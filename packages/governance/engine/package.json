@@ -1,0 +1,79 @@
+{
+  "name": "@agentproto/governance-engine",
+  "version": "0.1.0-alpha.0",
+  "description": "agentgovernance/v1 reference engine — record audit events, sign artifacts, maintain pending-signatures index. Vendor-neutral via the IGovernanceFilesystem interface (Node fs default, plug Supabase / S3 / in-memory adapters via the same interface). Pairs with @agentproto/governance for doctype types and validators.",
+  "keywords": [
+    "agentgovernance",
+    "governance",
+    "audit-log",
+    "hash-chain",
+    "signature",
+    "filesystem-adapter",
+    "engine",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/gov-1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/governance/engine"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.mjs",
+      "default": "./dist/tools/index.mjs"
+    },
+    "./provider": {
+      "types": "./dist/provider/index.d.ts",
+      "import": "./dist/provider/index.mjs",
+      "default": "./dist/provider/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/governance": "workspace:*",
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/ref": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "name": "@agentproto/governance",
+  "version": "0.1.0-alpha.0",
+  "description": "agentgovernance/v1 — universal contractual approval framework. Doctypes (signature.json, audit-log.jsonl, POLICY.md) describe how to record signatures, append hash-chained audit events, and declare autonomy policies as workspace files. Vendor-neutral, filesystem-first, third-party verifiable.",
+  "keywords": [
+    "agentgovernance",
+    "governance",
+    "approval",
+    "signature",
+    "audit-log",
+    "hash-chain",
+    "policy",
+    "open-standard",
+    "agentcompanies",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/gov-1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/governance/core"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./doctypes": {
+      "types": "./dist/doctypes/index.d.ts",
+      "import": "./dist/doctypes/index.mjs",
+      "default": "./dist/doctypes/index.mjs"
+    },
+    "./hash-chain": {
+      "types": "./dist/hash-chain/index.d.ts",
+      "import": "./dist/hash-chain/index.mjs",
+      "default": "./dist/hash-chain/index.mjs"
+    },
+    "./validators": {
+      "types": "./dist/validators/index.d.ts",
+      "import": "./dist/validators/index.mjs",
+      "default": "./dist/validators/index.mjs"
+    },
+    "./renderers": {
+      "types": "./dist/renderers/index.d.ts",
+      "import": "./dist/renderers/index.mjs",
+      "default": "./dist/renderers/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./AGENTGOVERNANCE.md": "./AGENTGOVERNANCE.md"
+  },
+  "files": [
+    "dist",
+    "src/spec/canvakit-templates",
+    "src/spec/agentgovernance-v1.md",
+    "AGENTGOVERNANCE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "yaml": "^2.6.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
