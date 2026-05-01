@@ -1,0 +1,64 @@
+{
+  "name": "@agentproto/driver",
+  "version": "0.1.0-alpha.0",
+  "description": "agentproto/provider-runtime — reference implementation of AIP-30 DRIVER.md `defineDriver` contract. Resolves multi-provider routing, applies schema-narrowing + mapping, and dispatches contract calls to provider bodies. Composes with @agentproto/tool (AIP-14 contracts) and the kind-specific runtime packages (provider-cli, provider-http, provider-mcp, provider-sdk). Framework adapters (Mastra, AI SDK, …) live in sibling `@agentproto/adapter-*` packages.",
+  "keywords": [
+    "agentproto",
+    "aip-30",
+    "provider",
+    "provider-runtime",
+    "defineDriver",
+    "resolver",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-30",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/specs"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/specs/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
