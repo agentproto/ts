@@ -1,0 +1,95 @@
+{
+  "name": "@agentproto/agencies",
+  "version": "0.1.0-alpha.0",
+  "description": "agentagencies/v1 — open file-format standard for entities that exercise agency. Operating layer over agentcompanies/v1 and agentgovernance/v1: services, counterparties, engagements, agreements, deliverables, invoices, vendor-neutral procedures, full-fidelity routines, capacity.",
+  "keywords": [
+    "agentagencies",
+    "agencies",
+    "agency",
+    "operations",
+    "engagement",
+    "agreement",
+    "invoice",
+    "procedure",
+    "open-standard",
+    "agentcompanies",
+    "agentgovernance",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/agp-1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/agencies/core"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./doctypes": {
+      "types": "./dist/doctypes/index.d.ts",
+      "import": "./dist/doctypes/index.mjs",
+      "default": "./dist/doctypes/index.mjs"
+    },
+    "./validators": {
+      "types": "./dist/validators/index.d.ts",
+      "import": "./dist/validators/index.mjs",
+      "default": "./dist/validators/index.mjs"
+    },
+    "./composition": {
+      "types": "./dist/composition/index.d.ts",
+      "import": "./dist/composition/index.mjs",
+      "default": "./dist/composition/index.mjs"
+    },
+    "./renderers": {
+      "types": "./dist/renderers/index.d.ts",
+      "import": "./dist/renderers/index.mjs",
+      "default": "./dist/renderers/index.mjs"
+    },
+    "./package.json": "./package.json",
+    "./AGENTAGENCIES.md": "./AGENTAGENCIES.md"
+  },
+  "files": [
+    "dist",
+    "src/spec/canvakit-templates",
+    "src/spec/snippets",
+    "AGENTAGENCIES.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/governance": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "yaml": "^2.6.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

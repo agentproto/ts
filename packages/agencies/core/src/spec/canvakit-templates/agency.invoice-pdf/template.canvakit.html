@@ -1,0 +1,142 @@
+---
+template: true
+name: agency.invoice-pdf
+version: 1.0.0-alpha
+description: |
+  Print-targeted invoice render. The host application reads INVOICE.md +
+  ENGAGEMENT.md + AGENCY.md (or COMPANY.md), passes the merged variables in,
+  and either inlines this HTML in an email or feeds it through a PDF engine
+  (Chromium / wkhtmltopdf) to archive a frozen PDF alongside the .md.
+
+  Document integrity: the issuing tool computes SHA-256 of the rendered HTML
+  *before* PDF conversion and stores it in INVOICE.md frontmatter as
+  `documentHash`. A signature.json on the invoice references the same hash —
+  changing the rendered HTML invalidates the signature.
+author: agencies.sh
+variables:
+  agencyName: "Acme Agency"
+  agencyAddressHtml: ""
+  agencyTaxId: ""
+  invoiceNumber: "INV-2026-0001"
+  issuedAt: "2026-04-26"
+  dueAt: "2026-05-26"
+  status: "issued"
+  counterpartyDisplayName: "Counterparty"
+  counterpartyAddressHtml: ""
+  counterpartyTaxId: ""
+  currency: "EUR"
+  subtotalFormatted: "0.00"
+  taxLines: []
+  totalFormatted: "0.00"
+  amountDueFormatted: "0.00"
+  paymentTermsHtml: ""
+  notesHtml: ""
+  paymentLinkUrl: ""
+  lineItems: []
+dataSources: {}
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Invoice {{invoiceNumber}}</title>
+    <style>
+      @page { size: A4; margin: 18mm; }
+      :root {
+        --fg: #111;
+        --muted: #555;
+        --border: #d4d4d4;
+        --accent: #1a1a1a;
+      }
+      body { font: 11pt/1.5 ui-sans-serif, system-ui, sans-serif; color: var(--fg); margin: 0; padding: 0; }
+      .doc { max-width: 720px; margin: 0 auto; padding: 0; }
+      header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 1.5rem; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
+      .agency { max-width: 60%; }
+      .agency h1 { font-size: 1.375rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+      .agency .tax { color: var(--muted); font-size: 0.875rem; }
+      .doc-title { text-align: right; }
+      .doc-title h2 { font-size: 1.125rem; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 0.25rem; color: var(--muted); font-weight: 500; }
+      .doc-title .num { font-size: 1.375rem; font-weight: 600; font-family: ui-monospace, SF Mono, monospace; }
+      .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; margin-bottom: 2rem; }
+      .meta h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 0.375rem; font-weight: 600; }
+      .meta p { margin: 0; line-height: 1.45; }
+      .dates { display: flex; gap: 2rem; padding: 0.75rem 1rem; background: #f7f5ee; border-radius: 4px; margin-bottom: 2rem; font-size: 0.9375rem; }
+      .dates dt { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.125rem; }
+      .dates dd { margin: 0; font-weight: 500; }
+      table.lines { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+      table.lines th { text-align: left; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0.5rem 0.75rem; border-bottom: 2px solid var(--accent); font-weight: 600; }
+      table.lines td { padding: 0.625rem 0.75rem; border-bottom: 1px solid #efefef; vertical-align: top; }
+      table.lines td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .totals { margin-left: auto; width: 18rem; font-size: 0.9375rem; }
+      .totals .row { display: flex; justify-content: space-between; padding: 0.375rem 0; }
+      .totals .row.grand { border-top: 2px solid var(--accent); margin-top: 0.5rem; padding-top: 0.625rem; font-weight: 600; font-size: 1.0625rem; }
+      .totals .row.due { color: var(--accent); margin-top: 0.5rem; padding: 0.625rem 0.75rem; background: #f7f5ee; border-radius: 4px; font-weight: 600; }
+      footer { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border); font-size: 0.875rem; color: var(--muted); line-height: 1.55; }
+      .pay-link { display: inline-block; margin-top: 0.75rem; padding: 0.5rem 1rem; background: var(--accent); color: #fff; text-decoration: none; border-radius: 4px; font-weight: 500; font-size: 0.875rem; }
+      .pill { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 999px; font-size: 0.75rem; font-weight: 500; background: #f0eee5; color: #555; vertical-align: middle; margin-left: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <div class="doc">
+      <header>
+        <div class="agency">
+          <h1>{{agencyName}}</h1>
+          {{{agencyAddressHtml}}}
+          {{#agencyTaxId}}<p class="tax">Tax ID: {{agencyTaxId}}</p>{{/agencyTaxId}}
+        </div>
+        <div class="doc-title">
+          <h2>Invoice <span class="pill">{{status}}</span></h2>
+          <div class="num">{{invoiceNumber}}</div>
+        </div>
+      </header>
+
+      <section class="meta">
+        <div>
+          <h3>Bill to</h3>
+          <p><strong>{{counterpartyDisplayName}}</strong></p>
+          {{{counterpartyAddressHtml}}}
+          {{#counterpartyTaxId}}<p class="tax">Tax ID: {{counterpartyTaxId}}</p>{{/counterpartyTaxId}}
+        </div>
+        <div class="dates">
+          <div><dt>Issued</dt><dd>{{issuedAt}}</dd></div>
+          <div><dt>Due</dt><dd>{{dueAt}}</dd></div>
+        </div>
+      </section>
+
+      <table class="lines">
+        <thead>
+          <tr><th>Description</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Total</th></tr>
+        </thead>
+        <tbody>
+          {{#lineItems}}
+          <tr>
+            <td>{{description}}</td>
+            <td class="num">{{quantity}}</td>
+            <td class="num">{{unitPriceFormatted}}</td>
+            <td class="num">{{totalFormatted}}</td>
+          </tr>
+          {{/lineItems}}
+        </tbody>
+      </table>
+
+      <div class="totals">
+        <div class="row"><span>Subtotal</span><span>{{subtotalFormatted}} {{currency}}</span></div>
+        {{#taxLines}}
+        <div class="row"><span>{{label}}</span><span>{{amountFormatted}} {{currency}}</span></div>
+        {{/taxLines}}
+        <div class="row grand"><span>Total</span><span>{{totalFormatted}} {{currency}}</span></div>
+        <div class="row due"><span>Amount due</span><span>{{amountDueFormatted}} {{currency}}</span></div>
+      </div>
+
+      {{#paymentLinkUrl}}
+      <p style="text-align:right;margin-top:1.25rem;"><a class="pay-link" href="{{paymentLinkUrl}}">Pay online</a></p>
+      {{/paymentLinkUrl}}
+
+      <footer>
+        {{#paymentTermsHtml}}<div>{{{paymentTermsHtml}}}</div>{{/paymentTermsHtml}}
+        {{#notesHtml}}<div style="margin-top:0.75rem;">{{{notesHtml}}}</div>{{/notesHtml}}
+        <p style="margin-top:1rem;font-size:0.75rem;">Generated by {{agencyName}} · agentagencies/v1</p>
+      </footer>
+    </div>
+  </body>
+</html>

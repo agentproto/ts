@@ -2,5 +2,6 @@ packages:
   - "packages/*"
   - "packages/driver/*"
   - "packages/governance/*"
+  - "packages/agencies/*"
   - "adapters/*"
   - "examples/*"

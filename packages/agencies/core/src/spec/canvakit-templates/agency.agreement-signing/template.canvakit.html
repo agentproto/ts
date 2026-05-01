@@ -1,0 +1,164 @@
+---
+template: true
+name: agency.agreement-signing
+version: 1.0.0-alpha
+description: |
+  Multi-party signing portal for AGREEMENT.md. Differs from
+  governance.signing-portal in three ways:
+    1. Renders the agreement body (line items, payment terms, scope) above the form.
+    2. Shows the multi-party signature status — already-signed parties are listed.
+    3. Knows about the agencies/v1 vocabulary (counterparty / operator / agent).
+
+  The host application:
+    - Reads AGREEMENT.md, computes documentHash, builds the signer list.
+    - Generates a single-use nonce + signing URL per pending signer.
+    - Receives the form POST and writes signature.json via signArtifactTool.
+author: agencies.sh
+variables:
+  agencyName: "Agency"
+  agreementTitle: "Agreement"
+  agreementPath: "engagements/example/AGREEMENT.md"
+  agreementBodyHtml: ""
+  documentHash: "0000000000000000000000000000000000000000000000000000000000000000"
+  signerKind: "counterparty"
+  signerSlug: "example-corp"
+  signerName: ""
+  signerEmail: ""
+  nonce: ""
+  signUrl: "/api/agency/sign-agreement"
+  alreadySignedParties: []
+  pendingParties: []
+  lineItems: []
+  totalFormatted: "0.00"
+  currency: "EUR"
+  paymentTermsHtml: ""
+dataSources: {}
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign: {{agreementTitle}} · {{agencyName}}</title>
+    <style>
+      :root { --fg: #1a1a1a; --muted: #666; --bg: #faf9f7; --panel: #fff; --border: #e5e5e5; --accent: #1a1a1a; --ok: #0a7d30; --warn: #b45309; }
+      body { font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; max-width: 44rem; margin: 0 auto; padding: 2.5rem 1.5rem; color: var(--fg); background: var(--bg); }
+      h1 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+      .lead { color: var(--muted); margin: 0 0 2rem; font-size: 0.9375rem; }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.25rem; }
+      .panel h2 { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin: 0 0 0.875rem; }
+      .body { font-size: 0.9375rem; line-height: 1.6; color: #222; }
+      .body :is(p, ul, ol, blockquote) { margin: 0 0 0.75rem; }
+      table.lines { width: 100%; border-collapse: collapse; margin: 0; }
+      table.lines th { text-align: left; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0.5rem 0.75rem; border-bottom: 1.5px solid var(--accent); font-weight: 600; }
+      table.lines td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #efece5; }
+      table.lines td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .total { display: flex; justify-content: space-between; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 2px solid var(--accent); font-weight: 600; font-size: 1.0625rem; }
+      .signers { display: grid; gap: 0.5rem; }
+      .signer { display: flex; justify-content: space-between; align-items: center; padding: 0.625rem 0.875rem; background: #f7f5ee; border-radius: 6px; font-size: 0.875rem; }
+      .signer .who { font-weight: 500; }
+      .signer .when { font-family: ui-monospace, SF Mono, monospace; font-size: 0.8125rem; color: var(--muted); }
+      .pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: 0.6875rem; font-weight: 500; vertical-align: middle; }
+      .pill.ok { background: #e7f5eb; color: var(--ok); }
+      .pill.warn { background: #fef3c7; color: var(--warn); }
+      .field { margin-bottom: 1rem; }
+      label { display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.375rem; }
+      input { width: 100%; padding: 0.625rem 0.75rem; border: 1px solid #d4d4d4; border-radius: 6px; font: inherit; box-sizing: border-box; background: #fff; }
+      input:focus { outline: 2px solid #2563eb; outline-offset: -2px; }
+      button { width: 100%; padding: 0.75rem 1rem; background: var(--accent); color: #fff; border: 0; border-radius: 6px; font: inherit; font-weight: 500; cursor: pointer; }
+      button:hover { background: #000; }
+      .meta { font-size: 0.8125rem; color: var(--muted); padding: 0.75rem 0.875rem; background: #f5f4f0; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 1rem; }
+      .meta dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; }
+      .meta dt { font-weight: 500; color: #444; }
+      .meta dd { margin: 0; font-family: ui-monospace, SF Mono, monospace; font-size: 0.75rem; word-break: break-all; }
+      .legal { font-size: 0.8125rem; color: #777; line-height: 1.6; margin-top: 1rem; }
+      .legal em { font-style: normal; font-weight: 500; color: var(--fg); }
+    </style>
+  </head>
+  <body>
+    <p class="lead">{{agencyName}} · agreement signing</p>
+    <h1>{{agreementTitle}}</h1>
+
+    {{#agreementBodyHtml}}
+    <section class="panel body">
+      {{{agreementBodyHtml}}}
+    </section>
+    {{/agreementBodyHtml}}
+
+    {{#lineItems.length}}
+    <section class="panel">
+      <h2>Line items</h2>
+      <table class="lines">
+        <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Total</th></tr></thead>
+        <tbody>
+          {{#lineItems}}
+          <tr><td>{{description}}</td><td class="num">{{quantity}}</td><td class="num">{{totalFormatted}}</td></tr>
+          {{/lineItems}}
+        </tbody>
+      </table>
+      <div class="total"><span>Total</span><span>{{totalFormatted}} {{currency}}</span></div>
+      {{#paymentTermsHtml}}<div style="margin-top:0.875rem;color:var(--muted);font-size:0.875rem;">{{{paymentTermsHtml}}}</div>{{/paymentTermsHtml}}
+    </section>
+    {{/lineItems.length}}
+
+    {{#alreadySignedParties.length}}
+    <section class="panel">
+      <h2>Already signed</h2>
+      <div class="signers">
+        {{#alreadySignedParties}}
+        <div class="signer">
+          <span class="who">{{label}} <span class="pill ok">signed</span></span>
+          <span class="when">{{signedAt}}</span>
+        </div>
+        {{/alreadySignedParties}}
+      </div>
+    </section>
+    {{/alreadySignedParties.length}}
+
+    {{#pendingParties.length}}
+    <section class="panel">
+      <h2>Pending signatures</h2>
+      <div class="signers">
+        {{#pendingParties}}
+        <div class="signer">
+          <span class="who">{{label}} <span class="pill warn">pending</span></span>
+          <span class="when">{{deadline}}</span>
+        </div>
+        {{/pendingParties}}
+      </div>
+    </section>
+    {{/pendingParties.length}}
+
+    <section class="panel">
+      <h2>Your signature</h2>
+      <p style="margin:0 0 1rem;color:var(--muted);font-size:0.875rem;">
+        You are signing on behalf of <strong>{{signerKind}}:{{signerSlug}}</strong>.
+      </p>
+      <form action="{{signUrl}}" method="POST">
+        <input type="hidden" name="nonce" value="{{nonce}}" />
+        <input type="hidden" name="artifactPath" value="{{agreementPath}}" />
+        <input type="hidden" name="documentHash" value="{{documentHash}}" />
+        <input type="hidden" name="signer" value="{{signerKind}}:{{signerSlug}}" />
+        <input type="hidden" name="signerKind" value="{{signerKind}}" />
+        {{#signerEmail}}<input type="hidden" name="signerEmail" value="{{signerEmail}}" />{{/signerEmail}}
+
+        <div class="field">
+          <label for="signerName">Type your full legal name to sign</label>
+          <input id="signerName" name="signerName" type="text" required value="{{signerName}}" autocomplete="name" />
+        </div>
+        <button type="submit">Sign agreement</button>
+      </form>
+    </section>
+
+    <div class="meta">
+      <dl>
+        <dt>Document</dt><dd>{{agreementPath}}</dd>
+        <dt>SHA-256</dt><dd>{{documentHash}}</dd>
+      </dl>
+    </div>
+
+    <p class="legal">
+      Typing your name and clicking <em>Sign agreement</em> creates a binding electronic signature on this version of the document. Your typed name, IP, browser user agent, and the document SHA-256 hash above are recorded as evidence. If the document changes, this signature does not apply to the new version.
+    </p>
+  </body>
+</html>

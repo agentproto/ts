@@ -1,0 +1,93 @@
+---
+template: true
+name: agency.procedure-card
+version: 1.0.0-alpha
+description: |
+  Narrative card view of a PROCEDURE.md — what it does, who triggers it,
+  what skills it requires, and the step list. Doubles as an in-product help
+  surface ("how does this engagement work?") and a published preview on
+  agencies.sh template registry pages.
+
+  Reads the source PROCEDURE.md by path; the host is responsible for
+  computing `currentStepId` if rendered inside an active engagement context
+  (so the card can highlight progress).
+author: agencies.sh
+refreshEvery: 5m
+variables:
+  agencyName: ""
+  procedurePath: "procedures/example/PROCEDURE.md"
+  currentStepId: ""
+dataSources:
+  procedure:
+    kind: file
+    path: "{{procedurePath}}"
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{procedure.name}} · procedure</title>
+    <style>
+      :root { --fg: #1a1a1a; --muted: #666; --bg: #faf9f7; --panel: #fff; --border: #e5e5e5; --accent: #1a1a1a; --done: #0a7d30; --active: #2563eb; }
+      body { font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; max-width: 44rem; margin: 0 auto; padding: 2.5rem 1.5rem; color: var(--fg); background: var(--bg); }
+      header { margin-bottom: 1.5rem; }
+      .lead { color: var(--muted); margin: 0 0 0.25rem; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.06em; }
+      h1 { font-size: 1.625rem; letter-spacing: -0.01em; margin: 0; }
+      .description { color: #333; margin: 0.5rem 0 1.5rem; font-size: 1rem; line-height: 1.55; }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+      .panel h2 { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin: 0 0 0.875rem; }
+      .meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; font-size: 0.875rem; }
+      .meta dt { font-weight: 500; color: #444; }
+      .meta dd { margin: 0; }
+      .pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: 0.75rem; background: #f0eee5; color: #444; margin-right: 0.25rem; margin-bottom: 0.25rem; }
+      .steps { list-style: none; padding: 0; margin: 0; counter-reset: step; }
+      .step { position: relative; padding: 0.875rem 0 0.875rem 2.75rem; border-bottom: 1px solid #efece5; }
+      .step:last-child { border-bottom: 0; }
+      .step::before { content: counter(step); counter-increment: step; position: absolute; left: 0; top: 0.875rem; width: 1.875rem; height: 1.875rem; border-radius: 999px; background: #f0eee5; color: #555; font-weight: 600; font-size: 0.875rem; display: flex; align-items: center; justify-content: center; }
+      .step.active::before { background: var(--active); color: #fff; }
+      .step.done::before { background: var(--done); color: #fff; content: "✓"; counter-increment: step; }
+      .step .name { font-weight: 500; font-size: 0.9375rem; }
+      .step .name .marker { display: none; }
+      .step.active .name .marker { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: 0.6875rem; background: var(--active); color: #fff; margin-left: 0.5rem; }
+      .step .desc { color: var(--muted); font-size: 0.875rem; margin-top: 0.25rem; line-height: 1.55; }
+      .step .skill { font-size: 0.75rem; color: #777; margin-top: 0.25rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p class="lead">{{#agencyName}}{{agencyName}} · {{/agencyName}}procedure</p>
+      <h1>{{procedure.name}}</h1>
+      <p class="description">{{procedure.description}}</p>
+    </header>
+
+    <section class="panel">
+      <h2>Overview</h2>
+      <dl class="meta">
+        <dt>Estimated duration</dt><dd>{{procedure.estimatedDuration}}</dd>
+        <dt>Required skills</dt><dd>
+          {{#procedure.requiredSkills}}<span class="pill">{{.}}</span>{{/procedure.requiredSkills}}
+        </dd>
+        <dt>Triggers</dt><dd>
+          {{#procedure.triggerLabels}}<span class="pill">{{.}}</span>{{/procedure.triggerLabels}}
+        </dd>
+        {{#procedure.autonomyPolicy}}
+        <dt>Autonomy policy</dt><dd><code>{{.}}</code></dd>
+        {{/procedure.autonomyPolicy}}
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h2>Steps</h2>
+      <ol class="steps">
+        {{#procedure.steps}}
+        <li class="step {{stateClass}}">
+          <div class="name">{{name}}<span class="marker">In progress</span></div>
+          <div class="desc">{{description}}</div>
+          {{#requiredSkill}}<div class="skill">requires <code>{{.}}</code></div>{{/requiredSkill}}
+        </li>
+        {{/procedure.steps}}
+      </ol>
+    </section>
+  </body>
+</html>

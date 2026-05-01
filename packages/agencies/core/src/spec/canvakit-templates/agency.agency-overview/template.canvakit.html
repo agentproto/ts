@@ -1,0 +1,173 @@
+---
+template: true
+name: agency.agency-overview
+version: 1.0.0-alpha
+description: |
+  Agency-wide rollup — active engagements, pipeline value, MRR-style stats,
+  pending signatures, recent payments. Driven by a routine-populated snapshot
+  file rather than live globs (counting 50 engagements on every page-view is
+  too expensive).
+
+  Connection pattern (the "data flow" answer):
+    1. routines/agency-overview-rollup/ROUTINE.md fires every 10 minutes.
+    2. It runs procedures/compute-agency-overview/PROCEDURE.md, which walks
+       counterparties/, engagements/, invoices/ and writes a snapshot to
+       _snapshots/agency-overview.json.
+    3. This template reads that snapshot via kind:file. Cheap. Static.
+    4. The snapshot frontmatter carries `generatedAt`; the page footer shows
+       it so operators know the freshness.
+
+  This is the canonical "routine writes a snapshot, template reads it" pattern
+  for any expensive aggregate. Do NOT switch to live globs without measuring.
+author: agencies.sh
+refreshEvery: 5m
+variables:
+  agencyName: "Acme Agency"
+  agencySlug: "acme"
+  currency: "EUR"
+dataSources:
+  snapshot:
+    kind: file
+    path: "_snapshots/agency-overview.json"
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{agencyName}} · Overview</title>
+    <style>
+      :root {
+        --fg: #1a1a1a;
+        --muted: #666;
+        --bg: #faf9f7;
+        --panel: #ffffff;
+        --border: #e5e5e5;
+        --accent: #1a1a1a;
+        --ok: #0a7d30;
+        --warn: #b45309;
+      }
+      body { font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; max-width: 72rem; margin: 0 auto; padding: 2.5rem 1.5rem; color: var(--fg); background: var(--bg); }
+      header { margin-bottom: 2rem; }
+      h1 { font-size: 1.625rem; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+      .lead { color: var(--muted); margin: 0; font-size: 0.9375rem; }
+      .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.25rem; }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; }
+      .panel h2 { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin: 0 0 1rem; }
+      .stat .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+      .stat .value { font-size: 1.875rem; font-weight: 600; letter-spacing: -0.02em; margin-top: 0.25rem; }
+      .stat .delta { font-size: 0.8125rem; color: var(--ok); margin-top: 0.25rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 0.5rem 0.625rem; border-bottom: 1px solid #efece5; font-size: 0.875rem; }
+      th { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.06em; color: #777; font-weight: 500; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: 0.6875rem; font-weight: 500; background: #f0eee5; color: #555; }
+      .pill.ok { background: #e7f5eb; color: var(--ok); }
+      .pill.warn { background: #fef3c7; color: var(--warn); }
+      a { color: #2563eb; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .stale { padding: 0.625rem 1rem; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; color: #92400e; font-size: 0.875rem; margin-bottom: 1.25rem; }
+      footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.8125rem; color: var(--muted); display: flex; justify-content: space-between; }
+      footer .freshness { font-family: ui-monospace, SF Mono, monospace; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p class="lead">Agency overview</p>
+      <h1>{{agencyName}}</h1>
+    </header>
+
+    {{#snapshot.isStale}}
+    <div class="stale">
+      ⚠ Snapshot is stale (last refreshed {{snapshot.generatedAt}}). Trigger
+      <code>routines/agency-overview-rollup</code> or wait for the next cron tick.
+    </div>
+    {{/snapshot.isStale}}
+
+    <section class="grid-4">
+      <div class="panel stat">
+        <p class="label">Active engagements</p>
+        <p class="value">{{snapshot.activeEngagementsCount}}</p>
+        <p class="delta">+{{snapshot.activeEngagementsDelta}} this month</p>
+      </div>
+      <div class="panel stat">
+        <p class="label">Pipeline value</p>
+        <p class="value">{{snapshot.pipelineValueFormatted}}</p>
+        <p class="delta">{{currency}}</p>
+      </div>
+      <div class="panel stat">
+        <p class="label">MRR</p>
+        <p class="value">{{snapshot.mrrFormatted}}</p>
+        <p class="delta">{{currency}}</p>
+      </div>
+      <div class="panel stat">
+        <p class="label">Pending signatures</p>
+        <p class="value">{{snapshot.pendingSignaturesCount}}</p>
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <div class="panel">
+        <h2>Engagements by status</h2>
+        <table>
+          <thead><tr><th>Status</th><th class="num">Count</th><th class="num">Value</th></tr></thead>
+          <tbody>
+            {{#snapshot.byStatus}}
+            <tr>
+              <td><span class="pill {{pillClass}}">{{status}}</span></td>
+              <td class="num">{{count}}</td>
+              <td class="num">{{valueFormatted}}</td>
+            </tr>
+            {{/snapshot.byStatus}}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Recent payments</h2>
+        {{#snapshot.recentPayments.length}}
+        <table>
+          <thead><tr><th>Invoice</th><th>Counterparty</th><th class="num">Amount</th><th>Paid</th></tr></thead>
+          <tbody>
+            {{#snapshot.recentPayments}}
+            <tr>
+              <td>{{invoiceNumber}}</td>
+              <td>{{counterpartyDisplayName}}</td>
+              <td class="num">{{amountFormatted}}</td>
+              <td>{{paidAt}}</td>
+            </tr>
+            {{/snapshot.recentPayments}}
+          </tbody>
+        </table>
+        {{/snapshot.recentPayments.length}}
+        {{^snapshot.recentPayments.length}}<p style="color:var(--muted);font-size:0.875rem;">No payments yet.</p>{{/snapshot.recentPayments.length}}
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Engagements awaiting signature</h2>
+      {{#snapshot.pendingByEngagement.length}}
+      <table>
+        <thead><tr><th>Engagement</th><th>Awaiting</th><th>Oldest pending</th><th></th></tr></thead>
+        <tbody>
+          {{#snapshot.pendingByEngagement}}
+          <tr>
+            <td><a href="/g/{{agencySlug}}/engagements/{{slug}}">{{name}}</a></td>
+            <td>{{requiredSigners}}</td>
+            <td>{{oldestPendingAt}}</td>
+            <td><span class="pill {{stalenessPillClass}}">{{stalenessLabel}}</span></td>
+          </tr>
+          {{/snapshot.pendingByEngagement}}
+        </tbody>
+      </table>
+      {{/snapshot.pendingByEngagement.length}}
+      {{^snapshot.pendingByEngagement.length}}<p style="color:var(--muted);font-size:0.875rem;">Nothing pending — clean inbox.</p>{{/snapshot.pendingByEngagement.length}}
+    </section>
+
+    <footer>
+      <span>Snapshot computed by <code>routines/agency-overview-rollup</code></span>
+      <span class="freshness">Generated: {{snapshot.generatedAt}}</span>
+    </footer>
+  </body>
+</html>

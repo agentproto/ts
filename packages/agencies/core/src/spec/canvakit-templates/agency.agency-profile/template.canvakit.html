@@ -1,0 +1,121 @@
+---
+template: true
+name: agency.agency-profile
+version: 1.0.0-alpha
+description: |
+  Public-facing profile rendering of AGENCY.md — verticals, primary services,
+  pricing models, autonomy posture. Suitable as the landing page when an
+  inbound prospect lands on `/agency/<slug>` or as a marketing fragment.
+
+  The optional services block lists primaryServices by reading their
+  SERVICE.md files; if the host doesn't pre-resolve them, only the slug is
+  shown.
+author: agencies.sh
+variables:
+  agencyName: ""
+  agencyDescription: ""
+  agencyTagline: ""
+  websiteUrl: ""
+  contactUrl: "/contact"
+  autonomyPosture: ""
+  defaultCurrency: "EUR"
+dataSources:
+  agency:
+    kind: file
+    path: "AGENCY.md"
+  services:
+    kind: query
+    include: "services/*/SERVICE.md"
+    sort: "displayOrder:asc"
+    fields: ["slug", "name", "description", "pricingModel", "estimatedDuration"]
+  pricing:
+    kind: query
+    include: "pricing-models/*/PRICING-MODEL.md"
+    fields: ["slug", "kind", "label"]
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{agency.name}}{{#agencyTagline}} · {{agencyTagline}}{{/agencyTagline}}</title>
+    <style>
+      :root { --fg: #1a1a1a; --muted: #666; --bg: #faf9f7; --panel: #fff; --border: #e5e5e5; --accent: #1a1a1a; }
+      body { font: 16px/1.6 ui-sans-serif, system-ui, sans-serif; max-width: 56rem; margin: 0 auto; padding: 4rem 1.5rem; color: var(--fg); background: var(--bg); }
+      .hero { text-align: center; padding: 2rem 0 3rem; }
+      .hero h1 { font-size: 2.5rem; letter-spacing: -0.025em; margin: 0 0 0.5rem; line-height: 1.1; }
+      .hero .tagline { color: var(--muted); font-size: 1.125rem; margin: 0; }
+      .hero .description { max-width: 40rem; margin: 1.5rem auto 0; color: #333; font-size: 1.0625rem; line-height: 1.6; }
+      .pills { margin: 1.5rem 0 0; }
+      .pill { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; background: #f0eee5; color: #444; font-size: 0.8125rem; margin: 0.125rem; }
+      section { margin-bottom: 3rem; }
+      section h2 { font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 1.25rem; font-weight: 500; }
+      .services { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+      .service { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; }
+      .service h3 { font-size: 1.125rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+      .service p { margin: 0 0 0.875rem; color: #333; font-size: 0.9375rem; line-height: 1.55; }
+      .service .meta { font-size: 0.8125rem; color: var(--muted); display: flex; gap: 1rem; }
+      .service .meta strong { color: #444; font-weight: 500; }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+      .panel dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1.25rem; font-size: 0.9375rem; }
+      .panel dt { font-weight: 500; color: #444; }
+      .panel dd { margin: 0; }
+      .cta { text-align: center; margin-top: 2rem; }
+      .cta a { display: inline-block; padding: 0.75rem 1.5rem; background: var(--accent); color: #fff; text-decoration: none; border-radius: 6px; font-weight: 500; font-size: 0.9375rem; }
+      .cta a:hover { background: #000; }
+      footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--border); text-align: center; font-size: 0.8125rem; color: var(--muted); }
+      footer a { color: #2563eb; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <div class="hero">
+      <h1>{{agency.name}}</h1>
+      {{#agencyTagline}}<p class="tagline">{{agencyTagline}}</p>{{/agencyTagline}}
+      {{#agency.description}}<p class="description">{{agency.description}}</p>{{/agency.description}}
+      <div class="pills">
+        {{#agency.verticalLabels}}<span class="pill">{{.}}</span>{{/agency.verticalLabels}}
+      </div>
+    </div>
+
+    {{#services.length}}
+    <section>
+      <h2>Services</h2>
+      <div class="services">
+        {{#services}}
+        <article class="service">
+          <h3>{{name}}</h3>
+          {{#description}}<p>{{.}}</p>{{/description}}
+          <div class="meta">
+            {{#estimatedDuration}}<span><strong>Duration:</strong> {{.}}</span>{{/estimatedDuration}}
+            {{#pricingModel}}<span><strong>Pricing:</strong> {{.}}</span>{{/pricingModel}}
+          </div>
+        </article>
+        {{/services}}
+      </div>
+    </section>
+    {{/services.length}}
+
+    <section>
+      <h2>How we work</h2>
+      <div class="panel">
+        <dl>
+          {{#agency.autonomyPosture}}<dt>Autonomy posture</dt><dd><code>{{.}}</code></dd>{{/agency.autonomyPosture}}
+          {{#agency.defaultPricingModel}}<dt>Default pricing</dt><dd>{{.}}</dd>{{/agency.defaultPricingModel}}
+          {{#agency.defaultCurrency}}<dt>Currency</dt><dd>{{.}}</dd>{{/agency.defaultCurrency}}
+          {{#agency.billingTimezone}}<dt>Timezone</dt><dd>{{.}}</dd>{{/agency.billingTimezone}}
+        </dl>
+      </div>
+    </section>
+
+    {{#contactUrl}}
+    <div class="cta">
+      <a href="{{contactUrl}}">Start an engagement</a>
+    </div>
+    {{/contactUrl}}
+
+    <footer>
+      <p>Powered by <a href="https://agentproto.sh/docs/agp-1">agencies.sh</a> · agentagencies/v1</p>
+      {{#websiteUrl}}<p><a href="{{websiteUrl}}">{{websiteUrl}}</a></p>{{/websiteUrl}}
+    </footer>
+  </body>
+</html>

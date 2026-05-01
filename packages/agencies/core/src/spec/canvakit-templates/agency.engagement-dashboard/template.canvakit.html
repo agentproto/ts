@@ -1,0 +1,191 @@
+---
+template: true
+name: agency.engagement-dashboard
+version: 1.0.0-alpha
+description: |
+  Operator-facing live dashboard for a single engagement. Reads ENGAGEMENT.md +
+  AGREEMENT.md + the deliverables/ and invoices/ folders + the tail of
+  `audit-log.jsonl`. Re-renders every 30s — the workflow updates the underlying
+  workspace files, this template just reflects state.
+
+  Data flow:
+    1. Workflow tool transitions ENGAGEMENT.md frontmatter (status, activeStep).
+    2. signArtifactTool / recordDeliverableTool / issueInvoiceCheckoutTool write
+       artifacts under engagements/<slug>/.
+    3. recordAuditEvent appends a hash-chained line to audit/audit-log.jsonl.
+    4. This template re-reads everything on the next refresh tick.
+
+  No "update the dashboard" tool call is needed — the dashboard is a *view* of
+  workspace state, not a separate persistence layer.
+author: agencies.sh
+refreshEvery: 30s
+variables:
+  engagementSlug: "2026-acme-website-redesign"
+  agencyName: "Acme Agency"
+  signUrlBase: "/g/acme/sign"
+dataSources:
+  engagement:
+    kind: file
+    path: "engagements/{{engagementSlug}}/ENGAGEMENT.md"
+  agreement:
+    kind: file
+    path: "engagements/{{engagementSlug}}/AGREEMENT.md"
+  deliverables:
+    kind: query
+    include: "engagements/{{engagementSlug}}/deliverables/*/DELIVERABLE.md"
+    sort: "createdAt:asc"
+    fields: ["slug", "name", "status", "requiredSignatures", "createdAt"]
+  invoices:
+    kind: query
+    include: "engagements/{{engagementSlug}}/invoices/*/INVOICE.md"
+    sort: "issuedAt:desc"
+    fields: ["invoiceNumber", "amount", "currency", "status", "issuedAt", "paidAt"]
+  audit:
+    kind: tool
+    ref: governance.audit_tail
+    params:
+      logPath: "engagements/{{engagementSlug}}/audit/audit-log.jsonl"
+      lines: 12
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{engagement.name}} · Engagement</title>
+    <style>
+      :root {
+        --fg: #1a1a1a;
+        --muted: #666;
+        --bg: #faf9f7;
+        --panel: #ffffff;
+        --border: #e5e5e5;
+        --accent: #1a1a1a;
+        --ok: #0a7d30;
+        --warn: #b45309;
+        --danger: #b91c1c;
+      }
+      body { font: 15px/1.55 ui-sans-serif, system-ui, sans-serif; max-width: 64rem; margin: 0 auto; padding: 2.5rem 1.5rem; color: var(--fg); background: var(--bg); }
+      header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2rem; }
+      h1 { font-size: 1.625rem; letter-spacing: -0.01em; margin: 0 0 0.25rem; }
+      .lead { color: var(--muted); margin: 0; font-size: 0.9375rem; }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+      .panel h2 { font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin: 0 0 1rem; }
+      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+      .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; }
+      .stat .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #666; }
+      .stat .value { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; margin-top: 0.25rem; }
+      .pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 500; line-height: 1.5; vertical-align: middle; }
+      .pill.ok { background: #e7f5eb; color: var(--ok); }
+      .pill.warn { background: #fef3c7; color: var(--warn); }
+      .pill.danger { background: #fee2e2; color: var(--danger); }
+      .pill.muted { background: #f0eee9; color: #555; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 0.625rem 0.75rem; border-bottom: 1px solid #efece5; vertical-align: top; }
+      th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: #777; font-weight: 500; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      td.mono { font-family: ui-monospace, SF Mono, monospace; font-size: 0.8125rem; color: #444; }
+      .audit { font-family: ui-monospace, SF Mono, monospace; font-size: 0.8125rem; color: #555; line-height: 1.7; }
+      .audit .row { display: grid; grid-template-columns: 9rem 7rem 1fr; gap: 0.75rem; padding: 0.25rem 0; border-bottom: 1px dashed #f0eee5; }
+      .audit .row:last-child { border-bottom: 0; }
+      .audit time { color: #888; }
+      .empty { padding: 1.25rem; text-align: center; color: var(--muted); font-size: 0.875rem; background: #f7f5f0; border-radius: 6px; }
+      a { color: #2563eb; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="lead">{{agencyName}} · engagement</p>
+        <h1>{{engagement.name}}</h1>
+      </div>
+      <div>
+        <span class="pill {{engagement.statusPillClass}}">{{engagement.status}}</span>
+      </div>
+    </header>
+
+    <div class="grid-3">
+      <div class="panel stat">
+        <p class="label">Counterparty</p>
+        <p class="value">{{engagement.counterpartyDisplayName}}</p>
+      </div>
+      <div class="panel stat">
+        <p class="label">Active step</p>
+        <p class="value">{{engagement.activeStep}}</p>
+      </div>
+      <div class="panel stat">
+        <p class="label">Procedure</p>
+        <p class="value">{{engagement.activeProcedure}}</p>
+      </div>
+    </div>
+
+    <section class="panel">
+      <h2>Agreement</h2>
+      <table>
+        <tbody>
+          <tr><th>Status</th><td><span class="pill {{agreement.statusPillClass}}">{{agreement.status}}</span></td></tr>
+          <tr><th>Signed by</th><td>{{agreement.signedByLabel}}</td></tr>
+          <tr><th>Document hash</th><td class="mono">{{agreement.documentHash}}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Deliverables</h2>
+      {{#deliverables.length}}
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>Pending signatures</th><th>Created</th></tr></thead>
+        <tbody>
+          {{#deliverables}}
+          <tr>
+            <td>{{name}}</td>
+            <td><span class="pill {{statusPillClass}}">{{status}}</span></td>
+            <td>{{pendingSignatureCount}}</td>
+            <td class="mono">{{createdAt}}</td>
+          </tr>
+          {{/deliverables}}
+        </tbody>
+      </table>
+      {{/deliverables.length}}
+      {{^deliverables.length}}<div class="empty">No deliverables yet — workflow has not advanced to <code>execute</code>.</div>{{/deliverables.length}}
+    </section>
+
+    <section class="panel">
+      <h2>Invoices</h2>
+      {{#invoices.length}}
+      <table>
+        <thead><tr><th>Invoice #</th><th>Amount</th><th>Status</th><th>Issued</th><th>Paid</th></tr></thead>
+        <tbody>
+          {{#invoices}}
+          <tr>
+            <td class="mono">{{invoiceNumber}}</td>
+            <td class="num">{{amountFormatted}}</td>
+            <td><span class="pill {{statusPillClass}}">{{status}}</span></td>
+            <td class="mono">{{issuedAt}}</td>
+            <td class="mono">{{paidAt}}</td>
+          </tr>
+          {{/invoices}}
+        </tbody>
+      </table>
+      {{/invoices.length}}
+      {{^invoices.length}}<div class="empty">No invoices issued.</div>{{/invoices.length}}
+    </section>
+
+    <section class="panel">
+      <h2>Recent audit events</h2>
+      {{#audit.length}}
+      <div class="audit">
+        {{#audit}}
+        <div class="row">
+          <time>{{createdAt}}</time>
+          <span>{{action}}</span>
+          <span>{{actor}} → {{entityId}}</span>
+        </div>
+        {{/audit}}
+      </div>
+      {{/audit.length}}
+      {{^audit.length}}<div class="empty">Audit log is empty.</div>{{/audit.length}}
+    </section>
+  </body>
+</html>
