@@ -20,6 +20,11 @@ export {
   validateOutput,
 } from "./define-tool.js"
 export {
+  createTool,
+  type CreateToolOptions,
+  type CreateToolResult,
+} from "./create-tool.js"
+export {
   ToolError,
   toToolError,
   toToolResult,

@@ -150,3 +150,41 @@ function capitalize(s: string): string {
 
 export const DOCTYPE_DEFAULT_ID_PATTERN = DEFAULT_ID_PATTERN
 export const DOCTYPE_MAX_DESCRIPTION_LEN = MAX_DESCRIPTION_LEN
+
+/**
+ * Filter a value to its YAML-serialisable subset:
+ *  - functions removed (e.g. driver `execute[id]: ExecuteFn`)
+ *  - zod schemas removed (e.g. tool `inputSchema`, `outputSchema`,
+ *    `contextSchema` — they live in TS, not in frontmatter)
+ *  - `undefined` values dropped from objects (so the YAML output
+ *    doesn't carry empty keys; `null` is preserved as a real value)
+ *
+ * Used by per-AIP `createX(params, opts)` to project a validated
+ * definition into a manifest-shaped object before writing to disk.
+ * Pure function; no I/O.
+ */
+export function filterSerializable(value: unknown): unknown {
+  if (value === null || value === undefined) return value
+  if (typeof value === "function") return undefined
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    Object.prototype.hasOwnProperty.call(value, "_def") &&
+    "parse" in value &&
+    typeof (value as { parse?: unknown }).parse === "function"
+  ) {
+    return undefined
+  }
+  if (Array.isArray(value)) {
+    return value.map(filterSerializable).filter((v) => v !== undefined)
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const filtered = filterSerializable(v)
+      if (filtered !== undefined) out[k] = filtered
+    }
+    return out
+  }
+  return value
+}

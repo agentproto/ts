@@ -120,3 +120,38 @@ describe("createDoctype", () => {
     expect(DOCTYPE_MAX_DESCRIPTION_LEN).toBe(2000)
   })
 })
+
+import { filterSerializable } from "../index.js"
+
+// Stand-in for a zod schema instance (the duck-typed `_def + parse`
+// shape `filterSerializable` looks for). Avoids pulling zod as a
+// devDep just for this test — define-doctype is intentionally
+// dependency-free.
+const fakeZodSchema = { _def: { typeName: "ZodFake" }, parse: () => ({}) }
+
+describe("filterSerializable", () => {
+  it("drops zod-shaped objects, functions, and undefined values", () => {
+    const out = filterSerializable({
+      id: "echo",
+      name: "Echo",
+      version: undefined,
+      inputSchema: fakeZodSchema,
+      execute: () => "x",
+      tags: ["a", undefined, "b"],
+      nested: {
+        keep: 1,
+        drop: () => "y",
+      },
+    })
+    expect(out).toEqual({
+      id: "echo",
+      name: "Echo",
+      tags: ["a", "b"],
+      nested: { keep: 1 },
+    })
+  })
+
+  it("preserves null distinct from undefined", () => {
+    expect(filterSerializable({ a: null, b: undefined })).toEqual({ a: null })
+  })
+})
