@@ -153,7 +153,7 @@ if (hasSchema) {
   })
   // The compiler emits multiple interfaces (sub-objects, $defs). Keep
   // them all — downstream code can reference SkillRef, ToolRef, etc.
-  definitionInterface = compiled.trim()
+  definitionInterface = relaxMixedIndexSignatures(compiled.trim())
   // json-schema-to-zod emits the zod v3 `.refine(pred, "msg")` shape;
   // zod v4 takes `.refine(pred, { message: "msg" })`. Walk the output
   // and rewrite — paren-aware (a regex would break on the nested
@@ -642,6 +642,96 @@ function parseArgs(argv) {
 
 function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/**
+ * Relax mismatched index signatures emitted by json-schema-to-typescript.
+ *
+ * When a JSON Schema has both `properties` (with optional members) and
+ * `additionalProperties: { type: T }`, JSTT emits an interface like:
+ *
+ *     interface ColorTokens {
+ *       background: string
+ *       surface?: string                // optional → string | undefined
+ *       [k: string]: string             // index says string (no undefined)
+ *     }
+ *
+ * TS rejects the optional vs index mismatch. Walk line-by-line tracking
+ * interface boundaries (carefully — JSDoc comments may contain braces
+ * like "{colors.<name>}", so brace counting must skip comment lines).
+ * For each interface body that has both an optional property and an
+ * index signature, append ` | undefined` to the index's value type.
+ * Runtime is unaffected.
+ */
+function relaxMixedIndexSignatures(tsSrc) {
+  const lines = tsSrc.split("\n")
+  let inInterface = false
+  let depth = 0
+  let hasOptional = false
+  let indexLineIdx = -1
+  let indexValueType = ""
+
+  const flush = () => {
+    if (
+      hasOptional &&
+      indexLineIdx >= 0 &&
+      indexValueType &&
+      !indexValueType.includes("undefined") &&
+      indexValueType !== "unknown"
+    ) {
+      lines[indexLineIdx] = lines[indexLineIdx].replace(
+        /(\[k:\s*string\]\s*:\s*)([^\n|]+)$/,
+        (_m, prefix, value) => `${prefix}${value.trim()} | undefined`,
+      )
+    }
+    inInterface = false
+    depth = 0
+    hasOptional = false
+    indexLineIdx = -1
+    indexValueType = ""
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!inInterface) {
+      if (/^export interface\s+\w+\s*\{/.test(line)) {
+        inInterface = true
+        depth = 1
+      }
+      continue
+    }
+    // Brace counting — skip JSDoc comment lines (they may contain
+    // `{...}` literals as documentation, not type structure).
+    const trimmed = line.trimStart()
+    const isCommentLine =
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("//")
+    if (!isCommentLine) {
+      for (const c of line) {
+        if (c === "{") depth++
+        else if (c === "}") {
+          depth--
+          if (depth === 0) {
+            flush()
+            break
+          }
+        }
+      }
+      if (!inInterface) continue
+    }
+    // Detect optional property at the top level of the body.
+    if (/^\s*"?[\w$-]+"?\s*\?\s*:/.test(line)) {
+      hasOptional = true
+    }
+    // Detect index signature line.
+    const im = line.match(/^\s*\[k:\s*string\]\s*:\s*(.+)$/)
+    if (im) {
+      indexLineIdx = i
+      indexValueType = im[1].trim()
+    }
+  }
+  return lines.join("\n")
 }
 
 /**
