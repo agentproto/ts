@@ -57,6 +57,12 @@ const AIP = Number(args.aip)
 const SLUG = args.slug
 const DOCTYPE = args.doctype.toUpperCase()
 const PASCAL = capitalize(SLUG)
+// CAMEL is for places that need a JS identifier — e.g.
+// `${CAMEL}FrontmatterSchema`, `${CAMEL}FromManifest`. Slugs without
+// separators (`operator`) collapse to the same lowercase string;
+// hyphenated slugs (`agency-v2`) become `agencyV2`.
+const CAMEL =
+  PASCAL.length > 0 ? PASCAL.charAt(0).toLowerCase() + PASCAL.slice(1) : ""
 const DEFINE_FN = `define${PASCAL}`
 const PKG_NAME = `@agentproto/${SLUG}`
 const PKG_DIR = resolve(TS_ROOT, "packages", SLUG)
@@ -297,7 +303,7 @@ write(
  *
  * Authoring paths:
  *   - TS:  \`${DEFINE_FN}({...})\` → \`${PASCAL}Handle\`
- *   - MD:  \`parse${PASCAL}Manifest(src) → ${SLUG}FromManifest({...})\` → \`${PASCAL}Handle\`
+ *   - MD:  \`parse${PASCAL}Manifest(src) → ${CAMEL}FromManifest({...})\` → \`${PASCAL}Handle\`
  */
 
 export const SPEC_NAME = "agent${SLUG}/v1" as const
@@ -358,15 +364,15 @@ if (hasSchema) {
 
 import { z } from "zod"
 
-export const ${SLUG}FrontmatterSchema = ${zodSchemaExpr}
+export const ${CAMEL}FrontmatterSchema = ${zodSchemaExpr}
 
-export type ${PASCAL}Frontmatter = z.infer<typeof ${SLUG}FrontmatterSchema>
+export type ${PASCAL}Frontmatter = z.infer<typeof ${CAMEL}FrontmatterSchema>
 `,
   )
 }
 
 const validateBody = hasSchema
-  ? `    const result = ${SLUG}FrontmatterSchema.safeParse(def)
+  ? `    const result = ${CAMEL}FrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
         \`${DEFINE_FN} (AIP-${AIP}): \${result.error.issues
@@ -380,7 +386,7 @@ const validateBody = hasSchema
   : `    // TODO: spec-${AIP}-specific checks.`
 
 const validateImport = hasSchema
-  ? `\nimport { ${SLUG}FrontmatterSchema } from "./schema.js"`
+  ? `\nimport { ${CAMEL}FrontmatterSchema } from "./schema.js"`
   : ""
 
 const validateParam = hasSchema ? "def" : "_def"
@@ -443,7 +449,7 @@ write(
 import matter from "gray-matter"
 ${
   hasSchema
-    ? `import { ${SLUG}FrontmatterSchema, type ${PASCAL}Frontmatter } from "../schema.js"`
+    ? `import { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter } from "../schema.js"`
     : `import { z } from "zod"`
 }
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
@@ -453,11 +459,11 @@ ${
   hasSchema
     ? `// Re-export so consumers can import the schema + inferred type either
 // from "@${PKG_NAME}/manifest" or directly from "@${PKG_NAME}/schema".
-export { ${SLUG}FrontmatterSchema, type ${PASCAL}Frontmatter }`
-    : `export const ${SLUG}ManifestFrontmatterSchema = ${zodSchemaExpr}
+export { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter }`
+    : `export const ${CAMEL}ManifestFrontmatterSchema = ${zodSchemaExpr}
 
 export type ${PASCAL}ManifestFrontmatter = z.infer<
-  typeof ${SLUG}ManifestFrontmatterSchema
+  typeof ${CAMEL}ManifestFrontmatterSchema
 >`
 }
 
@@ -471,7 +477,7 @@ export function parse${PASCAL}Manifest(source: string): ${PASCAL}Manifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parse${PASCAL}Manifest: missing or empty frontmatter")
   }
-  const result = ${hasSchema ? `${SLUG}FrontmatterSchema` : `${SLUG}ManifestFrontmatterSchema`}.safeParse(parsed.data)
+  const result = ${hasSchema ? `${CAMEL}FrontmatterSchema` : `${CAMEL}ManifestFrontmatterSchema`}.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       \`parse${PASCAL}Manifest: invalid frontmatter — \${result.error.issues
@@ -482,7 +488,7 @@ export function parse${PASCAL}Manifest(source: string): ${PASCAL}Manifest {
   return { frontmatter: result.data, body: parsed.content }
 }
 
-export function ${SLUG}FromManifest(manifest: ${PASCAL}Manifest): ${PASCAL}Handle {
+export function ${CAMEL}FromManifest(manifest: ${PASCAL}Manifest): ${PASCAL}Handle {
   // The zod-validated frontmatter is structurally compatible with
   // ${PASCAL}Definition; the cast pins the typing once the manifest
   // schema and the TS interface diverge (e.g. handle has frozen fields
@@ -641,7 +647,13 @@ function parseArgs(argv) {
 }
 
 function capitalize(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1)
+  // PascalCase: split on `-` or `_`, uppercase each segment's first char.
+  // Slug `agency-v2` → `AgencyV2` (TS-identifier-safe). Slugs without
+  // separators are unchanged (`operator` → `Operator`).
+  return s
+    .split(/[-_]/)
+    .map((seg) => (seg.length > 0 ? seg.charAt(0).toUpperCase() + seg.slice(1) : seg))
+    .join("")
 }
 
 /**
