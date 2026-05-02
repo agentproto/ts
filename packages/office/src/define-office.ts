@@ -24,6 +24,20 @@ export const defineOffice = createDoctype<OfficeDefinition, OfficeHandle>({
   name: "office",
   readIdentity: (def) => def.name,
   validate(def) {
+    // Cross-field rules run BEFORE field-level zod so structural
+    // errors surface before the cascade of "missing required field".
+    //
+    // AIP-22 rule: appliesTo non-empty ⇒ extends required.
+    const d = def as { appliesTo?: readonly unknown[]; extends?: unknown }
+    if (
+      Array.isArray(d.appliesTo) &&
+      d.appliesTo.length > 0 &&
+      d.extends == null
+    ) {
+      throw new Error(
+        `defineOffice (AIP-22): appliesTo is non-empty — extends MUST be set`,
+      )
+    }
     const result = officeFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
@@ -32,9 +46,6 @@ export const defineOffice = createDoctype<OfficeDefinition, OfficeHandle>({
           .join("; ")}`,
       )
     }
-    // TODO: spec-22-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.

@@ -19,6 +19,26 @@ export const defineCollection = createDoctype<CollectionDefinition, CollectionHa
   aip: 18,
   name: "collection",
   validate(def) {
+    // Cross-field rules run BEFORE the field-level zod check so a
+    // structurally-broken def (e.g. appliesTo without extends) reports
+    // the structural error rather than a less-actionable cascade of
+    // "missing required field" zod issues.
+    //
+    // AIP-18 rule: when `appliesTo` lists ≥1 consumer, the doctype is
+    // acting as a *view* of a parent and MUST declare the parent it
+    // extends. Mirrors `if appliesTo: { minItems: 1 } then required: [extends]`.
+    const d = def as { appliesTo?: readonly unknown[]; extends?: unknown }
+    if (
+      Array.isArray(d.appliesTo) &&
+      d.appliesTo.length > 0 &&
+      d.extends == null
+    ) {
+      throw new Error(
+        `defineCollection (AIP-18): appliesTo is non-empty — extends MUST be set`,
+      )
+    }
+    // Field-level validation: schema-derived zod (single source of
+    // truth shared with parseCollectionManifest).
     const result = collectionFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
@@ -27,9 +47,6 @@ export const defineCollection = createDoctype<CollectionDefinition, CollectionHa
           .join("; ")}`,
       )
     }
-    // TODO: spec-18-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.

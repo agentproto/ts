@@ -24,6 +24,34 @@ export const defineAssembly = createDoctype<AssemblyDefinition, AssemblyHandle>(
   name: "assembly",
   readIdentity: (def) => def.name,
   validate(def) {
+    // Cross-field rules run BEFORE field-level zod so structural
+    // errors surface before the cascade of "missing required field".
+    const d = def as {
+      appliesTo?: readonly unknown[]
+      extends?: unknown
+      defaults?: { triggerHeuristic?: string; triggerInterval_ms?: number }
+    }
+    // AIP-24 rule #1 (shared with AIP-18/20/22/23): appliesTo non-empty
+    // ⇒ extends required.
+    if (
+      Array.isArray(d.appliesTo) &&
+      d.appliesTo.length > 0 &&
+      d.extends == null
+    ) {
+      throw new Error(
+        `defineAssembly (AIP-24): appliesTo is non-empty — extends MUST be set`,
+      )
+    }
+    // AIP-24 rule #2: triggerHeuristic="periodic" demands an explicit
+    // interval — without one the runtime has no schedule.
+    if (
+      d.defaults?.triggerHeuristic === "periodic" &&
+      d.defaults?.triggerInterval_ms === undefined
+    ) {
+      throw new Error(
+        `defineAssembly (AIP-24): defaults.triggerHeuristic='periodic' requires defaults.triggerInterval_ms`,
+      )
+    }
     const result = assemblyFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
@@ -32,9 +60,6 @@ export const defineAssembly = createDoctype<AssemblyDefinition, AssemblyHandle>(
           .join("; ")}`,
       )
     }
-    // TODO: spec-24-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.
