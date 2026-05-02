@@ -189,13 +189,13 @@ describe("resolveDriver — Phase 4 pin override", () => {
 })
 
 describe("resolveDriver — Phase 5 cost ranking", () => {
-  it("prefers contract's defaultDriver when surviving", () => {
+  it("prefers contract's defaultImplementation when surviving", () => {
     const toolWithDefault = defineTool({
       id: "image-create",
       description: "Generate.",
       inputSchema: z.object({ prompt: z.string() }),
       outputSchema: z.object({ url: z.string() }),
-      defaultDriver: "preferred",
+      defaultImplementation: "preferred",
     })
     const candidates = [
       p({ id: "cheap", costOverride: { costUnitsPerCall: 1 } }),

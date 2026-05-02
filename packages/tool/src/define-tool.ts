@@ -76,7 +76,7 @@ const constructTool = createDoctype<
       tags: Object.freeze([...(def.tags ?? [])]),
       metadata: Object.freeze({ ...(def.metadata ?? {}) }),
       idempotent: def.idempotent ?? false,
-      defaultDriver: def.defaultDriver,
+      defaultImplementation: def.defaultImplementation,
       driverConstraints: freezeProviderConstraints(def.driverConstraints),
     }
   },

@@ -81,10 +81,10 @@ describe("defineTool — basic shape", () => {
       description: "PII redaction. Self-hosted only.",
       inputSchema: z.object({ text: z.string() }),
       outputSchema: z.object({ redacted: z.string() }),
-      defaultDriver: "host-presidio-sdk",
+      defaultImplementation: "host-presidio-sdk",
       driverConstraints: { forbid: ["http", "mcp"], requireKind: ["sdk", "builtin"] },
     })
-    expect(tool.defaultDriver).toBe("host-presidio-sdk")
+    expect(tool.defaultImplementation).toBe("host-presidio-sdk")
     expect(tool.driverConstraints.forbid).toEqual(["http", "mcp"])
     expect(tool.driverConstraints.requireKind).toEqual(["sdk", "builtin"])
   })

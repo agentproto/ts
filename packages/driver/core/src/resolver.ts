@@ -168,8 +168,8 @@ export function resolveDriver(args: {
   }
 
   // default_driver preference.
-  if (tool.defaultDriver) {
-    const def = phase3.find(({ provider }) => provider.id === tool.defaultDriver)
+  if (tool.defaultImplementation) {
+    const def = phase3.find(({ provider }) => provider.id === tool.defaultImplementation)
     if (def) {
       return { ok: true, provider: def.provider, implementsEntry: def.entry }
     }

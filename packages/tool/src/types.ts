@@ -69,7 +69,7 @@ export interface ToolDefinition<
    * this in Phase 5 (cost ranking) when no other signal differentiates
    * candidates. Null/undefined = pick by resolver policy.
    */
-  defaultDriver?: string
+  defaultImplementation?: string
 
   /**
    * Author-side allowlist/denylist on which provider kinds the contract
@@ -136,7 +136,7 @@ export interface ToolHandle<
   readonly tags: readonly string[]
   readonly metadata: Record<string, unknown>
   readonly idempotent: boolean
-  readonly defaultDriver?: string
+  readonly defaultImplementation?: string
   readonly driverConstraints: Required<DriverConstraints>
 }
 
