@@ -315,9 +315,58 @@ const descriptionOverride =
       ? `\n  readDescription: (def) => def.${descriptionField},`
       : ""
 
+// When the spec ships a JSON Schema, extract the zod schema to its own
+// file so both authoring paths (defineX from TS, parseManifest from MD)
+// can run it. Single source of truth — every field-level constraint
+// (length, pattern, enum, default) flows from the JSON Schema.
+if (hasSchema) {
+  write(
+    "src/schema.ts",
+    `/**
+ * AIP-${AIP} ${DOCTYPE}.md frontmatter zod schema.
+ *
+ * Generated from \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via
+ * json-schema-to-zod. Imported by both \`define-${SLUG}.ts\` (TS path
+ * validation) and \`manifest/index.ts\` (.md path validation) so every
+ * field-level constraint runs in both authoring paths from a single
+ * source of truth — re-run scaffold-aip to refresh after spec changes.
+ *
+ * Cross-field rules (if/then/allOf in JSON Schema) don't translate
+ * cleanly and live in \`define-${SLUG}.ts\`'s \`validate(def)\` instead.
+ */
+
+import { z } from "zod"
+
+export const ${SLUG}FrontmatterSchema = ${zodSchemaExpr}
+
+export type ${PASCAL}Frontmatter = z.infer<typeof ${SLUG}FrontmatterSchema>
+`,
+  )
+}
+
+const validateBody = hasSchema
+  ? `    const result = ${SLUG}FrontmatterSchema.safeParse(def)
+    if (!result.success) {
+      throw new Error(
+        \`${DEFINE_FN} (AIP-${AIP}): \${result.error.issues
+          .map((i) => \`\${i.path.join(".")}: \${i.message}\`)
+          .join("; ")}\`,
+      )
+    }
+    // TODO: spec-${AIP}-specific cross-field rules (if/then/allOf in
+    // the JSON Schema) — those don't translate to zod cleanly and
+    // belong here. See @agentproto/operator's autonomy=gated rule.`
+  : `    // TODO: spec-${AIP}-specific checks.`
+
+const validateImport = hasSchema
+  ? `\nimport { ${SLUG}FrontmatterSchema } from "./schema.js"`
+  : ""
+
+const validateParam = hasSchema ? "def" : "_def"
+
 write(
   `src/define-${SLUG}.ts`,
-  `import { createDoctype } from "@agentproto/define-doctype"
+  `import { createDoctype } from "@agentproto/define-doctype"${validateImport}
 import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
 
 /**
@@ -325,9 +374,11 @@ import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
  *
  * Built on \`createDoctype\` so the cross-AIP invariants (id pattern,
  * description length, top-level freeze, "${DEFINE_FN} (AIP-${AIP}): …"
- * error prefix) run uniformly with every other AIP defineX. Spec-${AIP}-
- * specific validation goes in \`validate(def)\`; defaulting and nested
- * freezing in \`build(def)\`.${
+ * error prefix) run uniformly with every other AIP defineX.${
+   hasSchema
+     ? `\n *\n * Field-level validation runs the schema-derived zod from\n * \`./schema.ts\` against the input. Same source of truth as the .md\n * path uses (\`parse${PASCAL}Manifest\`), so a malformed TS-authored\n * definition fails with the same diagnostic as a malformed manifest.\n * Cross-field rules go in \`validate(def)\` after the zod check.`
+     : `\n *\n * Spec-${AIP}-specific validation goes in \`validate(def)\`; defaulting\n * and nested freezing in \`build(def)\`.`
+ }${
    hasSchema && (identityField !== "id" || descriptionField !== "description")
      ? `\n *\n * Identity / description extractors detected from the JSON Schema:\n *   readIdentity: def.${identityField}${descriptionField ? `\n *   readDescription: def.${descriptionField}` : "\n *   readDescription: skipped (no string-y required field detected)"}.`
      : ""
@@ -336,11 +387,8 @@ import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
 export const ${DEFINE_FN} = createDoctype<${PASCAL}Definition, ${PASCAL}Handle>({
   aip: ${AIP},
   name: "${SLUG}",${identityOverride}${descriptionOverride}
-  validate(_def) {
-    // TODO: spec-${AIP}-specific checks (cross-field rules, ref patterns,
-    // length caps that the JSON Schema couldn't express). Length and
-    // pattern constraints on individual fields already run inside the
-    // manifest's zod schema when the .md path is taken.
+  validate(${validateParam}) {
+${validateBody}
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.
@@ -372,18 +420,28 @@ write(
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
+${
+  hasSchema
+    ? `import { ${SLUG}FrontmatterSchema, type ${PASCAL}Frontmatter } from "../schema.js"`
+    : `import { z } from "zod"`
+}
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
 import type { ${PASCAL}Definition, ${PASCAL}Handle } from "../types.js"
 
-export const ${SLUG}ManifestFrontmatterSchema = ${zodSchemaExpr}
+${
+  hasSchema
+    ? `// Re-export so consumers can import the schema + inferred type either
+// from "@${PKG_NAME}/manifest" or directly from "@${PKG_NAME}/schema".
+export { ${SLUG}FrontmatterSchema, type ${PASCAL}Frontmatter }`
+    : `export const ${SLUG}ManifestFrontmatterSchema = ${zodSchemaExpr}
 
 export type ${PASCAL}ManifestFrontmatter = z.infer<
   typeof ${SLUG}ManifestFrontmatterSchema
->
+>`
+}
 
 export interface ${PASCAL}Manifest {
-  frontmatter: ${PASCAL}ManifestFrontmatter
+  frontmatter: ${hasSchema ? `${PASCAL}Frontmatter` : `${PASCAL}ManifestFrontmatter`}
   body: string
 }
 
@@ -392,7 +450,7 @@ export function parse${PASCAL}Manifest(source: string): ${PASCAL}Manifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parse${PASCAL}Manifest: missing or empty frontmatter")
   }
-  const result = ${SLUG}ManifestFrontmatterSchema.safeParse(parsed.data)
+  const result = ${hasSchema ? `${SLUG}FrontmatterSchema` : `${SLUG}ManifestFrontmatterSchema`}.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       \`parse${PASCAL}Manifest: invalid frontmatter — \${result.error.issues

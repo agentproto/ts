@@ -1,0 +1,18 @@
+/**
+ * AIP-11 LESSON.md frontmatter zod schema.
+ *
+ * Generated from `resources/aip-11/draft/LESSON.schema.json` via
+ * json-schema-to-zod. Imported by both `define-lesson.ts` (TS path
+ * validation) and `manifest/index.ts` (.md path validation) so every
+ * field-level constraint runs in both authoring paths from a single
+ * source of truth — re-run scaffold-aip to refresh after spec changes.
+ *
+ * Cross-field rules (if/then/allOf in JSON Schema) don't translate
+ * cleanly and live in `define-lesson.ts`'s `validate(def)` instead.
+ */
+
+import { z } from "zod"
+
+export const lessonFrontmatterSchema = z.object({ "schema": z.literal("learning/v1").describe("Spec identifier. Must be the literal string 'learning/v1'."), "slug": z.string().regex(new RegExp("^[a-z][a-z0-9-]*[a-z0-9]$")).min(2).max(80).describe("Machine identifier, also the filename. Lowercase, digits, dashes. Imperative voice recommended."), "title": z.string().min(1).max(200).describe("One-sentence imperative title — what to do or avoid."), "trigger": z.object({ "description": z.string().min(1).max(1000).describe("Plain-text description of when this lesson applies."), "tags": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*$"))).max(12).describe("Retrieval keywords. Keep narrow; three is usually enough.").default([]), "targets": z.array(z.object({ "operator": z.string().optional(), "role": z.string().optional(), "skill": z.string().optional() }).strict()).describe("Operator / role / skill globs that scope retrieval. Empty means anyone.").default([]), "metadata": z.record(z.string(), z.any()).describe("Vendor-specific trigger predicates. Standard fields above MUST NOT be redefined here.").default({}) }).strict(), "outcome": z.enum(["success","failure","mixed"]).describe("Whether the source run succeeded, failed, or the lesson is conditional across runs."), "evidence": z.array(z.object({ "kind": z.enum(["run","conversation","work-item","audit","wiki-page"]).describe("What the evidence reference points to. 'audit' = AIP-7 governance record."), "ref": z.string().min(1).max(256).describe("Opaque id or path the host can resolve. Never free text."), "note": z.string().max(500).describe("One-line factual note about the event — not the lesson.").optional() }).strict()).min(1).describe("Provenance — at least one evidence entry MUST resolve to a real run, conversation, work item, audit, or wiki page in the host's indices."), "confidence": z.number().gte(0).lte(1).describe("Author's confidence in [0,1]. Default 0.5 at first sighting. Runtimes weigh this against observed counts.").default(0.5), "success_count": z.number().int().gte(0).describe("Times the lesson 'worked' when applied. Maintained by the runtime; author-supplied values are initial only.").default(0), "failure_count": z.number().int().gte(0).describe("Times the lesson's claim was contradicted. Maintained by the runtime; author-supplied values are initial only.").default(0), "supersedes": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*[a-z0-9]$"))).describe("Slugs of lessons this lesson replaces. Supersession is explicit, never silent. Each cited slug MUST exist on disk.").default([]), "expires_at": z.string().datetime({ offset: true }).describe("Soft TTL (ISO 8601). Past this instant, retrieval treats the lesson as absent by default.").optional(), "metadata": z.record(z.string(), z.any()).describe("Vendor-specific extensions under namespaced keys (metadata.<vendor>.<field>). Standard fields MUST NOT be redefined.").default({}) }).strict().and(z.any()).describe("Validates the YAML frontmatter portion of an AIP-11 LESSON.md file — one transferable lesson distilled from a completed run.")
+
+export type LessonFrontmatter = z.infer<typeof lessonFrontmatterSchema>
