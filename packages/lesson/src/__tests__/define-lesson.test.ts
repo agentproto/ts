@@ -45,9 +45,12 @@ describe("defineLesson — schema-derived field validation runs in TS path", () 
   })
 
   it("rejects empty evidence array (schema requires ≥1)", () => {
-    expect(() => defineLesson({ ...MINIMAL, evidence: [] })).toThrow(
-      /defineLesson \(AIP-11\)/,
-    )
+    // The schema's minItems=1 narrows TS to a non-empty tuple type;
+    // the `as never` runs the runtime check to prove the zod still
+    // catches a hand-bypassed empty array.
+    expect(() =>
+      defineLesson({ ...MINIMAL, evidence: [] as never }),
+    ).toThrow(/defineLesson \(AIP-11\)/)
   })
 
   it("rejects oversized title (schema cap: 200 chars)", () => {
