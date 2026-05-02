@@ -16,19 +16,20 @@
  */
 
 /**
- * Minimum shape every AIP definition must satisfy. AIPs are free to
- * widen this — `id` and `description` are universal because every
- * doctype carries identity + LLM-facing prose.
+ * Default shape every AIP definition is assumed to satisfy when no
+ * custom `readIdentity` / `readDescription` extractors are passed.
+ *
+ * Most AIPs (AIP-14 TOOL, AIP-30 DRIVER, AIP-3 SKILL, …) carry
+ * `id` + `description`. AIPs that depart from this convention (e.g.
+ * AIP-7 POLICY uses `slug` + `name`, with `description` optional)
+ * supply their own extractors via `DoctypeOptions`.
  */
 export interface DoctypeDefinitionBase {
   id: string
   description: string
 }
 
-export interface DoctypeOptions<
-  TDef extends DoctypeDefinitionBase,
-  THandle,
-> {
+export interface DoctypeOptions<TDef, THandle> {
   /**
    * AIP number — surfaces in error messages so a thrown stack frame
    * inside a framework adapter still tells you which spec rejected
@@ -41,11 +42,35 @@ export interface DoctypeOptions<
    */
   name: string
   /**
-   * Override the default id pattern. Default:
-   * `/^[a-z0-9][a-z0-9._-]{1,79}$/` — kebab/snake/dot separated, 2-80
-   * chars, leading alphanumeric. Most AIPs should keep the default.
+   * Extract the identity string (kebab-id, slug, …) to validate against
+   * `idPattern`. Default: `(def) => (def as { id: string }).id` —
+   * works for any AIP whose definition has an `id` field. AIPs whose
+   * identity field has a different name (e.g. AIP-7 POLICY's `slug`)
+   * supply their own reader.
+   */
+  readIdentity?: (def: TDef) => string
+  /**
+   * Override the default identity pattern. Default:
+   * `/^[a-z0-9][a-z0-9._-]{1,79}$/` — kebab/snake/dot separated,
+   * 2-80 chars, leading alphanumeric. AIPs with stricter rules
+   * (AIP-7 POLICY uses `^[a-z0-9][a-z0-9-]*$`, no dots) override.
    */
   idPattern?: RegExp
+  /**
+   * Extract the LLM-facing prose used by the length check. Default:
+   * `(def) => (def as { description: string }).description`. Pass
+   * `false` to skip the length validation (e.g. AIPs where
+   * description is optional, or where the human-readable string lives
+   * in a different field).
+   */
+  readDescription?: ((def: TDef) => string | undefined) | false
+  /**
+   * Override the maximum prose length. Default 2000. AIPs whose
+   * doctypes carry longer normative text on the doctype itself can
+   * raise this; most should keep the default for prompt-injection
+   * resistance.
+   */
+  maxDescriptionLen?: number
   /**
    * Spec-specific validations that run AFTER the default id and
    * description checks. Throw on failure. Stays out of `build()` so
@@ -78,28 +103,41 @@ const MAX_DESCRIPTION_LEN = 2000
  *       build(def) { ...defaulting + nested freezing... },
  *     })
  */
-export function createDoctype<
-  TDef extends DoctypeDefinitionBase,
-  THandle,
->(opts: DoctypeOptions<TDef, THandle>): (def: TDef) => THandle {
+export function createDoctype<TDef, THandle>(
+  opts: DoctypeOptions<TDef, THandle>,
+): (def: TDef) => THandle {
   const idPattern = opts.idPattern ?? DEFAULT_ID_PATTERN
+  const readIdentity =
+    opts.readIdentity ?? ((def: TDef) => (def as { id: string }).id)
+  const readDescription =
+    opts.readDescription === false
+      ? null
+      : (opts.readDescription ??
+        ((def: TDef) => (def as { description: string }).description))
+  const maxLen = opts.maxDescriptionLen ?? MAX_DESCRIPTION_LEN
   const prefix = `define${capitalize(opts.name)}`
   const aipTag = `(AIP-${opts.aip})`
 
   return function constructDoctype(def: TDef): THandle {
-    if (!idPattern.test(def.id)) {
+    const identity = readIdentity(def)
+    if (typeof identity !== "string" || !idPattern.test(identity)) {
       throw new Error(
-        `${prefix} ${aipTag}: invalid id '${def.id}' — must match ${idPattern}`,
+        `${prefix} ${aipTag}: invalid id '${String(
+          identity,
+        )}' — must match ${idPattern}`,
       )
     }
-    if (
-      typeof def.description !== "string" ||
-      def.description.length === 0 ||
-      def.description.length > MAX_DESCRIPTION_LEN
-    ) {
-      throw new Error(
-        `${prefix} ${aipTag}: id='${def.id}' description must be 1–${MAX_DESCRIPTION_LEN} chars`,
-      )
+    if (readDescription) {
+      const description = readDescription(def)
+      if (
+        typeof description !== "string" ||
+        description.length === 0 ||
+        description.length > maxLen
+      ) {
+        throw new Error(
+          `${prefix} ${aipTag}: id='${identity}' description must be 1–${maxLen} chars`,
+        )
+      }
     }
     opts.validate?.(def)
     return Object.freeze(opts.build(def)) as THandle

@@ -49,6 +49,11 @@
       "import": "./dist/validators/index.mjs",
       "default": "./dist/validators/index.mjs"
     },
+    "./policy": {
+      "types": "./dist/policy/index.d.ts",
+      "import": "./dist/policy/index.mjs",
+      "default": "./dist/policy/index.mjs"
+    },
     "./renderers": {
       "types": "./dist/renderers/index.d.ts",
       "import": "./dist/renderers/index.mjs",
@@ -78,6 +83,7 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
+    "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
     "yaml": "^2.6.1",
     "zod": "^4.3.6"
