@@ -37,7 +37,7 @@ describe("parseDriverManifest", () => {
     expect(m.frontmatter.id).toBe("gh-cli")
     expect(m.frontmatter.kind).toBe("cli")
     expect(m.frontmatter.implements).toHaveLength(2)
-    expect(m.frontmatter.implements[0].tool).toBe("./tools/list-prs/TOOL.md")
+    expect(m.frontmatter.implements[0]?.tool).toBe("./tools/list-prs/TOOL.md")
     expect(m.frontmatter.network?.egress).toEqual(["api.github.com"])
     expect(m.body).toContain("# GitHub CLI driver")
   })

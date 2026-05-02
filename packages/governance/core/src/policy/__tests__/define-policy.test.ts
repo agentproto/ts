@@ -116,7 +116,9 @@ Body content explaining the policy.
     expect(policy.name).toBe("Invoice cap 500 EUR")
     expect(policy.threshold).toBe("single")
     expect(policy.caps).toHaveLength(1)
-    expect(policy.caps[0].max).toBe(500)
+    const cap = policy.caps[0]
+    expect(cap).toBeDefined()
+    expect(cap?.max).toBe(500)
     expect(policy.metadata).toEqual({ "vendor.namespace": "katchy" })
     expect(Object.isFrozen(policy)).toBe(true)
   })

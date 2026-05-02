@@ -32,11 +32,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Type-check all packages
-        run: pnpm -r --filter "./packages/**" --filter "./adapters/**" check-types
-
+      # Build first — `tsc --noEmit` resolves workspace package imports
+      # through their published `.d.ts` files in `dist/`, which only
+      # exist after `pnpm build`. Running `check-types` before `build`
+      # produced "Cannot find module '@agentproto/<pkg>'" cascades on
+      # every commit since the multi-package extraction.
       - name: Build all packages
         run: pnpm -r --filter "./packages/**" --filter "./adapters/**" build
+
+      - name: Type-check all packages
+        run: pnpm -r --filter "./packages/**" --filter "./adapters/**" check-types
 
       - name: Run tests
         run: pnpm -r --filter "./packages/**" --filter "./adapters/**" test
