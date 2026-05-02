@@ -2,21 +2,19 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
 export default createTsupConfig({
   banner: `/**
- * @agentproto/tool v0.1.0-alpha
- * AIP-14 TOOL.md \`defineTool\` reference implementation.
+ * @agentproto/manifest v0.1.0-alpha
+ * Generic verbs for AIP doctypes (create, load, list, update, resolve, …).
  */`,
-  entry: {
-    index: "src/index.ts",
-    "manifest/index": "src/manifest/index.ts",
-  },
+  entry: { index: "src/index.ts" },
   format: ["esm"],
-  splitting: true,
+  splitting: false,
   dts: true,
   external: [
-    "zod",
     "gray-matter",
     "@agentproto/define-doctype",
-    "@agentproto/manifest",
+    "node:fs",
+    "node:fs/promises",
+    "node:path",
   ],
   noExternal: [],
 })

@@ -1,0 +1,57 @@
+{
+  "name": "@agentproto/manifest",
+  "version": "0.1.0-alpha.0",
+  "description": "agentproto/manifest — generic verbs for AIP doctypes (create, load, list, update, resolve, delete). Each per-AIP package supplies a DoctypeSpec describing its name / AIP number / schema literal / path convention / validator+parser; createVerbs(spec) returns the full lifecycle. Adding a new verb (hash, sign, migrate, …) is one place; every package picks it up automatically.",
+  "keywords": [
+    "agentproto",
+    "manifest",
+    "io",
+    "verbs",
+    "createX",
+    "loadX",
+    "listX",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/manifest"
+  },
+  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/define-doctype": "workspace:*",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

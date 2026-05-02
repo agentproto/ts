@@ -19,11 +19,15 @@ export {
   validateContext,
   validateOutput,
 } from "./define-tool.js"
+// Standalone create-tool kept for back-compat; new code should import
+// the unified verb surface (`toolVerbs.create`, `.load`, `.list`,
+// `.update`, `.resolve`, `.delete`) from `./spec.js`.
 export {
   createTool,
   type CreateToolOptions,
   type CreateToolResult,
 } from "./create-tool.js"
+export { toolSpec, toolVerbs } from "./spec.js"
 export {
   ToolError,
   toToolError,
