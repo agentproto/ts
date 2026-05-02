@@ -1,3 +1,4 @@
+import { createDoctype } from "@agentproto/define-doctype"
 import type {
   ExecuteFn,
   ImplementsEntry,
@@ -5,14 +6,19 @@ import type {
   DriverHandle,
 } from "./types.js"
 
-const ID_RE = /^[a-z0-9][a-z0-9.\-]{1,79}$/
-
 /**
  * AIP-30 reference implementation of `defineDriver`.
  *
  * Returns a {@link DriverHandle} with defaults applied. The resolver
  * (`resolveDriver`) and runners (`runTool`) consume this shape and
  * dispatch contract calls to the per-tool execute bodies.
+ *
+ * Built on `createDoctype` from `@agentproto/define-doctype`: the
+ * id-pattern + description-length validation and the top-level
+ * `Object.freeze` are shared with every other AIP defineX. The
+ * spec-30-specific parts (implements vs execute consistency, merging
+ * `implementations[]` into the execute map, freezing nested arrays
+ * and objects) live in `validate` and `build` below.
  *
  * Conformance highlights ([§ Conformance rules](https://agentproto.sh/docs/aip-30)):
  *  - Frontmatter is the source of truth — entries warn on mismatch and prefer frontmatter.
@@ -32,100 +38,96 @@ const ID_RE = /^[a-z0-9][a-z0-9.\-]{1,79}$/
  * Both can coexist on the same provider. On the same tool id, the
  * typed `implementations[]` form wins over the legacy bag.
  */
-export function defineDriver(
-  definition: DriverDefinition
-): DriverHandle {
-  if (!ID_RE.test(definition.id)) {
-    throw new Error(
-      `defineDriver: invalid id '${definition.id}' — must match ${ID_RE}`
+export const defineDriver = createDoctype<DriverDefinition, DriverHandle>({
+  aip: 30,
+  name: "driver",
+  validate(def) {
+    if (def.implements.length === 0) {
+      throw new Error(
+        `defineDriver: id='${def.id}' must declare ≥1 implements[] entry`,
+      )
+    }
+    // The execute-map vs implements[] consistency check needs the merged
+    // map; building it once and validating in `build` is fine — but we
+    // also want a precise error on per-tool missing bodies before we
+    // commit to the build path. Run that check here against a previewed
+    // merged map so the thrown message matches the historical wording
+    // ("implements 'X' but no execute['X'] body provided").
+    const previewMap = mergeExecuteMap(def)
+    const declaredToolIds = new Set(
+      def.implements.map((e) => normalizeToolId(e.tool)),
     )
-  }
-  if (!definition.description || definition.description.length > 2000) {
-    throw new Error(
-      `defineDriver: id='${definition.id}' description must be 1–2000 chars`
-    )
-  }
-  if (definition.implements.length === 0) {
-    throw new Error(
-      `defineDriver: id='${definition.id}' must declare ≥1 implements[] entry`
-    )
-  }
+    const executeKeys = new Set(Object.keys(previewMap))
+    for (const toolId of declaredToolIds) {
+      if (!executeKeys.has(toolId)) {
+        throw new Error(
+          `defineDriver: id='${def.id}' implements '${toolId}' but no execute['${toolId}'] body provided`,
+        )
+      }
+    }
+    for (const key of executeKeys) {
+      if (!declaredToolIds.has(key)) {
+        throw new Error(
+          `defineDriver: id='${def.id}' has execute['${key}'] but '${key}' is not in implements[]`,
+        )
+      }
+    }
+  },
+  build(def) {
+    const executeMap = mergeExecuteMap(def)
+    return {
+      id: def.id,
+      name: def.name,
+      description: def.description,
+      version: def.version,
+      kind: def.kind,
+      implements: Object.freeze(def.implements.map(freezeImplements)),
+      execute: Object.freeze(executeMap),
+      install: Object.freeze([...(def.install ?? [])]),
+      versionCheck: def.versionCheck,
+      auth: def.auth,
+      network: Object.freeze({
+        egress: Object.freeze([...(def.network?.egress ?? [])]),
+        ingress: Object.freeze([...(def.network?.ingress ?? [])]),
+      }),
+      region: Object.freeze([...(def.region ?? ["global"])]),
+      policyTags: Object.freeze([...(def.policyTags ?? [])]),
+      costOverride: def.costOverride,
+      timeoutOverrideMs: def.timeoutOverrideMs,
+      retryOverride: def.retryOverride,
+      healthCheck: def.healthCheck,
+      tags: Object.freeze([...(def.tags ?? [])]),
+      metadata: Object.freeze({ ...(def.metadata ?? {}) }),
+      login: def.login,
+      refresh: def.refresh,
+      parseOutput: def.parseOutput,
+      detectExpiry: def.detectExpiry,
+    }
+  },
+})
 
-  // Merge typed `implementations[]` into the runtime execute map.
-  // Each ToolImplementation carries its contract handle, so we read
-  // `impl.tool.id` to derive the binding key — authors don't restate
-  // the id as a string. Typed bindings beat legacy bag on collision.
-  const executeMap: Record<string, ExecuteFn> = { ...(definition.execute ?? {}) }
-  for (const impl of definition.implementations ?? []) {
+/**
+ * Merge typed `implementations[]` into the runtime execute map. Each
+ * ToolImplementation carries its contract handle, so we read
+ * `impl.tool.id` to derive the binding key — authors don't restate
+ * the id as a string. Typed bindings beat legacy bag on collision; a
+ * collision with a *different* body raises an error so there's never
+ * ambiguity about which body the resolver dispatched.
+ */
+function mergeExecuteMap(def: DriverDefinition): Record<string, ExecuteFn> {
+  const executeMap: Record<string, ExecuteFn> = { ...(def.execute ?? {}) }
+  for (const impl of def.implementations ?? []) {
     const id = impl.tool.id
     const typedBody = impl.body as ExecuteFn
     if (executeMap[id] && executeMap[id] !== typedBody) {
-      // Detect deliberate ambiguity. Single-source the binding so
-      // there's never a question of which body the resolver dispatched.
       throw new Error(
-        `defineDriver: id='${definition.id}' has duplicate body for '${id}' — ` +
-          `present in both 'execute' and 'implementations'. Pick one.`
+        `defineDriver: id='${def.id}' has duplicate body for '${id}' — ` +
+          `present in both 'execute' and 'implementations'. Pick one.`,
       )
     }
     executeMap[id] = typedBody
   }
-
-  // No global "must declare bodies" check — the per-tool validation
-  // below already raises a precise "implements X but no execute[X]"
-  // error when a declared tool has no body. The `implements.length`
-  // gate upstream already catches the all-empty case.
-
-  // Validate execute map matches implements[].
-  const declaredToolIds = new Set(
-    definition.implements.map(e => normalizeToolId(e.tool))
-  )
-  const executeKeys = new Set(Object.keys(executeMap))
-
-  for (const toolId of declaredToolIds) {
-    if (!executeKeys.has(toolId)) {
-      throw new Error(
-        `defineDriver: id='${definition.id}' implements '${toolId}' but no execute['${toolId}'] body provided`
-      )
-    }
-  }
-  for (const key of executeKeys) {
-    if (!declaredToolIds.has(key)) {
-      throw new Error(
-        `defineDriver: id='${definition.id}' has execute['${key}'] but '${key}' is not in implements[]`
-      )
-    }
-  }
-
-  const handle: DriverHandle = Object.freeze({
-    id: definition.id,
-    name: definition.name,
-    description: definition.description,
-    version: definition.version,
-    kind: definition.kind,
-    implements: Object.freeze(definition.implements.map(freezeImplements)),
-    execute: Object.freeze(executeMap),
-    install: Object.freeze([...(definition.install ?? [])]),
-    versionCheck: definition.versionCheck,
-    auth: definition.auth,
-    network: Object.freeze({
-      egress: Object.freeze([...(definition.network?.egress ?? [])]),
-      ingress: Object.freeze([...(definition.network?.ingress ?? [])]),
-    }),
-    region: Object.freeze([...(definition.region ?? ["global"])]),
-    policyTags: Object.freeze([...(definition.policyTags ?? [])]),
-    costOverride: definition.costOverride,
-    timeoutOverrideMs: definition.timeoutOverrideMs,
-    retryOverride: definition.retryOverride,
-    healthCheck: definition.healthCheck,
-    tags: Object.freeze([...(definition.tags ?? [])]),
-    metadata: Object.freeze({ ...(definition.metadata ?? {}) }),
-    login: definition.login,
-    refresh: definition.refresh,
-    parseOutput: definition.parseOutput,
-    detectExpiry: definition.detectExpiry,
-  })
-
-  return handle
+  return executeMap
 }
 
 function freezeImplements(entry: ImplementsEntry): ImplementsEntry {
@@ -133,7 +135,9 @@ function freezeImplements(entry: ImplementsEntry): ImplementsEntry {
     ...entry,
     schemaNarrowing: entry.schemaNarrowing
       ? Object.freeze({
-          dropInputs: Object.freeze([...(entry.schemaNarrowing.dropInputs ?? [])]),
+          dropInputs: Object.freeze([
+            ...(entry.schemaNarrowing.dropInputs ?? []),
+          ]),
           dropOutputs: Object.freeze([
             ...(entry.schemaNarrowing.dropOutputs ?? []),
           ]),

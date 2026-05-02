@@ -1,3 +1,4 @@
+import { createDoctype } from "@agentproto/define-doctype"
 import type { ZodType } from "zod"
 import { ToolError } from "./errors.js"
 import type {
@@ -11,7 +12,6 @@ import type {
   ValidationResult,
 } from "./types.js"
 
-const ID_RE = /^[a-z0-9][a-z0-9._-]{1,79}$/
 const PROVIDER_KINDS: readonly DriverKind[] = [
   "cli",
   "http",
@@ -28,63 +28,76 @@ const PROVIDER_KINDS: readonly DriverKind[] = [
  * hints. Bodies live on AIP-30 PROVIDER manifests; invocation goes
  * through provider-runtime's resolver.
  *
+ * Built on `createDoctype` from `@agentproto/define-doctype`: the
+ * id-pattern + description-length validation and the top-level
+ * `Object.freeze` are shared with every other AIP defineX. The
+ * spec-14-specific parts (migration guard for `execute`, defaulting
+ * `approval` from `mutates`, freezing nested arrays/objects) live in
+ * `validate` and `build` below.
+ *
  * Conformance highlights ([§ Conformance rules](https://agentproto.sh/docs/aip-14)):
  *  - No `execute` field on the contract — bodies are providers' job.
  *  - `defineTool` MUST refuse a definition carrying `execute` (migration error).
  *  - No I/O at module load — `defineTool(...)` is pure construction.
+ */
+const constructTool = createDoctype<
+  ToolDefinition<unknown, unknown, ToolContext>,
+  ToolHandle<unknown, unknown, ToolContext>
+>({
+  aip: 14,
+  name: "tool",
+  validate(def) {
+    // Migration guard: catch authors trying to ship a body on the contract.
+    // The body lives on a PROVIDER (per AIP-30); reject at construction.
+    if ("execute" in (def as unknown as Record<string, unknown>)) {
+      throw new Error(
+        `defineTool: id='${def.id}' carries an 'execute' property. ` +
+          `Bodies live on AIP-30 PROVIDER manifests, not on the TOOL contract. ` +
+          `See https://agentproto.sh/docs/aip-30 for migration.`,
+      )
+    }
+  },
+  build(def) {
+    return {
+      id: def.id,
+      name: def.name ?? def.id,
+      description: def.description,
+      version: def.version,
+      inputSchema: def.inputSchema,
+      outputSchema: def.outputSchema,
+      contextSchema: def.contextSchema,
+      mutates: Object.freeze([...(def.mutates ?? [])]),
+      requires: freezeCapabilities(def.requires),
+      approval: defaultApproval(def.approval, def.mutates),
+      riskLevel: def.riskLevel ?? 0,
+      costClass: def.costClass ?? "trivial",
+      timeoutMs: def.timeoutMs ?? 30_000,
+      retry: def.retry,
+      tags: Object.freeze([...(def.tags ?? [])]),
+      metadata: Object.freeze({ ...(def.metadata ?? {}) }),
+      idempotent: def.idempotent ?? false,
+      defaultDriver: def.defaultDriver,
+      driverConstraints: freezeProviderConstraints(def.driverConstraints),
+    }
+  },
+})
+
+/**
+ * Public-facing `defineTool` — typed wrapper around `constructTool`
+ * that preserves the per-call `<TInput, TOutput, TContext>` inference
+ * so callers don't write any generics. The wrapper exists purely for
+ * generic propagation; the runtime body is the meta-factory above.
  */
 export function defineTool<
   TInput,
   TOutput,
   TContext extends ToolContext = ToolContext,
 >(
-  definition: ToolDefinition<TInput, TOutput, TContext>
+  definition: ToolDefinition<TInput, TOutput, TContext>,
 ): ToolHandle<TInput, TOutput, TContext> {
-  if (!ID_RE.test(definition.id)) {
-    throw new Error(
-      `defineTool: invalid id '${definition.id}' — must match ${ID_RE}`
-    )
-  }
-  if (!definition.description || definition.description.length > 2000) {
-    throw new Error(
-      `defineTool: id='${definition.id}' description must be 1–2000 chars`
-    )
-  }
-  // Migration guard: catch authors trying to ship a body on the contract.
-  // The body lives on a PROVIDER (per AIP-30); reject at construction.
-  if ("execute" in (definition as unknown as Record<string, unknown>)) {
-    throw new Error(
-      `defineTool: id='${definition.id}' carries an 'execute' property. ` +
-        `Bodies live on AIP-30 PROVIDER manifests, not on the TOOL contract. ` +
-        `See https://agentproto.sh/docs/aip-30 for migration.`
-    )
-  }
-
-  const constraints = freezeProviderConstraints(definition.driverConstraints)
-
-  const handle: ToolHandle<TInput, TOutput, TContext> = Object.freeze({
-    id: definition.id,
-    name: definition.name ?? definition.id,
-    description: definition.description,
-    version: definition.version,
-    inputSchema: definition.inputSchema,
-    outputSchema: definition.outputSchema,
-    contextSchema: definition.contextSchema,
-    mutates: Object.freeze([...(definition.mutates ?? [])]),
-    requires: freezeCapabilities(definition.requires),
-    approval: defaultApproval(definition.approval, definition.mutates),
-    riskLevel: definition.riskLevel ?? 0,
-    costClass: definition.costClass ?? "trivial",
-    timeoutMs: definition.timeoutMs ?? 30_000,
-    retry: definition.retry,
-    tags: Object.freeze([...(definition.tags ?? [])]),
-    metadata: Object.freeze({ ...(definition.metadata ?? {}) }),
-    idempotent: definition.idempotent ?? false,
-    defaultDriver: definition.defaultDriver,
-    driverConstraints: constraints,
-  })
-
-  return handle
+  return constructTool(
+    definition as ToolDefinition<unknown, unknown, ToolContext>,
+  ) as unknown as ToolHandle<TInput, TOutput, TContext>
 }
 
 /**
@@ -94,7 +107,7 @@ export function defineTool<
  */
 export function validateInput<TInput>(
   handle: Pick<ToolHandle<TInput>, "id" | "inputSchema">,
-  input: unknown
+  input: unknown,
 ): ValidationResult<TInput> {
   const result = handle.inputSchema.safeParse(input)
   if (!result.success) {
@@ -120,7 +133,7 @@ export function validateInput<TInput>(
  */
 export function validateContext<TContext extends ToolContext = ToolContext>(
   handle: Pick<ToolHandle<unknown, unknown, TContext>, "id" | "contextSchema">,
-  context: unknown
+  context: unknown,
 ): ValidationResult<TContext> {
   if (!handle.contextSchema) {
     return { ok: true, value: context as TContext }
@@ -150,7 +163,7 @@ export function validateContext<TContext extends ToolContext = ToolContext>(
  */
 export function validateOutput<TOutput>(
   handle: Pick<ToolHandle<unknown, TOutput>, "id" | "outputSchema">,
-  output: unknown
+  output: unknown,
 ): TOutput {
   const result = handle.outputSchema.safeParse(output)
   if (!result.success) {
@@ -165,14 +178,14 @@ export function validateOutput<TOutput>(
 
 function defaultApproval(
   declared: ApprovalClass | undefined,
-  mutates: readonly string[] | undefined
+  mutates: readonly string[] | undefined,
 ): ApprovalClass {
   if (declared) return declared
   return mutates && mutates.length > 0 ? "on-mutate" : "auto"
 }
 
 function freezeCapabilities(
-  caps: ToolCapabilities | undefined
+  caps: ToolCapabilities | undefined,
 ): Readonly<ToolCapabilities> {
   return Object.freeze({
     network: Object.freeze([...(caps?.network ?? [])]),
@@ -182,13 +195,13 @@ function freezeCapabilities(
 }
 
 function freezeProviderConstraints(
-  c: DriverConstraints | undefined
+  c: DriverConstraints | undefined,
 ): Required<DriverConstraints> {
   const forbid = (c?.forbid ?? []).filter((k): k is DriverKind =>
-    PROVIDER_KINDS.includes(k as DriverKind)
+    PROVIDER_KINDS.includes(k as DriverKind),
   )
   const requireKind = (c?.requireKind ?? []).filter((k): k is DriverKind =>
-    PROVIDER_KINDS.includes(k as DriverKind)
+    PROVIDER_KINDS.includes(k as DriverKind),
   )
   return Object.freeze({
     forbid: Object.freeze(forbid) as readonly DriverKind[],
@@ -197,10 +210,10 @@ function freezeProviderConstraints(
 }
 
 function formatZodIssues(
-  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>
+  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>,
 ): string {
   return issues
-    .map(i => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
+    .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join("; ")
 }
 

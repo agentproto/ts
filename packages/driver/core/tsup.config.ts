@@ -9,6 +9,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod", "@agentproto/tool"],
+  external: ["zod", "@agentproto/tool", "@agentproto/define-doctype"],
   noExternal: [],
 })

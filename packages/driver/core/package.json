@@ -51,6 +51,7 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
+    "@agentproto/define-doctype": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "zod": "^4.3.6"
   },
