@@ -19,3 +19,10 @@ export {
   specFromExtension,
   type SpecFromExtensionOptions,
 } from "./spec-from-extension.js"
+export {
+  parseExtensionManifest,
+  extensionFromManifest,
+  extensionFrontmatterSchema,
+  type ExtensionFrontmatter,
+  type ExtensionManifest,
+} from "./manifest/index.js"
