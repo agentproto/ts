@@ -5,10 +5,18 @@ export default createTsupConfig({
  * @agentproto/driver v0.1.0-alpha
  * AIP-30 DRIVER.md \`defineDriver\` reference implementation.
  */`,
-  entry: { index: "src/index.ts" },
+  entry: {
+    index: "src/index.ts",
+    "manifest/index": "src/manifest/index.ts",
+  },
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod", "@agentproto/tool", "@agentproto/define-doctype"],
+  external: [
+    "zod",
+    "gray-matter",
+    "@agentproto/tool",
+    "@agentproto/define-doctype",
+  ],
   noExternal: [],
 })
