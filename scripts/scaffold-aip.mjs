@@ -11,6 +11,12 @@
  *   - vitest with a smoke test
  *   - manifest subpath (parseXManifest + xFromManifest)
  *
+ * If `resources/aip-<N>/draft/<DOCTYPE>.schema.json` exists, the
+ * scaffolder consumes it via `json-schema-to-typescript` (for the
+ * `<Pascal>Definition` interface) and `json-schema-to-zod` (for the
+ * manifest zod schema). When the schema is absent, fields stay as
+ * TODOs — same as before.
+ *
  * Usage:
  *   node scripts/scaffold-aip.mjs --aip 9 --slug operator --doctype OPERATOR
  *
@@ -21,14 +27,18 @@
  *              OPERATOR.md and as the type / interface stem (Operator,
  *              defineOperator, OperatorHandle).
  *
- * The skeleton is a starting point — the per-AIP build()/validate()
- * bodies and the type fields are TODOs marked in the generated files.
+ * The generated `validate()` and `build()` bodies are still hand-tuned
+ * — the schema gives us the field set + length/pattern/enum
+ * constraints "for free", but cross-field rules (`if/then/allOf` in
+ * JSON Schema) are too varied to generate cleanly and stay as TODOs.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import matter from "gray-matter"
+import { compile as compileJsonSchema } from "json-schema-to-typescript"
+import { jsonSchemaToZod } from "json-schema-to-zod"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TS_ROOT = resolve(HERE, "..")
@@ -66,10 +76,79 @@ const description = String(
 )
 const layer = String(fm.layer ?? "")
 
+// ── optional: read JSON Schema for the doctype's frontmatter ─────────
+const schemaPath = resolve(
+  SPEC_DIR,
+  `resources/aip-${AIP}/draft/${DOCTYPE}.schema.json`,
+)
+const hasSchema = existsSync(schemaPath)
+const schema = hasSchema
+  ? JSON.parse(readFileSync(schemaPath, "utf8"))
+  : null
+
 // ── refuse to overwrite an existing package ──────────────────────────
 if (existsSync(PKG_DIR)) {
   console.error(`package ${PKG_DIR} already exists — refusing to overwrite`)
   process.exit(1)
+}
+
+// ── codegen from JSON Schema (when present) ──────────────────────────
+// json-schema-to-typescript emits an `export interface <Pascal>Definition`
+// declaration; json-schema-to-zod emits a zod expression we splice into
+// the manifest module. Both fall back to TODO stubs when no schema ships.
+let definitionInterface = `export interface ${PASCAL}Definition {
+  id: string
+  description: string
+  // TODO: add spec-${AIP} fields here.
+}`
+let zodSchemaExpr = `z
+  .object({
+    schema: z.literal("agent${SLUG}/v1").optional(),
+    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+    description: z.string().min(1).max(2000),
+    // TODO: spec-${AIP} fields.
+  })
+  .loose()`
+// Identity + description-equivalent field detection. Each AIP doctype
+// uses its own conventions: tool/driver/operator/skill use `id`, policy
+// uses `slug`, lesson uses `slug`, etc. Likewise the LLM-facing prose
+// is `description` for some, `name` for others, `persona_summary` for
+// AIP-9. Detect from the schema's `required` keys; user can override
+// the generated createDoctype call afterwards if the heuristic is wrong.
+let identityField = "id"
+let descriptionField = "description"
+if (hasSchema && Array.isArray(schema.required)) {
+  const req = schema.required
+  if (req.includes("id")) identityField = "id"
+  else if (req.includes("slug")) identityField = "slug"
+  else if (req.includes("name")) identityField = "name"
+
+  if (req.includes("description")) descriptionField = "description"
+  else if (req.includes("persona_summary")) descriptionField = "persona_summary"
+  else if (req.includes("title")) descriptionField = "title"
+  else if (req.includes("name") && identityField !== "name")
+    descriptionField = "name"
+  else descriptionField = "" // skip the description check
+}
+
+if (hasSchema) {
+  // json-schema-to-typescript derives the top-level type name from the
+  // schema's `title`. Mutate a clone so the emitted interface is
+  // `<Pascal>Definition` instead of e.g. `LESSONMdFrontmatterAIP11`.
+  // The clone is throw-away — we don't write it back to disk.
+  const schemaForTs = JSON.parse(JSON.stringify(schema))
+  schemaForTs.title = `${PASCAL}Definition`
+  const compiled = await compileJsonSchema(schemaForTs, `${PASCAL}Definition`, {
+    bannerComment: "",
+    additionalProperties: false,
+    style: { semi: false, singleQuote: false },
+  })
+  // The compiler emits multiple interfaces (sub-objects, $defs). Keep
+  // them all — downstream code can reference SkillRef, ToolRef, etc.
+  definitionInterface = compiled.trim()
+  zodSchemaExpr = jsonSchemaToZod(schema, { module: "none" })
+    .trim()
+    .replace(/;$/, "")
 }
 
 // ── write the skeleton ───────────────────────────────────────────────
@@ -212,26 +291,29 @@ write(
   "src/types.ts",
   `/**
  * AIP-${AIP} ${PASCAL}Definition + ${PASCAL}Handle.
- *
- * TODO: fill in fields from the AIP-${AIP} ${DOCTYPE}.md frontmatter.
- * The two universals (id + description) are the cross-AIP invariants
- * \`createDoctype\` enforces; everything else is spec-${AIP}-specific.
+ *${
+   hasSchema
+     ? `\n * \`${PASCAL}Definition\` was generated from\n * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-typescript.\n * \`${PASCAL}Handle\` is the readonly view of the same shape; tighten it\n * by hand for fields that get defaults applied in build().`
+     : `\n * TODO: fill in fields from the AIP-${AIP} ${DOCTYPE}.md frontmatter.\n * The two universals (id + description) are the cross-AIP invariants\n * \`createDoctype\` enforces; everything else is spec-${AIP}-specific.`
+ }
  */
 
-export interface ${PASCAL}Definition {
-  id: string
-  description: string
-  // TODO: add spec-${AIP} fields here.
-}
+${definitionInterface}
 
-export interface ${PASCAL}Handle {
-  readonly id: string
-  readonly description: string
-  // TODO: add the frozen handle shape here, mirroring ${PASCAL}Definition
-  // with sensible defaults applied.
-}
+export type ${PASCAL}Handle = Readonly<${PASCAL}Definition>
 `,
 )
+
+const identityOverride =
+  identityField !== "id"
+    ? `\n  readIdentity: (def) => def.${identityField},`
+    : ""
+const descriptionOverride =
+  descriptionField === ""
+    ? `\n  readDescription: false,`
+    : descriptionField !== "description"
+      ? `\n  readDescription: (def) => def.${descriptionField},`
+      : ""
 
 write(
   `src/define-${SLUG}.ts`,
@@ -245,20 +327,27 @@ import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
  * description length, top-level freeze, "${DEFINE_FN} (AIP-${AIP}): …"
  * error prefix) run uniformly with every other AIP defineX. Spec-${AIP}-
  * specific validation goes in \`validate(def)\`; defaulting and nested
- * freezing in \`build(def)\`.
+ * freezing in \`build(def)\`.${
+   hasSchema && (identityField !== "id" || descriptionField !== "description")
+     ? `\n *\n * Identity / description extractors detected from the JSON Schema:\n *   readIdentity: def.${identityField}${descriptionField ? `\n *   readDescription: def.${descriptionField}` : "\n *   readDescription: skipped (no string-y required field detected)"}.`
+     : ""
+ }
  */
 export const ${DEFINE_FN} = createDoctype<${PASCAL}Definition, ${PASCAL}Handle>({
   aip: ${AIP},
-  name: "${SLUG}",
+  name: "${SLUG}",${identityOverride}${descriptionOverride}
   validate(_def) {
-    // TODO: spec-${AIP}-specific checks.
+    // TODO: spec-${AIP}-specific checks (cross-field rules, ref patterns,
+    // length caps that the JSON Schema couldn't express). Length and
+    // pattern constraints on individual fields already run inside the
+    // manifest's zod schema when the .md path is taken.
   },
   build(def) {
-    return {
-      id: def.id,
-      description: def.description,
-      // TODO: defaulting + nested freezing.
-    }
+    // Default build: spread the validated definition into a fresh object.
+    // Hand-tune for nested freezing (Object.freeze on arrays/objects) and
+    // for fields that need defaults applied — see @agentproto/operator
+    // for a reference shape.
+    return { ...def } as ${PASCAL}Handle
   },
 })
 `,
@@ -275,23 +364,19 @@ write(
  * frontmatter. Both inputs end up in \`${DEFINE_FN}\` so the cross-AIP
  * invariants run uniformly.
  *
- * TODO: tighten the frontmatter schema once the AIP-${AIP} fields are
- * decided. The skeleton accepts arbitrary extra keys via \`.loose()\`.
+ *${
+   hasSchema
+     ? `\n * The frontmatter zod schema below was generated from\n * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-zod.\n * Re-run scaffold-aip to refresh after spec changes (or hand-tune\n * any constraint the converter doesn't capture cleanly).`
+     : `\n * TODO: tighten the frontmatter schema once the AIP-${AIP} fields are\n * decided. The skeleton accepts arbitrary extra keys via \\\`.loose()\\\`.`
+ }
  */
 
 import matter from "gray-matter"
 import { z } from "zod"
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
-import type { ${PASCAL}Handle } from "../types.js"
+import type { ${PASCAL}Definition, ${PASCAL}Handle } from "../types.js"
 
-export const ${SLUG}ManifestFrontmatterSchema = z
-  .object({
-    schema: z.literal("agent${SLUG}/v1").optional(),
-    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-    description: z.string().min(1).max(2000),
-    // TODO: spec-${AIP} fields.
-  })
-  .loose()
+export const ${SLUG}ManifestFrontmatterSchema = ${zodSchemaExpr}
 
 export type ${PASCAL}ManifestFrontmatter = z.infer<
   typeof ${SLUG}ManifestFrontmatterSchema
@@ -319,19 +404,28 @@ export function parse${PASCAL}Manifest(source: string): ${PASCAL}Manifest {
 }
 
 export function ${SLUG}FromManifest(manifest: ${PASCAL}Manifest): ${PASCAL}Handle {
-  const fm = manifest.frontmatter
-  return ${DEFINE_FN}({
-    id: fm.id,
-    description: fm.description,
-    // TODO: project the rest of the frontmatter.
-  })
+  // The zod-validated frontmatter is structurally compatible with
+  // ${PASCAL}Definition; the cast pins the typing once the manifest
+  // schema and the TS interface diverge (e.g. handle has frozen fields
+  // a literal config doesn't carry yet).
+  return ${DEFINE_FN}(manifest.frontmatter as unknown as ${PASCAL}Definition)
 }
 `,
 )
 
+// Smoke-test template: when we detected the doctype's universal fields
+// match the createDoctype defaults (id + description), generate the
+// usual three-assertion smoke. When the schema diverges (slug vs id,
+// persona_summary vs description, …) the smoke would need every
+// required field to construct a valid def — too much to template
+// cleanly, so we emit a minimal "import works" test the author replaces.
+const useStandardSmoke =
+  identityField === "id" && descriptionField === "description"
+
 write(
   `src/__tests__/define-${SLUG}.test.ts`,
-  `import { describe, it, expect } from "vitest"
+  useStandardSmoke
+    ? `import { describe, it, expect } from "vitest"
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
 
 describe("${DEFINE_FN} (AIP-${AIP})", () => {
@@ -339,24 +433,42 @@ describe("${DEFINE_FN} (AIP-${AIP})", () => {
     const handle = ${DEFINE_FN}({
       id: "smoke",
       description: "Smoke-test ${SLUG}.",
-    })
+    } as never)
     expect(handle.id).toBe("smoke")
     expect(Object.isFrozen(handle)).toBe(true)
   })
 
   it("rejects invalid id (uppercase)", () => {
     expect(() =>
-      ${DEFINE_FN}({ id: "BadCaps", description: "x" }),
+      ${DEFINE_FN}({ id: "BadCaps", description: "x" } as never),
     ).toThrow(/${DEFINE_FN} \\(AIP-${AIP}\\): invalid id 'BadCaps'/)
   })
 
   it("rejects empty description", () => {
     expect(() =>
-      ${DEFINE_FN}({ id: "ok", description: "" }),
+      ${DEFINE_FN}({ id: "ok", description: "" } as never),
     ).toThrow(/description must be 1–2000 chars/)
   })
 
   // TODO: spec-${AIP}-specific tests for build()/validate() once those land.
+})
+`
+    : `import { describe, it, expect } from "vitest"
+import { ${DEFINE_FN} } from "../define-${SLUG}.js"
+
+describe("${DEFINE_FN} (AIP-${AIP})", () => {
+  // The AIP-${AIP} doctype uses '${identityField}'${
+        descriptionField ? ` + '${descriptionField}'` : ""
+      } instead of the cross-AIP
+  // default 'id' + 'description'. Constructing a valid def needs every
+  // required field — author real tests once build()/validate() are
+  // filled in. This file exists so vitest sees ≥1 test in the package.
+  it("imports cleanly", () => {
+    expect(typeof ${DEFINE_FN}).toBe("function")
+  })
+
+  // TODO: spec-${AIP} tests — see @agentproto/operator's test suite as
+  // a reference once you wire defaults + cross-field rules.
 })
 `,
 )

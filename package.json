@@ -22,6 +22,8 @@
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",
+    "json-schema-to-typescript": "^15.0.4",
+    "json-schema-to-zod": "^2.6.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
