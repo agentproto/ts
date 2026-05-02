@@ -132,6 +132,14 @@ if (hasSchema && Array.isArray(schema.required)) {
 }
 
 if (hasSchema) {
+  // Inline cross-AIP $refs (e.g. AIP-15 WORKFLOW.schema.json references
+  // https://agentproto.dev/schemas/aip-16/IO.schema.json). Both
+  // json-schema-to-typescript and json-schema-to-zod try HTTP-resolve
+  // these by default and fail offline. Walk the schema, load referenced
+  // files from `resources/aip-N/draft/`, attach to `$defs`, rewrite refs
+  // to local `#/$defs/<key>` form. Idempotent across nested refs.
+  inlineExternalRefs(schema, resolve(SPEC_DIR, "resources"))
+
   // json-schema-to-typescript derives the top-level type name from the
   // schema's `title`. Mutate a clone so the emitted interface is
   // `<Pascal>Definition` instead of e.g. `LESSONMdFrontmatterAIP11`.
@@ -146,9 +154,22 @@ if (hasSchema) {
   // The compiler emits multiple interfaces (sub-objects, $defs). Keep
   // them all — downstream code can reference SkillRef, ToolRef, etc.
   definitionInterface = compiled.trim()
-  zodSchemaExpr = jsonSchemaToZod(schema, { module: "none" })
-    .trim()
-    .replace(/;$/, "")
+  // json-schema-to-zod emits the zod v3 `.refine(pred, "msg")` shape;
+  // zod v4 takes `.refine(pred, { message: "msg" })`. Walk the output
+  // and rewrite — paren-aware (a regex would break on the nested
+  // commas inside the predicate's arrow function args).
+  let zodSrc = upgradeRefineToV4(
+    jsonSchemaToZod(schema, { module: "none" }).trim().replace(/;$/, ""),
+  )
+  // zod 4 + strict + nested defaults: `.strict().default({})` fails TS
+  // typecheck because the strict object's input shape requires fields
+  // whose own defaults TS can't see at the call site. Cast empty
+  // literal defaults so the schema typechecks; runtime behaviour is
+  // unchanged (zod still applies the inner defaults at parse time).
+  zodSrc = zodSrc
+    .replace(/\.default\(\{\}\)/g, ".default({} as never)")
+    .replace(/\.default\(\[\]\)/g, ".default([] as never)")
+  zodSchemaExpr = zodSrc
 }
 
 // ── write the skeleton ───────────────────────────────────────────────
@@ -471,14 +492,15 @@ export function ${SLUG}FromManifest(manifest: ${PASCAL}Manifest): ${PASCAL}Handl
 `,
 )
 
-// Smoke-test template: when we detected the doctype's universal fields
-// match the createDoctype defaults (id + description), generate the
-// usual three-assertion smoke. When the schema diverges (slug vs id,
-// persona_summary vs description, …) the smoke would need every
-// required field to construct a valid def — too much to template
-// cleanly, so we emit a minimal "import works" test the author replaces.
-const useStandardSmoke =
-  identityField === "id" && descriptionField === "description"
+// Smoke-test template: only use the standard 3-assertion smoke when
+// there's NO schema (so the doctype really has just id + description
+// at runtime). When a schema is present, even if the heuristic picked
+// id + description for identity/desc, the schema almost always requires
+// MORE fields (name, version, profile, …) — constructing a valid
+// `{id, description}` smoke fails the schema's safeParse at runtime.
+// Generate the minimal "import works" test in that case; the author
+// writes a real smoke once they know the full required-set.
+const useStandardSmoke = !hasSchema
 
 write(
   `src/__tests__/define-${SLUG}.test.ts`,
@@ -620,4 +642,156 @@ function parseArgs(argv) {
 
 function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/**
+ * Rewrite `.refine(<predicate>, "<message>")` (zod v3) →
+ * `.refine(<predicate>, { message: "<message>" })` (zod v4).
+ *
+ * Walks the source, finds each `.refine(`, tracks paren/string depth
+ * to locate the matching close paren, then checks whether the second
+ * arg is a bare string literal — if so, wraps it. Already-objected
+ * args pass through untouched.
+ */
+function upgradeRefineToV4(src) {
+  const NEEDLE = ".refine("
+  let out = ""
+  let i = 0
+  while (i < src.length) {
+    const idx = src.indexOf(NEEDLE, i)
+    if (idx < 0) {
+      out += src.slice(i)
+      break
+    }
+    out += src.slice(i, idx + NEEDLE.length)
+    let cursor = idx + NEEDLE.length
+    let depth = 1
+    let topComma = -1
+    let inString = false
+    let stringQuote = ""
+    while (cursor < src.length && depth > 0) {
+      const c = src[cursor]
+      if (inString) {
+        if (c === "\\") {
+          cursor += 2
+          continue
+        }
+        if (c === stringQuote) inString = false
+      } else if (c === '"' || c === "'" || c === "`") {
+        inString = true
+        stringQuote = c
+      } else if (c === "(") {
+        depth++
+      } else if (c === ")") {
+        depth--
+        if (depth === 0) break
+      } else if (c === "," && depth === 1 && topComma < 0) {
+        topComma = cursor
+      }
+      cursor++
+    }
+    const closeIdx = cursor
+    if (topComma < 0) {
+      out += src.slice(idx + NEEDLE.length, closeIdx + 1)
+    } else {
+      const predicate = src.slice(idx + NEEDLE.length, topComma)
+      const second = src.slice(topComma + 1, closeIdx).trim()
+      const stringLiteral = second.match(/^"((?:[^"\\]|\\.)*)"$/)
+      if (stringLiteral) {
+        out += `${predicate}, { message: ${second} })`
+      } else {
+        out += src.slice(idx + NEEDLE.length, closeIdx + 1)
+      }
+    }
+    i = closeIdx + 1
+  }
+  return out
+}
+
+/**
+ * Walk a JSON Schema and replace external `$ref` URLs that point to
+ * sibling AIP schemas (e.g.
+ * `https://agentproto.dev/schemas/aip-16/IO.schema.json`) with local
+ * `#/$defs/<key>` references whose definitions live in the host
+ * schema's `$defs`. Loads referenced files from
+ * `<resourcesRoot>/aip-N/draft/<DOCTYPE>.schema.json`.
+ *
+ * Two non-trivial bits:
+ *  - When a schema is inlined as `$defs/<key>`, its OWN internal refs
+ *    (`#/$defs/foo`) need rewriting to `#/$defs/<key>/$defs/foo` so
+ *    they still resolve. Done via `relocateInternalRefs`.
+ *  - Some specs reference doctypes with broken filenames
+ *    (e.g. AIP-15 → `aip-17/RUNTIME.schema.json` while the file is
+ *    `RUNNER.schema.json`). When the target file doesn't exist, log a
+ *    warning and stub with `{}` instead of throwing.
+ */
+function inlineExternalRefs(schema, resourcesRoot) {
+  schema.$defs ??= {}
+  const queue = [schema]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    walkExternal(current, schema, resourcesRoot, queue)
+  }
+}
+
+function walkExternal(node, host, resourcesRoot, queue) {
+  if (!node || typeof node !== "object") return
+  if (Array.isArray(node)) {
+    for (const item of node) walkExternal(item, host, resourcesRoot, queue)
+    return
+  }
+  if (typeof node.$ref === "string") {
+    const m = node.$ref.match(
+      /^https?:\/\/agentproto\.(?:dev|sh)\/schemas\/aip-(\d+)\/([A-Z][A-Z0-9_-]*)\.schema\.json(#[^"]*)?$/,
+    )
+    if (m) {
+      const [, aipN, doctype, fragment] = m
+      const defKey = `${doctype}_${aipN}`
+      const filePath = `${resourcesRoot}/aip-${aipN}/draft/${doctype}.schema.json`
+      if (existsSync(filePath)) {
+        if (!(defKey in host.$defs)) {
+          const referenced = JSON.parse(readFileSync(filePath, "utf8"))
+          relocateInternalRefs(referenced, defKey)
+          host.$defs[defKey] = referenced
+          queue.push(referenced) // walk for further external refs
+        }
+        const innerPath = fragment ? fragment.replace(/^#/, "") : ""
+        node.$ref = `#/$defs/${defKey}${innerPath}`
+      } else {
+        // Spec ships a broken reference — e.g. AIP-15 points at
+        // aip-17/RUNTIME.schema.json while the file is RUNNER. Replace
+        // the ref with an empty schema (matches anything) so codegen
+        // proceeds; the package author can tighten by hand.
+        console.warn(
+          `  ⚠ external ref ${node.$ref} → ${filePath} not found; replacing with empty schema {}`,
+        )
+        delete node.$ref
+      }
+      return
+    }
+  }
+  for (const key of Object.keys(node)) {
+    walkExternal(node[key], host, resourcesRoot, queue)
+  }
+}
+
+/**
+ * After inlining a schema X under `$defs/<defKey>`, every `#/<path>`
+ * inside X needs to become `#/$defs/<defKey>/<path>` so it resolves
+ * to the same target relative to the new outer document.
+ */
+function relocateInternalRefs(node, defKey) {
+  if (!node || typeof node !== "object") return
+  if (Array.isArray(node)) {
+    for (const item of node) relocateInternalRefs(item, defKey)
+    return
+  }
+  if (typeof node.$ref === "string" && node.$ref.startsWith("#/")) {
+    node.$ref = `#/$defs/${defKey}${node.$ref.slice(1)}`
+    return
+  }
+  for (const key of Object.keys(node)) {
+    relocateInternalRefs(node[key], defKey)
+  }
 }
