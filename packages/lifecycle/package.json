@@ -6,7 +6,8 @@
     "agentproto",
     "aip-37",
     "lifecycle",
-    "defineLifecycle",
+    "events",
+    "vocabulary",
     "open-standard",
     "agentic"
   ],
@@ -30,11 +31,6 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
-    "./manifest": {
-      "types": "./dist/manifest/index.d.ts",
-      "import": "./dist/manifest/index.mjs",
-      "default": "./dist/manifest/index.mjs"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -54,11 +50,7 @@
     "test:watch": "vitest",
     "prepublishOnly": "pnpm build"
   },
-  "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
-    "gray-matter": "^4.0.3",
-    "zod": "^4.3.6"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.1.0",
