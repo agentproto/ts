@@ -18,6 +18,9 @@ import type { AgentDefinition, AgentHandle } from "./types.js"
 export const defineAgent = createDoctype<AgentDefinition, AgentHandle>({
   aip: 42,
   name: "agent",
+  // AIP-42 ids accept an optional `@<owner>/` prefix for namespacing
+  // across registries (e.g. `@agentik/writer`). Bare ids stay valid.
+  idPattern: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,79}$/,
   validate(def) {
     const result = agentFrontmatterSchema.safeParse(def)
     if (!result.success) {

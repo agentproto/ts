@@ -50,8 +50,9 @@ export async function buildMastraAgent(
   const id = opts.id ?? handle.id
 
   // Mastra's Agent ctor types are heterogeneous (model union, tools
-  // record etc.); we widen at the boundary so the package stays
-  // independent of @mastra/core's internal generic shape.
+  // record etc.) and have generic-variance issues that leak through
+  // structuredOutput inference; we widen at both ends so the package
+  // stays independent of @mastra/core's internal generic shape.
   const agent = new Agent({
     name,
     id,
@@ -60,7 +61,7 @@ export async function buildMastraAgent(
     tools,
     memory,
     voice,
-  } as unknown as ConstructorParameters<typeof Agent>[0])
+  } as unknown as ConstructorParameters<typeof Agent>[0]) as unknown as Agent
 
   return {
     agent,

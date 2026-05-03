@@ -8,7 +8,10 @@ export default createTsupConfig({
   entry: { index: "src/index.ts" },
   format: ["esm"],
   splitting: false,
-  dts: true,
+  // dts emitted by `tsc -p tsconfig.build.json` instead — Mastra's own
+  // .d.ts has variance issues that break rollup-plugin-dts even when
+  // @mastra/core is marked external. tsc with skipLibCheck handles it.
+  dts: false,
   external: ["@agentproto/agent", "@mastra/core", "@mastra/core/agent"],
   noExternal: [],
 })
