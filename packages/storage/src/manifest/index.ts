@@ -8,30 +8,23 @@
  * invariants run uniformly.
  *
  *
- * TODO: tighten the frontmatter schema once the AIP-35 fields are
- * decided. The skeleton accepts arbitrary extra keys via \`.loose()\`.
+ * The frontmatter zod schema below was generated from
+ * `resources/aip-35/draft/STORAGE.schema.json` via json-schema-to-zod.
+ * Re-run scaffold-aip to refresh after spec changes (or hand-tune
+ * any constraint the converter doesn't capture cleanly).
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
+import { storageFrontmatterSchema, type StorageFrontmatter } from "../schema.js"
 import { defineStorage } from "../define-storage.js"
 import type { StorageDefinition, StorageHandle } from "../types.js"
 
-export const storageManifestFrontmatterSchema = z
-  .object({
-    schema: z.literal("agentstorage/v1").optional(),
-    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-    description: z.string().min(1).max(2000),
-    // TODO: spec-35 fields.
-  })
-  .loose()
-
-export type StorageManifestFrontmatter = z.infer<
-  typeof storageManifestFrontmatterSchema
->
+// Re-export so consumers can import the schema + inferred type either
+// from "@@agentproto/storage/manifest" or directly from "@@agentproto/storage/schema".
+export { storageFrontmatterSchema, type StorageFrontmatter }
 
 export interface StorageManifest {
-  frontmatter: StorageManifestFrontmatter
+  frontmatter: StorageFrontmatter
   body: string
 }
 
@@ -40,7 +33,7 @@ export function parseStorageManifest(source: string): StorageManifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parseStorageManifest: missing or empty frontmatter")
   }
-  const result = storageManifestFrontmatterSchema.safeParse(parsed.data)
+  const result = storageFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       `parseStorageManifest: invalid frontmatter — ${result.error.issues

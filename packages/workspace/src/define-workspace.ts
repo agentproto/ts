@@ -1,4 +1,5 @@
 import { createDoctype } from "@agentproto/define-doctype"
+import { workspaceFrontmatterSchema } from "./schema.js"
 import type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
 
 /**
@@ -8,14 +9,32 @@ import type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
  * description length, top-level freeze, "defineWorkspace (AIP-34): …"
  * error prefix) run uniformly with every other AIP defineX.
  *
- * Spec-34-specific validation goes in `validate(def)`; defaulting
- * and nested freezing in `build(def)`.
+ * Field-level validation runs the schema-derived zod from
+ * `./schema.ts` against the input. Same source of truth as the .md
+ * path uses (`parseWorkspaceManifest`), so a malformed TS-authored
+ * definition fails with the same diagnostic as a malformed manifest.
+ * Cross-field rules go in `validate(def)` after the zod check.
+ *
+ * Identity / description extractors detected from the JSON Schema:
+ *   readIdentity: def.id
+ *   readDescription: def.name.
  */
 export const defineWorkspace = createDoctype<WorkspaceDefinition, WorkspaceHandle>({
   aip: 34,
   name: "workspace",
-  validate(_def) {
-    // TODO: spec-34-specific checks.
+  readDescription: (def) => def.name,
+  validate(def) {
+    const result = workspaceFrontmatterSchema.safeParse(def)
+    if (!result.success) {
+      throw new Error(
+        `defineWorkspace (AIP-34): ${result.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      )
+    }
+    // TODO: spec-34-specific cross-field rules (if/then/allOf in
+    // the JSON Schema) — those don't translate to zod cleanly and
+    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.

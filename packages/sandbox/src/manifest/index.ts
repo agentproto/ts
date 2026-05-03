@@ -8,30 +8,23 @@
  * invariants run uniformly.
  *
  *
- * TODO: tighten the frontmatter schema once the AIP-36 fields are
- * decided. The skeleton accepts arbitrary extra keys via \`.loose()\`.
+ * The frontmatter zod schema below was generated from
+ * `resources/aip-36/draft/SANDBOX.schema.json` via json-schema-to-zod.
+ * Re-run scaffold-aip to refresh after spec changes (or hand-tune
+ * any constraint the converter doesn't capture cleanly).
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
+import { sandboxFrontmatterSchema, type SandboxFrontmatter } from "../schema.js"
 import { defineSandbox } from "../define-sandbox.js"
 import type { SandboxDefinition, SandboxHandle } from "../types.js"
 
-export const sandboxManifestFrontmatterSchema = z
-  .object({
-    schema: z.literal("agentsandbox/v1").optional(),
-    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-    description: z.string().min(1).max(2000),
-    // TODO: spec-36 fields.
-  })
-  .loose()
-
-export type SandboxManifestFrontmatter = z.infer<
-  typeof sandboxManifestFrontmatterSchema
->
+// Re-export so consumers can import the schema + inferred type either
+// from "@@agentproto/sandbox/manifest" or directly from "@@agentproto/sandbox/schema".
+export { sandboxFrontmatterSchema, type SandboxFrontmatter }
 
 export interface SandboxManifest {
-  frontmatter: SandboxManifestFrontmatter
+  frontmatter: SandboxFrontmatter
   body: string
 }
 
@@ -40,7 +33,7 @@ export function parseSandboxManifest(source: string): SandboxManifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parseSandboxManifest: missing or empty frontmatter")
   }
-  const result = sandboxManifestFrontmatterSchema.safeParse(parsed.data)
+  const result = sandboxFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       `parseSandboxManifest: invalid frontmatter — ${result.error.issues

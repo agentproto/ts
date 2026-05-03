@@ -8,30 +8,23 @@
  * invariants run uniformly.
  *
  *
- * TODO: tighten the frontmatter schema once the AIP-34 fields are
- * decided. The skeleton accepts arbitrary extra keys via \`.loose()\`.
+ * The frontmatter zod schema below was generated from
+ * `resources/aip-34/draft/WORKSPACE.schema.json` via json-schema-to-zod.
+ * Re-run scaffold-aip to refresh after spec changes (or hand-tune
+ * any constraint the converter doesn't capture cleanly).
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
+import { workspaceFrontmatterSchema, type WorkspaceFrontmatter } from "../schema.js"
 import { defineWorkspace } from "../define-workspace.js"
 import type { WorkspaceDefinition, WorkspaceHandle } from "../types.js"
 
-export const workspaceManifestFrontmatterSchema = z
-  .object({
-    schema: z.literal("agentworkspace/v1").optional(),
-    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-    description: z.string().min(1).max(2000),
-    // TODO: spec-34 fields.
-  })
-  .loose()
-
-export type WorkspaceManifestFrontmatter = z.infer<
-  typeof workspaceManifestFrontmatterSchema
->
+// Re-export so consumers can import the schema + inferred type either
+// from "@@agentproto/workspace/manifest" or directly from "@@agentproto/workspace/schema".
+export { workspaceFrontmatterSchema, type WorkspaceFrontmatter }
 
 export interface WorkspaceManifest {
-  frontmatter: WorkspaceManifestFrontmatter
+  frontmatter: WorkspaceFrontmatter
   body: string
 }
 
@@ -40,7 +33,7 @@ export function parseWorkspaceManifest(source: string): WorkspaceManifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parseWorkspaceManifest: missing or empty frontmatter")
   }
-  const result = workspaceManifestFrontmatterSchema.safeParse(parsed.data)
+  const result = workspaceFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       `parseWorkspaceManifest: invalid frontmatter — ${result.error.issues
