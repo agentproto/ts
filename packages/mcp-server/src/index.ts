@@ -20,7 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { createVerbs, type DoctypeSpec } from "@agentproto/manifest"
 import {
   parseExtensionManifest,
@@ -80,8 +80,16 @@ export async function createMcpServer(
     allSpecs.push(...extensions)
   }
 
+  // Path-anchoring: when a workspace is set, resolve all relative
+  // dir/path arguments against it. Agents pass logical paths like
+  // "tools" or "tools/echo/TOOL.md"; the server pins them to the
+  // workspace so they don't leak into process.cwd() (which is
+  // wherever the host happened to spawn the server).
+  const anchor = (p: string): string =>
+    isAbsolute(p) || !opts.workspace ? p : join(opts.workspace, p)
+
   for (const spec of allSpecs) {
-    registerVerbs(server, spec)
+    registerVerbs(server, spec, anchor)
   }
 
   return {
@@ -105,7 +113,11 @@ export async function runStdioServer(
 
 // ── verb registration ───────────────────────────────────────────────
 
-function registerVerbs(server: McpServer, spec: AnySpec): void {
+function registerVerbs(
+  server: McpServer,
+  spec: AnySpec,
+  anchor: (p: string) => string,
+): void {
   const verbs = createVerbs(spec)
   // Tool name uses snake_case to match MCP convention; spec.name may
   // be kebab (driver-cli) or namespaced (acme:deal). Map all to snake.
@@ -136,7 +148,11 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
         .describe("Render only — don't write to disk."),
     },
     async ({ params, dir, body, dryRun }) => {
-      const result = await verbs.create(params, { dir, body, dryRun })
+      const result = await verbs.create(params, {
+        dir: anchor(dir),
+        body,
+        dryRun,
+      })
       return contentText({
         path: result.path,
         rendered: result.rendered,
@@ -152,7 +168,7 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
       path: z.string().describe("Absolute or workspace-relative path to the .md file."),
     },
     async ({ path }) => {
-      const result = await verbs.load(path)
+      const result = await verbs.load(anchor(path))
       return contentText({ path: result.path, handle: result.handle })
     },
   )
@@ -172,7 +188,7 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
         .describe("Subdir names to skip (default: node_modules, .git, dist)."),
     },
     async ({ dir, skipDirs }) => {
-      const handles = await verbs.list(dir, { skipDirs })
+      const handles = await verbs.list(anchor(dir), { skipDirs })
       return contentText({ count: handles.length, handles })
     },
   )
@@ -193,7 +209,7 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
     },
     async ({ path, patch, body }) => {
       const result = await verbs.update(
-        path,
+        anchor(path),
         (existing: Record<string, unknown>) => ({ ...existing, ...patch }),
         { body },
       )
@@ -222,7 +238,9 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
         .describe("Base dir for `file:` references."),
     },
     async ({ block, baseDir }) => {
-      const handle = await verbs.resolve(block, { baseDir })
+      const handle = await verbs.resolve(block, {
+        baseDir: baseDir ? anchor(baseDir) : undefined,
+      })
       return contentText({ handle })
     },
   )
@@ -235,8 +253,9 @@ function registerVerbs(server: McpServer, spec: AnySpec): void {
       path: z.string().describe("Path to the manifest to delete."),
     },
     async ({ path }) => {
-      await verbs.delete(path)
-      return contentText({ deleted: path })
+      const target = anchor(path)
+      await verbs.delete(target)
+      return contentText({ deleted: target })
     },
   )
 }
