@@ -1,0 +1,74 @@
+{
+  "name": "@agentproto/runtime",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
+  "keywords": [
+    "agentproto",
+    "runtime",
+    "gateway",
+    "mcp",
+    "heartbeat",
+    "autonomy"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/runtime"
+  },
+  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./conversations": {
+      "types": "./dist/conversations.d.ts",
+      "import": "./dist/conversations.mjs",
+      "default": "./dist/conversations.mjs"
+    },
+    "./heartbeat": {
+      "types": "./dist/heartbeat.d.ts",
+      "import": "./dist/heartbeat.mjs",
+      "default": "./dist/heartbeat.mjs"
+    },
+    "./workspace-fs": {
+      "types": "./dist/workspace-fs.d.ts",
+      "import": "./dist/workspace-fs.mjs",
+      "default": "./dist/workspace-fs.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/agent": "workspace:*",
+    "@agentproto/manifest": "workspace:*",
+    "@agentproto/mcp-server": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
