@@ -17,7 +17,9 @@
     "url": "https://github.com/agentproto/ts",
     "directory": "packages/mastra"
   },
-  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
   "license": "MIT",
   "type": "module",
   "main": "dist/index.mjs",
@@ -31,8 +33,14 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup && tsc -p tsconfig.build.json",
@@ -50,7 +58,7 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@mastra/core": "1.13.2",
+    "@mastra/core": "1.32.1",
     "@types/node": "^25.1.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
