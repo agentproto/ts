@@ -1,0 +1,167 @@
+/**
+ * Filesystem MCP tools registered on the runtime's MCP server.
+ *
+ * The runtime already exposes AIP CRUD verbs (create_tool, load_agent, …)
+ * via @agentproto/mcp-server. To make the workspace genuinely reachable
+ * to remote MCP clients (Guilde cloud agents through a tunnel, IDEs,
+ * etc.), we also register canonical filesystem tools that match the
+ * shape used by `@modelcontextprotocol/server-filesystem` so existing
+ * MCP-fs proxy clients can target the runtime without bespoke logic:
+ *
+ *   read_file        ({ path })          → string
+ *   write_file       ({ path, content }) → "ok"
+ *   list_directory   ({ path? })         → "[FILE] x\n[DIR]  y" lines
+ *   get_file_info    ({ path })          → { name, type, size, modified }
+ *   create_directory ({ path })          → "ok"
+ *   delete_file      ({ path })          → "ok"
+ *
+ * All paths are resolved relative to the workspace root via the same
+ * escape guard used by `WorkspaceFs`. Absolute paths inside the root
+ * are accepted (so callers that prefix `basePath` with the absolute
+ * workspace path keep working).
+ */
+
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises"
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { z } from "zod"
+
+export interface RegisterFsToolsOptions {
+  workspace: string
+}
+
+class FsPathError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "FsPathError"
+  }
+}
+
+function makeAnchor(workspace: string): (input: string) => string {
+  const root = resolve(workspace)
+  return (input: string) => {
+    if (typeof input !== "string" || input.length === 0) {
+      throw new FsPathError("path must be a non-empty string")
+    }
+    const candidate = isAbsolute(input)
+      ? normalize(input)
+      : normalize(join(root, input))
+    const rel = relative(root, candidate)
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      throw new FsPathError(`path escapes the workspace: '${input}'`)
+    }
+    return candidate
+  }
+}
+
+function text(value: string | object): {
+  content: Array<{ type: "text"; text: string }>
+} {
+  return {
+    content: [
+      {
+        type: "text",
+        text: typeof value === "string" ? value : JSON.stringify(value),
+      },
+    ],
+  }
+}
+
+export function registerFsTools(
+  server: McpServer,
+  opts: RegisterFsToolsOptions,
+): void {
+  const anchor = makeAnchor(opts.workspace)
+
+  server.tool(
+    "read_file",
+    "Read a UTF-8 file from the workspace.",
+    { path: z.string().describe("Workspace-relative path to the file.") },
+    async ({ path }) => {
+      const abs = anchor(path)
+      const buf = await readFile(abs)
+      return text(buf.toString("utf8"))
+    },
+  )
+
+  server.tool(
+    "write_file",
+    "Write a file to the workspace. Parent directories are created on demand.",
+    {
+      path: z.string().describe("Workspace-relative path to the file."),
+      content: z.string().describe("File body (UTF-8)."),
+    },
+    async ({ path, content }) => {
+      const abs = anchor(path)
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, content, "utf8")
+      return text("ok")
+    },
+  )
+
+  server.tool(
+    "list_directory",
+    "List entries of a directory in the workspace. Returns one '[FILE]' or '[DIR]' line per entry, mirroring `@modelcontextprotocol/server-filesystem`.",
+    {
+      path: z
+        .string()
+        .optional()
+        .describe("Workspace-relative directory (defaults to workspace root)."),
+    },
+    async ({ path }) => {
+      const abs = anchor(path && path.length > 0 ? path : ".")
+      const entries = await readdir(abs, { withFileTypes: true })
+      const lines = entries.map(e =>
+        e.isDirectory() ? `[DIR]  ${e.name}` : `[FILE] ${e.name}`,
+      )
+      return text(lines.join("\n"))
+    },
+  )
+
+  server.tool(
+    "get_file_info",
+    "Stat a file or directory in the workspace.",
+    { path: z.string().describe("Workspace-relative path.") },
+    async ({ path }) => {
+      const abs = anchor(path)
+      const info = await stat(abs)
+      return text({
+        name: abs.split("/").pop() ?? path,
+        path,
+        type: info.isDirectory() ? "directory" : "file",
+        size: info.size,
+        modified: info.mtime.toISOString(),
+        created: info.birthtime.toISOString(),
+      })
+    },
+  )
+
+  server.tool(
+    "create_directory",
+    "Create a directory (recursive) in the workspace.",
+    { path: z.string().describe("Workspace-relative directory path.") },
+    async ({ path }) => {
+      const abs = anchor(path)
+      await mkdir(abs, { recursive: true })
+      return text("ok")
+    },
+  )
+
+  server.tool(
+    "delete_file",
+    "Delete a file or empty directory in the workspace.",
+    { path: z.string().describe("Workspace-relative path.") },
+    async ({ path }) => {
+      const abs = anchor(path)
+      await rm(abs, { recursive: true, force: true })
+      return text("ok")
+    },
+  )
+}

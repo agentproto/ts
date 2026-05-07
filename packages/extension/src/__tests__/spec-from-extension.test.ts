@@ -107,6 +107,48 @@ describe("specFromExtension — composes parent + extension into a runtime spec"
     )
   })
 
+  it("does not pass extension-owned fields to parent.define", () => {
+    // Parents typically validate via zod.strict() (e.g. AIP-42
+    // agentFrontmatterSchema), which rejects unknown keys. The
+    // composed spec must shield the parent from extension-owned
+    // fields — they're authoritative on the extension side.
+    const strictParent: DoctypeSpec<FakeParams, FakeHandle> = {
+      ...parentSpec,
+      define: (params) => {
+        const allowed = new Set([
+          "id",
+          "description",
+          "approval",
+          "cost_class",
+        ])
+        const rec = params as unknown as Record<string, unknown>
+        for (const key of Object.keys(rec)) {
+          if (!allowed.has(key)) {
+            throw new Error(`Unrecognized key '${key}' (parent strict)`)
+          }
+        }
+        return Object.freeze({
+          id: params.id,
+          description: params.description,
+          approval: params.approval ?? "auto",
+          cost_class: params.cost_class ?? "trivial",
+        })
+      },
+    }
+    const spec = specFromExtension(acmeDealExt, { parent: strictParent })
+    const handle = spec.define({
+      id: "ord-42",
+      description: "Q2 deal with ACME West",
+      customer_id: "cust-1",
+      amount: 1000,
+    } as never) as FakeHandle & { customer_id: string; amount: number }
+    expect(handle.id).toBe("ord-42")
+    expect(handle.customer_id).toBe("cust-1")
+    expect(handle.amount).toBe(1000)
+    // Extension defaults still applied to parent fields.
+    expect(handle.approval).toBe("on-mutate")
+  })
+
   it("rejects tighten with minLength > maxLength", () => {
     const badExt = defineExtension({
       ...acmeDealExt,

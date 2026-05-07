@@ -64,6 +64,13 @@ export function specFromExtension<
   const slugName = extension.slug.split(":")[1] ?? extension.slug
   const pathTemplate = extension.path_convention ?? null
 
+  // Keys the extension is authoritative over — anything declared in
+  // `add_fields.properties`. Computed once at spec-composition time so
+  // the per-call `define` is a hot-path lookup, not a re-derivation.
+  const extensionKeys = new Set(
+    Object.keys(extension.add_fields?.properties ?? {}),
+  )
+
   const define = (params: TParams) => {
     // Layered defaults: parent defaults are baked into parent.define;
     // extension defaults apply on top, only for keys the user omitted.
@@ -83,7 +90,25 @@ export function specFromExtension<
       // schema-level zod catches malformed input.)
       return Object.freeze(withDefaults) as unknown as THandle
     }
-    return parent!.define(withDefaults as unknown as TParams)
+    // Split params before delegating: parent specs typically validate
+    // through `zod.strict()` (e.g. AIP-42 `agentFrontmatterSchema`),
+    // which rejects extension-owned keys as "Unrecognized". Hand the
+    // parent only what it owns, then re-attach extension fields onto
+    // the resulting handle. Extension-side validation of these fields
+    // is the manifest layer's responsibility (compiled from
+    // `add_fields` JSON Schema at parse time); the runtime trusts
+    // input it received via that path.
+    const parentOnly: Record<string, unknown> = {}
+    const extensionOnly: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(withDefaults)) {
+      if (extensionKeys.has(key)) extensionOnly[key] = value
+      else parentOnly[key] = value
+    }
+    const parentHandle = parent!.define(parentOnly as unknown as TParams)
+    return Object.freeze({
+      ...(parentHandle as object),
+      ...extensionOnly,
+    }) as unknown as THandle
   }
 
   const parse = isRoot ? rootParse(extension) : parent!.parse

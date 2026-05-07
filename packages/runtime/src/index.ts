@@ -21,8 +21,11 @@ import { join, resolve } from "node:path"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
+import { writeRuntimeMeta } from "./agentproto-dir.js"
+import { registerCommandTools } from "./command-tools.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
+import { registerFsTools } from "./fs-tools.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import { startHttpServer, type AuthOptions } from "./http-server.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -104,12 +107,37 @@ export async function createGateway(
   const conversations = fileConversationStore({ workspace })
   const workspaceFs = createWorkspaceFs({ workspace })
 
-  const { server: mcpServer, registered } = await createMcpServer({
+  // Build a server once eagerly so we can capture `registered` for
+  // `/health`. The server is NOT used for serving — every `/mcp`
+  // request gets its own freshly-constructed pair, mirroring the
+  // SDK's official stateless pattern. See the comment on
+  // `RuntimeHttpServerOptions.mcpServerFactory` for why.
+  const { registered } = await createMcpServer({
     specs: opts.specs,
     workspace,
     name: opts.name ?? "agentproto-runtime",
     version: opts.version ?? "0.1.0-alpha",
   })
+
+  const mcpServerFactory = async () => {
+    const { server } = await createMcpServer({
+      specs: opts.specs,
+      workspace,
+      name: opts.name ?? "agentproto-runtime",
+      version: opts.version ?? "0.1.0-alpha",
+    })
+    // Canonical filesystem tools so remote MCP clients (cloud
+    // workspace-providers, IDEs, ad-hoc tooling) can read/write the
+    // workspace without each implementing AIP-aware glue. Names match
+    // `@modelcontextprotocol/server-filesystem` for drop-in compat.
+    registerFsTools(server, { workspace })
+    // Subprocess execution — the runtime's superpower for cloud
+    // agents. Any allowlisted CLI on the user's machine (claude, gh,
+    // pnpm, …) is reachable via `execute_command`. Allowlist lives at
+    // `.agentproto/allowed-commands.json`; default-deny.
+    registerCommandTools(server, { workspace })
+    return server
+  }
 
   // ── boot ─────────────────────────────────────────────────────────
   if (opts.boot !== false) {
@@ -134,7 +162,7 @@ export async function createGateway(
     port,
     bind: opts.bind,
     auth: opts.auth,
-    mcpServer,
+    mcpServerFactory,
     conversations,
     events,
     heartbeat,
@@ -146,6 +174,20 @@ export async function createGateway(
     type: "boot",
     at: new Date().toISOString(),
     workspace,
+    registered,
+  })
+
+  // Record a snapshot of the running config so external tooling /
+  // shell users can introspect a live gateway via
+  // `cat <workspace>/.agentproto/runtime.json`. Best-effort — failure
+  // here doesn't gate the gateway being functional.
+  void writeRuntimeMeta(workspace, {
+    workspace,
+    port,
+    bind: opts.bind ?? "127.0.0.1",
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    name: opts.name ?? "agentproto-runtime",
     registered,
   })
 
