@@ -1,0 +1,46 @@
+/**
+ * @agentproto/driver-agent-cli — AIP-45 AGENT-CLI.md `defineAgentCli`
+ * reference impl.
+ *
+ * Spec: https://agentproto.sh/docs/aip-45
+ *
+ * Authoring paths:
+ *   - TS:  `defineAgentCli({...})` → `AgentCliHandle`
+ *   - MD:  `parseAgentCliManifest(src) → agentCliFromManifest({...})` → `AgentCliHandle`
+ *
+ * Runtime: `createAgentCliRuntime(handle)` → spawn binary, dispatch
+ * turns through the protocol arm (acp / mcp / proprietary), normalise
+ * events to {@link StreamEvent}.
+ */
+
+export const SPEC_NAME = "agentcli-interactive/v1" as const
+export const SPEC_VERSION = "0.1.0-alpha" as const
+
+export {
+  defineAgentCli,
+  createAgentCliRuntime,
+} from "./define-agent-cli.js"
+// Exposed so callers can build a sandbox-resident `AgentCliRuntime`
+// against the same protocol layer the host-spawn factory uses, by
+// passing a `ChildProcess`-shaped duck whose stdio is bridged to a
+// remote subprocess (e2b sandbox, ssh, etc.). See guilde's
+// `cli-session-spawn/sandbox-runtime.ts` for a worked example.
+export { createAcpProtocolArm } from "./protocol/acp-client.js"
+export {
+  agentCliFrontmatterSchema,
+  type AgentCliFrontmatter,
+} from "./schema.js"
+export type {
+  AgentCliDefinition,
+  AgentCliHandle,
+  AgentCliProtocol,
+  AgentCliSessionMode,
+  AgentCliClient,
+  AgentCliConnectOptions,
+  AgentCliRuntime,
+  AgentCliRuntimeSession,
+  AgentCliStartOptions,
+  AgentCliCapabilities,
+  AgentCliMcpBlock,
+  StreamEvent,
+} from "./types.js"

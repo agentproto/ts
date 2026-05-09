@@ -1,0 +1,62 @@
+{
+  "name": "@agentproto/adapter-claude-code",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/adapter-claude-code — AIP-45 AGENT-CLI adapter for Anthropic's Claude Code via @agentclientprotocol/claude-agent-acp. Spawns the ACP wrapper and drives Claude Code as an agentproto agent CLI.",
+  "keywords": [
+    "agentproto",
+    "aip-45",
+    "claude-code",
+    "anthropic",
+    "acp",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/claude-code"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./CLAUDE-CODE.md": "./CLAUDE-CODE.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "CLAUDE-CODE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/driver-agent-cli": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

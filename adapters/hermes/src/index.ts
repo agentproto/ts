@@ -1,0 +1,88 @@
+/**
+ * @agentproto/adapter-hermes — AIP-45 adapter for Nous Research's Hermes Agent.
+ *
+ * Re-exports a `defineAgentCli` instance plus the runtime factory so
+ * a host can boot Hermes with one import:
+ *
+ *   import { hermes, hermesRuntime } from "@agentproto/adapter-hermes"
+ *   const session = await hermesRuntime().start({ env: { OPENROUTER_API_KEY } })
+ *   for await (const evt of session.send({ role: "user", content: "..." })) {
+ *     console.log(evt)
+ *   }
+ *   await session.close()
+ *
+ * The companion HERMES.md / SECRETS.md / hermes-acp.ACP.md files in
+ * this package describe the manifest, secret slots, and ACP wire
+ * profile.
+ */
+
+import {
+  createAgentCliRuntime,
+  defineAgentCli,
+  type AgentCliHandle,
+  type AgentCliRuntime,
+} from "@agentproto/driver-agent-cli"
+
+export const hermes: AgentCliHandle = defineAgentCli({
+  name: "hermes",
+  id: "hermes",
+  description:
+    "Nous Research's Hermes Agent — autonomous CLI agent with skills, sandboxes, memory plugins, and a built-in ACP server. Spawned as `hermes acp` and driven over stdio JSON-RPC.",
+  version: "0.1.0",
+  bin: "hermes",
+  bin_args: ["acp"],
+  install: [
+    {
+      method: "curl",
+      url: "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh",
+    },
+  ],
+  version_check: {
+    cmd: "hermes --version",
+    parse: "(\\d+\\.\\d+\\.\\d+)",
+    range: ">=0.13.0 <1.0.0",
+    timeout_ms: 5000,
+  },
+  auth: {
+    ref: "./SECRETS.md",
+    state: { env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+  },
+  sandbox: "./SANDBOX.md",
+  protocol: "acp",
+  acp: "./hermes-acp.ACP.md",
+  session: {
+    mode: "persistent",
+    idle_timeout_ms: 1_800_000,
+    context_carryover: true,
+  },
+  models: {
+    default: "anthropic/claude-sonnet-4-6",
+    allowed: [
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-opus-4-7",
+      "openai/gpt-4",
+      "meta-llama/llama-3.3-70b",
+    ],
+    env: {
+      anthropic: "ANTHROPIC_API_KEY",
+      openrouter: "OPENROUTER_API_KEY",
+      openai: "OPENAI_API_KEY",
+    },
+  },
+  capabilities: {
+    streaming: true,
+    tool_calls: true,
+    sub_agents: true,
+    file_io: true,
+    multimodal: true,
+    resumable: false,
+    bidirectional: true,
+  },
+  tags: ["hermes", "nous", "acp", "agent-runtime"],
+})
+
+export function hermesRuntime(): AgentCliRuntime {
+  return createAgentCliRuntime(hermes)
+}
+
+export type { AgentCliHandle, AgentCliRuntime }

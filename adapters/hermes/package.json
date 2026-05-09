@@ -1,0 +1,64 @@
+{
+  "name": "@agentproto/adapter-hermes",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/adapter-hermes — AIP-45 AGENT-CLI adapter for Nous Research's Hermes Agent. Spawns `hermes acp` and drives it as an agentproto agent CLI via the ACP protocol arm of @agentproto/driver-agent-cli.",
+  "keywords": [
+    "agentproto",
+    "aip-45",
+    "hermes",
+    "nous",
+    "acp",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/hermes"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./HERMES.md": "./HERMES.md",
+    "./SECRETS.md": "./SECRETS.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "HERMES.md",
+    "SECRETS.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/driver-agent-cli": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
