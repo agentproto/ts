@@ -14,4 +14,9 @@ export const SPEC_NAME = "agentsandbox/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineSandbox } from "./define-sandbox.js"
-export type { SandboxDefinition, SandboxHandle } from "./types.js"
+export type {
+  SandboxDefinition,
+  SandboxHandle,
+  SandboxRuntimeInput,
+  SandboxRuntimeHandle,
+} from "./types.js"

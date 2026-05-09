@@ -303,3 +303,42 @@ export interface AuthBlock1 {
 }
 
 export type SandboxHandle = Readonly<SandboxDefinition>
+
+// ── AIP-43 runtime slots ────────────────────────────────────────────
+//
+// Mirrors `@agentproto/storage`'s `StorageRuntimeInput` /
+// `StorageRuntimeHandle` shape — `factory` + `capabilities` are
+// HOST-OPAQUE TS-runtime slots only present when `defineSandbox(...)`
+// is called from TypeScript code (vs. parsed from a SANDBOX.md
+// manifest). Manifests can't carry function values; these slots are
+// stripped before zod validation and re-attached in the build path.
+//
+// `factory` is fully host-typed (Mastra `WorkspaceSandbox`,
+// `@guilde/...` adapter, MCP execute_command surface, etc).
+// `capabilities` is opaque metadata the registry queries on (per
+// AIP-43 § Capability metadata namespace).
+
+/**
+ * In-TS authoring shape — what callers pass to `defineSandbox(...)`
+ * when constructing a handle programmatically. Extends
+ * `SandboxDefinition` with two optional host-runtime slots.
+ */
+export interface SandboxRuntimeInput<
+  TFactory = unknown,
+  TCapabilities extends Record<string, unknown> = Record<string, unknown>,
+> extends SandboxDefinition {
+  factory?: TFactory
+  capabilities?: TCapabilities
+}
+
+/**
+ * What `defineSandbox(...)` returns. Carries `factory` + `capabilities`
+ * through unchanged so registry consumers can read them off the handle.
+ */
+export type SandboxRuntimeHandle<
+  TFactory = unknown,
+  TCapabilities extends Record<string, unknown> = Record<string, unknown>,
+> = Readonly<SandboxDefinition> & {
+  readonly factory?: TFactory
+  readonly capabilities?: Readonly<TCapabilities>
+}

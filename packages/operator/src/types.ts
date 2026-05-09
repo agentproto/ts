@@ -42,6 +42,20 @@ export type MemoryKind = "none" | "thread" | "operator-context" | "external"
 export type MemoryPolicy = "append-only" | "redactable" | "summarising"
 export type Autonomy = "autonomous" | "supervised" | "gated"
 export type ParticipationMode = "mention-only" | "proactive" | "silent"
+export type OperatorRuntimeKind = "in-process" | "agent-cli"
+export type OperatorRuntimeSessionMode = "ephemeral" | "persistent" | "resumable"
+
+export interface OperatorRuntime {
+  /** Default `in-process`. */
+  kind: OperatorRuntimeKind
+  /** AIP-45 AGENT-CLI ref. Required when kind=agent-cli. */
+  ref?: string
+  /** Session policy when delegating to an agent CLI. */
+  session?: {
+    mode?: OperatorRuntimeSessionMode
+    idle_timeout_ms?: number
+  }
+}
 
 export interface OperatorProfile {
   /** Job title and primary responsibility. 1–1000 chars. */
@@ -101,6 +115,13 @@ export interface OperatorDefinition {
   /** Capability surface declared. Negotiated against runtime offer at registration. */
   capabilities?: readonly string[]
   participation?: OperatorParticipation
+  /**
+   * Optional runtime binding. When omitted or `kind=in-process`, the
+   * host runs the operator's turn loop in-process. When `kind=agent-cli`,
+   * turns are dispatched to the spawned AIP-45 agent CLI (Hermes,
+   * Claude Code, …) referenced by `ref`.
+   */
+  runtime?: OperatorRuntime
   tags?: readonly string[]
   metadata?: Record<string, unknown>
 }
@@ -122,6 +143,7 @@ export interface OperatorHandle {
   readonly governance?: Readonly<OperatorGovernance>
   readonly capabilities: readonly string[]
   readonly participation?: Readonly<OperatorParticipation>
+  readonly runtime?: Readonly<OperatorRuntime>
   readonly tags: readonly string[]
   readonly metadata: Readonly<Record<string, unknown>>
 }

@@ -146,6 +146,13 @@ export const defineOperator = createDoctype<OperatorDefinition, OperatorHandle>(
           )
         }
       }
+
+      // Cross-field: runtime.kind=agent-cli requires runtime.ref.
+      if (def.runtime?.kind === "agent-cli" && !def.runtime.ref) {
+        throw new Error(
+          `defineOperator (AIP-9): id='${def.id}' runtime.kind='agent-cli' requires runtime.ref (e.g. '@agentproto/adapter-hermes#hermes')`,
+        )
+      }
     },
     build(def) {
       return {
@@ -186,6 +193,18 @@ export const defineOperator = createDoctype<OperatorDefinition, OperatorHandle>(
               reactions: def.participation.reactions ?? false,
             })
           : Object.freeze({ mode: "mention-only", reactions: false }),
+        runtime: def.runtime
+          ? Object.freeze({
+              kind: def.runtime.kind,
+              ref: def.runtime.ref,
+              session: def.runtime.session
+                ? Object.freeze({
+                    mode: def.runtime.session.mode,
+                    idle_timeout_ms: def.runtime.session.idle_timeout_ms,
+                  })
+                : undefined,
+            })
+          : undefined,
         tags: Object.freeze([...(def.tags ?? [])]),
         metadata: Object.freeze({ ...(def.metadata ?? {}) }),
       }

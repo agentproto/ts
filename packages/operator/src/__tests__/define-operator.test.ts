@@ -151,6 +151,47 @@ describe("defineOperator — spec-9 cross-field invariants", () => {
   })
 })
 
+describe("defineOperator — runtime binding (AIP-45 hook)", () => {
+  it("defaults runtime to undefined when not declared", () => {
+    const op = defineOperator(MINIMAL)
+    expect(op.runtime).toBeUndefined()
+  })
+
+  it("accepts runtime.kind=in-process without a ref", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      runtime: { kind: "in-process" },
+    })
+    expect(op.runtime?.kind).toBe("in-process")
+    expect(op.runtime?.ref).toBeUndefined()
+  })
+
+  it("accepts runtime.kind=agent-cli with a ref", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      runtime: {
+        kind: "agent-cli",
+        ref: "@agentproto/adapter-hermes#hermes",
+        session: { mode: "persistent", idle_timeout_ms: 1_800_000 },
+      },
+    })
+    expect(op.runtime?.kind).toBe("agent-cli")
+    expect(op.runtime?.ref).toBe("@agentproto/adapter-hermes#hermes")
+    expect(op.runtime?.session?.mode).toBe("persistent")
+    expect(Object.isFrozen(op.runtime)).toBe(true)
+    expect(Object.isFrozen(op.runtime?.session)).toBe(true)
+  })
+
+  it("rejects runtime.kind=agent-cli without a ref", () => {
+    expect(() =>
+      defineOperator({
+        ...MINIMAL,
+        runtime: { kind: "agent-cli" },
+      }),
+    ).toThrow(/runtime.kind='agent-cli' requires runtime.ref/)
+  })
+})
+
 describe("defineOperator — skills + tools accept ref shapes", () => {
   it("accepts string and object skill refs", () => {
     const op = defineOperator({

@@ -137,3 +137,61 @@ export interface AuthBlock {
 }
 
 export type StorageHandle = Readonly<StorageDefinition>
+
+// ── AIP-43 runtime slots ────────────────────────────────────────────
+//
+// `factory` + `capabilities` are HOST-OPAQUE TS-runtime slots — they
+// only exist when `defineStorage(...)` is called from TypeScript code
+// (vs. parsed from a STORAGE.md manifest). Manifests round-trip
+// through YAML and can't carry function values, so these fields are
+// stripped from any STORAGE.md serialisation. Hosts that want to
+// catalog handles via @agentproto/registry consume them directly off
+// the returned `StorageRuntimeHandle`.
+//
+// `factory` is fully host-typed — agentproto stays agnostic to what
+// "a filesystem" means at runtime (Mastra `MastraFilesystem`,
+// `@guilde/...` adapters, MCP-tool surfaces). The TFactory generic is
+// the host's choice.
+//
+// `capabilities` is opaque — agentproto neither validates nor reads
+// it. The registry uses it for cross-handle lookup queries (per
+// AIP-43 § Capability metadata namespace).
+
+/**
+ * In-TS authoring shape — what callers pass to `defineStorage(...)`
+ * when constructing a handle programmatically (vs. parsing one from
+ * STORAGE.md). Extends `StorageDefinition` with two optional
+ * host-runtime slots that don't exist in the manifest schema.
+ */
+export interface StorageRuntimeInput<
+  TFactory = unknown,
+  TCapabilities extends Record<string, unknown> = Record<string, unknown>,
+> extends StorageDefinition {
+  /**
+   * Host-typed factory function. Given config (and optionally a host-
+   * specific input bundle), returns a usable filesystem implementation
+   * in whatever shape the host expects (Mastra `MastraFilesystem`,
+   * MCP client, etc). The slot is opaque to agentproto; the host owns
+   * the type.
+   */
+  factory?: TFactory
+  /**
+   * Free-form metadata the registry indexes for cross-handle lookups.
+   * Suggested namespace conventions live in the AIP-43 § Capability
+   * metadata namespace section; the schema is otherwise unconstrained.
+   */
+  capabilities?: TCapabilities
+}
+
+/**
+ * What `defineStorage(...)` returns. Carries `factory` + `capabilities`
+ * through unchanged so registry consumers and host code can read them
+ * off the handle.
+ */
+export type StorageRuntimeHandle<
+  TFactory = unknown,
+  TCapabilities extends Record<string, unknown> = Record<string, unknown>,
+> = Readonly<StorageDefinition> & {
+  readonly factory?: TFactory
+  readonly capabilities?: Readonly<TCapabilities>
+}

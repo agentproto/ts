@@ -94,6 +94,18 @@ export const operatorManifestFrontmatterSchema = z.object({
       reactions: z.boolean().optional(),
     })
     .optional(),
+  runtime: z
+    .object({
+      kind: z.enum(["in-process", "agent-cli"]),
+      ref: z.string().optional(),
+      session: z
+        .object({
+          mode: z.enum(["ephemeral", "persistent", "resumable"]).optional(),
+          idle_timeout_ms: z.number().int().min(1000).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
   tags: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 })
@@ -138,6 +150,7 @@ export function operatorFromManifest(manifest: OperatorManifest): OperatorHandle
     governance: fm.governance,
     capabilities: fm.capabilities,
     participation: fm.participation,
+    runtime: fm.runtime,
     tags: fm.tags,
     metadata: fm.metadata,
   })

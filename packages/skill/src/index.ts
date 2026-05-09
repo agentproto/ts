@@ -11,7 +11,15 @@
  */
 
 export const SPEC_NAME = "agentskill/v1" as const
-export const SPEC_VERSION = "1.0.0-alpha" as const
+export const SPEC_VERSION = "2.0.0-alpha" as const
 
 export { defineSkill } from "./define-skill.js"
-export type { SkillDefinition, SkillHandle } from "./types.js"
+export { skillFrontmatterSchema, aip3ExtensionsSchema } from "./schema.js"
+export type { SkillFrontmatter, Aip3Extensions } from "./schema.js"
+export type {
+  SkillDefinition,
+  SkillHandle,
+  SkillVariant,
+  SkillExecution,
+  SkillExecutionLanguage,
+} from "./types.js"

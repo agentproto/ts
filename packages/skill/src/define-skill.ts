@@ -13,7 +13,10 @@ import type { SkillDefinition, SkillHandle } from "./types.js"
  * `./schema.ts` against the input. Same source of truth as the .md
  * path uses (`parseSkillManifest`), so a malformed TS-authored
  * definition fails with the same diagnostic as a malformed manifest.
- * Cross-field rules go in `validate(def)` after the zod check.
+ *
+ * Cross-field rules — variant=executable requires `metadata.aip3.execution`;
+ * variant=composite requires non-empty `metadata.aip3.uses` — run after
+ * the zod check so callers see one consistent error path.
  *
  * Identity / description extractors detected from the JSON Schema:
  *   readIdentity: def.name
@@ -32,15 +35,23 @@ export const defineSkill = createDoctype<SkillDefinition, SkillHandle>({
           .join("; ")}`,
       )
     }
-    // TODO: spec-3-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
+
+    const aip3 = result.data.metadata?.aip3
+    if (!aip3) return
+
+    const variant = aip3.variant ?? "instruction"
+    if (variant === "executable" && !aip3.execution) {
+      throw new Error(
+        "defineSkill (AIP-3): metadata.aip3.execution is required when metadata.aip3.variant=executable",
+      )
+    }
+    if (variant === "composite" && (!aip3.uses || aip3.uses.length === 0)) {
+      throw new Error(
+        "defineSkill (AIP-3): metadata.aip3.uses must be non-empty when metadata.aip3.variant=composite",
+      )
+    }
   },
   build(def) {
-    // Default build: spread the validated definition into a fresh object.
-    // Hand-tune for nested freezing (Object.freeze on arrays/objects) and
-    // for fields that need defaults applied — see @agentproto/operator
-    // for a reference shape.
     return { ...def } as SkillHandle
   },
 })

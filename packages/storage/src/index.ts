@@ -14,4 +14,9 @@ export const SPEC_NAME = "agentstorage/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineStorage } from "./define-storage.js"
-export type { StorageDefinition, StorageHandle } from "./types.js"
+export type {
+  StorageDefinition,
+  StorageHandle,
+  StorageRuntimeInput,
+  StorageRuntimeHandle,
+} from "./types.js"
