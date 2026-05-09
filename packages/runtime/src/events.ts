@@ -42,11 +42,23 @@ export interface ConvTurnEvent {
   contentPreview: string
 }
 
+/**
+ * One log line from a supervised tunnel provider (cloudflared today).
+ * Surfaced verbatim so users can debug "why didn't my remote URL come
+ * up" by tailing /events.
+ */
+export interface RemoteLogEvent {
+  type: "remote-log"
+  at: string
+  line: string
+}
+
 export type RuntimeEvent =
   | BootEvent
   | HeartbeatFiredEvent
   | HeartbeatErrorEvent
   | ConvTurnEvent
+  | RemoteLogEvent
 
 export interface RuntimeEvents {
   on<E extends RuntimeEvent["type"]>(

@@ -28,6 +28,8 @@ import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import { startHttpServer, type AuthOptions } from "./http-server.js"
+import { RemoteController } from "./remote-controller.js"
+import { registerRemoteTools } from "./remote-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -107,6 +109,21 @@ export async function createGateway(
   const conversations = fileConversationStore({ workspace })
   const workspaceFs = createWorkspaceFs({ workspace })
 
+  // Singleton controller for "publish to the internet" state. Created
+  // disabled — auth stays `mode: "none"` until `remote_enable` is
+  // called. Tunnel logs flow through the events stream so `/events`
+  // subscribers see cloudflared chatter.
+  const remote = new RemoteController({
+    workspace,
+    port,
+    onLog: line =>
+      events.emit({
+        type: "remote-log",
+        at: new Date().toISOString(),
+        line,
+      }),
+  })
+
   // Build a server once eagerly so we can capture `registered` for
   // `/health`. The server is NOT used for serving — every `/mcp`
   // request gets its own freshly-constructed pair, mirroring the
@@ -136,6 +153,10 @@ export async function createGateway(
     // pnpm, …) is reachable via `execute_command`. Allowlist lives at
     // `.agentproto/allowed-commands.json`; default-deny.
     registerCommandTools(server, { workspace })
+    // Remote-tunnel lifecycle. The controller is a singleton on the
+    // gateway, so registering its tools per-request is just rebinding
+    // the same closures — the underlying state lives in `remote`.
+    registerRemoteTools(server, { controller: remote })
     return server
   }
 
@@ -161,7 +182,17 @@ export async function createGateway(
   const http = await startHttpServer({
     port,
     bind: opts.bind,
-    auth: opts.auth,
+    // Auth is read on every request via this getter. `opts.auth`
+    // (when provided) is the startup default and represents the
+    // operator's intent — bearer-only deployments stay bearer-only
+    // even when no remote tunnel is up. The controller's auth wins
+    // once a tunnel is enabled (it issues a fresh token); on disable
+    // we fall back to `opts.auth` if set, otherwise `mode: "none"`.
+    auth: () => {
+      const remoteAuth = remote.readAuth()
+      if (remoteAuth.mode === "bearer") return remoteAuth
+      return opts.auth ?? { mode: "none" }
+    },
     mcpServerFactory,
     conversations,
     events,
@@ -198,6 +229,10 @@ export async function createGateway(
     registered,
     async stop() {
       heartbeat.stop()
+      // Tear the tunnel before the HTTP listener — otherwise cloudflared
+      // briefly proxies to a dead port and surfaces 502s to any in-flight
+      // remote client.
+      await remote.shutdown()
       await http.stop()
     },
   }

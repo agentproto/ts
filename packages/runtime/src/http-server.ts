@@ -32,10 +32,17 @@ export interface AuthOptions {
   token?: string
 }
 
+/**
+ * Auth can be a fixed value (set at startup) or a getter (re-read on
+ * every request). The getter form lets `remote_enable` flip bearer on
+ * at runtime without restarting the gateway.
+ */
+export type AuthSource = AuthOptions | (() => AuthOptions)
+
 export interface RuntimeHttpServerOptions {
   port: number
   bind?: string
-  auth?: AuthOptions
+  auth?: AuthSource
   /**
    * Per-request McpServer factory.
    *
@@ -72,10 +79,52 @@ export async function startHttpServer(
   opts: RuntimeHttpServerOptions,
 ): Promise<RuntimeHttpServerHandle> {
   const startedAt = Date.now()
-  const auth: AuthOptions = opts.auth ?? { mode: "none" }
+  const authSource: AuthSource = opts.auth ?? { mode: "none" }
+  const readAuth = (): AuthOptions =>
+    typeof authSource === "function" ? authSource() : authSource
+
+  /**
+   * Loopback bypass — requests originating from 127.0.0.1 / ::1 with
+   * no `X-Forwarded-For` header skip the bearer check even when one is
+   * configured. Rationale:
+   *
+   *   1. The bearer is meant to gate the *public tunnel*, not the
+   *      loopback socket. Without this, calling `remote_enable` from a
+   *      local MCP client immediately 401s that same local client —
+   *      the user locks themselves out and the only recovery is a
+   *      gateway restart. Hit this in real use; not a theoretical edge.
+   *
+   *   2. Cloudflared (and any reasonable tunnel) sets X-Forwarded-For
+   *      when forwarding a public request to the loopback origin. So
+   *      "loopback AND no XFF" is a tight characterisation of "this
+   *      request never left the machine."
+   *
+   *   3. Local FS access already trumps bearer (the user can read
+   *      runtime.json, kill -9 the daemon, etc.). Adding another check
+   *      here doesn't raise the bar for someone with shell on the box.
+   *
+   * If your threat model is "untrusted users on the same loopback
+   * interface" (unusual — usually a multi-tenant container scenario),
+   * pass `auth: { mode: "bearer", … }` at startup instead of relying
+   * on the controller's runtime flip; the auth getter will return the
+   * stricter of the two and the bypass still applies (intentional —
+   * the operator opted in to bearer with full knowledge of the trade).
+   */
+  function isLoopback(req: IncomingMessage): boolean {
+    const addr = req.socket.remoteAddress ?? ""
+    const isLocalAddr =
+      addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1"
+    if (!isLocalAddr) return false
+    // X-Forwarded-For present ⇒ a tunnel is in front of us; the
+    // request crossed the public internet to reach this socket.
+    if (req.headers["x-forwarded-for"]) return false
+    return true
+  }
 
   function authorize(req: IncomingMessage, res: ServerResponse): boolean {
+    const auth = readAuth()
     if (auth.mode === "none") return true
+    if (isLoopback(req)) return true
     const header = req.headers.authorization
     const expected = `Bearer ${auth.token}`
     if (header !== expected) {
@@ -216,6 +265,17 @@ export async function startHttpServer(
       try {
         const url = req.url ?? "/"
         const path = url.split("?")[0] ?? "/"
+        // Diagnostic: emit forwarded requests (those carrying XFF) onto
+        // the events stream so /events tailers can see what cloudflared
+        // actually sends. Loopback-only traffic stays quiet to avoid
+        // flooding subscribers during normal local use.
+        if (req.headers["x-forwarded-for"]) {
+          opts.events.emit({
+            type: "remote-log",
+            at: new Date().toISOString(),
+            line: `[http-in] ${req.method} ${url} host=${req.headers.host ?? "?"} xff=${String(req.headers["x-forwarded-for"])}`,
+          })
+        }
 
         applyCors(req, res)
         if (req.method === "OPTIONS") {
