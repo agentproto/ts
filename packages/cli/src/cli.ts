@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+/**
+ * `agentproto` — the binary entry. Three verbs:
+ *
+ *   agentproto install <slug>            install an adapter's underlying CLI
+ *   agentproto run <slug> [--cwd <dir>]  spawn the adapter and stream a turn
+ *   agentproto serve --connect <url>     daemon — relay spawns over WS
+ *
+ * Adapter slugs resolve through the registry (see ./registry/resolve.ts).
+ * Out of the box we ship `claude-code`, `hermes` etc. via npm-installed
+ * `@agentproto/adapter-<slug>` packages.
+ *
+ * argv handling: we identify the verb manually (first non-flag token)
+ * and hand the rest verbatim to the verb's parser. Going through one
+ * top-level parseArgs would either need to know every flag of every
+ * verb up front (lossy) or use `strict: false` (which then eats verb
+ * flags as positionals — see commit history for the bug this caused).
+ */
+
+import { runAuth } from "./commands/auth.js"
+import { runInstall } from "./commands/install.js"
+import { runSetupCommand } from "./commands/setup.js"
+import { runRun } from "./commands/run.js"
+import { runServe } from "./commands/serve.js"
+import { runWorkspace } from "./commands/workspace.js"
+import { runSessions } from "./commands/sessions.js"
+
+const USAGE = `agentproto — AIP-45 agent CLI host
+
+Usage:
+  agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
+  agentproto install   <slug> [--force] [--dry-run] [--skip-setup]
+  agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
+  agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
+  agentproto serve     [--workspace <dir>] [--port <n>] [--bind <ip>]
+                       [--connect <url> [--token <jwt>] [--label <name>]]
+  agentproto workspace <add|list|remove|use> [args]
+  agentproto sessions  [--watch] [--attach <id>] [--json]
+  agentproto --help
+  agentproto --version
+
+Examples:
+  agentproto auth login --host wss://guilde.work     # device flow → ~/.agentproto/credentials.json
+  agentproto install claude-code
+  agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
+  agentproto run claude-code --cwd . --prompt "summarise this repo"
+  agentproto workspace add ~/code/my-project --slug my-project
+  agentproto workspace list
+  agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+`
+
+const VERBS = new Set([
+  "auth",
+  "install",
+  "setup",
+  "run",
+  "serve",
+  "workspace",
+  "sessions",
+])
+
+async function main(argv: readonly string[]): Promise<number> {
+  // Find the verb — first token that matches a known verb. Anything
+  // before it is a top-level flag (--help/--version); anything after
+  // is forwarded to the verb's own parser.
+  const verbIdx = argv.findIndex((a) => VERBS.has(a))
+
+  if (verbIdx === -1) {
+    if (argv.includes("--version") || argv.includes("-v")) {
+      process.stdout.write("agentproto 0.1.0-alpha\n")
+      return 0
+    }
+    if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {
+      process.stdout.write(USAGE)
+      return 0
+    }
+    process.stderr.write(
+      `agentproto: unrecognised argument(s): ${argv.join(" ")}\n\n${USAGE}`
+    )
+    return 2
+  }
+
+  const verb = argv[verbIdx]
+  const rest = argv.slice(verbIdx + 1)
+
+  switch (verb) {
+    case "auth":
+      return runAuth(rest)
+    case "install":
+      return runInstall(rest)
+    case "setup":
+      return runSetupCommand(rest)
+    case "run":
+      return runRun(rest)
+    case "serve":
+      return runServe(rest)
+    case "workspace":
+      return runWorkspace(rest)
+    case "sessions":
+      return runSessions(rest)
+    default:
+      // Unreachable — VERBS membership checked above.
+      process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
+      return 2
+  }
+}
+
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code
+  },
+  (err: unknown) => {
+    const msg = err instanceof Error ? err.stack ?? err.message : String(err)
+    process.stderr.write(`agentproto: ${msg}\n`)
+    process.exitCode = 1
+  }
+)
