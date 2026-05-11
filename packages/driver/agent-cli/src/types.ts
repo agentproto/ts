@@ -54,6 +54,91 @@ export interface AgentCliAuth {
   expiry?: { parse?: string; grace_s?: number }
 }
 
+/**
+ * Re-runnable health check that, when matching, skips the enclosing
+ * setup step. Lets `agentproto setup <slug>` re-runs be idempotent
+ * without storing extra completion-ledger state — when the cmd's
+ * exit code matches `exit_code` (default 0), the step is treated as
+ * already satisfied and the host moves on.
+ */
+export interface AgentCliSetupSkipIf {
+  cmd: string
+  exit_code?: number
+  timeout_ms?: number
+}
+
+/**
+ * Where a setup step's captured value lands so the runner can reuse
+ * it on every spawn. Exactly one of the three forms — env / secret /
+ * cmd — applies.
+ */
+export type AgentCliSetupPersist =
+  | {
+      /** Env var the runner injects on every spawn (lifted from the
+       *  workspace secrets store, never logged). */
+      env: string
+      secret_slug?: never
+      cmd?: never
+    }
+  | {
+      env?: never
+      /** AIP-19 secret slug to write the value into. */
+      secret_slug: string
+      cmd?: never
+    }
+  | {
+      env?: never
+      secret_slug?: never
+      /** Run this command with `${value}` substituted by the captured
+       *  value. Use for CLIs that expect their own config command
+       *  (e.g. `openclaw config set gateway.remote.token ${value}`). */
+      cmd: string
+    }
+
+/**
+ * AIP-29 § Setup — one step in the post-install configuration
+ * pipeline. Discriminated by `kind`; the host runs steps in declared
+ * order and persists completion per (bundle.id, workspace.id, user.id).
+ */
+export type AgentCliSetupStep =
+  | {
+      id: string
+      kind: "cmd"
+      cmd: string
+      description?: string
+      skip_if?: AgentCliSetupSkipIf
+      timeout_ms?: number
+      interactive?: boolean
+      persist?: AgentCliSetupPersist
+    }
+  | {
+      id: string
+      kind: "prompt"
+      prompt: string
+      description?: string
+      type?: "text" | "select" | "boolean" | "secret"
+      default?: string
+      options?: string[] | { cmd: string; timeout_ms?: number }
+      skip_if?: AgentCliSetupSkipIf
+      persist?: AgentCliSetupPersist
+    }
+  | {
+      id: string
+      kind: "oauth"
+      secret_slug: string
+      description?: string
+      skip_if?: AgentCliSetupSkipIf
+    }
+  | {
+      id: string
+      kind: "external"
+      url: string
+      description?: string
+      callback?: { param?: string; timeout_ms?: number }
+      skip_if?: AgentCliSetupSkipIf
+      persist?: AgentCliSetupPersist
+    }
+
 export interface AgentCliSession {
   mode?: AgentCliSessionMode
   idle_timeout_ms?: number
@@ -76,6 +161,101 @@ export interface AgentCliCapabilities {
   resumable?: boolean
   bidirectional?: boolean
 }
+
+/**
+ * AIP-45 mode declaration — a mutually-exclusive operation profile
+ * the CLI exposes. The host picks at most ONE mode per turn via
+ * `OPERATOR.runtime.config.mode`. Mode patches apply AFTER the
+ * manifest's default `bin_args` and BEFORE option patches.
+ */
+export interface AgentCliMode {
+  id: string
+  description?: string
+  bin_args_append?: string[]
+  env?: Record<string, string>
+}
+
+export type AgentCliOptionType = "boolean" | "integer" | "string" | "enum"
+
+/**
+ * AIP-45 option declaration — an independent typed knob. Multiple
+ * options may be active per turn; each option's patch is independent
+ * and applied in declaration order, AFTER mode patches.
+ */
+export interface AgentCliOption {
+  id: string
+  type: AgentCliOptionType
+  description?: string
+  /** Required when type === "enum". */
+  enum?: string[]
+  default?: boolean | number | string
+  /** Inclusive lower bound when type === "integer". */
+  min?: number
+  /** Inclusive upper bound when type === "integer". */
+  max?: number
+  /**
+   * Argv template appended when the option has a non-default value.
+   * The literal token `{value}` is replaced with the option's value
+   * (stringified). Use for value-bearing flags like `--model {value}`.
+   */
+  bin_args_template?: string[]
+  /**
+   * Argv appended when type === "boolean" AND value === true. Use for
+   * bare flags like `--auto`.
+   */
+  bin_args_append_when_true?: string[]
+  /**
+   * Env vars to merge when the option has a non-default value. Values
+   * may contain `{value}` for templating.
+   */
+  env?: Record<string, string>
+}
+
+/**
+ * Built-in continuation strategy ids. Future custom strategies require
+ * a follow-up AIP that opens this enum. Keep this in lockstep with
+ * `continuationStrategyId` in `AGENT-CLI.schema.json`.
+ */
+export type ContinuationStrategyId =
+  | "none"
+  | "pinned-session"
+  | "transcript"
+  | "native-resume"
+
+/**
+ * AIP-45 continuation declaration — declares HOW prior turns reach the
+ * CLI on subsequent invocations. Hosts MUST refuse to dispatch with a
+ * strategy outside `supported`; the operator MAY override `default` via
+ * `OPERATOR.runtime.config.continuation` provided the chosen id is in
+ * `supported`.
+ */
+export interface AgentCliContinuation {
+  default: ContinuationStrategyId
+  supported: ContinuationStrategyId[]
+  pinned_session?: AgentCliPinnedSessionTuning
+}
+
+/** Tuning for the `pinned-session` strategy. Ignored by other strategies. */
+export interface AgentCliPinnedSessionTuning {
+  /** How long an idle pinned session is kept alive before the driver
+   *  closes it. Applies in addition to the CLI's own
+   *  `session.idle_timeout_ms`. Default 1_800_000 (30 min). */
+  idle_timeout_ms?: number
+  /**
+   * Composite key that uniquely identifies a pinned session. Default
+   * `["conversation", "operator"]` — different conversations get
+   * different child processes; one operator per conversation reuses
+   * one process across turns.
+   */
+  key_scope?: ContinuationKeyScope[]
+}
+
+export type ContinuationKeyScope =
+  | "conversation"
+  | "operator"
+  | "user"
+  | "guild"
+  | "workspace"
 
 export interface AgentCliMcpBlock {
   command?: string
@@ -106,6 +286,8 @@ export interface AgentCliDefinition {
   bin_args?: string[]
   install: AgentCliInstallMethod[]
   version_check: AgentCliVersionCheck
+  /** AIP-29 § Setup — post-install configuration pipeline. Optional. */
+  setup?: AgentCliSetupStep[]
   auth?: AgentCliAuth
   sandbox: string | Record<string, unknown>
   runner?: string | Record<string, unknown>
@@ -119,6 +301,12 @@ export interface AgentCliDefinition {
   session?: AgentCliSession
   models?: AgentCliModels
   capabilities?: AgentCliCapabilities
+  /** AIP-45 modes (mutually-exclusive operation profiles). */
+  modes?: AgentCliMode[]
+  /** AIP-45 options (independent typed knobs). */
+  options?: AgentCliOption[]
+  /** AIP-45 continuation policy (how prior turns reach the CLI). */
+  continuation?: AgentCliContinuation
   requires?: AgentCliRequires
   examples?: AgentCliExample[]
   tags?: string[]
@@ -136,6 +324,18 @@ export interface AgentCliConnectOptions {
   cwd: string
   env: Record<string, string>
   abortSignal: AbortSignal
+  /**
+   * When set, the protocol arm reattaches to the agent's existing
+   * session with this id (ACP `loadSession`, MCP equivalent, or argv
+   * `--resume`) instead of starting a fresh one. The agent decides
+   * the wire mechanics; the host is responsible for having stored the
+   * id from a prior `connect → newSession`.
+   *
+   * Drives the `native-resume` continuation strategy. Arms that don't
+   * support resume MAY ignore this field; the runner won't reject it
+   * because per-protocol semantics aren't visible at this layer.
+   */
+  resumeSessionId?: string
 }
 
 /**
@@ -149,6 +349,23 @@ export interface AgentCliClient {
   events(): AsyncIterable<StreamEvent>
   cancel(turnId: string): Promise<void>
   close(): Promise<void>
+  /**
+   * The session id the protocol arm holds. Populated after `connect()`
+   * resolves — for `newSession` calls it's whatever the agent assigned;
+   * for `loadSession` (resume) calls it's the same id the host passed
+   * in. Hosts persist this so a future cold start can resume.
+   *
+   * Empty string before connect or for protocols that don't have a
+   * session concept (proprietary one-shots).
+   */
+  readonly sessionId?: string
+  /**
+   * Diagnostic hook — returns the last N lines of the child's stderr,
+   * joined with newlines. Set by the runner after spawn; read by
+   * `promptTurn` to enrich error events with process-level context.
+   * Not part of the protocol; internal to the runner.
+   */
+  _stderrTail?: () => string
 }
 
 /**
@@ -164,6 +381,58 @@ export interface AgentCliStartOptions {
   cwd?: string
   env?: Record<string, string>
   signal?: AbortSignal
+  /**
+   * Per-turn runtime configuration — selects a manifest mode, sets
+   * options, and picks the continuation strategy. Validated against
+   * the manifest's declarations before spawn; unknown ids reject.
+   */
+  config?: RuntimeConfig
+  /**
+   * Identity context the host hands to the continuation strategy.
+   * The pinned-session strategy uses this to derive its session-pin
+   * key (per `manifest.continuation.pinned_session.key_scope`); other
+   * strategies may ignore. Hosts SHOULD always pass this when in a
+   * conversation context — without it, pinning can't be keyed and
+   * the strategy falls back to per-spawn behaviour.
+   */
+  turnCtx?: TurnContext
+  /**
+   * Reattach to an existing protocol session (ACP `loadSession`, MCP
+   * equivalent, argv `--resume`) instead of spawning fresh. The
+   * `native-resume` strategy populates this from the host's persisted
+   * (turnCtx → sessionId) lookup. Other strategies leave undefined.
+   * Forwarded verbatim to `protocolArm.connect({ resumeSessionId })`.
+   */
+  resumeSessionId?: string
+}
+
+/**
+ * Operator-side runtime configuration. Mirrors the `runtime.config`
+ * block in AIP-9 OPERATOR.md. Every field is optional; omitted fields
+ * fall back to the manifest's declared defaults.
+ */
+export interface RuntimeConfig {
+  /** Manifest-declared mode id. Unknown ids reject at validation time. */
+  mode?: string
+  /** Manifest-declared option ids → values. Type / enum / bound checked. */
+  options?: Record<string, boolean | number | string>
+  /** Continuation strategy id. Must be in `manifest.continuation.supported`. */
+  continuation?: ContinuationStrategyId
+}
+
+/**
+ * Identity scope for continuation key derivation. The host populates
+ * the fields it knows; the pinned-session strategy's `key_scope` array
+ * picks which to actually combine. Missing fields the scope asked for
+ * downgrade the strategy to per-spawn behaviour with a console warning
+ * (rather than silently colliding pins across operators / conversations).
+ */
+export interface TurnContext {
+  conversation?: string
+  operator?: string
+  user?: string
+  guild?: string
+  workspace?: string
 }
 
 export interface AgentCliRuntimeSession {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
+import { composeSpawn } from "./manifest/compose.js"
 import type {
   AgentCliClient,
   AgentCliDefinition,
@@ -68,19 +69,46 @@ export function createAgentCliRuntime(
     definition,
     async start(opts?: AgentCliStartOptions): Promise<AgentCliRuntimeSession> {
       const cwd = opts?.cwd ?? process.cwd()
+      // Compose final argv + env from the manifest + per-call config.
+      // Mode patches and option patches land BEFORE the host-provided
+      // env so an operator-set option can be observed by the CLI even
+      // when the manifest also touches the same env key (operator
+      // intent wins). Validation runs here too — a misconfigured
+      // operator throws RuntimeConfigError before we exec anything.
+      const composed = composeSpawn(definition, opts?.config)
       const env: Record<string, string> = {
         ...filterStringEnv(process.env),
+        ...composed.env,
         ...(opts?.env ?? {}),
       }
 
-      const child = spawn(definition.bin, definition.bin_args ?? [], {
+      const child = spawn(definition.bin, composed.binArgs, {
         cwd,
         env,
         stdio: ["pipe", "pipe", "pipe"],
         signal: opts?.signal,
       })
 
+      // Drain child.stderr — without this the kernel pipe buffer
+      // (~64 KB on macOS / Linux) eventually fills up and blocks the
+      // child mid-write, hanging the entire ACP exchange. Buffer the
+      // last few KB so a downstream error event can attach the tail
+      // for debugging — adapters like claude-agent-acp print useful
+      // context here ("not authenticated", "model gated") that the
+      // JSON-RPC reply would otherwise reduce to "Invalid params".
+      const stderrBuf: string[] = []
+      const STDERR_KEEP_LINES = 80
+      child.stderr?.setEncoding("utf8")
+      child.stderr?.on("data", (chunk: string) => {
+        for (const line of chunk.split(/\r?\n/)) {
+          if (!line) continue
+          stderrBuf.push(line)
+          if (stderrBuf.length > STDERR_KEEP_LINES) stderrBuf.shift()
+        }
+      })
+
       const arm = buildProtocolArm(definition, child, cwd)
+      arm._stderrTail = () => stderrBuf.join("\n")
 
       const abortController = new AbortController()
       if (opts?.signal) {
@@ -92,9 +120,16 @@ export function createAgentCliRuntime(
         cwd,
         env,
         abortSignal: abortController.signal,
+        ...(opts?.resumeSessionId
+          ? { resumeSessionId: opts.resumeSessionId }
+          : {}),
       })
 
-      const sessionId = randomUUID()
+      // Prefer the protocol-layer session id (ACP, etc.) so the host
+      // can persist it for a future native-resume. Fall back to a
+      // random UUID for protocols that don't model sessions — keeps
+      // the field always-populated for downstream loggers.
+      const sessionId = arm.sessionId ?? randomUUID()
 
       return {
         sessionId,
@@ -120,7 +155,22 @@ async function* promptTurn(
   message: unknown,
 ): AsyncIterable<StreamEvent> {
   await arm.send(turnId, message)
-  for await (const evt of arm.events()) yield evt
+  // Re-attach the recent stderr tail to error events. The ACP layer
+  // surfaces a terse `{message: "Invalid params"}`; the child's
+  // stderr almost always has a more useful line ("npx claude-agent-acp:
+  // not authenticated, run `claude login`"). Hosts read `error.data`
+  // when present, falling back to `message` for older payloads.
+  const stderrTail = arm._stderrTail
+  for await (const evt of arm.events()) {
+    if (evt.kind === "error" && typeof stderrTail === "function") {
+      const tail = stderrTail()
+      if (tail) {
+        const existing = (evt.error.data ?? {}) as Record<string, unknown>
+        evt.error.data = { ...existing, stderr: tail }
+      }
+    }
+    yield evt
+  }
 }
 
 function buildProtocolArm(
