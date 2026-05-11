@@ -22,7 +22,7 @@ import { filterSerializable } from "@agentproto/define-doctype"
 import matter from "gray-matter"
 import type { Dirent } from "node:fs"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 
 /**
  * Per-package descriptor consumed by `createVerbs`.
@@ -300,6 +300,3 @@ function defaultBody<P, H>(
   return `# ${id}\n`
 }
 
-// `relative` is imported but currently unused; re-export so consumers
-// can build their own path utilities on top without a node:path dep.
-export { relative as relativePath, resolve as resolvePath }

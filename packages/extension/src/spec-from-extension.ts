@@ -146,7 +146,6 @@ function verifyTightening<
   // `extension.tighten` against itself for self-consistency. Full
   // parent-vs-extension monotonicity verification belongs to a future
   // version once parent specs expose `schema:` introspection.
-  const _parent = parent
   const t = extension.tighten ?? {}
   for (const [field, override] of Object.entries(t)) {
     if (
