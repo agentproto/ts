@@ -10,6 +10,7 @@ export default createTsupConfig({
     conversations: "src/conversations.ts",
     heartbeat: "src/heartbeat.ts",
     "workspace-fs": "src/workspace-fs.ts",
+    "workspaces-config": "src/workspaces-config.ts",
   },
   format: ["esm"],
   splitting: false,

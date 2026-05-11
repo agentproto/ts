@@ -48,6 +48,23 @@ export interface AcpClient {
     cwd: string
     mcpServers?: unknown[]
   }): Promise<AcpClientSession>
+  /**
+   * Reattach to an existing session by id. Available only when the
+   * agent advertised `loadSession: true` in its capabilities (callers
+   * should check `agentCapabilities` first; we forward the SDK error
+   * verbatim if they don't).
+   *
+   * Drives the AIP-45 native-resume continuation strategy: the host
+   * persists the `sessionId` returned by `newSession`, then on a
+   * cold start (process restart, fresh sandbox, different machine)
+   * spawns a new subprocess and calls `loadSession` to pick up
+   * the conversation from the stored history.
+   */
+  loadSession(params: {
+    sessionId: string
+    cwd: string
+    mcpServers?: unknown[]
+  }): Promise<AcpClientSession>
   close(): Promise<void>
 }
 
@@ -110,6 +127,26 @@ export async function createAcpClient(
       }
       sessions.set(sessionId, state)
       return buildSession(connection, sessionId, state, sessions)
+    },
+    async loadSession(params) {
+      // SDK returns `LoadSessionResponse` (no body fields we need); the
+      // sessionId is what the caller already provided. We register a
+      // fresh `SessionState` so subsequent `prompt` calls have a slot
+      // to flush events into — same lifecycle shape as a brand-new
+      // session.
+      await connection.loadSession({
+        sessionId: params.sessionId,
+        cwd: params.cwd,
+        mcpServers: (params.mcpServers ?? []) as never,
+      } as never)
+      const state: SessionState = {
+        events: [],
+        resolveNext: null,
+        done: false,
+        active: false,
+      }
+      sessions.set(params.sessionId, state)
+      return buildSession(connection, params.sessionId, state, sessions)
     },
     async close() {
       sessions.clear()

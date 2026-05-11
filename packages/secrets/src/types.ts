@@ -5,7 +5,15 @@
  * `resources/aip-19/draft/SECRETS.schema.json` via json-schema-to-typescript.
  * `SecretsHandle` is the readonly view of the same shape; tighten it
  * by hand for fields that get defaults applied in build().
+ *
+ * The `exposures` field on each entry was added by hand (not regen'd
+ * yet) — runtime exposure descriptors live in `./exposure/types.ts` so
+ * they can be consumed independently by hosts that don't need the
+ * full SECRETS.md doctype machinery (Guilde's connector registry,
+ * @agentproto/egress's proxy core).
  */
+
+import type { SecretExposure } from "./exposure/types.js"
 
 export type SecretEntry = {
   [k: string]: unknown
@@ -30,6 +38,15 @@ export type SecretEntry = {
   metadata?: {
     [k: string]: unknown
   }
+  /**
+   * How this secret is exposed to the runtime that consumes it (env,
+   * file, egress placeholder, future MCP-header / HTTP-bearer / etc.).
+   * Optional — hosts MAY honor or remap based on their own catalog.
+   * Discriminated by `kind`; consumers ignore unknown kinds.
+   *
+   * See `@agentproto/secrets/exposure` for the variant types.
+   */
+  exposures?: SecretExposure[]
 } & {
   /**
    * Machine identifier. Lowercase, digits, dashes; optional <namespace>/ prefix. 2–80 chars total. Unique within the workspace inventory.
@@ -51,6 +68,15 @@ export type SecretEntry = {
   metadata?: {
     [k: string]: unknown
   }
+  /**
+   * How this secret is exposed to the runtime that consumes it (env,
+   * file, egress placeholder, future MCP-header / HTTP-bearer / etc.).
+   * Optional — hosts MAY honor or remap based on their own catalog.
+   * Discriminated by `kind`; consumers ignore unknown kinds.
+   *
+   * See `@agentproto/secrets/exposure` for the variant types.
+   */
+  exposures?: SecretExposure[]
 }
 /**
  * A single access-grant entry. Exactly ONE of role/userId/cap/tool/workflow.

@@ -10,6 +10,7 @@ export default createTsupConfig({
     "manifest/index": "src/manifest/index.ts",
     "client/index": "src/client/index.ts",
     "server/index": "src/server/index.ts",
+    "tunnel/index": "src/tunnel/index.ts",
   },
   format: ["esm"],
   splitting: true,

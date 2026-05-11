@@ -26,8 +26,32 @@ import { registerCommandTools } from "./command-tools.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
+import { registerSessionTools } from "./session-tools.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
-import { startHttpServer, type AuthOptions } from "./http-server.js"
+import {
+  startHttpServer,
+  type AuthOptions,
+  type AgentAdapterResolver,
+  type AgentAdapterLister,
+} from "./http-server.js"
+import { createSessionsRegistry, type SessionsRegistry } from "./sessions.js"
+import { McpProxyRegistry } from "./mcp-proxy.js"
+
+export type {
+  AgentAdapterResolver,
+  AgentAdapterLister,
+  AdapterListEntry,
+} from "./http-server.js"
+export type {
+  AgentSessionLike,
+  AgentStreamEvent,
+  SessionDescriptor,
+  SessionKind,
+  SessionStatus,
+  SpawnSessionInput,
+  SpawnAgentInput,
+  SessionsRegistry,
+} from "./sessions.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -74,6 +98,15 @@ export interface CreateGatewayOptions {
   boot?: boolean
   /** Agent id used for BOOT.md if no per-file frontmatter. */
   defaultBootAgent?: string
+  /** Optional adapter resolver — when provided, enables
+   *  `POST /sessions/agent` (long-running agent CLIs like
+   *  claude-code / hermes via the @agentproto/cli adapter system).
+   *  Without this, /sessions still works for raw `argv` spawns. */
+  resolveAgentAdapter?: AgentAdapterResolver
+  /** Optional adapter lister — when provided, enables
+   *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
+   *  can discover what's installed on the host. */
+  listAgentAdapters?: AgentAdapterLister
 }
 
 export interface GatewayHandle {
@@ -81,6 +114,10 @@ export interface GatewayHandle {
   workspace: string
   workspaceFs: WorkspaceFs
   registered: readonly string[]
+  /** Sessions registry — exposed so MCP tools / external spawners
+   *  inside the same process can register their child processes for
+   *  visibility through /sessions and the CLI TUI. */
+  sessions: SessionsRegistry
   stop(): Promise<void>
 }
 
@@ -136,6 +173,19 @@ export async function createGateway(
     version: opts.version ?? "0.1.0-alpha",
   })
 
+  // Sessions registry — single instance per gateway, captured by
+  // the per-request mcpServerFactory closure below + handed to
+  // startHttpServer for the /sessions HTTP routes. Declared here
+  // (above the factory) so its identifier is visible at closure-
+  // build time, even though the factory only invokes later.
+  const sessions = createSessionsRegistry()
+
+  // MCP proxy — single registry that holds open Client connections
+  // to every imported MCP server. The per-request mcpServerFactory
+  // captures it so each /mcp request reuses the same upstream
+  // sessions instead of re-spawning stdio children.
+  const mcpProxy = new McpProxyRegistry()
+
   const mcpServerFactory = async () => {
     const { server } = await createMcpServer({
       specs: opts.specs,
@@ -157,6 +207,21 @@ export async function createGateway(
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
     registerRemoteTools(server, { controller: remote })
+    // Agent-session orchestration — operators (Mastra agents in
+    // cloud Guilde, Claude Code as a sub-agent, …) drive long-running
+    // claude/hermes/aider sessions on the user's machine through
+    // these MCP tools. The registry + adapter resolver are
+    // singletons on the gateway, same closure-rebind pattern.
+    registerSessionTools(server, {
+      registry: sessions,
+      mcpProxy,
+      ...(opts.resolveAgentAdapter
+        ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+        : {}),
+      ...(opts.listAgentAdapters
+        ? { listAgentAdapters: opts.listAgentAdapters }
+        : {}),
+    })
     return server
   }
 
@@ -197,6 +262,14 @@ export async function createGateway(
     conversations,
     events,
     heartbeat,
+    sessions,
+    mcpProxy,
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
+    ...(opts.listAgentAdapters
+      ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
     meta: { workspace, registered },
   })
 
@@ -227,8 +300,16 @@ export async function createGateway(
     workspace,
     workspaceFs,
     registered,
+    sessions,
     async stop() {
       heartbeat.stop()
+      // Kill all live sessions before tearing down HTTP — otherwise
+      // long-running children inherit the daemon's listening socket
+      // and stay around as zombies after the parent exits.
+      sessions.shutdown()
+      // Close upstream MCP clients (their stdio children would
+      // otherwise leak the same way).
+      await mcpProxy.closeAll()
       // Tear the tunnel before the HTTP listener — otherwise cloudflared
       // briefly proxies to a dead port and surfaces 502s to any in-flight
       // remote client.

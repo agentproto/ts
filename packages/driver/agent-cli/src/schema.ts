@@ -21,6 +21,23 @@ const TAG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SEMVER_RANGE_PATTERN = /^[><=^~ \d.\-+\w*xX|, ]+$/
 const ADAPTER_PATTERN = /^@?[a-z0-9][a-z0-9-./]*$/
 const BIN_PATTERN = /^[A-Za-z0-9._\-/]+$/
+const MODE_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+const OPTION_ID_PATTERN = /^[a-z0-9][a-z0-9_]{0,63}$/
+
+const CONTINUATION_STRATEGY_IDS = [
+  "none",
+  "pinned-session",
+  "transcript",
+  "native-resume",
+] as const
+
+const CONTINUATION_KEY_SCOPES = [
+  "conversation",
+  "operator",
+  "user",
+  "guild",
+  "workspace",
+] as const
 
 // AIP-29 install methods, mirrored locally to avoid a runtime cross-package import.
 // Schema-level $ref to AIP-29 is preserved on the JSON Schema side
@@ -61,6 +78,104 @@ const versionCheckSchema = z.object({
   range: z.string().regex(SEMVER_RANGE_PATTERN).describe("npm-style semver range."),
   timeout_ms: z.number().int().min(100).default(5000),
 }).strict()
+
+const SETUP_STEP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+const SECRET_SLUG_PATTERN = /^([a-z][a-z0-9-]*[a-z0-9]\/)?[a-z][a-z0-9-]*[a-z0-9]$/
+
+// `skip_if`: re-runnable health check that, when matching, skips the
+// enclosing setup step. Lets `agentproto setup <slug>` re-runs be
+// idempotent without external completion-ledger state.
+const skipIfSchema = z
+  .object({
+    cmd: z.string(),
+    exit_code: z.number().int().default(0),
+    timeout_ms: z.number().int().min(100).default(5_000),
+  })
+  .strict()
+
+// `persist`: where the captured value lands so the runner can reuse
+// it on every spawn. Exactly one of env / secret_slug / cmd, enforced
+// via discriminated union.
+const persistEnvSchema = z
+  .object({ env: z.string().regex(/^[A-Z][A-Z0-9_]*$/) })
+  .strict()
+const persistSecretSchema = z
+  .object({ secret_slug: z.string().regex(SECRET_SLUG_PATTERN).min(2).max(80) })
+  .strict()
+const persistCmdSchema = z.object({ cmd: z.string() }).strict()
+const setupPersistSchema = z.union([
+  persistEnvSchema,
+  persistSecretSchema,
+  persistCmdSchema,
+])
+
+// AIP-29 § Setup. Mirrors `resources/aip-29/draft/CLI.schema.json#/$defs/setupStep`.
+// The runner runs steps in declared order, persists completion per
+// (bundle.id, workspace.id, user.id), and surfaces `setup_required`
+// to headless callers when steps remain pending.
+const setupStepSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      id: z.string().regex(SETUP_STEP_ID_PATTERN),
+      kind: z.literal("cmd"),
+      cmd: z.string(),
+      description: z.string().max(2000).optional(),
+      skip_if: skipIfSchema.optional(),
+      timeout_ms: z.number().int().min(100).default(60_000),
+      interactive: z.boolean().default(false),
+      persist: setupPersistSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().regex(SETUP_STEP_ID_PATTERN),
+      kind: z.literal("prompt"),
+      prompt: z.string().min(1),
+      description: z.string().max(2000).optional(),
+      type: z.enum(["text", "select", "boolean", "secret"]).default("text"),
+      default: z.string().optional(),
+      options: z
+        .union([
+          z.array(z.string().min(1)).min(1),
+          z
+            .object({
+              cmd: z.string(),
+              timeout_ms: z.number().int().min(100).default(30_000),
+            })
+            .strict(),
+        ])
+        .optional(),
+      skip_if: skipIfSchema.optional(),
+      persist: setupPersistSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().regex(SETUP_STEP_ID_PATTERN),
+      kind: z.literal("oauth"),
+      secret_slug: z.string().regex(SECRET_SLUG_PATTERN).min(2).max(80),
+      description: z.string().max(2000).optional(),
+      skip_if: skipIfSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().regex(SETUP_STEP_ID_PATTERN),
+      kind: z.literal("external"),
+      url: z.string().url(),
+      description: z.string().max(2000).optional(),
+      callback: z
+        .object({
+          param: z.string().min(1).optional(),
+          timeout_ms: z.number().int().min(1_000).default(600_000),
+        })
+        .strict()
+        .optional(),
+      skip_if: skipIfSchema.optional(),
+      persist: setupPersistSchema.optional(),
+    })
+    .strict(),
+])
 
 const authSchema = z.object({
   ref: z.string().optional(),
@@ -106,6 +221,53 @@ const capabilitiesSchema = z.object({
   bidirectional: z.boolean().optional(),
 }).strict()
 
+const modeSchema = z.object({
+  id: z.string().regex(MODE_ID_PATTERN),
+  description: z.string().optional(),
+  bin_args_append: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+}).strict()
+
+const optionSchema = z.object({
+  id: z.string().regex(OPTION_ID_PATTERN),
+  type: z.enum(["boolean", "integer", "string", "enum"]),
+  description: z.string().optional(),
+  enum: z.array(z.string()).min(1).optional(),
+  default: z.union([z.boolean(), z.number(), z.string()]).optional(),
+  min: z.number().int().optional(),
+  max: z.number().int().optional(),
+  bin_args_template: z.array(z.string()).optional(),
+  bin_args_append_when_true: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+}).strict().refine(
+  // type === "enum" REQUIRES an `enum` array. The JSON Schema enforces
+  // this via `if/then`; the zod side mirrors with a refine so both
+  // validation paths reject the same shapes.
+  o => o.type !== "enum" || (Array.isArray(o.enum) && o.enum.length > 0),
+  { message: "option.type === 'enum' requires a non-empty `enum` array" }
+)
+
+const continuationStrategyIdSchema = z.enum(CONTINUATION_STRATEGY_IDS)
+
+const continuationSchema = z.object({
+  default: continuationStrategyIdSchema,
+  supported: z.array(continuationStrategyIdSchema).min(1),
+  pinned_session: z.object({
+    idle_timeout_ms: z.number().int().min(1000).default(1_800_000),
+    key_scope: z
+      .array(z.enum(CONTINUATION_KEY_SCOPES))
+      .min(1)
+      .default(["conversation", "operator"]),
+  }).strict().optional(),
+}).strict().refine(
+  // The chosen `default` must appear in `supported` — otherwise the
+  // host has no valid strategy to fall back to.
+  c => c.supported.includes(c.default),
+  {
+    message: "continuation.default must be a member of continuation.supported",
+  }
+)
+
 const mcpBlockSchema = z.object({
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
@@ -123,6 +285,7 @@ export const agentCliFrontmatterSchema = z
     bin_args: z.array(z.string()).optional(),
     install: z.array(installMethodSchema).min(1),
     version_check: versionCheckSchema,
+    setup: z.array(setupStepSchema).optional(),
     auth: authSchema.optional(),
     sandbox: z.union([z.string(), z.record(z.string(), z.unknown())]),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
@@ -133,6 +296,9 @@ export const agentCliFrontmatterSchema = z
     session: sessionSchema.optional(),
     models: modelsSchema.optional(),
     capabilities: capabilitiesSchema.optional(),
+    modes: z.array(modeSchema).optional(),
+    options: z.array(optionSchema).optional(),
+    continuation: continuationSchema.optional(),
     requires: z.object({
       os: z.array(z.enum(["darwin", "linux", "windows"])).optional(),
       arch: z.array(z.enum(["x64", "arm64", "x86", "arm"])).optional(),
@@ -148,8 +314,82 @@ export const agentCliFrontmatterSchema = z
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
+  .superRefine((m, ctx) => {
+    // Unique mode ids — duplicates would silently shadow.
+    if (m.modes) {
+      const seen = new Set<string>()
+      for (const mode of m.modes) {
+        if (seen.has(mode.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["modes"],
+            message: `Duplicate mode id '${mode.id}' — mode ids must be unique within a manifest.`,
+          })
+        }
+        seen.add(mode.id)
+      }
+    }
+    // Unique setup step ids — duplicates would silently shadow each
+    // other in the host's completion ledger, leading to one step
+    // never re-prompting and another always re-prompting.
+    if (m.setup) {
+      const seen = new Set<string>()
+      for (const step of m.setup) {
+        if (seen.has(step.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["setup"],
+            message: `Duplicate setup step id '${step.id}' — step ids must be unique within a manifest.`,
+          })
+        }
+        seen.add(step.id)
+      }
+    }
+    // Unique option ids — same reasoning as modes.
+    if (m.options) {
+      const seen = new Set<string>()
+      for (const opt of m.options) {
+        if (seen.has(opt.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["options"],
+            message: `Duplicate option id '${opt.id}' — option ids must be unique within a manifest.`,
+          })
+        }
+        seen.add(opt.id)
+      }
+    }
+    // continuation.default === "native-resume" requires capabilities.resumable: true.
+    // Mirrors the JSON Schema's allOf rule so both validation paths
+    // reject the same shape.
+    if (
+      m.continuation?.default === "native-resume" &&
+      !m.capabilities?.resumable
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["continuation", "default"],
+        message:
+          "continuation.default === 'native-resume' requires capabilities.resumable: true.",
+      })
+    }
+  })
   .describe(
     "Validates the YAML frontmatter portion of an AIP-45 AGENT-CLI.md manifest.",
   )
 
 export type AgentCliFrontmatter = z.infer<typeof agentCliFrontmatterSchema>
+
+// Re-export the per-call config schema for hosts that want to validate
+// `OPERATOR.runtime.config` against a manifest at load time. Validation
+// against the manifest's modes/options/continuation lives in
+// `manifest/compose.ts` (the spawn-arg composer) — this schema covers
+// only the SHAPE checks (types, enum values).
+export const runtimeConfigSchema = z.object({
+  mode: z.string().optional(),
+  options: z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
+    .optional(),
+  continuation: continuationStrategyIdSchema.optional(),
+}).strict()
+
+export type RuntimeConfigInput = z.infer<typeof runtimeConfigSchema>

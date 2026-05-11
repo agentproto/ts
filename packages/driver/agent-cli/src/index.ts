@@ -25,11 +25,41 @@ export {
 // passing a `ChildProcess`-shaped duck whose stdio is bridged to a
 // remote subprocess (e2b sandbox, ssh, etc.). See guilde's
 // `cli-session-spawn/sandbox-runtime.ts` for a worked example.
-export { createAcpProtocolArm } from "./protocol/acp-client.js"
+export {
+  createAcpProtocolArm,
+  autoAllowPermissionHandler,
+  type AcpPermissionHandler,
+  type AcpPermissionOutcome,
+  type AcpPermissionRequestParams,
+} from "./protocol/acp-client.js"
 export {
   agentCliFrontmatterSchema,
+  runtimeConfigSchema,
   type AgentCliFrontmatter,
+  type RuntimeConfigInput,
 } from "./schema.js"
+export {
+  composeSpawn,
+  resolveContinuationStrategy,
+  RuntimeConfigError,
+  type ComposedSpawn,
+} from "./manifest/compose.js"
+export {
+  registerContinuationStrategy,
+  getContinuationStrategy,
+  listContinuationStrategies,
+} from "./continuation/registry.js"
+export {
+  configureNativeResume,
+  type NativeResumeHooks,
+} from "./continuation/strategies/native-resume.js"
+export {
+  deriveKeyFromScope,
+  type ContinuationStrategy,
+  type AcquireContext,
+  type ReleaseContext,
+  type ReleaseOutcome,
+} from "./continuation/types.js"
 export type {
   AgentCliDefinition,
   AgentCliHandle,
@@ -41,6 +71,23 @@ export type {
   AgentCliRuntimeSession,
   AgentCliStartOptions,
   AgentCliCapabilities,
+  AgentCliInstallMethod,
+  AgentCliVersionCheck,
+  AgentCliAuth,
+  AgentCliSetupStep,
+  AgentCliSetupSkipIf,
+  AgentCliSetupPersist,
+  AgentCliSession,
+  AgentCliModels,
   AgentCliMcpBlock,
+  AgentCliMode,
+  AgentCliOption,
+  AgentCliOptionType,
+  AgentCliContinuation,
+  AgentCliPinnedSessionTuning,
+  ContinuationStrategyId,
+  ContinuationKeyScope,
+  RuntimeConfig,
+  TurnContext,
   StreamEvent,
 } from "./types.js"
