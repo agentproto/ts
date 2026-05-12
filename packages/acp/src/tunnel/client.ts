@@ -69,6 +69,10 @@ export interface TunnelSpawnOptions {
   env?: Readonly<Record<string, string>>
   /** Allocate a PTY on the daemon. Requires `hello.capabilities.pty`. */
   pty?: boolean
+  /** Initial PTY column width (ignored when `pty` is false). Default 80. */
+  cols?: number
+  /** Initial PTY row height (ignored when `pty` is false). Default 24. */
+  rows?: number
 }
 
 /**
@@ -85,6 +89,8 @@ export interface TunnelChildProcess {
   on(event: "exit", listener: (code: number | null, signal: string | null) => void): this
   on(event: "error", listener: (err: Error) => void): this
   kill(signal?: NodeJS.Signals | number): boolean
+  /** Send a terminal resize to the daemon. No-op if the exec isn't PTY-backed. */
+  resize(cols: number, rows: number): void
 }
 
 export interface TunnelClient {
@@ -284,6 +290,7 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
         cwd: spawnOpts?.cwd,
         env: spawnOpts?.env,
         pty: spawnOpts?.pty,
+        ...(spawnOpts?.pty ? { cols: spawnOpts.cols ?? 80, rows: spawnOpts.rows ?? 24 } : {}),
       }
       const spawnedFrame = await new Promise<SpawnedFrame>(
         (resolve, reject) => {
@@ -424,5 +431,10 @@ class TunnelChildDuck extends EventEmitter implements TunnelChildProcess {
       signal: typeof signal === "string" ? signal : `SIG${signal}`,
     })
     return true
+  }
+
+  resize(cols: number, rows: number): void {
+    if (this.exited) return
+    this.sink.send({ t: "resize", execId: this.execId, cols, rows })
   }
 }

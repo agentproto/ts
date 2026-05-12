@@ -59,6 +59,9 @@
     "ws": "^8.20.0",
     "zod": "^4.4.3"
   },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
   "devDependencies": {
     "@agentproto/adapter-claude-code": "workspace:*",
     "@agentproto/adapter-hermes": "workspace:*",

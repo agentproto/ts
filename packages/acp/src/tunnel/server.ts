@@ -58,11 +58,23 @@ export interface TunnelServerOptions {
   /** User-friendly label sent in the hello frame. */
   label?: string
   /**
-   * Whether this daemon advertises PTY support. v0 always reports
-   * false — PTY allocation needs node-pty (optional dep) and we
-   * haven't wired that side yet.
+   * Whether this daemon advertises PTY support. Set to true only when
+   * `spawnPty` is also provided.
    */
   pty?: boolean
+  /**
+   * Factory for PTY-backed processes. When provided (and `pty: true`),
+   * spawn frames with `pty: true` use this instead of node:child_process.
+   * Injected from the CLI layer so the ACP package stays native-free.
+   */
+  spawnPty?: (opts: {
+    command: string
+    args: string[]
+    cwd?: string
+    env?: Record<string, string>
+    cols: number
+    rows: number
+  }) => PtyProcess
   /**
    * Optional hook fired once per successful spawn — after authorize
    * passed and the ChildProcess has emitted its `spawn` event.
@@ -82,6 +94,16 @@ export interface TunnelServerOptions {
   }) => void
 }
 
+/** Minimal PTY process surface — satisfied by node-pty's IPty. */
+export interface PtyProcess {
+  readonly pid: number
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  kill(signal?: string): void
+  onData(handler: (data: string) => void): void
+  onExit(handler: (event: { exitCode: number; signal?: number }) => void): void
+}
+
 export interface TunnelServer {
   /** Currently-live execId → ChildProcess. Read-only diagnostic. */
   readonly children: ReadonlyMap<string, ChildProcess>
@@ -91,6 +113,8 @@ export interface TunnelServer {
 
 export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   const children = new Map<string, ChildProcess>()
+  // PTY-backed processes keyed by execId (separate from pipe-based children).
+  const ptyProcs = new Map<string, PtyProcess>()
   let closed = false
 
   // Greet the host immediately so it can fail fast on version
@@ -119,6 +143,8 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     closed = true
     for (const [, child] of children) child.kill("SIGTERM")
     children.clear()
+    for (const [, pty] of ptyProcs) pty.kill()
+    ptyProcs.clear()
     offFrame()
     offClose()
   })
@@ -129,6 +155,11 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         await handleSpawn(frame)
         return
       case "stdin": {
+        const pty = ptyProcs.get(frame.execId)
+        if (pty) {
+          pty.write(Buffer.from(frame.data, "base64").toString("utf8"))
+          return
+        }
         const child = children.get(frame.execId)
         if (!child || !child.stdin) {
           opts.sink.send({
@@ -143,6 +174,11 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         return
       }
       case "kill": {
+        const pty = ptyProcs.get(frame.execId)
+        if (pty) {
+          pty.kill(frame.signal ?? "SIGTERM")
+          return
+        }
         const child = children.get(frame.execId)
         if (!child) {
           opts.sink.send({
@@ -153,15 +189,13 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
           })
           return
         }
-        // Cast: NodeJS.Signals is a string union; users may send any
-        // POSIX signal name. We trust the host.
         child.kill((frame.signal as NodeJS.Signals | undefined) ?? "SIGTERM")
         return
       }
-      case "resize":
-        // PTY resize — needs node-pty wiring. Silently no-op for now;
-        // hosts that care can check `hello.capabilities.pty`.
+      case "resize": {
+        ptyProcs.get(frame.execId)?.resize(frame.cols, frame.rows)
         return
+      }
       case "http_request":
         // Fire-and-forget — the handler emits its own http_response
         // frame (or error). Errors that escape handleHttpRequest
@@ -209,6 +243,54 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         code: "spawn_unauthorized",
         message: "Authorize hook rejected the spawn request.",
       })
+      return
+    }
+
+    // PTY path — use injected spawnPty factory when pty:true is requested.
+    if (approved.pty && opts.spawnPty) {
+      let pty: PtyProcess
+      try {
+        pty = opts.spawnPty({
+          command: approved.command,
+          args: [...approved.args],
+          cwd: approved.cwd,
+          env: approved.env ? { ...approved.env } : undefined,
+          cols: approved.cols ?? 80,
+          rows: approved.rows ?? 24,
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        opts.sink.send({ t: "error", execId: req.execId, code: "spawn_failed", message })
+        return
+      }
+
+      ptyProcs.set(req.execId, pty)
+      opts.sink.send({ t: "spawned", execId: req.execId, pid: pty.pid })
+
+      pty.onData(data => {
+        opts.sink.send({ t: "stdout", execId: req.execId, data: encodeData(data) })
+      })
+      pty.onExit(({ exitCode, signal }) => {
+        opts.sink.send({
+          t: "exit",
+          execId: req.execId,
+          code: exitCode,
+          signal: signal != null ? String(signal) : null,
+        })
+        ptyProcs.delete(req.execId)
+      })
+
+      if (opts.onChildSpawned) {
+        try {
+          // PTY processes can't be adopted as ChildProcess — pass a no-op shim
+          // so the hook fires (for session visibility) without crashing.
+          opts.onChildSpawned({
+            execId: req.execId,
+            child: { pid: pty.pid } as unknown as ChildProcess,
+            request: approved,
+          })
+        } catch { /* fire-and-forget */ }
+      }
       return
     }
 

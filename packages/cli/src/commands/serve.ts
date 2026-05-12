@@ -38,6 +38,8 @@ import { parseArgs } from "node:util"
 import { hostname, userInfo } from "node:os"
 import { resolve as resolvePath } from "node:path"
 import { promises as fs } from "node:fs"
+import { randomUUID } from "node:crypto"
+import type { PtyProcess, TunnelServerOptions } from "@agentproto/acp/tunnel"
 import {
   readHost,
   isExpired,
@@ -254,6 +256,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
     try {
       await runOneTunnel(opts, gateway, aborter.signal)
       backoffMs = opts.reconnectMinMs ?? 1_000 // success resets backoff
+      // Brief pause before reconnecting even on a clean close. This prevents
+      // an infinite reconnect fight when two daemon processes are running with
+      // the same token — each close-then-reconnect gets a minimum delay rather
+      // than spinning at CPU speed.
+      await sleep(2_000, aborter.signal)
     } catch (err) {
       if (aborter.signal.aborted) break
       const msg = err instanceof Error ? err.message : String(err)
@@ -311,10 +318,28 @@ async function runOneTunnel(
   process.stderr.write(`agentproto serve: tunnel up.\n`)
 
   const sink: FrameSink = wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
+
+  // Keep-alive: Cloud Run (and most reverse-proxies) close idle WebSocket
+  // connections after ~5 minutes. Send a ping every 30s so the connection
+  // stays alive between infrequent agent calls.
+  const keepaliveInterval = setInterval(() => {
+    try {
+      sink.send({ t: "ping", nonce: randomUUID() })
+    } catch {
+      // sink already closing — the onClose handler below will clear us
+    }
+  }, 30_000)
+
+  const spawnPty = await loadNodePtyFactory()
+  if (spawnPty) {
+    process.stderr.write(`agentproto serve: PTY support enabled (node-pty).\n`)
+  }
+
   const server = createTunnelServer({
     sink,
     label: opts.label,
-    pty: false,
+    pty: spawnPty !== null,
+    ...(spawnPty ? { spawnPty } : {}),
     // Generic HTTP-relay upstream for tunnel `http_request` frames.
     // Cloud-side callers (e.g. the API's local-daemon filesystem
     // provider) can now route MCP JSON-RPC + any other HTTP through
@@ -346,18 +371,52 @@ async function runOneTunnel(
   // Block until the sink closes (peer disconnect or our shutdown).
   await new Promise<void>(resolve => {
     const offClose = sink.onClose(() => {
+      clearInterval(keepaliveInterval)
       offClose()
       resolve()
     })
     if (signal.aborted) {
+      clearInterval(keepaliveInterval)
       server.close().finally(() => resolve())
     }
     signal.addEventListener("abort", () => {
+      clearInterval(keepaliveInterval)
       server.close().finally(() => resolve())
     })
   })
 
   process.stderr.write(`agentproto serve: tunnel closed.\n`)
+}
+
+/** Try to load node-pty. Returns null when the optional dep isn't installed. */
+async function loadNodePtyFactory(): Promise<TunnelServerOptions["spawnPty"] | null> {
+  try {
+    const nodePtyMod = await import("node-pty")
+    // node-pty is CJS — `import()` wraps the module under `.default` in ESM.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nodePty = (nodePtyMod as any).default ?? nodePtyMod
+    if (typeof nodePty.spawn !== "function") return null
+    return (opts) => {
+      const pty = nodePty.spawn(opts.command, opts.args, {
+        name: "xterm-256color",
+        cols: opts.cols,
+        rows: opts.rows,
+        cwd: opts.cwd,
+        env: { ...(process.env as Record<string, string>), ...(opts.env ?? {}) },
+      })
+      const proc: PtyProcess = {
+        get pid() { return pty.pid },
+        write(data: string) { pty.write(data) },
+        resize(cols: number, rows: number) { pty.resize(cols, rows) },
+        kill(signal?: string) { pty.kill(signal) },
+        onData(handler: (data: string) => void) { pty.onData(handler) },
+        onExit(handler: (event: { exitCode: number; signal?: number }) => void) { pty.onExit(handler) },
+      }
+      return proc
+    }
+  } catch {
+    return null
+  }
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

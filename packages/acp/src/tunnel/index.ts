@@ -34,6 +34,7 @@ export {
   createTunnelServer,
   type TunnelServer,
   type TunnelServerOptions,
+  type PtyProcess,
 } from "./server.js"
 
 export {

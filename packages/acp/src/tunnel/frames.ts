@@ -82,6 +82,10 @@ export interface SpawnFrame {
    * line-delimited JSON-RPC.
    */
   pty?: boolean
+  /** Initial PTY column width. Ignored when `pty` is false. Default 80. */
+  cols?: number
+  /** Initial PTY row height. Ignored when `pty` is false. Default 24. */
+  rows?: number
 }
 
 export interface StdinFrame {

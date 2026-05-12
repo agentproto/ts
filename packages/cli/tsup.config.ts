@@ -34,6 +34,9 @@ export default createTsupConfig({
     "node:process",
     "node:url",
     "node:util",
+    // node-pty is an optional dep with a native binary (.node). Bundling
+    // it breaks the relative-path native-binding resolution at runtime.
+    "node-pty",
   ],
   // Workspace @agentproto/* packages NOT yet on npm — bundle them
   // into cli.mjs. Once each lands on npm independently, move it to
