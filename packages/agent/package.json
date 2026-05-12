@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/agent",
   "version": "0.1.0-alpha.0",
-  "description": "@agentproto/agent \u2014 AIP-42 AGENT.md reference implementation. A markdown + frontmatter format for declaring a runnable agent \u2014 composes identity, persona, model, tools, actions, skills, workflows, runner, memory, governance, policy, and routines into a single manifest. Standalone runnable in any AIP-9 OPERATOR-conforming runtime. Body is the system prompt. Operators (AIP-9) extend AGENT with organizational context (role, company binding, dynamic per-request resolution).",
+  "description": "@agentproto/agent — AIP-42 AGENT.md reference implementation. A markdown + frontmatter format for declaring a runnable agent — composes identity, persona, model, tools, actions, skills, workflows, runner, memory, governance, policy, and routines into a single manifest. Standalone runnable in any AIP-9 OPERATOR-conforming runtime. Body is the system prompt. Operators (AIP-9) extend AGENT with organizational context (role, company binding, dynamic per-request resolution).",
   "keywords": [
     "agentproto",
     "aip-42",
@@ -58,11 +58,11 @@
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

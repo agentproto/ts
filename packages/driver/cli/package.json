@@ -2,7 +2,13 @@
   "name": "@agentproto/driver-cli",
   "version": "0.1.0-alpha.0",
   "description": "agentproto/cli-runtime — AIP-29 CLI provider specialisation. Sugar over @agentproto/driver for command-line binaries: argv templating, subprocess invocation, exit-code mapping, output parsing. v0.1 ships subprocess invocation; OS-level sandbox enforcement (network egress, fs ACLs, exec deny) is host policy and integrates with platform primitives in v0.2.",
-  "keywords": ["agentproto", "aip-29", "cli", "provider", "subprocess"],
+  "keywords": [
+    "agentproto",
+    "aip-29",
+    "cli",
+    "provider",
+    "subprocess"
+  ],
   "homepage": "https://agentproto.sh/docs/aip-29",
   "license": "MIT",
   "type": "module",
@@ -17,8 +23,14 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
@@ -34,10 +46,10 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   }
 }

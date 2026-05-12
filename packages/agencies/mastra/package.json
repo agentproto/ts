@@ -57,7 +57,7 @@
   "dependencies": {
     "@agentproto/agencies": "workspace:*",
     "@agentproto/governance": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@mastra/core": "*"
@@ -69,7 +69,7 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

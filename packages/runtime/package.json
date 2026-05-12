@@ -16,7 +16,9 @@
     "url": "https://github.com/agentproto/ts",
     "directory": "packages/runtime"
   },
-  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
   "license": "MIT",
   "type": "module",
   "main": "dist/index.mjs",
@@ -43,10 +45,21 @@
       "import": "./dist/workspace-fs.mjs",
       "default": "./dist/workspace-fs.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./workspaces-config": {
+      "types": "./dist/workspaces-config.d.ts",
+      "import": "./dist/workspaces-config.mjs",
+      "default": "./dist/workspaces-config.mjs"
+    }
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
@@ -62,11 +75,11 @@
     "@agentproto/mcp-server": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

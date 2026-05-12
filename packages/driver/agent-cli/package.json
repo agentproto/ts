@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-agent-cli",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "@agentproto/driver-agent-cli — AIP-45 AGENT-CLI.md reference implementation. Multi-protocol runner that loads an AGENT-CLI.md manifest, spawns the binary, and dispatches turns through an ACP / MCP / proprietary arm. ACP arm delegates to @agentproto/acp; emits the canonical StreamEvent taxonomy regardless of underlying protocol.",
   "keywords": [
     "agentproto",
@@ -63,11 +63,11 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

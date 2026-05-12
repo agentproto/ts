@@ -16,7 +16,9 @@
     "url": "https://github.com/agentproto/ts",
     "directory": "packages/mcp-server"
   },
-  "bugs": { "url": "https://github.com/agentproto/ts/issues" },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
   "license": "MIT",
   "type": "module",
   "main": "dist/index.mjs",
@@ -30,8 +32,14 @@
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
@@ -46,12 +54,12 @@
     "@agentproto/extension": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

@@ -57,11 +57,11 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

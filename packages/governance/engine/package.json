@@ -63,15 +63,15 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "@agentproto/governance": "workspace:*",
     "@agentproto/driver": "workspace:*",
+    "@agentproto/governance": "workspace:*",
     "@agentproto/ref": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.1.0",
+    "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
