@@ -1,0 +1,76 @@
+{
+  "name": "@agentproto/cli",
+  "version": "0.1.0-alpha.6",
+  "description": "@agentproto/cli — the `agentproto` binary. Install AIP-45 agent CLI adapters, run them locally, or expose them over a tunnel as a long-running daemon. Reference host for hermes / claude-code / opencode / gemini-cli / goose, all driven through @agentproto/driver-agent-cli.",
+  "keywords": [
+    "agentproto",
+    "aip-45",
+    "agent-cli",
+    "cli",
+    "daemon",
+    "claude-code",
+    "hermes",
+    "opencode",
+    "goose",
+    "gemini-cli"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agentproto": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/acp": "workspace:*",
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "gray-matter": "^4.0.3",
+    "ws": "^8.20.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/adapter-claude-code": "workspace:*",
+    "@agentproto/adapter-hermes": "workspace:*",
+    "@agentproto/runtime": "workspace:*",
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

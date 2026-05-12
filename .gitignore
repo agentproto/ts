@@ -8,6 +8,9 @@ dist
 .tsbuildinfo
 *.tsbuildinfo
 
+# agentproto daemon runtime state (workspace-local, never commit)
+.agentproto/
+
 # Editor
 .DS_Store
 .idea
