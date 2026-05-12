@@ -1,0 +1,15 @@
+{
+  "name": "agentproto",
+  "version": "0.0.1",
+  "description": "Placeholder for the unscoped `agentproto` name. The real package is @agentproto/cli — install that to get the `agentproto` binary.",
+  "keywords": ["agentproto", "agent-cli", "aip-45"],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/agentproto-placeholder"
+  },
+  "license": "MIT",
+  "author": "agentproto contributors",
+  "files": ["README.md"]
+}

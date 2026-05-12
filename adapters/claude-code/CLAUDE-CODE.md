@@ -38,9 +38,60 @@ capabilities:
   tool_calls: true
   sub_agents: false
   file_io: true
-  multimodal: false
-  resumable: false
+  # Claude Code's ACP wrapper announces `promptCapabilities.image: true`
+  # — image content blocks in the user prompt flow through to the
+  # underlying Anthropic Messages API as native vision content. See
+  # `@agentclientprotocol/claude-agent-acp` v0.30+. Hosts that take
+  # advantage of this should send `{type: "image", data, mimeType}`
+  # blocks alongside the text in `session.send`.
+  multimodal: true
+  # The wrapper (@agentclientprotocol/claude-agent-acp >= 0.30) advertises
+  # `loadSession: true` over ACP — newSession/loadSession/resumeSession
+  # are all wired. The host pairs this with the `native-resume`
+  # continuation strategy below to reattach to an existing session
+  # across cold starts (API restart, sandbox reap, multi-machine).
+  resumable: true
   bidirectional: true
+modes:
+  - id: default
+    description: Standard interactive mode with per-tool permission prompts.
+  - id: plan
+    description: Plan-only mode — Claude Code reasons and proposes but does not edit or run commands.
+    bin_args_append: ["--permission-mode", "plan"]
+  - id: accept-edits
+    description: Auto-accept file edits; commands still prompt.
+    bin_args_append: ["--permission-mode", "acceptEdits"]
+  - id: bypass-permissions
+    description: Skip all permission prompts. Use only in trusted automation contexts.
+    bin_args_append: ["--permission-mode", "bypassPermissions"]
+options:
+  - id: model
+    type: enum
+    enum: [claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5]
+    description: Override the default model for this operator binding.
+    bin_args_template: ["--model", "{value}"]
+  - id: max_turns
+    type: integer
+    min: 1
+    max: 200
+    description: Hard cap on tool-use turns within a single send. Claude Code stops after this many cycles.
+    bin_args_template: ["--max-turns", "{value}"]
+continuation:
+  # `native-resume` is the right default now that the wrapper supports
+  # `loadSession`: each turn cold-spawns claude with no overhead, then
+  # reattaches to the saved session id via ACP loadSession. Survives
+  # API restarts, sandbox reaps, and machine swaps because the session
+  # state lives in claude's own JSONL store at the agent's chosen
+  # storage location (CLAUDE_CONFIG_DIR-controlled).
+  #
+  # `pinned-session` is kept as a supported fallback for hosts that
+  # haven't wired the native-resume hooks yet — same warm-process
+  # behaviour as before, lost on process restart.
+  default: native-resume
+  supported: [native-resume, pinned-session, transcript, none]
+  pinned_session:
+    idle_timeout_ms: 1800000
+    key_scope: [conversation, operator]
 tags: [claude-code, anthropic, acp, agent-runtime, coding]
 ---
 
