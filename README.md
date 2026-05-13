@@ -1,9 +1,8 @@
 # agentproto/ts
 
-TypeScript reference implementations of the [agentproto](https://agentproto.sh)
-open standards. Companion to [agentproto/agentproto](https://github.com/agentproto/agentproto)
-(specifications) and [agentproto/site](https://github.com/agentproto/site)
-(docs renderer).
+**Write a tool once. Run it as a builtin, CLI subprocess, HTTP service, or MCP server — and project it into Mastra or the Vercel AI SDK without rewriting.** Same shape as `IERC20` ↔ `MyToken is IERC20`, ported to TypeScript: a `defineTool(...)` contract, `implementTool(...)` bodies, `defineDriver(...)` bundles.
+
+TypeScript reference implementations of the [agentproto](https://agentproto.sh) open standards. See [`agentproto/agentproto`](https://github.com/agentproto/agentproto) for the *why* and the markdown specs themselves; site renderer at [`agentproto/site`](https://github.com/agentproto/site).
 
 > **Status: 0.1.0-alpha.** APIs are stabilising; expect minor breaking
 > changes between alpha releases.
@@ -41,8 +40,6 @@ ITool         @agentproto/tool         defineTool(...)              the contract
 Tool          @agentproto/driver       implementTool(handle, body)  contract + typed body
 Driver        @agentproto/driver       defineDriver({...})          bundle of tools + shared infra
 ```
-
-Same shape as `IERC20` ↔ `MyToken is IERC20`, ported to TypeScript.
 
 ## Getting started
 
