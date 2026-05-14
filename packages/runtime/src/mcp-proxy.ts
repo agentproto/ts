@@ -346,8 +346,22 @@ async function openClient(entry: ImportedMcpEntry): Promise<Client> {
       command: snap.command,
       args: snap.args ?? [],
       env: { ...process.env, ...expandedEnv } as Record<string, string>,
+      // Pipe stderr so we can include it in the error message instead of
+      // surfacing the opaque "Connection closed" MCP error code.
+      stderr: "pipe",
     })
-    await client.connect(transport)
+    const stderrBuf: string[] = []
+    transport.stderr?.on("data", (chunk: Buffer | string) => {
+      stderrBuf.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"))
+      if (stderrBuf.length > 40) stderrBuf.shift()
+    })
+    try {
+      await client.connect(transport)
+    } catch (err) {
+      const stderrText = stderrBuf.join("").trim()
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(stderrText ? `${msg}\nstderr: ${stderrText.slice(-600)}` : msg)
+    }
     return client
   }
   if (snap.type === "http") {

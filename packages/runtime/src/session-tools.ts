@@ -51,6 +51,10 @@ interface RegisterSessionToolsOptions {
    *  let the operator drive imported MCPs (chrome-devtools, goose-bridge,
    *  …) through the daemon as a single MCP entry point. */
   mcpProxy?: McpProxyRegistry
+  /** Whether the registry was constructed with a PTY factory — when
+   *  true, expose the four terminal session tools. When false, the
+   *  tools return a clear "not configured" error. */
+  ptyEnabled?: boolean
 }
 
 export function registerSessionTools(
@@ -58,6 +62,7 @@ export function registerSessionTools(
   opts: RegisterSessionToolsOptions
 ): void {
   const { registry, resolveAgentAdapter, listAgentAdapters, mcpProxy } = opts
+  const ptyEnabled = opts.ptyEnabled === true
 
   // ── start_agent_session ────────────────────────────────────────
   server.tool(
@@ -243,12 +248,59 @@ export function registerSessionTools(
     }
   )
 
-  // ── list_agent_sessions ────────────────────────────────────────
+  // ── list_sessions (canonical lister) ──────────────────────────
+  server.tool(
+    "list_sessions",
+    "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
+      "hermes, …), terminal/PTY sessions (claude TUI, bash, …), and raw " +
+      "commands. Each entry includes `kind`, `pty` (true for real PTYs), " +
+      "`name` (when set at spawn), `status`, `command`, age + exit code. Use " +
+      "this when you need to know what's already running before spawning " +
+      "anything new, or to discover a session id by name.",
+    {
+      kind: z
+        .enum(["terminal", "agent-cli", "command", "all"])
+        .optional()
+        .describe(
+          "Filter by session kind. `all` (default) returns every kind. " +
+            "Use `terminal` to list only PTY sessions, `agent-cli` for " +
+            "structured ACP agents.",
+        ),
+      onlyAlive: z
+        .boolean()
+        .optional()
+        .describe("When true, only running/starting sessions. Default false."),
+      status: z
+        .enum(["starting", "running", "exited", "killed", "error"])
+        .optional()
+        .describe("Filter by exact status (overrides onlyAlive)."),
+    },
+    async input => {
+      let rows = registry.list()
+      if (input.kind && input.kind !== "all") {
+        rows = rows.filter(s => s.kind === input.kind)
+      }
+      if (input.status) {
+        rows = rows.filter(s => s.status === input.status)
+      } else if (input.onlyAlive) {
+        rows = rows.filter(
+          s => s.status === "running" || s.status === "starting",
+        )
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+        ],
+      }
+    },
+  )
+
+  // ── list_agent_sessions (kept for backwards compatibility) ─────
   server.tool(
     "list_agent_sessions",
-    "List all sessions tracked by the daemon — running, exited, killed. " +
-      "Use to find a session id when the operator's previous start call returned " +
-      "long ago, or to tell the user what's currently active on their machine.",
+    "DEPRECATED — prefer `list_sessions` which returns ALL kinds + filters. " +
+      "Despite the name this tool already returns every kind, not just " +
+      "agent-cli sessions; the new tool's name reflects the actual surface.",
     {
       onlyAlive: z
         .boolean()
@@ -715,6 +767,270 @@ export function registerSessionTools(
           {
             type: "text",
             text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
+          },
+        ],
+      }
+    }
+  )
+
+  // ── Terminal session tools ─────────────────────────────────────
+  // Four tools that mirror the agent-session set but operate on raw
+  // PTY sessions (real terminal, ANSI bytes, multi-subscriber). Use
+  // these to drive interactive CLIs like `claude` in TUI mode, or
+  // for one agent to orchestrate other shells. Read/write/exit
+  // happen over the byte ring buffer; the WS at /sessions/:id/pty
+  // is the streaming alternative.
+
+  const ptyNotConfigured = (toolName: string): {
+    content: Array<{ type: "text"; text: string }>
+    isError: true
+  } => ({
+    content: [
+      {
+        type: "text",
+        text:
+          `${toolName}: PTY support not enabled — the daemon was started without ` +
+          "a node-pty factory. Re-run `agentproto serve` from a build that ships " +
+          "node-pty (the optional dep ships with @agentproto/cli).",
+      },
+    ],
+    isError: true,
+  })
+
+  server.tool(
+    "start_terminal_session",
+    "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +
+      "ANSI escapes, alt-screen sequences) flow through the daemon's byte ring " +
+      "buffer; subscribers attach via the WS at /sessions/:id/pty. Use for " +
+      "interactive TUIs (claude, vim, htop) or to orchestrate shells from another " +
+      "agent. Returns the session descriptor.",
+    {
+      argv: z
+        .array(z.string())
+        .min(1)
+        .describe(
+          "Argv array. First element is the binary, rest are arguments. " +
+            "e.g. ['claude'] or ['bash', '-l']."
+        ),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe(
+          "Workspace slug from `agentproto workspace list`. Resolves cwd. Omit " +
+            "to use `cwd` explicitly or the active workspace."
+        ),
+      cwd: z
+        .string()
+        .optional()
+        .describe("Absolute cwd. Wins over workspaceSlug when both set."),
+      cols: z.number().int().min(1).max(500).optional().describe("Initial cols. Default 80."),
+      rows: z.number().int().min(1).max(200).optional().describe("Initial rows. Default 24."),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "User-friendly slug. Becomes an alias for the session id in " +
+            "subsequent tool calls (read/write/kill accept either)."
+        ),
+      label: z
+        .string()
+        .optional()
+        .describe(
+          "Free-text label surfaced in list_agent_sessions and the UI."
+        ),
+    },
+    async input => {
+      if (!ptyEnabled) return ptyNotConfigured("start_terminal_session")
+      let cwd = input.cwd
+      let resolvedSlug = input.workspaceSlug ?? "default"
+      if (!cwd) {
+        try {
+          const config = await loadWorkspacesConfig()
+          const ws = input.workspaceSlug
+            ? findWorkspace(config, input.workspaceSlug)
+            : getActiveWorkspace(config)
+          if (ws) {
+            cwd = ws.path
+            resolvedSlug = ws.slug
+          }
+        } catch {
+          // fall through to error
+        }
+      }
+      if (!cwd) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "start_terminal_session: no cwd resolvable. Pass `cwd` explicitly " +
+                "or `workspaceSlug` matching `agentproto workspace list`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const desc = registry.spawnPty({
+          argv: input.argv,
+          cwd,
+          workspaceSlug: resolvedSlug,
+          cols: input.cols ?? 80,
+          rows: input.rows ?? 24,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.label ? { label: input.label } : {}),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `start_terminal_session: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  server.tool(
+    "write_terminal_input",
+    "Send keystrokes to a PTY session's stdin. The text is forwarded verbatim — " +
+      "include trailing newlines if the target needs them (e.g. shell commands). " +
+      "Use after `start_terminal_session` to drive an interactive CLI.",
+    {
+      sessionId: z
+        .string()
+        .describe("Session id OR name from start_terminal_session."),
+      text: z.string().describe("Text to write. Sent as-is to the PTY's stdin."),
+    },
+    async input => {
+      if (!ptyEnabled) return ptyNotConfigured("write_terminal_input")
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `write_terminal_input: no session "${input.sessionId}"`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      const ok = registry.writeTerminalInput(desc.id, input.text)
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
+          },
+        ],
+        ...(ok ? {} : { isError: true as const }),
+      }
+    }
+  )
+
+  server.tool(
+    "read_terminal_output",
+    "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
+      "bytes (the buffer is RAW including ANSI escapes — strip with a regex if " +
+      "you want plain text). `lastBytes` caps the read from the tail.",
+    {
+      sessionId: z
+        .string()
+        .describe("Session id OR name from start_terminal_session."),
+      lastBytes: z
+        .number()
+        .int()
+        .min(1)
+        .max(64 * 1024)
+        .optional()
+        .describe("Max bytes from the tail. Default: full ring buffer (~64 KiB)."),
+    },
+    async input => {
+      if (!ptyEnabled) return ptyNotConfigured("read_terminal_output")
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `read_terminal_output: no session "${input.sessionId}"`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      const buf = registry.readTerminalOutput(
+        desc.id,
+        input.lastBytes,
+      )
+      if (!buf) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `read_terminal_output: session "${desc.id}" is not a PTY`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                sessionId: desc.id,
+                status: desc.status,
+                bytes: buf.byteLength,
+                b64: buf.toString("base64"),
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      }
+    }
+  )
+
+  server.tool(
+    "kill_terminal_session",
+    "SIGTERM a PTY session and drop it from the alive set. Same effect as " +
+      "`kill_agent_session` for the PTY family — separate name so it's obvious " +
+      "what's being stopped.",
+    {
+      sessionId: z
+        .string()
+        .describe("Session id OR name from start_terminal_session."),
+    },
+    async input => {
+      if (!ptyEnabled) return ptyNotConfigured("kill_terminal_session")
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `kill_terminal_session: no session "${input.sessionId}"`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      const ok = registry.kill(desc.id)
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok, sessionId: desc.id }, null, 2),
           },
         ],
       }

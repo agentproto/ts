@@ -21,8 +21,10 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import type { Duplex } from "node:stream"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
+import { WebSocketServer, type WebSocket } from "ws"
 import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
@@ -42,6 +44,19 @@ import {
 } from "./mcp-imports.js"
 
 /**
+ * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
+ * is undefined. Localhost on any port covers the user's own dev environments
+ * (Guilde web dev server, playground demos, embedded panels). Production
+ * origins (https://guilde.work, …) are NOT included by default — those are
+ * opt-in via `agentproto serve --allow-origin <url>`.
+ */
+const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
+  "http://localhost:*",
+  "http://127.0.0.1:*",
+  "https://localhost:*",
+]
+
+/**
  * Pluggable adapter resolver — keeps the runtime package free of any
  * @agentproto/cli dep. The host (cli `serve`, playground, embedding
  * apps) builds the resolver and hands it in. Returning null means
@@ -50,8 +65,18 @@ import {
 export type AgentAdapterResolver = (slug: string) => Promise<{
   /** Build a fresh AgentSessionLike for the given cwd. The driver
    *  spawns the adapter binary, opens the protocol, and the
-   *  registry holds the result. */
-  startSession(opts: { cwd: string }): Promise<AgentSessionLike>
+   *  registry holds the result.
+   *
+   *  When `resumeSessionId` is set, the driver reattaches to that
+   *  pre-existing adapter session (claude-code's conversation id,
+   *  hermes' chat handle, …) rather than starting blank. Same
+   *  mechanism as `agentproto run --resume <id>` — exposed over
+   *  HTTP so `agentproto sessions restart` works on agent-cli
+   *  sessions, not just PTY ones. */
+  startSession(opts: {
+    cwd: string
+    resumeSessionId?: string
+  }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
 } | null>
@@ -130,6 +155,41 @@ export interface RuntimeHttpServerOptions {
    *  without going through the MCP wire protocol (useful for the
    *  /providers/mcp page's "Local" tab). */
   mcpProxy?: McpProxyRegistry
+  /** Per-boot bearer token. When set, mutating /sessions/* routes
+   *  + the /sessions/:id/pty WebSocket upgrade require either
+   *  `Authorization: Bearer <token>` or an `Origin` header that
+   *  matches `allowedOrigins`. Read-only routes (GET, SSE stream)
+   *  stay open since the CORS surface already restricts origins
+   *  enough for them. */
+  token?: string
+  /** Trusted browser origins. When a mutating request carries an
+   *  `Origin: <url>` header (browser-set, JS can't forge), and that
+   *  url is in this list, the request is allowed without a Bearer
+   *  token. Browsers can't read the daemon's runtime.json (mode 0600)
+   *  so they can't send the token — Origin-based auth lets a trusted
+   *  page (Guilde web UI, local dev) drive the daemon. Non-browser
+   *  callers (curl, the CLI) still use the token.
+   *
+   *  Match policy: exact origin (`https://guilde.work`) OR prefix
+   *  with `:*` for any-port match (`http://localhost:*` matches
+   *  `http://localhost:3000`).
+   *
+   *  Default (when undefined): localhost on any port is allowed via
+   *  `DEFAULT_ALLOWED_ORIGINS`. Production origins are opt-in via
+   *  `agentproto serve --allow-origin <url>`. Pair with `strictOrigins`
+   *  to remove the localhost defaults entirely. */
+  allowedOrigins?: readonly string[]
+  /** When true, skip the localhost-wildcard defaults — only the
+   *  explicit `allowedOrigins` list is honoured. Useful for daemons
+   *  on shared hosts or when the user wants to lock dev to a
+   *  specific port. Default false (current behaviour — any browser
+   *  on `localhost` is trusted). */
+  strictOrigins?: boolean
+  /** Whether `POST /sessions/terminal` + WS upgrade are advertised.
+   *  Reflects whether the host injected a PTY factory into the
+   *  SessionsRegistry. When false, the terminal HTTP route returns
+   *  501 and the WS upgrade rejects. */
+  ptyEnabled?: boolean
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -200,6 +260,120 @@ export async function startHttpServer(
       return false
     }
     return true
+  }
+
+  /**
+   * Per-boot auth gate for mutating /sessions/* routes and the WS
+   * upgrade for /sessions/:id/pty. Accepts EITHER:
+   *
+   *   1. `Authorization: Bearer <token>` matching the per-boot token
+   *      (the CLI path — reads runtime.json mode 0600).
+   *   2. A WS-upgrade query-string `?token=<token>` (browser
+   *      WebSocket can't set headers; some non-browser clients use
+   *      this too).
+   *   3. An `Origin: <url>` header matching `allowedOrigins` — the
+   *      browser path. Origin is browser-set, JS can't forge.
+   *
+   * UNLIKE `authorize()`, this does NOT have a loopback bypass: the
+   * threat we're defending against (browser drive-by spawning shells
+   * via fetch to 127.0.0.1) IS loopback. Browsers can't read
+   * runtime.json (mode 0600); a same-origin trusted page can rely on
+   * its Origin instead.
+   *
+   * When `opts.token` is unset (older host integrations), this is a
+   * no-op so existing call sites keep working.
+   */
+  function checkSessionsToken(req: IncomingMessage): "ok" | "missing" | "bad" {
+    if (!opts.token) return "ok"
+
+    // 1. Header bearer token.
+    const header = req.headers.authorization
+    const expected = `Bearer ${opts.token}`
+    if (header === expected) return "ok"
+
+    // 2. ?token=<token> in the URL (WS upgrade convenience).
+    const urlStr = req.url ?? ""
+    if (urlStr.includes("?")) {
+      const qs = new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1))
+      const qsToken = qs.get("token")
+      if (qsToken && qsToken === opts.token) return "ok"
+    }
+
+    // 3. Origin allowlist (browser path).
+    const origin = req.headers.origin
+    if (typeof origin === "string" && originAllowed(origin)) return "ok"
+
+    return header ? "bad" : "missing"
+  }
+
+  function originAllowed(origin: string): boolean {
+    // Defaults are normally in effect — `opts.allowedOrigins` extends
+    // them rather than replacing. Otherwise setting one production
+    // origin via config silently locks out `http://localhost:*`,
+    // breaking local dev. Users who genuinely want a curated list
+    // (shared host, paranoid local-only ports) set `strictOrigins:true`
+    // which drops the defaults entirely.
+    const list = opts.strictOrigins
+      ? (opts.allowedOrigins ?? [])
+      : [...DEFAULT_ALLOWED_ORIGINS, ...(opts.allowedOrigins ?? [])]
+    for (const pattern of list) {
+      if (pattern === origin) return true
+      // `http://localhost:*` style: match the host prefix, any port.
+      if (pattern.endsWith(":*")) {
+        const prefix = pattern.slice(0, -2) // drop ":*"
+        if (origin === prefix || origin.startsWith(prefix + ":")) return true
+      }
+    }
+    return false
+  }
+
+  function rejectUnauthorizedSession(
+    req: IncomingMessage,
+    res: ServerResponse,
+    kind: "missing" | "bad",
+  ): void {
+    const origin = req.headers.origin ?? null
+    const allowList = opts.strictOrigins
+      ? (opts.allowedOrigins ?? [])
+      : [...DEFAULT_ALLOWED_ORIGINS, ...(opts.allowedOrigins ?? [])]
+    res.writeHead(401, { "content-type": "application/json" })
+    const message =
+      kind === "missing"
+        ? origin
+          ? `Origin "${origin}" not in the daemon's allowlist, and no Bearer token sent. ` +
+            `Either add it (\`agentproto config set daemon.allowedOrigins ${origin}\` then restart the daemon), ` +
+            `or send Authorization: Bearer <token> read from <workspace>/.agentproto/runtime.json.`
+          : `Authorization: Bearer <token> required on mutating /sessions/* routes. ` +
+            `Read the token from <workspace>/.agentproto/runtime.json. ` +
+            `(Browser callers can use an Origin in the allowlist instead.)`
+        : `Invalid bearer token. The daemon regenerated its token on its last boot — ` +
+          `re-read <workspace>/.agentproto/runtime.json.`
+    res.end(
+      JSON.stringify({
+        error: "sessions_unauthorized",
+        message,
+        // Debug data so a UI / network-tab inspection points the user
+        // straight at the fix without needing the daemon's stderr.
+        rejectedOrigin: origin,
+        allowedOrigins: allowList,
+        // We never echo the token; only the absence-or-presence flag.
+        receivedAuthHeader: typeof req.headers.authorization === "string",
+      }),
+    )
+  }
+
+  /**
+   * Returns true when this `path` + `method` is a mutating /sessions/*
+   * route that should require the per-boot token. Kept narrow: GETs
+   * (list, get, SSE stream) stay open for read-only telemetry from
+   * existing tools that haven't learned about the token yet.
+   */
+  function isMutatingSessionsRoute(method: string, path: string): boolean {
+    if (!path.startsWith("/sessions")) return false
+    if (method === "POST" || method === "DELETE" || method === "PUT" || method === "PATCH") {
+      return true
+    }
+    return false
   }
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -385,12 +559,20 @@ export async function startHttpServer(
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
         if (opts.sessions && path.startsWith("/sessions")) {
+          if (isMutatingSessionsRoute(req.method ?? "GET", path)) {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
           const handled = await handleSessions(
             req,
             res,
             path,
             opts.sessions,
-            opts.resolveAgentAdapter
+            opts.resolveAgentAdapter,
+            opts.ptyEnabled === true,
           )
           if (handled) return
         }
@@ -613,6 +795,76 @@ export async function startHttpServer(
     })()
   })
 
+  // ── WebSocket upgrade: /sessions/:id/pty ──
+  // Single WSS bound to the HTTP server's `upgrade` event. Connections
+  // are accepted only when the SessionsRegistry is wired AND PTY
+  // support is advertised. Frames are JSON-encoded over text WS
+  // messages (binary mode is a future optimization — JSON keeps
+  // wireshark/devtools debuggable):
+  //   server → client: {kind:"data", b64:"..."}
+  //   server → client: {kind:"exit", exitCode:0, signal?:1}
+  //   client → server: {kind:"input", b64:"..."}  (or {kind:"input", text:"..."})
+  //   client → server: {kind:"resize", cols:80, rows:24}
+  //   client → server: {kind:"ping"}              (no-op keepalive)
+  const wss = new WebSocketServer({ noServer: true })
+  server.on("upgrade", (req, socket, head) => {
+    const url = req.url ?? "/"
+    const path = url.split("?")[0] ?? "/"
+    const ptyMatch = path.match(/^\/sessions\/([^/]+)\/pty$/)
+    if (!ptyMatch) {
+      socket.destroy()
+      return
+    }
+    if (!opts.sessions || opts.ptyEnabled !== true) {
+      rejectUpgrade(socket, 501, "pty_not_configured")
+      return
+    }
+    // Per-boot token gate, no loopback bypass — see comment on
+    // checkSessionsToken for why.
+    const gate = checkSessionsToken(req)
+    if (gate !== "ok") {
+      rejectUpgrade(socket, 401, gate === "missing" ? "missing_token" : "bad_token")
+      return
+    }
+    const id = ptyMatch[1]
+    if (!id) {
+      rejectUpgrade(socket, 400, "missing_id")
+      return
+    }
+    // Resolve id-or-name BEFORE upgrading so a typo returns a clean
+    // 404 instead of a successful WS that immediately closes.
+    const desc = opts.sessions.findByIdOrName(id)
+    if (!desc) {
+      rejectUpgrade(socket, 404, "session_not_found")
+      return
+    }
+    if (desc.pty !== true) {
+      rejectUpgrade(socket, 400, "session_not_pty")
+      return
+    }
+    // A descriptor for an exited/killed/error session lives on as
+    // history — its PTY child is gone. Reject the upgrade with a
+    // clear reason so the CLI/web client can suggest `restart`
+    // instead of letting the user see a generic 1011 mid-attach.
+    if (
+      desc.status === "exited" ||
+      desc.status === "killed" ||
+      desc.status === "error"
+    ) {
+      rejectUpgrade(
+        socket,
+        410,
+        `session_${desc.status}`,
+        `Session ${desc.id}${desc.name ? ` (${desc.name})` : ""} has ${desc.status}. ` +
+          `Spawn a fresh one with: agentproto sessions restart ${desc.name ?? desc.id}`,
+      )
+      return
+    }
+    wss.handleUpgrade(req, socket, head, ws => {
+      handlePtyWebSocket(ws, req, desc.id, opts.sessions!)
+    })
+  })
+
   const bind = opts.bind ?? "127.0.0.1"
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
@@ -623,10 +875,187 @@ export async function startHttpServer(
     url: `http://${bind}:${opts.port}`,
     async stop() {
       // Per-request transports/servers are torn down on `res.close`,
-      // so we only need to stop the HTTP listener here.
+      // so we only need to stop the HTTP listener here. The WSS is
+      // bound `noServer:true` so closing the HTTP server also tears
+      // down its underlying TCP socket; live WS connections receive
+      // a close frame from the kernel.
+      wss.close()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }
+}
+
+/**
+ * Reject an HTTP upgrade attempt with a structured plaintext body.
+ * `ws.handleUpgrade` is meant to be the success path — if we can't
+ * accept the upgrade we write a minimal HTTP response and destroy
+ * the socket, matching ws's own internal error path.
+ */
+function rejectUpgrade(
+  socket: Duplex,
+  status: number,
+  reason: string,
+  message?: string,
+): void {
+  const reasonText = `${status} ${reason}`
+  const body: { error: string; message?: string } = { error: reason }
+  if (message) body.message = message
+  try {
+    socket.write(
+      `HTTP/1.1 ${reasonText}\r\n` +
+        `Content-Type: application/json\r\n` +
+        `Connection: close\r\n\r\n` +
+        JSON.stringify(body) +
+        `\n`,
+    )
+  } catch {
+    // socket already gone — fall through
+  }
+  socket.destroy()
+}
+
+/**
+ * Per-connection WS handler for /sessions/:id/pty. Attaches as a
+ * subscriber to the SessionsRegistry; bridges JSON frames in both
+ * directions. Per-subscriber backpressure: if the WS's `bufferedAmount`
+ * exceeds a threshold, the next chunk is dropped (slow client must
+ * not stall the daemon's fan-out to other subscribers).
+ */
+function handlePtyWebSocket(
+  ws: WebSocket,
+  req: IncomingMessage,
+  sessionId: string,
+  registry: SessionsRegistry,
+): void {
+  // Parse cols/rows from the query string for the initial dimension
+  // hint. Real clients will send a {kind:"resize"} immediately after
+  // connecting; this seeds the registry's min-size calculation so the
+  // first replay frames render at a sensible width if no resize comes.
+  const query = new URLSearchParams(
+    (req.url ?? "").includes("?") ? (req.url ?? "").split("?")[1] : "",
+  )
+  const cols = clampPositiveInt(query.get("cols"), 80)
+  const rows = clampPositiveInt(query.get("rows"), 24)
+
+  // Backpressure threshold — when the socket has more than 256 KiB
+  // queued, drop the next data frame for THIS subscriber rather than
+  // letting the registry block on send. Other subscribers stay live.
+  const BACKPRESSURE_BYTES = 256 * 1024
+
+  const handle = registry.attachPty(
+    sessionId,
+    { cols, rows },
+    chunk => {
+      if (ws.readyState !== ws.OPEN) return
+      if (ws.bufferedAmount > BACKPRESSURE_BYTES) return // drop
+      ws.send(
+        JSON.stringify({ kind: "data", b64: chunk.toString("base64") }),
+      )
+    },
+    evt => {
+      if (ws.readyState !== ws.OPEN) return
+      ws.send(
+        JSON.stringify({
+          kind: "exit",
+          exitCode: evt.exitCode,
+          ...(evt.signal != null ? { signal: evt.signal } : {}),
+        }),
+      )
+      // Close ourselves once we've emitted exit — the session can be
+      // reattached for a buffer replay but this socket is done.
+      try {
+        ws.close(1000, "session exited")
+      } catch {
+        // ignore
+      }
+    },
+  )
+
+  if (!handle) {
+    // Race: the session may have vanished between the upgrade and
+    // attach. Close politely.
+    try {
+      ws.close(1011, "session not attachable")
+    } catch {
+      // ignore
+    }
+    return
+  }
+
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      // Binary frames not supported yet — wire format is JSON-only.
+      return
+    }
+    let frame: unknown
+    try {
+      frame = JSON.parse(raw.toString("utf8"))
+    } catch {
+      return // malformed
+    }
+    if (!frame || typeof frame !== "object") return
+    const f = frame as Record<string, unknown>
+    switch (f.kind) {
+      case "input": {
+        // Accept either {text} (UTF-8) or {b64} (arbitrary bytes,
+        // useful for clients sending raw key sequences).
+        if (typeof f.text === "string") {
+          handle.write(f.text)
+        } else if (typeof f.b64 === "string") {
+          try {
+            handle.write(Buffer.from(f.b64, "base64").toString("utf8"))
+          } catch {
+            // ignore malformed base64
+          }
+        }
+        break
+      }
+      case "resize": {
+        const c =
+          typeof f.cols === "number" && f.cols > 0 ? Math.floor(f.cols) : null
+        const r =
+          typeof f.rows === "number" && f.rows > 0 ? Math.floor(f.rows) : null
+        if (c && r) handle.resize(c, r)
+        break
+      }
+      case "ping":
+        // Reply with pong so client keepalive logic works. Optional.
+        try {
+          ws.send(JSON.stringify({ kind: "pong" }))
+        } catch {
+          // ignore
+        }
+        break
+      // Unknown kinds silently dropped; reserved for forward compat.
+    }
+  })
+
+  ws.on("close", () => {
+    handle.detach()
+  })
+  ws.on("error", () => {
+    handle.detach()
+  })
+}
+
+function clampPositiveInt(raw: string | null, fallback: number): number {
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+function clampInt(
+  raw: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) return fallback
+  if (n < min) return min
+  if (n > max) return max
+  return n
 }
 
 /**
@@ -646,7 +1075,8 @@ async function handleSessions(
   res: ServerResponse,
   path: string,
   registry: SessionsRegistry,
-  resolveAgentAdapter?: AgentAdapterResolver
+  resolveAgentAdapter?: AgentAdapterResolver,
+  ptyEnabled = false,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -722,7 +1152,14 @@ async function handleSessions(
       return true
     }
     try {
-      const agentSession = await resolved.startSession({ cwd })
+      const resumeSessionId =
+        typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
+          ? b.resumeSessionId
+          : undefined
+      const agentSession = await resolved.startSession({
+        cwd,
+        ...(resumeSessionId ? { resumeSessionId } : {}),
+      })
       const desc = registry.spawnAgent({
         workspaceSlug,
         cwd,
@@ -740,6 +1177,88 @@ async function handleSessions(
         error: "agent_spawn_failed",
         message: err instanceof Error ? err.message : String(err),
       })
+    }
+    return true
+  }
+
+  // Long-running PTY session — spawn argv under node-pty. Bytes flow
+  // through the registry's byte ring buffer; attach via the WebSocket
+  // upgrade at /sessions/:id/pty. Body shape:
+  //   {argv: string[], cwd?, workspaceSlug?, cols, rows, env?, name?, label?}
+  if (path === "/sessions/terminal" && req.method === "POST") {
+    if (!ptyEnabled) {
+      json(501, {
+        error: "pty_not_configured",
+        message:
+          "POST /sessions/terminal needs the host to inject `spawnPty` into createGateway " +
+          "(node-pty optional dep — install in @agentproto/cli).",
+      })
+      return true
+    }
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const argv = Array.isArray(b.argv)
+      ? (b.argv as unknown[]).filter((v): v is string => typeof v === "string")
+      : []
+    if (argv.length === 0) {
+      json(400, { error: "missing_argv" })
+      return true
+    }
+    const cols = typeof b.cols === "number" && b.cols > 0 ? Math.floor(b.cols) : 80
+    const rows = typeof b.rows === "number" && b.rows > 0 ? Math.floor(b.rows) : 24
+    // cwd resolution mirrors /sessions/agent exactly.
+    let cwd: string | null =
+      typeof b.cwd === "string" && b.cwd.length > 0 ? b.cwd : null
+    let workspaceSlug =
+      typeof b.workspaceSlug === "string" ? b.workspaceSlug : ""
+    if (!cwd) {
+      try {
+        const config = await loadWorkspacesConfig()
+        const ws = workspaceSlug
+          ? findWorkspace(config, workspaceSlug)
+          : getActiveWorkspace(config)
+        if (ws) {
+          cwd = ws.path
+          workspaceSlug = ws.slug
+        }
+      } catch {
+        // fall through to process.cwd()
+      }
+    }
+    if (!cwd) {
+      cwd = process.cwd()
+      console.warn(
+        `[/sessions/terminal] no cwd resolvable for argv=${argv.join(" ")} ` +
+          `— falling back to daemon's cwd ${cwd}`
+      )
+    }
+    if (!workspaceSlug) workspaceSlug = "default"
+    try {
+      const desc = registry.spawnPty({
+        argv,
+        cwd,
+        workspaceSlug,
+        cols,
+        rows,
+        ...(b.env && typeof b.env === "object"
+          ? { env: b.env as Record<string, string> }
+          : {}),
+        ...(typeof b.name === "string" ? { name: b.name } : {}),
+        ...(typeof b.label === "string" ? { label: b.label } : {}),
+      })
+      json(201, desc)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("already in use")
+        ? 409
+        : msg.includes("no PTY factory")
+          ? 501
+          : 500
+      json(status, { error: "pty_spawn_failed", message: msg })
     }
     return true
   }
@@ -830,16 +1349,57 @@ async function handleSessions(
     return true
   }
 
-  // Per-id routes
-  const idMatch = path.match(/^\/sessions\/([^/]+)(\/stream|\/kill)?$/)
+  // Per-id routes. The `:id` slot also accepts a session's `name`
+  // when one was set at spawn time — `findByIdOrName` resolves both
+  // and the rest of the handler operates on the canonical id.
+  const idMatch = path.match(
+    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview)?$/,
+  )
   if (!idMatch) return false
-  const [, id, suffix] = idMatch
-  if (!id) return false
+  const [, rawIdOrName, suffix] = idMatch
+  if (!rawIdOrName) return false
+  const resolvedDesc = registry.findByIdOrName(rawIdOrName)
+  const id = resolvedDesc?.id ?? rawIdOrName
+
+  if (suffix === "/preview" && req.method === "GET") {
+    // Read-only snapshot of the recent ring buffer — used by the
+    // dashboard's detail pane so the user sees what the session was
+    // doing without committing to an attach. Returns BOTH lines
+    // (for agent-cli/command sessions) and recent-bytes (for PTY).
+    // Caller picks whichever is populated.
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const lineCap = clampInt(qs.get("lines"), 10, 1, 200)
+    const byteCap = clampInt(qs.get("bytes"), 16 * 1024, 256, 64 * 1024)
+    // No registry method exists for "give me the recent buffer
+    // snapshot" — readTerminalOutput is the closest. For non-PTY
+    // sessions, attach with a no-op subscriber, read backfill,
+    // detach. Cheap; the backfill is synchronous on attach.
+    const lines: string[] = []
+    if (resolvedDesc.pty !== true) {
+      const unsub = registry.attach(id, line => {
+        lines.push(line)
+      })
+      if (unsub) unsub()
+    }
+    const bufBytes = registry.readTerminalOutput(id, byteCap)
+    json(200, {
+      id: resolvedDesc.id,
+      lines: lines.slice(-lineCap),
+      bytes: bufBytes ? bufBytes.toString("base64") : null,
+    })
+    return true
+  }
 
   if (suffix === "/stream" && req.method === "GET") {
-    const desc = registry.get(id)
-    if (!desc) {
-      json(404, { error: "session_not_found", id })
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
     res.writeHead(200, {
@@ -886,12 +1446,11 @@ async function handleSessions(
   }
 
   if (!suffix && req.method === "GET") {
-    const desc = registry.get(id)
-    if (!desc) {
-      json(404, { error: "session_not_found", id })
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    json(200, desc)
+    json(200, resolvedDesc)
     return true
   }
 

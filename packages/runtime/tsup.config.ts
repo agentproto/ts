@@ -11,6 +11,8 @@ export default createTsupConfig({
     heartbeat: "src/heartbeat.ts",
     "workspace-fs": "src/workspace-fs.ts",
     "workspaces-config": "src/workspaces-config.ts",
+    config: "src/config.ts",
+    "resume-strategies": "src/resume-strategies.ts",
   },
   format: ["esm"],
   splitting: false,

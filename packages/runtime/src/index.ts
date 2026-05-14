@@ -15,6 +15,7 @@
  * server.
  */
 
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
@@ -34,7 +35,11 @@ import {
   type AgentAdapterResolver,
   type AgentAdapterLister,
 } from "./http-server.js"
-import { createSessionsRegistry, type SessionsRegistry } from "./sessions.js"
+import {
+  createSessionsRegistry,
+  type SessionsRegistry,
+  type PtyFactory,
+} from "./sessions.js"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 
 export type {
@@ -62,6 +67,12 @@ export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
+export {
+  sweepStaleRuntimeMetas,
+  unlinkRuntimeMeta,
+  readRuntimeMeta,
+  type RuntimeMeta,
+} from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -107,6 +118,25 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional PTY factory (node-pty wrapper, typically from the cli
+   *  layer's `loadNodePtyFactory()`). When provided, enables
+   *  `POST /sessions/terminal`, the `start_terminal_session` MCP
+   *  tool family, and the `/sessions/:id/pty` WebSocket. Without it,
+   *  those routes return 501 / the MCP tools aren't registered. */
+  spawnPty?: PtyFactory
+  /** Override the per-boot bearer token. Default: `randomUUID()`.
+   *  Tests can pin a known value; production should always let
+   *  the gateway generate fresh. The token is written into
+   *  `<workspace>/.agentproto/runtime.json` (mode 0600) and required
+   *  on mutating `/sessions/*` routes + the PTY WS upgrade. */
+  token?: string
+  /** Trusted browser origins allowed to drive mutating routes
+   *  without a bearer token. See `RuntimeHttpServerOptions.allowedOrigins`
+   *  for match semantics. Default: localhost on any port. */
+  allowedOrigins?: readonly string[]
+  /** When true, drop the localhost-wildcard defaults — only the
+   *  explicit `allowedOrigins` list is honoured. */
+  strictOrigins?: boolean
 }
 
 export interface GatewayHandle {
@@ -118,6 +148,11 @@ export interface GatewayHandle {
    *  inside the same process can register their child processes for
    *  visibility through /sessions and the CLI TUI. */
   sessions: SessionsRegistry
+  /** Per-boot bearer token required on mutating /sessions/* routes
+   *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
+   *  shell that hosts the gateway in-process) can pass it to child
+   *  tools without re-reading the runtime.json file. */
+  token: string
   stop(): Promise<void>
 }
 
@@ -178,7 +213,15 @@ export async function createGateway(
   // startHttpServer for the /sessions HTTP routes. Declared here
   // (above the factory) so its identifier is visible at closure-
   // build time, even though the factory only invokes later.
-  const sessions = createSessionsRegistry()
+  const sessions = createSessionsRegistry({
+    ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+  })
+
+  // Per-boot bearer token. Required on mutating /sessions/* routes
+  // and on the WS upgrade for /sessions/:id/pty. Persisted to
+  // runtime.json (mode 0600) so the same-user CLI can read it; a
+  // browser-loaded localhost page can't.
+  const token = opts.token ?? randomUUID()
 
   // MCP proxy — single registry that holds open Client connections
   // to every imported MCP server. The per-request mcpServerFactory
@@ -215,6 +258,7 @@ export async function createGateway(
     registerSessionTools(server, {
       registry: sessions,
       mcpProxy,
+      ptyEnabled: opts.spawnPty != null,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -264,6 +308,10 @@ export async function createGateway(
     heartbeat,
     sessions,
     mcpProxy,
+    token,
+    ptyEnabled: opts.spawnPty != null,
+    ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
+    ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -293,6 +341,7 @@ export async function createGateway(
     startedAt: new Date().toISOString(),
     name: opts.name ?? "agentproto-runtime",
     registered,
+    token,
   })
 
   return {
@@ -301,6 +350,7 @@ export async function createGateway(
     workspaceFs,
     registered,
     sessions,
+    token,
     async stop() {
       heartbeat.stop()
       // Kill all live sessions before tearing down HTTP — otherwise

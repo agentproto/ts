@@ -50,6 +50,16 @@
       "types": "./dist/workspaces-config.d.ts",
       "import": "./dist/workspaces-config.mjs",
       "default": "./dist/workspaces-config.mjs"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.mjs",
+      "default": "./dist/config.mjs"
+    },
+    "./resume-strategies": {
+      "types": "./dist/resume-strategies.d.ts",
+      "import": "./dist/resume-strategies.mjs",
+      "default": "./dist/resume-strategies.mjs"
     }
   },
   "files": [
@@ -75,11 +85,13 @@
     "@agentproto/mcp-server": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
+    "ws": "^8.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
+    "@types/ws": "^8.5.13",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

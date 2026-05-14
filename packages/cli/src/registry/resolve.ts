@@ -112,6 +112,12 @@ export async function listInstalledAdapters(opts?: {
   const roots = await collectAgentprotoNamespaceRoots(opts?.searchRoot)
   const seen = new Set<string>()
   const out: AdapterInfo[] = []
+  // Two failure buckets so we can produce ONE summary line for the
+  // expected case (adapter dir found by the walker but not importable
+  // from the daemon's resolution path — i.e. workspace-hoisted, not
+  // globally installed) and keep per-adapter warnings only for the
+  // genuinely surprising ones (broken exports, missing dist, etc.).
+  const notImportable: string[] = []
 
   for (const root of roots) {
     let entries: string[] = []
@@ -142,15 +148,37 @@ export async function listInstalledAdapters(opts?: {
         }
         out.push(info)
       } catch (err) {
-        // Broken adapter — log and skip rather than fail the listing.
-        console.warn(
-          `[agentproto/cli] listInstalledAdapters: skipping broken adapter '${slug}': ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        )
+        const msg = err instanceof Error ? err.message : String(err)
+        // ERR_MODULE_NOT_FOUND / "Cannot find package" is the expected
+        // shape when the walker finds an adapter dir hoisted in a
+        // workspace's node_modules but that dir isn't reachable from
+        // the daemon binary's NODE_PATH. Collapse those into a single
+        // summary line below; anything else (broken handle export,
+        // syntax error in dist, etc.) still warns individually.
+        if (
+          /Cannot find package|ERR_MODULE_NOT_FOUND/i.test(msg) &&
+          msg.includes(`@agentproto/adapter-${slug}`)
+        ) {
+          notImportable.push(slug)
+        } else {
+          console.warn(
+            `[agentproto/cli] listInstalledAdapters: skipping broken adapter '${slug}': ${msg}`
+          )
+        }
       }
     }
   }
+
+  // We deliberately do NOT log `notImportable` to console. The
+  // discovery walker often finds adapter directories hoisted in a
+  // workspace's node_modules that aren't reachable from the daemon's
+  // own NODE_PATH — that's a normal state for a fresh checkout and
+  // not actionable from a daemon log line. Callers who want the info
+  // can inspect the `listInstalledAdapters` return value (importable
+  // adapters only); a future `agentproto adapters doctor` verb is the
+  // right home for surfacing the unimportable slugs interactively.
+  void notImportable
+
   return out.sort((a, b) => a.slug.localeCompare(b.slug))
 }
 

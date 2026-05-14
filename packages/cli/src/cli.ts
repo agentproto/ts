@@ -18,6 +18,7 @@
  */
 
 import { runAuth } from "./commands/auth.js"
+import { runConfig } from "./commands/config.js"
 import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
 import { runRun } from "./commands/run.js"
@@ -29,13 +30,23 @@ const USAGE = `agentproto — AIP-45 agent CLI host
 
 Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
+  agentproto config    <show|path|get|set|unset|edit> [args]
+  agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto serve     [--workspace <dir>] [--port <n>] [--bind <ip>]
                        [--connect <url> [--token <jwt>] [--label <name>]]
+                       [--allow-origin <url> …] [--interactive | -i]
   agentproto workspace <add|list|remove|use> [args]
-  agentproto sessions  [--watch] [--attach <id>] [--json]
+  agentproto sessions  [--watch] [--attach <id-or-name>] [--json]
+  agentproto sessions  start <adapter> [--cwd <dir>] [--workspace <slug>]
+                                       [--prompt <text>] [--label <text>] [--attach]
+  agentproto sessions  terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
+                                             [--name <slug>] [--label <text>]
+                                             [--cols <n>] [--rows <n>] [--attach]
+  agentproto sessions  mirror <id-or-name>   read-only tail (Ctrl-C to exit)
+  agentproto sessions  stop <id-or-name>
   agentproto --help
   agentproto --version
 
@@ -47,10 +58,19 @@ Examples:
   agentproto workspace add ~/code/my-project --slug my-project
   agentproto workspace list
   agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+  agentproto sessions start claude-code --workspace agentik-studio --attach
+  agentproto sessions terminal --name claude-tui --attach -- claude
+  agentproto sessions stop claude-tui
+  agentproto config set daemon.port 18791
+  agentproto config set daemon.allowedOrigins https://guilde.work
+  agentproto daemon install            # write launchd plist + start (macOS)
+  agentproto daemon status             # plist? loaded? /health probe?
 `
 
 const VERBS = new Set([
   "auth",
+  "config",
+  "daemon",
   "install",
   "setup",
   "run",
@@ -86,6 +106,15 @@ async function main(argv: readonly string[]): Promise<number> {
   switch (verb) {
     case "auth":
       return runAuth(rest)
+    case "config":
+      return runConfig(rest)
+    case "daemon": {
+      // Lazy-import the daemon command — its launchctl/systemd
+      // shims pull in platform-specific code (plist templating,
+      // shell-out helpers) we don't need until the verb fires.
+      const { runDaemon } = await import("./commands/daemon.js")
+      return runDaemon(rest)
+    }
     case "install":
       return runInstall(rest)
     case "setup":
