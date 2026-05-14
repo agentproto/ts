@@ -488,6 +488,13 @@ export async function startHttpServer(
   // headers the browser blocks the response and the panel says
   // "not reachable" even though curl works. Auth still gates the
   // sensitive routes — this just lifts the cross-origin block.
+  //
+  // Private Network Access (Chrome 105+): when an HTTPS page like
+  // https://guilde.work fetches a loopback URL, Chrome sends a
+  // preflight with `Access-Control-Request-Private-Network: true`.
+  // Without `Access-Control-Allow-Private-Network: true` in the
+  // response, the browser blocks the actual GET. Mirror the flag
+  // when the request asked for it.
   function applyCors(req: IncomingMessage, res: ServerResponse): void {
     const origin = (req.headers.origin as string | undefined) ?? "*"
     res.setHeader("Access-Control-Allow-Origin", origin)
@@ -502,6 +509,9 @@ export async function startHttpServer(
       "Access-Control-Allow-Methods",
       "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     )
+    if (req.headers["access-control-request-private-network"] === "true") {
+      res.setHeader("Access-Control-Allow-Private-Network", "true")
+    }
   }
 
   const server: Server = createServer((req, res) => {
