@@ -79,6 +79,21 @@ interface SessionDescriptor {
   /** User-friendly slug (when set at spawn time). Accepted as an
    *  alias for the id by attach/stop. */
   name?: string
+  /** Argv that was spawned. Persisted so `restart` can clone the
+   *  original shape without re-tokenizing the display `command`. */
+  argv?: readonly string[]
+  /** Working directory the session was spawned in. Cloned by restart. */
+  cwd?: string
+  /** Adapter slug for agent-cli sessions — restart uses this to
+   *  spin up a fresh ACP runtime. */
+  adapterSlug?: string
+  /** ACP-level session id (the adapter's own handle). Set at spawnAgent
+   *  time; `restart` passes it as `resumeSessionId`. */
+  adapterSessionId?: string
+  /** Provider-specific resume hints sniffed from the session's output
+   *  (e.g. claude-code's `claude --resume <uuid>` hint). Keys are
+   *  adapter-specific (`claudeResumeId`, etc.). */
+  resumeMetadata?: Record<string, string>
 }
 
 export async function runSessions(args: readonly string[]): Promise<number> {
