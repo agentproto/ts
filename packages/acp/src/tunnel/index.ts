@@ -43,6 +43,9 @@ export {
   type TunnelClientOptions,
   type TunnelChildProcess,
   type TunnelSpawnOptions,
+  type TunnelHttpRequest,
+  type TunnelHttpResponse,
+  type TunnelHttpStreamResponse,
 } from "./client.js"
 
 export { wrapWebSocket, type WebSocketLike } from "./ws-adapter.js"

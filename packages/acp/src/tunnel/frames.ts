@@ -140,6 +140,20 @@ export interface HttpRequestFrame {
 /**
  * Generic HTTP-over-tunnel response (DAEMON → HOST). Mirrors
  * `HttpRequestFrame` — see its docs.
+ *
+ * Two-frame protocol:
+ *   - SHORT RESPONSES (most HTTP): daemon emits a single `http_response`
+ *     with body inline. The buffered `forwardHttp` resolves directly
+ *     from this frame.
+ *   - STREAMED RESPONSES (text/event-stream, long-lived chunked
+ *     transfers, large downloads): daemon emits `http_response_head`
+ *     first with status+headers, then one or more `http_response_chunk`
+ *     frames, the last of which has `end: true`. The streaming
+ *     `forwardHttpStream` builds a `ReadableStream` from the chunks.
+ *
+ * Hosts that only support the legacy buffered API can detect the
+ * stream protocol by looking for `http_response_head` and either
+ * pull the chunks into a buffer (compat) or refuse to handle.
  */
 export interface HttpResponseFrame {
   t: "http_response"
@@ -151,6 +165,45 @@ export interface HttpResponseFrame {
   /** Base64-encoded response body. */
   body?: string
   /** Set when the daemon failed to complete the upstream call. */
+  error?: Readonly<{
+    code: string
+    message: string
+  }>
+}
+
+/**
+ * Streaming HTTP response head (DAEMON → HOST). Sent ONCE per
+ * streaming response, before any chunk frames. Carries status +
+ * headers so the host can finalize the response shape (e.g. write
+ * Content-Type) before any body bytes arrive.
+ */
+export interface HttpResponseHeadFrame {
+  t: "http_response_head"
+  reqId: string
+  status: number
+  headers?: Readonly<Record<string, string>>
+}
+
+/**
+ * Streaming HTTP response body chunk (DAEMON → HOST). Each chunk
+ * carries some bytes of the response body. The terminal chunk has
+ * `end: true` and MAY include final bytes. An immediate `end: true`
+ * with no data signals empty-body close.
+ *
+ * `error` set on a chunk frame indicates the daemon's upstream
+ * failed mid-stream; host SHOULD propagate it as a stream error.
+ */
+export interface HttpResponseChunkFrame {
+  t: "http_response_chunk"
+  reqId: string
+  /** Base64-encoded chunk bytes. Omitted on pure end-of-stream
+   *  markers (those carry `end: true` only). */
+  data?: string
+  /** Set on the last chunk. After this frame the host SHOULD ignore
+   *  any further frames for this reqId. */
+  end?: boolean
+  /** Set when the upstream failed mid-stream. Host surfaces this as
+   *  a stream error and closes the readable. */
   error?: Readonly<{
     code: string
     message: string
@@ -252,6 +305,8 @@ export type DaemonToHostFrame =
   | StderrFrame
   | ExitFrame
   | HttpResponseFrame
+  | HttpResponseHeadFrame
+  | HttpResponseChunkFrame
   | PingFrame
   | PongFrame
   | ErrorFrame
@@ -265,6 +320,8 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "resize",
   "http_request",
   "http_response",
+  "http_response_head",
+  "http_response_chunk",
   "ping",
   "pong",
   "error",
