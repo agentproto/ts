@@ -450,7 +450,22 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     const url = `${opts.httpUpstream.replace(/\/$/, "")}${req.path}`
     const controller = new AbortController()
     const timeoutMs = req.timeoutMs ?? 30_000
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    // For streaming responses (SSE / long-poll), the daemon-side
+    // request must NOT abort on the regular timeout — the stream is
+    // *meant* to be long-lived. We arm the timer initially, then
+    // disarm it as soon as we detect a streaming response so the
+    // stream can run indefinitely (the host enforces its own teardown
+    // via tunnel close / explicit cancel).
+    let timer: ReturnType<typeof setTimeout> | null = setTimeout(
+      () => controller.abort(),
+      timeoutMs
+    )
+    const clearTimer = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
     try {
       const upstreamRes = await fetch(url, {
         method: req.method,
@@ -461,12 +476,77 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         // node fetch follows redirects by default — fine for MCP, the
         // upstream gateway doesn't redirect anyway.
       })
-      const buf = Buffer.from(await upstreamRes.arrayBuffer())
       const outHeaders: Record<string, string> = {}
       upstreamRes.headers.forEach((value, key) => {
         if (HOP_BY_HOP.has(key.toLowerCase())) return
         outHeaders[key] = value
       })
+
+      // Streaming detection — SSE responses MUST go through the
+      // chunked-frame protocol so the host can pipe bytes to the
+      // browser in real time. Anything else stays on the buffered
+      // path for now (small JSON responses are simpler that way; we
+      // can widen streaming to all responses later once it's proven).
+      const contentType = (outHeaders["content-type"] ?? "").toLowerCase()
+      const isStream =
+        contentType.startsWith("text/event-stream") ||
+        contentType.includes("application/x-ndjson")
+
+      if (isStream && upstreamRes.body) {
+        // Disarm the request-level timeout — SSE streams are
+        // long-lived by design. The host closing the tunnel (or the
+        // upstream closing its end) is what terminates us now.
+        clearTimer()
+        opts.sink.send({
+          t: "http_response_head",
+          reqId: req.reqId,
+          status: upstreamRes.status,
+          headers: outHeaders,
+        })
+        const reader = upstreamRes.body.getReader()
+        try {
+          while (true) {
+            const { value, done } = await reader.read()
+            if (done) {
+              opts.sink.send({
+                t: "http_response_chunk",
+                reqId: req.reqId,
+                end: true,
+              })
+              return
+            }
+            if (value && value.byteLength > 0) {
+              opts.sink.send({
+                t: "http_response_chunk",
+                reqId: req.reqId,
+                data: encodeData(Buffer.from(value)),
+              })
+            }
+            // Stop streaming if the tunnel sink closed under us — no
+            // point feeding chunks into the void.
+            if (!opts.sink.isOpen) {
+              try {
+                await reader.cancel()
+              } catch {
+                /* ignore */
+              }
+              return
+            }
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          opts.sink.send({
+            t: "http_response_chunk",
+            reqId: req.reqId,
+            end: true,
+            error: { code: "upstream_stream_failed", message },
+          })
+        }
+        return
+      }
+
+      // Buffered path (unchanged): small responses + non-SSE traffic.
+      const buf = Buffer.from(await upstreamRes.arrayBuffer())
       respond({
         status: upstreamRes.status,
         headers: outHeaders,
@@ -483,7 +563,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         },
       })
     } finally {
-      clearTimeout(timer)
+      clearTimer()
     }
   }
 
