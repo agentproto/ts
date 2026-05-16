@@ -286,6 +286,29 @@ export interface PongFrame {
   nonce: string
 }
 
+/**
+ * HOST → DAEMON. Graceful drain signal sent during host rollover (e.g.
+ * Kubernetes preStop). On receipt the daemon SHOULD:
+ *   1. Stop accepting new in-flight work where it can.
+ *   2. Close the WS cleanly (does not need to wait — host will follow
+ *      up with a `close(1012, "service_restart")` ~2 s later as a
+ *      hard backstop).
+ *   3. Reconnect IMMEDIATELY without the usual exponential backoff —
+ *      the host is mid-deploy, the new replica is already listening.
+ *
+ * Backward-compatible: daemons that don't know the frame just ignore
+ * it (parseFrame returns null for unknown types). The host's close
+ * then triggers the daemon's normal backoff loop — worst case ~30 s
+ * reconnect gap instead of ~2 s with the handler.
+ */
+export interface ReconnectSoonFrame {
+  t: "reconnect_soon"
+  /** Hint of how long the host plans to wait before forcing close.
+   *  Optional — daemons MAY use it to decide whether to finish
+   *  in-flight work or close immediately. */
+  reasonMs?: number
+}
+
 // ─── union + guards ─────────────────────────────────────────────
 
 export type HostToDaemonFrame =
@@ -297,6 +320,7 @@ export type HostToDaemonFrame =
   | PingFrame
   | PongFrame
   | ErrorFrame
+  | ReconnectSoonFrame
 
 export type DaemonToHostFrame =
   | HelloFrame
@@ -330,6 +354,7 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "stdout",
   "stderr",
   "exit",
+  "reconnect_soon",
 ])
 
 /**

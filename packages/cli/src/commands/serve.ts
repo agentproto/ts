@@ -404,10 +404,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   let backoffMs = opts.reconnectMinMs ?? 1_000
   const backoffMax = opts.reconnectMaxMs ?? 30_000
+  // Shared flag — flipped by the `reconnect_soon` handler inside
+  // runOneTunnel to skip the 2s post-clean-close pause. Lets a host
+  // doing a graceful preStop drain finish its rollover in ~2s instead
+  // of the daemon's normal ~30s backoff (or even the 2s settle).
+  const reconnectState = { immediate: false }
   while (!aborter.signal.aborted) {
     try {
-      await runOneTunnel(opts, gateway, spawnPty, aborter.signal)
+      await runOneTunnel(opts, gateway, spawnPty, aborter.signal, reconnectState)
       backoffMs = opts.reconnectMinMs ?? 1_000 // success resets backoff
+      if (reconnectState.immediate) {
+        reconnectState.immediate = false
+        // Host signaled graceful drain — skip the settle pause and
+        // reconnect right away (the new replica is already listening).
+        continue
+      }
       // Brief pause before reconnecting even on a clean close. This prevents
       // an infinite reconnect fight when two daemon processes are running with
       // the same token — each close-then-reconnect gets a minimum delay rather
@@ -436,7 +447,8 @@ async function runOneTunnel(
   opts: ServeOpts,
   gateway: GatewayHandle,
   spawnPty: PtyFactory | null,
-  signal: AbortSignal
+  signal: AbortSignal,
+  reconnectState: { immediate: boolean }
 ): Promise<void> {
   if (!opts.connect) throw new Error("runOneTunnel: --connect not set")
   const headers: Record<string, string> = {
@@ -513,6 +525,20 @@ async function runOneTunnel(
         kind: "agent-cli",
         label: `tunnel: ${request.command.split("/").pop() ?? request.command}`,
       })
+    },
+    // Graceful drain hook — flip the outer loop's "reconnect immediately"
+    // flag and close the WS so the supervisor reconnects without backoff.
+    // Host will follow up with close(1012) ~2s later as a hard backstop.
+    onReconnectSoon: ({ reasonMs }) => {
+      process.stderr.write(
+        `agentproto serve: host signaled drain (reasonMs=${reasonMs ?? "?"}) — reconnecting immediately\n`
+      )
+      reconnectState.immediate = true
+      try {
+        ws.close(1000, "host_drain")
+      } catch {
+        /* socket already closing */
+      }
     },
   })
 

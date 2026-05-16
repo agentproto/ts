@@ -92,6 +92,20 @@ export interface TunnelServerOptions {
     child: ChildProcess
     request: SpawnFrame
   }) => void
+  /**
+   * Optional hook fired when the host sends a `reconnect_soon` frame —
+   * graceful drain signal during host rollover. The daemon SHOULD
+   * close + reconnect immediately (skipping any backoff) so the new
+   * host replica picks it up. Default: ignore (the host follows up
+   * with `close(1012)` and the daemon's own reconnect supervisor
+   * handles it via normal backoff, ~30 s gap).
+   *
+   * Implementations typically call into their connection supervisor
+   * to mark the next reconnect as "no-backoff" then close the sink.
+   * `reasonMs` is the host's hint for how long it will wait before
+   * forcing close — daemons MAY use it to drain in-flight RPCs first.
+   */
+  onReconnectSoon?: (info: { reasonMs?: number }) => void
 }
 
 /** Minimal PTY process surface — satisfied by node-pty's IPty. */
@@ -207,6 +221,20 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         return
       case "ping":
         opts.sink.send({ t: "pong", nonce: frame.nonce })
+        return
+      case "reconnect_soon":
+        // Host is shutting down this replica (e.g. k8s preStop). Fire
+        // the supervisor hook so the daemon CLI can drop the WS +
+        // reconnect without exponential backoff. We do NOT close the
+        // sink here — that's the supervisor's call (it may want to
+        // drain in-flight RPCs first using the `reasonMs` hint).
+        try {
+          opts.onReconnectSoon?.({
+            ...(frame.reasonMs !== undefined ? { reasonMs: frame.reasonMs } : {}),
+          })
+        } catch {
+          /* defensive — supervisor hook must never break the tunnel */
+        }
         return
       case "pong":
       case "error":
