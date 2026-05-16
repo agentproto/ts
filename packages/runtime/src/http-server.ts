@@ -1274,7 +1274,20 @@ async function handleSessions(
   }
 
   // Send a follow-up turn to a live agent session.
-  // Body: { prompt: string }
+  // Body: { prompt: string | ContentBlock | ContentBlock[] }
+  //   - string                → auto-wrapped to a single text block by
+  //                             the registry (legacy / convenience).
+  //   - ContentBlock          → e.g. `{type:"image", source:{...}}`
+  //   - ContentBlock[]        → text + image mix for multimodal turns.
+  //                             Forwarded as-is to `agentSession.send`
+  //                             so the adapter (claude-agent-acp, …)
+  //                             negotiates its own content shape.
+  //
+  // Validation is intentionally loose — we accept anything object-
+  // shaped + non-empty arrays + non-empty strings. The adapter will
+  // reject ill-formed blocks with a clear error projected into the
+  // session's ring buffer; throwing here would just duplicate that.
+  //
   // Query: ?wait=false → fire-and-forget (return 202 after sync
   //   validation; output streams via /sessions/:id/stream). Default
   //   wait=true keeps the call blocking until the turn drains, which
@@ -1285,8 +1298,18 @@ async function handleSessions(
     if (!id) return false
     const body = await readJsonBody(req)
     const prompt = (body as { prompt?: unknown } | null)?.prompt
-    if (typeof prompt !== "string") {
-      json(400, { error: "missing_prompt" })
+    const validPrompt =
+      (typeof prompt === "string" && prompt.length > 0) ||
+      (Array.isArray(prompt) &&
+        prompt.length > 0 &&
+        prompt.every(b => b !== null && typeof b === "object")) ||
+      (prompt !== null && typeof prompt === "object" && !Array.isArray(prompt))
+    if (!validPrompt) {
+      json(400, {
+        error: "missing_prompt",
+        message:
+          "Body `prompt` must be a non-empty string, a content block object, or an array of content blocks.",
+      })
       return true
     }
     const reqUrl = req.url ?? ""
