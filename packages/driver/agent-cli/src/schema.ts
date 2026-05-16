@@ -219,6 +219,14 @@ const capabilitiesSchema = z.object({
   multimodal: z.boolean().optional(),
   resumable: z.boolean().optional(),
   bidirectional: z.boolean().optional(),
+  /**
+   * Adapter can ingest a filesystem path that the host UI just placed
+   * on disk (host-side drag-drop into a terminal pastes the path
+   * here). Implies the adapter has a Read-file tool wired so the
+   * dropped path actually does something. Hosts gate drag-drop UI on
+   * this flag — defaults to false (conservative).
+   */
+  file_attach: z.boolean().optional(),
 }).strict()
 
 const modeSchema = z.object({

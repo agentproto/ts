@@ -67,6 +67,13 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multi-machine).
     resumable: true,
     bidirectional: true,
+    // Claude Code's Read tool can ingest any absolute path the host
+    // surfaces via the prompt. Pair with the daemon's POST /files/upload
+    // route + a host UI drag-drop handler: drop a file → daemon writes
+    // to `cwd/.agentproto-attachments/<name>` → host pastes the path
+    // into the terminal → Claude reads it natively. No protocol-level
+    // multimodal round-trip needed; pure file-path injection.
+    file_attach: true,
   },
   modes: [
     { id: "default", description: "Standard interactive mode." },

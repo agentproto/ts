@@ -22,6 +22,8 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
+import { mkdir, stat, writeFile } from "node:fs/promises"
+import { isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
@@ -483,6 +485,116 @@ export async function startHttpServer(
     res.end(JSON.stringify({ status: "fired" }))
   }
 
+  /**
+   * POST /files/upload?cwd=<abs-dir>&name=<filename>
+   *
+   * Writes the raw request body bytes to
+   * `{cwd}/.agentproto-attachments/{safe-name}`, creating the
+   * subdirectory on demand, and returns `{path}` with the absolute
+   * path the agent CLI can read. Used by the host UI's terminal
+   * drag-drop: the browser can't read the dragged file's source path
+   * (security), so we copy the bytes to a known location and tell the
+   * UI to paste THAT path into the terminal — claude-code (and any
+   * CLI with a Read tool) picks it up natively.
+   *
+   * Gated by `checkSessionsToken` so a drive-by HTTP request can't
+   * write arbitrary files: only sessions-authorized callers (CLI or
+   * an allow-listed browser origin) can hit it.
+   *
+   * Hardening:
+   *   - `cwd` must be absolute and exist as a directory.
+   *   - `name` is basename-sanitized (no `/`, `..`, NULs).
+   *   - The resolved write target must stay within
+   *     `{cwd}/.agentproto-attachments/` (defense-in-depth in case the
+   *     name sanitizer ever drifts).
+   *   - Body capped at 32 MiB. Larger uploads error 413 instead of
+   *     filling the daemon's disk.
+   */
+  async function handleFileUpload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: string,
+  ): Promise<void> {
+    const reply = (status: number, body: unknown): void => {
+      res.writeHead(status, { "content-type": "application/json" })
+      res.end(JSON.stringify(body))
+    }
+    const qs = new URLSearchParams(url.includes("?") ? url.slice(url.indexOf("?") + 1) : "")
+    const cwd = qs.get("cwd")
+    const rawName = qs.get("name")
+    if (!cwd || !rawName) {
+      reply(400, { error: "missing_cwd_or_name" })
+      return
+    }
+    if (!isAbsolute(cwd)) {
+      reply(400, { error: "cwd_not_absolute" })
+      return
+    }
+    // basename-style sanitize: strip path separators + parent refs +
+    // NUL bytes; collapse leading dots so the file is visible. The
+    // resolvePath check below catches anything this misses.
+    const safeName = rawName
+      .replace(/[ /\\]/g, "_")
+      .replace(/\.\.+/g, ".")
+      .replace(/^\.+/, "")
+      .slice(0, 200)
+    if (safeName.length === 0) {
+      reply(400, { error: "invalid_name" })
+      return
+    }
+    try {
+      const st = await stat(cwd)
+      if (!st.isDirectory()) {
+        reply(400, { error: "cwd_not_a_directory" })
+        return
+      }
+    } catch {
+      reply(400, { error: "cwd_not_found" })
+      return
+    }
+    const dir = join(cwd, ".agentproto-attachments")
+    const target = resolvePath(dir, safeName)
+    // Defense-in-depth: the sanitized name should never escape `dir`,
+    // but if the sanitizer ever drifts, this catches the escape.
+    if (!target.startsWith(resolvePath(dir) + (dir.endsWith("/") ? "" : "/"))) {
+      reply(400, { error: "path_traversal_blocked" })
+      return
+    }
+    const MAX_BYTES = 32 * 1024 * 1024 // 32 MiB
+    const chunks: Buffer[] = []
+    let total = 0
+    let aborted = false
+    await new Promise<void>((resolveBody, rejectBody) => {
+      req.on("data", chunk => {
+        if (aborted) return
+        const buf = chunk as Buffer
+        total += buf.length
+        if (total > MAX_BYTES) {
+          aborted = true
+          reply(413, { error: "file_too_large", maxBytes: MAX_BYTES })
+          rejectBody(new Error("too_large"))
+          return
+        }
+        chunks.push(buf)
+      })
+      req.on("end", () => {
+        if (!aborted) resolveBody()
+      })
+      req.on("error", err => rejectBody(err))
+    }).catch(() => undefined)
+    if (aborted) return
+    try {
+      await mkdir(dir, { recursive: true })
+      await writeFile(target, Buffer.concat(chunks))
+      reply(200, { path: target, bytes: total })
+    } catch (err) {
+      reply(500, {
+        error: "write_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   // Permissive CORS for the loopback gateway. The Guilde web app
   // (localhost:3041) probes /health from the browser; without these
   // headers the browser blocks the response and the panel says
@@ -561,6 +673,18 @@ export async function startHttpServer(
         }
         if (path === "/heartbeat/tick" && req.method === "POST") {
           await handleHeartbeatTick(req, res)
+          return
+        }
+
+        if (path === "/files/upload" && req.method === "POST") {
+          // Same auth gate as the mutating /sessions/* routes — drive-by
+          // HTTP shouldn't be able to write arbitrary files to disk.
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          await handleFileUpload(req, res, url)
           return
         }
 

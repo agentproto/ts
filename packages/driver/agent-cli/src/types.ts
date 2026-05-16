@@ -160,6 +160,14 @@ export interface AgentCliCapabilities {
   multimodal?: boolean
   resumable?: boolean
   bidirectional?: boolean
+  /**
+   * Adapter can ingest a filesystem path that the host UI just placed
+   * on disk (host-side drag-drop into a terminal pastes the path
+   * here). Implies the adapter has a Read-file tool wired. Hosts gate
+   * drag-drop UI on this flag — defaults to false (conservative).
+   * Paired with the daemon's POST /files/upload route.
+   */
+  file_attach?: boolean
 }
 
 /**
