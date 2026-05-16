@@ -23,6 +23,11 @@ export {
   type ErrorFrame,
   type PingFrame,
   type PongFrame,
+  type WsOpenFrame,
+  type WsOpenAckFrame,
+  type WsMessageFrame,
+  type WsCloseFrame,
+  type ReconnectSoonFrame,
   type TunnelFrame,
   type HostToDaemonFrame,
   type DaemonToHostFrame,
@@ -35,6 +40,7 @@ export {
   type TunnelServer,
   type TunnelServerOptions,
   type PtyProcess,
+  type UpstreamWebSocket,
 } from "./server.js"
 
 export {
@@ -46,6 +52,8 @@ export {
   type TunnelHttpRequest,
   type TunnelHttpResponse,
   type TunnelHttpStreamResponse,
+  type TunnelWebSocket,
+  type TunnelWebSocketOpenRequest,
 } from "./client.js"
 
 export { wrapWebSocket, type WebSocketLike } from "./ws-adapter.js"

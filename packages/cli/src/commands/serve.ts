@@ -506,6 +506,83 @@ async function runOneTunnel(
     // the daemon without needing a public URL. We point at the local
     // gateway since that's where `/mcp`, `/sessions`, `/events` live.
     httpUpstream: gateway.url,
+    // WS forwarding upstream — daemon dials the local gateway's WS
+    // endpoints (/sessions/:id/pty, etc) and pipes frames to the host.
+    // Used by the cloud tunnel pod so browsers on mobile can attach to
+    // interactive PTY sessions even though the daemon is only reachable
+    // through the host (not directly).
+    dialUpstreamWs: async ({ url, protocols, headers }) => {
+      // Dial with the same `ws` lib already used for the host tunnel.
+      // Resolve once we receive `open`; reject on `error` / `unexpected-response`.
+      //
+      // Origin gotcha: the daemon's own HTTP gateway requires Origin in
+      // its allowlist for mutating + WS routes. When we self-dial here
+      // (no browser in the path), `ws` doesn't set Origin and the
+      // request gets 401'd by the daemon's own auth. Inject a loopback
+      // Origin matching the URL — `http://127.0.0.1:*` is always in the
+      // default allowlist.
+      const upstreamHeaders: Record<string, string> = {
+        ...(headers as Record<string, string> | undefined),
+      }
+      if (!upstreamHeaders["origin"] && !upstreamHeaders["Origin"]) {
+        try {
+          const u = new URL(url)
+          const httpScheme = u.protocol === "wss:" ? "https:" : "http:"
+          upstreamHeaders["Origin"] = `${httpScheme}//${u.host}`
+        } catch {
+          /* malformed url — daemon will reject with a clear error */
+        }
+      }
+      return await new Promise((resolve, reject) => {
+        const sock = new WebSocket(url, protocols ? [...protocols] : undefined, {
+          headers: upstreamHeaders,
+        })
+        const onceOpen = () => {
+          sock.off("error", onceError)
+          sock.off("unexpected-response", onceUnexpected)
+          resolve({
+            protocol: sock.protocol ?? "",
+            send: (data, sendOpts) => {
+              sock.send(data, { binary: sendOpts.binary })
+            },
+            close: (code, reason) => {
+              try {
+                sock.close(code, reason)
+              } catch {
+                /* defensive — socket may already be closed */
+              }
+            },
+            onMessage: handler => {
+              sock.on("message", (raw: Buffer, isBinary: boolean) => {
+                handler(raw, isBinary)
+              })
+            },
+            onClose: handler => {
+              sock.on("close", (code: number, reason: Buffer) => {
+                handler(code, reason.toString("utf8"))
+              })
+            },
+            onError: handler => {
+              sock.on("error", (err: Error) => handler(err))
+            },
+          })
+        }
+        const onceError = (err: Error) => {
+          sock.off("open", onceOpen)
+          reject(err)
+        }
+        const onceUnexpected = (
+          _req: unknown,
+          res: { statusCode?: number }
+        ) => {
+          sock.off("open", onceOpen)
+          reject(new Error(`Unexpected server response: ${res.statusCode ?? 0}`))
+        }
+        sock.once("open", onceOpen)
+        sock.once("error", onceError)
+        sock.once("unexpected-response", onceUnexpected)
+      })
+    },
     // v0 authorize hook: trust the bearer-authenticated host completely.
     // Token possession proves the host was provisioned for this daemon.
     // Per-spawn policy filtering will land alongside the policy.toml.

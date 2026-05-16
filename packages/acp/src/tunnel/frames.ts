@@ -221,6 +221,10 @@ export interface HelloFrame {
    */
   capabilities: Readonly<{
     pty: boolean
+    /** Daemon can bridge browser-WS upgrades to its local upstream via
+     *  `ws_open` / `ws_message` / `ws_close`. Hosts MUST gate
+     *  `forwardWebSocket()` on this — older daemons ignore the frames. */
+    wsForward?: boolean
     /** Future: file-transfer, port-forward, etc. */
   }>
   /** User-friendly daemon label, surfaced in host UIs. */
@@ -309,6 +313,91 @@ export interface ReconnectSoonFrame {
   reasonMs?: number
 }
 
+// ─── WebSocket forwarding ───────────────────────────────────────
+//
+// Mirrors the HTTP-forwarding shape but for full-duplex upgrades.
+// The daemon opens a WS connection to its local upstream (typically
+// `ws://127.0.0.1:<port>${path}`), then proxies frames in both
+// directions. Each open is correlated by `reqId`.
+//
+// Capabilities: daemons MUST set `hello.capabilities.wsForward = true`
+// to opt in. Hosts that don't see it MUST NOT send `ws_open`. Older
+// daemons silently ignore unknown frames, so misrouted `ws_open` on a
+// non-capable daemon is benign (the host's open will time out).
+
+/**
+ * HOST → DAEMON. Open a WS connection to the daemon's upstream.
+ * Path semantics match `HttpRequestFrame` — absolute URLs rejected,
+ * daemon prepends its `ws://<upstream>` base. Headers forwarded as-is
+ * (cookies are typically NOT forwarded since the daemon's upstream is
+ * loopback; cookie passthrough is opt-in via daemon config).
+ */
+export interface WsOpenFrame {
+  t: "ws_open"
+  /** Correlates every WS frame in both directions for this connection. */
+  reqId: string
+  /** Path + querystring on the daemon-local upstream, e.g.
+   *  `/sessions/abc/pty?cols=80&rows=24`. */
+  path: string
+  /** Headers to set on the upstream WS request. Hop-by-hop headers
+   *  (Connection, Upgrade, Sec-WebSocket-*) MUST be stripped — the
+   *  daemon's `ws` client manages those. */
+  headers?: Readonly<Record<string, string>>
+  /** Subprotocols requested by the browser; forwarded to upstream. */
+  protocols?: readonly string[]
+}
+
+/**
+ * DAEMON → HOST. Result of a `ws_open`. On success the upstream WS is
+ * connected and frames can flow. On failure `error` is set; no further
+ * frames for this `reqId` will arrive.
+ */
+export interface WsOpenAckFrame {
+  t: "ws_open_ack"
+  reqId: string
+  /** HTTP status from the upstream upgrade. 101 on success; 4xx/5xx
+   *  when the upstream refused the upgrade. */
+  status: number
+  /** Selected subprotocol, if any. */
+  protocol?: string
+  /** Set when the daemon couldn't open the upstream (DNS failure,
+   *  refused, timeout). Distinct from a clean upstream-side close,
+   *  which arrives as `ws_close`. */
+  error?: Readonly<{
+    code: string
+    message: string
+  }>
+}
+
+/**
+ * Either direction. One application-level WS frame's payload. Text
+ * frames carry UTF-8 bytes (`binary: false`); binary frames carry
+ * arbitrary bytes (`binary: true`). The `data` field is base64-encoded
+ * either way so the transport stays JSON.
+ */
+export interface WsMessageFrame {
+  t: "ws_message"
+  reqId: string
+  /** Base64-encoded WS frame payload. */
+  data: string
+  /** True for binary frames; false (or omitted) for text. */
+  binary?: boolean
+}
+
+/**
+ * Either direction. Close the bridged WS connection. Includes the
+ * close code (1000 normal, 1006 abnormal, etc.) and optional reason.
+ * After sending or receiving this frame, neither side will send
+ * further frames for `reqId`.
+ */
+export interface WsCloseFrame {
+  t: "ws_close"
+  reqId: string
+  /** WebSocket close code. */
+  code: number
+  reason?: string
+}
+
 // ─── union + guards ─────────────────────────────────────────────
 
 export type HostToDaemonFrame =
@@ -317,6 +406,9 @@ export type HostToDaemonFrame =
   | KillFrame
   | ResizeFrame
   | HttpRequestFrame
+  | WsOpenFrame
+  | WsMessageFrame
+  | WsCloseFrame
   | PingFrame
   | PongFrame
   | ErrorFrame
@@ -331,6 +423,9 @@ export type DaemonToHostFrame =
   | HttpResponseFrame
   | HttpResponseHeadFrame
   | HttpResponseChunkFrame
+  | WsOpenAckFrame
+  | WsMessageFrame
+  | WsCloseFrame
   | PingFrame
   | PongFrame
   | ErrorFrame
@@ -346,6 +441,10 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "http_response",
   "http_response_head",
   "http_response_chunk",
+  "ws_open",
+  "ws_open_ack",
+  "ws_message",
+  "ws_close",
   "ping",
   "pong",
   "error",

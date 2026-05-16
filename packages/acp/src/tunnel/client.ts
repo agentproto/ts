@@ -29,6 +29,7 @@ import {
   type StderrFrame,
   type StdoutFrame,
   type TunnelFrame,
+  type WsOpenFrame,
 } from "./frames.js"
 import type { FrameSink } from "./transport.js"
 
@@ -63,6 +64,48 @@ export interface TunnelHttpRequest {
   body?: Buffer | Uint8Array | string
   /** Per-request timeout in ms. Default 30_000. */
   timeoutMs?: number
+}
+
+export interface TunnelWebSocketOpenRequest {
+  /** Path + querystring on the daemon-local upstream. Daemon prepends
+   *  its `ws://<upstream>` base; absolute URLs are rejected. */
+  path: string
+  /** Headers forwarded to the upstream upgrade. Hop-by-hop / Sec-* are
+   *  stripped by the daemon. Cookies are NOT forwarded unless the
+   *  daemon was started with `--upstream-cookies`. */
+  headers?: Readonly<Record<string, string>>
+  /** Subprotocols requested. Echoed in `protocol` on success. */
+  protocols?: readonly string[]
+  /** How long to wait for the upstream upgrade before erroring. The
+   *  message stream itself has no timeout (WS lives as long as either
+   *  end keeps it open). Default 30_000. */
+  openTimeoutMs?: number
+}
+
+/**
+ * Bridged WS connection. Mirrors the surface of a browser WebSocket
+ * minus URL/protocol bookkeeping — the host already chose those when
+ * calling `forwardWebSocket`. Messages are typed as text (UTF-8 string)
+ * or binary (Uint8Array); the bridge preserves the upstream's framing.
+ */
+export interface TunnelWebSocket {
+  /** True until `close` runs in either direction. */
+  readonly readyState: "open" | "closing" | "closed"
+  /** Selected subprotocol from the upstream's upgrade response, if any. */
+  readonly protocol: string | null
+  /** Send a frame to the daemon's upstream. No-op when not open. */
+  send(data: string | Uint8Array): void
+  /** Initiate a clean close. Idempotent. */
+  close(code?: number, reason?: string): void
+  /** Subscribe to inbound frames. Returns an unsubscribe fn. */
+  onMessage(
+    listener: (data: Buffer, isBinary: boolean) => void
+  ): () => void
+  /** Subscribe to close. Fires exactly once (after either side closes
+   *  OR the tunnel itself drops). Returns an unsubscribe fn. */
+  onClose(listener: (code: number, reason: string) => void): () => void
+  /** Subscribe to transport-level errors. Closes follow shortly. */
+  onError(listener: (err: Error) => void): () => void
 }
 
 export interface TunnelClientOptions {
@@ -137,6 +180,17 @@ export interface TunnelClient {
    * For one-shot HTTP, prefer `forwardHttp`.
    */
   forwardHttpStream(req: TunnelHttpRequest): Promise<TunnelHttpStreamResponse>
+  /**
+   * Open a bridged WebSocket through the tunnel. The promise resolves
+   * once the daemon has completed the upstream upgrade; from that
+   * point messages flow via the returned `TunnelWebSocket`.
+   *
+   * Rejects on:
+   *   - missing `hello.capabilities.wsForward` — older daemon, no bridge
+   *   - upstream upgrade failure (4xx/5xx) — `cause` carries the status
+   *   - timeout waiting for `ws_open_ack`
+   */
+  forwardWebSocket(req: TunnelWebSocketOpenRequest): Promise<TunnelWebSocket>
   close(): Promise<void>
 }
 
@@ -194,6 +248,21 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       }
   const httpPending = new Map<string, HttpPending>()
 
+  // Per-reqId routing for bridged WS connections. Lifecycle:
+  //   1. forwardWebSocket() inserts a `wsOpenPending` entry + sends ws_open
+  //   2. Daemon emits ws_open_ack → we resolve the open promise into a
+  //      TunnelWebSocketDuck, move it to `wsByReq`, drop the pending entry
+  //   3. Bidirectional ws_message frames route to the duck
+  //   4. ws_close in either direction tears the duck down + drops from the map
+  //   5. Tunnel close errors all open WSes with code 1006
+  type WsPending = {
+    resolve: (ws: TunnelWebSocket) => void
+    reject: (err: Error) => void
+    timer: ReturnType<typeof setTimeout>
+  }
+  const wsOpenPending = new Map<string, WsPending>()
+  const wsByReq = new Map<string, TunnelWebSocketDuck>()
+
   const offFrame = opts.sink.onFrame((frame) => routeIncoming(frame))
   const offClose = opts.sink.onClose(() => {
     for (const [, duck] of childByExec) duck.__handleSinkClosed()
@@ -222,6 +291,15 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       }
     }
     httpPending.clear()
+    for (const [, p] of wsOpenPending) {
+      clearTimeout(p.timer)
+      p.reject(new Error("Tunnel closed before WS upgrade completed."))
+    }
+    wsOpenPending.clear()
+    for (const [, duck] of wsByReq) {
+      duck.__handleSinkClosed()
+    }
+    wsByReq.clear()
     offFrame()
     offClose()
   })
@@ -430,6 +508,56 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
         }
         return
       }
+      case "ws_open_ack": {
+        const pending = wsOpenPending.get(frame.reqId)
+        if (!pending) return
+        wsOpenPending.delete(frame.reqId)
+        clearTimeout(pending.timer)
+        if (frame.error || frame.status !== 101) {
+          const code = frame.error?.code ?? `http_${frame.status}`
+          const msg =
+            frame.error?.message ??
+            `Upstream WS upgrade returned ${frame.status}`
+          pending.reject(new Error(`${code}: ${msg}`))
+          return
+        }
+        const duck = new TunnelWebSocketDuck(
+          frame.reqId,
+          frame.protocol ?? null,
+          opts.sink,
+          () => wsByReq.delete(frame.reqId)
+        )
+        wsByReq.set(frame.reqId, duck)
+        pending.resolve(duck)
+        return
+      }
+      case "ws_message": {
+        const duck = wsByReq.get(frame.reqId)
+        if (!duck) return // stale frame after close — drop
+        duck.__handleMessage(decodeData(frame.data), frame.binary === true)
+        return
+      }
+      case "ws_close": {
+        // Resolve a pending open if the daemon closes before acking
+        // (e.g. upstream refused mid-upgrade and emitted close).
+        const pending = wsOpenPending.get(frame.reqId)
+        if (pending) {
+          wsOpenPending.delete(frame.reqId)
+          clearTimeout(pending.timer)
+          pending.reject(
+            new Error(
+              `WS closed before upgrade (code ${frame.code}${frame.reason ? `: ${frame.reason}` : ""})`
+            )
+          )
+          return
+        }
+        const duck = wsByReq.get(frame.reqId)
+        if (duck) {
+          wsByReq.delete(frame.reqId)
+          duck.__handleClose(frame.code, frame.reason ?? "")
+        }
+        return
+      }
       case "ping":
         opts.sink.send({ t: "pong", nonce: frame.nonce })
         return
@@ -439,6 +567,7 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       case "kill":
       case "resize":
       case "http_request":
+      case "ws_open":
         // Not expected on the host side; ignore.
         return
     }
@@ -604,6 +733,41 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       })
     },
 
+    async forwardWebSocket(
+      req: TunnelWebSocketOpenRequest
+    ): Promise<TunnelWebSocket> {
+      const h = await this.ready()
+      if (h.capabilities.wsForward !== true) {
+        throw new Error(
+          `Tunnel daemon '${h.label ?? "(unnamed)"}' does not advertise wsForward capability. Update the daemon to forward browser WS upgrades.`
+        )
+      }
+      const reqId = randomUUID()
+      const timeoutMs = req.openTimeoutMs ?? 30_000
+      const frame: WsOpenFrame = {
+        t: "ws_open",
+        reqId,
+        path: req.path,
+        ...(req.headers ? { headers: req.headers } : {}),
+        ...(req.protocols && req.protocols.length > 0
+          ? { protocols: req.protocols }
+          : {}),
+      }
+      return new Promise<TunnelWebSocket>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (!wsOpenPending.has(reqId)) return
+          wsOpenPending.delete(reqId)
+          reject(
+            new Error(
+              `Tunnel forwardWebSocket(${req.path}) did not receive ws_open_ack within ${timeoutMs}ms.`
+            )
+          )
+        }, timeoutMs)
+        wsOpenPending.set(reqId, { resolve, reject, timer })
+        opts.sink.send(frame)
+      })
+    },
+
     async close() {
       opts.sink.close("client.close")
     },
@@ -701,5 +865,134 @@ class TunnelChildDuck extends EventEmitter implements TunnelChildProcess {
   resize(cols: number, rows: number): void {
     if (this.exited) return
     this.sink.send({ t: "resize", execId: this.execId, cols, rows })
+  }
+}
+
+/**
+ * Internal duck for a bridged WS. Mirrors the `TunnelWebSocket`
+ * interface; double-underscored methods are control hooks called by
+ * the client's frame router.
+ *
+ * Listener semantics:
+ *   - `onMessage` fires for every `ws_message` frame routed here
+ *   - `onClose` fires exactly once, either when the daemon emits
+ *     `ws_close`, when the caller calls `.close()`, or when the
+ *     underlying tunnel disappears (with code 1006 in that case)
+ *   - `onError` fires for transport-level errors; close follows
+ */
+class TunnelWebSocketDuck implements TunnelWebSocket {
+  readonly protocol: string | null
+  private _readyState: "open" | "closing" | "closed" = "open"
+  private readonly reqId: string
+  private readonly sink: FrameSink
+  private readonly onCleanup: () => void
+  private readonly messageListeners = new Set<
+    (data: Buffer, isBinary: boolean) => void
+  >()
+  private readonly closeListeners = new Set<
+    (code: number, reason: string) => void
+  >()
+  private readonly errorListeners = new Set<(err: Error) => void>()
+
+  constructor(
+    reqId: string,
+    protocol: string | null,
+    sink: FrameSink,
+    onCleanup: () => void
+  ) {
+    this.reqId = reqId
+    this.protocol = protocol
+    this.sink = sink
+    this.onCleanup = onCleanup
+  }
+
+  get readyState(): "open" | "closing" | "closed" {
+    return this._readyState
+  }
+
+  send(data: string | Uint8Array): void {
+    if (this._readyState !== "open") return
+    const bytes =
+      typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data)
+    this.sink.send({
+      t: "ws_message",
+      reqId: this.reqId,
+      data: encodeData(bytes),
+      binary: typeof data !== "string",
+    })
+  }
+
+  close(code: number = 1000, reason?: string): void {
+    if (this._readyState === "closed") return
+    if (this._readyState === "open") {
+      this._readyState = "closing"
+      this.sink.send({
+        t: "ws_close",
+        reqId: this.reqId,
+        code,
+        ...(reason ? { reason } : {}),
+      })
+    }
+    // Fire local close immediately so the caller's onClose handler
+    // runs without waiting for the daemon's echo. The daemon's later
+    // ws_close (if any) is dropped because routeIncoming has already
+    // removed us from wsByReq via __handleClose.
+    this.__handleClose(code, reason ?? "")
+  }
+
+  onMessage(
+    listener: (data: Buffer, isBinary: boolean) => void
+  ): () => void {
+    this.messageListeners.add(listener)
+    return () => this.messageListeners.delete(listener)
+  }
+
+  onClose(listener: (code: number, reason: string) => void): () => void {
+    this.closeListeners.add(listener)
+    return () => this.closeListeners.delete(listener)
+  }
+
+  onError(listener: (err: Error) => void): () => void {
+    this.errorListeners.add(listener)
+    return () => this.errorListeners.delete(listener)
+  }
+
+  __handleMessage(data: Buffer, isBinary: boolean): void {
+    if (this._readyState !== "open") return
+    for (const l of this.messageListeners) {
+      try {
+        l(data, isBinary)
+      } catch {
+        /* listener threw — don't let it tear down siblings */
+      }
+    }
+  }
+
+  __handleClose(code: number, reason: string): void {
+    if (this._readyState === "closed") return
+    this._readyState = "closed"
+    this.onCleanup()
+    for (const l of this.closeListeners) {
+      try {
+        l(code, reason)
+      } catch {
+        /* swallow */
+      }
+    }
+    this.messageListeners.clear()
+    this.closeListeners.clear()
+    this.errorListeners.clear()
+  }
+
+  __handleSinkClosed(): void {
+    if (this._readyState === "closed") return
+    for (const l of this.errorListeners) {
+      try {
+        l(new Error("Tunnel closed mid-WS."))
+      } catch {
+        /* swallow */
+      }
+    }
+    this.__handleClose(1006, "tunnel_closed")
   }
 }

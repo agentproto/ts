@@ -32,6 +32,7 @@ import {
   type StderrFrame,
   type StdoutFrame,
   type TunnelFrame,
+  type WsOpenFrame,
 } from "./frames.js"
 import type { FrameSink } from "./transport.js"
 
@@ -106,6 +107,39 @@ export interface TunnelServerOptions {
    * forcing close — daemons MAY use it to drain in-flight RPCs first.
    */
   onReconnectSoon?: (info: { reasonMs?: number }) => void
+  /**
+   * Factory that dials a WS connection to the local upstream. When
+   * provided (and `httpUpstream` is set), the daemon advertises
+   * `wsForward` capability and handles `ws_open` frames by piping the
+   * upstream WS through the tunnel. Injected so `@agentproto/acp`
+   * stays free of a hard `ws` dependency — the CLI provides this
+   * factory using its already-pulled-in `ws` package.
+   */
+  dialUpstreamWs?: (params: {
+    url: string
+    protocols?: readonly string[]
+    headers?: Readonly<Record<string, string>>
+  }) => Promise<UpstreamWebSocket>
+}
+
+/**
+ * Minimal upstream WS surface — satisfied by the `ws` library's
+ * client socket. Daemons supplying `dialUpstreamWs` resolve into
+ * one of these as soon as the WS is OPEN. `protocol` is the
+ * subprotocol negotiated by the upstream (empty string when none).
+ */
+export interface UpstreamWebSocket {
+  readonly protocol: string
+  /** Send a frame to the upstream. */
+  send(data: Buffer | string, opts: { binary: boolean }): void
+  /** Close the upstream connection. */
+  close(code?: number, reason?: string): void
+  /** Subscribe to inbound frames. */
+  onMessage(handler: (data: Buffer, isBinary: boolean) => void): void
+  /** Subscribe to upstream close. */
+  onClose(handler: (code: number, reason: string) => void): void
+  /** Subscribe to transport errors. */
+  onError(handler: (err: Error) => void): void
 }
 
 /** Minimal PTY process surface — satisfied by node-pty's IPty. */
@@ -129,6 +163,10 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   const children = new Map<string, ChildProcess>()
   // PTY-backed processes keyed by execId (separate from pipe-based children).
   const ptyProcs = new Map<string, PtyProcess>()
+  // Per-reqId map of bridged upstream WS connections. Each entry's
+  // lifecycle starts at ws_open (we send open_ack on success) and ends
+  // at ws_close (either direction). On tunnel teardown we close all.
+  const upstreamWs = new Map<string, UpstreamWebSocket>()
   let closed = false
 
   // Greet the host immediately so it can fail fast on version
@@ -136,7 +174,10 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   opts.sink.send({
     t: "hello",
     version: TUNNEL_VERSION,
-    capabilities: { pty: opts.pty === true },
+    capabilities: {
+      pty: opts.pty === true,
+      wsForward: opts.dialUpstreamWs !== undefined && !!opts.httpUpstream,
+    },
     label: opts.label,
     daemon: {
       name: "agentproto",
@@ -159,6 +200,14 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     children.clear()
     for (const [, pty] of ptyProcs) pty.kill()
     ptyProcs.clear()
+    for (const [, ws] of upstreamWs) {
+      try {
+        ws.close(1001, "tunnel_closed")
+      } catch {
+        /* socket may already be dead */
+      }
+    }
+    upstreamWs.clear()
     offFrame()
     offClose()
   })
@@ -219,6 +268,47 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         // the host's forwardHttp expects.
         await handleHttpRequest(frame)
         return
+      case "ws_open":
+        await handleWsOpen(frame)
+        return
+      case "ws_message": {
+        const ws = upstreamWs.get(frame.reqId)
+        if (!ws) {
+          // Stale frame for a closed bridge — silently drop. Sending
+          // an error frame would race with our own ws_close on the
+          // teardown path.
+          return
+        }
+        try {
+          ws.send(decodeData(frame.data), { binary: frame.binary === true })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          opts.sink.send({
+            t: "ws_close",
+            reqId: frame.reqId,
+            code: 1011,
+            reason: `send_failed: ${message}`,
+          })
+          try {
+            ws.close(1011, "send_failed")
+          } catch {
+            /* defensive */
+          }
+          upstreamWs.delete(frame.reqId)
+        }
+        return
+      }
+      case "ws_close": {
+        const ws = upstreamWs.get(frame.reqId)
+        if (!ws) return
+        upstreamWs.delete(frame.reqId)
+        try {
+          ws.close(frame.code, frame.reason)
+        } catch {
+          /* socket may already be dead */
+        }
+        return
+      }
       case "ping":
         opts.sink.send({ t: "pong", nonce: frame.nonce })
         return
@@ -406,6 +496,144 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       }
       opts.sink.send(f)
       children.delete(req.execId)
+    })
+  }
+
+  /**
+   * Open a bridged WS connection to the local upstream. Same path-
+   * safety rules as `handleHttpRequest` (no absolute URLs, no `..`),
+   * same hop-by-hop header stripping. The `dialUpstreamWs` factory
+   * resolves to an `UpstreamWebSocket` once the upgrade is OPEN — we
+   * then emit `ws_open_ack` to the host and start piping frames.
+   */
+  async function handleWsOpen(req: WsOpenFrame): Promise<void> {
+    if (closed) return
+    const reject = (
+      status: number,
+      code: string,
+      message: string
+    ): void => {
+      opts.sink.send({
+        t: "ws_open_ack",
+        reqId: req.reqId,
+        status,
+        error: { code, message },
+      })
+    }
+    if (!opts.dialUpstreamWs || !opts.httpUpstream) {
+      reject(
+        502,
+        "ws_upstream_not_configured",
+        "Daemon does not support WS forwarding — start with `--upstream ws://…` (or upgrade)."
+      )
+      return
+    }
+    if (
+      !req.path.startsWith("/") ||
+      req.path.startsWith("//") ||
+      req.path.includes("..")
+    ) {
+      reject(
+        400,
+        "invalid_path",
+        `Daemon WS forward requires a safe relative path; got '${req.path}'.`
+      )
+      return
+    }
+    const HOP_BY_HOP = new Set([
+      "connection",
+      "upgrade",
+      "sec-websocket-version",
+      "sec-websocket-key",
+      "sec-websocket-extensions",
+      "sec-websocket-protocol",
+      "host",
+      "content-length",
+    ])
+    const headers: Record<string, string> = {}
+    for (const [k, v] of Object.entries(req.headers ?? {})) {
+      if (HOP_BY_HOP.has(k.toLowerCase())) continue
+      headers[k] = v
+    }
+    // Map the http upstream base to a ws scheme. The daemon's upstream
+    // is conventionally http://127.0.0.1:<port>; the same host accepts
+    // WS upgrades on the same port, so ws://… works.
+    const base = opts.httpUpstream.replace(/^http(s?):\/\//, "ws$1://")
+    const url = `${base.replace(/\/$/, "")}${req.path}`
+    let upstream: UpstreamWebSocket
+    try {
+      upstream = await opts.dialUpstreamWs({
+        url,
+        ...(req.protocols && req.protocols.length > 0
+          ? { protocols: req.protocols }
+          : {}),
+        headers,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // Try to extract an HTTP status from a `ws` error like
+      // `Unexpected server response: 404`.
+      const m = message.match(/Unexpected server response: (\d+)/)
+      const status = m ? Number.parseInt(m[1]!, 10) : 502
+      reject(status, "upstream_ws_failed", message)
+      return
+    }
+    // Race: caller already abandoned us (tunnel closed mid-upgrade).
+    if (closed) {
+      try {
+        upstream.close(1001, "tunnel_closed")
+      } catch {
+        /* defensive */
+      }
+      return
+    }
+    upstreamWs.set(req.reqId, upstream)
+    opts.sink.send({
+      t: "ws_open_ack",
+      reqId: req.reqId,
+      status: 101,
+      ...(upstream.protocol ? { protocol: upstream.protocol } : {}),
+    })
+
+    upstream.onMessage((data, isBinary) => {
+      if (!opts.sink.isOpen) return
+      opts.sink.send({
+        t: "ws_message",
+        reqId: req.reqId,
+        data: encodeData(data),
+        binary: isBinary,
+      })
+    })
+    upstream.onClose((code, reason) => {
+      if (!upstreamWs.has(req.reqId)) return
+      upstreamWs.delete(req.reqId)
+      if (opts.sink.isOpen) {
+        opts.sink.send({
+          t: "ws_close",
+          reqId: req.reqId,
+          code,
+          ...(reason ? { reason } : {}),
+        })
+      }
+    })
+    upstream.onError(err => {
+      // Errors typically precede a close; emit a stable error code in
+      // the close frame so the host can distinguish from clean close.
+      if (!upstreamWs.has(req.reqId)) return
+      upstreamWs.delete(req.reqId)
+      if (opts.sink.isOpen) {
+        opts.sink.send({
+          t: "ws_close",
+          reqId: req.reqId,
+          code: 1011,
+          reason: `upstream_error: ${err.message}`,
+        })
+      }
+      try {
+        upstream.close(1011, "upstream_error")
+      } catch {
+        /* defensive */
+      }
     })
   }
 
