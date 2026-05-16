@@ -183,6 +183,11 @@ interface SessionRuntime {
    *  ring buffer unreadable when each token got its own
    *  `[thought]` line — coalesce the same way text-delta does. */
   thoughtBuf: string
+  /** In-flight resume promise. Deduplicates concurrent prompt
+   *  attempts on a dead agent session — only one resume call hits
+   *  the adapter, the rest await this promise. Cleared once
+   *  resolved (success or failure). */
+  resumePromise?: Promise<void>
 }
 
 const RECENT_LINES_CAP = 500
@@ -359,6 +364,26 @@ export interface SpawnPtyInput {
   label?: string
 }
 
+/**
+ * Hook the registry uses to rebuild a dead agent session on demand.
+ * Invoked when a prompt arrives for an agent-cli session whose
+ * `agentSession` was lost (typically daemon restart). Returns a fresh
+ * `AgentSessionLike` bound to the same upstream conversation via
+ * `resumeSessionId`, OR null if resume isn't possible (adapter gone,
+ * upstream rejected). When null, the prompt path surfaces the same
+ * "not an agent session" error as before — caller knows the row is a
+ * ghost.
+ *
+ * The CLI wires this into the registry by passing in a closure that
+ * calls `resolveAgentAdapter(slug)?.startSession({cwd, resumeSessionId})`,
+ * which is the same path the gateway's POST /sessions/agent uses.
+ */
+export type AgentSessionResumer = (input: {
+  adapterSlug: string
+  cwd: string
+  resumeSessionId: string
+}) => Promise<AgentSessionLike | null>
+
 export function createSessionsRegistry(opts?: {
   /** Override the persistence path — tests pin a tmpdir. */
   persistPath?: string
@@ -368,10 +393,18 @@ export function createSessionsRegistry(opts?: {
    *  throws — the daemon advertises PTY support only when the cli
    *  layer resolved node-pty successfully. */
   spawnPty?: PtyFactory
+  /** Hook called when a prompt arrives for an agent-cli session whose
+   *  agentSession binding is gone (daemon restart). When provided,
+   *  the registry transparently resumes the session via the adapter's
+   *  resumeSessionId before dispatching the turn. When omitted,
+   *  killed agent-cli sessions surface the legacy "not an agent
+   *  session" error and the user must spawn fresh. */
+  resumeAgent?: AgentSessionResumer
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
   const ptyFactory = opts?.spawnPty
+  const resumeAgent = opts?.resumeAgent
   const sessions = new Map<string, SessionRuntime>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonically-growing PTY-subscriber id. Detach is O(1) on
@@ -644,6 +677,77 @@ export function createSessionsRegistry(opts?: {
       )
     }
     return rt
+  }
+
+  /**
+   * Attempt to resume a dead agent-cli session by re-spawning the
+   * adapter with the persisted `adapterSessionId`. The conversation
+   * continues from where it left off — ACP's `resumeSessionId`
+   * contract guarantees the adapter rehydrates state from the
+   * upstream provider (Anthropic / OpenAI / etc.) when supported.
+   *
+   * Returns silently when:
+   *   - resumeAgent hook wasn't provided (older daemon embedding)
+   *   - session is already alive (binding present)
+   *   - session is a non-agent kind (terminal/command can't resume)
+   *   - descriptor lacks adapterSessionId or adapterSlug (legacy row
+   *     persisted before resume metadata was tracked)
+   *
+   * Concurrent prompt arrivals share one resume attempt via
+   * `rt.resumePromise`.
+   */
+  const maybeResumeAgent = async (rt: SessionRuntime): Promise<void> => {
+    if (rt.agentSession) return
+    if (!resumeAgent) return
+    if (rt.desc.kind !== "agent-cli") return
+    const adapterSlug = rt.desc.adapterSlug ?? rt.adapterSlug
+    const adapterSessionId = rt.desc.adapterSessionId
+    const cwd = rt.desc.cwd
+    if (!adapterSlug || !adapterSessionId || !cwd) return
+    if (rt.resumePromise) {
+      await rt.resumePromise
+      return
+    }
+    rt.resumePromise = (async () => {
+      appendLine(
+        rt,
+        `── resuming ${adapterSlug} session ${adapterSessionId} ──`,
+        "stdout"
+      )
+      try {
+        const fresh = await resumeAgent({
+          adapterSlug,
+          cwd,
+          resumeSessionId: adapterSessionId,
+        })
+        if (!fresh) {
+          appendLine(
+            rt,
+            `[error] resume failed: adapter '${adapterSlug}' returned null`,
+            "stderr"
+          )
+          return
+        }
+        rt.agentSession = fresh
+        rt.adapterSlug = adapterSlug
+        rt.desc.adapterSessionId = fresh.sessionId
+        if (rt.desc.status !== "running") {
+          rt.desc.status = "running"
+          delete rt.desc.endedAt
+          delete rt.desc.exitCode
+          rt.emitter.emit("status", rt.desc.status)
+        }
+        schedulePersist()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
+      }
+    })()
+    try {
+      await rt.resumePromise
+    } finally {
+      rt.resumePromise = undefined
+    }
   }
 
   const runAgentTurn = async (
@@ -970,19 +1074,49 @@ export function createSessionsRegistry(opts?: {
       return desc
     },
     async sendPrompt(id, message) {
+      const rtPre = sessions.get(id)
+      if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
       await runAgentTurn(rt, message)
     },
     enqueuePrompt(id, message) {
-      // Sync validation throws to the caller; only the actual turn
-      // dispatch runs in the background. Errors during the turn land
-      // in the ring buffer (via projectEvent in runAgentTurn) so the
-      // SSE consumer sees them as `[error]` lines.
-      const rt = validateAgentTurn(id, "enqueuePrompt")
-      void runAgentTurn(rt, message).catch(() => {
-        // The runAgentTurn helper already projects errors into the
-        // session's ring buffer — nothing else to do here.
-      })
+      // For sync `enqueuePrompt`, we need to surface an immediate
+      // error when the session is missing OR when it's a non-agent
+      // kind that can't be resumed at all. But when the session IS
+      // an agent-cli with resume metadata, defer validation until
+      // after the resume attempt so a dead-but-resumable row Just
+      // Works for the caller (no "not an agent session" error after
+      // a daemon restart).
+      const rtPre = sessions.get(id)
+      if (!rtPre) {
+        throw new Error(`enqueuePrompt: no session "${id}"`)
+      }
+      if (rtPre.desc.kind !== "agent-cli") {
+        throw new Error(
+          `enqueuePrompt: session "${id}" is not an agent session (kind=${rtPre.desc.kind})`
+        )
+      }
+      if (rtPre.busy) {
+        throw new Error(
+          `enqueuePrompt: session "${id}" is mid-turn — wait for it to finish or cancel`
+        )
+      }
+      // Fire-and-forget: resume (if needed) then dispatch. Errors
+      // during either step land in the ring buffer as `[error]`
+      // lines so the SSE consumer sees them.
+      void (async () => {
+        try {
+          await maybeResumeAgent(rtPre)
+          const rt = validateAgentTurn(id, "enqueuePrompt")
+          await runAgentTurn(rt, message)
+        } catch (err) {
+          appendLine(
+            rtPre,
+            `[error] ${err instanceof Error ? err.message : String(err)}`,
+            "stderr"
+          )
+        }
+      })()
     },
     list() {
       return Array.from(sessions.values())

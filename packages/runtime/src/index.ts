@@ -215,6 +215,31 @@ export async function createGateway(
   // build time, even though the factory only invokes later.
   const sessions = createSessionsRegistry({
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+    // Resume hook: when a prompt arrives for a dead agent-cli row
+    // (typical after daemon restart), the registry calls back into
+    // the adapter resolver to re-create the AgentSession with
+    // `resumeSessionId = adapterSessionId`. ACP semantics: the
+    // upstream provider reattaches to the prior conversation.
+    // Unwired (no resolveAgentAdapter) → legacy "not an agent
+    // session" error, user must spawn fresh.
+    ...(opts.resolveAgentAdapter
+      ? {
+          resumeAgent: async ({ adapterSlug, cwd, resumeSessionId }) => {
+            const adapter = await opts.resolveAgentAdapter!(adapterSlug)
+            if (!adapter) return null
+            try {
+              return await adapter.startSession({ cwd, resumeSessionId })
+            } catch (err) {
+              console.warn(
+                `[agentproto] resumeAgent('${adapterSlug}', ${resumeSessionId}) failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`
+              )
+              return null
+            }
+          },
+        }
+      : {}),
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes
