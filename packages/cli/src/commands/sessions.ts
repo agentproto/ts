@@ -37,6 +37,7 @@ import {
   RESUME_STRATEGIES,
   hasResumeStrategy,
 } from "@agentproto/runtime/resume-strategies"
+import type { SessionDescriptor } from "@agentproto/runtime"
 
 const USAGE = `agentproto sessions — browse and control daemon sessions
 
@@ -61,25 +62,11 @@ While attached:
   Ctrl-C     send to the child (PTY mode) / detach (SSE mode)
 `
 
-interface SessionDescriptor {
-  id: string
-  kind: string
-  workspaceSlug: string
-  command: string
-  pid: number | null
-  status: string
-  startedAt: string
-  endedAt?: string
-  exitCode?: number
-  lastOutputAt?: string
-  label?: string
-  /** True when the session is a real PTY. Attach goes through WS
-   *  /sessions/:id/pty instead of SSE /sessions/:id/stream. */
-  pty?: boolean
-  /** User-friendly slug (when set at spawn time). Accepted as an
-   *  alias for the id by attach/stop. */
-  name?: string
-}
+// SessionDescriptor is imported from @agentproto/runtime — its
+// canonical shape covers adapterSlug / adapterSessionId / cwd / argv
+// / resumeMetadata, which the resume/restart flow below relies on.
+// Keeping a local re-declaration here in the past drifted out of
+// sync with the runtime, breaking type-check on every field added.
 
 export async function runSessions(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
