@@ -158,6 +158,21 @@ export interface IntentDefinition {
    */
   auth?: string
   experiments?: ExperimentArm[]
+  /**
+   * Publication tier. Aligns with Model Access Rules v2 scope chain.
+   * Default `app`. `platform` is reserved for host-runtime defaults
+   * and MUST NOT appear in authored manifests.
+   *
+   * See AIP-28 § Scope and publication for the seven tiers, the
+   * specificity ranks, and the authoring-permission gates per tier.
+   */
+  scope?: "app" | "tier" | "user" | "guild" | "workspace" | "operator"
+  /**
+   * Intent id of a less-specific-tier intent that this manifest hides.
+   * Used when a higher-tier scope wants to remove a lower-tier intent
+   * without re-implementing it.
+   */
+  disable?: string
   preview?: string
   tags?: string[]
   examples?: {
