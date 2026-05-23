@@ -1,0 +1,68 @@
+{
+  "name": "@agentproto/runtime-profile-standard",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/runtime-profile-standard — reference file-mode MultiAgentRuntime profile. Drops a Claude Code reviewer sub-agent, session-start + user-prompt-submit hooks, an `/ap-swarm` slash command, and an example local swarm manifest into a repo so `agentproto run-swarm` works out of the box. Installed via `agentproto install runtime-profile/standard`.",
+  "keywords": [
+    "agentproto",
+    "agent-runtime",
+    "runtime-profile",
+    "claude-code"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/runtime-profile-standard"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./profile.json": "./profile.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "files",
+    "profile.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "predev": "node scripts/build-hooks.mjs",
+    "dev": "tsup --watch",
+    "prebuild": "node scripts/build-hooks.mjs",
+    "build": "tsup",
+    "clean": "rm -rf dist files/.claude/hooks/user-prompt-submit.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "build:hooks": "node scripts/build-hooks.mjs",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@agentproto/agent-runtime": "workspace:*",
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

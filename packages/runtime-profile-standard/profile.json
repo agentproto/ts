@@ -1,0 +1,15 @@
+{
+  "schema": "agentproto/runtime-profile/v1",
+  "slug": "runtime-profile/standard",
+  "version": "0.1.0",
+  "name": "Standard MultiAgentRuntime profile",
+  "description": "Reference file-mode setup: an example reviewer sub-agent, session-start + user-prompt-submit Claude Code hooks, and an `/ap-swarm` slash command. Composes with the @agentproto/agent-runtime kernel and the @agentproto/cli `run-swarm` verb. Transport-bridge profiles (Slack, MCP servers, etc.) ship as separate `@<vendor>/runtime-profile-*` packages.",
+  "files": [
+    { "src": ".claude/agents/reviewer.md", "dest": ".claude/agents/reviewer.md", "strategy": "overwrite" },
+    { "src": ".claude/hooks/session-start.mjs", "dest": ".claude/hooks/session-start.mjs", "strategy": "overwrite", "executable": true },
+    { "src": ".claude/hooks/user-prompt-submit.mjs", "dest": ".claude/hooks/user-prompt-submit.mjs", "strategy": "overwrite", "executable": true },
+    { "src": ".claude/commands/ap-swarm.md", "dest": ".claude/commands/ap-swarm.md", "strategy": "overwrite" },
+    { "src": ".claude/examples/swarm-local.md", "dest": ".claude/examples/swarm-local.md", "strategy": "overwrite" },
+    { "src": ".claude/settings.json", "dest": ".claude/settings.json", "strategy": "merge-json-deep" }
+  ]
+}
