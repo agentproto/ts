@@ -1,0 +1,82 @@
+{
+  "name": "@agentproto/corpus-presets",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/corpus-presets — catalog of starter workspaces for the AIP-10 corpus runtime. Subpath exports per vertical (marketing, sales, …). Each preset is pure TS data — host iterates `files` and writes via FsPort. Mirrors @agentproto/role-catalog.",
+  "keywords": [
+    "agentproto",
+    "corpus",
+    "presets",
+    "starter",
+    "aip-10"
+  ],
+  "homepage": "https://agentproto.sh/docs/corpus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/corpus-presets"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./marketing": {
+      "types": "./dist/marketing/index.d.ts",
+      "import": "./dist/marketing/index.mjs",
+      "default": "./dist/marketing/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "agentproto-corpus-preset": {
+    "schema": "agentproto/corpus-preset/v1",
+    "presets": [
+      {
+        "slug": "marketing",
+        "entry": "./dist/marketing/index.mjs",
+        "export": "MarketingCorpusPreset",
+        "description": "Marketing knowledge corpus — principles, patterns, critiques, playbooks. Composes AIP-10/12/18/9/15/41 into a closed-loop improvement system."
+      }
+    ]
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "predev": "node scripts/gen-marketing.mjs",
+    "dev": "tsup --watch",
+    "prebuild": "node scripts/gen-marketing.mjs",
+    "build": "tsup",
+    "clean": "rm -rf dist src/marketing/files.ts",
+    "precheck-types": "node scripts/gen-marketing.mjs",
+    "check-types": "tsc --noEmit",
+    "pretest": "node scripts/gen-marketing.mjs",
+    "test": "vitest run --passWithNoTests",
+    "gen:marketing": "node scripts/gen-marketing.mjs",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/corpus": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "name": "@agentproto/corpus",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/corpus — canonical composition of AIP-10 KNOWLEDGE, AIP-12 PLAYBOOK, AIP-18 COLLECTION, AIP-9 OPERATOR, AIP-15 WORKFLOW, AIP-41 ROUTINE into an autonomous knowledge-improvement system. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
+  "keywords": [
+    "agentproto",
+    "corpus",
+    "aip-10",
+    "aip-12",
+    "aip-18",
+    "knowledge-base",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/corpus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/corpus"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./ports": {
+      "types": "./dist/ports/index.d.ts",
+      "import": "./dist/ports/index.mjs",
+      "default": "./dist/ports/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/collection": "workspace:*",
+    "@agentproto/knowledge": "workspace:*",
+    "@agentproto/operator": "workspace:*",
+    "@agentproto/playbook": "workspace:*",
+    "@agentproto/routine": "workspace:*",
+    "@agentproto/workflow": "workspace:*",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "gray-matter": "^4.0.3",
+    "yaml": "^2.7.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

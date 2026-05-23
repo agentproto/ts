@@ -1,0 +1,76 @@
+{
+  "name": "@agentproto/corpus-cli",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/corpus-cli — the `corpus` binary. Validate, lint, and operate an AIP-10 corpus workspace from the command line. Local-topology host for @agentproto/corpus — pair with a local backing engine (qdrant docker / gbrain) for a fully offline corpus runtime.",
+  "keywords": [
+    "agentproto",
+    "corpus",
+    "aip-10",
+    "cli",
+    "knowledge-base"
+  ],
+  "homepage": "https://agentproto.sh/docs/corpus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/corpus-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "corpus": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./ports": {
+      "types": "./dist/ports/index.d.ts",
+      "import": "./dist/ports/index.mjs",
+      "default": "./dist/ports/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/corpus": "workspace:*",
+    "@agentproto/corpus-presets": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
