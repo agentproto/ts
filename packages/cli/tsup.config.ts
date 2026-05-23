@@ -8,19 +8,34 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    "registry/runtime": "src/registry/runtime.ts",
+    "registry/builtins": "src/registry/builtins.ts",
+    "registry/plugins": "src/registry/plugins.ts",
+    "registry/manifest": "src/registry/manifest.ts",
+    "util/credentials": "src/util/credentials.ts",
   },
   format: ["esm"],
   splitting: false,
-  dts: { entry: { index: "src/index.ts" } },
+  dts: {
+    entry: {
+      index: "src/index.ts",
+      "registry/runtime": "src/registry/runtime.ts",
+      "registry/builtins": "src/registry/builtins.ts",
+      "registry/plugins": "src/registry/plugins.ts",
+      "registry/manifest": "src/registry/manifest.ts",
+      "util/credentials": "src/util/credentials.ts",
+    },
+  },
   external: [
     "@agentproto/acp",
     "@agentproto/driver-agent-cli",
     // Third-party deps — externalised so the published cli installs
     // them via npm at runtime. `gray-matter` is CJS + does dynamic
     // require("fs"), which esbuild can't safely inline into an ESM
-    // bundle, so it MUST stay external. zod + @modelcontextprotocol/sdk
-    // are also external because they're already on npm and bundling
-    // them would just bloat the cli without benefit.
+    // bundle, so it MUST stay external. Same for the MCP SDK, which
+    // transitively pulls in `cross-spawn` (CJS + dynamic require) —
+    // bundling it produces an ESM file that crashes on first import.
+    "@agentproto/runtime-profile-standard",
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/*",
     "gray-matter",
@@ -42,6 +57,12 @@ export default createTsupConfig({
   // into cli.mjs. Once each lands on npm independently, move it to
   // `external` and declare it under `dependencies` in package.json.
   noExternal: [
+    "@agentproto/agent-runtime",
+    "@agentproto/agent-runtime/adapters/substrate-file",
+    "@agentproto/agent-runtime/adapters/dispatcher-mention",
+    "@agentproto/agent-runtime/adapters/state-fs",
+    "@agentproto/agent-runtime/adapters/participant-agent-cli",
+    "@agentproto/agent-runtime/adapters/telemetry",
     "@agentproto/runtime",
     "@agentproto/agent",
     "@agentproto/manifest",

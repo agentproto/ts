@@ -33,8 +33,20 @@ import { parseArgs } from "node:util"
 import type { AgentCliInstallMethod } from "@agentproto/driver-agent-cli"
 import { resolveAdapter } from "../registry/resolve.js"
 import { runSetup } from "./setup.js"
+import { runInstallProfile } from "./install-profile.js"
 
 export async function runInstall(args: readonly string[]): Promise<number> {
+  // Peek at the slug before parseArgs — it influences which option set is
+  // valid. Adapter slugs and runtime-profile/* slugs share the verb but
+  // route through separate handlers with different flags.
+  const slugPeek = args.find((a) => !a.startsWith("-"))
+  if (slugPeek?.startsWith("runtime-profile/")) {
+    return runInstallProfile(
+      slugPeek,
+      args.filter((a) => a !== slugPeek)
+    )
+  }
+
   const { values, positionals } = parseArgs({
     args: [...args],
     allowPositionals: true,

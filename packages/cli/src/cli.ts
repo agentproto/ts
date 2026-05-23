@@ -21,7 +21,9 @@ import { runAuth } from "./commands/auth.js"
 import { runConfig } from "./commands/config.js"
 import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
+import { runPlugins } from "./commands/plugins.js"
 import { runRun } from "./commands/run.js"
+import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
@@ -33,8 +35,11 @@ Usage:
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup]
+                       <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
+  agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
+  agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>] [--verbose]
   agentproto serve     [--workspace <dir>] [--port <n>] [--bind <ip>]
                        [--connect <url> [--token <jwt>] [--label <name>]]
                        [--allow-origin <url> …] [--interactive | -i]
@@ -53,8 +58,10 @@ Usage:
 Examples:
   agentproto auth login --host wss://guilde.work     # device flow → ~/.agentproto/credentials.json
   agentproto install claude-code
+  agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
   agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
   agentproto run claude-code --cwd . --prompt "summarise this repo"
+  agentproto run-swarm --manifest .runtime/local.yaml --verbose
   agentproto workspace add ~/code/my-project --slug my-project
   agentproto workspace list
   agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
@@ -72,8 +79,10 @@ const VERBS = new Set([
   "config",
   "daemon",
   "install",
+  "plugins",
   "setup",
   "run",
+  "run-swarm",
   "serve",
   "workspace",
   "sessions",
@@ -117,10 +126,14 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     case "install":
       return runInstall(rest)
+    case "plugins":
+      return runPlugins(rest)
     case "setup":
       return runSetupCommand(rest)
     case "run":
       return runRun(rest)
+    case "run-swarm":
+      return runRunSwarm(rest)
     case "serve":
       return runServe(rest)
     case "workspace":

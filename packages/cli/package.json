@@ -36,7 +36,33 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
-    }
+    },
+    "./registry/runtime": {
+      "types": "./dist/registry/runtime.d.ts",
+      "import": "./dist/registry/runtime.mjs",
+      "default": "./dist/registry/runtime.mjs"
+    },
+    "./registry/builtins": {
+      "types": "./dist/registry/builtins.d.ts",
+      "import": "./dist/registry/builtins.mjs",
+      "default": "./dist/registry/builtins.mjs"
+    },
+    "./registry/plugins": {
+      "types": "./dist/registry/plugins.d.ts",
+      "import": "./dist/registry/plugins.mjs",
+      "default": "./dist/registry/plugins.mjs"
+    },
+    "./registry/manifest": {
+      "types": "./dist/registry/manifest.d.ts",
+      "import": "./dist/registry/manifest.mjs",
+      "default": "./dist/registry/manifest.mjs"
+    },
+    "./util/credentials": {
+      "types": "./dist/util/credentials.d.ts",
+      "import": "./dist/util/credentials.mjs",
+      "default": "./dist/util/credentials.mjs"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -54,6 +80,7 @@
   "dependencies": {
     "@agentproto/acp": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/runtime-profile-standard": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.20.0",
@@ -65,6 +92,7 @@
   "devDependencies": {
     "@agentproto/adapter-claude-code": "workspace:*",
     "@agentproto/adapter-hermes": "workspace:*",
+    "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
