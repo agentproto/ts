@@ -18,6 +18,24 @@ import type { KnowledgeDefinition, KnowledgeHandle } from "./types.js"
 export const defineKnowledge = createDoctype<KnowledgeDefinition, KnowledgeHandle>({
   aip: 10,
   name: "knowledge",
+  // AIP-10 has three branches with different identity fields:
+  //   entry  → slug
+  //   source → id
+  //   workspace → name
+  // Dispatch on the `schema` discriminator so the cross-AIP id-pattern
+  // check runs against the right token.
+  readIdentity: (def: KnowledgeDefinition) => {
+    switch (def.schema) {
+      case "knowledge.entry/v1":
+        return def.slug
+      case "knowledge.source/v1":
+        return def.id
+      case "knowledge.workspace/v1":
+        return def.name
+      default:
+        return ""
+    }
+  },
   validate(def) {
     const result = knowledgeFrontmatterSchema.safeParse(def)
     if (!result.success) {

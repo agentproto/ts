@@ -48,10 +48,14 @@ const SPEC_DIR = resolve(TS_ROOT, "../agentproto/specs")
 const args = parseArgs(process.argv.slice(2))
 if (!args.aip || !args.slug || !args.doctype) {
   console.error(
-    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE>",
+    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only]",
   )
   process.exit(1)
 }
+// --schema-only: emit ONLY the schema.ts content to stdout (no package
+// scaffold, no writes). Used to re-cut schemas for already-existing
+// packages when the JSON Schema or this generator's logic changes.
+const SCHEMA_ONLY = Boolean(args["schema-only"])
 
 const AIP = Number(args.aip)
 const SLUG = args.slug
@@ -93,7 +97,10 @@ const schema = hasSchema
   : null
 
 // ── refuse to overwrite an existing package ──────────────────────────
-if (existsSync(PKG_DIR)) {
+// `--schema-only` bypasses this guard — it emits to stdout, never to
+// the package directory, so an existing package is fine (in fact, the
+// usual case: regenerating the schema for a published package).
+if (!SCHEMA_ONLY && existsSync(PKG_DIR)) {
   console.error(`package ${PKG_DIR} already exists — refusing to overwrite`)
   process.exit(1)
 }
@@ -160,12 +167,21 @@ if (hasSchema) {
   // The compiler emits multiple interfaces (sub-objects, $defs). Keep
   // them all — downstream code can reference SkillRef, ToolRef, etc.
   definitionInterface = relaxMixedIndexSignatures(compiled.trim())
+  // json-schema-to-zod@2.6.x collapses a top-level `oneOf` of `$ref`s
+  // (the discriminator pattern AIP-6 + AIP-10 use) into a broken
+  // `z.any().superRefine` block that always fails the exactly-one
+  // check. Detect that case and emit `z.discriminatedUnion(...)`
+  // ourselves before falling back to the generic codegen.
+  const discriminatedUnionExpr = tryDiscriminatedUnion(schema)
   // json-schema-to-zod emits the zod v3 `.refine(pred, "msg")` shape;
   // zod v4 takes `.refine(pred, { message: "msg" })`. Walk the output
   // and rewrite — paren-aware (a regex would break on the nested
   // commas inside the predicate's arrow function args).
   let zodSrc = upgradeRefineToV4(
-    jsonSchemaToZod(schema, { module: "none" }).trim().replace(/;$/, ""),
+    (discriminatedUnionExpr ??
+      jsonSchemaToZod(schema, { module: "none" }))
+      .trim()
+      .replace(/;$/, ""),
   )
   // zod 4 + strict + nested defaults: `.strict().default({})` fails TS
   // typecheck because the strict object's input shape requires fields
@@ -176,6 +192,41 @@ if (hasSchema) {
     .replace(/\.default\(\{\}\)/g, ".default({} as never)")
     .replace(/\.default\(\[\]\)/g, ".default([] as never)")
   zodSchemaExpr = zodSrc
+}
+
+// ── --schema-only short-circuit ──────────────────────────────────────
+// Emit just the schema.ts content to stdout and exit before any writes
+// hit the package directory. Lets callers refresh schemas in published
+// packages without dragging the rest of the skeleton along.
+if (SCHEMA_ONLY) {
+  if (!hasSchema) {
+    console.error(
+      `--schema-only: no JSON Schema at resources/aip-${AIP}/draft/${DOCTYPE}.schema.json`,
+    )
+    process.exit(1)
+  }
+  process.stdout.write(
+    `/**
+ * AIP-${AIP} ${DOCTYPE}.md frontmatter zod schema.
+ *
+ * Generated from \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via
+ * json-schema-to-zod. Imported by both \`define-${SLUG}.ts\` (TS path
+ * validation) and \`manifest/index.ts\` (.md path validation) so every
+ * field-level constraint runs in both authoring paths from a single
+ * source of truth — re-run scaffold-aip to refresh after spec changes.
+ *
+ * Cross-field rules (if/then/allOf in JSON Schema) don't translate
+ * cleanly and live in \`define-${SLUG}.ts\`'s \`validate(def)\` instead.
+ */
+
+import { z } from "zod"
+
+export const ${CAMEL}FrontmatterSchema = ${zodSchemaExpr}
+
+export type ${PASCAL}Frontmatter = z.infer<typeof ${CAMEL}FrontmatterSchema>
+`,
+  )
+  process.exit(0)
 }
 
 // ── write the skeleton ───────────────────────────────────────────────
@@ -744,6 +795,121 @@ function relaxMixedIndexSignatures(tsSrc) {
     }
   }
   return lines.join("\n")
+}
+
+/**
+ * Detect a top-level `oneOf` whose branches share a literal-`const`
+ * discriminator field, and emit `z.discriminatedUnion(...)` directly.
+ *
+ * Returns the generated zod expression as a string when the pattern
+ * matches, or `null` otherwise (so the caller falls back to the
+ * generic json-schema-to-zod path).
+ *
+ * Pattern detected:
+ *
+ *   {
+ *     "type": "object",
+ *     "properties": { <shared top-level props> },
+ *     "oneOf": [ { "$ref": "#/$defs/A" }, { "$ref": "#/$defs/B" }, … ],
+ *     "$defs": {
+ *       "A": { "type": "object", "properties": { "doctype": { "const": "a" }, … } },
+ *       "B": { "type": "object", "properties": { "doctype": { "const": "b" }, … } },
+ *       …
+ *     }
+ *   }
+ *
+ * Branches may also reference the discriminator via the same literal
+ * `const` under any required field — we scan all branches' `const`
+ * properties for a field whose values are all distinct literals
+ * across branches.
+ *
+ * Each branch's merged JSON Schema is shared-top-level + branch
+ * properties (branch wins on conflicts). json-schema-to-zod runs on
+ * each merged branch on its own — which it handles fine, since the
+ * inner shape no longer contains the unresolvable `oneOf`.
+ */
+function tryDiscriminatedUnion(schema) {
+  if (!schema || typeof schema !== "object") return null
+  if (!Array.isArray(schema.oneOf) || schema.oneOf.length < 2) return null
+
+  // Resolve each branch ref to its $def. Bail if any branch is not a
+  // local $defs ref to a plain object schema with `properties`.
+  const defs = schema.$defs ?? schema.definitions ?? {}
+  const branches = []
+  for (const branch of schema.oneOf) {
+    if (!branch || typeof branch !== "object") return null
+    let resolved = branch
+    if (typeof branch.$ref === "string") {
+      const m = branch.$ref.match(/^#\/\$defs\/([^/]+)$/)
+      if (!m) return null
+      const def = defs[m[1]]
+      if (!def || typeof def !== "object") return null
+      resolved = def
+    }
+    if (resolved.type !== "object" || !resolved.properties) return null
+    branches.push(resolved)
+  }
+
+  // Find a discriminator: a property name present on every branch
+  // whose value declares a literal `const`, and whose `const` values
+  // are pairwise distinct across branches.
+  const candidates = new Set(Object.keys(branches[0].properties))
+  for (const b of branches.slice(1)) {
+    for (const k of [...candidates]) {
+      if (!(k in b.properties)) candidates.delete(k)
+    }
+  }
+  let discriminator = null
+  for (const k of candidates) {
+    const literals = branches.map(b => b.properties[k]?.const)
+    if (literals.some(v => v === undefined)) continue
+    if (literals.every(v => typeof v === "string" || typeof v === "number")) {
+      const distinct = new Set(literals)
+      if (distinct.size === literals.length) {
+        discriminator = k
+        break
+      }
+    }
+  }
+  if (!discriminator) return null
+
+  // Build a merged JSON Schema per branch: shared top-level
+  // properties first, branch's properties on top (so the branch's
+  // narrower `const` discriminator + required set win). Drop the
+  // `oneOf` and `$defs` from each merged branch so json-schema-to-zod
+  // doesn't try to follow them again.
+  const sharedProps = schema.properties ?? {}
+  const sharedRequired = Array.isArray(schema.required) ? schema.required : []
+  const branchZodExprs = []
+  for (const branch of branches) {
+    const merged = {
+      type: "object",
+      additionalProperties:
+        branch.additionalProperties ?? schema.additionalProperties ?? true,
+      properties: { ...sharedProps, ...branch.properties },
+      required: Array.from(
+        new Set([
+          ...sharedRequired,
+          ...(Array.isArray(branch.required) ? branch.required : []),
+        ]),
+      ),
+      $defs: defs,
+    }
+    if (branch.description) merged.description = branch.description
+    // Strip oneOf / allOf if the branch carried any (it shouldn't, but
+    // guard against unusual shapes).
+    delete merged.oneOf
+    delete merged.allOf
+    const expr = jsonSchemaToZod(merged, { module: "none" })
+      .trim()
+      .replace(/;$/, "")
+    branchZodExprs.push(expr)
+  }
+
+  const describe = schema.description
+    ? `.describe(${JSON.stringify(schema.description)})`
+    : ""
+  return `z.discriminatedUnion(${JSON.stringify(discriminator)}, [\n  ${branchZodExprs.join(",\n  ")},\n])${describe}`
 }
 
 /**
