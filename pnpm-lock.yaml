@@ -413,6 +413,34 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
 
+  packages/agent-runtime:
+    dependencies:
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
   packages/agentproto-placeholder: {}
 
   packages/assembly:
@@ -516,6 +544,9 @@ importers:
       '@agentproto/adapter-hermes':
         specifier: workspace:*
         version: link:../../adapters/hermes
+      '@agentproto/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -609,6 +640,111 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
+  packages/corpus:
+    dependencies:
+      '@agentproto/collection':
+        specifier: workspace:*
+        version: link:../collection
+      '@agentproto/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
+      '@agentproto/operator':
+        specifier: workspace:*
+        version: link:../operator
+      '@agentproto/playbook':
+        specifier: workspace:*
+        version: link:../playbook
+      '@agentproto/routine':
+        specifier: workspace:*
+        version: link:../routine
+      '@agentproto/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      ajv:
+        specifier: ^8.17.1
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+      yaml:
+        specifier: ^2.7.0
+        version: 2.8.4
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
+  packages/corpus-cli:
+    dependencies:
+      '@agentproto/corpus':
+        specifier: workspace:*
+        version: link:../corpus
+      '@agentproto/corpus-presets':
+        specifier: workspace:*
+        version: link:../corpus-presets
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
+  packages/corpus-presets:
+    dependencies:
+      '@agentproto/corpus':
+        specifier: workspace:*
+        version: link:../corpus
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
