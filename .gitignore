@@ -8,6 +8,12 @@ dist
 .tsbuildinfo
 *.tsbuildinfo
 
+# Generated source — regenerated from canonical fixtures by prebuild hooks
+packages/corpus-presets/src/marketing/files.ts
+
+# Generated Claude Code hook — regenerated from the canonical parser source by prebuild hooks
+packages/runtime-profile-standard/files/.claude/hooks/user-prompt-submit.mjs
+
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 
