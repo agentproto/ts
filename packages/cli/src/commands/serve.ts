@@ -104,6 +104,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       bind: { type: "string", short: "b" },
       "allow-origin": { type: "string", multiple: true },
       interactive: { type: "boolean", short: "i" },
+      profile: { type: "string" },
     },
   })
 
@@ -112,8 +113,44 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // hardcoded default. Errors during read are non-fatal — the file
   // is optional. Resolves to an empty object when missing.
   const cfg = await loadConfig()
-  const cfgDaemon = cfg.daemon ?? {}
-  const cfgTunnel = cfg.tunnel ?? {}
+
+  // ── Profile resolution ─────────────────────────────────────────
+  // `--profile <name>` (or `activeProfile` in config.json) picks a
+  // named bundle from `profiles[name]` and shallow-merges it OVER the
+  // top-level daemon/tunnel. A profile only needs to declare the
+  // fields that differ from the top-level (typically tunnel.host +
+  // tunnel.token); everything else falls through.
+  //
+  // Explicit `--profile <name>` is fatal if the profile doesn't
+  // exist (better than silently using top-level defaults — that
+  // path led to "why is it connecting to prod?" head-scratching).
+  // An `activeProfile` pointing at a missing profile only warns,
+  // since the user may have just deleted it.
+  const profileName = values.profile ?? cfg.activeProfile
+  const profile = profileName ? cfg.profiles?.[profileName] : undefined
+  if (values.profile && !profile) {
+    process.stderr.write(
+      `agentproto serve: profile "${values.profile}" not found in ` +
+        `~/.agentproto/config.json. Available: ${
+          cfg.profiles ? Object.keys(cfg.profiles).join(", ") || "(none)" : "(no profiles block)"
+        }\n`
+    )
+    return 2
+  }
+  if (cfg.activeProfile && !values.profile && !profile) {
+    process.stderr.write(
+      `agentproto serve: ⚠ activeProfile="${cfg.activeProfile}" but no matching ` +
+        `entry in profiles[]; falling back to top-level config.\n`
+    )
+  }
+  if (profile && process.stdout.isTTY) {
+    process.stdout.write(
+      `agentproto serve: using profile "${profileName}"\n`
+    )
+  }
+
+  const cfgDaemon = { ...(cfg.daemon ?? {}), ...(profile?.daemon ?? {}) }
+  const cfgTunnel = { ...(cfg.tunnel ?? {}), ...(profile?.tunnel ?? {}) }
 
   // Workspace defaults: --workspace > config.json > cwd. Validated
   // below — must exist + be a directory.
@@ -159,13 +196,18 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // Token resolution precedence:
   //   1. --token <jwt>            — explicit override
   //   2. $AGENTPROTO_TOKEN        — env, useful for CI / docker
-  //   3. ~/.agentproto/credentials.json[host] — `agentproto auth login`
+  //   3. config.json `tunnel.token` (or profile.tunnel.token) — set
+  //      via `agentproto config set tunnel.token` or hand-edited.
+  //      Profiles use this so a per-environment token lives next to
+  //      its host without the credentials.json host-key footgun.
+  //   4. ~/.agentproto/credentials.json[host] — `agentproto auth login`
   //
-  // Step 3 only applies when --connect is set (we have a host to look
+  // Step 4 only applies when --connect is set (we have a host to look
   // up) and the credential isn't expired. Expiry is non-fatal: we log
   // a warning and let the host reject the connect; that surfaces a
   // clearer error than a silent 401 mid-tunnel.
-  let token: string | undefined = values.token ?? process.env.AGENTPROTO_TOKEN
+  let token: string | undefined =
+    values.token ?? process.env.AGENTPROTO_TOKEN ?? cfgTunnel.token
   if (!token && connectFlag) {
     const cred = await readHost(connectFlag)
     if (cred) {

@@ -54,6 +54,12 @@ export interface TunnelConfig {
   /** Cloud WS URL. When set + autoconnect=true, `agentproto serve`
    *  bootstraps with `--connect <host>`. */
   host?: string
+  /** apt_ daemon token to present at the tunnel upgrade. When set,
+   *  `agentproto serve` uses this BEFORE falling back to
+   *  credentials.json — handy in profiles where the token-per-host
+   *  mapping in credentials.json doesn't fit (e.g. host = tunnel URL
+   *  but credentials were minted against the api URL). */
+  token?: string
   /** Whether `agentproto daemon start` connects the tunnel by
    *  default. v0 only — implementer can ignore until daemon needs it. */
   autoconnect?: boolean
@@ -65,11 +71,49 @@ export interface FeaturesConfig {
   pty?: boolean
 }
 
+/**
+ * Per-environment connection bundle. A profile overrides specific
+ * fields of the top-level `daemon` / `tunnel` / `features` blocks
+ * when selected via `--profile <name>` (or the top-level
+ * `activeProfile` setting). Missing fields fall through to the
+ * top-level config, so a profile only needs to declare what's
+ * different — typically just `tunnel.host` + `tunnel.token`.
+ *
+ * Example:
+ *   {
+ *     "daemon": { "workspace": "/code", "port": 18790 },
+ *     "activeProfile": "local",
+ *     "profiles": {
+ *       "local": { "tunnel": { "host": "ws://localhost:3200/connect",
+ *                              "token": "apt_local", "autoconnect": true } },
+ *       "prod":  { "tunnel": { "host": "wss://tunnel.guilde.work/connect",
+ *                              "token": "apt_prod",  "autoconnect": true },
+ *                  "daemon": { "port": 18791 } }
+ *     }
+ *   }
+ *
+ * Sandbox daemons generate per-sandbox profile entries at provision
+ * time so the daemon inside the sandbox boots with
+ * `agentproto serve --profile sandbox-<id>` and no extra plumbing.
+ */
+export interface ProfileConfig {
+  daemon?: DaemonConfig
+  tunnel?: TunnelConfig
+  features?: FeaturesConfig
+}
+
 export interface AgentprotoConfig {
   version?: number
   daemon?: DaemonConfig
   tunnel?: TunnelConfig
   features?: FeaturesConfig
+  /** Named connection profiles. See `ProfileConfig` for the merge
+   *  semantics — a profile's fields shallow-override the top-level
+   *  defaults for the selected run. */
+  profiles?: Record<string, ProfileConfig>
+  /** Profile name to use when `--profile` isn't passed. When unset,
+   *  the top-level `daemon` / `tunnel` blocks are used directly. */
+  activeProfile?: string
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }
