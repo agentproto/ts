@@ -47,7 +47,9 @@ ENV_BASE="../../../envs"
 if [ -z "${NPM_TOKEN:-}" ]; then
   for envfile in "$ENV_BASE/.env.local" "$ENV_BASE/.env"; do
     [ -f "$envfile" ] || continue
-    VAL=$(grep -m1 "^NPM_TOKEN=" "$envfile" 2>/dev/null \
+    # `|| true` because grep exits 1 when the line isn't found, which
+    # would trip pipefail; we want absence to be a normal case.
+    VAL=$( (grep -m1 "^NPM_TOKEN=" "$envfile" 2>/dev/null || true) \
       | sed -e 's/^NPM_TOKEN=//' -e 's/^["'\'']//' -e 's/["'\'']$//')
     if [ -n "$VAL" ]; then
       export NPM_TOKEN="$VAL"
