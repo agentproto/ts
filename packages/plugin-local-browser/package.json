@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/plugin-local-browser",
-  "version": "0.1.0-alpha.0",
-  "description": "@agentproto/plugin-local-browser — bridge a real local Chrome profile (cookies, logins, extensions) into the agentproto daemon as an MCP server. Picks one of the user's existing Chrome profiles, clones it into `~/.agentproto/chrome-profile/`, and registers `chrome-devtools-mcp` against it in `~/.agentproto/imported-mcps.json` so the daemon proxies its browser tools through `/mcp`. Then tunnel-connected hosts (Guilde, …) can drive the user's authenticated browser without any extra plumbing.",
+  "version": "0.1.0-alpha.1",
+  "description": "@agentproto/plugin-local-browser — bridge a real local Chrome profile (cookies, logins, extensions) into the agentproto daemon as an MCP server. Picks one of the user's existing Chrome profiles, clones it into `~/.agentproto/chrome-profile/`, installs `chrome-devtools-mcp` into a plugin-owned dir, and registers it in `~/.agentproto/imported-mcps.json` so the daemon proxies its browser tools through `/mcp`. Tunnel-connected hosts can then drive the user's authenticated browser without any extra plumbing.",
   "keywords": [
     "agentproto",
     "plugin",

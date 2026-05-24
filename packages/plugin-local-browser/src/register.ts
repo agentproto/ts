@@ -33,8 +33,10 @@ export interface RegisterOptions {
   /** Profile directory inside the user-data-dir to drive
    *  (`Default`, `Profile 1`, …). */
   profileDirectory: string
-  /** Pin the chrome-devtools-mcp version (default `latest`). */
-  chromeMcpVersion?: string
+  /** Absolute path to the `chrome-devtools-mcp` bin. Resolved by
+   *  the install step; we register it verbatim so the daemon's proxy
+   *  spawns it directly without going through any `npx` shim. */
+  chromeMcpBin: string
   /** Override the path to imported-mcps.json (for tests). */
   importsPath?: string
   /** Additional Chrome flags. The plugin already passes
@@ -76,12 +78,9 @@ export async function registerLocalBrowser(
   opts: RegisterOptions
 ): Promise<RegisterResult> {
   const path = opts.importsPath ?? IMPORTED_MCPS_PATH()
-  const version = opts.chromeMcpVersion ?? "latest"
   const id = `${IMPORT_ID_PREFIX}:${opts.profileDirectory}`
 
   const args = [
-    "-y",
-    `chrome-devtools-mcp@${version}`,
     "--userDataDir",
     opts.userDataDir,
     `--chromeArg=--profile-directory=${opts.profileDirectory}`,
@@ -100,7 +99,7 @@ export async function registerLocalBrowser(
       scope: "plugin:local-browser",
       name: IMPORT_ALIAS,
       type: "stdio",
-      command: "npx",
+      command: opts.chromeMcpBin,
       args,
       env: {},
     },

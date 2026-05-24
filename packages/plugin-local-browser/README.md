@@ -2,10 +2,10 @@
 
 Bridge a real local Chrome profile (cookies, signed-in sessions,
 extensions) into the agentproto daemon as a proxied MCP server. After
-setup, every host connected over the daemon's tunnel — Guilde, a
-self-hosted gateway, etc. — sees the 29 `chrome-devtools-mcp` browser
-tools (`navigate_page`, `click`, `fill`, `take_screenshot`,
-`evaluate_script`, …) alongside the daemon's built-in workspace tools.
+setup, every host connected over the daemon's tunnel sees the 29
+`chrome-devtools-mcp` browser tools (`navigate_page`, `click`, `fill`,
+`take_screenshot`, `evaluate_script`, …) alongside the daemon's
+built-in workspace tools.
 
 **Status:** alpha.
 
@@ -19,11 +19,17 @@ tools (`navigate_page`, `click`, `fill`, `take_screenshot`,
    and lock files are skipped so the copy is ~5–10× smaller than the
    source. Lives at its own user-data-dir so it can run alongside
    your daily Chrome without lock conflicts.
-3. Writes an entry into `~/.agentproto/imported-mcps.json` that
-   invokes `chrome-devtools-mcp` with `--userDataDir` pointing at
-   the clone and `--chromeArg=--profile-directory=<name>` pointing
-   at your chosen profile.
-4. Restart the daemon (`~/.agentproto/start-daemon-prod.sh`) — its
+3. Installs `chrome-devtools-mcp` into `~/.agentproto/chrome-mcp/`
+   (plugin-owned npm prefix). Resolved-by-absolute-path so the
+   daemon's MCP proxy can spawn it without going through any `npx`
+   shim — important because the daemon itself is typically launched
+   via `npm exec @agentproto/cli@latest`, and nested npm-exec calls
+   misinterpret `<pkg>@<version>` specs.
+4. Writes an entry into `~/.agentproto/imported-mcps.json` pointing
+   at the installed bin with `--userDataDir` set to the clone and
+   `--chromeArg=--profile-directory=<name>` set to your chosen
+   profile.
+5. Restart the daemon (`~/.agentproto/start-daemon-prod.sh`) — its
    MCP proxy picks up the new import and surfaces the browser tools
    through `/mcp` to every tunnel-connected host.
 

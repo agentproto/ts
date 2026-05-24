@@ -16,6 +16,11 @@ import {
 } from "./chrome-profiles.js"
 import { cloneChromeProfile, type CloneResult } from "./clone.js"
 import {
+  installChromeMcp,
+  DEFAULT_CHROME_MCP_PREFIX,
+  type InstallResult,
+} from "./install.js"
+import {
   registerLocalBrowser,
   unregisterLocalBrowser,
   type RegisterResult,
@@ -29,6 +34,11 @@ export {
 export type { ChromeProfile } from "./chrome-profiles.js"
 export { cloneChromeProfile } from "./clone.js"
 export type { CloneOptions, CloneResult } from "./clone.js"
+export {
+  installChromeMcp,
+  DEFAULT_CHROME_MCP_PREFIX,
+} from "./install.js"
+export type { InstallOptions, InstallResult } from "./install.js"
 export {
   registerLocalBrowser,
   unregisterLocalBrowser,
@@ -51,18 +61,27 @@ export interface SetupOptions {
    *  refresh the imported-mcps entry, e.g. after a chrome-devtools-mcp
    *  upgrade). Default false. */
   skipClone?: boolean
+  /** Skip the chrome-devtools-mcp install step. Only safe when a
+   *  prior setup already populated `chromeMcpPrefix`. */
+  skipInstall?: boolean
+  /** Install dir for chrome-devtools-mcp. Default
+   *  `~/.agentproto/chrome-mcp`. */
+  chromeMcpPrefix?: string
   /** chrome-devtools-mcp version to pin (`latest` by default). */
   chromeMcpVersion?: string
   /** Extra Chrome flags appended to the spawned MCP server's args. */
   extraChromeArgs?: string[]
   /** Progress hook fired for each file copied during clone. */
   onCloneProgress?: (relPath: string) => void
+  /** Progress hook fired for each npm-install output line. */
+  onInstallProgress?: (line: string) => void
 }
 
 export interface SetupResult {
   profile: ChromeProfile
   userDataDir: string
   clone: CloneResult | null
+  install: InstallResult
   register: RegisterResult
 }
 
@@ -99,16 +118,33 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
     })
   }
 
+  // Install (or refresh) chrome-devtools-mcp into a plugin-owned dir.
+  // Subsequent setups are idempotent — npm short-circuits when the
+  // pinned version is already on disk.
+  let install: InstallResult
+  if (opts.skipInstall) {
+    const prefix = opts.chromeMcpPrefix ?? DEFAULT_CHROME_MCP_PREFIX()
+    install = {
+      prefix,
+      binPath: join(prefix, "node_modules", ".bin", "chrome-devtools-mcp"),
+      installedVersion: "(skipped)",
+    }
+  } else {
+    install = await installChromeMcp({
+      ...(opts.chromeMcpPrefix ? { prefix: opts.chromeMcpPrefix } : {}),
+      ...(opts.chromeMcpVersion ? { version: opts.chromeMcpVersion } : {}),
+      ...(opts.onInstallProgress ? { onProgress: opts.onInstallProgress } : {}),
+    })
+  }
+
   const register = await registerLocalBrowser({
     userDataDir: destUserDataDir,
     profileDirectory: profile.directory,
-    ...(opts.chromeMcpVersion
-      ? { chromeMcpVersion: opts.chromeMcpVersion }
-      : {}),
+    chromeMcpBin: install.binPath,
     ...(opts.extraChromeArgs ? { extraChromeArgs: opts.extraChromeArgs } : {}),
   })
 
-  return { profile, userDataDir: destUserDataDir, clone, register }
+  return { profile, userDataDir: destUserDataDir, clone, install, register }
 }
 
 export async function teardown(): Promise<{ removed: number }> {

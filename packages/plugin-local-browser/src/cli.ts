@@ -29,7 +29,8 @@ import {
 const USAGE = `agentproto-browser — wire a real Chrome profile into the agentproto daemon
 
 Usage:
-  agentproto-browser setup   [--profile <dir>] [--yes] [--skip-clone]
+  agentproto-browser setup   [--profile <dir>] [--yes]
+                             [--skip-clone] [--skip-install]
                              [--user-data-dir <path>]
                              [--chrome-mcp-version <ver>]
                              [--headless]
@@ -41,7 +42,9 @@ setup steps:
   1. Reads ~/Library/Application Support/Google/Chrome/Local State
   2. Prompts you to pick one of your Chrome profiles (skip with --profile)
   3. Clones it to ~/.agentproto/chrome-profile/ (skip with --skip-clone)
-  4. Writes an entry to ~/.agentproto/imported-mcps.json so the daemon
+  4. Installs chrome-devtools-mcp into ~/.agentproto/chrome-mcp/
+     (skip with --skip-install — only safe on re-run)
+  5. Writes an entry to ~/.agentproto/imported-mcps.json so the daemon
      proxies chrome-devtools-mcp through /mcp to every connected host
 
 Restart the daemon after setup for the new tools to surface:
@@ -78,6 +81,7 @@ async function runSetup(args: readonly string[]): Promise<number> {
       profile: { type: "string" },
       yes: { type: "boolean", short: "y" },
       "skip-clone": { type: "boolean" },
+      "skip-install": { type: "boolean" },
       "user-data-dir": { type: "string" },
       "chrome-mcp-version": { type: "string" },
       headless: { type: "boolean" },
@@ -130,11 +134,16 @@ async function runSetup(args: readonly string[]): Promise<number> {
   if (!values.yes) {
     process.stdout.write(
       `\nAbout to set up:\n` +
-        `  Chrome profile  ${profile.directory} — ${profile.name}${
+        `  Chrome profile        ${profile.directory} — ${profile.name}${
           profile.email ? ` <${profile.email}>` : ""
         }\n` +
-        `  Clone to        ${destUserDataDir}${skipClone ? " (SKIPPED)" : ""}\n` +
-        `  Register MCP    ${IMPORTED_MCPS_PATH()}\n\n`
+        `  Clone to              ${destUserDataDir}${skipClone ? " (SKIPPED)" : ""}\n` +
+        `  Install chrome-mcp    ${
+          values["skip-install"] === true
+            ? "SKIPPED"
+            : "~/.agentproto/chrome-mcp"
+        }\n` +
+        `  Register MCP          ${IMPORTED_MCPS_PATH()}\n\n`
     )
     const ok = await promptYesNo("Proceed?")
     if (!ok) {
@@ -147,27 +156,38 @@ async function runSetup(args: readonly string[]): Promise<number> {
   if (values.headless) extraChromeArgs.push("--headless=new")
 
   const startedAt = Date.now()
-  let lastProgress = startedAt
-  let progressCount = 0
+  let lastClone = startedAt
+  let cloneCount = 0
+  let lastInstall = ""
   const result = await setup({
     profileDirectory: profile.directory,
     destUserDataDir,
     skipClone,
+    skipInstall: values["skip-install"] === true,
     ...(values["chrome-mcp-version"]
       ? { chromeMcpVersion: values["chrome-mcp-version"] }
       : {}),
     ...(extraChromeArgs.length ? { extraChromeArgs } : {}),
     onCloneProgress: () => {
-      progressCount += 1
+      cloneCount += 1
       const now = Date.now()
-      if (now - lastProgress > 250) {
-        process.stdout.write(`\r  cloning… ${progressCount} files`)
-        lastProgress = now
+      if (now - lastClone > 250) {
+        process.stdout.write(`\r  cloning… ${cloneCount} files`)
+        lastClone = now
       }
     },
+    onInstallProgress: line => {
+      // npm output is chatty; collapse to a single overwriting line.
+      lastInstall = line.split("\n").pop() ?? line
+      if (lastInstall.length > 78) lastInstall = lastInstall.slice(0, 75) + "…"
+      process.stdout.write(`\r  installing… ${lastInstall.padEnd(78)}`)
+    },
   })
-  if (progressCount > 0) {
-    process.stdout.write(`\r  cloning… ${progressCount} files done.   \n`)
+  if (cloneCount > 0) {
+    process.stdout.write(`\r  cloning… ${cloneCount} files done.${" ".repeat(40)}\n`)
+  }
+  if (lastInstall) {
+    process.stdout.write(`\r  installing… done.${" ".repeat(70)}\n`)
   }
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
 
@@ -185,7 +205,8 @@ async function runSetup(args: readonly string[]): Promise<number> {
     )
   }
   process.stdout.write(
-    `  registered  ${result.register.replaced ? "(replaced)" : "(new)"} as ` +
+    `  installed   chrome-devtools-mcp@${result.install.installedVersion} → ${result.install.prefix}\n` +
+      `  registered  ${result.register.replaced ? "(replaced)" : "(new)"} as ` +
       `alias 'local-browser' in ${result.register.importsPath}\n` +
       `\nRestart the daemon for the new tools to surface:\n` +
       `  ~/.agentproto/start-daemon-prod.sh\n`
@@ -225,13 +246,25 @@ async function runStatus(): Promise<number> {
         `  args: ${(entry.snapshot?.args ?? []).join(" ")}\n`
     )
   }
-  // Surface the clone dir too — helpful when troubleshooting.
+  // Surface the on-disk artifacts too — helpful when troubleshooting.
   const cloneDir = DEFAULT_AUTOMATION_USER_DATA_DIR()
   try {
     const ls = await fs.readdir(cloneDir)
     process.stdout.write(`\nclone dir: ${cloneDir}\n  entries: ${ls.join(", ")}\n`)
   } catch {
     process.stdout.write(`\nclone dir: ${cloneDir} (not present)\n`)
+  }
+  const mcpDir = join(homedir(), ".agentproto", "chrome-mcp")
+  try {
+    const pkg = JSON.parse(
+      await fs.readFile(
+        join(mcpDir, "node_modules", "chrome-devtools-mcp", "package.json"),
+        "utf8"
+      )
+    ) as { version?: string }
+    process.stdout.write(`chrome-mcp: ${mcpDir} (v${pkg.version ?? "?"})\n`)
+  } catch {
+    process.stdout.write(`chrome-mcp: ${mcpDir} (not installed)\n`)
   }
   return 0
 }
@@ -243,9 +276,10 @@ async function runRemove(): Promise<number> {
     return 0
   }
   process.stdout.write(
-    `agentproto-browser: removed ${removed} import(s). ` +
-      `Clone dir at ${DEFAULT_AUTOMATION_USER_DATA_DIR()} left in place — ` +
-      `delete manually if you want to reclaim disk.\n`
+    `agentproto-browser: removed ${removed} import(s).\n` +
+      `Disk artifacts left in place — delete manually if you want to reclaim:\n` +
+      `  ${DEFAULT_AUTOMATION_USER_DATA_DIR()}   (Chrome profile clone)\n` +
+      `  ${join(homedir(), ".agentproto", "chrome-mcp")}        (chrome-devtools-mcp install)\n`
   )
   return 0
 }
