@@ -39,18 +39,22 @@ for arg in "$@"; do
   esac
 done
 
-# Source env files from the agentik-studio monorepo so NPM_TOKEN
-# (and anything else) can live alongside other secrets. Local file
-# wins (it's the gitignored secrets bucket).
+# Pull NPM_TOKEN from the agentik-studio monorepo env files if not
+# already in env. Targeted grep instead of `source` — some env files
+# have multi-line values bash can't parse, and we only care about
+# this one var anyway.
 ENV_BASE="../../../envs"
-for envfile in "$ENV_BASE/.env.local" "$ENV_BASE/.env"; do
-  if [ -f "$envfile" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$envfile"
-    set +a
-  fi
-done
+if [ -z "${NPM_TOKEN:-}" ]; then
+  for envfile in "$ENV_BASE/.env.local" "$ENV_BASE/.env"; do
+    [ -f "$envfile" ] || continue
+    VAL=$(grep -m1 "^NPM_TOKEN=" "$envfile" 2>/dev/null \
+      | sed -e 's/^NPM_TOKEN=//' -e 's/^["'\'']//' -e 's/["'\'']$//')
+    if [ -n "$VAL" ]; then
+      export NPM_TOKEN="$VAL"
+      break
+    fi
+  done
+fi
 
 # Packages to publish, in dependency order.
 PACKAGES=(
