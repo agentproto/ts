@@ -60,6 +60,7 @@ fi
 # Packages to publish, in dependency order.
 PACKAGES=(
   "@agentproto/runtime-profile-standard|runtime-profile-standard"
+  "@agentproto/plugin-local-browser|plugin-local-browser"
   "@agentproto/cli|cli"
 )
 
