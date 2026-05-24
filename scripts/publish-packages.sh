@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# Publish @agentproto/* packages to npm with 2FA OTP.
+# Publish @agentproto/* packages to npm.
 #
-# Usage:
-#   scripts/publish-packages.sh                 # prompts for OTP
-#   scripts/publish-packages.sh 123456          # OTP as arg
-#   scripts/publish-packages.sh --dry-run       # don't actually publish
+# Two auth modes, picked automatically:
 #
-# Order matters: runtime-profile-standard before cli (cli depends on it
-# as a runtime dep, so pnpm needs the version on the registry to
+#   1. NPM_TOKEN in env → granular access token with "Bypass 2FA"
+#      enabled. The script sets it and pnpm publish runs unattended.
+#      Add it to agentik-studio/envs/.env.local (script auto-sources)
+#      or export it manually. Generate at:
+#      https://www.npmjs.com/settings/agentiknet/tokens
+#
+#   2. No NPM_TOKEN → falls back to interactive TOTP prompts (one
+#      fresh OTP per package, since codes are valid ~30s).
+#
+# Order matters: runtime-profile-standard before cli (cli depends on
+# it as a runtime dep, so pnpm needs the version on the registry to
 # resolve workspace:* at pack time).
 #
-# Each publish gets its own --otp prompt because a single TOTP code
-# is valid for ~30s and the second publish often misses the window
-# when the first one takes more than that.
+# Usage:
+#   scripts/publish-packages.sh                 # auto: token if set, otherwise OTP
+#   scripts/publish-packages.sh 123456          # force OTP mode with this code
+#   scripts/publish-packages.sh --dry-run       # don't actually publish
 
 set -euo pipefail
 
@@ -25,15 +32,27 @@ for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN="--dry-run" ;;
     --help|-h)
-      sed -n '2,16p' "$0" | sed 's|^# \?||'
+      sed -n '2,22p' "$0" | sed 's|^# \?||'
       exit 0
       ;;
     *) OTP="$arg" ;;
   esac
 done
 
-# Packages to publish, in dependency order. Each line:
-#   <pnpm-filter-name>   <human label>
+# Source env files from the agentik-studio monorepo so NPM_TOKEN
+# (and anything else) can live alongside other secrets. Local file
+# wins (it's the gitignored secrets bucket).
+ENV_BASE="../../../envs"
+for envfile in "$ENV_BASE/.env.local" "$ENV_BASE/.env"; do
+  if [ -f "$envfile" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$envfile"
+    set +a
+  fi
+done
+
+# Packages to publish, in dependency order.
 PACKAGES=(
   "@agentproto/runtime-profile-standard|runtime-profile-standard"
   "@agentproto/cli|cli"
@@ -42,8 +61,6 @@ PACKAGES=(
 prompt_otp() {
   local label="$1"
   if [ -n "$OTP" ]; then
-    # Use the previously-supplied OTP; clear so the next publish
-    # re-prompts (TOTP codes expire fast).
     local code="$OTP"
     OTP=""
     echo "$code"
@@ -60,7 +77,6 @@ publish_one() {
   echo
   echo "━━━ ${label} ━━━"
 
-  # Show what would publish — useful for the user before they enter OTP.
   pnpm --filter "$filter" publish --access public --no-git-checks --dry-run 2>&1 \
     | grep -E "^npm notice (name|version|filename|package size|total files):" \
     || true
@@ -70,6 +86,18 @@ publish_one() {
     return 0
   fi
 
+  # Token mode — no OTP needed (token has bypass 2FA).
+  if [ -n "${NPM_TOKEN:-}" ]; then
+    if pnpm --filter "$filter" publish \
+        --access public --no-git-checks; then
+      echo "✓ ${label} published (via NPM_TOKEN)"
+      return 0
+    fi
+    echo "✗ ${label} publish failed despite NPM_TOKEN — check token scope + expiry."
+    return 1
+  fi
+
+  # OTP fallback — three attempts, fresh code each time.
   local attempt=0
   while [ $attempt -lt 3 ]; do
     attempt=$((attempt + 1))
@@ -95,6 +123,11 @@ publish_one() {
 
 echo "Publishing as $(npm whoami 2>/dev/null || echo "(not logged in)")"
 echo "Workspace: $(pwd)"
+if [ -n "${NPM_TOKEN:-}" ]; then
+  echo "Auth: NPM_TOKEN (token mode)"
+else
+  echo "Auth: interactive OTP"
+fi
 
 for entry in "${PACKAGES[@]}"; do
   filter="${entry%%|*}"
