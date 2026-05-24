@@ -82,7 +82,7 @@ agentproto config show                                          # dump full conf
 agentproto config path                                          # print the file path
 agentproto config get daemon.port                               # read one key
 agentproto config set daemon.port 18791                         # number auto-detected
-agentproto config set daemon.workspace ~/code/agentik-studio
+agentproto config set daemon.workspace ~/code/my-app
 agentproto config set daemon.allowedOrigins https://guilde.work,https://app.example.com
 agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
 agentproto config set tunnel.autoconnect true                   # --connect implied at next serve
@@ -179,14 +179,14 @@ SESSIONS (3)                       │ DETAIL
    PTY shell-main running      4m  │   name      claude-tui
        hermes-bg  exited      1h   │   kind      terminal (pty)
                                     │   status    running
-                                    │   workspace agentik-studio
+                                    │   workspace my-app
                                     │   command   claude
                                     │   pid       12345
                                     │   started   12m ago
                                     │   last out  3s ago
                                     │
                                     │   Enter to attach
-─ events  20:42:01 boot · agentik-studio · 20:43:11 spawn sess_a3f8c1b2 ──────────────
+─ events  20:42:01 boot · my-app · 20:43:11 spawn sess_a3f8c1b2 ──────────────────────
   ↑/↓ select · Enter attach · K kill · d forget · r refresh · q quit
 ```
 
@@ -253,7 +253,7 @@ agentproto sessions --attach claude-tui
 agentproto sessions mirror claude-tui
 
 # Spawn an agent CLI (ACP, structured events)
-agentproto sessions start claude-code --workspace agentik-studio --attach
+agentproto sessions start claude-code --workspace my-app --attach
 agentproto sessions start hermes --label "ops on-call"
 
 # Spawn a real PTY (raw bytes, ANSI escapes, alt-screen apps)

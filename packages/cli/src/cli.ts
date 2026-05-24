@@ -65,7 +65,7 @@ Examples:
   agentproto workspace add ~/code/my-project --slug my-project
   agentproto workspace list
   agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
-  agentproto sessions start claude-code --workspace agentik-studio --attach
+  agentproto sessions start claude-code --workspace my-app --attach
   agentproto sessions terminal --name claude-tui --attach -- claude
   agentproto sessions stop claude-tui
   agentproto config set daemon.port 18791

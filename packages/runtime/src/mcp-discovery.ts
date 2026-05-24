@@ -240,8 +240,8 @@ async function scanGoose(
 /**
  * Per-workspace scan — for each registered workspace, look at the
  * common per-project MCP locations (.mcp.json, .cursor/mcp.json,
- * .vscode/mcp.json). Lets the UI surface "the agentik-studio
- * workspace ships its own chrome-devtools MCP" instead of only
+ * .vscode/mcp.json). Lets the UI surface "this workspace ships
+ * its own chrome-devtools MCP" instead of only
  * showing what the user configured globally in claude/cursor.
  */
 async function scanRegisteredWorkspaces(

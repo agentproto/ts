@@ -5,8 +5,8 @@
 #
 #   1. NPM_TOKEN in env → granular access token with "Bypass 2FA"
 #      enabled. The script sets it and pnpm publish runs unattended.
-#      Add it to agentik-studio/envs/.env.local (script auto-sources)
-#      or export it manually. Generate at:
+#      Export it manually, or place it in a sibling envs/.env(.local)
+#      file (script auto-sources). Generate at:
 #      https://www.npmjs.com/settings/agentiknet/tokens
 #
 #   2. No NPM_TOKEN → falls back to interactive TOTP prompts (one
@@ -39,10 +39,9 @@ for arg in "$@"; do
   esac
 done
 
-# Pull NPM_TOKEN from the agentik-studio monorepo env files if not
-# already in env. Targeted grep instead of `source` — some env files
-# have multi-line values bash can't parse, and we only care about
-# this one var anyway.
+# Pull NPM_TOKEN from a sibling envs/.env file if not already in env.
+# Targeted grep instead of `source` — some env files have multi-line
+# values bash can't parse, and we only care about this one var anyway.
 ENV_BASE="../../../envs"
 if [ -z "${NPM_TOKEN:-}" ]; then
   for envfile in "$ENV_BASE/.env.local" "$ENV_BASE/.env"; do

@@ -36,7 +36,7 @@ across CLI versions, so this surface is forward-compatible.
 
 ```bash
 agentproto config path
-# → /Users/jeremy/.agentproto/config.json
+# → /Users/<you>/.agentproto/config.json
 ```
 
 Prints the config file path. Scripting helper.

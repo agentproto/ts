@@ -203,7 +203,7 @@ on already-dead sessions (reports "not running"; exit `1`).
 
 ```bash
 # Start a persistent Claude Code session and attach
-agentproto sessions start claude-code --workspace agentik-studio --attach
+agentproto sessions start claude-code --workspace my-app --attach
 
 # Spawn a PTY-backed REPL with a friendly name
 agentproto sessions terminal --name claude-tui --attach -- claude
