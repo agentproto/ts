@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-31/HTTP.schema.json",
+  "title": "HTTP.md frontmatter — agenthttp/v1 (HTTP provider specialisation)",
+  "description": "Validates the HTTP-specific frontmatter fields of an AIP-31 DRIVER.md (kind: http). Universal PROVIDER fields validate via AIP-30's schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "base_url"],
+  "properties": {
+    "kind":     { "const": "http" },
+    "base_url": { "type": "string", "format": "uri" },
+    "default_headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "default_method": {
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      "default": "POST"
+    },
+    "streaming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport"],
+      "properties": {
+        "transport":   { "enum": ["sse", "ndjson", "chunked"] },
+        "event_field": { "type": "string" },
+        "terminator":  { "type": "string" }
+      }
+    },
+    "rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests_per_minute": { "type": "integer", "minimum": 1 },
+        "burst":               { "type": "integer", "minimum": 1 }
+      }
+    },
+    "implements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "version"],
+        "additionalProperties": true,
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "http": { "$ref": "#/$defs/perToolHttp" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "perToolHttp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint"],
+      "properties": {
+        "endpoint":   { "type": "string", "description": "Path relative to base_url, e.g. /v1/images/generations" },
+        "method":     { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "headers":    { "type": "object", "additionalProperties": { "type": "string" } },
+        "body_template":   { "type": "object" },
+        "query_template":  { "type": "object", "additionalProperties": { "type": "string" } },
+        "response_extract": { "type": "string", "description": "JSONPath-lite expression. Default: $" },
+        "streaming": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "transport":   { "enum": ["sse", "ndjson", "chunked"] },
+            "event_field": { "type": "string" },
+            "terminator":  { "type": "string" }
+          }
+        },
+        "idempotency_key_header": { "type": "string" }
+      }
+    }
+  }
+}

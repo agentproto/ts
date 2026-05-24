@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-7/GOVERNANCE.schema.json",
+  "title": "agentgovernance/v1 (AIP-7)",
+  "description": "Validates the four AIP-7 doctypes: signature (approval event), audit-event (append-only log line), policy (declarative autonomy rule), and governance.workspace/v1 (workspace manifest, root or view). Branch on the `doctype` (or for the workspace, the `schema`) field.",
+  "oneOf": [
+    { "$ref": "#/$defs/signature" },
+    { "$ref": "#/$defs/auditEvent" },
+    { "$ref": "#/$defs/policy" },
+    { "$ref": "#/$defs/workspace" }
+  ],
+  "$defs": {
+    "schemaTag": {
+      "const": "agentgovernance/v1",
+      "description": "Doctype family. Constant across all three doctypes."
+    },
+    "isoDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 / ISO 8601 timestamp with millisecond precision in UTC."
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Stable identifier of a principal (user id, agent id, service account). Slug or DID, never a numeric DB id."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "minLength": 2,
+      "maxLength": 64
+    },
+    "hexHash": {
+      "type": "string",
+      "pattern": "^(GENESIS|[0-9a-f]{32,128})$",
+      "description": "Lowercase hex hash digest, or the literal 'GENESIS' for the first entry's prevHash."
+    },
+    "signer": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/principalId" },
+        "role": { "type": "string", "maxLength": 64 },
+        "displayName": { "type": "string", "maxLength": 120 }
+      }
+    },
+    "signatureBlock": {
+      "type": "object",
+      "required": ["alg", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "alg": {
+          "enum": ["Ed25519", "ECDSA-P256", "RSA-PSS-SHA256", "Sigstore"],
+          "description": "Cryptographic algorithm. Default Ed25519."
+        },
+        "value": {
+          "type": "string",
+          "description": "Base64url-encoded signature bytes over the canonical JSON of the signed payload."
+        },
+        "publicKeyRef": {
+          "type": "string",
+          "description": "Reference resolvable in the workspace keyring (DID, key id, JWK thumbprint)."
+        }
+      }
+    },
+    "policyRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "$ref": "#/$defs/slug" },
+        "decision": {
+          "enum": ["allow", "deny", "require-approval", "escalate"]
+        }
+      }
+    },
+    "redactedValue": {
+      "type": "object",
+      "required": ["$redacted"],
+      "additionalProperties": false,
+      "properties": {
+        "$redacted": { "const": true },
+        "reason": { "type": "string" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "title": "signature (approval event)",
+      "required": [
+        "$schema",
+        "doctype",
+        "artifact",
+        "decision",
+        "signer",
+        "signedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "$schema": { "$ref": "#/$defs/schemaTag" },
+        "doctype": { "const": "signature" },
+        "artifact": {
+          "type": "string",
+          "description": "Slug or workspace-relative path of the artifact being approved."
+        },
+        "decision": {
+          "enum": ["approve", "reject", "abstain"]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Required when decision is 'reject'. Recommended for 'approve' in multi-signer flows."
+        },
+        "signer": { "$ref": "#/$defs/signer" },
+        "signedAt": { "$ref": "#/$defs/isoDateTime" },
+        "policy": { "$ref": "#/$defs/policyRef" },
+        "signature": { "$ref": "#/$defs/signatureBlock" },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "decision": { "const": "reject" } } },
+          "then": { "required": ["reason"] }
+        }
+      ]
+    },
+    "auditEvent": {
+      "type": "object",
+      "title": "audit-event (append-only chain entry)",
+      "required": [
+        "$schema",
+        "doctype",
+        "seq",
+        "ts",
+        "actor",
+        "action",
+        "subject",
+        "prevHash",
+        "hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "$schema": { "$ref": "#/$defs/schemaTag" },
+        "doctype": { "const": "audit-event" },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonic sequence number per chain. Starts at 0; gaps are spec violations."
+        },
+        "ts": { "$ref": "#/$defs/isoDateTime" },
+        "actor": {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/principalId" },
+            "role": { "type": "string", "maxLength": 64 }
+          }
+        },
+        "action": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*[a-z0-9]$",
+          "maxLength": 128,
+          "description": "Dot-separated action class: tool.call, workflow.start, workspace.write, mutation.commit, audit.note, etc."
+        },
+        "subject": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "maxLength": 32 },
+            "ref": { "type": "string", "maxLength": 256 },
+            "path": { "type": "string", "maxLength": 1024 }
+          }
+        },
+        "input": {
+          "description": "Input arguments (or {$redacted: true} placeholder).",
+          "anyOf": [{ "type": "object" }, { "$ref": "#/$defs/redactedValue" }]
+        },
+        "output": {
+          "description": "Output payload (or {$redacted: true} placeholder).",
+          "anyOf": [{ "type": "object" }, { "$ref": "#/$defs/redactedValue" }]
+        },
+        "policy": { "$ref": "#/$defs/policyRef" },
+        "signatures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Workspace-relative path to a signature.json file."
+          },
+          "default": []
+        },
+        "prevHash": { "$ref": "#/$defs/hexHash" },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32,128}$",
+          "description": "Hash of the canonical JSON of every other field. Recomputed on read."
+        },
+        "hashAlg": {
+          "enum": ["sha256", "sha512", "blake2b-256"],
+          "default": "sha256"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "title": "policy (declarative autonomy rule)",
+      "required": ["schema", "doctype", "slug", "version", "match", "decision"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "doctype": { "const": "policy" },
+        "slug": { "$ref": "#/$defs/slug" },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$"
+        },
+        "match": {
+          "type": "object",
+          "required": ["action"],
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._*-]*$",
+              "description": "Action class to match. May contain * as a wildcard segment."
+            },
+            "subject": {
+              "type": "string",
+              "description": "Optional. Literal id, glob, or workspace path. Wildcard matches everything."
+            },
+            "risk_level_min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3,
+              "default": 0
+            }
+          }
+        },
+        "decision": {
+          "enum": ["allow", "deny", "require-approval", "escalate"]
+        },
+        "signers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "anyOf": [
+              {
+                "required": ["role"],
+                "properties": { "role": { "type": "string" } }
+              },
+              {
+                "required": ["userId"],
+                "properties": { "userId": { "$ref": "#/$defs/principalId" } }
+              }
+            ],
+            "properties": {
+              "role": { "type": "string", "maxLength": 64 },
+              "userId": { "$ref": "#/$defs/principalId" }
+            }
+          }
+        },
+        "quorum": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Number of approve signatures required."
+        },
+        "autonomy": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "default": 2,
+          "description": "Maximum autonomy level at which this policy stays permissive. Above that, the policy escalates."
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_per_hour": { "type": "integer", "minimum": 1 },
+            "max_per_day": { "type": "integer", "minimum": 1 },
+            "max_amount_cents": { "type": "integer", "minimum": 1 },
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$",
+              "default": "USD"
+            }
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "decision": { "const": "require-approval" } }
+          },
+          "then": { "required": ["signers"] }
+        }
+      ]
+    },
+    "workspace": {
+      "type": "object",
+      "title": "governance.workspace/v1 (manifest, root or view)",
+      "description": "Workspace manifest doctype for AIP-7. Used both as the root manifest of a governance scope (no `extends`) and as a per-consumer view (with `extends`). The same schema validates both modes; the host distinguishes by checking whether `extends` is set. One-way switches (audit.appendOnly, signing.required) are enforced by the host at merge time and cannot be relaxed by a descendant view.",
+      "required": ["schema", "name", "title", "description", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "governance.workspace/v1",
+          "description": "Discriminator for the workspace manifest doctype. Note: this differs from the family-level $schema tag used by signature/audit-event/policy because the workspace doctype follows the AIP-10/AIP-13 manifest convention."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 96,
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Stable kebab-case identifier for the workspace or view."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human-readable workspace title."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "One-paragraph statement of purpose: what this workspace (or view) governs and who uses it."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$",
+          "description": "Semantic version of the WORKSPACE shape. Bump on autonomy / policies / approvers / signing / audit changes."
+        },
+        "extends": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(\\.\\./|\\./)[^\\s]+/GOVERNANCE\\.md$",
+          "description": "OPTIONAL — relative path to a parent GOVERNANCE.md. Presence of this field makes the manifest a VIEW; absence makes it a WORKSPACE ROOT. Recursive composition allowed; maximum chain depth is 8. Cycles and missing parents degrade to warnings; ONE-WAY SWITCHES (audit.appendOnly, signing.required) cannot be relaxed and produce hard refusals."
+        },
+        "appliesTo": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(ws://(operators|companies|skills)/[a-z][a-z0-9-]*|\\.\\./[^\\s]+)$",
+            "description": "Either a ws:// ref to an AIP-9 operator / AIP-6 company / AIP-3 skill, or a relative path to a consumer workspace folder."
+          },
+          "uniqueItems": true,
+          "description": "OPTIONAL — list of consumers this VIEW adapts the workspace for. Hosts MUST refuse the view if any binding does not resolve. Not inherited; views declare their own scope."
+        },
+        "autonomy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3,
+              "description": "Autonomy ceiling. 0 = read-only, 1 = suggest, 2 = bounded auto, 3 = irreversible auto. Maps to the AIP-7 0-4 ladder; the workspace manifest declares the CEILING for this scope, individual policies MAY further restrict."
+            },
+            "defaultApproval": {
+              "type": "string",
+              "pattern": "^(auto|always|on-mutate|policy:[a-z][a-z0-9-]*)$",
+              "description": "Default approval class when no policy matches. 'auto' = no approval; 'always' = always require approval; 'on-mutate' = require approval on mutation; 'policy:<slug>' = delegate to a named policy."
+            },
+            "approvalEscalation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["from", "to"],
+              "properties": {
+                "from": { "type": "string", "maxLength": 96 },
+                "to": { "type": "string", "maxLength": 96 }
+              },
+              "description": "Fallback route when defaultApproval can't resolve a quorum. 'from' and 'to' name approval classes."
+            }
+          },
+          "description": "Autonomy posture for the scope. Each leaf field overrides independently across the chain."
+        },
+        "signing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "algo": {
+              "enum": ["ed25519", "ecdsa-p256", "rsa-pss-sha256"],
+              "description": "Default signing algorithm. Hosts MUST support ed25519; others are OPTIONAL."
+            },
+            "keyring": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Workspace-relative path to a public-key bundle (e.g. .well-known/governance-keys.json). The host loads keys from this path to verify signatures."
+            },
+            "required": {
+              "type": "boolean",
+              "description": "ONE-WAY SWITCH. When true, every audit event MUST carry a verifiable signature. Once a parent locks this to true, no descendant view may downgrade to false; hosts MUST refuse the merge with `governance_signing_downgrade`."
+            }
+          },
+          "description": "Signing posture. Composes leaf-by-leaf across the chain. The `required` field is a one-way switch: parent strict → child stricter or equal."
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retention": {
+              "type": "string",
+              "pattern": "^(forever|days:[0-9]+)$",
+              "description": "Audit-log retention. 'forever' or 'days:<n>'."
+            },
+            "hashAlgo": {
+              "enum": ["sha256", "sha512", "blake3"],
+              "description": "Hash algorithm for the audit chain. Default sha256."
+            },
+            "appendOnly": {
+              "type": "boolean",
+              "description": "ONE-WAY SWITCH. When true, the audit log is locked append-only — no in-place edits, no truncation, no deletion. Once a parent locks this to true, no descendant view may downgrade to false; hosts MUST refuse the merge with `governance_append_only_relaxation`. This is AIP-7's defining safety property."
+            },
+            "storage": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "OPTIONAL — vendor-neutral URI of the audit store (e.g. file://, s3://, https://). Informational; the canonical artifact is still audit-log.jsonl."
+            },
+            "headPointerSign": {
+              "type": "boolean",
+              "description": "OPTIONAL — when true, the host periodically publishes a signed head-pointer attestation that external verifiers can pin against."
+            }
+          },
+          "description": "Audit posture. Each leaf field overrides independently EXCEPT for `appendOnly`, which is a one-way switch (parent true → child cannot set false)."
+        },
+        "policies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "ref"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Stable kebab-case policy registry id. Merge key when composing with the extends parent."
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Workspace-relative path to a POLICY.md file. Policies are ALWAYS file-referenced, never inlined; this keeps the policy registry editable through the same governance gate as any other artifact."
+              },
+              "appliesTo": {
+                "type": "string",
+                "pattern": "^([a-z][a-z0-9._-]*[a-z0-9]|\\*)$",
+                "description": "AIP-7 action class to bind this policy to (e.g. 'workspace.write', 'tool.call', 'mutates') or '*' for all actions."
+              },
+              "severity": {
+                "enum": ["error", "warn", "info"],
+                "description": "Severity when this policy is violated. 'error' = block; 'warn' = surface; 'info' = log only."
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Policy-instance parameters that the referenced POLICY.md interprets."
+              }
+            }
+          },
+          "default": [],
+          "description": "Registry of policies that apply in this scope. Merge-by-id against the extends parent: a child entry with the same id replaces the parent's; new ids are appended."
+        },
+        "approvers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Stable kebab-case approver id. Merge key when composing with the extends parent."
+              },
+              "role": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Human-readable role name OR an AIP-9 ws://operators/<slug> ref. Resolved at evaluation time."
+              },
+              "canApprove": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9._-]*[a-z0-9]$"
+                },
+                "uniqueItems": true,
+                "description": "Approval classes this approver is authorized for."
+              },
+              "quorum": {
+                "type": "string",
+                "pattern": "^([1-9][0-9]*|[1-9][0-9]*-of-[1-9][0-9]*)$",
+                "description": "Quorum requirement. '1' = single-signer; 'n-of-m' = quorum among a group of m."
+              }
+            }
+          },
+          "default": [],
+          "description": "Pre-declared approvers. Merge-by-id against the extends parent: a child entry with the same id replaces the parent's; new ids are appended."
+        },
+        "executor": {
+          "type": "string",
+          "pattern": "^ws://operators/[a-z][a-z0-9-]*$",
+          "description": "OPTIONAL — AIP-9 operator the host activates to run governance flows for this scope (apply policies, collect signatures, append audit entries)."
+        },
+        "escalateTo": {
+          "type": "string",
+          "pattern": "^ws://operators/[a-z][a-z0-9-]*$",
+          "description": "OPTIONAL — AIP-9 operator to escalate to when autonomy.approvalEscalation fires. Distinct from `executor`: the executor runs governance, the escalation operator decides outcomes when the executor cannot."
+        },
+        "work": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "OPTIONAL — AIP-13 WORK.md binding. Audit events emitted by this scope MAY also produce work-item updates in the bound work workspace."
+        },
+        "knowledge": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "OPTIONAL — AIP-10 KNOWLEDGE.md binding. Schema or source mutations in the bound wiki flow through this workspace's approval gate."
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "defaultDashboard": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+              "description": "OPTIONAL — slug of the dashboard a UI uses as the workspace landing surface."
+            },
+            "showRetentionWarnings": {
+              "type": "boolean",
+              "description": "OPTIONAL — when true, UIs surface a banner when retention windows are about to expire."
+            }
+          },
+          "description": "Display hints for UIs that render the workspace. Runtime-agnostic."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Vendor-specific extensions, namespaced under <vendor>. Deep-merged across the extends chain."
+        }
+      },
+      "allOf": [
+        {
+          "description": "A view (any manifest with appliesTo set) MUST extend a parent. A workspace-root manifest has neither field.",
+          "if": {
+            "required": ["appliesTo"],
+            "properties": {
+              "appliesTo": { "type": "array", "minItems": 1 }
+            }
+          },
+          "then": {
+            "required": ["extends"]
+          }
+        }
+      ]
+    }
+  }
+}

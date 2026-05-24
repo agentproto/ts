@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-29/CLI.schema.json",
+  "title": "CLI.md frontmatter — agentcli/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-29 CLI.md manifest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "id", "description", "version", "bin", "install", "version_check", "sandbox", "commands"],
+  "properties": {
+    "name":         { "type": "string", "minLength": 1, "maxLength": 80 },
+    "id":           { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{1,63}$" },
+    "description":  { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "version":      { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$" },
+    "bin":          { "type": "string", "pattern": "^[A-Za-z0-9._\\-/]+$" },
+    "bin_args":     { "type": "array", "items": { "type": "string" } },
+    "install": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/installMethod" }
+    },
+    "version_check": { "$ref": "#/$defs/versionCheck" },
+    "setup": {
+      "type": "array",
+      "description": "Ordered, idempotent post-install configuration steps. Run once after `install` and before the bundle is considered ready. Each step has a `kind` discriminator. Hosts MUST persist completion state per `(bundle.id, workspace.id, user.id)` so steps don't re-run on every invocation; `skip_if` allows in-band re-checks.",
+      "items": { "$ref": "#/$defs/setupStep" }
+    },
+    "auth":          { "$ref": "#/$defs/auth" },
+    "runner": {
+      "oneOf": [
+        { "type": "string", "description": "Workspace-relative path to a RUNNER.md (AIP-17)." },
+        { "type": "object", "description": "Inline AIP-17 runner block." }
+      ]
+    },
+    "sandbox":  { "$ref": "#/$defs/sandbox" },
+    "output":   { "$ref": "#/$defs/output" },
+    "commands": { "$ref": "#/$defs/commandTree" },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref"],
+        "properties": { "ref": { "type": "string" } }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os":             { "type": "array", "items": { "type": "string", "enum": ["darwin", "linux", "windows"] } },
+        "arch":           { "type": "array", "items": { "type": "string", "enum": ["x64", "arm64", "x86", "arm"] } },
+        "min_disk_mb":    { "type": "integer", "minimum": 0 },
+        "min_memory_mb":  { "type": "integer", "minimum": 0 }
+      }
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["goal", "cmd"],
+        "properties": {
+          "goal": { "type": "string" },
+          "cmd":  { "type": "string" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "metadata": { "type": "object" }
+  },
+  "$defs": {
+    "installMethod": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "brew" },   "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "apt" },    "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "dnf" },    "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "pacman" }, "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "choco" },  "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "scoop" },  "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "npm" },    "package": { "type": "string" }, "global": { "type": "boolean" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "pip" },    "package": { "type": "string" }, "user":   { "type": "boolean" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "cargo" },  "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "package"], "properties": { "method": { "const": "go" },     "package": { "type": "string" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "url"], "properties": { "method": { "const": "curl" }, "url": { "type": "string", "format": "uri" }, "verify_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "url", "extract_bin"], "properties": { "method": { "const": "download" }, "url": { "type": "string", "format": "uri" }, "extract_bin": { "type": "string" }, "verify_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "experimental": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["method", "path"], "properties": { "method": { "const": "vendored" }, "path": { "type": "string" }, "experimental": { "type": "boolean" } } }
+      ]
+    },
+    "versionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "parse", "range"],
+      "properties": {
+        "cmd":        { "type": "string" },
+        "parse":      { "type": "string", "description": "ECMAScript regex with at least one capture group." },
+        "range":      { "type": "string", "description": "npm-style semver range." },
+        "timeout_ms": { "type": "integer", "minimum": 100, "default": 5000 }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref":   { "type": "string", "description": "Workspace-relative path to SECRETS.md (AIP-19)." },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paths": { "type": "array", "items": { "type": "string" } },
+            "env":   { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "login": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cmd"],
+          "properties": {
+            "cmd":                   { "type": "string" },
+            "interactive":           { "type": "boolean" },
+            "requires_callback_url": { "type": "boolean" },
+            "completes_when": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cmd"],
+              "properties": {
+                "cmd":       { "type": "string" },
+                "exit_code": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "refresh": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cmd"],
+          "properties": {
+            "cmd":   { "type": "string" },
+            "every": { "type": "string", "pattern": "^P(?:T)?\\S+$", "description": "ISO-8601 duration." }
+          }
+        },
+        "expiry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "detect": { "type": "string", "pattern": "^exit_code:\\d+$" }
+          }
+        }
+      }
+    },
+    "setupStep": {
+      "description": "One step in the post-install setup pipeline. Discriminated by `kind`. Steps run in declared order; failures abort the pipeline.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "cmd"],
+          "properties": {
+            "id":          { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$", "description": "Stable per-step identifier; appears in audit logs and the host's setup ledger." },
+            "kind":        { "const": "cmd", "description": "Run a shell command. Useful for installers, daemon bootstraps, health checks." },
+            "cmd":         { "type": "string", "description": "Command to run. Hosts MUST shell-escape any interpolated values from prior steps (`${input.X}`, `${secrets.X}`)." },
+            "description": { "type": "string", "maxLength": 2000 },
+            "skip_if":     { "$ref": "#/$defs/skipIf" },
+            "timeout_ms":  { "type": "integer", "minimum": 100, "default": 60000 },
+            "interactive": { "type": "boolean", "default": false, "description": "When true, the host MUST attach a PTY; useful for `openclaw onboard` style installers that draw a TUI." },
+            "persist":     { "$ref": "#/$defs/setupPersist", "description": "When the cmd's stdout / parsed output should be captured into a secret slot or env var." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "prompt"],
+          "properties": {
+            "id":           { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+            "kind":         { "const": "prompt", "description": "Ask the user for a value. Surface adapter renders the appropriate UI (text input, select, confirm, masked secret)." },
+            "prompt":       { "type": "string", "description": "Question text shown to the user." },
+            "description":  { "type": "string", "maxLength": 2000 },
+            "type":         { "type": "string", "enum": ["text", "select", "boolean", "secret"], "default": "text" },
+            "default":      { "type": "string", "description": "Pre-filled value the user may accept by pressing Enter." },
+            "options":      {
+              "description": "For `type: select`, either a static enum or a command whose stdout produces the choices (one per line, optional `value\\tlabel` tab-separated).",
+              "oneOf": [
+                { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["cmd"],
+                  "properties": {
+                    "cmd":         { "type": "string" },
+                    "timeout_ms":  { "type": "integer", "minimum": 100, "default": 30000 }
+                  }
+                }
+              ]
+            },
+            "skip_if":      { "$ref": "#/$defs/skipIf" },
+            "persist":      { "$ref": "#/$defs/setupPersist" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "secret_slug"],
+          "properties": {
+            "id":            { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+            "kind":          { "const": "oauth", "description": "Drive an AIP-19 OAuth flow. Host opens the consent URL, exchanges the callback, stores tokens in the named SECRETS.md slug." },
+            "secret_slug":   { "type": "string", "minLength": 2, "maxLength": 80, "description": "Slug declared in the bundle's SECRETS.md with `kind: oauth`." },
+            "description":   { "type": "string", "maxLength": 2000 },
+            "skip_if":       { "$ref": "#/$defs/skipIf" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "url"],
+          "properties": {
+            "id":             { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+            "kind":           { "const": "external", "description": "Open a URL and wait for an external action — manual token paste, OAuth-like callback, or a third-party UI choice (Discord channel pick, Slack workspace bind)." },
+            "url":            { "type": "string", "format": "uri", "description": "URL the host opens in the user's browser. May contain `${input.X}` interpolations from earlier steps." },
+            "description":    { "type": "string", "maxLength": 2000 },
+            "callback":       {
+              "type": "object",
+              "description": "When the external flow returns to a host-allocated callback URL, this declares how to read the result.",
+              "additionalProperties": false,
+              "properties": {
+                "param":      { "type": "string", "description": "Query-string parameter holding the result value (e.g. `code` or `channel_id`)." },
+                "timeout_ms": { "type": "integer", "minimum": 1000, "default": 600000 }
+              }
+            },
+            "skip_if":        { "$ref": "#/$defs/skipIf" },
+            "persist":        { "$ref": "#/$defs/setupPersist" }
+          }
+        }
+      ]
+    },
+    "skipIf": {
+      "type": "object",
+      "description": "Health check that, when matching, skips the enclosing step. Lets re-runs of `agentproto setup <slug>` be idempotent without storing extra state.",
+      "additionalProperties": false,
+      "required": ["cmd"],
+      "properties": {
+        "cmd":         { "type": "string" },
+        "exit_code":   { "type": "integer", "default": 0, "description": "Skip the step when the cmd exits with this code. Default 0." },
+        "timeout_ms":  { "type": "integer", "minimum": 100, "default": 5000 }
+      }
+    },
+    "setupPersist": {
+      "type": "object",
+      "description": "How the step's resulting value reaches future invocations of the bundle. Exactly one of `env` / `secret_slug` / `cmd` MUST be present.",
+      "additionalProperties": false,
+      "properties": {
+        "env":         { "type": "string", "description": "Env var the runner injects on every spawn (lifted from the workspace secrets store, never logged)." },
+        "secret_slug": { "type": "string", "minLength": 2, "maxLength": 80, "description": "AIP-19 secret slug to write into. Use when the value is sensitive and the bundle's SECRETS.md declares the slug." },
+        "cmd":         { "type": "string", "description": "Run this command with `${value}` substituted by the captured value. Use for CLIs that expect their own config command (e.g. `openclaw config set gateway.remote.token ${value}`)." }
+      },
+      "oneOf": [
+        { "required": ["env"] },
+        { "required": ["secret_slug"] },
+        { "required": ["cmd"] }
+      ]
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "fs", "exec", "env"],
+      "properties": {
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "egress":  { "type": "array", "items": { "type": "string" } },
+            "ingress": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "fs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read":  { "type": "array", "items": { "type": "string" } },
+            "write": { "type": "array", "items": { "type": "string" } },
+            "deny":  { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "exec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["allow"],
+          "properties": {
+            "allow": { "type": "boolean" },
+            "spawn": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "type": "array", "items": { "type": "string" } },
+            "set":  { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "tty": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_format": { "type": "string", "enum": ["text", "json", "yaml", "binary"] },
+        "json_flag":      { "type": "string" },
+        "json_flag_args": { "type": "array", "items": { "type": "string" } },
+        "exit_codes":     {
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]+$" },
+          "propertyNames":         { "pattern": "^\\d+$" }
+        },
+        "stream":       { "type": "string", "enum": ["stdout", "stderr", "mixed"] },
+        "error_stream": { "type": "string", "enum": ["stdout", "stderr", "mixed"] }
+      }
+    },
+    "commandTree": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "description": "Workspace-relative path to a TOOL.md (AIP-14)." },
+          { "$ref": "#/$defs/commandTree" }
+        ]
+      }
+    }
+  }
+}

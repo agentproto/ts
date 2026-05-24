@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-35/STORAGE.schema.json",
+  "title": "STORAGE.md frontmatter — agentstorage/v1 (filesystem policy block)",
+  "description": "Validates the YAML frontmatter portion of an AIP-35 STORAGE.md manifest, OR the inline form embedded in any other manifest's `storage:` block. Filesystem-only — sandbox-shaped backends (e2b/modal/...) live in AIP-36 SANDBOX.md.",
+  "type": "object",
+  "required": ["provider", "config"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "storage/v1",
+      "description": "Standalone-only. Identifies the doctype + version. Absent when the block is inlined in another manifest."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+      "description": "Standalone-only. Globally addressable id `@<owner-slug>/<storage-slug>`."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "Standalone-only. Spec version of THIS file. Bump on breaking shape change."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Backend kind. Day-1 enumerated set: cloud-bucket | self-bucket | github | local-fs | dev-local | mastra-s3 | mastra-azure. Hosts MAY register additional ids; the schema accepts any non-empty string and host-side validation narrows."
+    },
+    "config": {
+      "type": "object",
+      "description": "Provider-specific connection fields. Shape varies per provider (see AIP-35 §Provider config shapes)."
+    },
+    "sync": {
+      "$ref": "#/$defs/syncBlock",
+      "description": "Sync semantics. Lifecycle triggers reference AIP-37 event names."
+    },
+    "auth": {
+      "$ref": "#/$defs/authBlock",
+      "description": "Reference to AIP-19 SECRETS.md (or future ENV.md) for credentials."
+    },
+    "identity": {
+      "$ref": "#/$defs/identityRefBlock",
+      "description": "AIP-23 identity-ref block — commit author(s) for syncing providers (github). Supports multi-attribution (primary + co-authors)."
+    },
+    "policy": {
+      "$ref": "#/$defs/policyRefBlock",
+      "description": "AIP-38 POLICY block — access grants on storage actions."
+    },
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Paths NOT mirrored to the backing store. Glob-ish, prefix-matched."
+    },
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reject writes at the storage layer."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form, namespaced. Authors MAY stash adapter-specific hints under namespaced keys."
+    }
+  },
+  "$defs": {
+    "syncBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": ["canonical", "pull-push", "watch"],
+          "default": "canonical"
+        },
+        "pull": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-37 lifecycle event name. Standard: workspace-open | turn-start | manual. Aliases (per-turn, each-write) resolve via AIP-37."
+            },
+            "ttl_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Cache validity for pull-push providers (e.g. github clone)."
+            }
+          }
+        },
+        "commit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-37 event name. Common: each-write | per-turn | per-conversation | manual."
+            },
+            "batch_window_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Debounce window for each-write commit mode."
+            },
+            "message_template": {
+              "type": "string",
+              "description": "Template for commit message. Provider-specific tokens (e.g. {{operator}}, {{summary}})."
+            }
+          }
+        },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-37 event name. Common: per-commit | per-turn | per-conversation | manual."
+            },
+            "branch_policy": {
+              "enum": ["main", "per-conversation", "per-turn"],
+              "description": "Github only. Where commits land."
+            },
+            "pr_policy": {
+              "enum": ["none", "auto", "manual"],
+              "description": "Github only. Whether to open PRs automatically."
+            }
+          }
+        },
+        "conflict": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "enum": ["rebase", "merge", "abort", "manual", "last-writer-wins", "split-conflicts"]
+            }
+          }
+        }
+      }
+    },
+    "authBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path or registry slug pointing to a SECRETS.md (or future ENV.md) inventory."
+        },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Env-var names this consumer expects to be revealed from the referenced inventory."
+            }
+          }
+        }
+      }
+    },
+    "identityRefBlock": {
+      "description": "AIP-23 §'Identity reference block'. Single entry or array (multi-attribution).",
+      "anyOf": [
+        { "$ref": "#/$defs/identityRefEntry" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identityRefEntry" },
+          "minItems": 1
+        }
+      ]
+    },
+    "policyRefEntry": {
+      "anyOf": [
+        { "$ref": "https://agentproto.sh/schemas/aip-38/POLICY.schema.json" },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": { "ref": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": { "file": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "policyRefBlock": {
+      "anyOf": [
+        { "$ref": "#/$defs/policyRefEntry" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/policyRefEntry" },
+          "minItems": 1
+        }
+      ]
+    },
+    "identityRefEntry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["name", "email"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "email": { "type": "string", "minLength": 1 },
+            "avatar": { "type": "string" },
+            "gpg_key": { "type": "string" },
+            "role": { "type": "string" },
+            "metadata": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": true,
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

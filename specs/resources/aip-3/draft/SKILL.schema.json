@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-3/SKILL.schema.json",
+  "title": "SKILL.md frontmatter (AIP-3)",
+  "description": "Validates the YAML frontmatter portion of an AIP-3 SKILL.md manifest. AIP-3 is a profile of agentskills.io: top-level fields mirror the upstream agentskills.io specification (name, description, license, compatibility, allowed-tools, metadata). AIP-3-specific extensions live under `metadata.aip3.*` so a skill authored against AIP-3 remains a valid agentskills.io skill in any conformant runtime (Claude Code, Cursor, Goose, Letta, OpenCode, Junie, Hermes Agent, OpenAI Codex, etc.). Note: this very schema is exercised by the AIP-3 authoring SKILL.md in the same folder — the authoring skill is itself a valid AIP-3 skill and validates against this file.",
+  "type": "object",
+  "required": ["name", "description"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$|^[a-z0-9]$",
+      "description": "Machine identifier. 1–64 chars, lowercase alphanumeric and hyphens only, no leading/trailing/consecutive hyphens. MUST equal the parent directory name. Inherited verbatim from agentskills.io."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "One-paragraph purpose, written for the LLM caller. SHOULD describe both what the skill does and when to use it. Inherited from agentskills.io (1024-char cap)."
+    },
+    "license": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Optional. License identifier (e.g. SPDX 'MIT', 'Apache-2.0') or a pointer to a bundled license file (e.g. 'LICENSE.txt has complete terms'). Inherited from agentskills.io."
+    },
+    "compatibility": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Optional. Free-form environment requirements: intended product, required system packages, network access, etc. Most skills omit this. Inherited from agentskills.io."
+    },
+    "allowed-tools": {
+      "type": "string",
+      "description": "Optional. Space-separated list of pre-approved tool patterns (e.g. 'Bash(git:*) Bash(jq:*) Read'). Experimental upstream — runtimes MAY ignore. The field is a request, not a grant: runtimes apply policy mediation before honoring it. Inherited from agentskills.io."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Free-form key-value mapping. Hosts and standards stash extension fields under namespaced keys (e.g. `metadata.aip3.*`, `metadata.acme.*`). Inherited from agentskills.io.",
+      "properties": {
+        "aip3": {
+          "$ref": "#/$defs/Aip3Extensions"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Aip3Extensions": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "AIP-3 extensions to the agentskills.io baseline. Runtimes that don't implement AIP-3 MUST preserve this object verbatim (it lives in agentskills.io's `metadata`).",
+      "properties": {
+        "schema": {
+          "const": "skills/v1",
+          "description": "Schema dispatch tag. Required for AIP-3 conformance. Pinned to 'skills/v1' for the current spec version."
+        },
+        "variant": {
+          "enum": ["instruction", "executable", "composite"],
+          "default": "instruction",
+          "description": "Skill variant. `instruction` is prose-only (default); `executable` bundles runnable code via `execution`; `composite` references other skills via `uses`."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+          "description": "Semver. Bump on breaking changes to the skill's behavior or required tools."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "default": [],
+          "maxItems": 12,
+          "description": "Catalog tags. Lowercase kebab-case; no leading symbols. 3–6 tags is typical."
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Coarse grouping (e.g. 'productivity', 'creative', 'development'). Free-form; runtimes SHOULD NOT enumerate."
+        },
+        "requires": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "default": [],
+          "description": "Other AIPs this skill depends on (e.g. `[9]` for the operator runtime). Runtimes MAY warn when a declared dependency is unsupported."
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Optional. Conventional shape: 'Name <email>' or stable handle. Mirrors the agentskills.io `metadata.author` convention; if both are present, `metadata.aip3.author` wins for AIP-3 runtimes."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Optional human-readable display title. Headless runtimes that can't render the body H1 MAY use this. The body H1 is preferred."
+        },
+        "uses": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$|^[a-z0-9]$" },
+          "default": [],
+          "description": "Skill names this skill composes with. Required and non-empty when variant=composite."
+        },
+        "execution": {
+          "type": "object",
+          "required": ["language", "code"],
+          "additionalProperties": false,
+          "description": "Executable bindings. Required when variant=executable.",
+          "properties": {
+            "language": {
+              "enum": ["typescript", "javascript", "python", "shell"],
+              "description": "Implementation language. Runtimes MAY refuse languages they don't support."
+            },
+            "code": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["file"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Relative path to the entry file. SHOULD live under `scripts/`. Path traversal (`..` segments escaping the skill dir) MUST be rejected."
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": ["inline"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "inline": {
+                      "type": "string",
+                      "description": "Inline source. Runtimes MUST sandbox before executing."
+                    }
+                  }
+                }
+              ],
+              "description": "Exactly one of { file } or { inline }. File paths are relative to SKILL.md."
+            },
+            "entrypoint": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional function name within the entry file."
+            },
+            "runtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "Optional execution backend hint (e.g. 'modal', 'daytona', 'vercel-sandbox', 'local')."
+                },
+                "timeout": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum execution time in milliseconds. Runtimes MUST enforce."
+                },
+                "memory": {
+                  "type": "string",
+                  "description": "Memory cap, e.g. '512MB', '2GB'."
+                }
+              }
+            },
+            "artifacts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["patterns"],
+              "properties": {
+                "patterns": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "Glob patterns of output files the runtime should capture."
+                }
+              }
+            },
+            "dependencies": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Package -> version map (e.g. lockfile-style)."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "variant": { "const": "executable" } }, "required": ["variant"] },
+          "then": { "required": ["execution"] }
+        },
+        {
+          "if": { "properties": { "variant": { "const": "composite" } }, "required": ["variant"] },
+          "then": {
+            "properties": {
+              "uses": { "type": "array", "minItems": 1 }
+            },
+            "required": ["uses"]
+          }
+        }
+      ]
+    }
+  }
+}

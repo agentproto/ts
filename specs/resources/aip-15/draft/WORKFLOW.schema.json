@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-15/WORKFLOW.schema.json",
+  "title": "WORKFLOW.md frontmatter (AIP-15)",
+  "description": "Validates the YAML frontmatter portion of an AIP-15 WORKFLOW.md manifest.",
+  "type": "object",
+  "required": [
+    "name",
+    "id",
+    "description",
+    "version",
+    "inputs",
+    "outputs",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+    },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$"
+    },
+    "entry": { "type": "string" },
+    "inputs": {
+      "description": "Defined by AIP-16 — the IO `inputs` block.",
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/inputs"
+    },
+    "outputs": {
+      "description": "Defined by AIP-16 — the IO `outputs` block.",
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/outputs"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "start": { "type": "string" },
+    "suspendable": { "type": "boolean" },
+    "triggers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/trigger" },
+      "default": []
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": { "type": "array", "items": { "type": "string" } },
+        "fs.read": { "type": "array", "items": { "type": "string" } },
+        "fs.write": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "array", "items": { "type": "string" } },
+        "secrets": { "type": "array", "items": { "type": "string" } },
+        "tools": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "approval": { "$ref": "#/$defs/approval", "default": "per-step" },
+    "risk_level": { "type": "integer", "minimum": 0, "maximum": 3 },
+    "timeout_ms": { "type": "integer", "minimum": 1, "default": 600000 },
+    "max_steps": { "type": "integer", "minimum": 1, "default": 100 },
+    "retry": { "$ref": "#/$defs/retry" },
+    "cost_class": {
+      "enum": ["trivial", "metered", "expensive"],
+      "default": "metered"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "inputsFiles": {
+      "description": "Defined by AIP-16 — the IO `inputsFiles` block.",
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/inputsFiles"
+    },
+    "outputsFiles": {
+      "description": "Defined by AIP-16 — the IO `outputsFiles` block.",
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/outputsFiles"
+    },
+    "runtime": {
+      "description": "Defined by AIP-17 — the runner block.",
+      "$ref": "https://agentproto.sh/schemas/aip-17/RUNNER.schema.json#/$defs/runner"
+    }
+  },
+  "$defs": {
+    "jsonSchema": {
+      "description": "Any JSON Schema draft 2020-12 document. Validation deferred to a meta-validator.",
+      "type": "object"
+    },
+    "approval": {
+      "anyOf": [
+        { "enum": ["auto", "always", "on-mutate", "per-step"] },
+        { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" }
+      ]
+    },
+    "retry": {
+      "type": "object",
+      "required": ["max_attempts", "backoff"],
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "backoff": { "enum": ["fixed", "exponential"] },
+        "initial_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "trigger": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "cron"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "schedule" },
+            "cron": { "type": "string" },
+            "timezone": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "webhook" },
+            "path": { "type": "string", "pattern": "^/" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "name"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "event" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "manual" },
+            "label": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "stepCommon": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "name": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "kind": {
+          "enum": [
+            "tool",
+            "branch",
+            "parallel",
+            "suspend",
+            "approval",
+            "map",
+            "loop",
+            "subworkflow"
+          ]
+        },
+        "inputs": { "type": "object" },
+        "outputs": { "$ref": "#/$defs/jsonSchema" },
+        "next": { "type": "string" },
+        "approval": { "$ref": "#/$defs/approval" },
+        "risk_level": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "retry": { "$ref": "#/$defs/retry" },
+        "compensation": { "type": "string" }
+      }
+    },
+    "step": {
+      "allOf": [
+        { "$ref": "#/$defs/stepCommon" },
+        {
+          "oneOf": [
+            { "$ref": "#/$defs/stepTool" },
+            { "$ref": "#/$defs/stepBranch" },
+            { "$ref": "#/$defs/stepParallel" },
+            { "$ref": "#/$defs/stepSuspend" },
+            { "$ref": "#/$defs/stepApproval" },
+            { "$ref": "#/$defs/stepMap" },
+            { "$ref": "#/$defs/stepLoop" },
+            { "$ref": "#/$defs/stepSubworkflow" }
+          ]
+        }
+      ]
+    },
+    "stepTool": {
+      "type": "object",
+      "required": ["kind", "tool"],
+      "properties": {
+        "kind": { "const": "tool" },
+        "tool": {
+          "anyOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "required": ["entry"],
+              "properties": {
+                "entry": { "type": "string" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "stepBranch": {
+      "type": "object",
+      "required": ["kind", "branches"],
+      "properties": {
+        "kind": { "const": "branch" },
+        "branches": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["when", "next"],
+            "properties": {
+              "when": { "type": "string" },
+              "next": { "type": "string" }
+            }
+          }
+        },
+        "default": { "type": "string" }
+      }
+    },
+    "stepParallel": {
+      "type": "object",
+      "required": ["kind", "branches"],
+      "properties": {
+        "kind": { "const": "parallel" },
+        "branches": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["id", "steps"],
+            "properties": {
+              "id": { "type": "string" },
+              "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+              "next": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "stepSuspend": {
+      "type": "object",
+      "required": ["kind", "resume"],
+      "properties": {
+        "kind": { "const": "suspend" },
+        "resume": {
+          "type": "object",
+          "required": ["on"],
+          "properties": {
+            "on": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            },
+            "timeout_ms": { "type": "integer", "minimum": 1 },
+            "on_timeout": { "type": "string" }
+          }
+        }
+      }
+    },
+    "stepApproval": {
+      "type": "object",
+      "required": ["kind", "prompt", "approvers"],
+      "properties": {
+        "kind": { "const": "approval" },
+        "prompt": { "type": "string" },
+        "artifacts": { "type": "array", "items": { "type": "string" } },
+        "approvers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "anyOf": [
+              {
+                "required": ["role"],
+                "properties": { "role": { "type": "string" } }
+              },
+              {
+                "required": ["userId"],
+                "properties": { "userId": { "type": "string" } }
+              }
+            ]
+          }
+        },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "on_approve": {
+          "type": "object",
+          "properties": { "next": { "type": "string" } }
+        },
+        "on_reject": {
+          "type": "object",
+          "properties": { "next": { "type": "string" } }
+        },
+        "on_timeout": { "type": "string" }
+      }
+    },
+    "stepMap": {
+      "type": "object",
+      "required": ["kind", "over", "steps"],
+      "properties": {
+        "kind": { "const": "map" },
+        "over": { "type": "string" },
+        "parallelism": { "type": "integer", "minimum": 0 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "stepLoop": {
+      "type": "object",
+      "required": ["kind", "while", "max_iterations", "steps"],
+      "properties": {
+        "kind": { "const": "loop" },
+        "while": { "type": "string" },
+        "max_iterations": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "stepSubworkflow": {
+      "type": "object",
+      "required": ["kind", "workflow"],
+      "properties": {
+        "kind": { "const": "subworkflow" },
+        "workflow": { "type": "string" }
+      }
+    }
+  }
+}

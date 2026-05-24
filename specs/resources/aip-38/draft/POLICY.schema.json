@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-38/POLICY.schema.json",
+  "title": "POLICY.md frontmatter — agentpolicy/v1 (composable policy block)",
+  "description": "Validates the YAML frontmatter portion of an AIP-38 POLICY.md manifest, OR the inline form embedded in any other manifest's `policy:` block. Grants on AIP-39 ACTION ids; principals via AIP-23 identity-ref schemes.",
+  "type": "object",
+  "required": ["schema"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "policy/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+      "description": "Standalone-only. Globally addressable id `@<owner-slug>/<policy-slug>`."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "Standalone-only. Spec version of THIS file."
+    },
+    "default": {
+      "enum": ["allow", "deny"],
+      "default": "deny",
+      "description": "Default decision when no grant matches. `deny` strongly recommended; `allow` is audit-significant."
+    },
+    "grants": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/grant" },
+      "default": [],
+      "description": "Access grants. Each grant ties a principal (AIP-23) to a set of actions (AIP-39)."
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "default": {},
+      "description": "Per-block behavioural defaults. Keys are AIP block names (storage, sandbox, code, secrets); values are partial block configs."
+    },
+    "limits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/limit" },
+      "default": [],
+      "description": "Resource limits. Each `{ kind, value, scope?, per?, applies_to? }`."
+    },
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/requirement" },
+      "default": [],
+      "description": "Cross-cutting must-haves (MFA, signing, approvals). ANDed across composed policies."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form, namespaced."
+    }
+  },
+  "$defs": {
+    "grant": {
+      "type": "object",
+      "required": ["principal", "actions"],
+      "additionalProperties": false,
+      "properties": {
+        "principal": {
+          "$ref": "#/$defs/identityRefEntry",
+          "description": "AIP-23 identity-ref. Schemes: operator://, user://, org://, guild://, bot://, group://, role://, *."
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/actionGrant" }
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/condition" },
+          "description": "Conditions ANDed (all must hold). Unknown conditions skip the grant."
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Time-bound grant; expires at granted_at + ttl_seconds."
+        },
+        "granted_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601. Audit metadata."
+        },
+        "granted_by": {
+          "$ref": "#/$defs/identityRefEntry",
+          "description": "Who issued this grant. Audit metadata."
+        },
+        "revoked": {
+          "type": "boolean",
+          "default": false,
+          "description": "Soft-revoke marker. A revoked grant evaluates as no-grant."
+        }
+      }
+    },
+    "actionGrant": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-39 ACTION reference. Bare id (e.g. `storage:commit`), workspace-relative path, or registry slug (`@agentik/actions/standard/storage-commit`). `*` suffix permits wildcards (`storage:*`)."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Optional scope narrowing for this grant (action-specific)."
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Condition kind. Standard: `during-business-hours`, `ip-range`, `mfa-recent`, `approval-from`, `signed-by`. Hosts MAY register custom kinds."
+        }
+      }
+    },
+    "limit": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Limit kind. Standard: `max-concurrent-sandboxes`, `rate-tool-calls`, `max-egress-bytes-per-day`. Host-extensible."
+        },
+        "value": {
+          "type": "number",
+          "minimum": 0
+        },
+        "scope": {
+          "type": "string",
+          "description": "Per what? `user`, `workspace`, `org`, host-specific."
+        },
+        "per": {
+          "enum": ["second", "minute", "hour", "day"],
+          "description": "For rate-style limits."
+        },
+        "applies_to": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Action refs the limit applies to. Empty / missing = all actions."
+        }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Requirement kind. Standard: `mfa-recent`, `signed-by`, `approval-from`. Host-extensible."
+        },
+        "applies_to": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Action refs this requirement applies to. Empty / missing = all actions."
+        }
+      }
+    },
+    "identityRefEntry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["name", "email"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "email": { "type": "string", "minLength": 1 },
+            "avatar": { "type": "string" },
+            "gpg_key": { "type": "string" },
+            "role": { "type": "string" },
+            "metadata": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": true,
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shorthand: bare scheme string like `operator://bob`, `user://current`, `*`."
+        }
+      ]
+    }
+  }
+}

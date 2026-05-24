@@ -1,0 +1,436 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-18/COLLECTION.schema.json",
+  "title": "collections/v1 frontmatter (AIP-18)",
+  "description": "Validates the YAML frontmatter portion of an AIP-18 collection schema or item. The doctype is selected via the `schema` discriminator: 'collection.schema/v1' (a COLLECTION.md, the schema for a class of records) or 'collection.item/v1' (an instance of one record validated against a named collection).",
+  "oneOf": [{ "$ref": "#/$defs/schema" }, { "$ref": "#/$defs/item" }],
+  "$defs": {
+    "schema": {
+      "type": "object",
+      "required": ["schema", "name", "title", "description", "version"],
+      "additionalProperties": false,
+      "description": "Collection schema doctype. Declares the shape of items (fields, statuses, ownership, deadline, lints, identity). Composes via `extends:` against another COLLECTION.md.",
+      "properties": {
+        "schema": {
+          "const": "collection.schema/v1",
+          "description": "Discriminator for a collection definition."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 96,
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Stable kebab-case identifier. Items reference this name via their `collection:` field."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human-readable collection title."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "One-paragraph statement of purpose: what this collection captures and when an item belongs here vs another collection."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$",
+          "description": "Semantic version of the SHAPE. Bump on field/status/lint changes. Independent of the collection's content."
+        },
+        "extends": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(\\.\\./|\\./)[^\\s]+/COLLECTION\\.md$",
+          "description": "OPTIONAL — relative path to a parent COLLECTION.md. Recursive composition; maximum chain depth is 8."
+        },
+        "appliesTo": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(ws://(workspaces|wikis|companies|operators|skills)/[a-z][a-z0-9-]*|\\.\\./[^\\s]+)$",
+            "description": "Either a ws:// ref to an AIP-20 work workspace, AIP-10 wiki, AIP-6 company, AIP-9 operator, or AIP-3 skill — or a relative path to a consumer workspace folder."
+          },
+          "uniqueItems": true,
+          "description": "OPTIONAL — list of consumers this collection adapts for. Hosts MUST refuse if any binding does not resolve. Not inherited; each child declares its own scope."
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldDef"
+          },
+          "default": [],
+          "description": "Item field schema. Merge-by-name vs parent: a child entry with the same `name` replaces the parent's (subject to type-drift refusal); new names are appended."
+        },
+        "statuses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Stable kebab-case status id. Merge key when composing."
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60,
+                "description": "Human-readable status label."
+              },
+              "terminal": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether items in this status are considered closed. Lints like `overdue` typically skip terminal statuses."
+              },
+              "transitionsTo": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                },
+                "uniqueItems": true,
+                "description": "OPTIONAL — allowed next status ids. If omitted, all transitions are permitted."
+              }
+            }
+          },
+          "default": [],
+          "description": "Status state machine. Merge-by-id vs parent. Children may add statuses, mark inherited statuses terminal, or narrow `transitionsTo`; they MUST NOT remove an inherited status."
+        },
+        "initialStatus": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "OPTIONAL — default status assigned to new items. MUST refer to a status declared (locally or inherited) by this collection."
+        },
+        "ownership": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cardinality": {
+              "enum": ["none", "single", "multiple"],
+              "default": "single",
+              "description": "How many owners an item may carry. `none` = no ownership concept; `single` = one owner; `multiple` = list of owners."
+            },
+            "role": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_]*$",
+              "default": "owner",
+              "description": "Item field name that holds the owner ref."
+            },
+            "required": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether items MUST declare an owner."
+            }
+          },
+          "description": "Ownership rules. Each leaf field overrides independently across the chain."
+        },
+        "deadline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": ["none", "target-date", "window", "recurrent"],
+              "default": "none",
+              "description": "Deadline shape. `none` = no deadline concept; `target-date` = single date; `window` = start+end; `recurrent` = repeating."
+            },
+            "required": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether items MUST declare a deadline value."
+            },
+            "fieldName": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_]*$",
+              "default": "dueAt",
+              "description": "Item field name that holds the deadline value."
+            }
+          },
+          "description": "Deadline rules. Each leaf field overrides independently."
+        },
+        "lints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "appliesTo", "severity"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Stable kebab-case lint id. Merge key when composing."
+              },
+              "kind": {
+                "enum": [
+                  "missing-owner",
+                  "overdue",
+                  "orphan",
+                  "broken-ref",
+                  "stale",
+                  "required-field",
+                  "custom"
+                ],
+                "description": "Lint algorithm. `custom` delegates to a host-defined check identified by `id`."
+              },
+              "appliesTo": {
+                "type": "string",
+                "const": "*",
+                "description": "Always '*' — items belong to one collection, so the lint always applies to all items of this collection. The field is preserved for symmetry with AIP-10's lint shape."
+              },
+              "severity": {
+                "enum": ["error", "warn", "info"],
+                "description": "Lint severity. Children may soften; governance policies MAY forbid softening below `error`."
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": true,
+                "default": {},
+                "description": "Kind-specific parameters. e.g. { days: 30 } for `stale`; { field: 'severity' } for `required-field`."
+              }
+            }
+          },
+          "default": [],
+          "description": "Lint rules. Merge-by-id vs parent."
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "slugSource": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "How to derive an item's slug. Either a field name (e.g. 'title'), the literal 'random', the literal 'sequence', or 'hash:<comma-separated-source-fields>' (e.g. 'hash:title,createdAt')."
+            },
+            "filingPath": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Template for where items are filed on disk. Tokens: {collection}, {slug}, {year}, {month}. e.g. 'items/{collection}/{slug}.md'."
+            }
+          },
+          "description": "Item identity & filing rules."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Vendor-specific extensions, namespaced under <vendor>. Deep-merged across the extends chain."
+        }
+      },
+      "allOf": [
+        {
+          "description": "A collection that binds to a consumer (any non-empty appliesTo) MUST extend a parent. A standalone collection has neither field, or has extends without appliesTo.",
+          "if": {
+            "required": ["appliesTo"],
+            "properties": {
+              "appliesTo": { "type": "array", "minItems": 1 }
+            }
+          },
+          "then": {
+            "required": ["extends"]
+          }
+        }
+      ]
+    },
+    "fieldDef": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "description": "Definition of one field on a collection's item schema. Merge-by-name. Type drift between parent and child is HARD refused.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9_]*$",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "kebab-or-camel-case field name. Merge key when composing."
+        },
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "enum",
+            "date",
+            "datetime",
+            "text",
+            "url",
+            "ref",
+            "array"
+          ],
+          "description": "Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`)."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether items MUST declare this field. A child may narrow false -> true; loosening true -> false is permitted (it removes a constraint without invalidating instances)."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Prose describing what the field captures."
+        },
+        "enum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "Required when type=enum. Children may narrow to a subset; widening to a superset is permitted (it does not invalidate instances)."
+        },
+        "items": {
+          "$ref": "#/$defs/fieldDef",
+          "description": "Required when type=array. Recursive shape — describes the inner item type."
+        },
+        "refKind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Required when type=ref. The target collection's `name`. Hosts validate that ref values point at items of this collection."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "OPTIONAL regex constraint. Only valid when type=string."
+        },
+        "min": {
+          "type": "number",
+          "description": "OPTIONAL minimum. For type=number: minimum value. For type=array: minimum length."
+        },
+        "max": {
+          "type": "number",
+          "description": "OPTIONAL maximum. For type=number: maximum value. For type=array: maximum length."
+        },
+        "format": {
+          "type": "string",
+          "description": "OPTIONAL named format. Common values: email, uri, semver, uuid, slug. Only valid when type=string. Hosts MAY interpret unknown formats as advisory."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "OPTIONAL deprecation flag. A child may set false to mark an inherited field deprecated; the host preserves the field in the resolved schema (so existing items still validate) but flags new uses via lint. Setting enabled:false on a field a child does not inherit is invalid."
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": ["schema", "collection", "id", "title"],
+      "additionalProperties": true,
+      "description": "Item instance doctype. Universal core (schema, collection, id, title) is the only set of MUST fields. Every other field shown here is OPTIONAL at the AIP-18 level — the resolved collection schema decides which become required for this collection's items. additionalProperties is true because collection-specific fields (declared in COLLECTION.md fields[]) appear flat at the item's top level.",
+      "properties": {
+        "schema": {
+          "const": "collection.item/v1",
+          "description": "Discriminator for an item instance."
+        },
+        "collection": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 96,
+              "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+              "description": "Canonical 99% form — just the collection's name. Host floats to the current resolved schema; drift surfaces as collection_item_schema_drift (warn)."
+            },
+            {
+              "type": "object",
+              "required": ["name"],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 96,
+                  "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+                },
+                "version": {
+                  "type": "string",
+                  "description": "Semver range (e.g. \"1.x\", \"^1.2\", \"1.2.0\"). When set, schema bumps outside the range fail with collection_item_schema_pinned_drift (HARD)."
+                }
+              },
+              "description": "Object form — pin a specific schema range. Power-user escape hatch for archival snapshots, cross-team publishing, third-party imports."
+            }
+          ],
+          "description": "Reference to the COLLECTION.md this item validates against. Resolution order: inline (workspace root) → local file (<workspace>/collections/<name>/COLLECTION.md) → registry (ws://collections/<name>). Unresolvable → collection_unresolvable (HARD)."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]*$",
+          "description": "Unique identifier within the collection. May be kebab-case, prefixed (BUG-1234), or hashed; the collection's identity.slugSource controls how it's derived for new items."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human-readable item title."
+        },
+        "parent": {
+          "type": "string",
+          "description": "OPTIONAL — containment ref. May target another item or another collection."
+        },
+        "owner": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "items": { "type": "string" },
+              "uniqueItems": true
+            }
+          ],
+          "description": "OPTIONAL — owner ref(s). Single string or array depending on collection.ownership.cardinality."
+        },
+        "status": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "OPTIONAL — current status. MUST be a status id declared (locally or inherited) by the collection."
+        },
+        "dueAt": {
+          "type": "string",
+          "description": "OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent."
+        },
+        "attachments": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "default": [],
+          "description": "OPTIONAL — list of attachment refs. Hosts resolve refs against the workspace's file registry."
+        },
+        "links": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "default": [],
+          "description": "OPTIONAL — list of cross-references to other items, knowledge entries, or external URLs."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "OPTIONAL — free-form tags consumed by retrieval, search, and grouping."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "OPTIONAL — ISO 8601 creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "OPTIONAL — ISO 8601 last-update timestamp."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Vendor-specific extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys; the spec's normative fields MUST NOT change meaning."
+        }
+      }
+    }
+  }
+}

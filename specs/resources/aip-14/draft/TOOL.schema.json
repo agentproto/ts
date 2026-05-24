@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-14/TOOL.schema.json",
+  "title": "TOOL.md frontmatter — agenttool/v1 (abstract agent contract)",
+  "description": "Validates the YAML frontmatter portion of an AIP-14 TOOL.md manifest. Implementation-specific fields (code/run/runner/secrets/network/entry) are NOT part of this schema — they live on the AIP-30 PROVIDER schema.",
+  "type": "object",
+  "required": ["name", "id", "description", "version", "inputs", "outputs"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable display name."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9][a-z0-9.\\-]*[a-z0-9]$",
+      "description": "Machine identifier. Lowercase, digits, dashes, dots. Dots denote namespace."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph purpose, written for the LLM caller."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "Spec version of THIS file. Bump on breaking change to inputs/outputs/side-effect profile."
+    },
+    "inputs": {
+      "description": "Defined by AIP-16 — the IO `inputs` block.",
+      "$ref": "https://agentproto.sh/docs/aip-16/IO.schema.json#/$defs/inputs"
+    },
+    "outputs": {
+      "description": "Defined by AIP-16 — the IO `outputs` block.",
+      "$ref": "https://agentproto.sh/docs/aip-16/IO.schema.json#/$defs/outputs"
+    },
+    "idempotent": {
+      "type": "boolean",
+      "default": false,
+      "description": "Logical idempotency at contract level. Network-level retry safety belongs to PROVIDER's retry_override."
+    },
+    "mutates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]+:[^\\s]+$",
+        "description": "Format: <class>:<scope>. Examples: network:*, workspace:/path, database:invoices."
+      },
+      "default": []
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": { "type": "array", "items": { "type": "string" } },
+        "secrets": { "type": "array", "items": { "type": "string" } },
+        "tools":   { "type": "array", "items": { "type": "string" } }
+      },
+      "description": "Capability requirements for governance gating per AIP-7. Providers MAY add to this set; MUST NOT remove from it."
+    },
+    "approval": {
+      "anyOf": [
+        { "enum": ["auto", "always", "on-mutate"] },
+        { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" }
+      ],
+      "default": "auto",
+      "description": "Approval class. 'auto' | 'always' | 'on-mutate' | 'policy:<ref>'. Contract-level — providers can't downgrade."
+    },
+    "risk_level": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "default": 0,
+      "description": "0=read-only, 1=scoped writes, 2=external side effects, 3=irreversible."
+    },
+    "cost_class": {
+      "enum": ["trivial", "metered", "expensive"],
+      "default": "trivial",
+      "description": "Baseline. Providers MAY override via cost_override.cost_class."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 30000,
+      "description": "Hard wall-clock contract ceiling. Providers MAY narrow via timeout_override_ms; MUST NOT widen."
+    },
+    "retry": {
+      "type": "object",
+      "required": ["max_attempts", "backoff"],
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "backoff":      { "enum": ["fixed", "exponential"] },
+        "initial_ms":   { "type": "integer", "minimum": 0 }
+      },
+      "description": "Baseline retry policy. Providers MAY override via retry_override."
+    },
+    "default_implementation": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9][a-z0-9.\\-]{1,79}$",
+      "description": "Optional provider.id to use when the resolver has no other signal. Null = pick by resolver policy."
+    },
+    "driver_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "forbid": {
+          "type": "array",
+          "items": { "enum": ["cli", "http", "mcp", "sdk", "builtin"] },
+          "uniqueItems": true,
+          "description": "Provider kinds the contract refuses (e.g. ['http'] for self-hosted-only tools)."
+        },
+        "require_kind": {
+          "type": "array",
+          "items": { "enum": ["cli", "http", "mcp", "sdk", "builtin"] },
+          "uniqueItems": true,
+          "description": "Whitelist of allowed provider kinds. Empty = all kinds permitted (subject to forbid)."
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "default": []
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "input"],
+        "additionalProperties": false,
+        "properties": {
+          "name":   { "type": "string" },
+          "input":  {},
+          "output": {},
+          "note":   { "type": "string" }
+        }
+      },
+      "default": [],
+      "description": "Provider-agnostic examples. Every conformant provider MUST satisfy these. Provider-specific edge cases live on the PROVIDER's own examples."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "approval": { "const": "auto" } }
+      },
+      "then": {
+        "properties": {
+          "mutates": {
+            "type": "array",
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

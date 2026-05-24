@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-41/ROUTINE.schema.json",
+  "title": "ROUTINE.md frontmatter — agentroutine/v1 (recurring schedule + target)",
+  "description": "Validates the YAML frontmatter portion of an AIP-41 ROUTINE.md manifest. Decouples 'when' (schedule) from 'what' (target action/workflow/tool).",
+  "type": "object",
+  "required": ["schema", "id", "description", "schedule", "target"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "routine/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9@][a-z0-9.@/_-]*$",
+      "description": "Machine identifier. Lowercase, digits, dashes, dots, optional @owner/ prefix. Unique within the registry that hosts the routine."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph purpose."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "default": "1.0.0",
+      "description": "Spec version of THIS file."
+    },
+    "schedule": {
+      "$ref": "#/$defs/schedule",
+      "description": "When the routine fires."
+    },
+    "target": {
+      "$ref": "#/$defs/target",
+      "description": "What the routine invokes when it fires."
+    },
+    "identity": {
+      "$ref": "#/$defs/identityRef",
+      "description": "Identity that owns the routine fire (AIP-23). Defaults to host policy."
+    },
+    "retry": {
+      "$ref": "#/$defs/retry",
+      "description": "Retry behaviour on failure."
+    },
+    "on_failure": {
+      "$ref": "#/$defs/onFailure",
+      "description": "Where to route failures after retries exhaust."
+    },
+    "history": {
+      "$ref": "#/$defs/history",
+      "description": "Run history retention."
+    },
+    "fires_events": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": ["routine-triggered", "routine-completed", "routine-failed"],
+      "description": "AIP-37 LIFECYCLE event names this routine fires."
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "If false, routine registers but does not fire. Useful for staging."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Free-form discovery tags."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form, namespaced."
+    }
+  },
+  "$defs": {
+    "schedule": {
+      "oneOf": [
+        { "$ref": "#/$defs/scheduleCron" },
+        { "$ref": "#/$defs/scheduleInterval" },
+        { "$ref": "#/$defs/scheduleCalendar" },
+        { "$ref": "#/$defs/scheduleManual" },
+        { "$ref": "#/$defs/scheduleEvent" }
+      ]
+    },
+    "scheduleCron": {
+      "type": "object",
+      "required": ["kind", "cron"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "cron" },
+        "cron": {
+          "type": "string",
+          "minLength": 9,
+          "maxLength": 100,
+          "description": "Standard 5-field cron expression."
+        },
+        "timezone": {
+          "type": "string",
+          "default": "UTC",
+          "description": "IANA tz database name. Legacy abbreviations rejected."
+        },
+        "jitter_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 0
+        },
+        "catchup": {
+          "enum": ["skip", "one", "all"],
+          "default": "skip"
+        }
+      }
+    },
+    "scheduleInterval": {
+      "type": "object",
+      "required": ["kind", "every"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "interval" },
+        "every": {
+          "type": "string",
+          "pattern": "^\\d+(s|m|h|d)$",
+          "description": "Duration: Ns | Nm | Nh | Nd."
+        },
+        "from": {
+          "type": "string",
+          "format": "date-time",
+          "description": "OPTIONAL anchor; default = registration time."
+        },
+        "jitter_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 0
+        }
+      }
+    },
+    "scheduleCalendar": {
+      "type": "object",
+      "required": ["kind", "rrule"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "calendar" },
+        "rrule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "RFC 5545 RRULE."
+        },
+        "timezone": {
+          "type": "string",
+          "default": "UTC"
+        }
+      }
+    },
+    "scheduleManual": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "manual" }
+      }
+    },
+    "scheduleEvent": {
+      "type": "object",
+      "required": ["kind", "on"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "event" },
+        "on": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-37 LIFECYCLE event name."
+        },
+        "filter": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "OPTIONAL — only fire if event payload matches filter."
+        }
+      }
+    },
+    "target": {
+      "oneOf": [
+        { "$ref": "#/$defs/targetAction" },
+        { "$ref": "#/$defs/targetWorkflow" },
+        { "$ref": "#/$defs/targetTool" }
+      ]
+    },
+    "targetAction": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-39 ACTION ref. Resolver picks tool implementation."
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Invocation payload. May reference ${{ vault.* }} and ${{ now }}."
+        }
+      }
+    },
+    "targetWorkflow": {
+      "type": "object",
+      "required": ["workflow"],
+      "additionalProperties": false,
+      "properties": {
+        "workflow": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "$ref": "#/$defs/anyRef" }
+          ],
+          "description": "AIP-15 WORKFLOW ref."
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "targetTool": {
+      "type": "object",
+      "required": ["tool"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-14 TOOL id (pin specific implementation)."
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "anyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "inline": { "type": "object", "additionalProperties": true }
+      },
+      "description": "AIP-27 ref primitive — exactly one of ref|file|inline."
+    },
+    "identityRef": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shorthand identity URI: operator://<id> | user://<id> | bot://<name> | @<owner>/identities/<slug>"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "file": { "type": "string", "minLength": 1 },
+            "inline": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "email": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 1
+        },
+        "backoff": {
+          "enum": ["exponential", "linear", "fixed"],
+          "default": "exponential"
+        },
+        "initial_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 60000
+        },
+        "max_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3600000
+        },
+        "on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "OPTIONAL — only retry these failure classes."
+        }
+      }
+    },
+    "onFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "notify": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identityRef" },
+          "description": "Identity-refs to notify."
+        },
+        "create_work_item": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open AIP-13/20 WORK item on retry-exhausted failure."
+        },
+        "fire_event": {
+          "type": "string",
+          "description": "OPTIONAL custom AIP-37 event to fire on failure."
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retain_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 100
+        },
+        "retain_failed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30
+        }
+      }
+    }
+  }
+}

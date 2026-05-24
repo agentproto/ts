@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-11/LESSON.schema.json",
+  "title": "LESSON.md frontmatter (AIP-11)",
+  "description": "Validates the YAML frontmatter portion of an AIP-11 LESSON.md file — one transferable lesson distilled from a completed run.",
+  "type": "object",
+  "required": ["schema", "slug", "title", "trigger", "outcome", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "learning/v1",
+      "description": "Spec identifier. Must be the literal string 'learning/v1'."
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Machine identifier, also the filename. Lowercase, digits, dashes. Imperative voice recommended."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "One-sentence imperative title — what to do or avoid."
+    },
+    "trigger": {
+      "type": "object",
+      "required": ["description"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Plain-text description of when this lesson applies."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "maxItems": 12,
+          "default": [],
+          "description": "Retrieval keywords. Keep narrow; three is usually enough."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operator": { "type": "string" },
+              "role": { "type": "string" },
+              "skill": { "type": "string" }
+            },
+            "minProperties": 1
+          },
+          "default": [],
+          "description": "Operator / role / skill globs that scope retrieval. Empty means anyone."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Vendor-specific trigger predicates. Standard fields above MUST NOT be redefined here."
+        }
+      }
+    },
+    "outcome": {
+      "enum": ["success", "failure", "mixed"],
+      "description": "Whether the source run succeeded, failed, or the lesson is conditional across runs."
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": ["run", "conversation", "work-item", "audit", "wiki-page"],
+            "description": "What the evidence reference points to. 'audit' = AIP-7 governance record."
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Opaque id or path the host can resolve. Never free text."
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "One-line factual note about the event — not the lesson."
+          }
+        }
+      },
+      "description": "Provenance — at least one evidence entry MUST resolve to a real run, conversation, work item, audit, or wiki page in the host's indices."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.5,
+      "description": "Author's confidence in [0,1]. Default 0.5 at first sighting. Runtimes weigh this against observed counts."
+    },
+    "success_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Times the lesson 'worked' when applied. Maintained by the runtime; author-supplied values are initial only."
+    },
+    "failure_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Times the lesson's claim was contradicted. Maintained by the runtime; author-supplied values are initial only."
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+      },
+      "default": [],
+      "description": "Slugs of lessons this lesson replaces. Supersession is explicit, never silent. Each cited slug MUST exist on disk."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Soft TTL (ISO 8601). Past this instant, retrieval treats the lesson as absent by default."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor-specific extensions under namespaced keys (metadata.<vendor>.<field>). Standard fields MUST NOT be redefined."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "outcome": { "const": "failure" } }
+      },
+      "then": {
+        "description": "A failure-only lesson is permitted with success_count=0 and failure_count>=1, but at least one evidence entry MUST be present (covered by the global minItems constraint)."
+      }
+    }
+  ]
+}

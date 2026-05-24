@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-36/SANDBOX.schema.json",
+  "title": "SANDBOX.md frontmatter — agentsandbox/v1 (compute environment policy)",
+  "description": "Validates the YAML frontmatter portion of an AIP-36 SANDBOX.md manifest, OR the inline form embedded in any other manifest's `sandbox:` block. Compute-only — durable filesystem backings live in AIP-35 STORAGE.md.",
+  "type": "object",
+  "required": ["provider", "config"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "sandbox/v1",
+      "description": "Standalone-only. Identifies the doctype + version. Absent when the block is inlined."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+      "description": "Standalone-only. Globally addressable id `@<owner-slug>/<sandbox-slug>`."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "Standalone-only. Spec version of THIS file."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Backend kind. Day-1 enumerated set: local | mastra-e2b | mastra-modal | mastra-daytona | mastra-blaxel | node-permission. Hosts MAY register additional ids."
+    },
+    "config": {
+      "type": "object",
+      "description": "Provider-specific connection fields. Shape varies per provider (see AIP-36 §Provider config shapes)."
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "memory_mb": { "type": "integer", "minimum": 1 },
+        "cpu_ms": { "type": "integer", "minimum": 1 }
+      },
+      "description": "Resource caps per command."
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": { "$ref": "#/$defs/authBlock" },
+        "passthrough": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Static host env-var names to forward into the sandbox."
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "egress": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Hostnames the sandbox MAY reach. Empty / missing = no egress."
+        }
+      }
+    },
+    "mounts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mountEntry" },
+      "default": [],
+      "description": "Filesystems mounted inside the sandbox at declared paths. Maps to Mastra Workspace.mounts."
+    },
+    "identity": {
+      "$ref": "#/$defs/identityRefBlock",
+      "description": "AIP-23 identity-ref — owner of the sandbox processes."
+    },
+    "policy": {
+      "$ref": "#/$defs/policyRefBlock",
+      "description": "AIP-38 POLICY block — access grants on sandbox actions."
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pause_after_idle": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-37 event name (e.g. `idle-600` for 10 min). Provider-supported only (modal, daytona)."
+        },
+        "destroy_on": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-37 event name (e.g. `workspace-close`)."
+        }
+      }
+    },
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reject command execution at the sandbox layer. Read-only sandbox calls fail with `sandbox_read_only`."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form, namespaced. Adapter hints under `metadata.<adapter>.*`."
+    }
+  },
+  "$defs": {
+    "mountEntry": {
+      "type": "object",
+      "required": ["source", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "anyOf": [
+            { "const": "workspace", "description": "Alias = the parent workspace's primary storage." },
+            {
+              "type": "object",
+              "required": ["ref"],
+              "additionalProperties": false,
+              "properties": { "ref": { "type": "string", "minLength": 1 } }
+            },
+            {
+              "type": "object",
+              "required": ["inline"],
+              "additionalProperties": false,
+              "properties": {
+                "inline": {
+                  "$ref": "https://agentproto.sh/schemas/aip-35/STORAGE.schema.json"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["file"],
+              "additionalProperties": false,
+              "properties": { "file": { "type": "string", "minLength": 1 } }
+            }
+          ],
+          "description": "What to mount. `\"workspace\"` shortcut for the parent workspace storage."
+        },
+        "at": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/",
+          "description": "Absolute path inside the sandbox where the mount appears."
+        },
+        "mode": {
+          "enum": ["read-write", "read-only"],
+          "default": "read-write"
+        }
+      }
+    },
+    "authBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "identityRefBlock": {
+      "description": "AIP-23 identity-ref. Single entry or array.",
+      "anyOf": [
+        { "$ref": "#/$defs/identityRefEntry" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identityRefEntry" },
+          "minItems": 1
+        }
+      ]
+    },
+    "policyRefEntry": {
+      "anyOf": [
+        { "$ref": "https://agentproto.sh/schemas/aip-38/POLICY.schema.json" },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": { "ref": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": false,
+          "properties": { "file": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "policyRefBlock": {
+      "anyOf": [
+        { "$ref": "#/$defs/policyRefEntry" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/policyRefEntry" },
+          "minItems": 1
+        }
+      ]
+    },
+    "identityRefEntry": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["name", "email"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "email": { "type": "string", "minLength": 1 },
+            "avatar": { "type": "string" },
+            "gpg_key": { "type": "string" },
+            "role": { "type": "string" },
+            "metadata": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["file"],
+          "additionalProperties": true,
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

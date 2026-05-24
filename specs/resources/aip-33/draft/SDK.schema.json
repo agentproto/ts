@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-33/SDK.schema.json",
+  "title": "SDK.md frontmatter — agentsdk/v1",
+  "description": "Validates the SDK-specific frontmatter of an AIP-33 DRIVER.md (kind: sdk). Universal PROVIDER fields validate via AIP-30's schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "package", "package_manager"],
+  "properties": {
+    "kind":             { "const": "sdk" },
+    "package":          { "type": "string", "minLength": 1 },
+    "package_manager":  { "enum": ["npm", "pnpm", "yarn", "pip", "poetry", "cargo", "go", "local"] },
+    "package_version":  { "type": "string" },
+    "entrypoint":       { "type": "string" },
+    "import_style":     { "enum": ["esm", "cjs", "python", "rust-crate", "go-module"], "default": "esm" },
+    "streaming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["async-iterator", "callback"] }
+      }
+    },
+    "implements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "version"],
+        "additionalProperties": true,
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "sdk": { "$ref": "#/$defs/perToolSdk" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "perToolSdk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["function_ref"],
+      "properties": {
+        "function_ref":   { "type": "string", "description": "Dotted ref - 'default', 'createImage', 'images.create', 'Client.images.create'" },
+        "args_template":  { "type": "object" },
+        "result_extract": { "type": "string" },
+        "streaming": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["async-iterator", "callback"] }
+          }
+        }
+      }
+    }
+  }
+}

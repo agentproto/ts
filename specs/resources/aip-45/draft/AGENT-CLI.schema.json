@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-45/AGENT-CLI.schema.json",
+  "title": "AGENT-CLI.md frontmatter — agentcli-interactive/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-45 AGENT-CLI.md manifest. Sibling of AIP-29 (CLI.md, tool CLIs); covers interactive agent CLIs (Hermes, Claude Code, OpenCode, Goose, Gemini CLI). Shares install/version/auth blocks with AIP-29 via $ref; binds to AIP-44 ACP for the wire protocol when protocol=acp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "id", "description", "version", "bin", "install", "version_check", "sandbox", "protocol"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Kebab id, MUST equal the parent directory name."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9\\-]{1,63}$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$"
+    },
+    "bin": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._\\-/]+$",
+      "description": "Path to the binary (absolute or PATH-resolvable)."
+    },
+    "bin_args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Default argv prefix (e.g. ['acp'] for `hermes acp`)."
+    },
+    "install": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/installMethod" },
+      "description": "Install methods — shared with AIP-29 via $ref."
+    },
+    "version_check": {
+      "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/versionCheck"
+    },
+    "setup": {
+      "type": "array",
+      "description": "Post-install configuration steps — shared with AIP-29 via $ref. Used for sidecar daemons (openclaw onboard) and one-time bind config (gateway URL, default channel) that don't fit the auth state machine.",
+      "items": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/setupStep" }
+    },
+    "auth": {
+      "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/auth"
+    },
+    "sandbox": {
+      "description": "Inherits AIP-36 SANDBOX.md verbatim. Either an inline block or a workspace-relative ref to a SANDBOX.md.",
+      "oneOf": [
+        { "type": "string", "description": "Workspace-relative path to a SANDBOX.md (AIP-36)." },
+        { "type": "object", "description": "Inline AIP-36 sandbox block." }
+      ]
+    },
+    "runner": {
+      "oneOf": [
+        { "type": "string", "description": "Workspace-relative path to a RUNNER.md (AIP-17)." },
+        { "type": "object", "description": "Inline AIP-17 runner block." }
+      ]
+    },
+    "protocol": {
+      "enum": ["acp", "mcp", "proprietary"],
+      "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = adapter package implements AgentCliClient."
+    },
+    "acp": {
+      "type": "string",
+      "description": "Workspace-relative ref to an AIP-44 ACP.md describing the wire profile. REQUIRED when protocol=acp."
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport"],
+      "description": "MCP server config. REQUIRED when protocol=mcp.",
+      "properties": {
+        "command":   { "type": "string" },
+        "args":      { "type": "array", "items": { "type": "string" } },
+        "transport": { "enum": ["stdio", "http", "sse"] },
+        "url":       { "type": "string", "format": "uri" }
+      }
+    },
+    "adapter": {
+      "type": "string",
+      "pattern": "^@?[a-z0-9][a-z0-9\\-./]*$",
+      "description": "NPM package name implementing AgentCliClient. REQUIRED when protocol=proprietary."
+    },
+    "session": { "$ref": "#/$defs/session" },
+    "models":  { "$ref": "#/$defs/models" },
+    "capabilities": { "$ref": "#/$defs/capabilities" },
+    "modes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mode" },
+      "description": "Mutually-exclusive operation modes the CLI exposes. The host picks at most one per turn via OPERATOR.runtime.config.mode. Each mode patches bin_args / env; the patches are applied AFTER the manifest's default bin_args and BEFORE option patches. Common shape: claude-code's permission modes (default | plan | accept-edits | bypass-permissions)."
+    },
+    "options": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/option" },
+      "description": "Independent typed knobs the CLI accepts. The host picks any subset per turn via OPERATOR.runtime.config.options. Patches apply in declaration order, AFTER mode patches."
+    },
+    "continuation": { "$ref": "#/$defs/continuation" },
+    "requires": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/properties/requires" },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["goal", "prompt"],
+        "properties": {
+          "goal":   { "type": "string" },
+          "prompt": { "type": "string" },
+          "note":   { "type": "string" }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "metadata": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if":   { "properties": { "protocol": { "const": "acp" } }, "required": ["protocol"] },
+      "then": { "required": ["acp"] }
+    },
+    {
+      "if":   { "properties": { "protocol": { "const": "mcp" } }, "required": ["protocol"] },
+      "then": { "required": ["mcp"] }
+    },
+    {
+      "if":   { "properties": { "protocol": { "const": "proprietary" } }, "required": ["protocol"] },
+      "then": { "required": ["adapter"] }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "properties": { "mode": { "const": "resumable" } },
+            "required": ["mode"]
+          }
+        },
+        "required": ["session"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "object",
+            "properties": { "resumable": { "const": true } },
+            "required": ["resumable"]
+          }
+        },
+        "required": ["capabilities"]
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "continuation": {
+            "type": "object",
+            "properties": {
+              "default": { "const": "native-resume" }
+            },
+            "required": ["default"]
+          }
+        },
+        "required": ["continuation"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "object",
+            "properties": { "resumable": { "const": true } },
+            "required": ["resumable"]
+          }
+        },
+        "required": ["capabilities"]
+      }
+    }
+  ],
+  "$defs": {
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": ["ephemeral", "persistent", "resumable"],
+          "default": "ephemeral",
+          "description": "ephemeral = torn down on disconnect; persistent = survives reconnect within idle_timeout_ms; resumable = durable across runs (requires capabilities.resumable: true)."
+        },
+        "idle_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 600000
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_carryover": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Model routing for the agent. Maps logical defaults to env var slots resolved via AIP-19 SECRETS.md.",
+      "properties": {
+        "default": { "type": "string", "description": "Default model id passed to the agent." },
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Model ids the host MAY route to."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Map of model slot -> env var name (e.g. anthropic -> ANTHROPIC_API_KEY)."
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Manifest-declared capabilities. When protocol=acp, MUST be a subset of the AIP-44 ACP.md capabilities the bound runtime negotiates.",
+      "properties": {
+        "streaming":     { "type": "boolean" },
+        "tool_calls":    { "type": "boolean" },
+        "sub_agents":    { "type": "boolean" },
+        "file_io":       { "type": "boolean" },
+        "multimodal":    { "type": "boolean" },
+        "resumable":     { "type": "boolean" },
+        "bidirectional": { "type": "boolean" }
+      }
+    },
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "description": "A single mutually-exclusive operation mode. Exactly one mode is active per turn; modes do not stack. Use options for independent knobs.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$",
+          "description": "Stable id. The operator config references this id."
+        },
+        "description": { "type": "string" },
+        "bin_args_append": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra argv appended after the manifest's bin_args when this mode is active."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Extra env vars merged into the spawn env when this mode is active."
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "description": "A single typed knob. Multiple options can be active in the same turn; each option's patch is independent.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_]{0,63}$",
+          "description": "Stable id. The operator config references this id."
+        },
+        "type": {
+          "enum": ["boolean", "integer", "string", "enum"]
+        },
+        "description": { "type": "string" },
+        "enum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Allowed values when type=enum."
+        },
+        "default": {
+          "description": "Default value used when the operator config omits this option. Type matches the declared `type`."
+        },
+        "min": {
+          "type": "integer",
+          "description": "Lower bound when type=integer."
+        },
+        "max": {
+          "type": "integer",
+          "description": "Upper bound when type=integer."
+        },
+        "bin_args_template": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Argv template appended when the option has a non-default value. The literal token `{value}` is replaced with the option's value (stringified). Use for value-bearing flags like `--model {value}` or `--max-turns {value}`."
+        },
+        "bin_args_append_when_true": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Argv appended when type=boolean AND value=true. Use for bare flags like `--auto`."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Env vars to merge when the option has a non-default value. Values may contain `{value}` for templating."
+        }
+      },
+      "allOf": [
+        {
+          "if":   { "properties": { "type": { "const": "enum" } }, "required": ["type"] },
+          "then": { "required": ["enum"] }
+        }
+      ]
+    },
+    "continuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "supported"],
+      "description": "How prior turns reach the CLI. The driver hosts a strategy registry; this block declares which strategies fit this CLI and which is the default. The operator config MAY override `default` with any id from `supported`.",
+      "properties": {
+        "default": { "$ref": "#/$defs/continuationStrategyId" },
+        "supported": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/continuationStrategyId" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Strategies the CLI is known to work with. The host MUST refuse to run with a strategy outside this list."
+        },
+        "pinned_session": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Tuning for the pinned-session strategy. Ignored by other strategies.",
+          "properties": {
+            "idle_timeout_ms": {
+              "type": "integer",
+              "minimum": 1000,
+              "default": 1800000,
+              "description": "How long an idle pinned session is kept alive before the driver closes it. Applies in addition to the CLI's own session.idle_timeout_ms."
+            },
+            "key_scope": {
+              "type": "array",
+              "items": { "enum": ["conversation", "operator", "user", "guild", "workspace"] },
+              "minItems": 1,
+              "uniqueItems": true,
+              "default": ["conversation", "operator"],
+              "description": "Composite key that uniquely identifies a pinned session. Default keys by (conversation, operator) — different conversations get different child processes; one operator per conversation reuses one process across turns."
+            }
+          }
+        }
+      }
+    },
+    "continuationStrategyId": {
+      "enum": ["none", "pinned-session", "transcript", "native-resume"],
+      "description": "Built-in strategy ids. Future custom strategies require a follow-up AIP that opens this enum."
+    }
+  }
+}

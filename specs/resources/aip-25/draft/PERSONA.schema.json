@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-25/PERSONA.schema.json",
+  "title": "PERSONA.md frontmatter (AIP-25)",
+  "description": "Validates the YAML frontmatter portion of an AIP-25 PERSONA.md manifest. Single-doc, no oneOf — every persona is the same shape. The body is markdown and not validated by this schema.",
+  "type": "object",
+  "required": ["schema", "name", "title", "description", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "persona/v1",
+      "description": "Schema dispatch tag. MUST be 'persona/v1' for this version of AIP-25."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Machine identifier. Lowercase, digits, dashes. Must start with a letter, end with a letter or digit. Unique within the registry that hosts the persona."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "Human-readable display title, sentence case."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph elevator pitch. The persona's purpose, audience, and shape."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Semver. Bump on breaking change to identity, voice, or boundaries."
+    },
+    "extends": {
+      "type": "string",
+      "pattern": "^(\\.{1,2}/)[^\\s]+PERSONA\\.md$",
+      "description": "Relative path to a parent PERSONA.md. Triggers composition. Path MUST end in 'PERSONA.md'."
+    },
+    "avatar": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Public visual face. URL, data URI, or 'ws://avatars/<slug>' ref. Schema does not validate scheme; the loader resolves."
+    },
+    "backstory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "oneLineHook": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280,
+          "description": "Punchy elevator hook. One sentence the catalog can show next to the persona name."
+        },
+        "background": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Long-form lore prose, in markdown. The character's history, motivations, and context."
+        },
+        "archetypes": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "uniqueItems": true,
+          "default": [],
+          "maxItems": 12,
+          "description": "Categorical archetype labels. Lowercase kebab-case. Examples: mentor, craftsman, sentinel, trickster. The catalog MAY cluster by these."
+        },
+        "era": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Free-form era label. Conventional values: 'contemporary', 'timeless', '<year>', '<year>-<year>', '<period>'. Free-form to accept any setting."
+        },
+        "setting": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Free-form setting label. Conventional values: 'real-world', 'fictional-<universe>'. Free-form to accept any setting."
+        }
+      },
+      "default": {}
+    },
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "register": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Voice register. Conventional values: warm-direct, playful, terse, academic. Custom values welcome — free-form to accept any author label."
+        },
+        "signaturePhrases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "uniqueItems": true,
+          "default": [],
+          "maxItems": 24,
+          "description": "Catchphrases the character uses. Append-and-dedupe under extends — lineage accumulates phrases."
+        },
+        "tonality": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 60 },
+          "uniqueItems": true,
+          "default": [],
+          "maxItems": 16,
+          "description": "Tonal adjectives. Examples: rigorous, encouraging, dry, warm. Append-and-dedupe under extends."
+        },
+        "formality": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Formality scale, 0 (extremely casual) to 10 (extremely formal). Optional."
+        },
+        "emojiUsage": {
+          "enum": ["never", "sparing", "frequent"],
+          "description": "Emoji posture. 'never' = no emojis ever; 'sparing' = occasional, intentional; 'frequent' = part of the voice."
+        },
+        "signOff": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Sign-off the persona uses to close messages. Examples: '—M.', 'Yours, Marcus', 'Until next time'."
+        }
+      },
+      "default": {}
+    },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refuses": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Topics the persona refuses outright. Free-form prose; the persona body SHOULD demonstrate the refusal posture in voice samples. Append-and-dedupe under extends."
+        },
+        "defers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Topics the persona defers to a specialist on. Append-and-dedupe under extends."
+        },
+        "redirects": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["topic", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "topic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": "The topic the persona redirects."
+              },
+              "to": {
+                "type": "string",
+                "pattern": "^(ws://(personas|operators|skills)/[^\\s]+|\\.{1,2}/[^\\s]+)$",
+                "description": "Redirect target. ws:// ref to a persona/operator/skill, or a relative path."
+              },
+              "notes": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Optional prose describing why the redirect exists."
+              }
+            }
+          },
+          "description": "Topic-to-target redirects. Merge-by-`topic` under extends — child entry with same topic replaces parent's."
+        }
+      },
+      "default": {}
+    },
+    "defaultLocale": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Z][a-zA-Z0-9]+)*(-[A-Z]{2})?(-[a-zA-Z0-9]+)*$",
+      "description": "BCP-47 locale tag. Examples: 'en', 'en-US', 'fr-FR', 'pt-BR'."
+    },
+    "multilingual": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]{2,3}(-[A-Z][a-zA-Z0-9]+)*(-[A-Z]{2})?(-[a-zA-Z0-9]+)*$"
+      },
+      "uniqueItems": true,
+      "default": [],
+      "maxItems": 32,
+      "description": "Fallback locales. BCP-47. Append-and-dedupe under extends."
+    },
+    "relationships": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["persona", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "persona": {
+            "type": "string",
+            "pattern": "^ws://personas/[^\\s]+$",
+            "description": "ws:// ref to another persona/v1 manifest in the registry."
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "description": "Relationship kind. Conventional values: mentor-of, peer-of, mentee-of, rival-of, partner-of. Free-form to accept any author label."
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Optional prose describing the relationship."
+          }
+        }
+      },
+      "description": "Named relationships to other personas. Merge-by-`persona` under extends — child entry with same ref replaces parent's."
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^ws://identities/[^\\s]+$",
+      "description": "Optional AIP-23 identity workspace ref. The persona's inner substance."
+    },
+    "appliesTo": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "pattern": "^(ws://(operators|skills|assemblies/[a-z0-9-]+|personas)/[^\\s]+|\\.\\./[^\\s]+)$",
+        "description": "Cross-AIP ref. Operator (AIP-9), skill (AIP-3), assembly seat (AIP-24), or relative path."
+      },
+      "uniqueItems": true,
+      "description": "Bind this persona to specific consumers. Local-only — not inherited under extends."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "default": [],
+      "maxItems": 16,
+      "description": "Catalog tags. Lowercase kebab-case. Append-and-dedupe under extends."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys; vendor namespaces MUST NOT override the meaning of fields defined in this AIP."
+    }
+  }
+}

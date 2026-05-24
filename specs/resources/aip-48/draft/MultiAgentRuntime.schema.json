@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-48/MultiAgentRuntime.schema.json",
+  "title": "MultiAgentRuntime",
+  "description": "Manifest format for agentruntimes/v1 — a composable multi-agent execution kernel. See AIP-48.",
+  "type": "object",
+  "required": ["schema", "kind", "id", "participants", "substrate", "dispatcher"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": {
+      "const": "agentruntimes/v1",
+      "description": "Schema discriminator. MUST be 'agentruntimes/v1'."
+    },
+    "kind": {
+      "const": "MultiAgentRuntime",
+      "description": "Kind discriminator. MUST be 'MultiAgentRuntime'."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Unique slug for this runtime within its scope. Lower-kebab."
+    },
+    "participants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Participant" }
+    },
+    "substrate": { "$ref": "#/$defs/AdapterConfig" },
+    "dispatcher": { "$ref": "#/$defs/AdapterConfig" },
+    "state": { "$ref": "#/$defs/AdapterConfig" },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "onTurnEnd": { "type": "boolean" },
+        "onMention": { "type": "boolean" },
+        "onIdle": { "type": "boolean" }
+      },
+      "description": "Advisory flags — whether the runtime's lifecycle hooks should fire. Adapter implementations decide what onTurnEnd / onMention / onIdle actually do."
+    },
+    "effectors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/EffectorBinding" }
+    },
+    "provisioning": { "$ref": "#/$defs/AdapterConfig" }
+  },
+  "$defs": {
+    "Participant": {
+      "type": "object",
+      "required": ["id", "executor"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "description": "Stable id used in mentions and self-skip. Lower-kebab + underscore."
+        },
+        "executor": {
+          "type": "string",
+          "description": "Key into the runtime's adapter registry. Examples: 'agent-cli', 'db-operator', 'inline'."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Human name. The mention dispatcher matches @<displayName> exactly (case-sensitive substring) and falls back to first-word matching for multi-word names."
+        },
+        "role": {
+          "type": "string",
+          "description": "Path to an AIP-47 ROLE.md (preferred) or inline role text. Paths resolve relative to the manifest directory."
+        },
+        "meta": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Adapter-specific extras — operator id, runtime ref slug, capability tags."
+        }
+      }
+    },
+    "AdapterConfig": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Adapter kind. The runtime registry resolves this to an implementation."
+        }
+      },
+      "description": "Adapter configuration block. Schema is open by design — each adapter validates its own additional fields."
+    },
+    "EffectorBinding": {
+      "type": "object",
+      "required": ["participantId", "tools"],
+      "additionalProperties": false,
+      "properties": {
+        "participantId": { "type": "string" },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tool names this participant may invoke at execution time."
+        },
+        "mcpServers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional list of MCP server ids whose tools are available to this participant."
+        }
+      }
+    }
+  }
+}

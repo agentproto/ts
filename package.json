@@ -18,7 +18,9 @@
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" test",
     "check-types": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" check-types",
     "clean": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" clean",
-    "scaffold-aip": "node scripts/scaffold-aip.mjs"
+    "scaffold-aip": "node scripts/scaffold-aip.mjs",
+    "sync-specs": "node scripts/sync-specs.mjs",
+    "sync-specs:check": "node scripts/sync-specs.mjs --check"
   },
   "devDependencies": {
     "gray-matter": "^4.0.3",

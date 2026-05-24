@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-20/WORK.schema.json",
+  "title": "agentwork/v2 frontmatter (AIP-20)",
+  "description": "Validates the YAML frontmatter portion of an AIP-20 WORK.md (workspace root or per-context view). The single doctype 'work.workspace/v2' is used in both modes; the host distinguishes by checking whether `extends` is set. Per-item-kind schemas are delegated to AIP-18 (COLLECTION.md / ITEM.md).",
+  "type": "object",
+  "required": ["schema", "name", "title", "description", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "work.workspace/v2",
+      "description": "Discriminator for the AIP-20 workspace doctype."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Stable kebab-case identifier for the workspace or view."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Human-readable workspace title."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph statement of purpose: what this workspace tracks and who uses it."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$",
+      "description": "Semantic version of the WORKSPACE shape. Bump on collection / scope / rollup / lint / defaults changes. Independent of the tracker's content version."
+    },
+    "extends": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(\\.\\./|\\./)[^\\s]+/WORK\\.md$",
+      "description": "OPTIONAL — relative path to a parent WORK.md. Presence makes the manifest a VIEW; absence makes it a WORKSPACE ROOT. Recursive composition; maximum chain depth is 8."
+    },
+    "appliesTo": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(ws://(operators|companies|skills)/[a-z][a-z0-9-]*|\\.\\./[^\\s]+)$",
+        "description": "Either a ws:// ref to an AIP-9 operator / AIP-6 company / AIP-3 skill, or a relative path to a consumer workspace folder."
+      },
+      "uniqueItems": true,
+      "description": "OPTIONAL — list of consumers this VIEW adapts the workspace for. Hosts MUST refuse the view if any binding does not resolve. Not inherited; views declare their own scope."
+    },
+    "executor": {
+      "type": "string",
+      "pattern": "^ws://operators/[a-z][a-z0-9-]*$",
+      "description": "OPTIONAL — AIP-9 default executor operator. The host activates this operator when an item with no explicit assignee surfaces."
+    },
+    "governance": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "OPTIONAL — AIP-7 policy or audit binding. May be a path to an AIP-7 policy file or a ws:// ref. Status-transition approvals, owner-change audits, and scope-widening interventions flow through this ref."
+    },
+    "knowledge": {
+      "type": "string",
+      "pattern": "^ws://wikis/[a-z][a-z0-9-]*(/KNOWLEDGE\\.md)?$",
+      "description": "OPTIONAL — AIP-10 KNOWLEDGE.md ref. Lets cross-references on items resolve against the bound wiki by default."
+    },
+    "agency": {
+      "type": "string",
+      "pattern": "^ws://agencies/[a-z][a-z0-9-]*$",
+      "description": "OPTIONAL — AIP-8 agency context. Binds the workspace to an autonomous-agency engagement for billable work, time-tracking, and contractual approval."
+    },
+    "playbook": {
+      "type": "string",
+      "pattern": "^ws://playbooks/[a-z][a-z0-9-]*$",
+      "description": "OPTIONAL — AIP-12 active playbook. Governs the routine plays this workspace runs."
+    },
+    "collections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/collectionEntry"
+      },
+      "default": [],
+      "description": "Collections enabled by this workspace. Three forms supported: inline (full COLLECTION.md frontmatter), file ref, or registry import. Merge-by-effective-name (alias if set, otherwise the collection's name) across the extends chain."
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "containment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether the containment axis is active. ONE-WAY SWITCH: once true at any ancestor, descendants MUST NOT set false (would orphan items). Refusal: work_scope_disable (HARD)."
+            },
+            "field": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_]*$",
+              "default": "parent",
+              "description": "Item field name carrying the containment ref. Defaults to AIP-18's universal-ish 'parent'."
+            },
+            "rules": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowedKinds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+                  },
+                  "uniqueItems": true,
+                  "description": "OPTIONAL — collection names allowed as containment parents. The host enforces this at item-write time."
+                },
+                "maxDepth": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 32,
+                  "description": "OPTIONAL — maximum containment depth. The host counts ancestors and refuses items past the cap."
+                }
+              },
+              "description": "OPTIONAL containment constraints."
+            }
+          },
+          "description": "Containment axis (parent/child). Per-collection schemas may declare their own field name; this declaration is the workspace-level default."
+        },
+        "applicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether the applicability axis is active."
+            },
+            "field": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_]*$",
+              "default": "appliesTo",
+              "description": "Item field name carrying the applicability ref list."
+            },
+            "valueClass": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$",
+              "description": "Class of refs the field accepts. Recognised classes: company, role, role-and-company, operator. ONE-WAY SWITCH: once set at any ancestor, descendants MUST NOT change (would invalidate existing items). Refusal: work_scope_value_class_drift (HARD)."
+            }
+          },
+          "description": "Applicability axis (who the item is about / scoped to)."
+        },
+        "ownership": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether the ownership axis is active."
+            },
+            "field": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_]*$",
+              "default": "owner",
+              "description": "Workspace-level default item field name carrying the ownership ref. Per-collection AIP-18 schemas may override this with their own ownership.role."
+            },
+            "policy": {
+              "enum": ["strict", "inherit", "open"],
+              "default": "inherit",
+              "description": "Workspace-level ownership policy. 'strict' requires every collection's ownership.required to be true; 'inherit' delegates to the collection's own setting; 'open' permits any collection to omit ownership."
+            }
+          },
+          "description": "Ownership axis (who is doing the item). Composes with AIP-18 per-collection ownership rules."
+        }
+      },
+      "description": "Workspace-level scope axes — three orthogonal axes (containment / applicability / ownership) declared once per workspace, applied uniformly across enabled collections."
+    },
+    "statusRollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether status rollup is active. When false, parent-item statuses are read directly from the item's stored status."
+        },
+        "policy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["when", "bubbleParentStatus"],
+            "additionalProperties": false,
+            "properties": {
+              "when": {
+                "type": "string",
+                "pattern": "^(all-children-terminal|any-child-blocked|any-child-overdue|no-children|custom:[a-z][a-z0-9-]*)$",
+                "description": "Rollup predicate. Recognised values: all-children-terminal, any-child-blocked, any-child-overdue, no-children, custom:<id>. Merge key when composing."
+              },
+              "bubbleParentStatus": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "description": "Status id to surface on the parent when the predicate holds. MUST exist in every collection eligible to be a parent (per scope.containment.rules.allowedKinds)."
+              }
+            }
+          },
+          "default": [],
+          "description": "Rollup rules. Merge-by-`when` against the extends parent."
+        },
+        "exposeViaField": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9_]*$",
+          "description": "OPTIONAL — item field name on parents to materialize the rolled status into. When unset, rollup is query-time only and never written to disk."
+        }
+      },
+      "description": "Status-rollup policy. Per-collection statuses live on AIP-18; this declaration is the workspace-level aggregation layer."
+    },
+    "lints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Stable kebab-case lint id. Merge key when composing with extends parent."
+          },
+          "kind": {
+            "enum": [
+              "orphan-across-collections",
+              "stale-tree",
+              "broken-parent-ref",
+              "scope-mismatch",
+              "custom"
+            ],
+            "description": "Workspace-spanning lint algorithm. AIP-18 per-collection lints (missing-owner, overdue, required-field, etc.) live on COLLECTION.md and are NOT redeclared here. 'custom' delegates to a host-defined check identified by `id`."
+          },
+          "severity": {
+            "enum": ["error", "warn", "info"],
+            "description": "Lint severity. Children may soften; governance policies MAY forbid softening below `error`."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {},
+            "description": "Kind-specific parameters. e.g. { days: 14 } for stale-tree; { axis: applicability } for scope-mismatch."
+          }
+        }
+      },
+      "default": [],
+      "description": "Workspace-spanning lints. Merge-by-id vs parent."
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "OPTIONAL — default AIP-15 WORKFLOW.md path or ref. Routine workflow run against work items in this workspace."
+        },
+        "approvalClass": {
+          "type": "string",
+          "pattern": "^(auto|always|on-mutate|policy:[A-Za-z0-9_./:-]+)$",
+          "description": "Approval class for mutations. 'auto' = no gate; 'always' = every mutation requires approval; 'on-mutate' = approval on field-level mutations; 'policy:<ref>' = delegate to an AIP-7 policy."
+        },
+        "auditMutations": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether mutations are audited. ONE-WAY SWITCH: once true at any ancestor, descendants MUST NOT set false. Refusal: work_audit_downgrade (HARD)."
+        }
+      },
+      "description": "Routine workflow defaults. Composes with AIP-15."
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "homePage": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_:-]*$",
+          "description": "OPTIONAL — id of the item to use as the workspace landing page."
+        },
+        "defaultGrouping": {
+          "enum": ["kind", "status", "owner", "parent"],
+          "description": "Default grouping for list views."
+        },
+        "defaultView": {
+          "enum": ["list", "board", "tree", "timeline"],
+          "description": "Default rendering mode."
+        }
+      },
+      "description": "Display hints for UIs that render the workspace. Runtime-agnostic."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor-specific extensions, namespaced under <vendor>. Deep-merged across the extends chain. MUST NOT change the meaning of any spec field."
+    }
+  },
+  "allOf": [
+    {
+      "description": "A view (any manifest with appliesTo set) MUST extend a parent. A workspace-root manifest has neither field.",
+      "if": {
+        "required": ["appliesTo"],
+        "properties": {
+          "appliesTo": { "type": "array", "minItems": 1 }
+        }
+      },
+      "then": {
+        "required": ["extends"]
+      }
+    }
+  ],
+  "$defs": {
+    "collectionEntry": {
+      "oneOf": [
+        { "$ref": "#/$defs/collectionInline" },
+        { "$ref": "#/$defs/collectionRef" }
+      ],
+      "description": "One collection declaration. Either an inline AIP-18 collection schema, or a ref (path or ws:// URI) optionally aliased and version-pinned."
+    },
+    "collectionInline": {
+      "type": "object",
+      "required": ["inline"],
+      "additionalProperties": false,
+      "properties": {
+        "inline": {
+          "$ref": "https://agentproto.sh/schemas/aip-18/COLLECTION.schema.json#/$defs/schema",
+          "description": "Full AIP-18 collection.schema/v1 frontmatter, parsed in-place. The host registers the collection directly via AIP-18's defineCollection without loading a separate file."
+        }
+      },
+      "description": "Inline collection declaration. Full AIP-18 schema embedded; hosts MUST validate it against the AIP-18 COLLECTION schema before registration."
+    },
+    "collectionRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^((\\.\\./|\\./)[^\\s]+/COLLECTION\\.md|ws://collections/[a-z][a-z0-9-]*)$",
+          "description": "Either a relative path to a COLLECTION.md (file ref) or a ws://collections/<slug> URI (registry import). The host loads the referenced collection via AIP-18 and registers it under its name (or the alias, if set)."
+        },
+        "alias": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "minLength": 2,
+          "maxLength": 96,
+          "description": "OPTIONAL — workspace-local name to expose the collection under. Items in this workspace reference the alias, not the upstream name. Two collections resolving to the same effective name (alias or upstream) is a HARD failure: work_collection_alias_conflict."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "OPTIONAL — semver range (e.g. \"1.x\", \"^1.2\", \"1.2.0\"). When set, schema bumps outside the range fail with collection_item_schema_pinned_drift (HARD) at item load time."
+        }
+      },
+      "description": "Collection ref declaration. Either a file path (./.. /COLLECTION.md) or a registry URI (ws://collections/<slug>)."
+    }
+  }
+}

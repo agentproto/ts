@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-39/ACTION.schema.json",
+  "title": "ACTION.md frontmatter — agentaction/v1 (verb primitive)",
+  "description": "Validates the YAML frontmatter portion of an AIP-39 ACTION.md manifest. The pivot primitive: TOOL implements it, POLICY grants on it, INTENT routes to it, WORKFLOW steps invoke it.",
+  "type": "object",
+  "required": ["schema", "id", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "action/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9][a-z0-9.-]*(:[a-z0-9][a-z0-9.-]*)?$",
+      "description": "Machine identifier. Standard format `<target-kind>:<verb>` (e.g. `storage:commit`). Single colon only; multiple colons reserved for future namespacing."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph purpose, written for the LLM caller."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "default": "1.0.0",
+      "description": "Spec version of THIS file. Bump on breaking change to mutates / risk_level."
+    },
+    "category": {
+      "type": "string",
+      "default": "",
+      "description": "Discovery category for catalog UIs. Common: filesystem, compute, messaging, vcs, payment, auth, lifecycle."
+    },
+    "verb": {
+      "type": "string",
+      "description": "The bare verb (e.g. `commit`, `execute`). Derived from `id` after the `:` if absent."
+    },
+    "target_kind": {
+      "type": "string",
+      "description": "The resource kind this action operates on (e.g. `storage`, `sandbox`, `secrets`). Derived from `id` before the `:` if absent."
+    },
+    "mutates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]+:[^\\s]+$",
+        "description": "Format: <class>:<scope>. Examples: storage:*, network:api.foo.com, database:invoices. Implementors MUST honour every entry; widening rejected at parse time."
+      },
+      "default": [],
+      "description": "Resources the action may modify. Inherited by implementors (TOOL, DRIVER); they MAY add more, never drop."
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": { "type": "array", "items": { "type": "string" } },
+        "secrets": { "type": "array", "items": { "type": "string" } },
+        "tools":   { "type": "array", "items": { "type": "string" } }
+      },
+      "description": "Capability requirements gated by AIP-7 governance. Implementors MAY add to this set; MUST NOT remove."
+    },
+    "approval": {
+      "anyOf": [
+        { "enum": ["auto", "always", "on-mutate"] },
+        { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" }
+      ],
+      "default": "auto",
+      "description": "Approval class. Implementors MAY narrow (`auto` → `always` → `on-mutate`); MUST NOT widen."
+    },
+    "risk_level": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "default": 0,
+      "description": "0=read-only, 1=scoped writes, 2=external side effects, 3=irreversible. Implementors MAY raise; MUST NOT lower."
+    },
+    "fires_events": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "AIP-37 LIFECYCLE event names this action fires when invoked. Subscribers (sync layers, audit) attach to these. Implementors MAY fire more events; MUST NOT drop any declared here."
+    },
+    "implementations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": ["tool", "driver", "ui", "lifecycle"],
+            "description": "Kind of implementation."
+          },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Reference to the implementor (TOOL.md id, DRIVER.md id, UI surface name, etc.)."
+          }
+        }
+      },
+      "default": [],
+      "description": "OPTIONAL discovery hint — known implementations of this action. NOT authoritative — source of truth lives on implementors via their `implements:` field. Hosts populate from scanning."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Free-form discovery tags."
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "scenario"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "scenario": { "type": "string", "minLength": 1 },
+          "note": { "type": "string" }
+        }
+      },
+      "default": [],
+      "description": "Semantic examples (NOT input/output, since action has no schema). Each `{ name, scenario, note? }`."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form, namespaced. Authors MAY stash adapter-specific hints under namespaced keys."
+    }
+  }
+}

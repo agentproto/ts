@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-32/MCP.schema.json",
+  "title": "MCP.md frontmatter — agentmcp/v1",
+  "description": "Validates the MCP-specific frontmatter of an AIP-32 DRIVER.md (kind: mcp). Universal PROVIDER fields validate via AIP-30's schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "server", "transport"],
+  "properties": {
+    "kind":      { "const": "mcp" },
+    "server":    { "$ref": "#/$defs/server" },
+    "transport": { "enum": ["stdio", "sse", "http"] },
+    "protocol_version": { "type": "string" },
+    "prompts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "integrate_as"],
+        "additionalProperties": false,
+        "properties": {
+          "name":         { "type": "string" },
+          "description":  { "type": "string" },
+          "integrate_as": { "enum": ["skill_block", "raw"] },
+          "skill_ref":    { "type": "string" }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["uri_template", "integrate_as"],
+        "additionalProperties": false,
+        "properties": {
+          "uri_template": { "type": "string" },
+          "description":  { "type": "string" },
+          "integrate_as": { "enum": ["ref_kind", "raw"] },
+          "ref_kind_id":  { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        }
+      }
+    },
+    "connection_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms":  { "type": "integer", "minimum": 100 },
+        "max_retries": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "keepalive":   { "type": "boolean" }
+      }
+    },
+    "implements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "version"],
+        "additionalProperties": true,
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "mcp": { "$ref": "#/$defs/perToolMcp" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "server": {
+      "oneOf": [
+        { "type": "object", "required": ["kind", "path"],    "properties": { "kind": { "const": "binary" }, "path": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } }, "env": { "type": "object", "additionalProperties": { "type": "string" } } } },
+        { "type": "object", "required": ["kind", "package"], "properties": { "kind": { "const": "npm" },    "package": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } }, "env": { "type": "object", "additionalProperties": { "type": "string" } } } },
+        { "type": "object", "required": ["kind", "image"],   "properties": { "kind": { "const": "docker" }, "image": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } }, "env": { "type": "object", "additionalProperties": { "type": "string" } } } },
+        { "type": "object", "required": ["kind", "url"],     "properties": { "kind": { "const": "remote" }, "url": { "type": "string", "format": "uri" } } }
+      ]
+    },
+    "perToolMcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_name"],
+      "properties": {
+        "tool_name":         { "type": "string" },
+        "argument_mapping":  { "type": "object", "additionalProperties": { "type": "string" } },
+        "result_extract":    { "type": "string" }
+      }
+    }
+  }
+}

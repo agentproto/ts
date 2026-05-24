@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-40/EXTENSION.schema.json",
+  "title": "ExtensionDefinition",
+  "description": "Validates the YAML frontmatter portion of an AIP-40 EXTENSION.md manifest. An extension declares a workspace-local doctype that inherits a public AIP's schema and may add fields, tighten constraints, set defaults, and override the path convention.",
+  "type": "object",
+  "required": ["schema", "slug", "title", "description", "version", "status", "extends"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "agentproto/extension/v1",
+      "description": "Pins the spec version this manifest conforms to."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Namespaced identifier — `<namespace>:<name>`. Lowercase, digits, dashes; single colon separator. Example: `acme:deal`."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable display name."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph statement of the extension's purpose."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Extension's own semver. Bump on breaking change."
+    },
+    "status": {
+      "const": "Local",
+      "description": "Extensions are perpetually Local — they never enter the public registry's Draft/Review/Final lifecycle."
+    },
+    "extends": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^aip-\\d+$",
+          "description": "Inherit a public AIP's schema (e.g. `aip-14`)."
+        },
+        {
+          "const": "none",
+          "description": "Brand-new doctype, no inheritance."
+        }
+      ],
+      "description": "Parent AIP this extension inherits from, or `none` for a root doctype."
+    },
+    "add_fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "properties": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "JSON Schema property definitions to merge into the parent's properties. Collisions are an error — use `tighten` to narrow an existing field."
+        },
+        "required": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Field names that become required in addition to parent's required[]. Unioned with parent's required, never replaces."
+        }
+      },
+      "description": "Schema-level additions: new properties + new required entries."
+    },
+    "tighten": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pattern": { "type": "string" },
+          "enum": { "type": "array" },
+          "minLength": { "type": "integer", "minimum": 0 },
+          "maxLength": { "type": "integer", "minimum": 0 },
+          "minimum": { "type": "number" },
+          "maximum": { "type": "number" }
+        }
+      },
+      "description": "Per-field constraint overrides. Each entry MUST tighten (not loosen) the parent's constraints; runtimes verify monotonicity at registration."
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Default values applied when a field is omitted. Layered on top of parent's defaults; extension's value wins on the same key."
+    },
+    "path_convention": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Filesystem convention template, e.g. `\"deals/<slug>/DEAL.md\"`. Tokens: `<slug>` (doctype identity), `<DOCTYPE>` (extension's slug name part). Falls back to parent's convention when omitted."
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Public AIPs the extension depends on, in addition to its parent."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Free-form vendor extensions under namespaced keys (`metadata.<vendor>.<field>`)."
+    }
+  }
+}

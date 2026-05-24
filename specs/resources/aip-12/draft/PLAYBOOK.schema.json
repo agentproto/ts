@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-12/PLAYBOOK.schema.json",
+  "title": "PLAYBOOK.md frontmatter (AIP-12)",
+  "description": "Validates the YAML frontmatter portion of an AIP-12 PLAYBOOK.md overlay manifest.",
+  "type": "object",
+  "required": [
+    "schema",
+    "slug",
+    "title",
+    "targets",
+    "kind",
+    "lock_check",
+    "evidence",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "playbooks/v1"
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "entry": {
+      "type": "string",
+      "description": "Optional path to the entry file exposing definePlaybook. Defaults to playbook.ts."
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/target" }
+    },
+    "kind": {
+      "enum": ["overlay", "block-replacement"],
+      "default": "overlay"
+    },
+    "block": {
+      "type": "string",
+      "description": "Required when kind is 'block-replacement' — the named persona block to swap.",
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50
+    },
+    "lock_check": {
+      "type": "array",
+      "description": "Locked persona traits this overlay MUST NOT modify. Author intent — runtime enforces independently.",
+      "items": { "$ref": "#/$defs/traitId" },
+      "default": []
+    },
+    "ttl": {
+      "type": "string",
+      "description": "Optional ISO 8601 duration. Auto-archives at updated_at + ttl.",
+      "pattern": "^P(?:\\d+Y)?(?:\\d+M)?(?:\\d+W)?(?:\\d+D)?(?:T(?:\\d+H)?(?:\\d+M)?(?:\\d+S)?)?$"
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/evidenceItem" }
+    },
+    "status": {
+      "enum": ["shadow", "active", "archived"],
+      "default": "shadow"
+    },
+    "supersedes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/slug" },
+      "default": []
+    },
+    "history": {
+      "type": "array",
+      "description": "Append-only audit trail of deltas, promotions, and archivals applied to this playbook.",
+      "items": { "$ref": "#/$defs/historyEntry" },
+      "default": []
+    },
+    "binds_operator": {
+      "type": "string",
+      "description": "Optional — the specific operator (per AIP-9) this playbook is bound to. Narrower than targets[].",
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor extensions go under metadata.<vendor>."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "block-replacement" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["block"]
+      }
+    }
+  ],
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+    },
+    "traitId": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["operator", "role", "skill", "runtime"]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Slug, glob, or qualified path. Examples: 'role/companion', 'operator/alice', 'skill/research', 'operator/*'."
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["run", "conversation", "work-item", "reflection", "human"]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
+    "historyEntry": {
+      "type": "object",
+      "required": ["at", "kind", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "kind": {
+          "enum": [
+            "created",
+            "delta",
+            "promoted",
+            "archived",
+            "superseded",
+            "lock-violation"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "source": {
+          "type": "string",
+          "description": "Pointer to the run/reflection/governance ticket that produced this entry."
+        },
+        "by": {
+          "type": "string",
+          "description": "User id, agent id, or system identifier responsible for the entry."
+        },
+        "gate": {
+          "enum": ["a-b", "scorer", "human", "governance"],
+          "description": "For kind='promoted', the gate that passed."
+        }
+      }
+    }
+  }
+}

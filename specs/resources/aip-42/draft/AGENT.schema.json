@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-42/AGENT.schema.json",
+  "title": "AGENT.md frontmatter — agentagent/v1 (base runnable agent primitive)",
+  "description": "Validates the YAML frontmatter portion of an AIP-42 AGENT.md manifest. Composes identity, persona, model, tools, actions, skills, workflows, runner, memory, governance, policy, routines into a single runnable definition.",
+  "type": "object",
+  "required": ["schema", "id", "description", "model"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "agent/v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9@][a-z0-9.@/_-]*$",
+      "description": "Machine identifier. Optional @<owner>/ prefix. Unique within the registry that hosts the agent."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph purpose."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "default": "1.0.0",
+      "description": "Spec version of THIS file."
+    },
+    "extends": {
+      "$ref": "#/$defs/agentRef",
+      "description": "Parent AGENT this extends. Inherits all fields; child overrides win."
+    },
+    "model": {
+      "$ref": "#/$defs/modelRef",
+      "description": "The brain — provider/model id string or structured ref."
+    },
+    "identity": {
+      "$ref": "#/$defs/identityRef",
+      "description": "AIP-23 identity ref. Defaults to host policy."
+    },
+    "persona": {
+      "$ref": "#/$defs/anyRef",
+      "description": "AIP-25 persona ref."
+    },
+    "runner": {
+      "$ref": "#/$defs/anyRef",
+      "description": "AIP-17 runtime engine ref."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/toolRef" },
+      "default": [],
+      "description": "AIP-14 tool refs."
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "granted": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/actionRef" },
+          "default": []
+        }
+      },
+      "description": "Explicit action allow-list. POLICY checks union of this + tools' implements."
+    },
+    "skills": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/anyRef" },
+      "default": [],
+      "description": "AIP-3 skill refs."
+    },
+    "workflows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/anyRef" },
+      "default": [],
+      "description": "AIP-15 workflow refs."
+    },
+    "routines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/anyRef" },
+      "default": [],
+      "description": "AIP-41 routine refs that auto-fire this agent."
+    },
+    "delegates_to": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/agentRef" },
+      "default": [],
+      "description": "Sub-agents this agent may dispatch to (council pattern, AIP-24)."
+    },
+    "memory": {
+      "$ref": "#/$defs/memoryConfig",
+      "description": "Memory configuration."
+    },
+    "governance": {
+      "$ref": "#/$defs/anyRef",
+      "description": "AIP-7 governance binding."
+    },
+    "policy": {
+      "$ref": "#/$defs/anyRef",
+      "description": "AIP-38 POLICY binding."
+    },
+    "traits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10
+      },
+      "default": {},
+      "description": "Free-form numeric trait scores (0-10)."
+    },
+    "autonomy": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 5,
+      "description": "How much the agent acts vs asks. 0 = always asks, 10 = full autonomy."
+    },
+    "boundaries": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "Hard rules the agent MUST decline / escalate. Surfaced into system prompt."
+    },
+    "on": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/actionRef" },
+          {
+            "type": "array",
+            "items": { "$ref": "#/$defs/actionRef" }
+          }
+        ]
+      },
+      "default": {},
+      "description": "Lifecycle hooks. AIP-37 event name -> action-ref(s) to invoke."
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visibility": {
+          "enum": ["private", "unlisted", "public"],
+          "default": "private"
+        },
+        "registry": {
+          "type": "string"
+        }
+      },
+      "default": { "visibility": "private" }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "anyRef": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "file": { "type": "string", "minLength": 1 },
+            "inline": { "type": "object", "additionalProperties": true }
+          }
+        }
+      ],
+      "description": "AIP-27 ref primitive — string shorthand or { ref | file | inline }."
+    },
+    "agentRef": {
+      "$ref": "#/$defs/anyRef"
+    },
+    "toolRef": {
+      "$ref": "#/$defs/anyRef"
+    },
+    "actionRef": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "action": { "type": "string", "minLength": 1 },
+            "ref": { "type": "string", "minLength": 1 },
+            "inputs": { "type": "object", "additionalProperties": true }
+          }
+        }
+      ]
+    },
+    "identityRef": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "file": { "type": "string", "minLength": 1 },
+            "inline": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "email": { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "modelRef": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider/model id shorthand (e.g. anthropic/claude-opus-4-7)."
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "inline": { "type": "object", "additionalProperties": true },
+            "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+            "max_tokens": { "type": "integer", "minimum": 1 },
+            "top_p": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      ]
+    },
+    "memoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "enum": ["per-conversation", "per-thread", "per-workspace", "none"],
+          "default": "per-conversation"
+        },
+        "retention_turns": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 50
+        },
+        "semantic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "embedder": { "$ref": "#/$defs/modelRef" },
+            "top_k": { "type": "integer", "minimum": 1, "default": 5 }
+          }
+        }
+      }
+    }
+  }
+}

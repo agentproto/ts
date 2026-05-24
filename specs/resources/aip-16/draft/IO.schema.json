@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-16/IO.schema.json",
+  "title": "IO blocks (AIP-16)",
+  "description": "Composable JSON Schema definitions for the four input/output blocks reused across manifest formats: inputs, outputs, inputsFiles, outputsFiles. Other AIPs reference these by $ref into their own schemas.",
+  "type": "object",
+  "$defs": {
+    "inputs": {
+      "description": "Structured arguments. Validated by the host before the body runs.",
+      "$ref": "#/$defs/jsonSchema"
+    },
+    "outputs": {
+      "description": "Structured success-case return. Errors are out-of-band per the importing manifest's error model.",
+      "$ref": "#/$defs/jsonSchema"
+    },
+    "inputsFiles": {
+      "description": "File-contract IN. Map of <key> → file entry. Host stages workspace:<path> into <fsRoot>/<key> before the run.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/fileContractEntry" },
+      "default": {}
+    },
+    "outputsFiles": {
+      "description": "File-contract OUT. Map of <key> → file entry. Host syncs <fsRoot>/<key> back to workspace:<path> after the run.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/fileContractEntry" },
+      "default": {}
+    },
+    "fileContractEntry": {
+      "description": "A single declared file in inputsFiles/outputsFiles.",
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Workspace-relative path. outputsFiles entries MAY use the tokens <runId>, <workflowId>, <toolId>, <isoDate> for per-run path interpolation.",
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "description": "Convention only — not enforced by the contract. `ro` for inputs is the typical default; `rw` for outputs.",
+          "enum": ["ro", "rw"]
+        },
+        "contentType": {
+          "description": "Informational MIME type. Hosts MAY surface in audit logs / UIs.",
+          "type": "string"
+        }
+      }
+    },
+    "jsonSchema": {
+      "description": "Any JSON Schema draft 2020-12 document. Validation deferred to a meta-validator.",
+      "type": "object"
+    },
+    "reservedFsRootField": {
+      "description": "Importing manifests SHOULD include this key in their `inputs` schema's `properties` when they declare inputsFiles/outputsFiles. Hosts inject the absolute scratch-root path here before the body runs.",
+      "type": "object",
+      "properties": {
+        "_workflowFsRoot": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

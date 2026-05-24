@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-44/ACP.schema.json",
+  "title": "ACP.md frontmatter — agentacp/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-44 ACP.md manifest. AIP-44 is a profile of the upstream Agent Client Protocol at agentclientprotocol.com — top-level fields describe a runtime's role/transport/conformance, and AIP-44-specific bindings live under metadata.aip44.* so upstream ACP runtimes preserve them verbatim.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["name", "id", "description", "version", "kind", "transport", "metadata"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Kebab id, MUST equal the parent directory name."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9\\-]{1,63}$",
+      "description": "Stable runtime id used for cross-references."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "One-paragraph purpose."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "Semver of this manifest (independent from upstream ACP version)."
+    },
+    "kind": {
+      "enum": ["client", "server", "bridge"],
+      "description": "client = drives a subprocess agent; server = exposes an operator; bridge = both."
+    },
+    "transport": {
+      "oneOf": [
+        { "$ref": "#/$defs/transport" },
+        { "type": "array", "items": { "$ref": "#/$defs/transport" }, "minItems": 1, "uniqueItems": true }
+      ],
+      "description": "stdio (REQUIRED), websocket (OPTIONAL but RECOMMENDED for remote use)."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["aip44"],
+      "properties": {
+        "aip44": { "$ref": "#/$defs/aip44Extensions" }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "transport": {
+      "enum": ["stdio", "websocket"]
+    },
+    "aip44Extensions": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["acp_rev", "tier"],
+      "description": "AIP-44-specific bindings. Upstream ACP runtimes preserve unknown metadata.* keys verbatim, so these survive end-to-end.",
+      "properties": {
+        "acp_rev": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{7,40}$",
+          "description": "Commit SHA of the agentclientprotocol/agent-client-protocol repository this manifest validates against."
+        },
+        "tier": {
+          "enum": ["basic", "governance-aware", "sandboxed"],
+          "description": "Capability tier shorthand. basic = session/{new,prompt,update} only; governance-aware = + loadSession + tool-call streaming; sandboxed = + mcpCapabilities + sandbox profile."
+        },
+        "capabilities": {
+          "$ref": "#/$defs/capabilities",
+          "description": "Optional explicit capability map. When present, overrides tier defaults."
+        },
+        "operator": {
+          "type": "string",
+          "description": "Workspace-relative ref to the AIP-9 OPERATOR.md this server exposes. REQUIRED when kind=server."
+        },
+        "governance": {
+          "type": "string",
+          "description": "Optional ref to AIP-7 GOVERNANCE.md. Defaults to the operator's governance binding."
+        },
+        "sandbox": {
+          "type": "string",
+          "description": "Ref to AIP-36 SANDBOX.md. REQUIRED when tier=sandboxed."
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional audit log target override. Defaults to the governance binding's log.",
+          "properties": {
+            "ref":  { "type": "string" },
+            "kind": { "enum": ["governance", "external", "off"] }
+          }
+        },
+        "mcp_servers": {
+          "type": "array",
+          "description": "Optional list of MCP server refs the runtime mounts via session/new.mcpServers.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "transport"],
+            "properties": {
+              "name":      { "type": "string" },
+              "transport": { "enum": ["stdio", "http", "sse"] },
+              "ref":       { "type": "string" }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if":   { "properties": { "tier": { "const": "sandboxed" } }, "required": ["tier"] },
+          "then": { "required": ["sandbox"] }
+        }
+      ]
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Mirror of upstream ACP initialize capabilities. Omitted keys MUST be treated as unsupported.",
+      "properties": {
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "readTextFile":  { "type": "boolean" },
+                "writeTextFile": { "type": "boolean" }
+              }
+            },
+            "terminal": { "type": "boolean" }
+          }
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "loadSession": { "type": "boolean" },
+            "promptCapabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image":            { "type": "boolean" },
+                "audio":            { "type": "boolean" },
+                "embeddedContext":  { "type": "boolean" }
+              }
+            },
+            "mcpCapabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "http": { "type": "boolean" },
+                "sse":  { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

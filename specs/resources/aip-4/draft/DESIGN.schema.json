@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-4/DESIGN.schema.json",
+  "title": "DESIGN.md frontmatter (AIP-4)",
+  "description": "Validates the YAML frontmatter portion of an AIP-4 DESIGN.md design-token kit.",
+  "type": "object",
+  "required": ["kit", "title", "colors", "typography"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "designkit/v1",
+      "description": "Pins the registry schema this kit conforms to. Required for registry submission."
+    },
+    "kit": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 48,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Kebab-case kit identifier. Namespaced by the registry on publish."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable display name."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "One-paragraph summary surfaced in registry search results."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Semver of THIS kit. Bump on token change."
+    },
+    "author": {
+      "type": "string",
+      "description": "Display name of the author / maintainer."
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX identifier or 'proprietary' for private brand kits."
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri"
+    },
+    "preview": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL to a screenshot of the kit applied to a reference surface."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "minItems": 0,
+      "maxItems": 12,
+      "default": []
+    },
+    "based-on": {
+      "type": "string",
+      "description": "URI of a parent DESIGN.md to compose on top of. Depth-limited to 3."
+    },
+    "mode": {
+      "enum": ["light", "dark", "both"],
+      "default": "light",
+      "description": "Default surface mode. 'both' requires a sibling 'variants' block."
+    },
+    "colors": { "$ref": "#/$defs/colorTokens" },
+    "typography": { "$ref": "#/$defs/typographyTokens" },
+    "spacing": { "$ref": "#/$defs/scaleTokens" },
+    "rounded": { "$ref": "#/$defs/scaleTokens" },
+    "shadows": { "$ref": "#/$defs/scaleTokens" },
+    "motion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "duration": { "$ref": "#/$defs/scaleTokens" },
+        "easing": { "$ref": "#/$defs/scaleTokens" }
+      }
+    },
+    "variants": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dark": { "$ref": "#/$defs/variantDelta" },
+        "light": { "$ref": "#/$defs/variantDelta" }
+      },
+      "description": "Delta blocks per mode. Only tokens that differ from the base are listed."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Host-namespaced extension fields. Other hosts MUST tolerate unknown keys here.",
+      "default": {}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "both" } },
+        "required": ["mode"]
+      },
+      "then": { "required": ["variants"] }
+    }
+  ],
+  "$defs": {
+    "colorTokens": {
+      "type": "object",
+      "required": ["background", "ink", "primary"],
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Hex (#RGB / #RRGGBB / #RRGGBBAA), rgb(a), hsl(a), or '{colors.<name>}' reference."
+      },
+      "properties": {
+        "background": { "type": "string" },
+        "surface": { "type": "string" },
+        "ink": { "type": "string" },
+        "ink-muted": { "type": "string" },
+        "primary": { "type": "string" },
+        "on-primary": { "type": "string" },
+        "accent": { "type": "string" },
+        "on-accent": { "type": "string" },
+        "muted": { "type": "string" },
+        "muted-foreground": { "type": "string" },
+        "border": { "type": "string" },
+        "link": { "type": "string" },
+        "success": { "type": "string" },
+        "warning": { "type": "string" },
+        "danger": { "type": "string" }
+      }
+    },
+    "typographyTokens": {
+      "type": "object",
+      "required": ["body", "h1"],
+      "additionalProperties": { "$ref": "#/$defs/typeStyle" },
+      "properties": {
+        "body": { "$ref": "#/$defs/typeStyle" },
+        "h1": { "$ref": "#/$defs/typeStyle" },
+        "h2": { "$ref": "#/$defs/typeStyle" },
+        "h3": { "$ref": "#/$defs/typeStyle" },
+        "h4": { "$ref": "#/$defs/typeStyle" },
+        "code": { "$ref": "#/$defs/typeStyle" },
+        "small": { "$ref": "#/$defs/typeStyle" }
+      }
+    },
+    "typeStyle": {
+      "type": "object",
+      "required": ["family"],
+      "additionalProperties": false,
+      "properties": {
+        "family": { "type": "string", "minLength": 1 },
+        "size": { "type": "string" },
+        "weight": { "type": ["integer", "string"] },
+        "lineHeight": { "type": ["number", "string"] },
+        "letterSpacing": { "type": "string" }
+      }
+    },
+    "scaleTokens": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "variantDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "colors": { "$ref": "#/$defs/scaleTokens" },
+        "typography": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/typeStyle" }
+        },
+        "spacing": { "$ref": "#/$defs/scaleTokens" },
+        "rounded": { "$ref": "#/$defs/scaleTokens" },
+        "shadows": { "$ref": "#/$defs/scaleTokens" },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "duration": { "$ref": "#/$defs/scaleTokens" },
+            "easing": { "$ref": "#/$defs/scaleTokens" }
+          }
+        }
+      }
+    }
+  }
+}

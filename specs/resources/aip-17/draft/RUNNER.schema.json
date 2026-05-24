@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-17/RUNNER.schema.json",
+  "title": "Runner block (AIP-17)",
+  "description": "Composable JSON Schema definition for the `runner` block — process boundary, optional container image, declarative dependency needs, and resource limits. Other AIPs reference this by $ref into their own schemas.",
+  "type": "object",
+  "$defs": {
+    "runner": {
+      "description": "Process boundary that hosts the body. Engine + optional image + declarative needs + resource limits.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "description": "Where the process runs. `subprocess` (default): host-local Node `--permission` child. `sandbox`: real container via the host's SandboxProviderAdapter. `in-process`: dynamic import inside the host process; reserved for trusted/vendor code, silently downgraded to `subprocess` for untrusted origins.",
+          "enum": ["subprocess", "sandbox", "in-process"],
+          "default": "subprocess"
+        },
+        "image": {
+          "description": "Sandbox template id from the host registry. Only meaningful for `engine: sandbox`. When omitted, the host auto-picks via `needs`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "needs": {
+          "description": "Declarative dependency requirements. Hosts use these to auto-pick an image, install missing deps at cold-start, and surface them in trust UIs.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "language": {
+              "description": "Primary language runtime.",
+              "enum": ["node", "python", "multi"]
+            },
+            "native": {
+              "description": "OS-level package names. Default convention: Debian/Ubuntu apt names.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            },
+            "npm": {
+              "description": "Additional npm packages installed via `npm install` after lockfile-driven `npm ci`.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^@?[^@]+@?.*$"
+              },
+              "default": []
+            },
+            "pip": {
+              "description": "Additional pip packages installed via `pip install --user`.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "default": []
+            }
+          }
+        },
+        "limits": {
+          "description": "Resource caps. Advisory but enforceable when the isolation primitive supports it.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "memory_mb": {
+              "description": "Hard memory cap in MiB.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeout_ms": {
+              "description": "Hard wall-clock cap in ms.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "cpu_ms": {
+              "description": "CPU-time cap in ms. Hosts that can't enforce it ignore this field.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

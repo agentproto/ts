@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-9/OPERATOR.schema.json",
+  "title": "OPERATOR.md frontmatter (AIP-9)",
+  "description": "Validates the YAML frontmatter portion of an AIP-9 OPERATOR.md manifest.",
+  "type": "object",
+  "required": ["name", "id", "persona_summary", "version", "profile"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable display name."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Machine identifier and dispatch slug. Lowercase, digits, dashes."
+    },
+    "persona_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 280,
+      "description": "One-sentence role description, written for a teammate to read at a glance."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Spec version of THIS file. Bump on breaking change."
+    },
+    "entry": {
+      "type": "string",
+      "description": "Relative path to the implementation file (e.g. operator.ts)."
+    },
+    "profile": {
+      "type": "object",
+      "required": ["role", "voice", "boundaries"],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Job title and primary responsibility."
+        },
+        "voice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Tone, register, and pronoun stance."
+        },
+        "boundaries": {
+          "type": "array",
+          "minItems": 0,
+          "items": { "type": "string", "maxLength": 500 },
+          "description": "Imperative MUST-NOT rules. Surface in every system-prompt synthesis."
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/skillRef" },
+      "default": [],
+      "description": "AIP-3 skill references the operator loads."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/toolRef" },
+      "default": [],
+      "description": "AIP-14 tool refs and MCP server bindings the operator may invoke."
+    },
+    "memory": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["none", "thread", "operator-context", "external"],
+          "description": "Memory scope. Default 'thread' for stateless workflows; 'operator-context' for long-running roles."
+        },
+        "policy": {
+          "enum": ["append-only", "redactable", "summarising"],
+          "default": "summarising"
+        },
+        "share_with": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Operator ids granted READ access to this operator's memory."
+        },
+        "external": {
+          "type": "object",
+          "required": ["uri"],
+          "additionalProperties": false,
+          "properties": {
+            "uri": { "type": "string" },
+            "namespace": { "type": "string" }
+          }
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "required": ["audit_log", "autonomy"],
+      "additionalProperties": false,
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^policy:[A-Za-z0-9_./-]+$" },
+          "default": [],
+          "description": "AIP-7 policy refs the operator MUST consult before privileged actions."
+        },
+        "audit_log": {
+          "type": "string",
+          "pattern": "^audit:[A-Za-z0-9_./-]+$",
+          "description": "Audit channel for state transitions, tool calls, memory writes."
+        },
+        "autonomy": {
+          "enum": ["autonomous", "supervised", "gated"],
+          "description": "Per-turn autonomy class. Default 'supervised'."
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": [],
+      "description": "Capability surface the operator declares. Negotiated against runtime offer at registration."
+    },
+    "participation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": ["mention-only", "proactive", "silent"],
+          "default": "mention-only"
+        },
+        "pass_when": {
+          "type": "string",
+          "description": "Host-evaluated predicate; when true the operator emits a 'pass' instead of a full turn."
+        },
+        "reactions": { "type": "boolean", "default": false }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "description": "Runtime binding. When kind=in-process (default), the operator runs in the host's in-process agent runtime. When kind=agent-cli, turns are dispatched to a spawned AIP-45 agent CLI subprocess (Hermes, Claude Code, OpenCode, ...).",
+      "properties": {
+        "kind": {
+          "enum": ["in-process", "agent-cli"],
+          "default": "in-process"
+        },
+        "ref": {
+          "type": "string",
+          "description": "AIP-45 AGENT-CLI reference. Required when kind=agent-cli. Conventional shape: '<package>#<export>' (e.g. '@agentproto/adapter-hermes#hermes') or a workspace-relative path to an AGENT-CLI.md."
+        },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["ephemeral", "persistent", "resumable"] },
+            "idle_timeout_ms": { "type": "integer", "minimum": 1000 }
+          }
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-runtime configuration that the host applies when spawning / dispatching to the bound AIP-45 manifest. The host MUST validate every entry against the manifest's declared `modes` / `options` / `continuation.supported`; unknown ids are a hard load-time error.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "description": "Id of the manifest-declared mode to activate for this operator. At most one per operator (modes are mutually exclusive). Omitted = manifest's default behaviour (no mode patch applied)."
+            },
+            "options": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Map of manifest-declared option id → value. Each value MUST satisfy the option's declared type / enum / min / max. Unknown ids are rejected at load time."
+            },
+            "continuation": {
+              "type": "string",
+              "enum": ["none", "pinned-session", "transcript", "native-resume"],
+              "description": "Continuation strategy id. MUST be a member of the manifest's `continuation.supported`. Omitted = manifest's `continuation.default`."
+            }
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "governance": {
+            "properties": { "autonomy": { "const": "gated" } },
+            "required": ["autonomy"]
+          }
+        },
+        "required": ["governance"]
+      },
+      "then": {
+        "properties": {
+          "participation": {
+            "properties": { "mode": { "enum": ["mention-only", "silent"] } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "properties": { "kind": { "const": "agent-cli" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["runtime"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "required": ["ref"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "skillRef": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+        {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+            "source": { "type": "string" },
+            "version": { "type": "string" },
+            "allow": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "toolRef": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+        {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string" },
+            "source": { "type": "string" },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "workspace": { "type": "string" },
+                "network": { "type": "array", "items": { "type": "string" } },
+                "secrets": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "server"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "mcp" },
+            "server": { "type": "string" },
+            "allow": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    }
+  }
+}

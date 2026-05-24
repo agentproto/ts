@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-8/AGENCY.schema.json",
+  "title": "agentagencies/v1 doctype frontmatter (AIP-8)",
+  "description": "Validates the YAML frontmatter portion of every AIP-8 doctype: AGENCY.md, SERVICE.md, PROCEDURE.md, PRICING-MODEL.md, COUNTERPARTY.md, ENGAGEMENT.md, AGREEMENT.md, DELIVERABLE.md, INVOICE.md, ROUTINE.md, CAPACITY.md.",
+  "type": "object",
+  "required": ["schema", "kind", "id", "version"],
+  "oneOf": [
+    { "$ref": "#/$defs/agency" },
+    { "$ref": "#/$defs/service" },
+    { "$ref": "#/$defs/procedure" },
+    { "$ref": "#/$defs/pricingModel" },
+    { "$ref": "#/$defs/counterparty" },
+    { "$ref": "#/$defs/engagement" },
+    { "$ref": "#/$defs/agreement" },
+    { "$ref": "#/$defs/deliverable" },
+    { "$ref": "#/$defs/invoice" },
+    { "$ref": "#/$defs/routine" },
+    { "$ref": "#/$defs/capacity" }
+  ],
+  "$defs": {
+    "schemaTag": {
+      "const": "agentagencies/v1",
+      "description": "MUST be the literal string agentagencies/v1."
+    },
+    "slug": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Kebab-case slug. Lowercase, digits, dashes. Starts with a letter, ends with a letter or digit."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Spec version of THIS file. Bump on breaking change."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO-4217 currency code, e.g. USD, EUR."
+    },
+    "money": {
+      "type": "object",
+      "required": ["amount", "currency"],
+      "additionalProperties": false,
+      "properties": {
+        "amount": { "type": "number", "minimum": 0 },
+        "currency": { "$ref": "#/$defs/currency" }
+      }
+    },
+    "lifecycleState": {
+      "enum": [
+        "draft",
+        "proposed",
+        "agreed",
+        "in-progress",
+        "delivered",
+        "invoiced",
+        "closed",
+        "cancelled"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor extensions live under namespaced keys (metadata.<vendor>.*)."
+    },
+    "signatureRef": {
+      "type": "string",
+      "description": "Path or slug pointing to an AIP-7 signature event."
+    },
+
+    "agency": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "agency" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "company": {
+          "$ref": "#/$defs/slug",
+          "description": "Slug of the parent COMPANY.md (AIP-6)."
+        },
+        "billing_currency": { "$ref": "#/$defs/currency" },
+        "working_hours": {
+          "type": "string",
+          "description": "Free-form description of working hours (e.g. 'Mon-Fri 09:00-18:00 Europe/Paris')."
+        },
+        "default_policy": {
+          "$ref": "#/$defs/slug",
+          "description": "Slug of an AIP-7 POLICY.md."
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "required": [
+        "schema",
+        "kind",
+        "id",
+        "version",
+        "name",
+        "pricing_model",
+        "procedures"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "service" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "pricing_model": { "$ref": "#/$defs/slug" },
+        "procedures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" },
+          "minItems": 1
+        },
+        "default_role": {
+          "$ref": "#/$defs/slug",
+          "description": "AIP-6 role slug."
+        },
+        "inclusions": { "type": "array", "items": { "type": "string" } },
+        "exclusions": { "type": "array", "items": { "type": "string" } },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "procedure": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "name", "service"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "procedure" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "service": { "$ref": "#/$defs/slug" },
+        "entry": {
+          "type": "string",
+          "description": "Relative path to procedure.ts / .py / etc."
+        },
+        "workflow": {
+          "$ref": "#/$defs/slug",
+          "description": "Slug of an AIP-15 WORKFLOW.md if delegating."
+        },
+        "assigned_to": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" },
+          "description": "AIP-6 operator slugs."
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "after_step"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/slug" },
+              "after_step": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          },
+          "default": []
+        },
+        "deliverables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["slug", "produced_by"],
+            "additionalProperties": false,
+            "properties": {
+              "slug": { "$ref": "#/$defs/slug" },
+              "produced_by": {
+                "type": "string",
+                "description": "Step id whose completion produces this deliverable."
+              },
+              "schema": {
+                "type": "object",
+                "description": "JSON Schema for the deliverable artifact."
+              }
+            }
+          },
+          "default": []
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "pricingModel": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "name", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "pricing-model" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "model": {
+          "enum": ["fixed", "hourly", "retainer", "milestone", "usage"]
+        },
+        "fixed_price": { "$ref": "#/$defs/money" },
+        "hourly_rate": { "$ref": "#/$defs/money" },
+        "retainer": {
+          "type": "object",
+          "required": ["amount", "period"],
+          "additionalProperties": false,
+          "properties": {
+            "amount": { "$ref": "#/$defs/money" },
+            "period": { "enum": ["weekly", "monthly", "quarterly"] }
+          }
+        },
+        "milestones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["slug", "amount"],
+            "additionalProperties": false,
+            "properties": {
+              "slug": { "$ref": "#/$defs/slug" },
+              "amount": { "$ref": "#/$defs/money" },
+              "trigger": {
+                "type": "string",
+                "description": "Checkpoint or deliverable slug that releases this milestone."
+              }
+            }
+          }
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "counterparty": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "counterparty" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "legal_name": { "type": "string" },
+        "contact_email": { "type": "string", "format": "email" },
+        "address": { "type": "string" },
+        "tax_id": { "type": "string" },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "engagement": {
+      "type": "object",
+      "required": [
+        "schema",
+        "kind",
+        "id",
+        "version",
+        "service",
+        "counterparty",
+        "state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "engagement" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "service": { "$ref": "#/$defs/slug" },
+        "counterparty": { "$ref": "#/$defs/slug" },
+        "state": { "$ref": "#/$defs/lifecycleState" },
+        "agreement": { "$ref": "#/$defs/slug" },
+        "objectives": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" },
+          "description": "AIP-6 objective slugs."
+        },
+        "deliverables": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" }
+        },
+        "invoices": { "type": "array", "items": { "$ref": "#/$defs/slug" } },
+        "started_at": { "type": "string", "format": "date-time" },
+        "delivered_at": { "type": "string", "format": "date-time" },
+        "closed_at": { "type": "string", "format": "date-time" },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "agreement": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "engagement", "signers"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "agreement" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "engagement": { "$ref": "#/$defs/slug" },
+        "signers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "anyOf": [
+              {
+                "required": ["role"],
+                "properties": { "role": { "$ref": "#/$defs/slug" } }
+              },
+              {
+                "required": ["counterparty"],
+                "properties": { "counterparty": { "$ref": "#/$defs/slug" } }
+              },
+              {
+                "required": ["operator"],
+                "properties": { "operator": { "$ref": "#/$defs/slug" } }
+              }
+            ]
+          }
+        },
+        "signatures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/signatureRef" }
+        },
+        "policy": { "$ref": "#/$defs/slug" },
+        "acceptance_policy": {
+          "enum": ["auto", "signed"],
+          "default": "signed"
+        },
+        "acceptance_signers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" }
+        },
+        "effective_date": { "type": "string", "format": "date" },
+        "termination_date": { "type": "string", "format": "date" },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "deliverable": {
+      "type": "object",
+      "required": [
+        "schema",
+        "kind",
+        "id",
+        "version",
+        "engagement",
+        "produced_by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "deliverable" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "engagement": { "$ref": "#/$defs/slug" },
+        "produced_by": {
+          "type": "string",
+          "description": "<procedure-slug>:<step-id>"
+        },
+        "produced_at": { "type": "string", "format": "date-time" },
+        "accepted_at": { "type": "string", "format": "date-time" },
+        "signatures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/signatureRef" }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "content_type": { "type": "string" },
+              "checksum": { "type": "string" }
+            }
+          },
+          "default": []
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "invoice": {
+      "type": "object",
+      "required": [
+        "schema",
+        "kind",
+        "id",
+        "version",
+        "engagement",
+        "issuer",
+        "total",
+        "line_items"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "invoice" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "engagement": { "$ref": "#/$defs/slug" },
+        "issuer": {
+          "$ref": "#/$defs/slug",
+          "description": "Role slug from AIP-6."
+        },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "due_at": { "type": "string", "format": "date" },
+        "paid_at": { "type": "string", "format": "date-time" },
+        "currency": { "$ref": "#/$defs/currency" },
+        "total": { "$ref": "#/$defs/money" },
+        "line_items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["description", "amount"],
+            "additionalProperties": false,
+            "properties": {
+              "description": { "type": "string", "minLength": 1 },
+              "quantity": { "type": "number", "minimum": 0 },
+              "unit": { "type": "string" },
+              "amount": { "$ref": "#/$defs/money" },
+              "deliverable": { "$ref": "#/$defs/slug" }
+            }
+          }
+        },
+        "signatures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/signatureRef" }
+        },
+        "state": {
+          "enum": ["draft", "issued", "paid", "void"],
+          "default": "draft"
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "routine": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "name", "schedule"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "routine" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "schedule": {
+          "type": "object",
+          "required": ["cron"],
+          "additionalProperties": false,
+          "properties": {
+            "cron": { "type": "string" },
+            "timezone": { "type": "string" }
+          }
+        },
+        "engagement": { "$ref": "#/$defs/slug" },
+        "procedure": { "$ref": "#/$defs/slug" },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    },
+
+    "capacity": {
+      "type": "object",
+      "required": ["schema", "kind", "id", "version", "operator"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schemaTag" },
+        "kind": { "const": "capacity" },
+        "id": { "$ref": "#/$defs/slug" },
+        "version": { "$ref": "#/$defs/version" },
+        "operator": {
+          "$ref": "#/$defs/slug",
+          "description": "AIP-6 operator slug."
+        },
+        "hours_per_week": { "type": "number", "minimum": 0, "maximum": 168 },
+        "concurrent_engagements": { "type": "integer", "minimum": 0 },
+        "blackout_dates": {
+          "type": "array",
+          "items": { "type": "string", "format": "date" }
+        },
+        "tags": { "$ref": "#/$defs/tags" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      }
+    }
+  }
+}

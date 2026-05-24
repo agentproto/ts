@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-30/DRIVER.schema.json",
+  "title": "DRIVER.md frontmatter — agentdriver/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-30 DRIVER.md manifest. Subtype-specific fields (CLI's bin/sandbox/output, HTTP's endpoint/body, etc.) are validated by the subtype AIP's schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["name", "id", "description", "version", "kind", "implements"],
+  "properties": {
+    "name":        { "type": "string", "minLength": 1, "maxLength": 80 },
+    "id":          { "type": "string", "pattern": "^[a-z0-9][a-z0-9.\\-]{1,79}$" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "version":     { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$" },
+    "kind":        { "type": "string", "enum": ["cli", "http", "mcp", "sdk", "builtin"] },
+    "implements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/implementsEntry" }
+    },
+    "install": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Inherited from AIP-29 § Install methods. Methods registry validated by subtype schema."
+    },
+    "version_check": { "$ref": "#/$defs/versionCheck" },
+    "auth":          { "$ref": "#/$defs/auth" },
+    "runner": {
+      "oneOf": [
+        { "type": "string", "description": "Workspace-relative path to a RUNNER.md (AIP-17)." },
+        { "type": "object" }
+      ]
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "egress":  { "type": "array", "items": { "type": "string" } },
+        "ingress": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "region": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["global"]
+    },
+    "policy_tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "cost_override":      { "$ref": "#/$defs/costOverride" },
+    "timeout_override_ms": { "type": "integer", "minimum": 100 },
+    "retry_override":     { "$ref": "#/$defs/retryPolicy" },
+    "health_check":       { "$ref": "#/$defs/healthCheck" },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os":             { "type": "array", "items": { "type": "string", "enum": ["darwin", "linux", "windows"] } },
+        "arch":           { "type": "array", "items": { "type": "string", "enum": ["x64", "arm64", "x86", "arm"] } },
+        "min_disk_mb":    { "type": "integer", "minimum": 0 },
+        "min_memory_mb":  { "type": "integer", "minimum": 0 }
+      }
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["goal"],
+        "properties": {
+          "goal": { "type": "string" },
+          "note": { "type": "string" },
+          "cmd":  { "type": "string", "description": "CLI subtype only" }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9\\-]{0,63}$" },
+      "uniqueItems": true
+    },
+    "metadata": { "type": "object" }
+  },
+  "$defs": {
+    "implementsEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "version"],
+      "properties": {
+        "tool":    { "type": "string", "description": "Workspace-relative path or registry id of a TOOL.md." },
+        "version": { "type": "string", "description": "Contract semver range (npm-style)." },
+        "schema_narrowing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "drop_inputs":  { "type": "array", "items": { "type": "string" } },
+            "drop_outputs": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "mapping": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/mappingValue" }
+        },
+        "cost_override":      { "$ref": "#/$defs/costOverride" },
+        "timeout_override_ms": { "type": "integer", "minimum": 100 },
+        "retry_override":     { "$ref": "#/$defs/retryPolicy" },
+        "metadata":           { "type": "object" }
+      }
+    },
+    "mappingValue": {
+      "oneOf": [
+        { "type": "string", "description": "Identity / rename: tool input → provider input key." },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from"],
+          "properties": {
+            "from":      { "type": "string" },
+            "transform": { "type": "string", "description": "Named transformer exported by the provider's entry." }
+          }
+        }
+      ]
+    },
+    "versionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "parse", "range"],
+      "properties": {
+        "cmd":        { "type": "string" },
+        "parse":      { "type": "string" },
+        "range":      { "type": "string" },
+        "timeout_ms": { "type": "integer", "minimum": 100, "default": 5000 }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref":   { "type": "string" },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paths": { "type": "array", "items": { "type": "string" } },
+            "env":   { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "login": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cmd":                   { "type": "string" },
+            "url":                   { "type": "string", "format": "uri" },
+            "interactive":           { "type": "boolean" },
+            "requires_callback_url": { "type": "boolean" },
+            "completes_when": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cmd":            { "type": "string" },
+                "exit_code":      { "type": "integer" },
+                "http": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["method", "url"],
+                  "properties": {
+                    "method":        { "type": "string", "enum": ["GET", "POST", "HEAD"] },
+                    "url":           { "type": "string", "format": "uri" },
+                    "expect_status": { "type": "integer", "minimum": 100, "maximum": 599 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "refresh": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cmd":   { "type": "string" },
+            "url":   { "type": "string", "format": "uri" },
+            "every": { "type": "string", "pattern": "^P(?:T)?\\S+$" }
+          }
+        },
+        "expiry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "detect": { "type": "string", "description": "exit_code:N | http_status:N | exception:Name | header:NAME:VALUE" }
+          }
+        }
+      }
+    },
+    "costOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cost_class":          { "type": "string", "enum": ["trivial", "metered", "expensive"] },
+        "cost_units_per_call": { "type": "number", "minimum": 0, "description": "Millicents per call." },
+        "currency":            { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "backoff":      { "type": "string", "enum": ["fixed", "exponential"] },
+        "initial_ms":   { "type": "integer", "minimum": 0 }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method"],
+      "properties": {
+        "method":      { "type": "string", "enum": ["ping", "exec", "http", "noop"] },
+        "cmd":         { "type": "string", "description": "Used when method=exec" },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "url"],
+          "properties": {
+            "method":        { "type": "string", "enum": ["GET", "POST", "HEAD"] },
+            "url":           { "type": "string", "format": "uri" },
+            "expect_status": { "type": "integer", "minimum": 100, "maximum": 599 }
+          }
+        },
+        "expect_exit": { "type": "integer" },
+        "every":       { "type": "string", "pattern": "^P(?:T)?\\S+$" },
+        "timeout_ms":  { "type": "integer", "minimum": 100, "default": 5000 }
+      }
+    }
+  }
+}

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-5/TEMPLATE.schema.json",
+  "title": "CANVAKIT.md frontmatter (AIP-5)",
+  "description": "Validates the YAML frontmatter portion of an AIP-5 *.canvakit.* template.",
+  "type": "object",
+  "required": ["template", "name", "version"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "canvakit/v1",
+      "description": "Spec version pin. Hosts that find an unknown schema MUST refuse rather than guess."
+    },
+    "template": {
+      "type": "boolean",
+      "const": true,
+      "description": "Required marker. Tooling that loads files by glob uses this to catch 'renamed but not a template' mistakes."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Slug-safe machine name. Lowercase, digits, dashes."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Semver. Bump on breaking change to the rendered shape or variables contract."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "One-sentence purpose for the gallery card."
+    },
+    "author": {
+      "type": "string",
+      "description": "Optional locally; required for gallery publish — (author, name, version) is the canonical key."
+    },
+    "renderer": {
+      "enum": ["mustache", "handlebars", "mdx"],
+      "default": "mustache",
+      "description": "Template engine. v1 default 'mustache' is universally supported; others are spec-legal but optional."
+    },
+    "design": {
+      "type": "string",
+      "description": "Designkit fallback hint. Used only when no workspace design is active. Schemes: dk:<preset>, ws:<path>, kit:<slug>, or a bare *.md path."
+    },
+    "forceDesign": {
+      "type": "string",
+      "description": "Designkit override. Bypasses workspace selection. Same scheme grammar as 'design'."
+    },
+    "refreshEvery": {
+      "anyOf": [
+        { "enum": ["manual", "on-tool-change"] },
+        {
+          "type": "string",
+          "pattern": "^\\d+(ms|s|m|h)$",
+          "description": "Duration string — e.g. 60s, 5m, 1h."
+        }
+      ],
+      "default": "manual",
+      "description": "Declarative cadence hint. Honored opportunistically; runtimes that can't honor SHOULD treat as 'manual'."
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/variable" },
+      "default": {},
+      "description": "Caller inputs with author defaults. Substituted into dataSources params before resolution."
+    },
+    "dataSources": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/dataSource" },
+      "default": {},
+      "description": "Named data sources resolved in parallel and merged into the render context."
+    },
+    "imports": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/import" },
+      "default": {},
+      "description": "Nested canvases. Each renders in isolation; output exposed under {{{imports.<name>}}}."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Host-specific extension surface. Other hosts MUST tolerate unknown metadata.<host>.* keys."
+    }
+  },
+  "$defs": {
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["string", "number", "boolean", "object", "array"] },
+        "required": { "type": "boolean", "default": false },
+        "default": {},
+        "description": { "type": "string" }
+      }
+    },
+    "dataSource": {
+      "oneOf": [
+        { "$ref": "#/$defs/dataSourceTool" },
+        { "$ref": "#/$defs/dataSourceStatic" },
+        { "$ref": "#/$defs/dataSourceFile" },
+        { "$ref": "#/$defs/dataSourceQuery" }
+      ],
+      "description": "Discriminated by 'kind'. One of: tool, static, file, query."
+    },
+    "dataSourceTool": {
+      "type": "object",
+      "required": ["kind", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "tool" },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool identifier. Flat ('searchFlights'), namespaced ('stripe.mrr'), or MCP-qualified ('mcp://server/tool'). Resolution: exact > longest wildcard > MCP."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "JSON params passed verbatim to the resolver. String values may interpolate {{variables.*}}."
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Legacy alias for 'params'. Hosts SHOULD accept and warn."
+        }
+      }
+    },
+    "dataSourceStatic": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "static" },
+        "value": {
+          "description": "Literal pass-through. Never fetched, never parsed."
+        }
+      }
+    },
+    "dataSourceFile": {
+      "type": "object",
+      "required": ["kind", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "file" },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Filesystem path relative to the render filesystem. Parsed by extension per the format contract."
+        }
+      }
+    },
+    "dataSourceQuery": {
+      "type": "object",
+      "required": ["kind", "include"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "query" },
+        "include": {
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1
+            }
+          ],
+          "description": "Glob or array of globs. Bare directory paths are rewritten to <path>/**/*.md."
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Field predicates against parsed shape. Supports equality and operators _in, _contains, _before, _after."
+        },
+        "sort": {
+          "type": "string",
+          "pattern": "^-?[A-Za-z_][A-Za-z0-9_.]*$",
+          "description": "field (asc) or -field (desc) on a parsed key."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Project to a subset of parsed keys."
+        }
+      }
+    },
+    "import": {
+      "type": "object",
+      "required": ["template"],
+      "additionalProperties": false,
+      "properties": {
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to a sibling *.canvakit.* file."
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Values passed to the imported canvas. Imports do NOT inherit parent variables; pass explicitly."
+        }
+      }
+    }
+  }
+}

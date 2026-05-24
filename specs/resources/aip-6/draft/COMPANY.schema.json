@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-6/COMPANY.schema.json",
+  "title": "agentcompanies/v1 doctype frontmatter (AIP-6)",
+  "description": "Validates the YAML frontmatter portion of any agentcompanies/v1 doctype file. The `doctype` field discriminates between company / role / objective; each branch enforces the doctype-specific shape. Operator doctype is sketched here but the normative definition lives in AIP-8 — only company / role / objective are normative under AIP-6.",
+  "type": "object",
+  "required": ["schema", "doctype", "id"],
+  "properties": {
+    "schema": {
+      "const": "agentcompanies/v1",
+      "description": "Format identifier. MUST be the literal string `agentcompanies/v1`."
+    },
+    "doctype": {
+      "enum": ["company", "role", "objective"],
+      "description": "Discriminator. Selects the doctype-specific branch under `oneOf`."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "description": "Slug identifier. Lowercase, digits, dashes. Stable across renames; references use this, never database IDs."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$",
+      "description": "Spec version of THIS file. Bump on breaking change."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Human-readable display name."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "One-paragraph purpose."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {},
+      "description": "Vendor-specific extensions. Authors stash hints under namespaced keys `metadata.<vendor>.…`; other readers MUST tolerate unknown keys."
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/company" },
+    { "$ref": "#/$defs/role" },
+    { "$ref": "#/$defs/objective" }
+  ],
+  "$defs": {
+    "company": {
+      "type": "object",
+      "required": ["doctype", "name", "mission"],
+      "properties": {
+        "doctype": { "const": "company" },
+        "mission": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "One-paragraph mission. Read by every operator at boot."
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 200 },
+          "default": [],
+          "description": "Short value statements; surfaced in role prompts."
+        },
+        "structure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+              },
+              "default": [],
+              "description": "Slugs of roles defined under `roles/<slug>/ROLE.md`."
+            },
+            "objectives": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+              },
+              "default": [],
+              "description": "Slugs of top-level objectives defined under `objectives/<slug>/OBJECTIVE.md`."
+            },
+            "reports_to": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+              },
+              "default": {},
+              "description": "Map of role-slug → role-slug expressing the reporting tree. The key reports to the value. Roles not in the map are top-level."
+            }
+          }
+        },
+        "imports": {
+          "type": "array",
+          "default": [],
+          "items": { "$ref": "#/$defs/import" },
+          "description": "External roles or objectives pulled from a registry. Resolved by the adapter at load time."
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "required": ["doctype", "name", "mandate"],
+      "properties": {
+        "doctype": { "const": "role" },
+        "mandate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "One-paragraph statement of what this role is responsible for. Defines the role's bounded autonomy."
+        },
+        "reports_to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Slug of the parent role. Omit for top-level roles."
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "owns": {
+              "type": "array",
+              "items": { "type": "string", "maxLength": 200 },
+              "default": [],
+              "description": "Free-text list of resource classes this role owns (e.g. `outbound-email`, `q3-pipeline`)."
+            },
+            "capabilities": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+              "default": [],
+              "description": "Capability slugs the role grants — referenced by AIP-7 governance and AIP-8 operators."
+            }
+          }
+        },
+        "objectives": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Slugs of objectives this role pursues. Each MUST resolve to an `objectives/<slug>/OBJECTIVE.md`."
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Slugs of AIP-14 tools the role may call. Adapter resolves against the host's tool catalog."
+        },
+        "workflows": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Slugs of AIP-15 workflows the role may execute."
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "required": ["doctype", "name", "statement"],
+      "properties": {
+        "doctype": { "const": "objective" },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "One-paragraph statement of the desired outcome."
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Slug of the role accountable for this objective."
+        },
+        "horizon": {
+          "enum": ["sprint", "quarter", "year", "ongoing"],
+          "default": "quarter",
+          "description": "Time horizon. Adapter MAY use this to surface stale objectives."
+        },
+        "status": {
+          "enum": ["proposed", "active", "paused", "achieved", "abandoned"],
+          "default": "active"
+        },
+        "key_results": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["id", "statement"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+              },
+              "statement": { "type": "string", "maxLength": 500 },
+              "target": { "type": "string", "maxLength": 200 },
+              "progress": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "parent": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Slug of the parent objective (for decomposition trees). Omit for top-level objectives."
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Slugs of child sub-objectives. Adapter validates the parent/children edges agree."
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
+          "default": [],
+          "description": "Slugs of objectives this one depends on."
+        }
+      }
+    },
+    "import": {
+      "type": "object",
+      "required": ["from", "as"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source ref. Format: `<registry>/<package>@<version>` or a relative path."
+        },
+        "as": {
+          "enum": ["role", "objective"],
+          "description": "Imported doctype."
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Local slug to bind the import under."
+        },
+        "alias": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Override the import's local slug if it would collide."
+        }
+      }
+    }
+  }
+}

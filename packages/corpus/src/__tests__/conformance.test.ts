@@ -27,10 +27,12 @@ import { parseRoutineManifest } from "@agentproto/routine/manifest"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES_ROOT = path.resolve(__dirname, "../../test/fixtures/marketing")
-const SPECS_ROOT = path.resolve(
-  __dirname,
-  "../../../../../agentproto/specs/resources",
-)
+
+// Schemas live at `<repo>/specs/resources/aip-XX/draft/*.schema.json`.
+// Override with CORPUS_SPECS_ROOT if loading from a different location.
+const SPECS_ROOT =
+  process.env["CORPUS_SPECS_ROOT"] ??
+  path.resolve(__dirname, "../../../../specs/resources")
 
 // ─── AJV setup ──────────────────────────────────────────────────────────────
 const ajv = new Ajv2020({
