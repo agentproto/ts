@@ -101,8 +101,8 @@ export class MemoryFs implements FsPort {
   }
 }
 
-/** Load the M0 fixture workspace from real disk into a MemoryFs. */
-export async function loadM0FixtureFs(): Promise<MemoryFs> {
+/** Load the marketing fixture workspace from real disk into a MemoryFs. */
+export async function loadMarketingFixtureFs(): Promise<MemoryFs> {
   const { readFileSync } = await import("node:fs")
   const path = await import("node:path")
   const { fileURLToPath } = await import("node:url")

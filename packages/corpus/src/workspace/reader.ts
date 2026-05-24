@@ -54,7 +54,16 @@ export class CorpusWorkspaceReader {
       const content = await this.opts.fs.readFile(path)
       const parsed = matter(content)
       const file: ParsedFile = {
-        path,
+        // Workspace-relative path. The walk returns paths anchored at
+        // the host's storage root (which already includes `root` for
+        // non-empty workspaces — see GuildWorkspaceFsAdapter.walk),
+        // so we strip `root` here to match the documented contract
+        // ("paths returned are workspace-relative"). Without this,
+        // call sites that re-join `workspacePath + file.path` (the
+        // playbook lifecycle, the evaluator, the promoter's CAS write)
+        // double-prefix the path and the next read/CAS misses,
+        // surfacing as CorpusVersionConflictError.
+        path: stripRoot(path, root),
         kind: classify(path, root),
         frontmatter: (parsed.data ?? {}) as Readonly<Record<string, unknown>>,
         body: parsed.content,

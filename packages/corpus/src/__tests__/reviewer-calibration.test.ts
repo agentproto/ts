@@ -18,7 +18,7 @@ import { MemoryFs } from "./_helpers/memory-fs.js"
 
 // ── Aggregation ─────────────────────────────────────────────────────
 
-describe("aggregateReviewerScores (M12)", () => {
+describe("aggregateReviewerScores", () => {
   it("empty input → zero aggregate, no disagreement", () => {
     const r = aggregateReviewerScores([])
     expect(r.aggregate).toBe(0)
@@ -122,7 +122,7 @@ describe("aggregateReviewerScores (M12)", () => {
 
 // ── Track record ───────────────────────────────────────────────────
 
-describe("ReviewerTrackRecord (M12)", () => {
+describe("ReviewerTrackRecord", () => {
   it("load on missing file → empty record", async () => {
     const fs = new MemoryFs()
     const r = new ReviewerTrackRecord({ fs, path: "_cal.yaml" })
@@ -193,7 +193,7 @@ describe("ReviewerTrackRecord (M12)", () => {
 
 // ── Pearson correlation ───────────────────────────────────────────
 
-describe("pearsonCorrelation (M12)", () => {
+describe("pearsonCorrelation", () => {
   it("perfect positive correlation → 1", () => {
     const r = pearsonCorrelation([1, 2, 3, 4, 5], [10, 20, 30, 40, 50])
     expect(r).toBeCloseTo(1, 10)
@@ -227,7 +227,7 @@ describe("pearsonCorrelation (M12)", () => {
 
 // ── Reviewer calibration ──────────────────────────────────────────
 
-describe("computeReviewerCalibration (M12)", () => {
+describe("computeReviewerCalibration", () => {
   function entries(
     pairs: Array<[score: number, utility: number]>
   ): TrackRecordEntry[] {
@@ -311,7 +311,7 @@ describe("computeReviewerCalibration (M12)", () => {
 
 // ── Integration: calibration → aggregator ─────────────────────────
 
-describe("Calibration feeds weighted aggregation (M12)", () => {
+describe("Calibration feeds weighted aggregation", () => {
   it("trusted reviewer's calibration weight overrides junk reviewers", () => {
     // Simulate: well-calibrated reviewer alone says 4.5; two
     // miscalibrated reviewers say 1.0. The weighted median should

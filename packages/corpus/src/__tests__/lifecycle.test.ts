@@ -32,11 +32,11 @@ import { CorpusWorkspaceReader } from "../workspace/reader.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { IdentityPort } from "../ports/identity.port.js"
 import type { WriterPort, PushChunksInput } from "../ports/writer.port.js"
-import { MemoryFs, loadM0FixtureFs } from "./_helpers/memory-fs.js"
+import { MemoryFs, loadMarketingFixtureFs } from "./_helpers/memory-fs.js"
 
 // ── Sidecar ─────────────────────────────────────────────────────────
 
-describe("CandidatesSidecar (M3)", () => {
+describe("CandidatesSidecar", () => {
   it("load returns [] when the file doesn't exist", async () => {
     const fs = new MemoryFs()
     const sidecar = new CandidatesSidecar({
@@ -113,7 +113,7 @@ describe("CandidatesSidecar (M3)", () => {
 
 // ── State machine ──────────────────────────────────────────────────
 
-describe("Candidate state machine (M3)", () => {
+describe("Candidate state machine", () => {
   it("permits discovered → analyzed", () => {
     expect(canTransition("discovered", "analyzed").allowed).toBe(true)
   })
@@ -153,7 +153,7 @@ describe("Candidate state machine (M3)", () => {
 
 // ── Gate ────────────────────────────────────────────────────────────
 
-describe("Auto-promote gate (M3)", () => {
+describe("Auto-promote gate", () => {
   const ENABLED_CONFIG = {
     enabled: true,
     requires: {
@@ -292,7 +292,7 @@ describe("Auto-promote gate (M3)", () => {
   })
 
   it("extractAutoPromoteConfig reads from snapshot.workspace.metadata.corpus.autoPromote", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const config = extractAutoPromoteConfig(snapshot)
     expect(config.enabled).toBe(true)
@@ -302,7 +302,7 @@ describe("Auto-promote gate (M3)", () => {
 
 // ── Chunker ─────────────────────────────────────────────────────────
 
-describe("chunkText (M3)", () => {
+describe("chunkText", () => {
   it("returns a single chunk when text fits in target", () => {
     const chunks = chunkText("Hello world.")
     expect(chunks).toEqual(["Hello world."])
@@ -322,7 +322,7 @@ describe("chunkText (M3)", () => {
 
 // ── Indexer + Promote (end-to-end) ────────────────────────────────
 
-describe("CorpusPromoter end-to-end (M3)", () => {
+describe("CorpusPromoter end-to-end", () => {
   function makeStubWriter(): { writer: WriterPort; pushed: PushChunksInput[]; removed: string[] } {
     const pushed: PushChunksInput[] = []
     const removed: string[] = []

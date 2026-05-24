@@ -19,7 +19,7 @@ import {
 } from "../playbooks/lifecycle.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { IdentityPort } from "../ports/identity.port.js"
-import { loadM0FixtureFs, MemoryFs } from "./_helpers/memory-fs.js"
+import { loadMarketingFixtureFs, MemoryFs } from "./_helpers/memory-fs.js"
 
 const fixedClock: ClockPort = {
   now: () => new Date("2026-05-22T15:00:00.000Z"),
@@ -34,12 +34,12 @@ const stubIdentity: IdentityPort = {
 
 // ── Registry ────────────────────────────────────────────────────────
 
-describe("PlaybookRegistry (M7)", () => {
-  it("loads the M0 fixture playbooks with correct typed fields", async () => {
-    const fs = await loadM0FixtureFs()
+describe("PlaybookRegistry", () => {
+  it("loads the marketing fixture playbooks with correct typed fields", async () => {
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const reg = new PlaybookRegistry({ snapshot })
-    // After M8 the marketing preset ships 5 shadow playbooks for the
+    // The marketing preset ships 5 shadow playbooks for the
     // marketing-analyst operator. landing-page-copy is the headliner;
     // the rest (ad-angle, competitor-positioning, cold-email,
     // social-hook) are also shadow with the same default shape.
@@ -62,7 +62,7 @@ describe("PlaybookRegistry (M7)", () => {
   })
 
   it("listBy filters by status, kind, target operator", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const reg = new PlaybookRegistry({ snapshot })
     expect(reg.listBy({ status: "shadow" }).length).toBe(5)
@@ -129,7 +129,7 @@ describe("PlaybookRegistry (M7)", () => {
 
 // ── Resolver ────────────────────────────────────────────────────────
 
-describe("OperatorOverlayResolver (M7)", () => {
+describe("OperatorOverlayResolver", () => {
   it("returns active overlays for an operator unconditionally", async () => {
     const fs = new MemoryFs({
       "KNOWLEDGE.md": fmYaml({
@@ -162,7 +162,7 @@ describe("OperatorOverlayResolver (M7)", () => {
   })
 
   it("sampling is deterministic per conversationId — same id always same arm", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const resolver = new OperatorOverlayResolver(
       new PlaybookRegistry({ snapshot })
@@ -180,12 +180,12 @@ describe("OperatorOverlayResolver (M7)", () => {
   })
 
   it("shadow fires on ~shadowTrafficPct of conversations (independent per playbook)", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const resolver = new OperatorOverlayResolver(
       new PlaybookRegistry({ snapshot })
     )
-    // M0 / M8 ships 5 shadow playbooks for marketing-analyst, each at
+    // The marketing fixture ships 5 shadow playbooks for marketing-analyst, each at
     // 10% — so P(at-least-one-fires) ≈ 1 - (0.9)^5 ≈ 0.41. We measure
     // a single specific playbook's hit rate to assert the 10% target
     // directly (independent of the operator's total playbook count).
@@ -254,7 +254,7 @@ describe("OperatorOverlayResolver (M7)", () => {
 
 // ── Lifecycle ──────────────────────────────────────────────────────
 
-describe("PlaybookLifecycle (M7)", () => {
+describe("PlaybookLifecycle", () => {
   function tinyWorkspace(): MemoryFs {
     return new MemoryFs({
       "KNOWLEDGE.md": fmYaml({

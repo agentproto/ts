@@ -14,7 +14,7 @@ import type {
 } from "../ports/evaluator.port.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { IdentityPort } from "../ports/identity.port.js"
-import { loadM0FixtureFs, MemoryFs } from "./_helpers/memory-fs.js"
+import { loadMarketingFixtureFs, MemoryFs } from "./_helpers/memory-fs.js"
 
 const fixedClock: ClockPort = {
   now: () => new Date("2026-05-22T15:00:00.000Z"),
@@ -62,9 +62,9 @@ const RUBRIC: EvalRubricPort = Object.freeze({
   ]),
 })
 
-describe("PlaybookEvaluator.runBatch (M9)", () => {
+describe("PlaybookEvaluator.runBatch", () => {
   it("computes winRateVsBaseline + records shadowMetrics on the playbook file", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,
@@ -112,7 +112,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
   })
 
   it("readyForActivation respects auto_promote.threshold + minSampleSize", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,
@@ -121,7 +121,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
       evaluator: makeStubEvaluator(),
     })
 
-    // 5 cases (< minSampleSize=30 in M0 fixture) — even if winRate=1,
+    // 5 cases (< minSampleSize=30 in marketing fixture) — even if winRate=1,
     // not ready for activation.
     const cases: EvalCase[] = []
     for (let i = 0; i < 5; i++) {
@@ -137,7 +137,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
   })
 
   it("ties count as non-wins (playbook must strictly beat baseline)", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,
@@ -156,7 +156,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
   })
 
   it("emits playbook.shadow.evaluated event to _log.md", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,
@@ -177,7 +177,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
   })
 
   it("throws PlaybookNotFoundError on a missing slug", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,
@@ -191,7 +191,7 @@ describe("PlaybookEvaluator.runBatch (M9)", () => {
   })
 
   it("empty cases array → winRate=0, sampleSize=0, not ready", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const evaluator = new PlaybookEvaluator({
       fs,
       clock: fixedClock,

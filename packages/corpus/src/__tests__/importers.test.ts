@@ -46,7 +46,7 @@ function freshWorkspace(): MemoryFs {
 
 // ── LocalFilesImporter ──────────────────────────────────────────────
 
-describe("LocalFilesImporter + ImporterRunner (M11)", () => {
+describe("LocalFilesImporter + ImporterRunner", () => {
   it("imports every .md from a configured root, archives + appends candidates", async () => {
     const fs = freshWorkspace()
     await fs.writeFile(
@@ -209,7 +209,7 @@ describe("LocalFilesImporter + ImporterRunner (M11)", () => {
 
 // ── KbMigrationImporter ────────────────────────────────────────────
 
-describe("KbMigrationImporter (M11 / I13)", () => {
+describe("KbMigrationImporter", () => {
   it("yields one ImportedSource per source from the stub provider", async () => {
     const provider = {
       async listSources() {
@@ -337,7 +337,7 @@ describe("KbMigrationImporter (M11 / I13)", () => {
 
 // ── Language filter ────────────────────────────────────────────────
 
-describe("language filter (M11 / I17)", () => {
+describe("language filter", () => {
   it("resolveLanguageFilter expands locale variants", () => {
     const f = resolveLanguageFilter({
       callerLocale: "en-US",

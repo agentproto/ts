@@ -16,7 +16,7 @@ import type { Attestation } from "../types.js"
 
 // ── Attestation chain ────────────────────────────────────────────────
 
-describe("appendAttestation / readAttestations (M10)", () => {
+describe("appendAttestation / readAttestations", () => {
   it("appends to an empty frontmatter (creates metadata.corpus.attestations)", () => {
     const att = makeAttestation({
       kind: "created",
@@ -74,7 +74,7 @@ describe("appendAttestation / readAttestations (M10)", () => {
 
 // ── Access policy ────────────────────────────────────────────────────
 
-describe("evaluateAccess (M10)", () => {
+describe("evaluateAccess", () => {
   const callerSarah = {
     identityTree: [
       "ws://operators/sarah",
@@ -247,7 +247,7 @@ describe("evaluateAccess (M10)", () => {
 
 // ── Capability levels ──────────────────────────────────────────────
 
-describe("evaluateCapability (M10)", () => {
+describe("evaluateCapability", () => {
   const operatorAny = {
     identityTree: [
       "ws://operators/sarah",

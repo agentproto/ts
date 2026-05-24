@@ -1,5 +1,5 @@
 /**
- * M0 — Conformance fixtures.
+ * Conformance fixtures.
  *
  * Validates the marketing reference fixture workspace against the actual
  * AgentProto JSON Schemas (resources/aip-XX/draft/*.schema.json). These
@@ -7,7 +7,7 @@
  * reference implementations partially generated from them.
  *
  * The fixture workspace at `test/fixtures/marketing/` is the frozen
- * reference all later milestones build against.
+ * reference the rest of the test suite builds against.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs"
@@ -90,7 +90,7 @@ function assertValid(validator: ValidateFunction, data: unknown, label: string) 
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
-describe("M0 — marketing fixture workspace conformance", () => {
+describe("marketing fixture workspace conformance", () => {
   describe("AIP-10 KNOWLEDGE (workspace + entries + source)", () => {
     it("workspace manifest validates", () => {
       const fm = readFrontmatter("KNOWLEDGE.md")

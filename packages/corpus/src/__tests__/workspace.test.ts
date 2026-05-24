@@ -17,23 +17,22 @@ import { CorpusEventEmitter } from "../events/emitter.js"
 import { systemClock } from "../ports/clock.port.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { IdentityPort } from "../ports/identity.port.js"
-import { MemoryFs, loadM0FixtureFs } from "./_helpers/memory-fs.js"
+import { MemoryFs, loadMarketingFixtureFs } from "./_helpers/memory-fs.js"
 import { loadAipSchemaBundle } from "./_helpers/schemas.js"
 
 // ── Reader ──────────────────────────────────────────────────────────
 
-describe("CorpusWorkspaceReader (M2)", () => {
-  it("classifies every M0 fixture into the correct bucket", async () => {
-    const fs = await loadM0FixtureFs()
+describe("CorpusWorkspaceReader", () => {
+  it("classifies every fixture into the correct bucket", async () => {
+    const fs = await loadMarketingFixtureFs()
     const reader = new CorpusWorkspaceReader({ fs })
     const snapshot = await reader.read("")
 
     expect(snapshot.workspace).not.toBeNull()
     expect(snapshot.workspace?.frontmatter.name).toBe("marketing-corpus")
-    // Counts grew through M8 when the preset filled out. Keep them
-    // tight enough to fail loudly on accidental fixture additions /
-    // deletions, loose enough that a single-file change to the
-    // marketing preset doesn't break unrelated tests.
+    // Keep counts tight enough to fail loudly on accidental fixture
+    // additions / deletions, loose enough that a single-file change
+    // to the marketing preset doesn't break unrelated tests.
     expect(snapshot.sources.length).toBe(1)
     expect(snapshot.entries.length).toBe(8)
     expect(snapshot.collections.length).toBe(1)
@@ -46,7 +45,7 @@ describe("CorpusWorkspaceReader (M2)", () => {
   })
 
   it("computes a stable versionToken per file (sha256 prefix)", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     for (const f of [
       snapshot.workspace,
@@ -66,13 +65,37 @@ describe("CorpusWorkspaceReader (M2)", () => {
     expect(snapshot.entries.length).toBe(0)
     expect(snapshot.unknown.length).toBe(1)
   })
+
+  // Regression: when `root` is non-empty the reader must return paths
+  // relative to that root. Otherwise downstream call sites that
+  // `joinPath(workspacePath, file.path)` (PlaybookLifecycle.writeWith,
+  // PlaybookEvaluator, CorpusPromoter for re-promotion of an existing
+  // entry) double-prefix the workspace path and the next CAS write
+  // surfaces as `CorpusVersionConflictError: ... <missing>`. Tests with
+  // `root=""` masked this because the join is a no-op there.
+  it("returns workspace-relative paths when root is non-empty", async () => {
+    const fs = new MemoryFs({
+      "corpora/default/KNOWLEDGE.md":
+        "---\nschema: knowledge.workspace/v1\nname: rooted\n---\n",
+      "corpora/default/playbooks/x/PLAYBOOK.md":
+        "---\nschema: playbook/v1\nslug: x\nstatus: shadow\n---\n",
+      "corpora/default/entries/principles/y.md":
+        "---\nschema: knowledge.entry/v1\nslug: y\n---\n",
+    })
+    const snapshot = await new CorpusWorkspaceReader({ fs }).read(
+      "corpora/default"
+    )
+    expect(snapshot.playbooks[0]?.path).toBe("playbooks/x/PLAYBOOK.md")
+    expect(snapshot.entries[0]?.path).toBe("entries/principles/y.md")
+    expect(snapshot.workspace?.path).toBe("KNOWLEDGE.md")
+  })
 })
 
 // ── Validator ───────────────────────────────────────────────────────
 
-describe("CorpusValidator (M2)", () => {
-  it("validates the entire M0 fixture workspace without errors", async () => {
-    const fs = await loadM0FixtureFs()
+describe("CorpusValidator", () => {
+  it("validates the entire marketing fixture workspace without errors", async () => {
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const validator = new CorpusValidator({ bundle: loadAipSchemaBundle() })
     const result = validator.validateWorkspace(snapshot)
@@ -88,7 +111,7 @@ describe("CorpusValidator (M2)", () => {
   })
 
   it("detects an entry with the wrong authority enum (drift)", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const validator = new CorpusValidator({ bundle: loadAipSchemaBundle() })
     // Tamper an entry in memory and validate the file directly.
@@ -116,9 +139,9 @@ describe("CorpusValidator (M2)", () => {
 
 // ── Linter ──────────────────────────────────────────────────────────
 
-describe("CorpusLinter (M2)", () => {
+describe("CorpusLinter", () => {
   it("clean fixtures produce only the expected lints", async () => {
-    const fs = await loadM0FixtureFs()
+    const fs = await loadMarketingFixtureFs()
     const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
     const linter = new CorpusLinter({ clock: systemClock })
     const report = linter.lint(snapshot)
@@ -234,7 +257,7 @@ describe("CorpusLinter (M2)", () => {
 
 // ── Event Emitter ──────────────────────────────────────────────────
 
-describe("CorpusEventEmitter (M2)", () => {
+describe("CorpusEventEmitter", () => {
   const fixedClock: ClockPort = {
     now: () => new Date("2026-05-22T14:30:00.000Z"),
     nowMs: () => Date.parse("2026-05-22T14:30:00.000Z"),
@@ -300,7 +323,7 @@ describe("CorpusEventEmitter (M2)", () => {
 
 // ── Writer ──────────────────────────────────────────────────────────
 
-describe("CorpusWorkspaceWriter (M2)", () => {
+describe("CorpusWorkspaceWriter", () => {
   it("create-only mode (expected=null) refuses if file exists", async () => {
     const fs = new MemoryFs({ "foo.md": "existing" })
     const writer = new CorpusWorkspaceWriter({ fs })

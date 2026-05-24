@@ -84,7 +84,7 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stdout).toMatch(
       /initialized "marketing" preset \(Marketing Expert Corpus\)/
     )
-    // M8 grew the preset from 11 to 34 files. Assert a number ≥ 30
+    // The marketing preset ships 30+ files. Assert a number ≥ 30
     // (loose enough to tolerate small future additions, tight enough
     // to fail if the preset is empty / mis-loaded).
     expect(r.stdout).toMatch(/\d{2,} files written/)
