@@ -56,6 +56,23 @@ agentproto-browser status     # show the registered entry + clone dir
 agentproto-browser remove     # unregister (leaves the clone on disk)
 ```
 
+## Claude Code skill (optional)
+
+The package ships a Claude Code skill at `skill/local-browser/SKILL.md`
+that teaches agents when to drive the browser, which of the 29 tools
+to reach for, and the safety rails to apply. Drop it into your project
+or user skills dir:
+
+```bash
+PKG=$(npm root -g)/@agentproto/plugin-local-browser
+cp -r "$PKG/skill/local-browser" .claude/skills/local-browser
+# or, for cross-project use:
+cp -r "$PKG/skill/local-browser" ~/.claude/skills/local-browser
+```
+
+After that, `/local-browser` (or any conversation that triggers the
+description) loads the guidance into context.
+
 ## Security
 
 Chrome's remote debugging protocol has no authentication — anything
