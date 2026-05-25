@@ -10,7 +10,7 @@
 /**
  * Discriminated by 'kind'. One of: tool, static, file, query.
  */
-export type DataSource = DataSourceTool | DataSourceStatic | DataSourceFile | DataSourceQuery
+export type Source = SourceTool | SourceStatic | SourceFile | SourceQuery
 
 /**
  * Validates the YAML frontmatter portion of an AIP-5 *.canvakit.* template.
@@ -57,7 +57,7 @@ export interface CanvakitDefinition {
    */
   refreshEvery?: ("manual" | "on-tool-change") | string
   /**
-   * Caller inputs with author defaults. Substituted into dataSources params before resolution.
+   * Caller inputs with author defaults. Substituted into sources params before resolution.
    */
   variables?: {
     [k: string]: Variable
@@ -65,8 +65,8 @@ export interface CanvakitDefinition {
   /**
    * Named data sources resolved in parallel and merged into the render context.
    */
-  dataSources?: {
-    [k: string]: DataSource
+  sources?: {
+    [k: string]: Source
   }
   /**
    * Nested canvases. Each renders in isolation; output exposed under {{{imports.<name>}}}.
@@ -88,7 +88,7 @@ export interface Variable {
   default?: unknown
   description?: string
 }
-export interface DataSourceTool {
+export interface SourceTool {
   kind: "tool"
   /**
    * Tool identifier. Flat ('searchFlights'), namespaced ('stripe.mrr'), or MCP-qualified ('mcp://server/tool'). Resolution: exact > longest wildcard > MCP.
@@ -107,7 +107,7 @@ export interface DataSourceTool {
     [k: string]: unknown
   }
 }
-export interface DataSourceStatic {
+export interface SourceStatic {
   kind: "static"
   /**
    * Literal pass-through. Never fetched, never parsed.
@@ -116,14 +116,14 @@ export interface DataSourceStatic {
     [k: string]: unknown
   }
 }
-export interface DataSourceFile {
+export interface SourceFile {
   kind: "file"
   /**
    * Filesystem path relative to the render filesystem. Parsed by extension per the format contract.
    */
   path: string
 }
-export interface DataSourceQuery {
+export interface SourceQuery {
   kind: "query"
   /**
    * Glob or array of globs. Bare directory paths are rewritten to <path>/** /*.md.

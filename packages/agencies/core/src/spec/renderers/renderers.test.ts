@@ -50,8 +50,8 @@ describe("agencies canvakit templates — bundled HTML files", () => {
     expect(t.frontmatter.template).toBe(true)
     expect(t.frontmatter.name).toBe(ENGAGEMENT_DASHBOARD_TEMPLATE_ID)
     expect(t.frontmatter.refreshEvery).toBe("30s")
-    expect(t.frontmatter.dataSources).toBeDefined()
-    const ds = t.frontmatter.dataSources as {
+    expect(t.frontmatter.sources).toBeDefined()
+    const ds = t.frontmatter.sources as {
       engagement: { kind: string }
       deliverables: { kind: string }
       invoices: { kind: string }
@@ -68,7 +68,7 @@ describe("agencies canvakit templates — bundled HTML files", () => {
     const t = await loadTemplate(INVOICE_PDF_TEMPLATE_PATH)
     expect(t.frontmatter.template).toBe(true)
     expect(t.frontmatter.name).toBe(INVOICE_PDF_TEMPLATE_ID)
-    expect(t.frontmatter.dataSources).toEqual({})
+    expect(t.frontmatter.sources).toEqual({})
     expect(t.body).toContain("Invoice")
     expect(t.body).toContain("@page")
   })
@@ -78,7 +78,7 @@ describe("agencies canvakit templates — bundled HTML files", () => {
     expect(t.frontmatter.template).toBe(true)
     expect(t.frontmatter.name).toBe(AGENCY_OVERVIEW_TEMPLATE_ID)
     expect(t.frontmatter.refreshEvery).toBe("5m")
-    const ds = t.frontmatter.dataSources as {
+    const ds = t.frontmatter.sources as {
       snapshot: { kind: string; path: string }
     }
     expect(ds.snapshot.kind).toBe("file")

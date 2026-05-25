@@ -66,11 +66,11 @@
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/variable" },
       "default": {},
-      "description": "Caller inputs with author defaults. Substituted into dataSources params before resolution."
+      "description": "Caller inputs with author defaults. Substituted into sources params before resolution."
     },
-    "dataSources": {
+    "sources": {
       "type": "object",
-      "additionalProperties": { "$ref": "#/$defs/dataSource" },
+      "additionalProperties": { "$ref": "#/$defs/source" },
       "default": {},
       "description": "Named data sources resolved in parallel and merged into the render context."
     },
@@ -103,16 +103,16 @@
         "description": { "type": "string" }
       }
     },
-    "dataSource": {
+    "source": {
       "oneOf": [
-        { "$ref": "#/$defs/dataSourceTool" },
-        { "$ref": "#/$defs/dataSourceStatic" },
-        { "$ref": "#/$defs/dataSourceFile" },
-        { "$ref": "#/$defs/dataSourceQuery" }
+        { "$ref": "#/$defs/sourceTool" },
+        { "$ref": "#/$defs/sourceStatic" },
+        { "$ref": "#/$defs/sourceFile" },
+        { "$ref": "#/$defs/sourceQuery" }
       ],
       "description": "Discriminated by 'kind'. One of: tool, static, file, query."
     },
-    "dataSourceTool": {
+    "sourceTool": {
       "type": "object",
       "required": ["kind", "ref"],
       "additionalProperties": false,
@@ -136,7 +136,7 @@
         }
       }
     },
-    "dataSourceStatic": {
+    "sourceStatic": {
       "type": "object",
       "required": ["kind", "value"],
       "additionalProperties": false,
@@ -147,7 +147,7 @@
         }
       }
     },
-    "dataSourceFile": {
+    "sourceFile": {
       "type": "object",
       "required": ["kind", "path"],
       "additionalProperties": false,
@@ -160,7 +160,7 @@
         }
       }
     },
-    "dataSourceQuery": {
+    "sourceQuery": {
       "type": "object",
       "required": ["kind", "include"],
       "additionalProperties": false,
