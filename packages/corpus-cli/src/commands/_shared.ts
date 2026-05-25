@@ -19,9 +19,13 @@ const __dirname = path.dirname(__filename)
  */
 function findSpecsRoot(): string {
   const candidates = [
-    // source-tree: packages/corpus-cli/src/commands → up to projects/agentproto/agentproto/specs/resources
+    // source-tree (vendored): packages/corpus-cli/src/commands → ts repo's own specs/resources
+    path.resolve(__dirname, "../../../../specs/resources"),
+    // dist-tree (vendored): packages/corpus-cli/dist → ts repo's own specs/resources
+    path.resolve(__dirname, "../../../specs/resources"),
+    // source-tree (sibling agentproto repo): up to projects/agentproto/agentproto/specs/resources
     path.resolve(__dirname, "../../../../../agentproto/specs/resources"),
-    // dist-tree: packages/corpus-cli/dist → up to projects/agentproto/agentproto/specs/resources
+    // dist-tree (sibling agentproto repo): up to projects/agentproto/agentproto/specs/resources
     path.resolve(__dirname, "../../../../agentproto/specs/resources"),
     // global install: share/agentproto-specs/resources next to the bin
     path.resolve(__dirname, "../share/agentproto-specs/resources"),
