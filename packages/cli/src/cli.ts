@@ -97,7 +97,7 @@ async function main(argv: readonly string[]): Promise<number> {
 
   if (verbIdx === -1) {
     if (argv.includes("--version") || argv.includes("-v")) {
-      process.stdout.write("agentproto 0.1.0-alpha\n")
+      process.stdout.write(`agentproto ${__CLI_VERSION__}\n`)
       return 0
     }
     if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) {

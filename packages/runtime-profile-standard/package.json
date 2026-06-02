@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/runtime-profile-standard",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/runtime-profile-standard — reference file-mode MultiAgentRuntime profile. Drops a Claude Code reviewer sub-agent, session-start + user-prompt-submit hooks, an `/ap-swarm` slash command, and an example local swarm manifest into a repo so `agentproto run-swarm` works out of the box. Installed via `agentproto install runtime-profile/standard`.",
   "keywords": [
     "agentproto",

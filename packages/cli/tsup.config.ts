@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const { version } = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8")
+)
+
 export default createTsupConfig({
+  define: { __CLI_VERSION__: JSON.stringify(version) },
   banner: `/**
- * @agentproto/cli v0.1.0-alpha
+ * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.
  */`,
   entry: {

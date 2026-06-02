@@ -494,7 +494,7 @@ async function runOneTunnel(
 ): Promise<void> {
   if (!opts.connect) throw new Error("runOneTunnel: --connect not set")
   const headers: Record<string, string> = {
-    "user-agent": "agentproto/0.1.0-alpha",
+    "user-agent": `agentproto/${__CLI_VERSION__}`,
   }
   if (opts.token) headers.authorization = `Bearer ${opts.token}`
 

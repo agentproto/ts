@@ -57,11 +57,17 @@ if [ -z "${NPM_TOKEN:-}" ]; then
   done
 fi
 
-# Packages to publish, in dependency order.
+# Packages to publish, in dependency order. The cli's workspace:* deps
+# (define-doctype, acp, driver-agent-cli, runtime-profile-standard) are
+# resolved to exact versions at pack time, so each must already be on
+# the registry before the cli packs — hence they publish first.
 PACKAGES=(
+  "@agentproto/define-doctype|define-doctype"
+  "@agentproto/acp|acp"
+  "@agentproto/driver-agent-cli|driver-agent-cli"
   "@agentproto/runtime-profile-standard|runtime-profile-standard"
-  "@agentproto/plugin-local-browser|plugin-local-browser"
   "@agentproto/cli|cli"
+  "@agentproto/plugin-local-browser|plugin-local-browser"
 )
 
 prompt_otp() {
