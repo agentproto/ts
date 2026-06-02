@@ -19,6 +19,7 @@
   "exports": {
     "./typescript/base.json": "./typescript/base.json",
     "./typescript/bundler.json": "./typescript/bundler.json",
+    "./typescript/node-library.json": "./typescript/node-library.json",
     "./tsup/base": "./tsup/base.js",
     "./package.json": "./package.json"
   },
