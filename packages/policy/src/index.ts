@@ -14,4 +14,6 @@ export const SPEC_NAME = "agentpolicy/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { definePolicy } from "./define-policy.js"
+export { policyFrontmatterSchema } from "./schema.js"
+export type { PolicyFrontmatter } from "./schema.js"
 export type { PolicyDefinition, PolicyHandle } from "./types.js"

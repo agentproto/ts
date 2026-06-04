@@ -70,6 +70,7 @@ export type {
 export { ImporterRunner } from "./importers/runner.js"
 export { LocalFilesImporter } from "./importers/local-files.js"
 export { KbMigrationImporter } from "./importers/kb-migration.js"
+export { WebImporter } from "./importers/web.js"
 export type {
   CorpusImporter,
   ImporterTarget,
@@ -78,6 +79,41 @@ export type {
   ImporterRunnerOptions,
 } from "./importers/types.js"
 export type { LocalFilesImporterOptions } from "./importers/local-files.js"
+export type { WebImporterOptions } from "./importers/web.js"
+
+// Distill — raw source → refined entries (KNOWLEDGE layer)
+export { DistillRunner } from "./distill/runner.js"
+export type {
+  DistillRunnerOptions,
+  DistillSource,
+  DistillRunReport,
+} from "./distill/runner.js"
+export type {
+  DistillPort,
+  DistillInput,
+  DistilledItem,
+  RefinedKind,
+} from "./distill/types.js"
+export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
+
+// Knowledge resolver — the `knowledge:` binding (KNOWLEDGE → SKILL link)
+export { resolveKnowledge } from "./knowledge/resolve.js"
+export type {
+  KnowledgeQuery,
+  ResolvedEntry,
+  ResolveKnowledgeOptions,
+} from "./knowledge/resolve.js"
+
+// Overlay — guild edits shadow read-only packs (the customization engine)
+export { OverlayFs, ReadOnlyFs } from "./knowledge/overlay-fs.js"
+
+// In-memory FsPort — backs build-time-inlined knowledge packs (no runtime fs)
+export { MemFs } from "./knowledge/mem-fs.js"
+
+// Sink — agnostic outbound (corpus → external store via a config/MCP sink)
+export { SyncRunner } from "./sink/runner.js"
+export type { SyncRunnerOptions, SyncReport } from "./sink/runner.js"
+export type { SinkPort, SinkItem, SinkPushResult } from "./sink/types.js"
 export type {
   KbMigrationConfig,
   KbListLike,
@@ -115,6 +151,11 @@ export type {
 } from "./ports/fs.port.js"
 export type { ClockPort } from "./ports/clock.port.js"
 export type { IdentityPort, CallerIdentity } from "./ports/identity.port.js"
+export type {
+  FetcherPort,
+  FetchedSource,
+  FetchedSourceKind,
+} from "./ports/fetcher.port.js"
 export { systemClock } from "./ports/clock.port.js"
 
 // Workspace

@@ -100,7 +100,7 @@ describe("mergeRoles (AIP-47)", () => {
       const ancestorChain: RoleHandle = {
         ...parent,
         extends: "../grandparent/ROLE.md",
-      } as RoleHandle
+      }
       const { role } = mergeRoles(ancestorChain, { name: "child" })
       expect(role.extends).toBeUndefined()
     })
@@ -109,7 +109,7 @@ describe("mergeRoles (AIP-47)", () => {
       const ancestorWithApply: RoleHandle = {
         ...parent,
         appliesTo: ["ws://operators/sarah"],
-      } as RoleHandle
+      }
       const { role } = mergeRoles(ancestorWithApply, { name: "child" })
       expect(role.appliesTo).toBeUndefined()
     })
@@ -127,7 +127,7 @@ describe("mergeRoles (AIP-47)", () => {
       const withPolicy: RoleHandle = {
         ...parent,
         defaultPolicy: "ws://policies/seo-baseline",
-      } as RoleHandle
+      }
       const { role } = mergeRoles(withPolicy, {
         defaultPolicy: "ws://policies/brand-aligned",
       })
@@ -143,6 +143,37 @@ describe("mergeRoles (AIP-47)", () => {
       expect(role.metadata).toEqual({
         guilde: { visibility: "org", organizationId: "org_x" },
       })
+    })
+  })
+
+  describe("knowledge.packs (append-and-dedupe across lineage)", () => {
+    const withPacks: RoleHandle = {
+      ...parent,
+      knowledge: { packs: ["seo-specialist", "rgpd"] },
+    }
+
+    it("unions child packs onto the inherited floor, deduped", () => {
+      const { role } = mergeRoles(withPacks, {
+        knowledge: { packs: ["rgpd", "geo"] },
+      })
+      expect(role.knowledge?.packs).toEqual(["seo-specialist", "rgpd", "geo"])
+    })
+
+    it("inherits the parent's packs when the child declares none", () => {
+      const { role } = mergeRoles(withPacks, {})
+      expect(role.knowledge?.packs).toEqual(["seo-specialist", "rgpd"])
+    })
+
+    it("introduces a knowledge block from the child when the parent has none", () => {
+      const { role } = mergeRoles(parent, {
+        knowledge: { packs: ["elon-tweets"] },
+      })
+      expect(role.knowledge?.packs).toEqual(["elon-tweets"])
+    })
+
+    it("emits no knowledge block when neither layer declares one", () => {
+      const { role } = mergeRoles(parent, {})
+      expect(role.knowledge).toBeUndefined()
     })
   })
 })

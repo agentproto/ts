@@ -169,6 +169,20 @@
       "minLength": 1,
       "description": "AIP-38 POLICY ref recommended for operators adopting this role. ADVISORY ONLY — role declares intent, policy decides effect. The runtime MUST NOT apply defaultPolicy to an operator without the operator's own 'policy:' field or a governance signature attesting the binding. See AIP-47 §Role vs Policy vs Governance."
     },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "default": [],
+          "description": "AIP-10 knowledge-pack refs this role mounts as its generic corpus floor. The host resolves each ref to a pack and mounts it read-only UNDER the operator's own editable corpus (the host overlays them). Append-and-dedupe across 'extends'. Absent = the host's convention (e.g. a pack named after the role slug). Operator-level packs layer ABOVE these."
+        }
+      },
+      "description": "Generic knowledge this role consults — AIP-10 corpus packs mounted read-only as a floor beneath the operator's own corpus. Distinct from 'skills' (what the role knows how to DO): knowledge is what it CONSULTS. The host unions these with any operator-level packs."
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },

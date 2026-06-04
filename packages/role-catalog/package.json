@@ -50,6 +50,7 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
+    "@agentproto/policy": "workspace:*",
     "@agentproto/role": "workspace:*"
   },
   "devDependencies": {

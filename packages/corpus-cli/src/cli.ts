@@ -19,6 +19,10 @@ import { runInit } from "./commands/init.js"
 import { runValidate } from "./commands/validate.js"
 import { runLint } from "./commands/lint.js"
 import { runEventsEmit, runEventsTail } from "./commands/events.js"
+import { runImportWeb } from "./commands/import-web.js"
+import { runDistill } from "./commands/distill.js"
+import { runKnowledge } from "./commands/knowledge.js"
+import { runSync } from "./commands/sync.js"
 import { VERSION } from "./version.js"
 
 export type ExitCode = 0 | 1 | 2
@@ -32,6 +36,21 @@ Commands:
   events:emit <kind> --payload <json> [path]
                                          Append an event to _log.md
   events:tail [path]                     Print _log.md
+  import-web [path] --urls-file <f> [--max n --throttle ms --tags t --lang l --force --diarize]
+                                         Import URLs as sources (video→Whisper, article→
+                                         readability). Resumable: skips already-ingested
+                                         URLs, so re-run with --max N to batch through.
+                                         --diarize: AssemblyAI speaker labels (interviews).
+  distill [path] [--source id --max n --throttle ms --model m]
+                                         Distill raw sources → refined entries
+                                         (principle/pattern/…) with sources:[id] provenance.
+                                         Resumable: skips already-distilled sources.
+  knowledge [path] --tags a,b [--kind k --access scope --max n]
+                                         Preview what a skill's knowledge: binding resolves to
+                                         — refined entries + their provenance (filesystem).
+  sync [path] --config <sink.json> [--tags a,b --kind k --throttle ms]
+                                         Push refined entries to an external store via a
+                                         config-driven MCP sink (host-agnostic).
   -h, --help                             Show this help
   -v, --version                          Show version
 
@@ -64,6 +83,14 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runEventsEmit(rest)
     case "events:tail":
       return await runEventsTail(rest)
+    case "import-web":
+      return await runImportWeb(rest)
+    case "distill":
+      return await runDistill(rest)
+    case "knowledge":
+      return await runKnowledge(rest)
+    case "sync":
+      return await runSync(rest)
     default:
       process.stderr.write(`corpus: unknown command "${cmd}". Try --help.\n`)
       return 2

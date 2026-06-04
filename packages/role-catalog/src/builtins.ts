@@ -32,10 +32,26 @@ interface RoleSeed {
   readonly mission: string
   readonly responsibilities: readonly string[]
   readonly capabilities?: readonly string[]
+  readonly skills?: readonly string[]
+  readonly tools?: readonly string[]
+  readonly kpis?: readonly string[]
   readonly strengths?: readonly string[]
   readonly antiPatterns?: readonly string[]
   readonly reportsTo?: string
   readonly tags?: readonly string[]
+  /** AIP-25 PERSONA ref recommended for operators in this role (advisory). */
+  readonly defaultPersona?: string
+  /** AIP-23 IDENTITY ref recommended for operators in this role (advisory). */
+  readonly defaultIdentity?: string
+  /** AIP-38 POLICY ref recommended for operators in this role (advisory). */
+  readonly defaultPolicy?: string
+  /**
+   * AIP-10 knowledge-pack refs this role mounts as its generic corpus floor
+   * (kb-persona). Absent = the host's slug convention (a pack named after the
+   * role). Shared modules (e.g. `rgpd`) go here so several roles reuse one
+   * authoritative corpus instead of each duplicating it.
+   */
+  readonly knowledgePacks?: readonly string[]
   readonly body: string
 }
 
@@ -51,10 +67,19 @@ function seedToEntry(seed: RoleSeed): BuiltinRoleEntry {
     mission: seed.mission,
     responsibilities: [...seed.responsibilities] as [string, ...string[]],
     capabilities: seed.capabilities ? [...seed.capabilities] : undefined,
+    skills: seed.skills ? [...seed.skills] : undefined,
+    tools: seed.tools ? [...seed.tools] : undefined,
+    kpis: seed.kpis ? [...seed.kpis] : undefined,
     strengths: seed.strengths ? [...seed.strengths] : undefined,
     antiPatterns: seed.antiPatterns ? [...seed.antiPatterns] : undefined,
     reports_to: seed.reportsTo,
     tags: seed.tags ? [...seed.tags] : undefined,
+    defaultPersona: seed.defaultPersona,
+    defaultIdentity: seed.defaultIdentity,
+    defaultPolicy: seed.defaultPolicy,
+    knowledge: seed.knowledgePacks
+      ? { packs: [...seed.knowledgePacks] }
+      : undefined,
   }
   return { slug: seed.name, handle, body: seed.body }
 }
@@ -703,6 +728,115 @@ The role's leverage is recurring-pattern reports, not ticket throughput.
 `,
 }
 
+/* ─── people ───────────────────────────────────────────────────── */
+
+const talentAcquisitionSpecialist: RoleSeed = {
+  name: "talent-acquisition-specialist",
+  title: "Talent Acquisition Specialist",
+  description:
+    "Runs the end-to-end hiring funnel on behalf of a hiring manager — from role intake through onboarding — producing the artifacts a manager needs to decide. The hire decision itself stays with the hiring manager.",
+  department: "people",
+  seniority: "senior",
+  reportsTo: "ws://roles/general-manager",
+  mission:
+    "Move open roles to confident hires. Frame the need, fill the funnel with qualified candidates, and hand the hiring manager structured, bias-aware evidence to decide on — never deciding for them.",
+  responsibilities: [
+    "Frame the hiring need with the hiring manager and draft the job spec and offer copy",
+    "Source and approach candidates across channels using Boolean / X-ray queries",
+    "Screen CVs and run structured phone pre-screens against agreed criteria",
+    "Build interview scorecards and synthesise candidate evaluations and debriefs",
+    "Prepare reference checks, offer packages, and candidate-closing plans",
+    "Plan onboarding and run candidate-pipeline communications end to end",
+    "Track recruitment KPIs (time-to-hire, cost-per-hire, funnel conversion)",
+  ],
+  capabilities: [
+    "Hiring-need framing and inclusive job-spec writing",
+    "Boolean / X-ray sourcing across LinkedIn and job boards",
+    "Structured screening and STAR-based interview design",
+    "Candidate evaluation and comparative scorecards",
+    "Offer construction and salary-negotiation support",
+    "Recruitment-funnel analytics",
+  ],
+  skills: [
+    "analyze-role-need",
+    "write-job-description",
+    "write-job-ad",
+    "audit-inclusive-job-ad",
+    "build-sourcing-query",
+    "source-candidates",
+    "write-outreach-message",
+    "screen-cv",
+    "run-phone-screen",
+    "build-interview-scorecard",
+    "evaluate-candidate",
+    "compare-candidates",
+    "write-interview-debrief",
+    "check-references",
+    "draft-offer-letter",
+    "plan-candidate-closing",
+    "plan-onboarding",
+    "write-pipeline-reply",
+    "compute-recruiting-kpis",
+  ],
+  tools: [
+    "web-search",
+    "linkedin",
+    "job-boards",
+    "ats",
+    "email",
+    "calendar",
+    "document-generation",
+  ],
+  kpis: [
+    "time-to-hire",
+    "cost-per-hire",
+    "offer-acceptance-rate",
+    "funnel-conversion-rate",
+    "quality-of-hire",
+  ],
+  strengths: [
+    "Reads a job description like a recruiter — separates must-have from nice-to-have",
+    "Writes outreach passive candidates actually reply to",
+    "Holds a structured, bias-aware evaluation bar across a shortlist",
+  ],
+  antiPatterns: [
+    "Making the final hire decision — that stays with the hiring manager",
+    "Collecting sensitive personal data or applying discriminatory criteria",
+    "Accessing payroll or finance beyond the open role's salary range",
+  ],
+  tags: ["people", "recruiting", "talent-acquisition", "sourcing", "hiring"],
+  defaultPolicy: "@builtin/talent-acquisition-baseline",
+  body: `## Background
+
+A Talent Acquisition Specialist is an assistant to the hiring manager, not
+a decision-maker. The role's leverage is funnel throughput and evaluation
+quality — turning a vague need into a crisp spec, a spec into a qualified
+shortlist, and a shortlist into evidence a manager can decide on fast.
+
+## Working principles
+
+- The hiring manager decides. The role produces fiches de poste, scorecards,
+  debriefs, and comparisons — it never extends or rejects an offer on its own.
+- Every job ad gets an inclusive-language pass before it goes out.
+- Screen and interview against written criteria agreed up front, not vibes.
+- Use the STAR method for behavioural questions; capture answers structurally.
+- Source the claim before stating it — a ranking, a salary band, a candidate
+  fit score is backed by data, not asserted.
+
+## When to escalate
+
+- Any request to capture sensitive personal data or use criteria that touch a
+  protected characteristic — stop and escalate (GDPR / anti-bias).
+- Compensation or finance questions beyond the open role's published range.
+- A hiring-manager instruction that conflicts with these working principles.
+
+## Anti-patterns
+
+- Acting as the decision-maker on a hire, an offer, or a rejection.
+- Storing CVs or notes containing sensitive data outside the agreed pipeline.
+`,
+}
+
 /* ─── finance ──────────────────────────────────────────────────── */
 
 const financialManager: RoleSeed = {
@@ -934,6 +1068,8 @@ const SEEDS: readonly RoleSeed[] = [
   // sales / customer
   salesRep,
   supportAgent,
+  // people
+  talentAcquisitionSpecialist,
   // finance
   chiefFinancialOfficer,
   financialManager,

@@ -217,6 +217,17 @@ export function mergeRoles(parent: RoleHandle, child: RoleChildInput): MergeResu
     lists.responsibilities = [...parent.responsibilities]
   }
 
+  // knowledge.packs — append-and-dedupe across lineage (nested, so not a
+  // LIST_FIELD; child packs append onto the inherited floor). Only emit a
+  // `knowledge` block when some layer declared one, so packless roles stay
+  // clean (and the host's slug convention still applies).
+  const mergedPacks = [
+    ...(parent.knowledge?.packs ?? []),
+    ...(child.knowledge?.packs ?? []),
+  ].filter((p, i, a) => a.indexOf(p) === i)
+  const knowledge =
+    parent.knowledge || child.knowledge ? { packs: mergedPacks } : undefined
+
   const merged: RoleDefinition = {
     // Doctype identity — child wins if set.
     schema: "role/v1",
@@ -240,6 +251,9 @@ export function mergeRoles(parent: RoleHandle, child: RoleChildInput): MergeResu
     defaultPersona: pick("defaultPersona") as string | undefined,
     defaultIdentity: pick("defaultIdentity") as string | undefined,
     defaultPolicy: pick("defaultPolicy") as string | undefined,
+
+    // Nested knowledge binding — append-and-dedupe union (computed above).
+    ...(knowledge ? { knowledge } : {}),
 
     // Local-only fields — child's value carries; parent's is dropped.
     extends: child.extends,

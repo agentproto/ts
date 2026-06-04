@@ -15,14 +15,14 @@ import {
 } from "../index.js"
 
 describe("@agentproto/role-catalog builtins", () => {
-  it("ships twenty builtin roles covering the recommended departments", () => {
-    expect(BUILTIN_ROLE_ENTRIES).toHaveLength(20)
-    expect(BUILTIN_ROLE_SLUGS).toHaveLength(20)
+  it("ships twenty-one builtin roles covering the recommended departments", () => {
+    expect(BUILTIN_ROLE_ENTRIES).toHaveLength(21)
+    expect(BUILTIN_ROLE_SLUGS).toHaveLength(21)
   })
 
   it("every builtin validates against defineRole", () => {
     for (const entry of BUILTIN_ROLE_ENTRIES) {
-      expect(() => defineRole(entry.handle as RoleHandle)).not.toThrow()
+      expect(() => defineRole(entry.handle)).not.toThrow()
     }
   })
 
@@ -140,7 +140,7 @@ describe("registerBuiltinRoles + replace + unregister", () => {
     seniority: "mid",
     mission: "Demonstrate that downstream apps can extend the builtin catalogue.",
     responsibilities: ["Exist for the duration of the test", "Be cleaned up"],
-  } as RoleHandle
+  }
 
   it("registers a downstream entry, resolves through the singleton, then unregisters", async () => {
     expect(builtinRoleSource().has(TEST_SLUG)).toBe(false)

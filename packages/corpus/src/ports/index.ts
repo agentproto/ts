@@ -11,6 +11,11 @@ export type { FsPort, FsStat, FsLockHandle } from "./fs.port.js"
 export type { ClockPort } from "./clock.port.js"
 export { systemClock } from "./clock.port.js"
 export type { IdentityPort, CallerIdentity } from "./identity.port.js"
+export type {
+  FetcherPort,
+  FetchedSource,
+  FetchedSourceKind,
+} from "./fetcher.port.js"
 
 export type {
   EvaluatorPort,

@@ -43,6 +43,11 @@ export {
   LEGACY_GUILDE_ROLE_MAP,
 } from "./builtins.js"
 
+export {
+  BUILTIN_POLICY_HANDLES,
+  talentAcquisitionBaselinePolicy,
+} from "./policies.js"
+
 /**
  * Process-wide singleton — the canonical builtin registry for this
  * runtime. Bootstrapped lazily on first access with

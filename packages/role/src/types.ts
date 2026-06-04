@@ -110,6 +110,23 @@ export interface RoleDefinition {
    */
   defaultPolicy?: string
   /**
+   * Generic knowledge this role consults — AIP-10 corpus packs mounted
+   * read-only as a floor beneath the operator's own corpus. Distinct from
+   * 'skills' (what the role knows how to DO): knowledge is what it CONSULTS.
+   * The host unions these with any operator-level packs.
+   */
+  knowledge?: {
+    /**
+     * AIP-10 knowledge-pack refs this role mounts as its generic corpus
+     * floor. The host resolves each ref to a pack and mounts it read-only
+     * UNDER the operator's own editable corpus (the host overlays them).
+     * Append-and-dedupe across 'extends'. Absent = the host's convention
+     * (e.g. a pack named after the role slug). Operator-level packs layer
+     * ABOVE these.
+     */
+    packs?: string[]
+  }
+  /**
    * Catalog tags. Lowercase kebab-case. Append-and-dedupe across 'extends'.
    */
   tags?: string[]
