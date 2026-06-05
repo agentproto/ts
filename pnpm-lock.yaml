@@ -1128,6 +1128,34 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
 
+  packages/image-stylize:
+    dependencies:
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
   packages/intent:
     dependencies:
       '@agentproto/define-doctype':
@@ -1576,6 +1604,9 @@ importers:
 
   packages/role-catalog:
     dependencies:
+      '@agentproto/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@agentproto/role':
         specifier: workspace:*
         version: link:../role

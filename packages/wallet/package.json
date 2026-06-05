@@ -1,0 +1,72 @@
+{
+  "name": "@agentproto/wallet",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/wallet — AIP-49 principal-owned multi-asset wallet primitive. Assets declared ERC-20-style (ref/symbol/decimals/standard/peg/ruleSet) ⊃ partitions (ERC-1410 tranches) ⊃ lots. Event-sourced journal, restriction lattice (no-arbitrage convert), coalescing spend, allowance delegation. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
+  "keywords": [
+    "agentproto",
+    "wallet",
+    "aip-49",
+    "erc-20",
+    "erc-1400",
+    "ledger",
+    "event-sourcing",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/wallet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/wallet"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./ports": {
+      "types": "./dist/ports/index.d.ts",
+      "import": "./dist/ports/index.mjs",
+      "default": "./dist/ports/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@agentproto/define-doctype": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
