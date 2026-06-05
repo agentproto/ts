@@ -32,6 +32,7 @@ export {
   minorUnitScale,
 } from "./asset.js"
 export { defineAsset } from "./define-asset.js"
+export { AssetRegistry } from "./registry.js"
 export { assetDeclarationSchema, type AssetDeclarationInput } from "./schema.js"
 
 // Partition — ERC-1410 tranche within an asset
