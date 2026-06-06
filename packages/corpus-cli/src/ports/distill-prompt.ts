@@ -36,7 +36,7 @@ Guidance:
   "critique": a common mistake / anti-pattern. "summary": a compact overview.
   "example": a concrete worked instance worth remembering.
 - Drop filler, calls-to-action, tangents. Keep only what an operator could ACT on later.
-- Write body in the source's own language.
+- Write every title and body in ENGLISH, even when the source is in another language. Translate the insight; do not copy the source language.
 
 SOURCE TITLE: ${input.title}
 ${input.tags?.length ? `TAGS: ${input.tags.join(", ")}\n` : ""}SOURCE BODY:
