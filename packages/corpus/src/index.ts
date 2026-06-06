@@ -7,6 +7,16 @@
 export const SPEC_NAME = "agentcorpus/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
 
+// Shared slug + language utilities (single source of truth)
+export {
+  slugify,
+  uniqueSlug,
+  isSourceSlug,
+  isEntrySlug,
+  type SlugifyOptions,
+} from "./util/slug.js"
+export { normalizeLanguageTag } from "./util/language.js"
+
 // Types
 export type {
   FileKind,
@@ -297,3 +307,4 @@ export type {
   PlaybookBatchResult,
   PlaybookEvaluatorOptions,
 } from "./playbooks/evaluator.js"
+

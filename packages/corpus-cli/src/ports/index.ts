@@ -18,6 +18,9 @@ export type {
   BrowserMcpFetcherOptions,
 } from "./browser-fetcher.adapter.js"
 
+export { ScrapeMcpFetcher } from "./scrape-mcp-fetcher.adapter.js"
+export type { ScrapeMcpFetcherOptions } from "./scrape-mcp-fetcher.adapter.js"
+
 export { YtDlpWhisperFetcher } from "./ytdlp-whisper-fetcher.adapter.js"
 export type {
   YtDlpWhisperFetcherOptions,
@@ -30,6 +33,9 @@ export type { SttPort, Transcript, OpenAiWhisperSttOptions } from "./stt.port.js
 
 export { AssemblyAiStt } from "./assemblyai-stt.adapter.js"
 export type { AssemblyAiSttOptions } from "./assemblyai-stt.adapter.js"
+
+export { ChunkedStt } from "./chunked-stt.adapter.js"
+export type { ChunkedSttOptions, AudioSplitter } from "./chunked-stt.adapter.js"
 
 export { CompositeFetcher } from "./composite-fetcher.js"
 

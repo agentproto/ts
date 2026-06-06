@@ -52,9 +52,11 @@ import {
   BrowserMcpFetcher,
   type BrowserMcpLike,
 } from "../ports/browser-fetcher.adapter.js"
+import { ScrapeMcpFetcher } from "../ports/scrape-mcp-fetcher.adapter.js"
 import { YtDlpWhisperFetcher } from "../ports/ytdlp-whisper-fetcher.adapter.js"
 import { OpenAiWhisperStt, type SttPort } from "../ports/stt.port.js"
 import { AssemblyAiStt } from "../ports/assemblyai-stt.adapter.js"
+import { ChunkedStt } from "../ports/chunked-stt.adapter.js"
 import { HttpReadabilityFetcher } from "../ports/http-readability-fetcher.adapter.js"
 import { CompositeFetcher } from "../ports/composite-fetcher.js"
 import { ThrottleFetcher } from "../ports/throttle-fetcher.adapter.js"
@@ -70,10 +72,14 @@ interface ParsedArgs {
   tags: string[]
   lang: string | undefined
   max: number | undefined
+  maxDurationSec: number | undefined
+  cookiesFromBrowser: string | undefined
+  cookiesFile: string | undefined
   throttleMs: number
   force: boolean
   diarize: boolean
   browserMcp: string | undefined
+  scrapeMcp: string | undefined
   importerId: string
   dryRun: boolean
 }
@@ -86,10 +92,14 @@ function parse(args: readonly string[]): ParsedArgs {
     tags: [],
     lang: undefined,
     max: undefined,
+    maxDurationSec: undefined,
+    cookiesFromBrowser: undefined,
+    cookiesFile: undefined,
     throttleMs: 2000,
     force: false,
     diarize: false,
     browserMcp: process.env.BROWSER_MCP_URL,
+    scrapeMcp: process.env.SCRAPE_MCP_URL,
     importerId: "web",
     dryRun: false,
   }
@@ -102,10 +112,14 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--tags": { const v = next(); if (v) out.tags.push(...v.split(",").map(s => s.trim()).filter(Boolean)); break }
       case "--lang": out.lang = next(); break
       case "--max": { const v = next(); if (v) out.max = Number(v); break }
+      case "--max-duration": { const v = next(); if (v) out.maxDurationSec = Number(v); break }
+      case "--cookies-from-browser": out.cookiesFromBrowser = next(); break
+      case "--cookies": out.cookiesFile = next(); break
       case "--throttle": { const v = next(); if (v) out.throttleMs = Number(v); break }
       case "--force": out.force = true; break
       case "--diarize": out.diarize = true; break
       case "--browser-mcp": out.browserMcp = next(); break
+      case "--scrape-mcp": out.scrapeMcp = next(); break
       case "--importer-id": out.importerId = next() ?? "web"; break
       case "--dry-run": out.dryRun = true; break
       default:
@@ -220,13 +234,41 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
       )
   } else {
     const openaiKey = process.env.OPENAI_API_KEY
-    if (openaiKey) stt = new OpenAiWhisperStt({ apiKey: openaiKey })
+    // Wrap Whisper in ChunkedStt so multi-hour media (full courses,
+    // masterclasses) gets ffmpeg-segmented under the 25 MB cap instead of
+    // being rejected. AssemblyAI has no such cap, so it stays unwrapped.
+    if (openaiKey)
+      stt = new ChunkedStt({ base: new OpenAiWhisperStt({ apiKey: openaiKey }) })
     else
       process.stderr.write(
         "corpus: OPENAI_API_KEY not set — video URLs will be skipped (no transcription).\n"
       )
   }
-  if (stt) chain.push(new YtDlpWhisperFetcher({ stt }))
+  if (stt)
+    chain.push(
+      new YtDlpWhisperFetcher({
+        stt,
+        ...(parsed.maxDurationSec
+          ? { maxDurationSec: parsed.maxDurationSec }
+          : {}),
+        ...(parsed.cookiesFromBrowser
+          ? { cookiesFromBrowser: parsed.cookiesFromBrowser }
+          : {}),
+        ...(parsed.cookiesFile ? { cookiesFile: parsed.cookiesFile } : {}),
+      })
+    )
+
+  // A `scrape` MCP server (e.g. the browser project's tiered router) handles
+  // walled / JS-rendered pages with stealth + auto-escalation and returns
+  // clean Markdown. Sits ahead of the cheaper fallbacks.
+  if (parsed.scrapeMcp) {
+    try {
+      const client = await connectBrowserMcp({ endpoint: parsed.scrapeMcp })
+      chain.push(new ScrapeMcpFetcher({ client }))
+    } catch (e) {
+      return fail(`could not connect to scrape MCP at ${parsed.scrapeMcp}: ${msg(e)}`, 1)
+    }
+  }
 
   if (parsed.browserMcp) {
     let browser: BrowserMcpLike

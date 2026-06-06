@@ -60,6 +60,59 @@ describe("WebImporter", () => {
     expect(sources.map(s => s.originalUrl)).toEqual(["https://a.com"])
   })
 
+  it("normalizes the fetched language tag to the AIP-10 shape", async () => {
+    const importer = new WebImporter({
+      fetcher: fakeFetcher({
+        "https://us.com": { title: "US", text: "body", kind: "article", language: "en-us" },
+        "https://gb.com": { title: "GB", text: "body", kind: "article", language: "EN-gb" },
+        "https://name.com": { title: "Name", text: "body", kind: "article", language: "english" },
+        "https://junk.com": { title: "Junk", text: "body", kind: "article", language: "c++" },
+      }),
+    })
+    const byUrl = Object.fromEntries(
+      (
+        await collect(
+          importer.enumerate(
+            target({
+              urls: [
+                "https://us.com",
+                "https://gb.com",
+                "https://name.com",
+                "https://junk.com",
+              ],
+            })
+          )
+        )
+      ).map(s => [s.originalUrl, s.language])
+    )
+    expect(byUrl["https://us.com"]).toBe("en-US") // lowercase region → uppercase
+    expect(byUrl["https://gb.com"]).toBe("en-GB") // mixed case → canonical
+    expect(byUrl["https://name.com"]).toBe("en") // full name → code (Whisper path too)
+    expect(byUrl["https://junk.com"]).toBeUndefined() // unparseable → omitted
+  })
+
+  it("skips a URL whose fetcher THROWS instead of aborting the whole batch", async () => {
+    // A thrown fetch (transient network failure, browser-MCP disconnect)
+    // must not kill every remaining URL — the importer skips it and goes on.
+    const importer = new WebImporter({
+      fetcher: {
+        fetch: async (url: string) => {
+          if (url === "https://boom.com") throw new Error("fetch failed")
+          return { title: url, text: "ok", kind: "article" as const }
+        },
+      },
+    })
+    const sources = await collect(
+      importer.enumerate(
+        target({ urls: ["https://a.com", "https://boom.com", "https://b.com"] })
+      )
+    )
+    expect(sources.map(s => s.originalUrl)).toEqual([
+      "https://a.com",
+      "https://b.com",
+    ]) // boom.com skipped, batch survives
+  })
+
   it("dedupes slugs derived from identical titles", async () => {
     const importer = new WebImporter({
       fetcher: fakeFetcher({

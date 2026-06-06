@@ -10,7 +10,11 @@
 import matter from "gray-matter"
 import type { FsPort } from "../ports/fs.port.js"
 import type { ClockPort } from "../ports/clock.port.js"
+import { slugify, uniqueSlug } from "../util/slug.js"
 import type { DistillPort, DistilledItem, RefinedKind } from "./types.js"
+
+/** Entry slugs must start with a letter; cap at 80 and fall back to "entry". */
+const ENTRY_SLUG_OPTS = { leadingLetter: true, fallback: "entry", maxLen: 80 } as const
 
 const KIND_DIR: Record<RefinedKind, string> = {
   principle: "principles",
@@ -60,7 +64,7 @@ export class DistillRunner {
 
     for (const item of items) {
       if (!item.title.trim() || !item.body.trim()) continue
-      const slug = uniqueSlug(makeSlug(item.title), seen)
+      const slug = uniqueSlug(slugify(item.title, ENTRY_SLUG_OPTS), seen, 80)
       const dir = KIND_DIR[item.kind]
       const path = `entries/${dir}/${year}/${slug}.md`
 
@@ -134,23 +138,3 @@ function sanitizeTag(raw: string): string | null {
   return /^[a-z][a-z0-9-]*$/.test(t) ? t : null
 }
 
-function makeSlug(input: string): string {
-  return (
-    input
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "") // strip combining diacritics
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .replace(/-{2,}/g, "-")
-      .slice(0, 80) || "entry"
-  )
-}
-
-function uniqueSlug(base: string, seen: Set<string>): string {
-  let slug = base
-  let n = 2
-  while (seen.has(slug)) slug = `${base}-${n++}`.slice(0, 80)
-  seen.add(slug)
-  return slug
-}

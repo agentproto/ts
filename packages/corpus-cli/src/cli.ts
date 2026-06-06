@@ -36,10 +36,19 @@ Commands:
   events:emit <kind> --payload <json> [path]
                                          Append an event to _log.md
   events:tail [path]                     Print _log.md
-  import-web [path] --urls-file <f> [--max n --throttle ms --tags t --lang l --force --diarize]
+  import-web [path] --urls-file <f> [--max n --max-duration s --throttle ms --tags t --lang l --force --diarize]
                                          Import URLs as sources (video→Whisper, article→
                                          readability). Resumable: skips already-ingested
                                          URLs, so re-run with --max N to batch through.
+                                         --max-duration: skip videos longer than s seconds
+                                         (no download); omit for no cap (long media is
+                                         segmented under Whisper's 25 MB limit).
+                                         --cookies-from-browser <b>: auth yt-dlp from a
+                                         local browser (chrome/firefox) to dodge YouTube's
+                                         bot-check; --cookies <file> for a cookies.txt.
+                                         --scrape-mcp <url>: delegate article fetching to a
+                                         scrape MCP server (stealth + clean Markdown) for
+                                         walled/JS pages, ahead of plain readability.
                                          --diarize: AssemblyAI speaker labels (interviews).
   distill [path] [--source id --max n --throttle ms --model m]
                                          Distill raw sources → refined entries

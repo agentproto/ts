@@ -17,6 +17,7 @@
  */
 
 import { createHash } from "node:crypto"
+import { slugify } from "../util/slug.js"
 import type { FsPort } from "../ports/fs.port.js"
 import type {
   CorpusImporter,
@@ -107,17 +108,11 @@ function pickExt(path: string): string {
 }
 
 function makeSlug(path: string, rootPath: string): string {
-  // Take the relative path from root, strip extension, replace
-  // separators with dashes. Apply AIP-10 slug pattern.
+  // Slug from the root-relative path, extension stripped. Source ids may
+  // start with a digit, so no leading-letter constraint here.
   const rel = path.startsWith(rootPath) ? path.slice(rootPath.length) : path
   const stripped = rel.replace(/^\/+/, "").replace(/\.[^.]+$/, "")
-  const slugified = stripped
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-")
-    .slice(0, 96)
-  return slugified || "source"
+  return slugify(stripped, { fallback: "source" })
 }
 
 function readTitleFromBody(body: string, fallback: string): string {

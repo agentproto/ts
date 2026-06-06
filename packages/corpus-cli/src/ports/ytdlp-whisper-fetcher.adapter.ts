@@ -52,6 +52,23 @@ export interface YtDlpWhisperFetcherOptions {
   readonly ytDlpBin?: string
   /** Treat these hostnames as video (in addition to the YouTube/Vimeo set). */
   readonly extraVideoHosts?: readonly string[]
+  /**
+   * Skip videos longer than this many seconds, BEFORE downloading
+   * (yt-dlp `--match-filter "duration <= N"`). A filtered video pulls no
+   * bytes and resolves to `null` (skipped), so a stray 40-hour stream
+   * can't blow up the batch. Omit for no cap — long media is segmented by
+   * `ChunkedStt`, so length alone is not a blocker.
+   */
+  readonly maxDurationSec?: number
+  /**
+   * Read cookies from a local browser (`chrome`, `firefox`, `chrome:Profile 1`)
+   * — passed to yt-dlp as `--cookies-from-browser`. Authenticated requests
+   * sidestep YouTube's "confirm you're not a bot" rate-limit that public
+   * fetches hit after a burst of downloads.
+   */
+  readonly cookiesFromBrowser?: string
+  /** Path to a Netscape cookies.txt — passed to yt-dlp as `--cookies`. */
+  readonly cookiesFile?: string
 }
 
 export class YtDlpWhisperFetcher implements FetcherPort {
@@ -62,7 +79,12 @@ export class YtDlpWhisperFetcher implements FetcherPort {
   constructor(opts: YtDlpWhisperFetcherOptions) {
     this.stt = opts.stt
     this.download =
-      opts.download ?? defaultYtDlpDownloader(opts.ytDlpBin ?? "yt-dlp")
+      opts.download ??
+      defaultYtDlpDownloader(opts.ytDlpBin ?? "yt-dlp", {
+        maxDurationSec: opts.maxDurationSec,
+        cookiesFromBrowser: opts.cookiesFromBrowser,
+        cookiesFile: opts.cookiesFile,
+      })
     this.extraHosts = opts.extraVideoHosts
       ? new Set(opts.extraVideoHosts)
       : undefined
@@ -74,9 +96,13 @@ export class YtDlpWhisperFetcher implements FetcherPort {
     let dl: AudioDownload
     try {
       dl = await this.download(url)
-    } catch {
-      // Per-video download failure (geo-block, private, removed) → skip,
-      // don't abort the batch. Hard config errors (STT auth) still throw.
+    } catch (e) {
+      // Per-video download failure (geo-block, private, removed, or a
+      // YouTube bot-check) → skip, don't abort the batch. Surface it so a
+      // run that silently downloads nothing is diagnosable (e.g. the
+      // bot-check that --cookies-from-browser fixes) rather than looking
+      // like "0 videos found".
+      process.stderr.write(`corpus: download failed for ${url} — skipped (${msg(e)})\n`)
       return null
     }
     try {
@@ -91,25 +117,76 @@ export class YtDlpWhisperFetcher implements FetcherPort {
           : {}),
         via: "transcription",
       }
+    } catch (e) {
+      // A transcription failure on ONE video must not abort the whole
+      // batch (the STT layer already retries transient blips). Skip it and
+      // let the resumable importer retry on the next run — EXCEPT for an
+      // auth/config error, which would fail every video, so we surface it
+      // loudly rather than silently dropping the entire run.
+      if (isAuthError(e)) throw e
+      process.stderr.write(
+        `corpus: transcription failed for ${url} — skipped (${msg(e)})\n`
+      )
+      return null
     } finally {
       await dl.cleanup().catch(() => {})
     }
   }
 }
 
+function msg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/** A 401/403 or "api key" error fails every video — abort, don't skip. */
+function isAuthError(e: unknown): boolean {
+  const m = msg(e).toLowerCase()
+  return (
+    m.includes(" 401") ||
+    m.includes(" 403") ||
+    m.includes("unauthorized") ||
+    m.includes("forbidden") ||
+    m.includes("api key") ||
+    m.includes("api_key")
+  )
+}
+
 // ── Default yt-dlp subprocess downloader ────────────────────────────
 
-function defaultYtDlpDownloader(bin: string): AudioDownloader {
+function defaultYtDlpDownloader(
+  bin: string,
+  opts?: {
+    readonly maxDurationSec?: number
+    readonly cookiesFromBrowser?: string
+    readonly cookiesFile?: string
+  }
+): AudioDownloader {
   return async (url: string): Promise<AudioDownload> => {
     const dir = await mkdtemp(join(tmpdir(), "corpus-ytdlp-"))
     const cleanup = () => rm(dir, { recursive: true, force: true })
     try {
+      // `--match-filter` is evaluated before the media is fetched, so an
+      // over-length video pulls zero bytes — it just yields no output file,
+      // which the caller treats as a skip.
+      const durationGuard =
+        opts?.maxDurationSec && opts.maxDurationSec > 0
+          ? ["--match-filter", `duration <= ${Math.floor(opts.maxDurationSec)}`]
+          : []
+      // Authenticate via local browser cookies (or a cookies.txt) to dodge
+      // YouTube's bot-check rate-limit on bursts of public downloads.
+      const cookieArgs = opts?.cookiesFromBrowser
+        ? ["--cookies-from-browser", opts.cookiesFromBrowser]
+        : opts?.cookiesFile
+          ? ["--cookies", opts.cookiesFile]
+          : []
       await execFileAsync(
         bin,
         [
           "-f", "bestaudio",
           "-x", "--audio-format", "mp3", "--audio-quality", "64K",
           "--no-playlist", "--no-progress",
+          ...durationGuard,
+          ...cookieArgs,
           "--write-info-json",
           "-o", join(dir, "track.%(ext)s"),
           url,
