@@ -209,6 +209,11 @@ const marketingManager: RoleSeed = {
     "Cross-functional alignment with sales and product",
   ],
   strengths: ["Pattern recognition across funnel stages", "Translating brand into channel-specific creative"],
+  skills: ["brand-voice", "campaign-brief"],
+  // The generic marketing corpus ships under the "marketing-strategist" pack
+  // id (a persona name, not a role slug), so mount it explicitly rather than
+  // relying on the slug convention.
+  knowledgePacks: ["marketing-strategist"],
   tags: ["marketing", "demand-gen", "brand"],
   body: `## Background
 
@@ -665,6 +670,7 @@ const salesRep: RoleSeed = {
     "Report pipeline health weekly",
   ],
   capabilities: ["Outbound outreach", "Qualification frameworks", "Pipeline management"],
+  skills: ["icp-research", "outbound-sequence"],
   strengths: ["Disqualifying early", "Honest close-date forecasting"],
   antiPatterns: ["Pipeline padding", "Discounting before qualification"],
   tags: ["sales", "pipeline"],

@@ -1,12 +1,17 @@
 /**
  * `corpus distill [workspace]` — raw sources → refined AIP-10 entries.
  *
- *   corpus distill <ws> [--source <id>] [--max n] [--throttle ms] [--model m]
+ *   corpus distill <ws> [--engine id] [--source <id>] [--max n] [--throttle ms] [--model m]
  *
- * Reads sources/**​/*.md, distills each via Claude into refined entries
- * (principle/pattern/critique/summary/example) written under entries/, each
- * carrying `sources: [<sourceId>]` (provenance) + inherited `access`.
+ * Reads sources/**​/*.md, distills each via the selected engine into refined
+ * entries (principle/pattern/critique/summary/example) written under entries/,
+ * each carrying `sources: [<sourceId>]` (provenance) + inherited `access`.
  * Resumable: skips sources that already have entries derived from them.
+ *
+ * Engines (`--engine`, default `anthropic-api`):
+ *   anthropic-api  metered Messages API (needs ANTHROPIC_API_KEY)
+ *   claude-code    local `claude` CLI, billed against the logged-in subscription
+ *                  (no API key) — cheaper for large batches, subject to rate caps
  */
 
 import { readFile, readdir } from "node:fs/promises"
@@ -43,10 +48,51 @@ const ENTRY_SOURCES_FRONTMATTER = z
   .object({ sources: z.array(z.string()).optional().catch(undefined) })
   .loose()
 import matter from "gray-matter"
-import { DistillRunner, systemClock, type DistillSource } from "@agentproto/corpus"
+import {
+  DistillRunner,
+  systemClock,
+  type DistillSource,
+  type DistillPort,
+} from "@agentproto/corpus"
 import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
+import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
+import { CLI_ENGINES } from "../ports/cli-engines.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
+
+const DEFAULT_ENGINE = "anthropic-api"
+
+/** A selectable distill engine: whether it needs an API key + how to build it. */
+interface DistillerEngine {
+  readonly id: string
+  readonly needsApiKey: boolean
+  create(opts: { apiKey?: string; model?: string }): DistillPort
+}
+
+/**
+ * Engine registry — the metered API plus every CLI engine, dispatched by id (no
+ * `engine === "..."` branching at the call site). Add a CLI engine in
+ * cli-engines.ts and it appears here automatically.
+ */
+const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
+  [DEFAULT_ENGINE]: {
+    id: DEFAULT_ENGINE,
+    needsApiKey: true,
+    create: ({ apiKey, model }) =>
+      new AnthropicDistiller({ apiKey: apiKey!, ...(model ? { model } : {}) }),
+  },
+  ...Object.fromEntries(
+    Object.values(CLI_ENGINES).map(engine => [
+      engine.id,
+      {
+        id: engine.id,
+        needsApiKey: false,
+        create: ({ model }) =>
+          new CliAgentDistiller({ engine, ...(model ? { model } : {}) }),
+      } satisfies DistillerEngine,
+    ])
+  ),
+}
 
 interface ParsedArgs {
   workspace: string | undefined
@@ -54,6 +100,7 @@ interface ParsedArgs {
   max: number | undefined
   throttleMs: number
   model: string | undefined
+  engine: string
 }
 
 function parse(args: readonly string[]): ParsedArgs {
@@ -63,6 +110,7 @@ function parse(args: readonly string[]): ParsedArgs {
     max: undefined,
     throttleMs: 1000,
     model: undefined,
+    engine: DEFAULT_ENGINE,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -72,6 +120,7 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--max": { const v = next(); if (v) out.max = Number(v); break }
       case "--throttle": { const v = next(); if (v) out.throttleMs = Number(v); break }
       case "--model": out.model = next(); break
+      case "--engine": { const v = next(); if (v) out.engine = v; break }
       default:
         if (!a.startsWith("-") && out.workspace === undefined) out.workspace = a
     }
@@ -145,8 +194,18 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 export async function runDistill(args: readonly string[]): Promise<ExitCode> {
   const parsed = parse(args)
   const target = resolveWorkspacePath(parsed.workspace)
+
+  const engine = DISTILLER_ENGINES[parsed.engine]
+  if (!engine) {
+    return fail(
+      `unknown --engine "${parsed.engine}". Valid: ${Object.keys(DISTILLER_ENGINES).join(", ")}.`,
+      2
+    )
+  }
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return fail("distill needs ANTHROPIC_API_KEY in the environment.", 2)
+  if (engine.needsApiKey && !apiKey) {
+    return fail(`distill engine "${engine.id}" needs ANTHROPIC_API_KEY in the environment.`, 2)
+  }
 
   const all = await readSources(target)
   if (all.length === 0) return fail("no sources found under sources/ — run import-web first.", 2)
@@ -159,6 +218,7 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
 
   process.stdout.write(
     `distill → ${target}\n` +
+      `  engine:   ${engine.id}\n` +
       `  sources:  ${all.length} total · ${all.length - pool.length} already distilled · ${pool.length} to do\n` +
       `  this run: ${batch.length}${parsed.max !== undefined ? ` (--max ${parsed.max})` : ""}\n`
   )
@@ -170,7 +230,10 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
   const runner = new DistillRunner({
     fs: new NodeFsAdapter({ root: target }),
     clock: systemClock,
-    distiller: new AnthropicDistiller({ apiKey, ...(parsed.model ? { model: parsed.model } : {}) }),
+    distiller: engine.create({
+      ...(apiKey ? { apiKey } : {}),
+      ...(parsed.model ? { model: parsed.model } : {}),
+    }),
   })
 
   let totalEntries = 0

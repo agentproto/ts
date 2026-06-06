@@ -7,14 +7,18 @@
  * etc.).
  */
 
-import { spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import matter from "gray-matter"
+import { spawnWithStdin } from "@agentproto/cli-exec"
 import type {
   ParticipantExecuteInput,
   ParticipantExecuteOutput,
   ParticipantExecutor,
 } from "../ports.js"
+
+// Re-exported for back-compat: the JSON-envelope parser now lives in the shared
+// @agentproto/cli-exec package alongside the spawn helper.
+export { parseClaudeJsonOutput } from "@agentproto/cli-exec"
 
 export type AgentCliParticipantOptions = {
   /** Executable to invoke. Examples: "claude", "hermes", "goose". */
@@ -102,81 +106,4 @@ async function loadRole(roleField: string): Promise<string> {
 function looksLikeRoleFile(s: string): boolean {
   const lower = s.toLowerCase()
   return ROLE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
-}
-
-type SpawnArgs = {
-  command: string
-  args: readonly string[]
-  cwd: string
-  timeoutMs: number
-  stdin: string
-  signal?: AbortSignal
-}
-
-async function spawnWithStdin(args: SpawnArgs): Promise<string> {
-  return new Promise((resolveP, rejectP) => {
-    const proc = spawn(args.command, [...args.args], {
-      cwd: args.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-
-    let stdout = ""
-    let stderr = ""
-    const onAbort = () => proc.kill("SIGTERM")
-    args.signal?.addEventListener("abort", onAbort)
-
-    const timer = setTimeout(() => {
-      proc.kill("SIGTERM")
-    }, args.timeoutMs)
-
-    proc.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8")
-    })
-    proc.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8")
-    })
-    proc.on("error", (err) => {
-      clearTimeout(timer)
-      args.signal?.removeEventListener("abort", onAbort)
-      rejectP(err)
-    })
-    proc.on("close", (code) => {
-      clearTimeout(timer)
-      args.signal?.removeEventListener("abort", onAbort)
-      if (code === 0) {
-        resolveP(stdout)
-        return
-      }
-      rejectP(
-        new Error(
-          `agent-cli participant "${args.command}" exited with code ${code}: ${stderr.trim() || "(no stderr)"}`
-        )
-      )
-    })
-
-    proc.stdin.write(args.stdin)
-    proc.stdin.end()
-  })
-}
-
-/**
- * Parser for `claude --output-format=json` responses. Returns the
- * `result` field as the turn content, or null if the JSON doesn't have
- * the expected shape (caller falls back to raw stdout).
- */
-export function parseClaudeJsonOutput(stdout: string): string | null {
-  try {
-    const parsed = JSON.parse(stdout) as unknown
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "result" in parsed &&
-      typeof (parsed as { result: unknown }).result === "string"
-    ) {
-      return (parsed as { result: string }).result
-    }
-    return null
-  } catch {
-    return null
-  }
 }
