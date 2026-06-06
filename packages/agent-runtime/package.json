@@ -92,6 +92,7 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
+    "@agentproto/cli-exec": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.4.3"
   },

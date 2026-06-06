@@ -1,19 +1,21 @@
 {
-  "name": "@agentproto/corpus-cli",
+  "name": "@agentproto/cli-exec",
   "version": "0.1.0-alpha.0",
-  "description": "@agentproto/corpus-cli — the `corpus` binary. Validate, lint, and operate an AIP-10 corpus workspace from the command line. Local-topology host for @agentproto/corpus — pair with a local backing engine (qdrant docker / gbrain) for a fully offline corpus runtime.",
+  "description": "Minimal one-shot CLI execution helper — spawn a command, feed a prompt over stdin, capture stdout, with timeout + AbortSignal. Plus a tolerant parser for agent CLIs that emit a `--output-format json` result envelope. Shared by anything that drives a headless agent CLI (claude --print, gemini, goose, …).",
   "keywords": [
-    "agentproto",
-    "corpus",
-    "aip-10",
     "cli",
-    "knowledge-base"
+    "spawn",
+    "stdin",
+    "child-process",
+    "headless",
+    "agent",
+    "agentproto"
   ],
-  "homepage": "https://agentproto.sh/docs/corpus",
+  "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "packages/corpus-cli"
+    "directory": "packages/cli-exec"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -23,19 +25,11 @@
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "bin": {
-    "corpus": "./dist/cli.mjs"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
-    },
-    "./ports": {
-      "types": "./dist/ports/index.d.ts",
-      "import": "./dist/ports/index.mjs",
-      "default": "./dist/ports/index.mjs"
     },
     "./package.json": "./package.json"
   },
@@ -53,17 +47,11 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "pnpm build"
   },
-  "dependencies": {
-    "@agentproto/cli-exec": "workspace:*",
-    "@agentproto/corpus": "workspace:*",
-    "@agentproto/corpus-presets": "workspace:*",
-    "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",

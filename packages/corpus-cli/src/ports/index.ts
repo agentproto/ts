@@ -45,6 +45,17 @@ export type { ThrottleFetcherOptions } from "./throttle-fetcher.adapter.js"
 export { HttpReadabilityFetcher } from "./http-readability-fetcher.adapter.js"
 export type { HttpReadabilityFetcherOptions } from "./http-readability-fetcher.adapter.js"
 
+export { AnthropicDistiller } from "./anthropic-distiller.js"
+export type { AnthropicDistillerOptions } from "./anthropic-distiller.js"
+
+export { CliAgentDistiller } from "./cli-agent-distiller.js"
+export type { CliAgentDistillerOptions } from "./cli-agent-distiller.js"
+
+export { CLI_ENGINES } from "./cli-engines.js"
+export type { CliEngine } from "./cli-engines.js"
+
+export { buildDistillPrompt, parseItems } from "./distill-prompt.js"
+
 export { connectMcpHttp } from "./mcp-http-client.js"
 export type { McpClientLike, ConnectMcpHttpOptions } from "./mcp-http-client.js"
 export { McpSink } from "./mcp-sink.adapter.js"
