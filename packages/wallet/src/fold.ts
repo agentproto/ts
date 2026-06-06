@@ -11,6 +11,7 @@ import type { AssetRef } from "./asset.js"
 import type { PartitionId } from "./partition.js"
 import type { Restriction } from "./restriction-lattice.js"
 import { UNRESTRICTED } from "./restriction-lattice.js"
+import { evaluatePolicy, type PartitionPolicy } from "./partition-policy.js"
 
 /** Spend agency — the safety boundary (passive = cost of existing, active = chosen action). */
 export type Intent = "passive" | "active"
@@ -176,4 +177,59 @@ export function balanceByAsset(lots: readonly Lot[], now: number): Map<AssetRef,
     m.set(lot.asset, (m.get(lot.asset) ?? 0) + lot.remaining - lot.reserved)
   }
   return m
+}
+
+/** Resolves a lot's partition to its lifecycle policy (the catalog lookup). */
+export type PolicyResolver = (
+  partitionId: PartitionId,
+) => PartitionPolicy | undefined
+
+/**
+ * Net spendable for one lot under its partition policy: the policy factor
+ * (decay / vest / expire) applied to `remaining`, then `reserved` removed; 0 if
+ * the policy makes the lot ineligible for `category`. `grantedAt` is the lot's
+ * `createdAt` — the anchor for relative TimeSpecs.
+ */
+export function spendableLotUnderPolicy(
+  lot: Lot,
+  policy: PartitionPolicy,
+  now: number,
+  category?: string,
+): number {
+  const ev = evaluatePolicy(policy, {
+    now,
+    grantedAt: lot.createdAt,
+    remaining: lot.remaining,
+    category,
+  })
+  if (!ev.eligible) return 0
+  return Math.max(0, ev.spendable - lot.reserved)
+}
+
+/**
+ * Policy-aware spendable balance. Each lot's value is folded through its
+ * partition's policy (resolved from the catalog); lots whose partition has no
+ * policy fall back to the legacy `expiresAt` path, so this is a drop-in superset
+ * of `spendableBalance`.
+ */
+export function spendableBalanceUnderPolicy(
+  lots: readonly Lot[],
+  asset: AssetRef,
+  now: number,
+  resolve: PolicyResolver,
+  category?: string,
+): number {
+  let total = 0
+  for (const lot of lots) {
+    if (lot.asset !== asset) continue
+    if (lot.status === "exhausted") continue
+    const policy = resolve(lot.partitionId)
+    if (policy) {
+      total += spendableLotUnderPolicy(lot, policy, now, category)
+      continue
+    }
+    if (lot.expiresAt !== undefined && lot.expiresAt <= now) continue
+    total += lot.remaining - lot.reserved
+  }
+  return total
 }

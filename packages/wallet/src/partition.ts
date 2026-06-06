@@ -12,6 +12,7 @@
 
 import type { AssetRef } from "./asset.js"
 import type { Restriction } from "./restriction-lattice.js"
+import type { PartitionPolicy } from "./partition-policy.js"
 
 /** `<asset>:<tranche>` — e.g. "GUILDE_CREDITS:general", "GUILDE_CREDITS:image-trial". */
 export type PartitionId = string
@@ -25,6 +26,14 @@ export interface PartitionSpec {
   spendableOn?: readonly string[]
   /** Default lifetime (ms) applied to lots minted into this partition, if any. */
   defaultTtlMs?: number
+  /**
+   * The partition's lifecycle policy (restriction / expiry / decay / vest /
+   * transfer as composable rules). When present it is the source of truth for a
+   * lot's effective spendable + eligibility; `restriction` / `spendableOn` /
+   * `defaultTtlMs` above are the legacy shorthand for the common rules and stay
+   * as a fast path. See `partition-policy.ts`.
+   */
+  policy?: PartitionPolicy
 }
 
 /** Build a conventional partition id from an asset ref and a tranche name. */

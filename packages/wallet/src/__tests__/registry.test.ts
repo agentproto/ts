@@ -64,4 +64,31 @@ describe("AssetRegistry — config-first catalog (common + app-wide)", () => {
     const reg = AssetRegistry.from([USD, CREDITS, POINTS])
     expect(reg.verify(fixedResolver).ok).toBe(true)
   })
+
+  it("is the partition catalog: resolves a partition + its policy by id", () => {
+    const CREDITS_WITH_TRANCHES = defineAsset({
+      ...CREDITS,
+      partitions: [
+        {
+          id: "GUILDE_CREDITS:image-trial",
+          asset: "GUILDE_CREDITS",
+          restriction: [],
+          policy: [
+            { kind: "spendOn", categories: ["image"] },
+            { kind: "expire", at: { kind: "afterGrant", ms: 2_592_000_000 } },
+          ],
+        },
+      ],
+    })
+    const reg = AssetRegistry.from([USD, CREDITS_WITH_TRANCHES])
+
+    expect(reg.partition("GUILDE_CREDITS:image-trial")?.asset).toBe("GUILDE_CREDITS")
+    expect(reg.policyFor("GUILDE_CREDITS:image-trial")?.[0]).toEqual({
+      kind: "spendOn",
+      categories: ["image"],
+    })
+    // unknown partition / asset without the tranche → undefined (a valid resolver)
+    expect(reg.policyFor("GUILDE_CREDITS:nope")).toBeUndefined()
+    expect(reg.policyFor("USD:general")).toBeUndefined()
+  })
 })
