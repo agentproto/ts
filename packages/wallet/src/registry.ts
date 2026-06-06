@@ -13,6 +13,8 @@
  */
 
 import type { AssetDeclaration, AssetRef } from "./asset.js"
+import { assetOfPartition, type PartitionId, type PartitionSpec } from "./partition.js"
+import type { PartitionPolicy } from "./partition-policy.js"
 import {
   verifyNoArbitrage,
   type NoArbitrageResult,
@@ -47,6 +49,22 @@ export class AssetRegistry {
 
   getAll(): AssetDeclaration[] {
     return [...this.assets.values()]
+  }
+
+  /**
+   * The partition spec for `<asset>:<tranche>`, resolved via its owning asset —
+   * the registry is the partition catalog (partitions co-locate on the asset).
+   */
+  partition(id: PartitionId): PartitionSpec | undefined {
+    return this.assets.get(assetOfPartition(id))?.partitions?.find(p => p.id === id)
+  }
+
+  /**
+   * The lifecycle policy of a partition, or undefined. Shaped as a
+   * `PolicyResolver` so `registry.policyFor` plugs straight into the fold.
+   */
+  policyFor = (id: PartitionId): PartitionPolicy | undefined => {
+    return this.partition(id)?.policy
   }
 
   static from(assets: readonly AssetDeclaration[]): AssetRegistry {
