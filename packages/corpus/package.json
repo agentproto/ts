@@ -62,6 +62,7 @@
     "@agentproto/knowledge": "workspace:*",
     "@agentproto/operator": "workspace:*",
     "@agentproto/playbook": "workspace:*",
+    "@agentproto/registry": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "ajv": "^8.17.1",

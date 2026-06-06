@@ -131,6 +131,69 @@ describe("OverlayFs", () => {
   })
 })
 
+describe("OverlayFs whiteout", () => {
+  it("a higher .whiteout marker REMOVES a lower entry (not just shadows it)", async () => {
+    const pack = memFs({
+      "entries/p/a.md": entry("a", "principle", ["x"], "pack a"),
+      "entries/p/b.md": entry("b", "principle", ["x"], "pack b"),
+    })
+    // guild drops "a" with a marker, leaves "b".
+    const guild = memFs({ "entries/p/a.md.whiteout": "" })
+    const overlay = new OverlayFs([guild, pack], { whiteout: true })
+
+    expect(await overlay.exists("entries/p/a.md")).toBe(false)
+    await expect(overlay.readFile("entries/p/a.md")).rejects.toThrow()
+    expect(await overlay.stat("entries/p/a.md")).toBeNull()
+
+    const resolved = await resolveKnowledge({ fs: overlay, query: { tags: ["x"] } })
+    const slugs = resolved.map(r => r.slug)
+    expect(slugs).toContain("b")
+    expect(slugs).not.toContain("a")
+  })
+
+  it("hides marker files themselves from readdir and walk", async () => {
+    const pack = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "pack a") })
+    const guild = memFs({ "entries/p/a.md.whiteout": "" })
+    const overlay = new OverlayFs([guild, pack], { whiteout: true })
+
+    expect(await overlay.readdir("entries/p")).not.toContain("a.md.whiteout")
+    expect(await overlay.readdir("entries/p")).not.toContain("a.md")
+    expect(await overlay.walk("entries")).not.toContain("p/a.md.whiteout")
+    expect(await overlay.walk("entries")).not.toContain("p/a.md")
+  })
+
+  it("a higher real entry overrides a lower tombstone (top-down resolution)", async () => {
+    const pack = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "pack a") })
+    const mid = memFs({ "entries/p/a.md.whiteout": "" })
+    const guild = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "guild a") })
+    const overlay = new OverlayFs([guild, mid, pack], { whiteout: true })
+
+    expect(await overlay.exists("entries/p/a.md")).toBe(true)
+    expect(await overlay.readFile("entries/p/a.md")).toContain("guild a")
+  })
+
+  it("a tombstone only suppresses LOWER layers, never a higher one", async () => {
+    // marker sits in the lowest layer; the real entry above survives.
+    const low = memFs({ "entries/p/a.md.whiteout": "" })
+    const high = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "high a") })
+    const overlay = new OverlayFs([high, low], { whiteout: true })
+
+    expect(await overlay.exists("entries/p/a.md")).toBe(true)
+    expect(await overlay.readFile("entries/p/a.md")).toContain("high a")
+  })
+
+  it("whiteout OFF (default) ignores markers — byte-for-byte legacy behavior", async () => {
+    const pack = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "pack a") })
+    const guild = memFs({ "entries/p/a.md.whiteout": "" })
+    const overlay = new OverlayFs([guild, pack]) // no options → whiteout off
+
+    expect(await overlay.exists("entries/p/a.md")).toBe(true)
+    expect(await overlay.readFile("entries/p/a.md")).toContain("pack a")
+    // the marker is just an ordinary file in this mode
+    expect(await overlay.exists("entries/p/a.md.whiteout")).toBe(true)
+  })
+})
+
 describe("ReadOnlyFs", () => {
   it("passes reads through and rejects mutations", async () => {
     const inner = memFs({ "entries/p/a.md": entry("a", "principle", ["x"], "body") })
