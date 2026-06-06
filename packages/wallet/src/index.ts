@@ -39,6 +39,16 @@ export { assetDeclarationSchema, type AssetDeclarationInput } from "./schema.js"
 export type { PartitionId, PartitionSpec } from "./partition.js"
 export { partitionId, assetOfPartition } from "./partition.js"
 
+// Partition policy — the unified lifecycle runtime (restrict/expire/decay/vest/transfer)
+export type {
+  TimeSpec,
+  PartitionRule,
+  PartitionPolicy,
+  PolicyContext,
+  PolicyEvaluation,
+} from "./partition-policy.js"
+export { evaluatePolicy, resolveTime } from "./partition-policy.js"
+
 // Restriction lattice — the LAW layer
 export type { RestrictionTag, Restriction, LatticeCheckResult } from "./restriction-lattice.js"
 export {
@@ -60,6 +70,11 @@ export type {
   Lot,
 } from "./fold.js"
 export { fold, spendableBalance, balanceByAsset } from "./fold.js"
+export type { PolicyResolver } from "./fold.js"
+export {
+  spendableLotUnderPolicy,
+  spendableBalanceUnderPolicy,
+} from "./fold.js"
 
 // Coalescing — intra-asset spend routing
 export type { SpendRequest, LotDraw, SpendPlan } from "./coalescing.js"

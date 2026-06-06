@@ -12,6 +12,7 @@
  */
 
 import type { Restriction } from "./restriction-lattice.js"
+import type { PartitionSpec } from "./partition.js"
 
 /** Unique, human-readable key. Convention: `<ORIGIN>_<SYMBOL>` or bare ISO-4217. */
 export type AssetRef = string
@@ -82,6 +83,12 @@ export interface AssetDeclaration {
   chain?: ChainRef
   peg?: PegSpec
   ruleSet: AssetRuleSet
+  /**
+   * The asset's tranches + their lifecycle policies — the partition catalog,
+   * co-located with the asset (a partition always belongs to one asset, so the
+   * `AssetRegistry` IS the partition catalog: global commons + per-app extend).
+   */
+  partitions?: readonly PartitionSpec[]
 }
 
 /** Does this asset (absent a narrowing partition) pay for `category`? */
