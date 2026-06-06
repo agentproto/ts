@@ -84,6 +84,9 @@ export function spawnWithStdin(opts: SpawnWithStdinOptions): Promise<string> {
       })
     )
 
+    // child may exit before stdin drains → EPIPE on the stream; the close
+    // handler already drives resolve/reject, so this write error is benign
+    child.stdin.on("error", () => {})
     child.stdin.write(stdin)
     child.stdin.end()
   })
