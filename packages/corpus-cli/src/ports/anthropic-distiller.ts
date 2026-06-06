@@ -52,7 +52,7 @@ export class AnthropicDistiller implements DistillPort {
 
   constructor(opts: AnthropicDistillerOptions) {
     this.apiKey = opts.apiKey
-    this.model = opts.model ?? "claude-sonnet-4-5"
+    this.model = opts.model ?? "claude-sonnet-4-6"
     this.baseUrl = (opts.baseUrl ?? "https://api.anthropic.com/v1").replace(/\/+$/, "")
     this.maxItems = opts.maxItems ?? 8
   }

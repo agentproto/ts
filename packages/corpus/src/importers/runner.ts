@@ -16,6 +16,7 @@ import { CorpusEventEmitter } from "../events/emitter.js"
 import { CorpusWorkspaceReader } from "../workspace/reader.js"
 import { CorpusWorkspaceWriter } from "../workspace/writer.js"
 import { CandidatesSidecar } from "../workspace/sidecar.js"
+import { isSourceSlug } from "../util/slug.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { FsPort } from "../ports/fs.port.js"
 import type { IdentityPort } from "../ports/identity.port.js"
@@ -90,7 +91,7 @@ export class ImporterRunner {
     const warnings: string[] = []
 
     for await (const source of importer.enumerate(target)) {
-      if (!isValidSlug(source.slug)) {
+      if (!isSourceSlug(source.slug)) {
         warnings.push(`source skipped — invalid slug "${source.slug}"`)
         continue
       }
@@ -208,12 +209,6 @@ function serializeSource(
     source.body.startsWith("\n") ? source.body : "\n" + source.body,
     fm
   )
-}
-
-function isValidSlug(s: string): boolean {
-  // AIP-10 source id pattern: ^[a-z0-9][a-z0-9-]*$ (no trailing constraint),
-  // length 2-96. Be strict here so we never produce a non-validating source.
-  return /^[a-z0-9][a-z0-9-]*$/.test(s) && s.length >= 2 && s.length <= 96
 }
 
 function joinPath(a: string, b: string): string {

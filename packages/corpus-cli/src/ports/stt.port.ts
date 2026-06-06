@@ -9,6 +9,7 @@
 
 import { readFile } from "node:fs/promises"
 import { basename } from "node:path"
+import { normalizeLanguageTag } from "@agentproto/corpus"
 import { z } from "zod"
 
 /** The Whisper verbose_json fields we read. */
@@ -67,40 +68,48 @@ export class OpenAiWhisperStt implements SttPort {
     form.append("model", this.model)
     form.append("response_format", "verbose_json")
 
-    const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.apiKey}` },
-      body: form,
-    })
+    const res = await this.postWithRetry(form)
     if (!res.ok) {
       const body = await res.text().catch(() => "")
       throw new Error(`Whisper STT ${res.status} ${res.statusText}: ${body.slice(0, 200)}`)
     }
     const data = WHISPER_RESPONSE.parse(await res.json())
-    const language = normalizeLanguage(data.language)
+    const language = normalizeLanguageTag(data.language)
     return {
       text: (data.text ?? "").trim(),
       ...(language ? { language } : {}),
     }
   }
+
+  /**
+   * POST the audio with bounded retry. Transcribing a long talk fans out
+   * into many segment uploads (see ChunkedStt), so a single transient
+   * network blip ("fetch failed") or a 429 / 5xx must not abort the whole
+   * batch. Network errors and retryable statuses back off and retry;
+   * client errors (401 auth, 400 bad request) return immediately so a real
+   * misconfiguration still surfaces loudly.
+   */
+  private async postWithRetry(form: FormData, attempts = 4): Promise<Response> {
+    const url = `${this.baseUrl}/audio/transcriptions`
+    let lastErr: unknown
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { authorization: `Bearer ${this.apiKey}` },
+          body: form,
+        })
+        if (res.status !== 429 && res.status < 500) return res
+        lastErr = new Error(`Whisper STT ${res.status} ${res.statusText}`)
+      } catch (e) {
+        lastErr = e // network-level failure (undici "fetch failed", reset, timeout)
+      }
+      if (i < attempts - 1) await delay(500 * 2 ** i) // 0.5s, 1s, 2s
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+  }
 }
 
-// Whisper returns the language as a full English name ("english",
-// "french") in verbose_json — AIP-10 frontmatter wants a BCP-47 code
-// ("en", "fr"). Map the common ones; pass through anything that already
-// looks like a code; drop the rest (language is optional, and an invalid
-// value would fail source validation).
-const LANGUAGE_NAME_TO_CODE: Readonly<Record<string, string>> = {
-  english: "en", french: "fr", spanish: "es", german: "de", italian: "it",
-  portuguese: "pt", dutch: "nl", russian: "ru", japanese: "ja", korean: "ko",
-  chinese: "zh", arabic: "ar", hindi: "hi", turkish: "tr", polish: "pl",
-  swedish: "sv", norwegian: "no", danish: "da", finnish: "fi", greek: "el",
-  hebrew: "he", thai: "th", vietnamese: "vi", indonesian: "id", ukrainian: "uk",
-}
-
-function normalizeLanguage(raw: string | undefined): string | undefined {
-  if (!raw) return undefined
-  const v = raw.trim().toLowerCase()
-  if (/^[a-z]{2,3}(-[a-z0-9]+)*$/i.test(v) && v.length <= 5) return v // already a code
-  return LANGUAGE_NAME_TO_CODE[v]
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }

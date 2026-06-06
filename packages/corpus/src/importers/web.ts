@@ -20,7 +20,9 @@
  */
 
 import { createHash } from "node:crypto"
-import type { FetcherPort } from "../ports/fetcher.port.js"
+import { slugify, uniqueSlug } from "../util/slug.js"
+import { normalizeLanguageTag } from "../util/language.js"
+import type { FetcherPort, FetchedSource } from "../ports/fetcher.port.js"
 import type {
   CorpusImporter,
   ImportedSource,
@@ -53,16 +55,27 @@ export class WebImporter implements CorpusImporter {
     for (const url of config.urls) {
       if (yielded >= maxUrls) break
 
-      const fetched = await this.opts.fetcher.fetch(url)
+      // A fetcher signals "couldn't reduce this URL" with null. A *thrown*
+      // error (transient network failure, browser-MCP disconnect, timeout)
+      // must NOT abort the whole batch — the throw would propagate out of
+      // this generator and kill every remaining URL. Treat it as a per-URL
+      // skip; the importer is resumable, so a re-run retries it.
+      let fetched: FetchedSource | null
+      try {
+        fetched = await this.opts.fetcher.fetch(url)
+      } catch {
+        continue
+      }
       // null = the fetcher couldn't reduce this URL to text; skip it.
       // The runner surfaces skipped URLs as warnings on the batch.
       if (!fetched || !fetched.text.trim()) continue
 
       const slug = uniqueSlug(
-        makeSlug(fetched.title) || makeSlug(url) || "source",
+        slugify(fetched.title, { fallback: "" }) ||
+          slugify(url, { stripScheme: true, fallback: "source" }),
         seenSlugs
       )
-      const language = fetched.language ?? config.language
+      const language = normalizeLanguageTag(fetched.language ?? config.language)
 
       yield {
         slug,
@@ -108,27 +121,6 @@ function parseConfig(raw: Readonly<Record<string, unknown>>): WebConfig {
       : undefined,
     language: typeof raw.language === "string" ? raw.language : undefined,
   }
-}
-
-function makeSlug(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-")
-    .slice(0, 96)
-}
-
-function uniqueSlug(base: string, seen: Set<string>): string {
-  let slug = base
-  let n = 2
-  while (seen.has(slug)) {
-    slug = `${base}-${n}`.slice(0, 96)
-    n++
-  }
-  seen.add(slug)
-  return slug
 }
 
 function sha256(content: string): string {
