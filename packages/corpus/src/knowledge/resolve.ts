@@ -36,6 +36,22 @@ const ENTRY_FRONTMATTER = z
           .object({
             access: z.string().optional().catch(undefined),
             status: z.string().optional().catch(undefined),
+            // Resolved provenance written at promote time — the origins this
+            // entry was distilled from, so a recall can cite the real source.
+            source_refs: z
+              .array(
+                z
+                  .object({
+                    id: z.string(),
+                    url: z.string().optional().catch(undefined),
+                    title: z.string().optional().catch(undefined),
+                    authority: z.string().optional().catch(undefined),
+                    language: z.string().optional().catch(undefined),
+                  })
+                  .loose()
+              )
+              .optional()
+              .catch(undefined),
           })
           .loose()
           .optional()
@@ -56,6 +72,15 @@ export interface KnowledgeQuery {
   readonly maxResults?: number
 }
 
+/** A resolved origin an entry was distilled from (id + where to find it). */
+export interface SourceRef {
+  readonly id: string
+  readonly url?: string
+  readonly title?: string
+  readonly authority?: string
+  readonly language?: string
+}
+
 export interface ResolvedEntry {
   readonly slug: string
   readonly kind: string
@@ -63,6 +88,8 @@ export interface ResolvedEntry {
   readonly body: string
   /** Provenance — the raw source ids this entry was derived from. */
   readonly sources: readonly string[]
+  /** Resolved provenance — id + url + title for each source, when available. */
+  readonly sourceRefs?: readonly SourceRef[]
   readonly confidence: number
   readonly tags: readonly string[]
   readonly access?: string
@@ -128,6 +155,9 @@ export async function resolveKnowledge(
       title: fm.title ?? "",
       body: parsed.content.trim(),
       sources: fm.sources ?? [],
+      ...(fm.metadata?.corpus?.source_refs
+        ? { sourceRefs: fm.metadata.corpus.source_refs }
+        : {}),
       confidence: fm.confidence ?? 0,
       tags,
       ...(access ? { access } : {}),

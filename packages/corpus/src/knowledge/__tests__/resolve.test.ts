@@ -64,4 +64,36 @@ describe("resolveKnowledge", () => {
     const hits = await resolveKnowledge({ fs: fakeFs(files), query: { maxResults: 1 } })
     expect(hits).toHaveLength(1)
   })
+
+  it("extracts resolved source_refs when present, undefined otherwise", async () => {
+    const withRefs = matter.stringify("\ninsight", {
+      schema: "knowledge.entry/v1",
+      slug: "r",
+      kind: "principle",
+      title: "r",
+      sources: ["src-amy"],
+      confidence: 0.9,
+      tags: ["screening"],
+      metadata: {
+        corpus: {
+          status: "active",
+          source_refs: [
+            { id: "src-amy", url: "https://example.com/x", title: "X", authority: "secondary" },
+          ],
+        },
+      },
+    })
+    const hits = await resolveKnowledge({
+      fs: fakeFs({
+        "entries/principles/2026/r.md": withRefs,
+        "entries/principles/2026/a.md": files["entries/principles/2026/a.md"]!, // no source_refs
+      }),
+      query: { tags: ["screening"] },
+    })
+    const r = hits.find(h => h.slug === "r")
+    expect(r?.sourceRefs).toEqual([
+      { id: "src-amy", url: "https://example.com/x", title: "X", authority: "secondary" },
+    ])
+    expect(hits.find(h => h.slug === "a")?.sourceRefs).toBeUndefined()
+  })
 })
