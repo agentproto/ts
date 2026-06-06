@@ -111,6 +111,7 @@ export { resolveKnowledge } from "./knowledge/resolve.js"
 export type {
   KnowledgeQuery,
   ResolvedEntry,
+  SourceRef,
   ResolveKnowledgeOptions,
 } from "./knowledge/resolve.js"
 
