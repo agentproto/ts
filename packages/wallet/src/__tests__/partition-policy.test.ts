@@ -135,20 +135,18 @@ describe("resolveTime", () => {
 // ── fold integration ──
 
 function lot(p: Partial<Lot> & Pick<Lot, "remaining">): Lot {
-  return {
-    id: p.id ?? "L1",
+  const base = {
+    id: "L1",
     accountId: "acct-1",
-    asset: p.asset ?? "GUILDE_CREDITS",
-    partitionId: p.partitionId ?? "GUILDE_CREDITS:general",
+    asset: "GUILDE_CREDITS",
+    partitionId: "GUILDE_CREDITS:general",
     restriction: UNRESTRICTED,
-    original: p.original ?? p.remaining,
-    remaining: p.remaining,
-    reserved: p.reserved ?? 0,
+    reserved: 0,
     sourceEventId: "e1",
-    status: p.status ?? "active",
-    createdAt: p.createdAt ?? GRANT,
-    ...p,
+    status: "active" as const,
+    createdAt: GRANT,
   }
+  return { ...base, ...p, original: p.original ?? p.remaining }
 }
 
 describe("spendableBalanceUnderPolicy — policy-aware fold", () => {
