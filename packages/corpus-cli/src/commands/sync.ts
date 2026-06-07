@@ -17,7 +17,7 @@ import { readFile } from "node:fs/promises"
 import {
   SyncRunner,
   isRefinedKind,
-  type KnowledgeQuery,
+  type CorpusEntryQuery,
   type RefinedKind,
 } from "@agentproto/corpus"
 import { McpSink, SINK_CONFIG_SCHEMA } from "../ports/mcp-sink.adapter.js"
@@ -61,7 +61,7 @@ export async function runSync(args: readonly string[]): Promise<ExitCode> {
   }
   const config = parsedConfig.data
 
-  const select: KnowledgeQuery = {
+  const select: CorpusEntryQuery = {
     ...(tags.length ? { tags } : {}),
     ...(kinds.length ? { kinds } : {}),
   }

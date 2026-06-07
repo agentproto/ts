@@ -6,14 +6,14 @@
  */
 
 import type { FsPort } from "../ports/fs.port.js"
-import { resolveKnowledge, type KnowledgeQuery } from "../knowledge/resolve.js"
+import { resolveKnowledge, type CorpusEntryQuery } from "../knowledge/resolve.js"
 import type { SinkPort, SinkItem, SinkPushResult } from "./types.js"
 
 export interface SyncRunnerOptions {
   readonly fs: FsPort
   readonly sink: SinkPort
   /** Which entries to sync (tags/kinds). Empty = all refined entries. */
-  readonly select?: KnowledgeQuery
+  readonly select?: CorpusEntryQuery
   /** URI scheme for the item address. Default `corpus`. */
   readonly uriScheme?: string
   /** Pace between pushes (ms). Default 0. */

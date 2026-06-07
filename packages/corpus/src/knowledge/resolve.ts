@@ -63,7 +63,7 @@ const ENTRY_FRONTMATTER = z
   })
   .loose()
 
-export interface KnowledgeQuery {
+export interface CorpusEntryQuery {
   /** Match entries sharing ANY of these tags. Empty/absent = no tag filter. */
   readonly tags?: readonly string[]
   /** Restrict to these refined kinds. Empty/absent = all kinds. */
@@ -98,7 +98,7 @@ export interface ResolvedEntry {
 
 export interface ResolveKnowledgeOptions {
   readonly fs: FsPort
-  readonly query: KnowledgeQuery
+  readonly query: CorpusEntryQuery
   /**
    * Access scopes the caller (operator) is cleared for. An entry passes if it
    * has no access (public) or its access ∈ this set. Omit = no access filter.

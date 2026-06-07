@@ -9,7 +9,7 @@
 import {
   resolveKnowledge,
   isRefinedKind,
-  type KnowledgeQuery,
+  type CorpusEntryQuery,
   type RefinedKind,
 } from "@agentproto/corpus"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
@@ -39,7 +39,7 @@ export async function runKnowledge(args: readonly string[]): Promise<ExitCode> {
     return fail("knowledge needs --tags a,b and/or --kind <k>.", 2)
   }
 
-  const query: KnowledgeQuery = {
+  const query: CorpusEntryQuery = {
     ...(tags.length ? { tags } : {}),
     ...(kinds.length ? { kinds } : {}),
     ...(max !== undefined ? { maxResults: max } : {}),

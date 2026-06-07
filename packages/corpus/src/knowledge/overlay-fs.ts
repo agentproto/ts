@@ -23,25 +23,93 @@
 
 import type { FsPort, FsLockHandle, FsStat } from "../ports/fs.port.js"
 
-export class OverlayFs implements FsPort {
-  /** Layers ordered highest-precedence first. layers[0] is writable. */
-  private readonly layers: readonly FsPort[]
+/**
+ * Sibling-path marker that removes (whiteouts) a lower layer's entry. To
+ * drop `entries/foo.md`, a higher layer authors `entries/foo.md.whiteout`.
+ * A marker file (not a frontmatter flag) keeps overlay resolution a pure
+ * path operation — listing a directory never reads entry bodies.
+ */
+export const WHITEOUT_SUFFIX = ".whiteout"
 
-  constructor(layers: readonly FsPort[]) {
+const isMarker = (p: string): boolean => p.endsWith(WHITEOUT_SUFFIX)
+const baseOf = (markerPath: string): string =>
+  markerPath.slice(0, -WHITEOUT_SUFFIX.length)
+
+export interface OverlayFsOptions {
+  /**
+   * Honor `.whiteout` markers so a higher layer can REMOVE (not just
+   * shadow) a lower entry. OFF by default: with whiteout disabled the
+   * overlay is pure union + shadow, byte-for-byte the original behavior.
+   */
+  readonly whiteout?: boolean
+  /**
+   * Index of the writable layer (writes / appends / locks target it).
+   * Defaults to 0. Set this when a read-only CONSTRAINT floor is pinned
+   * ABOVE the writable layer: read precedence (layer order) and the write
+   * target are then independent — the floor wins reads, the guild layer
+   * still takes writes.
+   */
+  readonly writableLayer?: number
+}
+
+export class OverlayFs implements FsPort {
+  /** Layers ordered highest-precedence first. */
+  private readonly layers: readonly FsPort[]
+  private readonly whiteout: boolean
+  private readonly writableIndex: number
+
+  constructor(layers: readonly FsPort[], options: OverlayFsOptions = {}) {
     if (layers.length === 0) {
       throw new Error("OverlayFs requires at least one layer")
     }
     this.layers = layers
+    this.whiteout = options.whiteout ?? false
+    const w = options.writableLayer ?? 0
+    if (w < 0 || w >= layers.length) {
+      throw new Error(
+        `OverlayFs: writableLayer ${w} out of range [0, ${layers.length - 1}]`
+      )
+    }
+    this.writableIndex = w
+  }
+
+  /**
+   * Top-down resolution for a single path: the first layer that declares
+   * either the real entry OR its whiteout marker decides. Within one
+   * layer a real entry wins over a stale marker. Returns null when no
+   * layer declares the path, and `{ removed: true }` when the winning
+   * layer tombstones it.
+   */
+  private async resolvePath(
+    path: string
+  ): Promise<{ layer: FsPort } | { removed: true } | null> {
+    const marker = path + WHITEOUT_SUFFIX
+    for (const layer of this.layers) {
+      if (await layer.exists(path)) return { layer }
+      if (await layer.exists(marker)) return { removed: true }
+    }
+    return null
   }
 
   async exists(path: string): Promise<boolean> {
-    for (const layer of this.layers) {
-      if (await layer.exists(path)) return true
+    if (!this.whiteout) {
+      for (const layer of this.layers) {
+        if (await layer.exists(path)) return true
+      }
+      return false
     }
-    return false
+    if (isMarker(path)) return false // markers are not visible entries
+    const r = await this.resolvePath(path)
+    return r !== null && !("removed" in r)
   }
 
   async readFile(path: string): Promise<string> {
+    if (this.whiteout && !isMarker(path)) {
+      const r = await this.resolvePath(path)
+      if (r && "layer" in r) return await r.layer.readFile(path)
+      // Tombstoned or genuinely missing — surface a plain not-found.
+      return await this.layers[0]!.readFile(path)
+    }
     for (const layer of this.layers) {
       if (await layer.exists(path)) return await layer.readFile(path)
     }
@@ -50,6 +118,12 @@ export class OverlayFs implements FsPort {
   }
 
   async stat(path: string): Promise<FsStat | null> {
+    if (this.whiteout && !isMarker(path)) {
+      const r = await this.resolvePath(path)
+      if (r && "layer" in r) return await r.layer.stat(path)
+      return null
+    }
+    if (this.whiteout && isMarker(path)) return null
     for (const layer of this.layers) {
       const s = await layer.stat(path)
       if (s) return s
@@ -58,40 +132,77 @@ export class OverlayFs implements FsPort {
   }
 
   async readdir(path: string): Promise<readonly string[]> {
-    const seen = new Set<string>()
-    for (const layer of this.layers) {
-      let names: readonly string[]
-      try {
-        names = await layer.readdir(path)
-      } catch {
-        continue // layer lacks this dir — skip
+    if (!this.whiteout) {
+      const seen = new Set<string>()
+      for (const layer of this.layers) {
+        let names: readonly string[]
+        try {
+          names = await layer.readdir(path)
+        } catch {
+          continue // layer lacks this dir — skip
+        }
+        for (const n of names) seen.add(n)
       }
-      for (const n of names) seen.add(n)
+      return [...seen]
     }
-    return [...seen]
+    return this.unionWhiteoutAware((layer) => layer.readdir(path))
   }
 
   async walk(path: string): Promise<readonly string[]> {
-    const seen = new Set<string>()
-    for (const layer of this.layers) {
-      const rels = await layer.walk(path) // NodeFsAdapter returns [] if missing
-      for (const rel of rels) seen.add(rel)
+    if (!this.whiteout) {
+      const seen = new Set<string>()
+      for (const layer of this.layers) {
+        const rels = await layer.walk(path) // NodeFsAdapter returns [] if missing
+        for (const rel of rels) seen.add(rel)
+      }
+      return [...seen]
     }
-    return [...seen]
+    return this.unionWhiteoutAware((layer) => layer.walk(path))
   }
 
-  // ── mutations target the top (writable) layer only ──────────────────
+  /**
+   * Union the entries each layer reports for a path (basenames for
+   * readdir, relative paths for walk), resolving whiteouts top-down: the
+   * first layer (highest precedence) that declares an entry or its marker
+   * wins. Real entries win over markers within the same layer; marker
+   * files are stripped from the result.
+   */
+  private async unionWhiteoutAware(
+    list: (layer: FsPort) => Promise<readonly string[]>
+  ): Promise<readonly string[]> {
+    const decided = new Map<string, "present" | "removed">()
+    for (const layer of this.layers) {
+      let entries: readonly string[]
+      try {
+        entries = await list(layer)
+      } catch {
+        continue // layer lacks this dir — skip
+      }
+      const reals = entries.filter((e) => !isMarker(e))
+      const markerBases = entries.filter(isMarker).map(baseOf)
+      // Real entries first so a real entry wins over a same-layer marker.
+      for (const r of reals) if (!decided.has(r)) decided.set(r, "present")
+      for (const b of markerBases) if (!decided.has(b)) decided.set(b, "removed")
+    }
+    const out: string[] = []
+    for (const [name, state] of decided) {
+      if (state === "present") out.push(name)
+    }
+    return out
+  }
+
+  // ── mutations target the writable layer only ────────────────────────
 
   async writeFile(path: string, content: string): Promise<void> {
-    return await this.layers[0]!.writeFile(path, content)
+    return await this.layers[this.writableIndex]!.writeFile(path, content)
   }
 
   async appendFile(path: string, content: string): Promise<void> {
-    return await this.layers[0]!.appendFile(path, content)
+    return await this.layers[this.writableIndex]!.appendFile(path, content)
   }
 
   async lock(path: string): Promise<FsLockHandle> {
-    return await this.layers[0]!.lock(path)
+    return await this.layers[this.writableIndex]!.lock(path)
   }
 }
 

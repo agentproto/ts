@@ -1,22 +1,22 @@
 {
-  "name": "@agentproto/corpus",
+  "name": "@agentproto/social",
   "version": "0.1.0-alpha.0",
-  "description": "@agentproto/corpus — canonical composition of AIP-10 KNOWLEDGE, AIP-12 PLAYBOOK, AIP-18 COLLECTION, AIP-9 OPERATOR, AIP-15 WORKFLOW, AIP-41 ROUTINE into an autonomous knowledge-improvement system. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
+  "description": "@agentproto/social — platform-neutral social footprint capture (posts, engagement, connections) reduced to AIP-10 corpus sources + a social-graph op stream. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports (SocialSourcePort, BrowserPort, GraphSinkPort).",
   "keywords": [
     "agentproto",
+    "social",
+    "footprint",
     "corpus",
-    "aip-10",
-    "aip-12",
-    "aip-18",
-    "knowledge-base",
+    "social-graph",
+    "persona",
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh/docs/corpus",
+  "homepage": "https://agentproto.sh/docs/social",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "packages/corpus"
+    "directory": "packages/social"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -54,22 +54,10 @@
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest",
-    "prepublishOnly": "pnpm build"
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/collection": "workspace:*",
-    "@agentproto/knowledge": "workspace:*",
-    "@agentproto/operator": "workspace:*",
-    "@agentproto/playbook": "workspace:*",
-    "@agentproto/registry": "workspace:*",
-    "@agentproto/routine": "workspace:*",
-    "@agentproto/workflow": "workspace:*",
-    "ajv": "^8.17.1",
-    "ajv-formats": "^3.0.1",
-    "gray-matter": "^4.0.3",
-    "yaml": "^2.7.0",
-    "zod": "^4.4.3"
+    "@agentproto/corpus": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

@@ -81,6 +81,7 @@ export { ImporterRunner } from "./importers/runner.js"
 export { LocalFilesImporter } from "./importers/local-files.js"
 export { KbMigrationImporter } from "./importers/kb-migration.js"
 export { WebImporter } from "./importers/web.js"
+export { ConversationImporter } from "./importers/conversation.js"
 export type {
   CorpusImporter,
   ImporterTarget,
@@ -90,6 +91,7 @@ export type {
 } from "./importers/types.js"
 export type { LocalFilesImporterOptions } from "./importers/local-files.js"
 export type { WebImporterOptions } from "./importers/web.js"
+export type { ConversationImporterOptions } from "./importers/conversation.js"
 
 // Distill — raw source → refined entries (KNOWLEDGE layer)
 export { DistillRunner } from "./distill/runner.js"
@@ -105,21 +107,77 @@ export type {
   RefinedKind,
 } from "./distill/types.js"
 export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
+export { buildDistillPrompt, parseItems } from "./distill/prompt.js"
+export { scanDistilledSourceIds } from "./distill/scan.js"
+
+// Distill registry — the catalog of distill kinds (4 swappable slots per
+// descriptor) + the generic per-(descriptor × scope) runner.
+export { createDistillRegistry } from "./distill/registry.js"
+export type {
+  DistillRegistry,
+  DistillDescriptor,
+  DistillBinding,
+  DistillScope,
+  DistillTarget,
+} from "./distill/registry.js"
+export { runDistill } from "./distill/run.js"
+export type { DistillReport } from "./distill/run.js"
+
+// ClaudeDistiller — a DistillPort over the Messages API (host-injected key).
+export { ClaudeDistiller } from "./distill/claude-distiller.js"
+export type { ClaudeDistillerOptions } from "./distill/claude-distiller.js"
+
+// Conversation windowing — pure (thread, day) helpers + the windowed-source
+// contract the conversation kind binds against.
+export {
+  windowRef,
+  parseWindowRef,
+  windowSlug,
+  enumerateWindowRefs,
+} from "./distill/windows.js"
+export type {
+  ConversationWindowSource,
+  ConversationThreadRef,
+} from "./distill/windows.js"
 
 // Knowledge resolver — the `knowledge:` binding (KNOWLEDGE → SKILL link)
 export { resolveKnowledge } from "./knowledge/resolve.js"
 export type {
-  KnowledgeQuery,
+  CorpusEntryQuery,
   ResolvedEntry,
   SourceRef,
   ResolveKnowledgeOptions,
 } from "./knowledge/resolve.js"
 
 // Overlay — guild edits shadow read-only packs (the customization engine)
-export { OverlayFs, ReadOnlyFs } from "./knowledge/overlay-fs.js"
+export {
+  OverlayFs,
+  ReadOnlyFs,
+  WHITEOUT_SUFFIX,
+  type OverlayFsOptions,
+} from "./knowledge/overlay-fs.js"
 
 // In-memory FsPort — backs build-time-inlined knowledge packs (no runtime fs)
 export { MemFs } from "./knowledge/mem-fs.js"
+
+// Knowledge stack — composable layer resolution (register one provider per
+// dimension; resolver emits a band-ordered stack; mount helper overlays it)
+export {
+  StackResolver,
+  buildOverlayFromStack,
+  flattenPackRefs,
+  partitionStackRefs,
+  type BuildOverlayOptions,
+  type StackRefPartition,
+  type LayerMode,
+  type LayerRef,
+  type LayerProvider,
+  type LayerShadow,
+  type ResolutionContext,
+  type StackEntry,
+  type StackResolution,
+  type StackSkip,
+} from "./stack/index.js"
 
 // Sink — agnostic outbound (corpus → external store via a config/MCP sink)
 export { SyncRunner } from "./sink/runner.js"
@@ -167,6 +225,11 @@ export type {
   FetchedSource,
   FetchedSourceKind,
 } from "./ports/fetcher.port.js"
+export type {
+  ConversationSourcePort,
+  ConversationDoc,
+  ConversationTurn,
+} from "./ports/conversation-source.port.js"
 export { systemClock } from "./ports/clock.port.js"
 
 // Workspace

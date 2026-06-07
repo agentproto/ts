@@ -20,12 +20,15 @@
  * module.
  */
 
-import { createHash } from "node:crypto"
 import type {
   Playbook,
   PlaybookStatus,
 } from "./types.js"
 import type { PlaybookRegistry } from "./registry.js"
+import {
+  DEFAULT_SHADOW_TRAFFIC_PCT,
+  sampleShadow as sampleShadowToken,
+} from "../util/shadow-sample.js"
 
 export interface ResolveContext {
   /**
@@ -108,22 +111,11 @@ export class OperatorOverlayResolver {
  * traffic with stable identity.
  */
 function sampleShadow(ctx: ResolveContext, p: Playbook): boolean {
-  if (!ctx.conversationId) return false
   const pct = typeof p.corpus.shadowTrafficPct === "number"
     ? p.corpus.shadowTrafficPct
     : DEFAULT_SHADOW_TRAFFIC_PCT
-  if (pct <= 0) return false
-  if (pct >= 1) return true
-  const h = createHash("sha256")
-    .update(`${ctx.conversationId}|${p.slug}`)
-    .digest()
-  // Use the first 4 bytes as a uint32 → [0, 1).
-  const u32 = h.readUInt32BE(0)
-  const bucket = u32 / 0x1_0000_0000
-  return bucket < pct
+  return sampleShadowToken(ctx.conversationId, p.slug, pct)
 }
-
-const DEFAULT_SHADOW_TRAFFIC_PCT = 0.1
 
 /**
  * Render-ready combination of overlays for a prompt. Returns the
