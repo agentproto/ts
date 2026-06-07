@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { createRegistry } from "@agentproto/registry"
-import { KnowledgeStackResolver } from "../resolver.js"
+import { StackResolver } from "../resolver.js"
 import { buildOverlayFromStack, flattenPackRefs } from "../mount.js"
 import type { LayerProvider, LayerRef } from "../types.js"
 import type { FsPort, FsStat } from "../../ports/fs.port.js"
@@ -72,12 +72,12 @@ const roleProvider: LayerProvider<Subject> = {
   },
 }
 
-describe("KnowledgeStackResolver", () => {
+describe("StackResolver", () => {
   it("emits layers band-ordered (operator band 10 before role band 50)", async () => {
     const r = reg()
     r.register(roleProvider) // register out of band order on purpose
     r.register(operatorProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
 
     const res = await resolver.resolve({
       subject: { operatorPacks: ["elon-tweets"], rolePacks: ["sales-rep"], roleSlug: "sales-rep" },
@@ -89,7 +89,7 @@ describe("KnowledgeStackResolver", () => {
     const r = reg()
     r.register(operatorProvider)
     r.register(roleProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
 
     // role packs include a duplicate of an operator pack
     const res = await resolver.resolve({
@@ -102,7 +102,7 @@ describe("KnowledgeStackResolver", () => {
     const r = reg()
     r.register(operatorProvider)
     r.register(roleProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
 
     const res = await resolver.resolve({
       subject: { operatorPacks: [], rolePacks: null, roleSlug: null },
@@ -123,7 +123,7 @@ describe("KnowledgeStackResolver", () => {
     }
     const r = reg()
     r.register(shadow)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
 
     const a1 = await resolver.resolve({ conversationId: "conv-A" })
     const a2 = await resolver.resolve({ conversationId: "conv-A" })
@@ -143,7 +143,7 @@ describe("buildOverlayFromStack", () => {
   it("mounts lens packs UNDER the guild layer (guild shadows packs)", async () => {
     const r = reg()
     r.register(operatorProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
     const res = await resolver.resolve({
       subject: { operatorPacks: ["pack-a"], rolePacks: null, roleSlug: null },
     })
@@ -175,7 +175,7 @@ describe("buildOverlayFromStack", () => {
     const r = reg()
     r.register(operatorProvider)
     r.register(constraintProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
     const res = await resolver.resolve({
       subject: { operatorPacks: ["pack-a"], rolePacks: null, roleSlug: null },
     })
@@ -203,7 +203,7 @@ describe("buildOverlayFromStack", () => {
   it("returns guildFs unchanged when nothing resolves", async () => {
     const r = reg()
     r.register(operatorProvider)
-    const resolver = new KnowledgeStackResolver(r)
+    const resolver = new StackResolver(r)
     const res = await resolver.resolve({
       subject: { operatorPacks: [], rolePacks: null, roleSlug: null },
     })

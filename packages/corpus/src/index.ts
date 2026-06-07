@@ -113,7 +113,7 @@ export { scanDistilledSourceIds } from "./distill/scan.js"
 // Knowledge resolver — the `knowledge:` binding (KNOWLEDGE → SKILL link)
 export { resolveKnowledge } from "./knowledge/resolve.js"
 export type {
-  KnowledgeQuery,
+  CorpusEntryQuery,
   ResolvedEntry,
   SourceRef,
   ResolveKnowledgeOptions,
@@ -133,7 +133,7 @@ export { MemFs } from "./knowledge/mem-fs.js"
 // Knowledge stack — composable layer resolution (register one provider per
 // dimension; resolver emits a band-ordered stack; mount helper overlays it)
 export {
-  KnowledgeStackResolver,
+  StackResolver,
   buildOverlayFromStack,
   flattenPackRefs,
   partitionStackRefs,
