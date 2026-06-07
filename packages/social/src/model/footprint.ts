@@ -47,12 +47,15 @@ export interface ProfileRecord extends FootprintPerson {
 }
 
 /** A lightweight reference to any post (the subject's, or someone else's). */
-/** An image / video / gif attached to a post — referenced by URL. */
+/** An image / video / gif / document attached to a post — referenced by URL. */
 export interface MediaRef {
-  readonly type: "image" | "video" | "gif"
-  /** Best/original media URL (video: the playable variant; image: the photo). */
+  readonly type: "image" | "video" | "gif" | "document"
+  /**
+   * Best/original media URL (video: the playable variant; image: the photo;
+   * document: the source file, e.g. a LinkedIn slide deck PDF).
+   */
   readonly url: string
-  /** Poster/thumbnail still (set for video/gif). */
+  /** Poster/thumbnail still (set for video/gif; document: cover page). */
   readonly thumbUrl?: string | null
   /** Author-provided alt text, when present. */
   readonly alt?: string | null
