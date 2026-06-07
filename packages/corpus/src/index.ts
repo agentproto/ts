@@ -110,6 +110,36 @@ export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
 export { buildDistillPrompt, parseItems } from "./distill/prompt.js"
 export { scanDistilledSourceIds } from "./distill/scan.js"
 
+// Distill registry — the catalog of distill kinds (4 swappable slots per
+// descriptor) + the generic per-(descriptor × scope) runner.
+export { createDistillRegistry } from "./distill/registry.js"
+export type {
+  DistillRegistry,
+  DistillDescriptor,
+  DistillBinding,
+  DistillScope,
+  DistillTarget,
+} from "./distill/registry.js"
+export { runDistill } from "./distill/run.js"
+export type { DistillReport, RunDistillOptions } from "./distill/run.js"
+
+// ClaudeDistiller — a DistillPort over the Messages API (host-injected key).
+export { ClaudeDistiller } from "./distill/claude-distiller.js"
+export type { ClaudeDistillerOptions } from "./distill/claude-distiller.js"
+
+// Conversation windowing — pure (thread, day) helpers + the windowed-source
+// contract the conversation kind binds against.
+export {
+  windowRef,
+  parseWindowRef,
+  windowSlug,
+  enumerateWindowRefs,
+} from "./distill/windows.js"
+export type {
+  ConversationWindowSource,
+  ConversationThreadRef,
+} from "./distill/windows.js"
+
 // Knowledge resolver — the `knowledge:` binding (KNOWLEDGE → SKILL link)
 export { resolveKnowledge } from "./knowledge/resolve.js"
 export type {
