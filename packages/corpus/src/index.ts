@@ -121,7 +121,7 @@ export type {
   DistillTarget,
 } from "./distill/registry.js"
 export { runDistill } from "./distill/run.js"
-export type { DistillReport, RunDistillOptions } from "./distill/run.js"
+export type { DistillReport } from "./distill/run.js"
 
 // ClaudeDistiller — a DistillPort over the Messages API (host-injected key).
 export { ClaudeDistiller } from "./distill/claude-distiller.js"

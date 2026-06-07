@@ -16,7 +16,8 @@ function stub(id: string, jobType = `distill:${id}`): DistillDescriptor {
     label: id,
     bind: () => ({
       importer: new ConversationImporter({ source }),
-      enumerate: async () => [],
+      prepare: async () => null,
+      provenanceId: imported => imported.slug,
     }),
     distiller: () => distiller,
     target: async () => ({ fs: new MemFs({}), clock: systemClock }),

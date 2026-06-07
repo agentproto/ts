@@ -8,7 +8,7 @@
  * No per-kind branches: every variation rides on the descriptor's slots.
  *
  * Idempotent: a unit whose provenance id already backs an entry is skipped by
- * the binding's `enumerate`, and `DistillRunner` additionally skips any entry
+ * the binding's `prepare`, and `DistillRunner` additionally skips any entry
  * slug that already exists — so a daily re-run only adds fresh material.
  */
 
@@ -19,7 +19,7 @@ import type { DistillDescriptor, DistillScope } from "./registry.js"
 export interface DistillReport {
   readonly descriptorId: string
   readonly scopeId: string
-  /** Fresh units the binding offered this run. */
+  /** Sources the importer yielded this run. */
   unitsConsidered: number
   /** Units that produced ≥1 new entry. */
   unitsDistilled: number
@@ -28,15 +28,9 @@ export interface DistillReport {
   skipped: number
 }
 
-export interface RunDistillOptions {
-  /** Cap units imported in one run (cost ceiling). */
-  readonly maxUnits?: number
-}
-
 export async function runDistill<S extends DistillScope>(
   descriptor: DistillDescriptor<S>,
-  scope: S,
-  opts: RunDistillOptions = {}
+  scope: S
 ): Promise<DistillReport> {
   const report: DistillReport = {
     descriptorId: descriptor.id,
@@ -49,10 +43,10 @@ export async function runDistill<S extends DistillScope>(
 
   const target = await descriptor.target(scope)
   const distilled = await scanDistilledSourceIds(target.fs)
-  const binding = descriptor.bind(scope)
-  const refs = await binding.enumerate(distilled)
-  report.unitsConsidered = refs.length
-  if (refs.length === 0) return report
+  const binding = descriptor.bind(scope, target)
+  const config = await binding.prepare(distilled)
+  // null ⇒ the binding found nothing fresh to import this run.
+  if (!config) return report
 
   const runner = new DistillRunner({
     fs: target.fs,
@@ -62,22 +56,13 @@ export async function runDistill<S extends DistillScope>(
 
   for await (const imported of binding.importer.enumerate({
     importerId: descriptor.id,
-    config: {
-      refs: [...refs],
-      ...(descriptor.tags && descriptor.tags.length > 0
-        ? { tags: [...descriptor.tags] }
-        : {}),
-      authority: "primary",
-      ...(opts.maxUnits ? { maxRefs: opts.maxUnits } : {}),
-    },
+    config,
   })) {
-    // Key provenance off the raw source id (not the slugified entry slug) so
-    // the skip-scan matches on the next run.
-    const sourceId =
-      (imported.corpusMetadata as { conversationId?: string } | undefined)
-        ?.conversationId ?? imported.slug
+    report.unitsConsidered++
+    // Provenance id is binding-defined (window slug, URL, …) so the skip-scan
+    // matches it on the next run — not the slugified entry slug.
     const source: DistillSource = {
-      id: sourceId,
+      id: binding.provenanceId(imported),
       title: imported.title,
       body: imported.body,
       ...(imported.tags ? { tags: imported.tags } : {}),

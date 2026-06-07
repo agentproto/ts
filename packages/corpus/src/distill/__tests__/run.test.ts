@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest"
 import { MemFs } from "../../knowledge/mem-fs.js"
 import { ConversationImporter } from "../../importers/conversation.js"
+import { WebImporter } from "../../importers/web.js"
 import type { ConversationDoc } from "../../ports/conversation-source.port.js"
+import type { FetchedSource } from "../../ports/fetcher.port.js"
 import { runDistill } from "../run.js"
 import type { DistillDescriptor, DistillScope } from "../registry.js"
 import type { DistilledItem, DistillPort } from "../types.js"
@@ -56,7 +58,15 @@ function descriptorOver(
     tags: ["personal", "conversation"],
     bind: () => ({
       importer: new ConversationImporter({ source }),
-      enumerate: distilled => enumerateWindowRefs(source, distilled),
+      async prepare(distilled) {
+        const refs = await enumerateWindowRefs(source, distilled)
+        return refs.length
+          ? { refs, tags: ["personal", "conversation"], authority: "primary" }
+          : null
+      },
+      provenanceId: imported =>
+        (imported.corpusMetadata as { conversationId?: string } | undefined)
+          ?.conversationId ?? imported.slug,
     }),
     distiller: () => distiller,
     target: async () => ({ fs, clock }),
@@ -127,5 +137,82 @@ describe("runDistill", () => {
     const report = await runDistill(descriptor, { id: "u1", userId: "u1" })
     expect(report.unitsConsidered).toBe(0)
     expect(distiller.distill).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Importer-agnostic check: a DIFFERENT importer (WebImporter) plugs into the
+ * SAME runDistill via the binding's importer-native config (`{urls}`, not
+ * `{refs}`) and a different provenance field (`originalUrl`). This is the
+ * generalization the registry exists for — no per-kind code in the runner.
+ */
+describe("runDistill — web-style importer (urls / originalUrl provenance)", () => {
+  const fakeFetcher = (pages: Record<string, FetchedSource>) => ({
+    fetch: vi.fn(async (url: string) => pages[url] ?? null),
+  })
+
+  function webDescriptorOver(
+    fs: MemFs,
+    fetcher: { fetch: (u: string) => Promise<FetchedSource | null> },
+    distiller: DistillPort,
+    queue: string[]
+  ): DistillDescriptor {
+    return {
+      id: "web",
+      jobType: "distill:web",
+      label: "Web",
+      tags: ["web"],
+      bind: () => ({
+        importer: new WebImporter({ fetcher }),
+        async prepare(distilled) {
+          const fresh = queue.filter(u => !distilled.has(u))
+          return fresh.length ? { urls: fresh, tags: ["web"] } : null
+        },
+        // WebImporter sets originalUrl — the stable dedup key, not the slug.
+        provenanceId: imported => imported.originalUrl ?? imported.slug,
+      }),
+      distiller: () => distiller,
+      target: async () => ({ fs, clock }),
+      scopes: async () => [{ id: "g1", userId: "owner1" }],
+      resolveScope: async (id): Promise<DistillScope> => ({
+        id,
+        userId: "owner1",
+      }),
+    }
+  }
+
+  it("distills queued URLs and dedups by URL on re-run", async () => {
+    const fs = new MemFs({})
+    const fetcher = fakeFetcher({
+      "https://example.com/a": {
+        title: "Pricing power",
+        text: "Charge for the value delivered, not the cost incurred.",
+        kind: "article",
+      },
+    })
+    const distiller = fakeDistiller([
+      {
+        kind: "principle",
+        title: "Price on value, not cost",
+        body: "Anchor price to the buyer's outcome.",
+      },
+    ])
+    const descriptor = webDescriptorOver(fs, fetcher, distiller, [
+      "https://example.com/a",
+    ])
+
+    const first = await runDistill(descriptor, { id: "g1", userId: "owner1" })
+    expect(first.entriesWritten).toBe(1)
+    expect(fetcher.fetch).toHaveBeenCalledTimes(1)
+    // The entry's provenance backlink is the URL.
+    const written = await fs.walk("entries")
+    const body = await fs.readFile(`entries/${written[0]!}`)
+    expect(body).toContain("https://example.com/a")
+
+    // Re-run: the URL is already distilled ⇒ prepare returns null, no re-fetch.
+    const second = await runDistill(descriptor, { id: "g1", userId: "owner1" })
+    expect(second.unitsConsidered).toBe(0)
+    expect(second.entriesWritten).toBe(0)
+    expect(distiller.distill).toHaveBeenCalledTimes(1)
   })
 })

@@ -14,7 +14,7 @@
  * bindings live in each app's core package.
  */
 
-import type { CorpusImporter } from "../importers/types.js"
+import type { CorpusImporter, ImportedSource } from "../importers/types.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { FsPort } from "../ports/fs.port.js"
 import type { DistillPort } from "./types.js"
@@ -40,19 +40,31 @@ export interface DistillTarget {
 
 /**
  * SOURCE + IMPORTER bound to one scope. Co-constructed so both share a single
- * (cache-bearing) source instance: the importer resolves refs through it, and
- * `enumerate` lists the refs worth importing. Keeping them together is not just
- * convenience — it is what lets a windowed source load each thread once.
+ * (cache-bearing) source instance where relevant (e.g. a windowed conversation
+ * source loads each thread once). The binding owns the importer-native config
+ * AND the provenance mapping, so `runDistill` stays importer-agnostic — a
+ * conversation kind keys on `{refs}`/`conversationId`, a web kind on
+ * `{urls}`/`originalUrl`, with no per-kind code in the runner.
  */
 export interface DistillBinding {
-  /** The kit importer that resolves refs through this scope's source. */
+  /** The kit importer for this kind (ConversationImporter, WebImporter, …). */
   readonly importer: CorpusImporter
   /**
-   * Refs to import this run — already filtered against `distilled` (the set of
-   * provenance ids that already have ≥1 entry), so a re-run only sees fresh
-   * material.
+   * Build the importer's NATIVE config for the fresh (not-yet-distilled)
+   * material, or `null` when nothing new is left to import. The config is
+   * passed straight to `importer.enumerate({ config })`, so its shape is the
+   * importer's own (`{refs}`, `{urls}`, …). Filter against `distilled` (the set
+   * of provenance ids already backing ≥1 entry) so a re-run only sees fresh work.
    */
-  enumerate(distilled: ReadonlySet<string>): Promise<readonly string[]>
+  prepare(
+    distilled: ReadonlySet<string>
+  ): Promise<Readonly<Record<string, unknown>> | null>
+  /**
+   * Stable provenance id for an imported source — becomes the entry's
+   * `sources:` backlink and the dedup key matched against `distilled`. MUST
+   * agree with the ids `prepare` filters on (e.g. the window slug, the URL).
+   */
+  provenanceId(imported: ImportedSource): string
 }
 
 /**
@@ -70,8 +82,12 @@ export interface DistillDescriptor<S extends DistillScope = DistillScope> {
   /** Tags applied to every source distilled by this kind (e.g. ["personal"]). */
   readonly tags?: readonly string[]
 
-  /** SOURCE + IMPORTER slots, bound to the scope. */
-  bind(scope: S): DistillBinding
+  /**
+   * SOURCE + IMPORTER slots, bound to the scope. Receives the resolved TARGET
+   * so an importer that reads the corpus filesystem (e.g. refine-its-own-sources)
+   * can bind against it without resolving the target a second time.
+   */
+  bind(scope: S, target: DistillTarget): DistillBinding
   /** DISTILLER slot: the LLM boundary for this scope. */
   distiller(scope: S): DistillPort
   /** TARGET slot: where entries land for this scope. */
