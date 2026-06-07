@@ -15,7 +15,7 @@ export type {
   StackSkip,
 } from "./types.js"
 
-export { KnowledgeStackResolver } from "./resolver.js"
+export { StackResolver } from "./resolver.js"
 export {
   buildOverlayFromStack,
   flattenPackRefs,

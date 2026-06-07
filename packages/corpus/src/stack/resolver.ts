@@ -1,5 +1,5 @@
 /**
- * KnowledgeStackResolver — given a `ResolutionContext` and a registry of
+ * StackResolver — given a `ResolutionContext` and a registry of
  * `LayerProvider`s, produce the band-ordered list of layers an operator's
  * recall is resolved against.
  *
@@ -19,7 +19,7 @@ import type {
   StackSkip,
 } from "./types.js"
 
-export class KnowledgeStackResolver<TSubject = unknown> {
+export class StackResolver<TSubject = unknown> {
   constructor(
     private readonly registry: Registry<LayerProvider<TSubject>>
   ) {}
