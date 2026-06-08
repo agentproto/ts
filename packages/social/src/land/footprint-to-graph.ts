@@ -58,7 +58,28 @@ export function footprintToGraphOps(
     switch (r.kind) {
       case "profile": {
         // The richer profile card supersedes the thin subject seed.
-        ops.push({ op: "person", person: toGraphPerson(r) })
+        const person = toGraphPerson(r)
+        ops.push({ op: "person", person })
+        // Work history → person —WORKS_AT→ company edges. Collapse repeated
+        // stints at the same company to one edge (keep the most-recent role,
+        // which appears first), so re-runs stay idempotent and the graph holds
+        // one employment fact per (person, company).
+        const seenCo = new Set<string>()
+        for (const e of r.experience ?? []) {
+          const key = e.company.toLowerCase().replace(/\s+/g, " ").trim()
+          if (!key || seenCo.has(key)) continue
+          seenCo.add(key)
+          ops.push({
+            op: "employment",
+            platform: r.platform,
+            person,
+            company: { name: e.company, platform: r.platform },
+            title: e.title ?? null,
+            start: e.start ?? null,
+            end: e.end ?? null,
+            current: e.current ?? null,
+          })
+        }
         break
       }
       case "post": {

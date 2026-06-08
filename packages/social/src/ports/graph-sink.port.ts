@@ -39,6 +39,14 @@ export interface GraphEngagement {
   readonly comments?: ReadonlyArray<GraphPerson & { text?: string | null }>
 }
 
+/** An employer — mirrors graph-social's OrganizationInput (merge-by-name). */
+export interface GraphOrg {
+  readonly name: string
+  readonly platform?: string | null
+  readonly companyUrn?: string | null
+  readonly url?: string | null
+}
+
 export type GraphOp =
   | { readonly op: "person"; readonly person: GraphPerson }
   | { readonly op: "post"; readonly post: GraphPost }
@@ -49,6 +57,16 @@ export type GraphOp =
       readonly edge: "FOLLOWS" | "CONNECTED"
       readonly from: GraphPerson
       readonly to: GraphPerson
+    }
+  | {
+      readonly op: "employment"
+      readonly platform: string
+      readonly person: GraphPerson
+      readonly company: GraphOrg
+      readonly title?: string | null
+      readonly start?: string | null
+      readonly end?: string | null
+      readonly current?: boolean | null
     }
 
 export interface GraphSinkPort {

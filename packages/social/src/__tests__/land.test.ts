@@ -163,4 +163,33 @@ describe("footprintToGraphOps", () => {
     expect(replyEng?.engagement.comments?.[0]?.handle).toBe("romanbuildsaas")
     expect(replyEng?.engagement.comments?.[0]?.text).toContain("distribution is the moat")
   })
+
+  it("projects profile experience into WORKS_AT employment ops, deduped per company", () => {
+    const withExp = [
+      {
+        kind: "profile" as const,
+        platform: "linkedin",
+        handle: "alex",
+        name: "Alex Rivera",
+        experience: [
+          { company: "Stripe", title: "Staff Engineer", start: "2025", current: true },
+          { company: "Google", title: "Senior Engineer", start: "2019", end: "2020" },
+          { company: "google", title: "Engineer", start: "2017", end: "2019" },
+        ],
+      },
+    ]
+    const ops = footprintToGraphOps(withExp, {
+      platform: "linkedin",
+      handle: "alex",
+      name: "Alex Rivera",
+    })
+    const emp = ops.filter((o): o is Extract<typeof o, { op: "employment" }> => o.op === "employment")
+    // two distinct companies (the two Google stints collapse by normalized name)
+    expect(emp).toHaveLength(2)
+    const current = emp.find((e) => e.company.name === "Stripe")
+    expect(current?.current).toBe(true)
+    expect(current?.person.handle).toBe("alex")
+    // the most-recent Google role wins the single collapsed edge
+    expect(emp.find((e) => /google/i.test(e.company.name))?.title).toBe("Senior Engineer")
+  })
 })
