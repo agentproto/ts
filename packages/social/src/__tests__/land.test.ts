@@ -169,27 +169,27 @@ describe("footprintToGraphOps", () => {
       {
         kind: "profile" as const,
         platform: "linkedin",
-        handle: "mathilde",
-        name: "Mathilde Dugué",
+        handle: "alex",
+        name: "Alex Rivera",
         experience: [
-          { company: "ANINE BING", title: "Group Manager", start: "2025", current: true },
-          { company: "The Kooples", title: "Chef de Groupe", start: "2019", end: "2020" },
-          { company: "the kooples", title: "Chef de Produit", start: "2017", end: "2019" },
+          { company: "Stripe", title: "Staff Engineer", start: "2025", current: true },
+          { company: "Google", title: "Senior Engineer", start: "2019", end: "2020" },
+          { company: "google", title: "Engineer", start: "2017", end: "2019" },
         ],
       },
     ]
     const ops = footprintToGraphOps(withExp, {
       platform: "linkedin",
-      handle: "mathilde",
-      name: "Mathilde Dugué",
+      handle: "alex",
+      name: "Alex Rivera",
     })
     const emp = ops.filter((o): o is Extract<typeof o, { op: "employment" }> => o.op === "employment")
-    // two distinct companies (the two Kooples stints collapse by normalized name)
+    // two distinct companies (the two Google stints collapse by normalized name)
     expect(emp).toHaveLength(2)
-    const anine = emp.find((e) => e.company.name === "ANINE BING")
-    expect(anine?.current).toBe(true)
-    expect(anine?.person.handle).toBe("mathilde")
-    // the most-recent Kooples role wins the single edge
-    expect(emp.find((e) => /kooples/i.test(e.company.name))?.title).toBe("Chef de Groupe")
+    const current = emp.find((e) => e.company.name === "Stripe")
+    expect(current?.current).toBe(true)
+    expect(current?.person.handle).toBe("alex")
+    // the most-recent Google role wins the single collapsed edge
+    expect(emp.find((e) => /google/i.test(e.company.name))?.title).toBe("Senior Engineer")
   })
 })
