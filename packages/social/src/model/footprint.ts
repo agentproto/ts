@@ -41,9 +41,23 @@ export interface FootprintPerson {
   readonly verified?: boolean | null
 }
 
+/** One role in a person's work history (LinkedIn positions, etc.). Platform-
+ *  neutral and additive — sources that have no notion of employment omit it. */
+export interface ExperienceEntry {
+  readonly company: string
+  readonly title?: string | null
+  /** Start/end as a year ("2025") or ISO date; `end` null/absent = current. */
+  readonly start?: string | null
+  readonly end?: string | null
+  readonly current?: boolean
+  readonly location?: string | null
+}
+
 /** The captured subject's own profile card. */
 export interface ProfileRecord extends FootprintPerson {
   readonly kind: "profile"
+  /** Work history, most-recent first, when the source exposes it. */
+  readonly experience?: readonly ExperienceEntry[]
 }
 
 /** A lightweight reference to any post (the subject's, or someone else's). */

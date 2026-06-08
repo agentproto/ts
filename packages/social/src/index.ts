@@ -24,6 +24,7 @@ export type {
   FootprintPerson,
   MediaRef,
   ProfileRecord,
+  ExperienceEntry,
   PostRef,
   PostRecord,
   EngagementGivenRecord,
@@ -46,6 +47,7 @@ export type {
   GraphPerson,
   GraphPost,
   GraphEngagement,
+  GraphOrg,
 } from "./ports/graph-sink.port.js"
 export type {
   FootprintIndexPort,

@@ -163,4 +163,33 @@ describe("footprintToGraphOps", () => {
     expect(replyEng?.engagement.comments?.[0]?.handle).toBe("romanbuildsaas")
     expect(replyEng?.engagement.comments?.[0]?.text).toContain("distribution is the moat")
   })
+
+  it("projects profile experience into WORKS_AT employment ops, deduped per company", () => {
+    const withExp = [
+      {
+        kind: "profile" as const,
+        platform: "linkedin",
+        handle: "mathilde",
+        name: "Mathilde Dugué",
+        experience: [
+          { company: "ANINE BING", title: "Group Manager", start: "2025", current: true },
+          { company: "The Kooples", title: "Chef de Groupe", start: "2019", end: "2020" },
+          { company: "the kooples", title: "Chef de Produit", start: "2017", end: "2019" },
+        ],
+      },
+    ]
+    const ops = footprintToGraphOps(withExp, {
+      platform: "linkedin",
+      handle: "mathilde",
+      name: "Mathilde Dugué",
+    })
+    const emp = ops.filter((o): o is Extract<typeof o, { op: "employment" }> => o.op === "employment")
+    // two distinct companies (the two Kooples stints collapse by normalized name)
+    expect(emp).toHaveLength(2)
+    const anine = emp.find((e) => e.company.name === "ANINE BING")
+    expect(anine?.current).toBe(true)
+    expect(anine?.person.handle).toBe("mathilde")
+    // the most-recent Kooples role wins the single edge
+    expect(emp.find((e) => /kooples/i.test(e.company.name))?.title).toBe("Chef de Groupe")
+  })
 })
