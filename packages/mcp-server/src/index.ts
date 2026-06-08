@@ -111,6 +111,13 @@ export async function runStdioServer(
   await server.connect(transport)
 }
 
+export {
+  toMcpTool,
+  buildMcpTool,
+  type ToMcpToolOptions,
+  type McpToolRegistration,
+} from "./to-mcp-tool.js"
+
 // ── verb registration ───────────────────────────────────────────────
 
 function registerVerbs(

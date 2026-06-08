@@ -1,0 +1,62 @@
+{
+  "name": "@agentproto/workflow-runtime",
+  "version": "0.1.0-alpha.0",
+  "description": "Reference step-walker for AIP-15 WORKFLOW composition: executes a typed step graph (tool / map / branch / loop / transform) over @agentproto/driver runTool, threading each step's output into a run-scoped binding bag (the AIP-16 IO seam, expressed as typed selectors). The missing executor that makes 'composition = config' runnable.",
+  "keywords": [
+    "agentproto",
+    "aip-15",
+    "workflow",
+    "runtime",
+    "step-walker",
+    "orchestration",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-15",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/specs"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}
