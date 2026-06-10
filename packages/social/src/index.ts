@@ -33,6 +33,22 @@ export type {
   FootprintRecord,
 } from "./model/footprint.js"
 
+// File format: the versioned envelope + runtime validation. The cross-product
+// handoff contract (capture writes it, landing reads it).
+export {
+  SCHEMA_VERSION,
+  zFootprintFile,
+  zFootprintRecord,
+  zFootprintSubject,
+  parseFootprintFile,
+  normalizeFootprintFile,
+  footprintSubject,
+} from "./model/footprint.schema.js"
+export type {
+  FootprintFile,
+  FootprintSubject,
+} from "./model/footprint.schema.js"
+
 // Ports (also available at @agentproto/social/ports). The transport seam
 // the platform adapters consume lives host-side in @agstudio/browser-social,
 // not here — this kit is pure (zero browser dependency).

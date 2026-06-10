@@ -57,7 +57,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/corpus": "workspace:*"
+    "@agentproto/corpus": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
