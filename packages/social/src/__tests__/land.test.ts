@@ -1,6 +1,16 @@
 import { describe, it, expect } from "vitest"
+import type {
+  BatchReport,
+  CorpusImporter,
+  ImporterRunner,
+  ImporterTarget,
+} from "@agentproto/corpus"
 import { footprintToSources } from "../land/footprint-to-corpus.js"
 import { footprintToGraphOps } from "../land/footprint-to-graph.js"
+import { landFootprint } from "../land/land-footprint.js"
+import type { GraphOp, GraphSinkPort } from "../ports/graph-sink.port.js"
+import type { FootprintFile } from "../model/footprint.schema.js"
+import { parseFootprintFile } from "../model/footprint.schema.js"
 import type { FootprintRecord } from "../model/footprint.js"
 
 const subject = { platform: "x", handle: "romanbuildsaas", name: "Roman" }
@@ -64,6 +74,90 @@ const records: FootprintRecord[] = [
     person: { platform: "x", handle: "fan1", name: "Fan One" },
   },
 ]
+
+/** A runner that drains the importer's sources so we can assert what landed. */
+function fakeRunner() {
+  const seen: { sources: number; tags: string[] } = { sources: 0, tags: [] }
+  const target: ImporterTarget = { importerId: "social", config: {} }
+  const run = async (importer: CorpusImporter): Promise<BatchReport> => {
+    const slugs: string[] = []
+    for await (const s of importer.enumerate(target)) {
+      seen.sources++
+      slugs.push(s.slug)
+      for (const t of s.tags ?? []) seen.tags.push(t)
+    }
+    return {
+      importerId: "social",
+      batchId: "2026-06-11",
+      archivedSlugs: slugs,
+      duplicateSlugs: [],
+      candidateIds: slugs,
+      warnings: [],
+    }
+  }
+  return { runner: { run } as unknown as ImporterRunner, seen }
+}
+
+function fakeGraph() {
+  const ops: GraphOp[] = []
+  const sink: GraphSinkPort = {
+    apply: async (op) => {
+      ops.push(op)
+    },
+  }
+  return { sink, ops }
+}
+
+const file: FootprintFile = parseFootprintFile({
+  schemaVersion: "1.0.0",
+  capturedAt: "2026-06-11T00:00:00.000Z",
+  subject: { platform: "x", handle: "romanbuildsaas" },
+  profile: {
+    kind: "profile",
+    platform: "x",
+    handle: "romanbuildsaas",
+    name: "Roman",
+    profileUrl: "https://x.com/romanbuildsaas",
+  },
+  records,
+})
+
+describe("landFootprint", () => {
+  it("fans the footprint into both sinks when both are given", async () => {
+    const { runner, seen } = fakeRunner()
+    const { sink, ops } = fakeGraph()
+    const res = await landFootprint(file, { corpus: { runner }, graph: sink })
+
+    // corpus: the two voice units land; the platform tags the sources.
+    expect(res.corpus).toEqual({
+      archived: 2,
+      duplicates: 0,
+      candidates: 2,
+      warnings: [],
+    })
+    expect(seen.sources).toBe(2)
+    expect(seen.tags).toContain("x")
+
+    // graph: the network merges idempotently; every op applied.
+    expect(res.graph).toEqual({ applied: ops.length, failed: 0 })
+    expect(ops.map((o) => o.op)).toContain("person")
+    expect(res.subject).toEqual({ platform: "x", handle: "romanbuildsaas" })
+  })
+
+  it("skips the graph at zero cost when no graph port is given", async () => {
+    const { runner } = fakeRunner()
+    const res = await landFootprint(file, { corpus: { runner } })
+    expect(res.corpus?.archived).toBe(2)
+    expect(res.graph).toBeUndefined()
+  })
+
+  it("derives the subject from the profile when none is stamped", async () => {
+    const { sink } = fakeGraph()
+    const legacy = parseFootprintFile({ profile: file.profile, records })
+    const res = await landFootprint(legacy, { graph: sink })
+    expect(res.subject).toEqual({ platform: "x", handle: "romanbuildsaas" })
+  })
+})
 
 describe("footprintToSources", () => {
   it("emits one source per voice unit (post + reply), skips non-voice", () => {

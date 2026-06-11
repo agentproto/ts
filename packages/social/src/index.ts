@@ -101,6 +101,16 @@ export {
   makeSocialCandidateMapper,
 } from "./land/social-importer.js"
 
+// Land — the single fan-out pipeline (corpus + opt-in graph, decided once)
+export { landFootprint } from "./land/land-footprint.js"
+export type {
+  LandCorpusSink,
+  LandFootprintSinks,
+  LandCorpusResult,
+  LandGraphResult,
+  LandFootprintResult,
+} from "./land/land-footprint.js"
+
 // Land — graph sink
 export {
   footprintToGraphOps,
