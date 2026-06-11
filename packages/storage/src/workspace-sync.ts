@@ -52,6 +52,14 @@ export type PushResult =
       prUrl?: string
       prNumber?: number
       files: number
+      /** Bytes materialised to the origin, when the provider tracks it. */
+      bytes?: number
+      /** Files the provider intentionally left behind (size caps,
+       *  exclude rules) — telemetry, not a failure. */
+      filesSkipped?: number
+      /** Non-fatal errors during a best-effort push. The push still
+       *  landed; these are per-file warnings a UI may surface. */
+      errors?: readonly string[]
       message: string
     }
   /** Working tree matches the origin — nothing to push. */
