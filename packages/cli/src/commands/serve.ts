@@ -542,6 +542,9 @@ async function runOneTunnel(
     label: opts.label,
     pty: spawnPty !== null,
     ...(spawnPty ? { spawnPty } : {}),
+    // Announce what this daemon serves — the gateway's registered adapter
+    // ids — so a multi-daemon host can enumerate + route by capability.
+    ...(gateway.registered.length ? { tools: gateway.registered } : {}),
     // Generic HTTP-relay upstream for tunnel `http_request` frames.
     // Cloud-side callers (e.g. the API's local-daemon filesystem
     // provider) can now route MCP JSON-RPC + any other HTTP through

@@ -225,6 +225,15 @@ export interface HelloFrame {
      *  `ws_open` / `ws_message` / `ws_close`. Hosts MUST gate
      *  `forwardWebSocket()` on this — older daemons ignore the frames. */
     wsForward?: boolean
+    /**
+     * Identifiers of the capabilities the daemon serves — its registered
+     * agent adapters / tool surfaces. Lets a host that fronts several
+     * daemons enumerate and route by what each one can do, without a
+     * round-trip. Omitted by older daemons (host treats as "unknown",
+     * not "none"). Advisory: the authoritative surface is still the
+     * daemon's live `tools/list` over the HTTP relay.
+     */
+    tools?: ReadonlyArray<string>
     /** Future: file-transfer, port-forward, etc. */
   }>
   /** User-friendly daemon label, surfaced in host UIs. */

@@ -59,6 +59,13 @@ export interface TunnelServerOptions {
   /** User-friendly label sent in the hello frame. */
   label?: string
   /**
+   * Capability identifiers advertised in the hello frame — the agent
+   * adapters / tool surfaces this daemon serves (e.g. the gateway's
+   * registered adapter ids). Lets a multi-daemon host enumerate and
+   * route by capability without a round-trip. Omit to advertise none.
+   */
+  tools?: ReadonlyArray<string>
+  /**
    * Whether this daemon advertises PTY support. Set to true only when
    * `spawnPty` is also provided.
    */
@@ -177,6 +184,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     capabilities: {
       pty: opts.pty === true,
       wsForward: opts.dialUpstreamWs !== undefined && !!opts.httpUpstream,
+      ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
     },
     label: opts.label,
     daemon: {
