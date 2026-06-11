@@ -20,3 +20,12 @@ export type {
   StorageRuntimeInput,
   StorageRuntimeHandle,
 } from "./types.js"
+
+export { hasWorkspaceSync } from "./workspace-sync.js"
+export type {
+  WorkspaceSync,
+  SyncTree,
+  PullResult,
+  PushResult,
+  PushOptions,
+} from "./workspace-sync.js"
