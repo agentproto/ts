@@ -317,6 +317,18 @@ export async function runServe(args: readonly string[]): Promise<number> {
     return 1
   }
 
+  // The capability set this daemon announces in its tunnel hello: the MCP
+  // doctypes it serves PLUS the agent adapters installed on this machine.
+  // The adapters are what differentiate one daemon from another (every daemon
+  // registers the same base doctypes), so a multi-daemon host routes on them.
+  // Computed once at boot — the adapter walk is cheap but not worth per-reconnect.
+  const installedAdapterSlugs = await listInstalledAdapters()
+    .then(list => list.map(a => a.slug))
+    .catch(() => [] as string[])
+  const announcedTools = [
+    ...new Set([...gateway.registered, ...installedAdapterSlugs]),
+  ]
+
   printBootBanner({
     url: gateway.url,
     workspace: gateway.workspace,
@@ -453,7 +465,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const reconnectState = { immediate: false }
   while (!aborter.signal.aborted) {
     try {
-      await runOneTunnel(opts, gateway, spawnPty, aborter.signal, reconnectState)
+      await runOneTunnel(
+        opts,
+        gateway,
+        announcedTools,
+        spawnPty,
+        aborter.signal,
+        reconnectState
+      )
       backoffMs = opts.reconnectMinMs ?? 1_000 // success resets backoff
       if (reconnectState.immediate) {
         reconnectState.immediate = false
@@ -488,6 +507,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 async function runOneTunnel(
   opts: ServeOpts,
   gateway: GatewayHandle,
+  announcedTools: readonly string[],
   spawnPty: PtyFactory | null,
   signal: AbortSignal,
   reconnectState: { immediate: boolean }
@@ -542,9 +562,9 @@ async function runOneTunnel(
     label: opts.label,
     pty: spawnPty !== null,
     ...(spawnPty ? { spawnPty } : {}),
-    // Announce what this daemon serves — the gateway's registered adapter
-    // ids — so a multi-daemon host can enumerate + route by capability.
-    ...(gateway.registered.length ? { tools: gateway.registered } : {}),
+    // Announce what this daemon serves (doctypes + installed agent adapters)
+    // so a multi-daemon host can enumerate + route by capability.
+    ...(announcedTools.length ? { tools: announcedTools } : {}),
     // Generic HTTP-relay upstream for tunnel `http_request` frames.
     // Cloud-side callers (e.g. the API's local-daemon filesystem
     // provider) can now route MCP JSON-RPC + any other HTTP through
