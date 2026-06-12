@@ -332,6 +332,36 @@ export type {
   EvalContextPort,
 } from "./ports/evaluator.port.js"
 
+// Attachment binding plane — Dimensions × Selectors × one matcher
+export {
+  ANY_REF,
+  WELL_KNOWN_AXES,
+  createAxisRegistry,
+  identityAxis,
+  roleAxis,
+  positionAxis,
+  capabilityAxis,
+  prefixedRefNormalizer,
+  EMPTY_SELECTOR,
+  isEmptySelector,
+  matchesSelector,
+  parseSelectorFrontmatter,
+  compileLegacyPlaybookBinding,
+  matchAttachments,
+  matchAttachmentRefs,
+} from "./binding/index.js"
+export type {
+  AxisDefinition,
+  AxisRegistry,
+  Dimensions,
+  MatchOptions,
+  Selector,
+  SelectorTerm,
+  AttachmentAsset,
+  AttachmentDeclaration,
+  MatchAttachmentsOptions,
+} from "./binding/index.js"
+
 // Playbooks (AIP-12)
 export { PlaybookRegistry } from "./playbooks/registry.js"
 export type { PlaybookRegistryOptions } from "./playbooks/registry.js"

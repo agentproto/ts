@@ -21,9 +21,20 @@ export type PlaybookDefinition = {
    */
   entry?: string
   /**
+   * @deprecated In favor of `selector`. Legacy axis-ambiguous binding —
+   * runtimes compile it into a selector (see AIP-12 §Selector binding).
+   * Kept valid forever. At least one of `targets` / `selector` is required.
+   *
    * @minItems 1
    */
-  targets: [Target, ...Target[]]
+  targets?: [Target, ...Target[]]
+  /**
+   * Typed attachment binding evaluated against the subject's dimensions.
+   * Short form: axis → ref | ref[] (AND across keys, OR within a list).
+   * Long form: `allOf` / `anyOf` lists of `{axis, anyOf}` terms.
+   * Wins over `targets`/`binds_operator` when present.
+   */
+  selector?: SelectorFrontmatter
   kind: "overlay" | "block-replacement"
   /**
    * Required when kind is 'block-replacement' — the named persona block to swap.
@@ -49,7 +60,9 @@ export type PlaybookDefinition = {
    */
   history?: HistoryEntry[]
   /**
-   * Optional — the specific operator (per AIP-9) this playbook is bound to. Narrower than targets[].
+   * @deprecated As a binding — provenance only when `selector` is present.
+   * Without `selector`, runtimes compile it like a kind 'operator' target
+   * (matches BOTH identity and role axes).
    */
   binds_operator?: string
   created_at?: string
@@ -64,6 +77,30 @@ export type PlaybookDefinition = {
 }
 export type TraitId = string
 export type Slug = string
+
+/** Axis value slug, prefixed ref (e.g. 'role/sales-rep'), or '*' (any present value). */
+export type SelectorRef = string
+export interface SelectorTermFrontmatter {
+  axis: string
+  /**
+   * @minItems 1
+   */
+  anyOf: [SelectorRef, ...SelectorRef[]]
+}
+/**
+ * Short form: axis keys → ref | ref[]. Long form: explicit `allOf` /
+ * `anyOf` term lists for OR across axes.
+ */
+export type SelectorFrontmatter = {
+  allOf?: SelectorTermFrontmatter[]
+  anyOf?: SelectorTermFrontmatter[]
+} & {
+  [axis: string]:
+    | SelectorRef
+    | SelectorRef[]
+    | SelectorTermFrontmatter[]
+    | undefined
+}
 
 export interface Target {
   kind: "operator" | "role" | "skill" | "runtime"

@@ -13,6 +13,7 @@
  * so callers don't dig into untyped frontmatter.
  */
 
+import type { Dimensions, Selector } from "../binding/index.js"
 import type { ParsedFile } from "../types.js"
 
 export type PlaybookStatus = "shadow" | "active" | "archived"
@@ -62,6 +63,15 @@ export interface Playbook {
   readonly targets: readonly PlaybookTarget[]
   /** Optional convenience — narrower than targets[]. */
   readonly bindsOperator?: string
+  /**
+   * The binding, always populated: parsed from `selector:` frontmatter
+   * when present, otherwise compiled from the legacy `targets[]` /
+   * `binds_operator` fields (see binding/legacy.ts). Matching goes
+   * through this — never through `targets` directly.
+   */
+  readonly selector: Selector
+  /** Where `selector` came from — explicit frontmatter or legacy compile. */
+  readonly selectorSource: "selector" | "legacy"
   readonly supersedes: readonly string[]
   /** Markdown body — the overlay text. */
   readonly body: string
@@ -79,6 +89,19 @@ export interface PlaybookQuery {
   readonly operatorRef?: string
   /** Match on `kind` (overlay | block-replacement). */
   readonly kind?: PlaybookKind
-  /** Match playbooks bound to this slug (binds_operator OR targets[]). */
-  readonly forOperatorSlug?: string
+  /**
+   * Match playbooks bound to this slug (binds_operator OR targets[]).
+   * Accepts several slugs so a caller can match an operator by more than
+   * one handle it answers to — e.g. its identity slug AND the role slug it
+   * fulfils. A playbook matches if it binds/targets ANY of them.
+   *
+   * Sugar over `dimensions: { identity: slugs, role: slugs }` — prefer
+   * `dimensions` when the caller knows which axis each value belongs to.
+   */
+  readonly forOperatorSlug?: string | readonly string[]
+  /**
+   * Typed subject dimensions (axis → value(s)) evaluated against each
+   * playbook's `selector`. Wins over `forOperatorSlug` when both are set.
+   */
+  readonly dimensions?: Dimensions
 }

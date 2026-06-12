@@ -12,6 +12,12 @@
  * is pure read.
  */
 
+import {
+  compileLegacyPlaybookBinding,
+  createAxisRegistry,
+  matchesSelector,
+  parseSelectorFrontmatter,
+} from "../binding/index.js"
 import type { CorpusWorkspaceSnapshot, ParsedFile } from "../types.js"
 import type {
   Playbook,
@@ -74,6 +80,12 @@ function parsePlaybook(file: ParsedFile): Playbook | null {
   const targets = readTargets(fm)
   const supersedes = readStringArray(fm.supersedes)
   const corpus = readCorpusMeta(fm)
+  // Explicit `selector:` wins; malformed or absent falls back to the
+  // legacy compile so an old or broken file keeps its targets binding.
+  const explicitSelector = parseSelectorFrontmatter(fm.selector)
+  const selector =
+    explicitSelector ?? compileLegacyPlaybookBinding(targets, bindsOperator)
+  const selectorSource = explicitSelector ? "selector" : "legacy"
 
   return Object.freeze({
     path: file.path,
@@ -84,6 +96,8 @@ function parsePlaybook(file: ParsedFile): Playbook | null {
     priority,
     targets,
     bindsOperator,
+    selector,
+    selectorSource,
     supersedes,
     body: file.body,
     corpus,
@@ -137,16 +151,27 @@ function readCorpusMeta(
 
 // ── Query matching ─────────────────────────────────────────────────
 
+const AXES = createAxisRegistry()
+
 function matches(p: Playbook, q: PlaybookQuery): boolean {
   if (q.status !== undefined) {
     const wanted = Array.isArray(q.status) ? q.status : [q.status]
     if (!wanted.includes(p.status)) return false
   }
   if (q.kind !== undefined && p.kind !== q.kind) return false
+  if (q.dimensions !== undefined) {
+    return matchesSelector(p.selector, q.dimensions, { axes: AXES })
+  }
   if (q.forOperatorSlug !== undefined) {
-    if (p.bindsOperator === q.forOperatorSlug) return true
-    return p.targets.some(
-      (t) => t.kind === "operator" && refMatchesSlug(t.ref, q.forOperatorSlug!)
+    // Legacy sugar: the caller's slugs are axis-ambiguous handles, so
+    // try them on both axes — exactly the old either-axis behavior.
+    const slugs = Array.isArray(q.forOperatorSlug)
+      ? q.forOperatorSlug
+      : [q.forOperatorSlug]
+    return matchesSelector(
+      p.selector,
+      { identity: slugs, role: slugs },
+      { axes: AXES }
     )
   }
   if (q.operatorRef !== undefined) {
@@ -155,14 +180,4 @@ function matches(p: Playbook, q: PlaybookQuery): boolean {
     )
   }
   return true
-}
-
-function refMatchesSlug(ref: string, slug: string): boolean {
-  // AIP-12 target.ref shapes: "marketing-analyst", "operator/marketing-analyst",
-  // "ws://operators/marketing-analyst", or globs like "operator/*".
-  if (ref === slug) return true
-  if (ref === `operator/${slug}`) return true
-  if (ref === `ws://operators/${slug}`) return true
-  if (ref === "operator/*" || ref === "ws://operators/*") return true
-  return false
 }

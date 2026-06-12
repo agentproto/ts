@@ -38,8 +38,12 @@ export interface LayerRef {
 export interface ResolutionContext<TSubject = unknown> {
   /** Stable bucketing token for shadow rollout (e.g. conversation id). */
   readonly conversationId?: string
-  /** Dimension values keyed by dimension name. Missing/undefined = absent. */
-  readonly dimensions?: Readonly<Record<string, string | undefined>>
+  /** Dimension values keyed by dimension name. Missing/undefined = absent.
+   * List-valued dimensions (e.g. `capability`) carry every value at once —
+   * providers that expect a scalar must guard. */
+  readonly dimensions?: Readonly<
+    Record<string, string | readonly string[] | undefined>
+  >
   /** Host payload providers read to compute their refs. */
   readonly subject?: TSubject
 }

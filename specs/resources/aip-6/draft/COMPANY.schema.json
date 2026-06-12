@@ -76,6 +76,15 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "positions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+              },
+              "default": [],
+              "description": "Slugs of the company's seats — each typically materialized as an operator under `operators/<slug>/OPERATOR.md`. A position is a seat one operator holds; several positions may share one AIP-47 catalog role. See AIP-47 §Role vs Position vs Access role."
+            },
             "roles": {
               "type": "array",
               "items": {
@@ -83,7 +92,8 @@
                 "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
               },
               "default": [],
-              "description": "Slugs of roles defined under `roles/<slug>/ROLE.md`."
+              "deprecated": true,
+              "description": "DEPRECATED alias of `positions`. Readers MUST accept both; when both are present, `positions` wins. Historically documented as role slugs but used in practice for seats."
             },
             "objectives": {
               "type": "array",
@@ -101,7 +111,7 @@
                 "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
               },
               "default": {},
-              "description": "Map of role-slug → role-slug expressing the reporting tree. The key reports to the value. Roles not in the map are top-level."
+              "description": "Map of position-slug → position-slug expressing the reporting tree. The key reports to the value. Positions not in the map are top-level."
             }
           }
         },

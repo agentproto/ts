@@ -33,9 +33,21 @@ export const definePlaybook = createDoctype<PlaybookDefinition, PlaybookHandle>(
           .join("; ")}`,
       )
     }
-    // TODO: spec-12-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
+    // Cross-field binding rule (anyOf in the JSON Schema): at least
+    // one of `selector` (preferred) / legacy `targets` must be present.
+    const hasTargets = Array.isArray(def.targets) && def.targets.length > 0
+    const selector = def.selector
+    const hasSelector =
+      !!selector &&
+      typeof selector === "object" &&
+      Object.keys(selector).length > 0
+    if (!hasTargets && !hasSelector) {
+      throw new Error(
+        "definePlaybook (AIP-12): a binding is required — declare `selector` (preferred) or legacy `targets`",
+      )
+    }
+    // TODO: remaining cross-field rules (kind=block-replacement →
+    // `block` required). See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.

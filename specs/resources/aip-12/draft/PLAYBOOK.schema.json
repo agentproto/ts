@@ -8,7 +8,6 @@
     "schema",
     "slug",
     "title",
-    "targets",
     "kind",
     "lock_check",
     "evidence",
@@ -37,10 +36,21 @@
     "targets": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/target" }
+      "items": {
+        "$ref": "#/$defs/target"
+      },
+      "deprecated": true,
+      "description": "DEPRECATED in favor of `selector`. Legacy axis-ambiguous binding: runtimes compile each entry into a selector (kind 'operator' refs match BOTH the identity and the role axis — see AIP-12 §Selector binding). Kept valid forever; new files SHOULD declare `selector` instead."
+    },
+    "selector": {
+      "$ref": "#/$defs/selector",
+      "description": "Typed attachment binding evaluated against the subject's dimensions. Wins over `targets`/`binds_operator` when present."
     },
     "kind": {
-      "enum": ["overlay", "block-replacement"],
+      "enum": [
+        "overlay",
+        "block-replacement"
+      ],
       "default": "overlay"
     },
     "block": {
@@ -57,7 +67,9 @@
     "lock_check": {
       "type": "array",
       "description": "Locked persona traits this overlay MUST NOT modify. Author intent — runtime enforces independently.",
-      "items": { "$ref": "#/$defs/traitId" },
+      "items": {
+        "$ref": "#/$defs/traitId"
+      },
       "default": []
     },
     "ttl": {
@@ -68,27 +80,38 @@
     "evidence": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/evidenceItem" }
+      "items": {
+        "$ref": "#/$defs/evidenceItem"
+      }
     },
     "status": {
-      "enum": ["shadow", "active", "archived"],
+      "enum": [
+        "shadow",
+        "active",
+        "archived"
+      ],
       "default": "shadow"
     },
     "supersedes": {
       "type": "array",
-      "items": { "$ref": "#/$defs/slug" },
+      "items": {
+        "$ref": "#/$defs/slug"
+      },
       "default": []
     },
     "history": {
       "type": "array",
       "description": "Append-only audit trail of deltas, promotions, and archivals applied to this playbook.",
-      "items": { "$ref": "#/$defs/historyEntry" },
+      "items": {
+        "$ref": "#/$defs/historyEntry"
+      },
       "default": []
     },
     "binds_operator": {
       "type": "string",
-      "description": "Optional — the specific operator (per AIP-9) this playbook is bound to. Narrower than targets[].",
-      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$"
+      "description": "DEPRECATED as a binding — provenance only when `selector` is present. Without `selector`, runtimes compile it like a kind 'operator' target (matches BOTH identity and role axes).",
+      "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+      "deprecated": true
     },
     "created_at": {
       "type": "string",
@@ -100,7 +123,10 @@
     },
     "tags": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
       "default": []
     },
     "metadata": {
@@ -113,12 +139,34 @@
   "allOf": [
     {
       "if": {
-        "properties": { "kind": { "const": "block-replacement" } },
-        "required": ["kind"]
+        "properties": {
+          "kind": {
+            "const": "block-replacement"
+          }
+        },
+        "required": [
+          "kind"
+        ]
       },
       "then": {
-        "required": ["block"]
+        "required": [
+          "block"
+        ]
       }
+    },
+    {
+      "anyOf": [
+        {
+          "required": [
+            "targets"
+          ]
+        },
+        {
+          "required": [
+            "selector"
+          ]
+        }
+      ]
     }
   ],
   "$defs": {
@@ -136,11 +184,19 @@
     },
     "target": {
       "type": "object",
-      "required": ["kind", "ref"],
+      "required": [
+        "kind",
+        "ref"
+      ],
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "enum": ["operator", "role", "skill", "runtime"]
+          "enum": [
+            "operator",
+            "role",
+            "skill",
+            "runtime"
+          ]
         },
         "ref": {
           "type": "string",
@@ -152,11 +208,20 @@
     },
     "evidenceItem": {
       "type": "object",
-      "required": ["kind", "ref"],
+      "required": [
+        "kind",
+        "ref"
+      ],
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "enum": ["run", "conversation", "work-item", "reflection", "human"]
+          "enum": [
+            "run",
+            "conversation",
+            "work-item",
+            "reflection",
+            "human"
+          ]
         },
         "ref": {
           "type": "string",
@@ -171,10 +236,17 @@
     },
     "historyEntry": {
       "type": "object",
-      "required": ["at", "kind", "summary"],
+      "required": [
+        "at",
+        "kind",
+        "summary"
+      ],
       "additionalProperties": false,
       "properties": {
-        "at": { "type": "string", "format": "date-time" },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
         "kind": {
           "enum": [
             "created",
@@ -199,10 +271,79 @@
           "description": "User id, agent id, or system identifier responsible for the entry."
         },
         "gate": {
-          "enum": ["a-b", "scorer", "human", "governance"],
+          "enum": [
+            "a-b",
+            "scorer",
+            "human",
+            "governance"
+          ],
           "description": "For kind='promoted', the gate that passed."
         }
       }
+    },
+    "selector": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Short form: axis keys (identity, role, position, capability, or host-registered) mapping to a ref or ref list — AND across keys, OR within a list. Long form: explicit `allOf`/`anyOf` selector-term lists for OR across axes. An asset that wants every subject in scope says so explicitly with `\"*\"`; an empty selector matches nothing.",
+      "properties": {
+        "allOf": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selectorTerm"
+          }
+        },
+        "anyOf": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/selectorTerm"
+          }
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/selectorRefs"
+      }
+    },
+    "selectorTerm": {
+      "type": "object",
+      "required": [
+        "axis",
+        "anyOf"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "anyOf": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/selectorRef"
+          }
+        }
+      }
+    },
+    "selectorRefs": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/selectorRef"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/selectorRef"
+          }
+        }
+      ]
+    },
+    "selectorRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Axis value slug, prefixed ref (e.g. 'role/sales-rep'), or '*' (any present value)."
     }
   }
 }

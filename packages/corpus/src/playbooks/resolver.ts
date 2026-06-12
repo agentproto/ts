@@ -20,6 +20,7 @@
  * module.
  */
 
+import type { Dimensions } from "../binding/index.js"
 import type {
   Playbook,
   PlaybookStatus,
@@ -36,6 +37,22 @@ export interface ResolveContext {
    * `binds_operator` AND `targets[].ref` (with operator/* glob).
    */
   readonly operatorSlug: string
+  /**
+   * The role (job) slug the operator fulfils, when distinct from its
+   * identity slug. Overlays bind by role — "the recruiting SOP for any
+   * recruiter" — so a playbook targeting this role matches every operator
+   * fulfilling it, not just one. Matched in addition to `operatorSlug`.
+   *
+   * @deprecated Supply `dimensions` instead — it carries role, position,
+   * capability, and any host-registered axis in one typed map.
+   */
+  readonly roleSlug?: string
+  /**
+   * Typed subject dimensions (axis → value(s)) evaluated against each
+   * playbook's selector. When present, wins over the
+   * `operatorSlug`/`roleSlug` slug-pair matching.
+   */
+  readonly dimensions?: Dimensions
   /**
    * Conversation id (or another stable bucketing token). Used to
    * deterministically place a conversation into shadow-traffic
@@ -67,8 +84,13 @@ export class OperatorOverlayResolver {
   constructor(private readonly registry: PlaybookRegistry) {}
 
   resolve(ctx: ResolveContext): ResolveResult {
+    const slugs = ctx.roleSlug
+      ? [ctx.operatorSlug, ctx.roleSlug]
+      : [ctx.operatorSlug]
     const candidates = this.registry.listBy({
-      forOperatorSlug: ctx.operatorSlug,
+      ...(ctx.dimensions
+        ? { dimensions: ctx.dimensions }
+        : { forOperatorSlug: slugs }),
       status: ["active", "shadow"],
     })
 
