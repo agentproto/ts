@@ -41,6 +41,12 @@ export interface WorkflowDefinition {
   inputs: Inputs
   outputs: Outputs
   /**
+   * Optional value expression mapping step results to the workflow output,
+   * using the same reference grammar as a step's `inputs`. Omitted ⇒ the
+   * output is the final step's result.
+   */
+  result?: Record<string, unknown> | string
+  /**
    * @minItems 1
    */
   steps: [Step, ...Step[]]

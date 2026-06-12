@@ -174,10 +174,17 @@ export function compileWorkflow(
     )
   }
   assertLinear(steps)
+  // `result` is the optional output value-expression (AIP-15): map it through
+  // the same ref grammar as a step's inputs. Absent ⇒ no output selector, so
+  // runWorkflow falls back to the final step's result.
+  const result = (handle as { result?: unknown }).result
+  const output =
+    result !== undefined ? (b: Bindings) => resolveValue(result, b) : undefined
   return {
     id: handle.id,
     description: handle.description,
     steps: steps.map((s) => compileStep(s, opts)),
+    ...(output ? { output } : {}),
   }
 }
 

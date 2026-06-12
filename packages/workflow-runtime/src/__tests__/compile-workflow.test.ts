@@ -121,6 +121,24 @@ describe("compileWorkflow", () => {
     expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([2, 4, 6])
   })
 
+  it("maps the workflow output from a declarative `result` expression", async () => {
+    const wf = defineWorkflow({
+      name: "Double, report both",
+      id: "double-report",
+      description: "Double the input and return both the raw and doubled value.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      result: { raw: "$input.n", doubled: "$steps.d.n" },
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const { output } = await runWorkflow({ workflow: compiled, input: { n: 7 } })
+    expect(output).toEqual({ raw: 7, doubled: 14 })
+  })
+
   it("rejects a non-linear next goto with a diagnostic", () => {
     const wf = defineWorkflow({
       name: "Goto",
