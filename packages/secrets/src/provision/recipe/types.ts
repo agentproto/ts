@@ -18,16 +18,20 @@
 
 /**
  * Where a method's credential is read on the origin machine. Discriminated by
- * the present key; exactly one of file / env / prompt.
+ * the present key; exactly one of file / env / keychain / prompt.
  *
- *  - file   read a file (`~` expands); optionally extract a JSON string field.
- *  - env    read a process env var.
- *  - prompt read interactively (e.g. a website password for a remote browser);
- *           never on disk, never logged. Needs an injected prompt impl.
+ *  - file     read a file (`~` expands); optionally extract a JSON string field.
+ *  - env      read a process env var.
+ *  - keychain read the macOS login Keychain (`security find-generic-password`)
+ *             by service name; optionally extract a JSON string field. macOS
+ *             CLIs (e.g. Claude Code) store their OAuth token here, not on disk.
+ *  - prompt   read interactively (e.g. a website password for a remote browser);
+ *             never on disk, never logged. Needs an injected prompt impl.
  */
 export type CredentialSourceSpec =
   | { file: string; jsonPath?: string }
   | { env: string }
+  | { keychain: string; account?: string; jsonPath?: string }
   | { prompt: string }
 
 /** One installable flavor of a provider's credential. The first method in a
@@ -38,8 +42,10 @@ export interface RecipeMethod {
   id: string
   /** Human label for this flavor; falls back to the recipe label. */
   label?: string
-  /** Where to read the credential for this flavor. */
-  source: CredentialSourceSpec
+  /** Where to read the credential for this flavor. An array is an ordered
+   *  fallback chain — the first source that resolves wins (e.g. macOS Keychain,
+   *  then a file, so one recipe spans platforms). */
+  source: CredentialSourceSpec | CredentialSourceSpec[]
 }
 
 export interface ProvisionRecipeDefinition {

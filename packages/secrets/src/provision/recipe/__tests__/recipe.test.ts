@@ -8,6 +8,7 @@ import {
   resolveRecipeMethod,
   resolveSourceSpec,
   codexRecipe,
+  claudeCodeOauthRecipe,
 } from "../index.js"
 
 describe("defineProvisionRecipe", () => {
@@ -151,6 +152,54 @@ describe("resolveSourceSpec", () => {
     await expect(
       resolveSourceSpec({ prompt: "Website password" }),
     ).rejects.toThrow(/no promptImpl/)
+  })
+
+  it("falls back through a source chain (first fails, second wins)", async () => {
+    process.env.__RECIPE_FALLBACK = "fallback-secret"
+    await expect(
+      resolveSourceSpec([
+        { file: "/nonexistent/agentproto/x.json" },
+        { env: "__RECIPE_FALLBACK" },
+      ]),
+    ).resolves.toBe("fallback-secret")
+    delete process.env.__RECIPE_FALLBACK
+  })
+
+  it("aggregates errors when no source in the chain resolves", async () => {
+    await expect(
+      resolveSourceSpec([
+        { file: "/nonexistent/agentproto/x.json" },
+        { env: "__DEFINITELY_UNSET_VAR__" },
+      ]),
+    ).rejects.toThrow(/no credential source resolved/)
+  })
+
+  it.runIf(process.platform === "darwin")(
+    "keychain: unknown service throws not-found (macOS)",
+    async () => {
+      await expect(
+        resolveSourceSpec({ keychain: "agentproto-nonexistent-test-xyz" }),
+      ).rejects.toThrow(/not found/)
+    },
+  )
+
+  it.skipIf(process.platform === "darwin")(
+    "keychain: non-macOS throws macOS-only",
+    async () => {
+      await expect(
+        resolveSourceSpec({ keychain: "anything" }),
+      ).rejects.toThrow(/macOS-only/)
+    },
+  )
+})
+
+describe("builtin claude-code-oauth recipe", () => {
+  it("reads the subscription token via Keychain → file fallback", () => {
+    const src = claudeCodeOauthRecipe.methods[0].source
+    expect(Array.isArray(src)).toBe(true)
+    const chain = src as Array<Record<string, unknown>>
+    expect(chain[0]).toMatchObject({ keychain: "Claude Code-credentials" })
+    expect(chain[1]).toMatchObject({ file: "~/.claude/.credentials.json" })
   })
 })
 
