@@ -144,9 +144,15 @@ function matches(p: Playbook, q: PlaybookQuery): boolean {
   }
   if (q.kind !== undefined && p.kind !== q.kind) return false
   if (q.forOperatorSlug !== undefined) {
-    if (p.bindsOperator === q.forOperatorSlug) return true
-    return p.targets.some(
-      (t) => t.kind === "operator" && refMatchesSlug(t.ref, q.forOperatorSlug!)
+    const slugs = Array.isArray(q.forOperatorSlug)
+      ? q.forOperatorSlug
+      : [q.forOperatorSlug]
+    return slugs.some(
+      (slug) =>
+        p.bindsOperator === slug ||
+        p.targets.some(
+          (t) => t.kind === "operator" && refMatchesSlug(t.ref, slug)
+        )
     )
   }
   if (q.operatorRef !== undefined) {

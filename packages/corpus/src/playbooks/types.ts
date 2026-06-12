@@ -79,6 +79,11 @@ export interface PlaybookQuery {
   readonly operatorRef?: string
   /** Match on `kind` (overlay | block-replacement). */
   readonly kind?: PlaybookKind
-  /** Match playbooks bound to this slug (binds_operator OR targets[]). */
-  readonly forOperatorSlug?: string
+  /**
+   * Match playbooks bound to this slug (binds_operator OR targets[]).
+   * Accepts several slugs so a caller can match an operator by more than
+   * one handle it answers to — e.g. its identity slug AND the role slug it
+   * fulfils. A playbook matches if it binds/targets ANY of them.
+   */
+  readonly forOperatorSlug?: string | readonly string[]
 }

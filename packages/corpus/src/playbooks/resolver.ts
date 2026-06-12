@@ -37,6 +37,13 @@ export interface ResolveContext {
    */
   readonly operatorSlug: string
   /**
+   * The role (job) slug the operator fulfils, when distinct from its
+   * identity slug. Overlays bind by role — "the recruiting SOP for any
+   * recruiter" — so a playbook targeting this role matches every operator
+   * fulfilling it, not just one. Matched in addition to `operatorSlug`.
+   */
+  readonly roleSlug?: string
+  /**
    * Conversation id (or another stable bucketing token). Used to
    * deterministically place a conversation into shadow-traffic
    * buckets, so the same conversation consistently sees (or doesn't
@@ -67,8 +74,11 @@ export class OperatorOverlayResolver {
   constructor(private readonly registry: PlaybookRegistry) {}
 
   resolve(ctx: ResolveContext): ResolveResult {
+    const slugs = ctx.roleSlug
+      ? [ctx.operatorSlug, ctx.roleSlug]
+      : [ctx.operatorSlug]
     const candidates = this.registry.listBy({
-      forOperatorSlug: ctx.operatorSlug,
+      forOperatorSlug: slugs,
       status: ["active", "shadow"],
     })
 
