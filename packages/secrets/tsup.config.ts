@@ -9,6 +9,7 @@ export default createTsupConfig({
     index: "src/index.ts",
     "manifest/index": "src/manifest/index.ts",
     "exposure/index": "src/exposure/index.ts",
+    "seal/index": "src/seal/index.ts",
   },
   format: ["esm"],
   splitting: true,
