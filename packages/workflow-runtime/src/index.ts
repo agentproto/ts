@@ -17,6 +17,7 @@ export {
   evalPredicate,
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
+export { compileWorkflowManifest } from "./load-workflow.js"
 export type {
   Bindings,
   Selector,
