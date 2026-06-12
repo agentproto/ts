@@ -18,6 +18,7 @@ import type { AssetDeclaration, AssetRef } from "./asset.js"
 import { assetSpendsCategory } from "./asset.js"
 import type { PartitionId, PartitionSpec } from "./partition.js"
 import type { Lot } from "./fold.js"
+import { floorOf } from "./fold.js"
 import { restrictionWeight } from "./restriction-lattice.js"
 
 export interface SpendRequest {
@@ -38,11 +39,16 @@ export interface SpendPlan {
   shortfall: number
 }
 
-/** Available (spendable) amount on a lot right now. */
+/**
+ * Available (spendable) amount on a lot right now. For a normal lot this is the
+ * unreserved remainder; for a short lot (floor < 0) it's the unused borrowing
+ * headroom down to the floor — `Infinity` for an unbounded one. A fully-drawn
+ * bounded short lot is `exhausted` ⇒ 0.
+ */
 function available(lot: Lot, now: number): number {
   if (lot.status === "exhausted") return 0
   if (lot.expiresAt !== undefined && lot.expiresAt <= now) return 0
-  return Math.max(0, lot.remaining - lot.reserved)
+  return Math.max(0, lot.remaining - lot.reserved - floorOf(lot.floor))
 }
 
 /** Categories a lot can pay for: the partition narrows the asset, else the asset's. */
@@ -66,8 +72,15 @@ function eligible(
   return on.includes("*") || on.includes(req.category)
 }
 
-/** restricted-first, then expiring-first (NULLS last), then oldest. */
+/**
+ * Owned-first (short positions last), then restricted-first, then expiring-first
+ * (NULLS last), then oldest. Borrowing from a short lot only happens once every
+ * real holding is drained — so general credit is spent before going negative.
+ */
 function compareForSpend(a: Lot, b: Lot): number {
+  const sa = floorOf(a.floor) < 0 ? 1 : 0
+  const sb = floorOf(b.floor) < 0 ? 1 : 0
+  if (sa !== sb) return sa - sb
   const wr = restrictionWeight(b.restriction) - restrictionWeight(a.restriction)
   if (wr !== 0) return wr
   const ea = a.expiresAt ?? Number.POSITIVE_INFINITY

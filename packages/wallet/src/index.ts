@@ -69,7 +69,7 @@ export type {
   LotStatus,
   Lot,
 } from "./fold.js"
-export { fold, spendableBalance, balanceByAsset } from "./fold.js"
+export { fold, floorOf, spendableBalance, balanceByAsset } from "./fold.js"
 export type { PolicyResolver } from "./fold.js"
 export {
   spendableLotUnderPolicy,

@@ -50,6 +50,16 @@ export interface WalletEvent {
   intent?: Intent
   /** Lot expiry (epoch ms) — carried on the mint/convert_in event. */
   expiresAt?: number
+  /**
+   * Lower bound for `remaining` on the lot this mint creates. Three cases:
+   *   • absent (default) → 0: a normal lot, can't go short.
+   *   • a negative number → a bounded short position (borrowing down to `floor`).
+   *   • `null` → an UNBOUNDED short position (no lower bound).
+   * The kit is asset-agnostic about it — what a short position *means* (e.g. a
+   * postpaid overdraft settled monthly) is the host's decision, carried only in
+   * the floor it mints.
+   */
+  floor?: number | null
   /** Peg value at grant time, for provenance. */
   pegAtGrant?: number
   occurredAt: number
@@ -67,14 +77,34 @@ export interface Lot {
   remaining: number
   reserved: number
   expiresAt?: number
+  /**
+   * Lower bound for `remaining`. Absent ⇒ 0 (a normal lot); a negative number ⇒
+   * a bounded short position; `null` ⇒ an unbounded short position. Read it
+   * through `floorOf` to collapse the three cases to a number.
+   */
+  floor?: number | null
   pegAtGrant?: number
   sourceEventId: string
   status: LotStatus
   createdAt: number
 }
 
+/**
+ * Collapse the three `floor` cases to the numeric lower bound `remaining` may
+ * reach: absent → 0 (a normal lot), `null` → −∞ (an unbounded short position),
+ * a number → itself (a bounded short position).
+ */
+export function floorOf(floor: number | null | undefined): number {
+  if (floor === undefined) return 0
+  if (floor === null) return -Infinity
+  return floor
+}
+
 function deriveStatus(lot: Lot, now: number): LotStatus {
-  if (lot.remaining <= 0) return "exhausted"
+  // A lot is exhausted once it reaches its floor (0 for a normal grant lot,
+  // negative for a bounded short position, never for an unbounded one). A
+  // partially-drawn short lot stays active.
+  if (lot.remaining <= floorOf(lot.floor)) return "exhausted"
   if (lot.expiresAt !== undefined && lot.expiresAt <= now) return "expired"
   return "active"
 }
@@ -101,6 +131,7 @@ export function fold(events: readonly WalletEvent[], now: number): Lot[] {
           remaining: e.amount,
           reserved: 0,
           expiresAt: e.expiresAt,
+          floor: e.floor,
           pegAtGrant: e.pegAtGrant,
           sourceEventId: e.id,
           status: "active",
@@ -152,7 +183,12 @@ export function fold(events: readonly WalletEvent[], now: number): Lot[] {
   return out
 }
 
-/** Spendable balance for an asset = Σ(remaining − reserved) over live lots. */
+/**
+ * Spendable balance for an asset = Σ(remaining − reserved) over non-expired
+ * lots. Exhausted lots are NOT skipped: a normal exhausted lot contributes 0
+ * (remaining 0), but a fully-drawn short lot carries a negative residual that is
+ * a real liability and must stay in the sum.
+ */
 export function spendableBalance(
   lots: readonly Lot[],
   asset: AssetRef,
@@ -161,7 +197,6 @@ export function spendableBalance(
   let total = 0
   for (const lot of lots) {
     if (lot.asset !== asset) continue
-    if (lot.status === "exhausted") continue
     if (lot.expiresAt !== undefined && lot.expiresAt <= now) continue
     total += lot.remaining - lot.reserved
   }
@@ -172,7 +207,6 @@ export function spendableBalance(
 export function balanceByAsset(lots: readonly Lot[], now: number): Map<AssetRef, number> {
   const m = new Map<AssetRef, number>()
   for (const lot of lots) {
-    if (lot.status === "exhausted") continue
     if (lot.expiresAt !== undefined && lot.expiresAt <= now) continue
     m.set(lot.asset, (m.get(lot.asset) ?? 0) + lot.remaining - lot.reserved)
   }
@@ -222,7 +256,6 @@ export function spendableBalanceUnderPolicy(
   let total = 0
   for (const lot of lots) {
     if (lot.asset !== asset) continue
-    if (lot.status === "exhausted") continue
     const policy = resolve(lot.partitionId)
     if (policy) {
       total += spendableLotUnderPolicy(lot, policy, now, category)
