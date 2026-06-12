@@ -42,8 +42,9 @@ export interface WorkflowDefinition {
   outputs: Outputs
   /**
    * Optional value expression mapping step results to the workflow output,
-   * using the same reference grammar as a step's `inputs`. Omitted ⇒ the
-   * output is the final step's result.
+   * using the same reference grammar as a step's `inputs` ($workflow.inputs.*,
+   * $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result.
+   * Its shape SHOULD satisfy `outputs`.
    */
   result?: Record<string, unknown> | string
   /**
