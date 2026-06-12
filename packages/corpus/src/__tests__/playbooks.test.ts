@@ -73,6 +73,42 @@ describe("PlaybookRegistry", () => {
     expect(reg.listBy({ forOperatorSlug: "sales-rep" }).length).toBe(0)
   })
 
+  it("resolves a position-targeted overlay by the position dimension", async () => {
+    // The seat label (AIP-6 position, slugified from the operator's title)
+    // is a first-class selector axis — a playbook can target a seat, not just
+    // a role or identity. Proves the position axis end-to-end at the registry.
+    const fs = new MemoryFs({
+      "KNOWLEDGE.md": fmYaml({
+        schema: "knowledge.workspace/v1",
+        name: "t",
+        title: "T",
+        description: "t",
+        version: "1.0.0",
+      }),
+      "playbooks/seat-sop/PLAYBOOK.md": fmYaml({
+        schema: "playbooks/v1",
+        slug: "seat-sop",
+        title: "Seat SOP",
+        selector: { position: "vp-of-sales" },
+        kind: "overlay",
+        status: "active",
+        priority: 100,
+        lock_check: [],
+        evidence: [{ kind: "run", ref: "/r/1" }],
+      }) + "\n## Seat overlay\n",
+    })
+    const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
+    const reg = new PlaybookRegistry({ snapshot })
+    expect(reg.listBy({ dimensions: { position: "vp-of-sales" } }).length).toBe(
+      1
+    )
+    // Wrong seat, or the same slug on the wrong axis → no match.
+    expect(reg.listBy({ dimensions: { position: "ic-rep" } }).length).toBe(0)
+    expect(reg.listBy({ dimensions: { role: "vp-of-sales" } }).length).toBe(0)
+    // The slug-pair sugar (identity+role) doesn't reach a position selector.
+    expect(reg.listBy({ forOperatorSlug: "vp-of-sales" }).length).toBe(0)
+  })
+
   it("orders by priority descending", async () => {
     // Synthetic workspace with 3 playbooks targeting same operator.
     const fs = new MemoryFs({

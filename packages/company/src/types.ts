@@ -56,7 +56,11 @@ export interface Company {
   values?: string[]
   structure?: {
     /**
-     * Slugs of roles defined under `roles/<slug>/ROLE.md`.
+     * Slugs of the company's seats — each typically materialized as an operator under `operators/<slug>/OPERATOR.md`. A position is a seat one operator holds; several positions may share one AIP-47 catalog role. See AIP-47 §Role vs Position vs Access role.
+     */
+    positions?: string[]
+    /**
+     * @deprecated Alias of `positions`. Readers accept both; `positions` wins. Use `companyPositions()` to read.
      */
     roles?: string[]
     /**
@@ -64,7 +68,7 @@ export interface Company {
      */
     objectives?: string[]
     /**
-     * Map of role-slug → role-slug expressing the reporting tree. The key reports to the value. Roles not in the map are top-level.
+     * Map of position-slug → position-slug expressing the reporting tree. The key reports to the value. Positions not in the map are top-level.
      */
     reports_to?: {
       [k: string]: string | undefined
