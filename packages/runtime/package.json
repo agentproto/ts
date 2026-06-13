@@ -56,6 +56,11 @@
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
     },
+    "./mcp-imports": {
+      "types": "./dist/mcp-imports.d.ts",
+      "import": "./dist/mcp-imports.mjs",
+      "default": "./dist/mcp-imports.mjs"
+    },
     "./resume-strategies": {
       "types": "./dist/resume-strategies.d.ts",
       "import": "./dist/resume-strategies.mjs",

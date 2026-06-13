@@ -12,6 +12,7 @@ export default createTsupConfig({
     "workspace-fs": "src/workspace-fs.ts",
     "workspaces-config": "src/workspaces-config.ts",
     config: "src/config.ts",
+    "mcp-imports": "src/mcp-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
   },
   format: ["esm"],
