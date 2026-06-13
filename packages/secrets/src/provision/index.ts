@@ -147,7 +147,7 @@ function joinPath(a: string, b: string): string {
   return a.replace(/\/$/, "") + "/" + b.replace(/^\//, "")
 }
 
-function extractJsonPath(raw: string, path: string): string {
+export function extractJsonPath(raw: string, path: string): string {
   let cur: unknown = JSON.parse(raw)
   for (const part of path.split(".")) {
     if (cur == null || typeof cur !== "object") {

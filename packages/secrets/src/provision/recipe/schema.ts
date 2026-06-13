@@ -13,8 +13,8 @@
 
 import { z } from "zod"
 
-/** Exactly one of file / env / prompt. `value` is explicitly forbidden — a
- *  recipe carries locations, never secrets. */
+/** Exactly one of file / env / keychain / prompt. `value` is explicitly
+ *  forbidden — a recipe carries locations, never secrets. */
 export const credentialSourceSpecSchema = z
   .union([
     z
@@ -24,17 +24,31 @@ export const credentialSourceSpecSchema = z
       })
       .strict(),
     z.object({ env: z.string().min(1) }).strict(),
+    z
+      .object({
+        keychain: z.string().min(1),
+        account: z.string().min(1).optional(),
+        jsonPath: z.string().min(1).optional(),
+      })
+      .strict(),
     z.object({ prompt: z.string().min(1) }).strict(),
   ])
   .describe(
-    "Where a method's credential is read on the origin machine: a file (optionally a JSON field), an env var, or an interactive prompt. Never a literal value.",
+    "Where a method's credential is read on the origin machine: a file (optionally a JSON field), an env var, the macOS Keychain, or an interactive prompt. Never a literal value.",
   )
+
+/** A method's source: a single spec or an ordered fallback chain (first that
+ *  resolves wins). */
+export const methodSourceSchema = z.union([
+  credentialSourceSpecSchema,
+  z.array(credentialSourceSpecSchema).min(1),
+])
 
 export const recipeMethodSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1).optional(),
-    source: credentialSourceSpecSchema,
+    source: methodSourceSchema,
   })
   .strict()
 

@@ -11,19 +11,27 @@
 import { defineProvisionRecipe } from "./define-recipe.js"
 import type { ProvisionRecipe } from "./types.js"
 
-/** Claude Code subscription OAuth token written by the local CLI. */
+/** Claude Code subscription OAuth token. macOS stores it in the login Keychain;
+ *  Linux writes it to ~/.claude/.credentials.json. Try the Keychain first, fall
+ *  back to the file, so one recipe spans both. */
 export const claudeCodeOauthRecipe = defineProvisionRecipe({
   id: "claude-code-oauth",
   description:
-    "Claude Code subscription OAuth access token, read from the local CLI's credential file.",
+    "Claude Code subscription OAuth access token, read from the macOS Keychain or the local CLI's credential file.",
   label: "Claude Code (subscription)",
   methods: [
     {
       id: "subscription-token",
-      source: {
-        file: "~/.claude/.credentials.json",
-        jsonPath: "claudeAiOauth.accessToken",
-      },
+      source: [
+        {
+          keychain: "Claude Code-credentials",
+          jsonPath: "claudeAiOauth.accessToken",
+        },
+        {
+          file: "~/.claude/.credentials.json",
+          jsonPath: "claudeAiOauth.accessToken",
+        },
+      ],
     },
   ],
 })
