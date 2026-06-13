@@ -37,6 +37,8 @@ export type { FrameSink } from "./transport.js"
 
 export {
   createTunnelServer,
+  DEFAULT_WS_DIAL_TIMEOUT_MS,
+  DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
   type TunnelServer,
   type TunnelServerOptions,
   type PtyProcess,

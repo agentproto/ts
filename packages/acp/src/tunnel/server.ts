@@ -36,6 +36,21 @@ import {
 } from "./frames.js"
 import type { FrameSink } from "./transport.js"
 
+/**
+ * Default ceiling for an upstream WS dial. An upstream that accepts the TCP
+ * connection but never completes (or rejects) the WebSocket upgrade would
+ * otherwise leave the `ws_open` pending forever — the host never gets an ack or
+ * a reject. Bounded so a hung upstream surfaces as a 504 instead.
+ */
+export const DEFAULT_WS_DIAL_TIMEOUT_MS = 10_000
+
+/**
+ * Default ceiling for an `http_request` forward when the frame carries no
+ * `timeoutMs`. Covers connect + buffered body (or connect + headers for a
+ * stream, after which the bound is handed to `httpStreamIdleTimeoutMs`).
+ */
+export const DEFAULT_HTTP_FORWARD_TIMEOUT_MS = 30_000
+
 export interface TunnelServerOptions {
   sink: FrameSink
   /**
@@ -56,6 +71,22 @@ export interface TunnelServerOptions {
    * `error: { code: "http_upstream_not_configured" }`.
    */
   httpUpstream?: string
+  /**
+   * Default ceiling for an `http_request` forward (connect + buffered body, or
+   * connect + headers for a stream) when the frame carries no `timeoutMs`.
+   * Defaults to DEFAULT_HTTP_FORWARD_TIMEOUT_MS. Disarmed once a streaming
+   * response is detected — see `httpStreamIdleTimeoutMs` for the stream phase.
+   */
+  httpForwardTimeoutMs?: number
+  /**
+   * Idle ceiling between chunks of a STREAMING response (SSE / ndjson). A
+   * stalled upstream that sends headers then hangs forever between chunks would
+   * otherwise block indefinitely (the regular timeout is disarmed for streams,
+   * since they're long-lived by design). Counts time since the last byte and
+   * resets on every chunk, so a heartbeating stream is never cut. Omitted ⇒ no
+   * idle bound (current behaviour); set it to guard against silent stalls.
+   */
+  httpStreamIdleTimeoutMs?: number
   /** User-friendly label sent in the hello frame. */
   label?: string
   /**
@@ -126,7 +157,30 @@ export interface TunnelServerOptions {
     url: string
     protocols?: readonly string[]
     headers?: Readonly<Record<string, string>>
+    /**
+     * Aborted when the dial exceeds `wsDialTimeoutMs` (or the tunnel tears down
+     * mid-dial). A cooperating implementation SHOULD abort the in-flight upgrade
+     * and reject so the socket isn't left half-open; even if it doesn't, the
+     * server bounds the wait independently and rejects the `ws_open`.
+     */
+    signal?: AbortSignal
   }) => Promise<UpstreamWebSocket>
+  /**
+   * Ceiling for `dialUpstreamWs` to resolve before the `ws_open` is rejected
+   * with 504 `upstream_ws_timeout`. Defaults to DEFAULT_WS_DIAL_TIMEOUT_MS.
+   */
+  wsDialTimeoutMs?: number
+  /**
+   * Resolve a named upstream (a `ws_open` frame's `upstream` field) to an
+   * HTTP base URL the daemon should dial instead of `httpUpstream`. Lets a
+   * host reach an imported local service by alias (e.g. a browser capability
+   * server) without ever naming a raw origin — the daemon owns the name→URL
+   * mapping. Return undefined for an unknown alias (the open is rejected).
+   * Omitted ⇒ every `ws_open` dials the default `httpUpstream`.
+   */
+  resolveWsUpstream?: (
+    upstream: string
+  ) => string | undefined | Promise<string | undefined>
 }
 
 /**
@@ -563,21 +617,79 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       if (HOP_BY_HOP.has(k.toLowerCase())) continue
       headers[k] = v
     }
+    // Pick the HTTP base: a named upstream (resolved by the daemon to an
+    // imported service's origin) when the frame carries one, else the
+    // default gateway. The host names an alias, never a URL, so it can't
+    // steer the daemon at an arbitrary origin.
+    let httpBase = opts.httpUpstream
+    if (req.upstream) {
+      const resolved = await opts.resolveWsUpstream?.(req.upstream)
+      if (!resolved) {
+        reject(
+          502,
+          "unknown_ws_upstream",
+          `No WS upstream registered for '${req.upstream}'.`
+        )
+        return
+      }
+      httpBase = resolved
+    }
     // Map the http upstream base to a ws scheme. The daemon's upstream
     // is conventionally http://127.0.0.1:<port>; the same host accepts
     // WS upgrades on the same port, so ws://… works.
-    const base = opts.httpUpstream.replace(/^http(s?):\/\//, "ws$1://")
+    const base = httpBase.replace(/^http(s?):\/\//, "ws$1://")
     const url = `${base.replace(/\/$/, "")}${req.path}`
+
+    // Bound the dial: a hung upstream that never finishes the upgrade must not
+    // strand the ws_open. Abort the dial (cooperating impls cancel the real
+    // socket) AND race the timeout independently, so even an impl that ignores
+    // the signal still yields a 504.
+    const dialTimeoutMs = opts.wsDialTimeoutMs ?? DEFAULT_WS_DIAL_TIMEOUT_MS
+    const dialAbort = new AbortController()
+    let dialTimedOut = false
+    let dialTimer: ReturnType<typeof setTimeout> | null = null
+    const dialPromise = opts.dialUpstreamWs({
+      url,
+      ...(req.protocols && req.protocols.length > 0
+        ? { protocols: req.protocols }
+        : {}),
+      headers,
+      signal: dialAbort.signal,
+    })
+    const timeoutPromise = new Promise<never>((_resolve, rej) => {
+      dialTimer = setTimeout(() => {
+        dialTimedOut = true
+        dialAbort.abort(new Error("ws_dial_timeout"))
+        rej(new Error(`upstream WS dial timed out after ${dialTimeoutMs}ms`))
+      }, dialTimeoutMs)
+      if (typeof dialTimer !== "number") dialTimer.unref()
+    })
+
     let upstream: UpstreamWebSocket
     try {
-      upstream = await opts.dialUpstreamWs({
-        url,
-        ...(req.protocols && req.protocols.length > 0
-          ? { protocols: req.protocols }
-          : {}),
-        headers,
-      })
+      upstream = await Promise.race([dialPromise, timeoutPromise])
     } catch (err) {
+      if (dialTimer) clearTimeout(dialTimer)
+      if (dialTimedOut) {
+        // The timeout won the race. If the abandoned dial ever resolves, close
+        // the orphaned socket so it doesn't leak.
+        dialPromise.then(
+          sock => {
+            try {
+              sock.close(1001, "dial_timeout")
+            } catch {
+              /* defensive */
+            }
+          },
+          () => {},
+        )
+        reject(
+          504,
+          "upstream_ws_timeout",
+          `Upstream did not complete the WS upgrade within ${dialTimeoutMs}ms.`,
+        )
+        return
+      }
       const message = err instanceof Error ? err.message : String(err)
       // Try to extract an HTTP status from a `ws` error like
       // `Unexpected server response: 404`.
@@ -586,6 +698,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       reject(status, "upstream_ws_failed", message)
       return
     }
+    if (dialTimer) clearTimeout(dialTimer)
     // Race: caller already abandoned us (tunnel closed mid-upgrade).
     if (closed) {
       try {
@@ -713,7 +826,10 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
 
     const url = `${opts.httpUpstream.replace(/\/$/, "")}${req.path}`
     const controller = new AbortController()
-    const timeoutMs = req.timeoutMs ?? 30_000
+    const timeoutMs =
+      req.timeoutMs ??
+      opts.httpForwardTimeoutMs ??
+      DEFAULT_HTTP_FORWARD_TIMEOUT_MS
     // For streaming responses (SSE / long-poll), the daemon-side
     // request must NOT abort on the regular timeout — the stream is
     // *meant* to be long-lived. We arm the timer initially, then
@@ -768,9 +884,47 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
           headers: outHeaders,
         })
         const reader = upstreamRes.body.getReader()
+        // Inter-chunk idle bound: the request timeout is disarmed for streams,
+        // so without this a stalled upstream (headers sent, then silence) hangs
+        // forever. The timer resets per chunk, so a heartbeating stream is never
+        // cut. `IDLE` is the sentinel for "no byte arrived within the window".
+        const idleMs = opts.httpStreamIdleTimeoutMs
+        const IDLE = Symbol("idle")
+        type ReadResult = Awaited<ReturnType<typeof reader.read>>
+        const readChunk = async (): Promise<ReadResult | typeof IDLE> => {
+          if (!idleMs) return reader.read()
+          let idleTimer: ReturnType<typeof setTimeout> | null = null
+          const idle = new Promise<typeof IDLE>(resolve => {
+            idleTimer = setTimeout(() => resolve(IDLE), idleMs)
+            if (typeof idleTimer !== "number") idleTimer.unref()
+          })
+          try {
+            return await Promise.race([reader.read(), idle])
+          } finally {
+            if (idleTimer) clearTimeout(idleTimer)
+          }
+        }
         try {
           while (true) {
-            const { value, done } = await reader.read()
+            const chunk = await readChunk()
+            if (chunk === IDLE) {
+              try {
+                await reader.cancel()
+              } catch {
+                /* ignore */
+              }
+              opts.sink.send({
+                t: "http_response_chunk",
+                reqId: req.reqId,
+                end: true,
+                error: {
+                  code: "upstream_stream_idle_timeout",
+                  message: `No data from upstream for ${idleMs}ms.`,
+                },
+              })
+              return
+            }
+            const { value, done } = chunk
             if (done) {
               opts.sink.send({
                 t: "http_response_chunk",

@@ -70,6 +70,10 @@ export interface TunnelWebSocketOpenRequest {
   /** Path + querystring on the daemon-local upstream. Daemon prepends
    *  its `ws://<upstream>` base; absolute URLs are rejected. */
   path: string
+  /** Optional registered upstream to dial instead of the daemon's default
+   *  gateway — a NAME the daemon resolves to a base URL (e.g. an imported
+   *  service alias). The host never names a raw origin. */
+  upstream?: string
   /** Headers forwarded to the upstream upgrade. Hop-by-hop / Sec-* are
    *  stripped by the daemon. Cookies are NOT forwarded unless the
    *  daemon was started with `--upstream-cookies`. */
@@ -748,6 +752,7 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
         t: "ws_open",
         reqId,
         path: req.path,
+        ...(req.upstream ? { upstream: req.upstream } : {}),
         ...(req.headers ? { headers: req.headers } : {}),
         ...(req.protocols && req.protocols.length > 0
           ? { protocols: req.protocols }

@@ -348,6 +348,12 @@ export interface WsOpenFrame {
   /** Path + querystring on the daemon-local upstream, e.g.
    *  `/sessions/abc/pty?cols=80&rows=24`. */
   path: string
+  /** Optional registered upstream to dial instead of the daemon's
+   *  default gateway — a NAME the daemon resolves to a base URL (never
+   *  a URL itself, so the host can't point the daemon at an arbitrary
+   *  origin). Used to reach an imported local service (e.g. a browser
+   *  capability server) by alias. Absent ⇒ the daemon's own gateway. */
+  upstream?: string
   /** Headers to set on the upstream WS request. Hop-by-hop headers
    *  (Connection, Upgrade, Sec-WebSocket-*) MUST be stripped — the
    *  daemon's `ws` client manages those. */
