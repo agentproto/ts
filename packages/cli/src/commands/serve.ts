@@ -48,9 +48,12 @@ import {
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
+import { loadImportedMcps } from "@agentproto/runtime/mcp-imports"
 import {
   createTunnelServer,
   wrapWebSocket,
+  DEFAULT_WS_DIAL_TIMEOUT_MS,
+  DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
   type FrameSink,
 } from "@agentproto/acp/tunnel"
 import {
@@ -571,12 +574,25 @@ async function runOneTunnel(
     // the daemon without needing a public URL. We point at the local
     // gateway since that's where `/mcp`, `/sessions`, `/events` live.
     httpUpstream: gateway.url,
+    // Forward bounds, stated explicitly so they're visible and tunable here
+    // (the local gateway is fast, so the package defaults fit; bump these if
+    // this daemon ever fronts a slower upstream):
+    //  - connect + buffered-body / connect + stream-headers ceiling
+    httpForwardTimeoutMs: DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
+    //  - WS upgrade dial ceiling
+    wsDialTimeoutMs: DEFAULT_WS_DIAL_TIMEOUT_MS,
+    // Bound a streaming forward against a silent upstream: if an SSE/ndjson
+    // stream sends headers then stalls with no bytes for 2 min, end it instead
+    // of holding the reqId open forever. The window resets per chunk, so a
+    // well-behaved stream (events or heartbeat comments) is never cut — only a
+    // genuinely dead upstream trips it.
+    httpStreamIdleTimeoutMs: 120_000,
     // WS forwarding upstream — daemon dials the local gateway's WS
     // endpoints (/sessions/:id/pty, etc) and pipes frames to the host.
     // Used by the cloud tunnel pod so browsers on mobile can attach to
     // interactive PTY sessions even though the daemon is only reachable
     // through the host (not directly).
-    dialUpstreamWs: async ({ url, protocols, headers }) => {
+    dialUpstreamWs: async ({ url, protocols, headers, signal }) => {
       // Dial with the same `ws` lib already used for the host tunnel.
       // Resolve once we receive `open`; reject on `error` / `unexpected-response`.
       //
@@ -602,7 +618,27 @@ async function runOneTunnel(
         const sock = new WebSocket(url, protocols ? [...protocols] : undefined, {
           headers: upstreamHeaders,
         })
+        // The server bounds the dial and aborts via `signal` on timeout/teardown.
+        // Honour it: tear down the half-open socket and reject promptly so we
+        // don't leak a connecting socket.
+        const onAbort = () => {
+          sock.off("open", onceOpen)
+          sock.off("error", onceError)
+          sock.off("unexpected-response", onceUnexpected)
+          try {
+            sock.terminate()
+          } catch {
+            /* defensive — socket may already be closing */
+          }
+          reject(
+            signal?.reason instanceof Error
+              ? signal.reason
+              : new Error("ws dial aborted"),
+          )
+        }
+        const detachAbort = () => signal?.removeEventListener("abort", onAbort)
         const onceOpen = () => {
+          detachAbort()
           sock.off("error", onceError)
           sock.off("unexpected-response", onceUnexpected)
           resolve({
@@ -633,6 +669,7 @@ async function runOneTunnel(
           })
         }
         const onceError = (err: Error) => {
+          detachAbort()
           sock.off("open", onceOpen)
           reject(err)
         }
@@ -640,13 +677,37 @@ async function runOneTunnel(
           _req: unknown,
           res: { statusCode?: number }
         ) => {
+          detachAbort()
           sock.off("open", onceOpen)
           reject(new Error(`Unexpected server response: ${res.statusCode ?? 0}`))
+        }
+        if (signal) {
+          if (signal.aborted) {
+            onAbort()
+            return
+          }
+          signal.addEventListener("abort", onAbort, { once: true })
         }
         sock.once("open", onceOpen)
         sock.once("error", onceError)
         sock.once("unexpected-response", onceUnexpected)
       })
+    },
+    // Resolve a named WS upstream to a registered import's origin. A host
+    // can watch a tab on an imported capability server (e.g. a browser
+    // daemon) by aliasing the import instead of the default gateway — the
+    // path rides the import's own origin (`http://127.0.0.1:<port>`), the
+    // daemon never accepts a raw origin from the host.
+    resolveWsUpstream: async alias => {
+      const cfg = await loadImportedMcps()
+      const entry = cfg.imports.find(e => e.alias === alias)
+      const url = entry?.snapshot.url
+      if (!url) return undefined
+      try {
+        return new URL(url).origin
+      } catch {
+        return undefined
+      }
     },
     // v0 authorize hook: trust the bearer-authenticated host completely.
     // Token possession proves the host was provisioned for this daemon.
