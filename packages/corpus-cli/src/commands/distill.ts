@@ -16,7 +16,7 @@
 
 import { readFile, readdir } from "node:fs/promises"
 import type { Dirent } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { z } from "zod"
 
 /** Lenient zod view of a source's frontmatter (each field degrades to undefined). */
@@ -58,6 +58,7 @@ import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
 import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
 import { CLI_ENGINES } from "../ports/cli-engines.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
+import { createUsageSink, type DistillUsage } from "../ports/usage-telemetry.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
 const DEFAULT_ENGINE = "anthropic-api"
@@ -66,7 +67,11 @@ const DEFAULT_ENGINE = "anthropic-api"
 interface DistillerEngine {
   readonly id: string
   readonly needsApiKey: boolean
-  create(opts: { apiKey?: string; model?: string }): DistillPort
+  create(opts: {
+    apiKey?: string
+    model?: string
+    onUsage?: (usage: DistillUsage) => void
+  }): DistillPort
 }
 
 /**
@@ -78,8 +83,12 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
   [DEFAULT_ENGINE]: {
     id: DEFAULT_ENGINE,
     needsApiKey: true,
-    create: ({ apiKey, model }) =>
-      new AnthropicDistiller({ apiKey: apiKey!, ...(model ? { model } : {}) }),
+    create: ({ apiKey, model, onUsage }) =>
+      new AnthropicDistiller({
+        apiKey: apiKey!,
+        ...(model ? { model } : {}),
+        ...(onUsage ? { onUsage } : {}),
+      }),
   },
   ...Object.fromEntries(
     Object.values(CLI_ENGINES).map(engine => [
@@ -227,12 +236,14 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
     return 0
   }
 
+  const usage = createUsageSink({ runName: basename(target) })
   const runner = new DistillRunner({
     fs: new NodeFsAdapter({ root: target }),
     clock: systemClock,
     distiller: engine.create({
       ...(apiKey ? { apiKey } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
+      onUsage: usage.record,
     }),
   })
 
@@ -249,5 +260,6 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
     }
   }
   process.stdout.write(`\n${totalEntries} refined entries written (each with sources:[<id>] provenance).\n`)
+  await usage.flush()
   return 0
 }

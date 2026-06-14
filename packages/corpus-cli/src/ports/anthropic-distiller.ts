@@ -12,12 +12,18 @@
 import { z } from "zod"
 import type { DistillPort, DistillInput, DistilledItem } from "@agentproto/corpus"
 import { buildDistillPrompt, parseItems } from "./distill-prompt.js"
+import type { DistillUsage } from "./usage-telemetry.js"
 
-/** The Messages API response shape we read (just the text content blocks). */
+/** The Messages API response — text content blocks plus model + token usage. */
 const ANTHROPIC_RESPONSE = z
   .object({
+    model: z.string().optional(),
     content: z
       .array(z.object({ type: z.string(), text: z.string().optional() }).loose())
+      .optional(),
+    usage: z
+      .object({ input_tokens: z.number(), output_tokens: z.number() })
+      .loose()
       .optional(),
   })
   .loose()
@@ -29,6 +35,8 @@ export interface AnthropicDistillerOptions {
   readonly baseUrl?: string
   /** Max refined items to extract per source. */
   readonly maxItems?: number
+  /** Optional sink for per-call token usage (cost + Langfuse export). */
+  readonly onUsage?: (usage: DistillUsage) => void
 }
 
 export class AnthropicDistiller implements DistillPort {
@@ -36,16 +44,19 @@ export class AnthropicDistiller implements DistillPort {
   private readonly model: string
   private readonly baseUrl: string
   private readonly maxItems: number
+  private readonly onUsage: ((usage: DistillUsage) => void) | undefined
 
   constructor(opts: AnthropicDistillerOptions) {
     this.apiKey = opts.apiKey
     this.model = opts.model ?? "claude-sonnet-4-6"
     this.baseUrl = (opts.baseUrl ?? "https://api.anthropic.com/v1").replace(/\/+$/, "")
     this.maxItems = opts.maxItems ?? 8
+    this.onUsage = opts.onUsage
   }
 
   async distill(input: DistillInput): Promise<readonly DistilledItem[]> {
     const prompt = buildDistillPrompt(input, this.maxItems)
+    const startedAt = new Date().toISOString()
     const res = await fetch(`${this.baseUrl}/messages`, {
       method: "POST",
       headers: {
@@ -66,6 +77,16 @@ export class AnthropicDistiller implements DistillPort {
     const text = parsed.success
       ? (parsed.data.content ?? []).find(c => c.type === "text")?.text ?? ""
       : ""
+    if (parsed.success && parsed.data.usage && this.onUsage) {
+      this.onUsage({
+        model: parsed.data.model ?? this.model,
+        inputTokens: parsed.data.usage.input_tokens,
+        outputTokens: parsed.data.usage.output_tokens,
+        label: input.title,
+        startedAt,
+        endedAt: new Date().toISOString(),
+      })
+    }
     return parseItems(text)
   }
 }
