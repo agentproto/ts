@@ -8,6 +8,9 @@
  * Authoring paths:
  *   - TS:  `defineCanvakit({...})` → `CanvakitHandle`
  *   - MD:  `parseCanvakitManifest(src) → canvakitFromManifest({...})` → `CanvakitHandle`
+ *
+ * The RENDER engine lives in `@canvakit/core` (`render`) — the reference
+ * implementation of this spec. This package is the spec/definition layer only.
  */
 
 export const SPEC_NAME = "agentcanvakit/v1" as const

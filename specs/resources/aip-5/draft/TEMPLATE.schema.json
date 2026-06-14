@@ -157,6 +157,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Filesystem path relative to the render filesystem. Parsed by extension per the format contract."
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Resolve `path` against a named workspace instead of the render filesystem. The host's workspace resolver supplies the filesystem (and enforces access); unconfigured cross-workspace refs surface as status:error rather than silently reading the wrong scope."
         }
       }
     },
@@ -196,6 +201,11 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Project to a subset of parsed keys."
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Resolve the glob against a named workspace instead of the render filesystem. The host's workspace resolver supplies the filesystem (and enforces access); unconfigured cross-workspace refs surface as status:error rather than silently reading the wrong scope."
         }
       }
     },
