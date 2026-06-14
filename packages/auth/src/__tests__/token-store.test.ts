@@ -12,6 +12,17 @@ import {
   writeKeychainToken,
 } from "../token-store.js"
 
+// The Keychain helpers are guarded to macOS. CI runs on Linux, so the
+// success-path tests must pin the platform to darwin to exercise the mocked
+// `security` calls (the platform-guard block below flips it the other way).
+const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+function pinPlatform(value: string) {
+  Object.defineProperty(process, "platform", { value, configurable: true })
+}
+function restorePlatform() {
+  if (realPlatform) Object.defineProperty(process, "platform", realPlatform)
+}
+
 describe("resolveAccount", () => {
   it("substitutes the {server} template", () => {
     expect(resolveAccount("{server}", "https://api.example")).toBe(
@@ -33,7 +44,11 @@ describe("resolveAccount", () => {
 })
 
 describe("readKeychainToken", () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pinPlatform("darwin")
+  })
+  afterEach(restorePlatform)
 
   it("returns the trimmed token on success", async () => {
     execFileMock.mockImplementation(
@@ -61,7 +76,11 @@ describe("readKeychainToken", () => {
 })
 
 describe("writeKeychainToken", () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pinPlatform("darwin")
+  })
+  afterEach(restorePlatform)
 
   it("calls security add-generic-password with -U (update-in-place)", async () => {
     execFileMock.mockImplementation(
@@ -80,35 +99,24 @@ describe("writeKeychainToken", () => {
 })
 
 describe("platform guard", () => {
-  const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")
-
-  afterEach(() => {
-    if (realPlatform) Object.defineProperty(process, "platform", realPlatform)
-  })
-
-  function setPlatform(value: string) {
-    Object.defineProperty(process, "platform", {
-      value,
-      configurable: true,
-    })
-  }
+  afterEach(restorePlatform)
 
   it("throws a clear error on a non-macOS platform (read)", async () => {
-    setPlatform("linux")
+    pinPlatform("linux")
     await expect(readKeychainToken("svc", "acct")).rejects.toThrow(
       /only supports macOS/,
     )
   })
 
   it("throws a clear error on a non-macOS platform (write)", async () => {
-    setPlatform("win32")
+    pinPlatform("win32")
     await expect(writeKeychainToken("svc", "acct", "t")).rejects.toThrow(
       /only supports macOS/,
     )
   })
 
   it("does not guard the pure resolveAccount helper", () => {
-    setPlatform("linux")
+    pinPlatform("linux")
     expect(resolveAccount("{server}", "https://x")).toBe("https://x")
   })
 })
