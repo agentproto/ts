@@ -40,12 +40,10 @@ export interface ServiceAuthConfig {
   clientId?: string
   /** Optional login_hint (email) passed to /agent/identity. */
   loginHint?: string
-  /** Keychain destination for the long-lived credential. The primary slot holds
-   *  the rotating refresh token (`ort_*`, ~30d) so the credential outlives the
-   *  short `oat_*` window; on a server that doesn't rotate, the access token is
-   *  stored as a fallback. The identity_assertion, when issued, is stored
-   *  separately in a derived `<keychain>-assertion` slot for jwt-bearer
-   *  re-exchange. The raw `oat_*` access token is never the persisted primary. */
+  /** Keychain destination for the durable credential. Per AIP-50 the stored
+   *  credential is the `identity_assertion` JWT — re-exchanged via the
+   *  jwt-bearer grant for a fresh access token. The access token is ephemeral
+   *  and MUST NOT be persisted; the claim_token is held in memory only. */
   tokenStore: TokenStoreSpec
 }
 
@@ -98,13 +96,13 @@ export interface DiscoveredEndpoints {
 }
 
 /** Result of a completed auth flow. The engine has already persisted the
- *  durable credential to the Keychain (refresh token in the primary slot,
- *  assertion in the `-assertion` slot); these fields are the in-memory values
- *  the caller uses for the current invocation. */
+ *  durable credential to the Keychain (for service-auth, the identity_assertion
+ *  in the primary slot); these fields are the in-memory values the caller uses
+ *  for the current invocation. */
 export interface FlowResult {
   /** Service-signed identity assertion JWT (service-auth flow), when the server
-   *  issues one. The engine has stored it in the `<keychain>-assertion` slot for
-   *  future jwt-bearer re-exchange; surfaced here for immediate use. */
+   *  issues one. The engine has stored it in the Keychain (primary slot) as the
+   *  durable credential for jwt-bearer re-exchange; surfaced here too. */
   identityAssertion?: string
   /** ISO 8601 expiry of the identity assertion. */
   assertionExpires?: string

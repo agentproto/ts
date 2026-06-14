@@ -7,12 +7,14 @@
  *   User approves at verification_uri in browser.
  *   Poll POST {token_endpoint} with grant_type=urn:workos:agent-auth:grant-type:claim
  *     until approved / denied / expired.
- *   On success: store the rotating refresh token (ort_*) in the primary slot and
- *     the identity_assertion in the `<keychain>-assertion` slot.
+ *   On success: store the identity_assertion JWT (AIP-50 §Token storage —
+ *     the assertion is the durable credential; the access_token MUST NOT be
+ *     persisted, and the claim_token stays in memory only).
  *
- * Subsequent runs skip the ceremony: a cached ort_* is exchanged via the
- * refresh_token grant, and failing that a stored assertion is exchanged via the
- * jwt-bearer grant — only when both are unavailable does a new ceremony start.
+ * Subsequent runs skip the ceremony: the stored assertion is exchanged via the
+ * jwt-bearer grant for a fresh access_token ("this IS the refresh path" — no
+ * refresh_token). Only when the assertion is expired/rejected does a new
+ * ceremony start.
  *
  * See: https://github.com/workos/auth.md  /  AIP-50
  */
@@ -32,7 +34,7 @@ import {
   readKeychainToken,
   writeKeychainToken,
 } from "../token-store.js"
-import { fetchWithDeadline } from "../http.js"
+import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 
 const execAsync = promisify(execFile)
 
@@ -189,44 +191,12 @@ async function pollForToken(
   throw new Error("auth timeout — approval window closed")
 }
 
-// ── Refresh token exchange ────────────────────────────────────────────────────
+// ── Identity-assertion exchange (jwt-bearer, RFC 7523) ────────────────────────
 //
-// When a `ort_*` refresh token is cached in the primary Keychain slot, exchange
-// it for a fresh `oat_*` access token without requiring another browser-approve
-// ceremony. The server uses rotating refresh tokens so the response includes a
-// new `ort_*` which replaces the old one in Keychain.
-
-async function refreshAccessToken(
-  tokenEndpoint: string,
-  refreshToken: string,
-  clientId: string,
-  signal?: AbortSignal,
-): Promise<TokenSuccess | null> {
-  try {
-    const data = await postForm(
-      tokenEndpoint,
-      {
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: clientId,
-      },
-      tokenResponseSchema,
-      signal,
-    )
-    if ("error" in data) return null
-    return data
-  } catch {
-    return null
-  }
-}
-
-// ── Identity-assertion exchange (jwt-bearer) ──────────────────────────────────
-//
-// When the primary slot has no usable refresh token but a prior ceremony stored
-// an identity_assertion in the `-assertion` slot, exchange it via RFC 7523
-// jwt-bearer for a fresh access token — sparing the user a full browser ceremony
-// while the assertion is still valid. Returns null on any error (expired /
-// revoked / server doesn't support the grant) so the caller falls through.
+// The stored credential IS the identity_assertion JWT. Exchange it at the token
+// endpoint for a fresh, short-lived access token — the AIP-50 refresh path, with
+// no refresh_token involved. Returns null on any error (expired / invalid_grant
+// / server doesn't support the grant) so the caller falls back to a ceremony.
 async function exchangeAssertion(
   tokenEndpoint: string,
   assertion: string,
@@ -277,43 +247,19 @@ export const serviceAuthFlowEngine: FlowEngine = {
     const tokenEndpoint =
       discovered?.tokenEndpoint ?? `${server}/oauth/token`
 
+    // AIP-50 §Security: auth requests MUST use HTTPS (loopback exempt for dev).
+    assertSecureUrl(identityEndpoint)
+    assertSecureUrl(tokenEndpoint)
+
     const primarySlot = config.tokenStore.keychain
-    const assertionSlot = `${primarySlot}-assertion`
     const account = resolveAccount(config.tokenStore.account, server)
 
-    // Cached credential path — skip the ceremony if we already hold a credential.
-    // Precedence (each step falls through on failure):
-    //   1. ort_* in the primary slot → refresh_token grant → fresh oat_* (+ rotate)
-    //   2. legacy oat_*/gld_* in the primary slot → return as-is
-    //   3. identity_assertion in the -assertion slot → jwt-bearer grant → oat_*
-    //   4. nothing usable → full browser ceremony (below)
+    // Cached path — the stored credential IS the identity_assertion JWT (AIP-50:
+    // never the access token, never a refresh token). Exchange it via jwt-bearer
+    // for a fresh access token; on failure (expired / invalid_grant) fall through
+    // to a full browser ceremony.
     if (!opts.force) {
-      const cached = await readKeychainToken(primarySlot, account)
-      if (cached) {
-        if (cached.startsWith("ort_")) {
-          const refreshed = await refreshAccessToken(
-            tokenEndpoint,
-            cached,
-            clientId,
-            opts.signal,
-          )
-          if (refreshed) {
-            if (refreshed.refresh_token) {
-              await writeKeychainToken(primarySlot, account, refreshed.refresh_token)
-            }
-            return { accessToken: refreshed.access_token, tokenKind: "oat" }
-          }
-          // Refresh failed (expired/revoked) — fall through; the ceremony (or an
-          // assertion exchange) overwrites the stale ort_* at the end.
-        } else {
-          // Legacy oat_* or gld_* in slot — return as-is.
-          return { accessToken: cached, tokenKind: "oat" }
-        }
-      }
-
-      // No usable access token from the primary slot — try a stored
-      // identity_assertion via jwt-bearer before forcing a browser ceremony.
-      const storedAssertion = await readKeychainToken(assertionSlot, account)
+      const storedAssertion = await readKeychainToken(primarySlot, account)
       if (storedAssertion) {
         const exchanged = await exchangeAssertion(
           tokenEndpoint,
@@ -322,10 +268,22 @@ export const serviceAuthFlowEngine: FlowEngine = {
           opts.signal,
         )
         if (exchanged) {
-          if (exchanged.refresh_token) {
-            await writeKeychainToken(primarySlot, account, exchanged.refresh_token)
+          // If the server rotated the assertion, persist the new one; otherwise
+          // the existing assertion stays valid for the next exchange.
+          if (exchanged.identity_assertion) {
+            await writeKeychainToken(
+              primarySlot,
+              account,
+              exchanged.identity_assertion,
+            )
           }
-          return { accessToken: exchanged.access_token, tokenKind: "oat" }
+          return {
+            accessToken: exchanged.access_token,
+            ...(exchanged.identity_assertion
+              ? { identityAssertion: exchanged.identity_assertion }
+              : {}),
+            tokenKind: "oat",
+          }
         }
       }
     }
@@ -364,25 +322,15 @@ export const serviceAuthFlowEngine: FlowEngine = {
       opts.signal,
     )
 
-    // 4 — Store ort_* in the primary slot (survives 30 days; auto-exchanged on
-    //     next bureau login). Fall back to oat_* if the server didn't issue a
-    //     refresh token (e.g. a PAT-style server that doesn't support rotation).
-    //     Store identity_assertion in a secondary slot for future jwt-bearer use.
+    // 4 — Store the identity_assertion as the durable credential (AIP-50: the
+    //     access_token is ephemeral and MUST NOT be persisted; the claim_token
+    //     was held in memory only). The assertion is re-exchanged via jwt-bearer
+    //     on the next run.
     const accessToken = tokenResult.access_token
-    const refreshToken = tokenResult.refresh_token
     const assertion = tokenResult.identity_assertion
 
-    await writeKeychainToken(
-      config.tokenStore.keychain,
-      account,
-      refreshToken ?? accessToken,
-    )
     if (assertion) {
-      await writeKeychainToken(
-        `${config.tokenStore.keychain}-assertion`,
-        account,
-        assertion,
-      )
+      await writeKeychainToken(primarySlot, account, assertion)
     }
 
     // Resolve assertion expiry as ISO 8601

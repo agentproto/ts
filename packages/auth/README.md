@@ -106,17 +106,16 @@ The auth.md claim ceremony:
    `grant_type=urn:workos:agent-auth:grant-type:claim` and `claim_token` until
    `access_token` is returned (`authorization_pending` / `slow_down` /
    `expired_token` / `access_denied` are handled per RFC 8628).
-4. On success, store the rotating refresh token (`ort_*`) in the primary Keychain
-   slot — it survives the short `oat_*` window — and the `identity_assertion`
-   (if any) in a `<keychain>-assertion` slot.
+4. On success, store the **`identity_assertion` JWT** in the Keychain — per
+   AIP-50, the assertion is the durable credential; the `access_token` is
+   ephemeral and is **never persisted**, and the `claim_token` stays in memory
+   only.
 
-On a subsequent run the ceremony is skipped where possible, in precedence order:
-
-1. `ort_*` in the primary slot → `refresh_token` grant → fresh `oat_*` (rotated).
-2. a legacy `oat_*`/`gld_*` in the primary slot → returned as-is.
-3. an `identity_assertion` in the `-assertion` slot →
-   `urn:ietf:params:oauth:grant-type:jwt-bearer` exchange → `oat_*`.
-4. nothing usable → a new browser ceremony.
+On a subsequent run the ceremony is skipped when possible: the stored assertion
+is exchanged at the token endpoint via
+`urn:ietf:params:oauth:grant-type:jwt-bearer` for a fresh `access_token` ("this
+IS the refresh path" — no refresh token). Only when the assertion is expired or
+rejected (`invalid_grant`) does a new browser ceremony start.
 
 ## Discovery
 

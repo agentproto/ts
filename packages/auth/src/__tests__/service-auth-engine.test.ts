@@ -74,37 +74,44 @@ describe("serviceAuthFlowEngine", () => {
     )
   })
 
-  it("returns a cached non-ort token as-is without any network call", async () => {
-    readKeychainToken.mockResolvedValue("gld_legacy")
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-
-    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
-    expect(r).toEqual({ accessToken: "gld_legacy", tokenKind: "oat" })
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("exchanges a cached ort_* refresh token for a fresh oat_* and rotates it", async () => {
-    readKeychainToken.mockResolvedValue("ort_old")
+  it("exchanges the stored identity_assertion via jwt-bearer (no ceremony)", async () => {
+    // The primary slot holds the identity_assertion JWT (AIP-50 storage model).
+    readKeychainToken.mockResolvedValue("assert-jwt")
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        expect(grantOf(init)).toBe("refresh_token")
-        return jsonRes({ access_token: "oat_new", refresh_token: "ort_new" })
+      vi.fn(async (url: string, init?: RequestInit) => {
+        expect(url).toBe(TOKEN)
+        expect(grantOf(init)).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer")
+        return jsonRes({ access_token: "oat_from_assert" })
       }),
     )
 
     const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
-    expect(r).toEqual({ accessToken: "oat_new", tokenKind: "oat" })
-    // Rotated refresh token persisted to the primary slot.
+    expect(r).toEqual({ accessToken: "oat_from_assert", tokenKind: "oat" })
+    // No refresh token is stored — the assertion stays put unless rotated.
+    expect(writeKeychainToken).not.toHaveBeenCalled()
+  })
+
+  it("persists a rotated assertion returned by the exchange", async () => {
+    readKeychainToken.mockResolvedValue("assert-old")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonRes({ access_token: "oat_x", identity_assertion: "assert-new" }),
+      ),
+    )
+
+    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
+    expect(r.accessToken).toBe("oat_x")
+    expect(r.identityAssertion).toBe("assert-new")
     expect(writeKeychainToken).toHaveBeenCalledWith(
       "bureau-guilde",
       API,
-      "ort_new",
+      "assert-new",
     )
   })
 
-  it("runs the full claim ceremony when forced, storing ort_* + assertion", async () => {
+  it("runs the full ceremony when forced and stores the assertion (not the token)", async () => {
     readKeychainToken.mockResolvedValue(undefined)
     vi.stubGlobal(
       "fetch",
@@ -122,13 +129,10 @@ describe("serviceAuthFlowEngine", () => {
           })
         }
         if (url === TOKEN) {
-          expect(grantOf(init)).toBe(
-            "urn:workos:agent-auth:grant-type:claim",
-          )
+          expect(grantOf(init)).toBe("urn:workos:agent-auth:grant-type:claim")
           return jsonRes({
             access_token: "oat_fresh",
             token_type: "Bearer",
-            refresh_token: "ort_fresh",
             identity_assertion: "assert-jwt",
             assertion_expires_in: 3600,
           })
@@ -147,54 +151,26 @@ describe("serviceAuthFlowEngine", () => {
     expect(r.tokenKind).toBe("oat")
     expect(r.assertionExpires).toMatch(/^\d{4}-\d{2}-\d{2}T/) // ISO 8601
 
-    // Primary slot holds the rotating refresh token; assertion in -assertion slot.
+    // The assertion is stored — NOT the access token, NOT a refresh token.
+    expect(writeKeychainToken).toHaveBeenCalledTimes(1)
     expect(writeKeychainToken).toHaveBeenCalledWith(
       "bureau-guilde",
-      API,
-      "ort_fresh",
-    )
-    expect(writeKeychainToken).toHaveBeenCalledWith(
-      "bureau-guilde-assertion",
       API,
       "assert-jwt",
     )
   })
 
-  it("exchanges a stored assertion via jwt-bearer when the primary slot is empty", async () => {
-    // Primary slot empty; the -assertion slot holds a prior ceremony's JWT.
-    readKeychainToken.mockImplementation(async (service: string) =>
-      service === "bureau-guilde-assertion" ? "assert-jwt" : undefined,
-    )
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        expect(grantOf(init)).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer")
-        return jsonRes({ access_token: "oat_from_assert", refresh_token: "ort_x" })
-      }),
-    )
-
-    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
-    expect(r).toEqual({ accessToken: "oat_from_assert", tokenKind: "oat" })
-    // A rotated refresh token from the exchange is persisted to the primary slot.
-    expect(writeKeychainToken).toHaveBeenCalledWith("bureau-guilde", API, "ort_x")
-  })
-
-  it("falls through to a full ceremony when both refresh and assertion fail", async () => {
-    // ort_* in the primary slot, but no usable assertion in the -assertion slot.
-    readKeychainToken.mockImplementation(async (service: string) =>
-      service === "bureau-guilde" ? "ort_stale" : undefined,
-    )
+  it("falls through to a ceremony when the stored assertion is rejected", async () => {
+    readKeychainToken.mockResolvedValue("assert-expired")
     let calls = 0
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         calls += 1
-        // 1st: refresh attempt fails → triggers fall-through.
-        if (grantOf(init) === "refresh_token") {
+        // 1st: jwt-bearer exchange fails → triggers fall-through to a ceremony.
+        if (grantOf(init) === "urn:ietf:params:oauth:grant-type:jwt-bearer") {
           return jsonRes({ error: "invalid_grant" })
         }
-        // No assertion is cached, so no jwt-bearer exchange is attempted.
-        // 2nd: ceremony identity request.
         if (url === IDENTITY) {
           return jsonRes({
             registration_id: "r",
@@ -207,7 +183,6 @@ describe("serviceAuthFlowEngine", () => {
             },
           })
         }
-        // 3rd: claim poll succeeds.
         return jsonRes({ access_token: "oat_after_fail", token_type: "Bearer" })
       }),
     )
@@ -215,5 +190,12 @@ describe("serviceAuthFlowEngine", () => {
     const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
     expect(r.accessToken).toBe("oat_after_fail")
     expect(calls).toBeGreaterThanOrEqual(3)
+  })
+
+  it("rejects an insecure (non-HTTPS, non-loopback) endpoint", async () => {
+    vi.stubGlobal("fetch", vi.fn())
+    await expect(
+      serviceAuthFlowEngine.run(provider, null, { server: "http://evil.example" }),
+    ).rejects.toThrow(/requires HTTPS/)
   })
 })

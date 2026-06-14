@@ -13,7 +13,7 @@
 
 import { z } from "zod"
 import type { DiscoveredEndpoints } from "./types.js"
-import { fetchWithDeadline } from "./http.js"
+import { fetchWithDeadline, assertSecureUrl } from "./http.js"
 
 export class DiscoveryError extends Error {
   readonly serverUrl: string
@@ -75,12 +75,19 @@ export async function discoverEndpoints(
   opts: DiscoverOptions = {},
 ): Promise<DiscoveredEndpoints> {
   const base = apiBase.replace(/\/$/, "")
-  const fetchOpts = { signal: opts.signal }
+  // AIP-50 §Security: HTTPS only (loopback exempt for dev), and never follow
+  // redirects on discovery — a 3xx is treated as a failure, not chased to a
+  // potentially-rogue endpoint.
+  const fetchOpts: RequestInit = {
+    signal: opts.signal,
+    redirect: "manual",
+  }
 
   // Hop 1 — PRM
   const prmUrl = `${base}/.well-known/oauth-protected-resource`
   let prm: PRMShape
   try {
+    assertSecureUrl(prmUrl)
     const res = await fetchWithDeadline(prmUrl, fetchOpts, opts.timeoutMs)
     if (!res.ok) {
       throw new DiscoveryError(
@@ -106,6 +113,7 @@ export async function discoverEndpoints(
   const asUrl = `${authServerBase}/.well-known/oauth-authorization-server`
   let as: ASMetaShape
   try {
+    assertSecureUrl(asUrl)
     const res = await fetchWithDeadline(asUrl, fetchOpts, opts.timeoutMs)
     if (!res.ok) {
       throw new DiscoveryError(

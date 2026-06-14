@@ -175,4 +175,40 @@ describe("discoverEndpoints", () => {
     ac.abort()
     await expect(p).rejects.toBeInstanceOf(DiscoveryError)
   })
+
+  it("requests with redirect:manual and treats a 3xx as a failure", async () => {
+    let redirectMode: string | undefined
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        redirectMode = init?.redirect
+        return res({}, { ok: false, status: 302 }) // a redirect, not followed
+      }),
+    )
+    await expect(discoverEndpoints(API)).rejects.toBeInstanceOf(DiscoveryError)
+    expect(redirectMode).toBe("manual")
+  })
+
+  it("rejects a non-HTTPS apiBase", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(
+      discoverEndpoints("http://insecure.example"),
+    ).rejects.toBeInstanceOf(DiscoveryError)
+    expect(fetchMock).not.toHaveBeenCalled() // guarded before any request
+  })
+
+  it("allows loopback http for local development", async () => {
+    const LOOPBACK = "http://127.0.0.1:8080"
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === `${LOOPBACK}/.well-known/oauth-protected-resource`)
+          return res({ authorization_servers: [AS] })
+        return res(AS_META)
+      }),
+    )
+    const d = await discoverEndpoints(LOOPBACK)
+    expect(d.tokenEndpoint).toBe(`${AS}/oauth2/token`)
+  })
 })
