@@ -68,6 +68,23 @@ PACKAGES=(
   "@agentproto/runtime-profile-standard|runtime-profile-standard"
   "@agentproto/cli|cli"
   "@agentproto/plugin-local-browser|plugin-local-browser"
+
+  # corpus-cli dependency closure (the AIP-10 `corpus` binary). define-doctype
+  # is shared with the cli closure above and publishes there first. Order
+  # within this block is dep-first; the idempotency guard in publish_one skips
+  # any version already on the registry, so the shared deps and re-runs are safe.
+  "@agentproto/cli-exec|cli-exec"
+  "@agentproto/collection|collection"
+  "@agentproto/knowledge|knowledge"
+  "@agentproto/operator|operator"
+  "@agentproto/playbook|playbook"
+  "@agentproto/registry|registry"
+  "@agentproto/manifest|manifest"
+  "@agentproto/routine|routine"
+  "@agentproto/workflow|workflow"
+  "@agentproto/corpus|corpus"
+  "@agentproto/corpus-presets|corpus-presets"
+  "@agentproto/corpus-cli|corpus-cli"
 )
 
 prompt_otp() {
@@ -82,12 +99,28 @@ prompt_otp() {
   echo "$code"
 }
 
+# Resolve a package's local version from its own package.json (path-agnostic).
+local_version() {
+  pnpm --filter "$1" --silent exec node -e \
+    "process.stdout.write(require('./package.json').version)" 2>/dev/null
+}
+
 publish_one() {
   local filter="$1"
   local label="$2"
 
   echo
   echo "━━━ ${label} ━━━"
+
+  # Idempotency: if this exact version is already on the registry, skip. Lets
+  # the script span several closures and be re-run without erroring on
+  # already-published packages.
+  local ver
+  ver=$(local_version "$filter")
+  if [ -n "$ver" ] && npm view "${filter}@${ver}" version >/dev/null 2>&1; then
+    echo "↷ ${ver} already on npm — skipping"
+    return 0
+  fi
 
   pnpm --filter "$filter" publish --access public --no-git-checks --dry-run 2>&1 \
     | grep -E "^npm notice (name|version|filename|package size|total files):" \

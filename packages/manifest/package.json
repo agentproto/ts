@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/manifest",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "agentproto/manifest — generic verbs for AIP doctypes (create, load, list, update, resolve, delete). Each per-AIP package supplies a DoctypeSpec describing its name / AIP number / schema literal / path convention / validator+parser; createVerbs(spec) returns the full lifecycle. Adding a new verb (hash, sign, migrate, …) is one place; every package picks it up automatically.",
   "keywords": [
     "agentproto",

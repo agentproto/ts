@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/registry",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "@agentproto/registry — AIP-43 reference implementation. A type-parametric in-memory catalog that collects N defineX'd doctype handles (storage, sandbox, operator, extension, ...) and exposes a uniform lookup surface. One impl, every doctype family. Replaces hand-rolled per-host registries.",
   "keywords": [
     "agentproto",
