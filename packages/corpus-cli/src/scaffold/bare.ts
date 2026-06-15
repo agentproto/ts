@@ -64,6 +64,11 @@ curation:
 queryHints:
   preferRecent: true
   preferAuthoritative: true
+metadata:
+  corpus:
+    # "flat" → entries/<kind>/<slug>.md (matches the scaffolded dirs).
+    # Set "dated" for entries/<kind>/<year>/<slug>.md on high-volume corpora.
+    entryLayout: flat
 ---
 
 # ${title}

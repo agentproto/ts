@@ -95,4 +95,29 @@ describe("DistillRunner", () => {
     const report = await runner.run({ id: "s", title: "t", body: "b" })
     expect(report.entryPaths).toHaveLength(0)
   })
+
+  it("layout: 'flat' drops the year segment from entry paths", async () => {
+    const { fs, written } = fakeFs()
+    const runner = new DistillRunner({
+      fs,
+      clock,
+      layout: "flat",
+      distiller: fakeDistiller([{ kind: "principle", title: "Flat one", body: "x" }]),
+    })
+    const report = await runner.run({ id: "s1", title: "t", body: "b" })
+    expect(report.entryPaths).toEqual(["entries/principles/flat-one.md"])
+    expect(written.has("entries/principles/flat-one.md")).toBe(true)
+    expect(written.has("entries/principles/2026/flat-one.md")).toBe(false)
+  })
+
+  it("layout defaults to 'dated' (year segment present)", async () => {
+    const { fs } = fakeFs()
+    const runner = new DistillRunner({
+      fs,
+      clock,
+      distiller: fakeDistiller([{ kind: "principle", title: "Dated one", body: "x" }]),
+    })
+    const report = await runner.run({ id: "s1", title: "t", body: "b" })
+    expect(report.entryPaths).toEqual(["entries/principles/2026/dated-one.md"])
+  })
 })

@@ -53,6 +53,7 @@ import {
   systemClock,
   type DistillSource,
   type DistillPort,
+  type EntryLayout,
 } from "@agentproto/corpus"
 import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
 import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
@@ -62,6 +63,25 @@ import { createUsageSink, type DistillUsage } from "../ports/usage-telemetry.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
 const DEFAULT_ENGINE = "anthropic-api"
+
+/**
+ * Read the corpus's preferred entry layout from KNOWLEDGE.md
+ * (`metadata.corpus.entryLayout: flat | dated`). Absent / unreadable → undefined
+ * (the runner defaults to "dated"). Lives in freeform `metadata`, so no spec change.
+ */
+async function readEntryLayout(target: string): Promise<EntryLayout | undefined> {
+  try {
+    const raw = await readFile(join(target, "KNOWLEDGE.md"), "utf8")
+    const layout = (matter(raw).data as Record<string, unknown>)?.metadata
+    const corpus = (layout as Record<string, unknown> | undefined)?.["corpus"] as
+      | Record<string, unknown>
+      | undefined
+    const v = corpus?.["entryLayout"]
+    return v === "flat" || v === "dated" ? v : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** A selectable distill engine: whether it needs an API key + how to build it. */
 interface DistillerEngine {
@@ -237,9 +257,11 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
   }
 
   const usage = createUsageSink({ runName: basename(target) })
+  const layout = await readEntryLayout(target)
   const runner = new DistillRunner({
     fs: new NodeFsAdapter({ root: target }),
     clock: systemClock,
+    ...(layout ? { layout } : {}),
     distiller: engine.create({
       ...(apiKey ? { apiKey } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),

@@ -2,7 +2,8 @@
  * DistillRunner — turn one raw source into refined AIP-10 entries.
  *
  * Reads nothing itself beyond what it's handed; writes each distilled item
- * as `entries/<kind-plural>/<year>/<slug>.md` with `sources: [<sourceId>]`
+ * as `entries/<kind-plural>/<year>/<slug>.md` (layout: "dated", default) or
+ * `entries/<kind-plural>/<slug>.md` (layout: "flat") with `sources: [<sourceId>]`
  * (the provenance edge) and inherited `access`. Pure: consumes FsPort +
  * ClockPort + an injected DistillPort. The filesystem refs are the graph.
  */
@@ -41,10 +42,18 @@ export interface DistillRunReport {
   readonly skipped: readonly string[] // slugs skipped (already exist)
 }
 
+/** Where distilled entries land under `entries/<kind>/`. */
+export type EntryLayout = "dated" | "flat"
+
 export interface DistillRunnerOptions {
   readonly fs: FsPort
   readonly clock: ClockPort
   readonly distiller: DistillPort
+  /**
+   * Entry path layout. "dated" (default) → `entries/<kind>/<year>/<slug>.md`
+   * (scales to large corpora over time); "flat" → `entries/<kind>/<slug>.md`.
+   */
+  readonly layout?: EntryLayout
 }
 
 export class DistillRunner {
@@ -58,6 +67,7 @@ export class DistillRunner {
     })
 
     const year = this.opts.clock.now().getUTCFullYear()
+    const flat = this.opts.layout === "flat"
     const seen = new Set<string>()
     const entryPaths: string[] = []
     const skipped: string[] = []
@@ -66,7 +76,9 @@ export class DistillRunner {
       if (!item.title.trim() || !item.body.trim()) continue
       const slug = uniqueSlug(slugify(item.title, ENTRY_SLUG_OPTS), seen, 80)
       const dir = KIND_DIR[item.kind]
-      const path = `entries/${dir}/${year}/${slug}.md`
+      const path = flat
+        ? `entries/${dir}/${slug}.md`
+        : `entries/${dir}/${year}/${slug}.md`
 
       if (await this.opts.fs.exists(path)) {
         skipped.push(slug)

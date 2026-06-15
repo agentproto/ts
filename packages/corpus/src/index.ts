@@ -99,6 +99,7 @@ export type {
   DistillRunnerOptions,
   DistillSource,
   DistillRunReport,
+  EntryLayout,
 } from "./distill/runner.js"
 export type {
   DistillPort,
