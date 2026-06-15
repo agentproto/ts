@@ -30,6 +30,7 @@ export async function runInit(args: readonly string[]): Promise<ExitCode> {
   const withStarters: string[] = []
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
+    if (a === undefined) continue
     if (a === "--list" || a === "-l") {
       listOnly = true
     } else if (a === "--preset" || a === "-p") {
