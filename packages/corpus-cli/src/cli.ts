@@ -6,7 +6,7 @@
  * handles ~90% of what we need, the rest is a 50-line dispatcher.
  *
  * Usage:
- *   corpus init <vertical> [path]
+ *   corpus init <name> [path] [--with a,b] [--preset <slug>]
  *   corpus validate [path]
  *   corpus lint [path]
  *   corpus events:emit <kind> --payload <json> [path]
@@ -30,7 +30,9 @@ export type ExitCode = 0 | 1 | 2
 const HELP = `corpus — AIP-10 corpus workspace operator (v${VERSION})
 
 Commands:
-  init <vertical> [path]                 Scaffold a starter workspace
+  init <name> [path] [--with a,b] [--preset <slug>]
+                                         Scaffold a corpus — bare AIP-10 by default
+                                         (--preset seeds a full vertical; --list shows them)
   validate [path]                        JSON Schema check across every AIP file
   lint [path]                            Run lints declared in KNOWLEDGE.md
   events:emit <kind> --payload <json> [path]

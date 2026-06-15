@@ -122,6 +122,10 @@ export interface SourceFile {
    * Filesystem path relative to the render filesystem. Parsed by extension per the format contract.
    */
   path: string
+  /**
+   * Resolve `path` against a named workspace instead of the render filesystem. The host's workspace resolver supplies the filesystem (and enforces access); unconfigured cross-workspace refs surface as status:error.
+   */
+  workspace?: string
 }
 export interface SourceQuery {
   kind: "query"
@@ -144,6 +148,10 @@ export interface SourceQuery {
    * Project to a subset of parsed keys.
    */
   fields?: string[]
+  /**
+   * Resolve the glob against a named workspace instead of the render filesystem. The host's workspace resolver supplies the filesystem (and enforces access); unconfigured cross-workspace refs surface as status:error.
+   */
+  workspace?: string
 }
 export interface Import {
   /**

@@ -62,7 +62,7 @@ describe("corpus CLI — end-to-end", () => {
     const r = await runCli(["--help"])
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(/corpus — AIP-10 corpus workspace operator/)
-    expect(r.stdout).toContain("init <vertical>")
+    expect(r.stdout).toContain("init <name>")
   })
 
   it("--version exits 0", async () => {
@@ -77,9 +77,9 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stderr).toMatch(/unknown command "frobnicate"/)
   })
 
-  it("init marketing scaffolds the workspace at the target path", async () => {
+  it("init --preset marketing scaffolds the full vertical at the target path", async () => {
     const ws = path.join(tmp, "ws")
-    const r = await runCli(["init", "marketing", ws])
+    const r = await runCli(["init", "marketing", ws, "--preset", "marketing"])
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(
       /initialized "marketing" preset \(Marketing Expert Corpus\)/
@@ -92,16 +92,25 @@ describe("corpus CLI — end-to-end", () => {
     expect(n).toBeGreaterThanOrEqual(30)
   })
 
+  it("init (bare, no preset) scaffolds a neutral AIP-10 workspace", async () => {
+    const ws = path.join(tmp, "ws-bare")
+    const r = await runCli(["init", "my-research", ws])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toMatch(/initialized bare corpus "my-research"/)
+    // bare = KNOWLEDGE.md + sources + collections + 6 entry-kind dirs
+    expect(r.stdout).toMatch(/neutral KNOWLEDGE\.md/)
+  })
+
   it("init on an existing workspace refuses (exit 1)", async () => {
     const ws = path.join(tmp, "ws")
-    const r = await runCli(["init", "marketing", ws])
+    const r = await runCli(["init", "marketing", ws, "--preset", "marketing"])
     expect(r.code).toBe(1)
     expect(r.stderr).toMatch(/refusing to overwrite/)
   })
 
-  it("init with unknown slug exits 2", async () => {
+  it("init with unknown --preset exits 2", async () => {
     const ws = path.join(tmp, "ws-unknown")
-    const r = await runCli(["init", "frobology", ws])
+    const r = await runCli(["init", "x", ws, "--preset", "frobology"])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/not found in any configured package/)
   })

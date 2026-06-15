@@ -16,7 +16,7 @@
 
 import { readFile, readdir } from "node:fs/promises"
 import type { Dirent } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { z } from "zod"
 
 /** Lenient zod view of a source's frontmatter (each field degrades to undefined). */
@@ -53,20 +53,45 @@ import {
   systemClock,
   type DistillSource,
   type DistillPort,
+  type EntryLayout,
 } from "@agentproto/corpus"
 import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
 import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
 import { CLI_ENGINES } from "../ports/cli-engines.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
+import { createUsageSink, type DistillUsage } from "../ports/usage-telemetry.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
 const DEFAULT_ENGINE = "anthropic-api"
+
+/**
+ * Read the corpus's preferred entry layout from KNOWLEDGE.md
+ * (`metadata.corpus.entryLayout: flat | dated`). Absent / unreadable → undefined
+ * (the runner defaults to "dated"). Lives in freeform `metadata`, so no spec change.
+ */
+async function readEntryLayout(target: string): Promise<EntryLayout | undefined> {
+  try {
+    const raw = await readFile(join(target, "KNOWLEDGE.md"), "utf8")
+    const layout = (matter(raw).data as Record<string, unknown>)?.metadata
+    const corpus = (layout as Record<string, unknown> | undefined)?.["corpus"] as
+      | Record<string, unknown>
+      | undefined
+    const v = corpus?.["entryLayout"]
+    return v === "flat" || v === "dated" ? v : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** A selectable distill engine: whether it needs an API key + how to build it. */
 interface DistillerEngine {
   readonly id: string
   readonly needsApiKey: boolean
-  create(opts: { apiKey?: string; model?: string }): DistillPort
+  create(opts: {
+    apiKey?: string
+    model?: string
+    onUsage?: (usage: DistillUsage) => void
+  }): DistillPort
 }
 
 /**
@@ -78,8 +103,12 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
   [DEFAULT_ENGINE]: {
     id: DEFAULT_ENGINE,
     needsApiKey: true,
-    create: ({ apiKey, model }) =>
-      new AnthropicDistiller({ apiKey: apiKey!, ...(model ? { model } : {}) }),
+    create: ({ apiKey, model, onUsage }) =>
+      new AnthropicDistiller({
+        apiKey: apiKey!,
+        ...(model ? { model } : {}),
+        ...(onUsage ? { onUsage } : {}),
+      }),
   },
   ...Object.fromEntries(
     Object.values(CLI_ENGINES).map(engine => [
@@ -227,12 +256,16 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
     return 0
   }
 
+  const usage = createUsageSink({ runName: basename(target) })
+  const layout = await readEntryLayout(target)
   const runner = new DistillRunner({
     fs: new NodeFsAdapter({ root: target }),
     clock: systemClock,
+    ...(layout ? { layout } : {}),
     distiller: engine.create({
       ...(apiKey ? { apiKey } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
+      onUsage: usage.record,
     }),
   })
 
@@ -249,5 +282,6 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
     }
   }
   process.stdout.write(`\n${totalEntries} refined entries written (each with sources:[<id>] provenance).\n`)
+  await usage.flush()
   return 0
 }
