@@ -1,16 +1,18 @@
 /**
- * `corpus init <slug> [path]` — scaffold a starter workspace from a
- * preset declared by one of the configured corpus-preset packages.
+ * `corpus init <name> [path]` — scaffold a new AIP-10 corpus.
  *
- * The CLI discovers presets via manifests:
+ * BARE BY DEFAULT: emits a neutral `knowledge.workspace/v1` manifest + the
+ * AIP-10 folder structure (kept by `.gitkeep`), nothing else. This is what you
+ * want for a fresh research corpus — structure without a domain's boilerplate.
  *
+ *   corpus init <name> [path]                      # bare scaffold
+ *   corpus init <name> [path] --with operators,playbooks   # + opt-in surfaces
+ *   corpus init <name> [path] --preset marketing   # seed a full preset
+ *   corpus init --list                             # list available presets
+ *
+ * Presets are discovered via manifests:
  *   - Default: scans `@agentproto/corpus-presets`.
- *   - Configurable: `corpusPresetPackages[]` in `~/.agentproto/config.json`
- *     lets third parties add their own packages (e.g.
- *     `@vendor/corpus-presets`) to the discovery set.
- *
- * `corpus init --list` prints every preset visible to the current
- * configuration before scaffolding anything.
+ *   - Configurable: `corpusPresetPackages[]` in `~/.agentproto/config.json`.
  */
 
 import {
@@ -18,37 +20,53 @@ import {
   loadPreset,
 } from "../registry/preset-loader.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
+import { buildBareWorkspace, STARTER_SURFACES } from "../scaffold/bare.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
 export async function runInit(args: readonly string[]): Promise<ExitCode> {
   const positionals: string[] = []
   let listOnly = false
-  for (const a of args) {
+  let presetSlug: string | undefined
+  const withStarters: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
     if (a === "--list" || a === "-l") {
       listOnly = true
-      continue
+    } else if (a === "--preset" || a === "-p") {
+      presetSlug = args[++i]
+    } else if (a.startsWith("--preset=")) {
+      presetSlug = a.slice("--preset=".length)
+    } else if (a === "--with" || a === "-w") {
+      withStarters.push(...splitList(args[++i]))
+    } else if (a.startsWith("--with=")) {
+      withStarters.push(...splitList(a.slice("--with=".length)))
+    } else {
+      positionals.push(a)
     }
-    positionals.push(a)
   }
 
   if (listOnly) {
     return runList()
   }
 
-  const [slug, pathArg] = positionals
-  if (!slug) {
-    const available = await formatAvailable()
+  const [name, pathArg] = positionals
+  if (!name) {
     return fail(
-      `init requires a <slug> argument.\n${available}`,
+      `init requires a <name> argument.\n` +
+        `  corpus init <name> [path]                  # bare AIP-10 scaffold (default)\n` +
+        `  corpus init <name> [path] --with operators,playbooks\n` +
+        `  corpus init <name> [path] --preset <slug>  # seed a full preset\n` +
+        `Run \`corpus init --list\` for available presets.`,
       2
     )
   }
 
-  const preset = await loadPreset(slug)
-  if (!preset) {
-    const available = await formatAvailable()
+  // Validate any requested starter surfaces up front.
+  const unknown = withStarters.filter(s => !(s in STARTER_SURFACES))
+  if (unknown.length) {
     return fail(
-      `init: preset "${slug}" not found in any configured package.\n${available}`,
+      `init: unknown --with surface(s): ${unknown.join(", ")}. ` +
+        `Known: ${Object.keys(STARTER_SURFACES).join(", ")}.`,
       2
     )
   }
@@ -64,29 +82,61 @@ export async function runInit(args: readonly string[]): Promise<ExitCode> {
     )
   }
 
+  // ── Preset path (opt-in) ──
+  if (presetSlug) {
+    const preset = await loadPreset(presetSlug)
+    if (!preset) {
+      const available = await formatAvailable()
+      return fail(
+        `init: preset "${presetSlug}" not found in any configured package.\n${available}`,
+        2
+      )
+    }
+    let count = 0
+    for (const [rel, content] of Object.entries(preset.files)) {
+      await fs.writeFile(rel, content)
+      count++
+    }
+    // Optional bootstrap hook for presets that need more than file writes.
+    if (preset.bootstrap) {
+      await preset.bootstrap({
+        workspacePath: "",
+        write: (rel, content) => fs.writeFile(rel, content),
+      })
+    }
+    process.stdout.write(
+      `corpus: initialized "${preset.slug}" preset (${preset.title}) at ${target}\n` +
+        `        ${count} files written\n` +
+        `Try: corpus validate ${pathArg ?? "."}\n` +
+        `     corpus lint ${pathArg ?? "."}\n`
+    )
+    return 0
+  }
+
+  // ── Bare path (default) ──
+  const files = buildBareWorkspace(name, withStarters)
   let count = 0
-  for (const [rel, content] of Object.entries(preset.files)) {
+  for (const [rel, content] of Object.entries(files)) {
     await fs.writeFile(rel, content)
     count++
   }
-
-  // Optional bootstrap hook for presets that need more than file writes.
-  if (preset.bootstrap) {
-    await preset.bootstrap({
-      workspacePath: "",
-      write: (rel, content) => fs.writeFile(rel, content),
-    })
-  }
-
+  const withNote = withStarters.length
+    ? ` (+ starters: ${withStarters.join(", ")})`
+    : ""
   process.stdout.write(
-    `corpus: initialized "${preset.slug}" preset (${preset.title}) at ${target}\n` +
-      `        ${count} files written\n`
-  )
-  process.stdout.write(
-    `Try: corpus validate ${pathArg ?? "."}\n` +
-      `     corpus lint ${pathArg ?? "."}\n`
+    `corpus: initialized bare corpus "${name}"${withNote} at ${target}\n` +
+      `        ${count} files written — neutral KNOWLEDGE.md + AIP-10 structure\n` +
+      `Try: corpus import-web ${pathArg ?? "."} --urls-file urls.txt\n` +
+      `     corpus validate ${pathArg ?? "."}\n`
   )
   return 0
+}
+
+function splitList(v: string | undefined): string[] {
+  return (v ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
 }
 
 async function runList(): Promise<ExitCode> {
