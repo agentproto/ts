@@ -72,6 +72,15 @@ export async function runInit(args: readonly string[]): Promise<ExitCode> {
     )
   }
 
+  // The bare scaffold writes <name> straight into the knowledge.workspace/v1
+  // manifest, whose `.name` is a constrained kebab-case identifier. Reject an
+  // invalid name up front so `init` never emits a corpus that fails its own
+  // `corpus validate`. Presets carry their own manifest, so name is unused there.
+  if (!presetSlug) {
+    const nameErr = invalidCorpusName(name)
+    if (nameErr) return fail(nameErr, 2)
+  }
+
   const target = resolveWorkspacePath(pathArg)
   const fs = new NodeFsAdapter({ root: target })
 
@@ -131,6 +140,34 @@ export async function runInit(args: readonly string[]): Promise<ExitCode> {
       `     corpus validate ${pathArg ?? "."}\n`
   )
   return 0
+}
+
+// knowledge.workspace/v1 `.name`: kebab-case, 2–96 chars. Mirror of the AIP-10
+// schema constraint so `corpus init` can never scaffold a self-invalid corpus.
+const CORPUS_NAME_RE = /^[a-z][a-z0-9-]*[a-z0-9]$/
+
+function invalidCorpusName(name: string): string | null {
+  if (name.length >= 2 && name.length <= 96 && CORPUS_NAME_RE.test(name)) {
+    return null
+  }
+  const suggestion = slugifyName(name)
+  const hint =
+    suggestion.length >= 2 && CORPUS_NAME_RE.test(suggestion)
+      ? `\nDid you mean: ${suggestion}`
+      : ""
+  return (
+    `init: invalid corpus name "${name}". A corpus name is a kebab-case ` +
+    `identifier — lowercase letters, digits and hyphens, 2–96 chars, starting ` +
+    `with a letter and ending alphanumerically (^[a-z][a-z0-9-]*[a-z0-9]$).${hint}`
+  )
+}
+
+function slugifyName(raw: string): string {
+  return raw
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
 }
 
 function splitList(v: string | undefined): string[] {

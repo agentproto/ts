@@ -10,7 +10,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -113,6 +113,23 @@ describe("corpus CLI — end-to-end", () => {
     const r = await runCli(["init", "x", ws, "--preset", "frobology"])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/not found in any configured package/)
+  })
+
+  it("init (bare) rejects an invalid corpus name with exit 2", async () => {
+    // "c" is too short for knowledge.workspace/v1 .name (minLength 2) — the
+    // old behaviour scaffolded a corpus that failed its own `validate`.
+    const ws = path.join(tmp, "ws-badname")
+    const r = await runCli(["init", "c", ws])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toMatch(/invalid corpus name "c"/)
+    expect(existsSync(path.join(ws, "KNOWLEDGE.md"))).toBe(false)
+  })
+
+  it("init (bare) suggests a kebab-case slug for a fixable name", async () => {
+    const ws = path.join(tmp, "ws-suggest")
+    const r = await runCli(["init", "My Corpus", ws])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toMatch(/Did you mean: my-corpus/)
   })
 
   it("validate prints 0 errors on the freshly-init'd workspace (exit 0)", async () => {
