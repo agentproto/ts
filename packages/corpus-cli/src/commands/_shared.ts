@@ -19,6 +19,9 @@ const __dirname = path.dirname(__filename)
  */
 function findSpecsRoot(): string {
   const candidates = [
+    // published binary: schemas bundled beside the CLI at dist/specs/resources
+    // (copied from the repo's specs/resources by scripts/bundle-specs.mjs at build).
+    path.resolve(__dirname, "specs/resources"),
     // source-tree (vendored): packages/corpus-cli/src/commands → ts repo's own specs/resources
     path.resolve(__dirname, "../../../../specs/resources"),
     // dist-tree (vendored): packages/corpus-cli/dist → ts repo's own specs/resources
@@ -43,12 +46,23 @@ function findSpecsRoot(): string {
   )
 }
 
-const SPECS_ROOT = process.env.CORPUS_SPECS_ROOT || findSpecsRoot()
+let _specsRoot: string | undefined
+/**
+ * Resolve the specs root lazily and memoize it. Commands that never read
+ * schemas (init, --help, --version) must not trip the "not found" error
+ * just by importing this module, so resolution is deferred to first use.
+ */
+function getSpecsRoot(): string {
+  if (_specsRoot === undefined) {
+    _specsRoot = process.env.CORPUS_SPECS_ROOT || findSpecsRoot()
+  }
+  return _specsRoot
+}
 
 function loadSchema(aip: number, doctype: string): unknown {
   return JSON.parse(
     readFileSync(
-      path.join(SPECS_ROOT, `aip-${aip}`, "draft", `${doctype}.schema.json`),
+      path.join(getSpecsRoot(), `aip-${aip}`, "draft", `${doctype}.schema.json`),
       "utf8"
     )
   )
