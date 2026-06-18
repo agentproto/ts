@@ -110,6 +110,10 @@ export type {
 export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
 export { buildDistillPrompt, parseItems } from "./distill/prompt.js"
 export { scanDistilledSourceIds } from "./distill/scan.js"
+// Model-backed distiller — any structural ModelPort (incl. an agent CLI via
+// makeAgentCliModel) becomes a DistillPort. Unifies distill with the report writer.
+export { modelDistiller } from "./distill/model-distiller.js"
+export type { ModelDistillerOptions } from "./distill/model-distiller.js"
 
 // Distill registry — the catalog of distill kinds (4 swappable slots per
 // descriptor) + the generic per-(descriptor × scope) runner.
