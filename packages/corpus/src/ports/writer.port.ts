@@ -23,6 +23,13 @@ export interface PushChunksInput {
   readonly uri?: string
   readonly chunks: readonly WriterChunk[]
   readonly entryMetadata?: Readonly<Record<string, unknown>>
+  /**
+   * The entry's full parsed frontmatter. Vector engines ignore it; a
+   * graph-projection writer reads the relation arrays the flattened
+   * `entryMetadata` drops (`links` / `supersedes` / `contradicts`) to build
+   * entry↔entry edges. Optional — absence just means no graph projection.
+   */
+  readonly entryFrontmatter?: Readonly<Record<string, unknown>>
 }
 
 export interface WriterPort {

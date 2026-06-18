@@ -126,6 +126,9 @@ export class CorpusIndexer {
         tags: entry.frontmatter.tags,
         ...corpus,
       },
+      // Full frontmatter for a graph-projection writer (relation arrays the
+      // flattened entryMetadata drops). Vector engines ignore it.
+      entryFrontmatter: entry.frontmatter,
     })
     return chunks.length
   }
