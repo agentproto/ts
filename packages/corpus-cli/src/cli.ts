@@ -22,6 +22,7 @@ import { runEventsEmit, runEventsTail } from "./commands/events.js"
 import { runImportWeb } from "./commands/import-web.js"
 import { runDistill } from "./commands/distill.js"
 import { runKnowledge } from "./commands/knowledge.js"
+import { runReport } from "./commands/report.js"
 import { runSync } from "./commands/sync.js"
 import { VERSION } from "./version.js"
 
@@ -59,6 +60,11 @@ Commands:
   knowledge [path] --tags a,b [--kind k --access scope --max n]
                                          Preview what a skill's knowledge: binding resolves to
                                          — refined entries + their provenance (filesystem).
+  report packs [dataset] --config <f> [--out <dir>] [--views-dir <n>]
+                                         Build per-chapter knowledge views + the global
+                                         citation bibliography from a dataset. Dataset is
+                                         mounted read-only; --out (default: dataset) is the
+                                         only writer; --views-dir defaults to "views".
   sync [path] --config <sink.json> [--tags a,b --kind k --throttle ms]
                                          Push refined entries to an external store via a
                                          config-driven MCP sink (host-agnostic).
@@ -100,6 +106,8 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runDistill(rest)
     case "knowledge":
       return await runKnowledge(rest)
+    case "report":
+      return await runReport(rest)
     case "sync":
       return await runSync(rest)
     default:

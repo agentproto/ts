@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/corpus",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "@agentproto/corpus — canonical composition of AIP-10 KNOWLEDGE, AIP-12 PLAYBOOK, AIP-18 COLLECTION, AIP-9 OPERATOR, AIP-15 WORKFLOW, AIP-41 ROUTINE into an autonomous knowledge-improvement system. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
   "keywords": [
     "agentproto",
@@ -36,6 +36,11 @@
       "types": "./dist/ports/index.d.ts",
       "import": "./dist/ports/index.mjs",
       "default": "./dist/ports/index.mjs"
+    },
+    "./report": {
+      "types": "./dist/report/index.d.ts",
+      "import": "./dist/report/index.mjs",
+      "default": "./dist/report/index.mjs"
     },
     "./package.json": "./package.json"
   },

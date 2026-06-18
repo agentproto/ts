@@ -8,6 +8,7 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     "ports/index": "src/ports/index.ts",
+    "report/index": "src/report/index.ts",
   },
   format: ["esm"],
   splitting: true,
