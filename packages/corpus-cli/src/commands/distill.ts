@@ -12,6 +12,11 @@
  *   anthropic-api  metered Messages API (needs ANTHROPIC_API_KEY)
  *   claude-code    local `claude` CLI, billed against the logged-in subscription
  *                  (no API key) — cheaper for large batches, subject to rate caps
+ *   gemini         local `gemini` CLI (Google login / GEMINI_API_KEY)
+ *   codex          local `codex exec` (ChatGPT login / OPENAI_API_KEY)
+ *   opencode       local `opencode run` (provider key: ANTHROPIC/OPENAI/OPENROUTER…)
+ * The three CLI engines use each tool's first-party non-interactive print mode
+ * (prompt on stdin → plain text out); confirm flags against `<cli> --help`.
  */
 
 import { readFile, readdir } from "node:fs/promises"
