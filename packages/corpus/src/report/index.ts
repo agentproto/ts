@@ -13,6 +13,26 @@ export type {
   PackFile,
 } from "./packs.js"
 
+export { citesOf, outOfRangeCites } from "./cites.js"
+
+export { assembleChapters, cleanDraft } from "./assemble.js"
+export type {
+  AssembleOptions,
+  AssembleResult,
+  ChapterDraft,
+} from "./assemble.js"
+
+export { stitchReport } from "./stitch.js"
+export type { StitchOptions, StitchResult } from "./stitch.js"
+
+export { applyEdits } from "./apply-edits.js"
+export type {
+  ApplyEditsOptions,
+  ApplyEditsResult,
+  ChapterEdit,
+  ChapterEditSet,
+} from "./apply-edits.js"
+
 export {
   reportConfigSchema,
   reportChapterSchema,

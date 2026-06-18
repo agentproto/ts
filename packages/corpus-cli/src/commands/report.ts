@@ -14,7 +14,11 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { ReadOnlyFs } from "@agentproto/corpus"
-import { buildPacks, reportConfigSchema } from "@agentproto/corpus/report"
+import {
+  buildPacks,
+  stitchReport,
+  reportConfigSchema,
+} from "@agentproto/corpus/report"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
@@ -23,11 +27,19 @@ export async function runReport(args: readonly string[]): Promise<ExitCode> {
   switch (sub) {
     case "packs":
       return await runReportPacks(rest)
+    case "stitch":
+      return await runReportStitch(rest)
     case undefined:
-      return fail("report needs a subcommand (packs). Try --help.", 2)
+      return fail("report needs a subcommand (packs | stitch). Try --help.", 2)
     default:
       return fail(`unknown report subcommand "${sub}". Try --help.`, 2)
   }
+}
+
+/** Load + zod-validate a report config from a path (cwd-relative). */
+function loadReportConfig(configPath: string) {
+  const raw = readFileSync(path.resolve(process.cwd(), configPath), "utf8")
+  return reportConfigSchema.parse(JSON.parse(raw))
 }
 
 async function runReportPacks(args: readonly string[]): Promise<ExitCode> {
@@ -61,8 +73,7 @@ async function runReportPacks(args: readonly string[]): Promise<ExitCode> {
 
   let config
   try {
-    const raw = readFileSync(path.resolve(process.cwd(), configPath), "utf8")
-    config = reportConfigSchema.parse(JSON.parse(raw))
+    config = loadReportConfig(configPath)
   } catch (err) {
     return fail(
       `could not load/validate config "${configPath}": ${
@@ -90,5 +101,62 @@ async function runReportPacks(args: readonly string[]): Promise<ExitCode> {
       result.chapters.map((c) => `  ${c.id}: ${c.entryCount}`).join("\n") +
       "\n"
   )
+  return 0
+}
+
+async function runReportStitch(args: readonly string[]): Promise<ExitCode> {
+  let reportRoot: string | undefined
+  let configPath: string | undefined
+  let out: string | undefined
+  let chaptersDir: string | undefined
+  let viewsDir: string | undefined
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    const next = () => args[++i]
+    switch (a) {
+      case "--config":
+        configPath = next()
+        break
+      case "--out":
+        out = next()
+        break
+      case "--chapters-dir":
+        chaptersDir = next()
+        break
+      case "--views-dir":
+        viewsDir = next()
+        break
+      default:
+        if (!a.startsWith("-") && reportRoot === undefined) reportRoot = a
+    }
+  }
+
+  const root = resolveWorkspacePath(reportRoot)
+  if (!configPath) {
+    return fail("report stitch needs --config <report.config.json>.", 2)
+  }
+
+  let config
+  try {
+    config = loadReportConfig(configPath)
+  } catch (err) {
+    return fail(
+      `could not load/validate config "${configPath}": ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      2
+    )
+  }
+
+  const reportFs = new NodeFsAdapter({ root })
+  const { content, wordCount } = await stitchReport({
+    config,
+    report: reportFs,
+    ...(chaptersDir ? { chaptersDir } : {}),
+    ...(viewsDir ? { viewsDir } : {}),
+  })
+  await reportFs.writeFile(out ?? "REPORT.md", content)
+  process.stdout.write(`report stitch → ${out ?? "REPORT.md"} · ${wordCount} words\n`)
   return 0
 }

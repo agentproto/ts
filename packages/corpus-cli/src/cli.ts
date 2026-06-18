@@ -65,6 +65,9 @@ Commands:
                                          citation bibliography from a dataset. Dataset is
                                          mounted read-only; --out (default: dataset) is the
                                          only writer; --views-dir defaults to "views".
+  report stitch [report] --config <f> [--out <REPORT.md>] [--chapters-dir <d> --views-dir <n>]
+                                         Stitch front + parts + chapters + annexes + Sources
+                                         into one REPORT.md (report-side reads only).
   sync [path] --config <sink.json> [--tags a,b --kind k --throttle ms]
                                          Push refined entries to an external store via a
                                          config-driven MCP sink (host-agnostic).
