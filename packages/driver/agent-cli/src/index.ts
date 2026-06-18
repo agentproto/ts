@@ -20,6 +20,20 @@ export {
   defineAgentCli,
   createAgentCliRuntime,
 } from "./define-agent-cli.js"
+// Agent CLI → generic model port: one executor backing every prompt→completion
+// seam (report writer, corpus distiller, Mastra judgment step) over any AIP-45 CLI.
+export {
+  makeAgentCliModel,
+  resolveCliEnv,
+  composePrompt,
+  datasetPreamble,
+  PROVIDER_KEY_ENV,
+} from "./model.js"
+export type {
+  ModelLike,
+  FileReadingOptions,
+  AgentCliModelOptions,
+} from "./model.js"
 // Exposed so callers can build a sandbox-resident `AgentCliRuntime`
 // against the same protocol layer the host-spawn factory uses, by
 // passing a `ChildProcess`-shaped duck whose stdio is bridged to a
