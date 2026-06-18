@@ -70,6 +70,9 @@ export type {
 export { writeChapter, buildChapterWritePrompt } from "./write.js"
 export type { ChapterWriteContext } from "./write.js"
 
+export { reviewChapter, buildReviewPrompt } from "./review.js"
+export type { ChapterReviewContext } from "./review.js"
+
 export { planOutline } from "./plan.js"
 export type { PlanOutlineOptions, PlanOutlineResult } from "./plan.js"
 
