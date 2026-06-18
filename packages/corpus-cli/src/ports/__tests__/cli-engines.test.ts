@@ -33,11 +33,18 @@ describe("buildArgs — model injection", () => {
     expect(e.buildArgs({ model: "gemini-2.5-pro" })).toEqual(["-m", "gemini-2.5-pro"])
   })
 
-  it("codex: exec + stdin '-', -m <model> when given", () => {
+  it("codex: exec + skip-git-repo-check + json + stdin '-', -m <model> when given", () => {
     const e = CLI_ENGINES["codex"]!
-    expect(e.buildArgs({})).toEqual(["exec", "-"])
+    expect(e.buildArgs({})).toEqual([
+      "exec",
+      "--skip-git-repo-check",
+      "--json",
+      "-",
+    ])
     expect(e.buildArgs({ model: "gpt-5-codex" })).toEqual([
       "exec",
+      "--skip-git-repo-check",
+      "--json",
       "-m",
       "gpt-5-codex",
       "-",
@@ -65,9 +72,26 @@ describe("parseOutput", () => {
   it("plain-text engines strip ANSI and keep the JSON array text", () => {
     const esc = String.fromCharCode(27)
     const colored = `${esc}[32m[{"kind":"principle"}]${esc}[0m`
-    for (const id of ["gemini", "codex", "opencode"]) {
+    for (const id of ["gemini", "opencode"]) {
       const cleaned = CLI_ENGINES[id]!.parseOutput(colored)
       expect(cleaned).toBe('[{"kind":"principle"}]')
     }
+  })
+
+  it("codex unwraps the agent_message from its JSONL event stream", () => {
+    const e = CLI_ENGINES["codex"]!
+    const jsonl = [
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"[{\\"kind\\":\\"principle\\"}]"}}',
+      '{"type":"turn.completed"}',
+    ].join("\n")
+    expect(e.parseOutput(jsonl)).toBe('[{"kind":"principle"}]')
+    // older shape
+    expect(
+      e.parseOutput('{"type":"agent_message","message":"hi"}')
+    ).toBe("hi")
+    // no message line → null (falls back to raw stdout)
+    expect(e.parseOutput('{"type":"turn.started"}')).toBeNull()
   })
 })

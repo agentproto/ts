@@ -58,6 +58,38 @@ function plainTextOutput(stdout: string): string {
 }
 
 /**
+ * Codex `exec --json` emits a JSONL event stream; the model's answer is the
+ * `agent_message` item, not a clean text-only stdout (its human mode prints a
+ * preamble whose brackets break the tolerant `[…]` grab). Walk the lines and
+ * return the LAST agent-message text. Tolerates the two known event shapes
+ * (`item.completed`→`item.text`, and the older `agent_message`→`message`);
+ * verify against `codex exec --json` on the host if a version drifts. Null when
+ * no message line is found → fall back to raw stdout.
+ */
+function parseCodexJsonl(stdout: string): string | null {
+  let found: string | null = null
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith("{")) continue
+    let evt: unknown
+    try {
+      evt = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (!evt || typeof evt !== "object") continue
+    const e = evt as Record<string, unknown>
+    const item = e.item as Record<string, unknown> | undefined
+    if (item?.type === "agent_message" && typeof item.text === "string") {
+      found = item.text
+    } else if (e.type === "agent_message" && typeof e.message === "string") {
+      found = e.message
+    }
+  }
+  return found
+}
+
+/**
  * Claude Code in headless print mode, billed against the logged-in subscription.
  *
  * Flags (verified against `claude -p --help`):
@@ -102,9 +134,12 @@ const GEMINI: CliEngine = {
  * OpenAI Codex CLI in non-interactive automation mode (`codex exec`). The `-`
  * positional reads the prompt from stdin; the final assistant message prints to
  * stdout. Auth: ChatGPT login (subscription) or OPENAI_API_KEY / CODEX_API_KEY.
- *   exec          one-shot, non-interactive run
- *   -m <model>    optional model id (e.g. "gpt-5-codex")
- *   -             read the prompt from stdin
+ *   exec                   one-shot, non-interactive run
+ *   --skip-git-repo-check  allow running outside a git repo (cwd is os.tmpdir())
+ *   --json                 JSONL event stream (clean — its human mode prints a
+ *                          preamble whose brackets break the JSON-array grab)
+ *   -m <model>             optional model id (e.g. "gpt-5-codex")
+ *   -                      read the prompt from stdin
  * NOTE: this is Codex's own print mode, NOT the @zed-industries/codex-acp wrapper
  * the AIP-45 adapter uses for streaming sessions.
  */
@@ -112,8 +147,14 @@ const CODEX: CliEngine = {
   id: "codex",
   subscriptionBilled: true,
   command: "codex",
-  buildArgs: ({ model }) => ["exec", ...(model ? ["-m", model] : []), "-"],
-  parseOutput: plainTextOutput,
+  buildArgs: ({ model }) => [
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    ...(model ? ["-m", model] : []),
+    "-",
+  ],
+  parseOutput: parseCodexJsonl,
 }
 
 /**
