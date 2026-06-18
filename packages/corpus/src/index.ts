@@ -325,6 +325,7 @@ export type {
   WriterPort,
   WriterChunk,
   PushChunksInput,
+  PushSourceInput,
 } from "./ports/writer.port.js"
 
 // Evaluator port — the kit's seam into a backing evaluator engine.

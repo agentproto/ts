@@ -32,7 +32,28 @@ export interface PushChunksInput {
   readonly entryFrontmatter?: Readonly<Record<string, unknown>>
 }
 
+/**
+ * A `knowledge.source/v1` doc to project. Sources never chunk into a vector
+ * engine, so they have their own port method (not `pushChunks`). A graph
+ * writer projects the full source frontmatter (title / authority /
+ * content_hash / …) into a real Source node; a vector writer no-ops.
+ */
+export interface PushSourceInput {
+  readonly sourceId: string
+  readonly sourcePath: string
+  readonly title?: string
+  /** The source's full parsed frontmatter (`knowledge.source/v1`). */
+  readonly sourceFrontmatter: Readonly<Record<string, unknown>>
+}
+
 export interface WriterPort {
   pushChunks(input: PushChunksInput): Promise<readonly string[]>
   removeEntry(entrySlug: string): Promise<{ removed: number }>
+  /**
+   * Project a source doc. Optional — vector-only writers omit it (sources
+   * aren't searchable chunks); a graph-projection writer implements it so
+   * Source nodes carry full frontmatter, not just the stub id the
+   * entry→source `DERIVED_FROM` path leaves behind.
+   */
+  pushSource?(input: PushSourceInput): Promise<void>
 }

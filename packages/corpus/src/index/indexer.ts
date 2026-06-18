@@ -35,6 +35,7 @@ export interface IndexReport {
   readonly removed: number            // entries dropped
   readonly skipped: number            // entries skipped (non-active)
   readonly chunkCount: number         // total chunks pushed across entries
+  readonly sourcesPushed: number      // source docs projected (graph writer)
 }
 
 export class CorpusIndexer {
@@ -49,6 +50,27 @@ export class CorpusIndexer {
     let removed = 0
     let skipped = 0
     let chunkCount = 0
+    let sourcesPushed = 0
+
+    // Sources first, so entry→source DERIVED_FROM edges land on fully-projected
+    // Source nodes (not stubs). Only a graph writer implements pushSource; a
+    // vector writer leaves it undefined and these are skipped.
+    if (this.opts.writer.pushSource) {
+      for (const source of snapshot.sources) {
+        const sourceId = source.frontmatter.id
+        if (typeof sourceId !== "string") continue
+        await this.opts.writer.pushSource({
+          sourceId,
+          sourcePath: source.path,
+          title:
+            typeof source.frontmatter.title === "string"
+              ? source.frontmatter.title
+              : undefined,
+          sourceFrontmatter: source.frontmatter,
+        })
+        sourcesPushed++
+      }
+    }
 
     for (const entry of snapshot.entries) {
       const status = readStatus(entry)
@@ -66,7 +88,7 @@ export class CorpusIndexer {
         skipped++
       }
     }
-    return { pushed, removed, skipped, chunkCount }
+    return { pushed, removed, skipped, chunkCount, sourcesPushed }
   }
 
   /**
