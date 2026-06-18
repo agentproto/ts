@@ -25,6 +25,24 @@ export type {
 export { stitchReport } from "./stitch.js"
 export type { StitchOptions, StitchResult } from "./stitch.js"
 
+// Medium-agnostic content — the single input every `render.*` tool consumes.
+export {
+  buildReportContent,
+  collectReportSections,
+  reportContentToMarkdown,
+  reportContentSchema,
+  reportSectionSchema,
+  reportSectionKindSchema,
+  bibEntrySchema,
+} from "./content.js"
+export type {
+  ReportContent,
+  ReportSection,
+  BibEntry,
+  BuildReportContentOptions,
+  CollectSectionsOptions,
+} from "./content.js"
+
 export { applyEdits } from "./apply-edits.js"
 export type {
   ApplyEditsOptions,
