@@ -33,6 +33,28 @@ export type {
   ChapterEditSet,
 } from "./apply-edits.js"
 
+// Model steps — the single-pass "model driver" tier. Prompt-builders are pure
+// and exported so the claude-code driver reuses them verbatim.
+export { runModel } from "./model.js"
+export type {
+  ReportModelPort,
+  ReportModelInput,
+  ReportModelOutput,
+} from "./model.js"
+
+export { analyzeDataset, buildFacetAnalysisPrompt } from "./analyze.js"
+export type {
+  AnalyzeDatasetOptions,
+  AnalyzeDatasetResult,
+  AnalyzeFacetInput,
+} from "./analyze.js"
+
+export { writeChapter, buildChapterWritePrompt } from "./write.js"
+export type { ChapterWriteContext } from "./write.js"
+
+export { planOutline } from "./plan.js"
+export type { PlanOutlineOptions, PlanOutlineResult } from "./plan.js"
+
 export {
   reportConfigSchema,
   reportChapterSchema,
