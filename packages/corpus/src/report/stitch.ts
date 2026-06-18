@@ -31,15 +31,33 @@ export async function stitchReport(opts: StitchOptions): Promise<StitchResult> {
   const viewsDir = opts.viewsDir ?? "views"
 
   const rd = async (p: string): Promise<string> => (await report.readFile(p)).trim()
+  const rdOpt = async (p: string): Promise<string | null> => {
+    try {
+      return await rd(p)
+    } catch {
+      return null
+    }
+  }
   const ch = (id: string): Promise<string> => rd(`${chaptersDir}/${id}.md`)
 
   const out: string[] = []
-  out.push(await rd(config.frontFile ?? `${chaptersDir}/_front.md`))
-  for (const part of config.parts ?? []) {
-    out.push(part.heading)
-    for (const id of part.chapters ?? []) out.push(await ch(id))
+  // Front matter is optional — auto-generated reports may not author one.
+  const front = await rdOpt(config.frontFile ?? `${chaptersDir}/_front.md`)
+  if (front) out.push(front)
+  if (config.parts && config.parts.length) {
+    // Explicit structure: part dividers + their chapters in declared order.
+    for (const part of config.parts) {
+      out.push(part.heading)
+      for (const id of part.chapters ?? []) out.push(await ch(id))
+    }
+  } else {
+    // No parts (auto-generated report): all chapters in config order, no dividers.
+    for (const c of config.chapters) out.push(await ch(c.id))
   }
-  if (config.annexesFile) out.push(await rd(config.annexesFile))
+  if (config.annexesFile) {
+    const annexes = await rdOpt(config.annexesFile)
+    if (annexes) out.push(annexes)
+  }
 
   const bib = (await rd(`${viewsDir}/_bibliography.md`))
     .replace(/^# Bibliography.*$/m, "")
