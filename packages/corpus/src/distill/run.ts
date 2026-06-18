@@ -12,33 +12,34 @@
  * slug that already exists — so a daily re-run only adds fresh material.
  */
 
-import { DistillRunner, type DistillSource } from "./runner.js"
 import { scanDistilledSourceIds } from "./scan.js"
+import { distillFromImporter, type DistillCoreReport } from "./generate.js"
+import type { DistillIndex } from "./distill-index.js"
 import type { DistillDescriptor, DistillScope } from "./registry.js"
 
-export interface DistillReport {
+export interface DistillReport extends DistillCoreReport {
   readonly descriptorId: string
   readonly scopeId: string
-  /** Sources the importer yielded this run. */
-  unitsConsidered: number
-  /** Units that produced ≥1 new entry. */
-  unitsDistilled: number
-  entriesWritten: number
-  /** Entry slugs skipped because an identical title already existed. */
-  skipped: number
+}
+
+export interface RunDistillOptions {
+  /** Optional ledger — records every distilled unit (what/when/engine). */
+  readonly index?: DistillIndex
+  /** Engine label written into the ledger. */
+  readonly engine?: string
 }
 
 export async function runDistill<S extends DistillScope>(
   descriptor: DistillDescriptor<S>,
-  scope: S
+  scope: S,
+  opts: RunDistillOptions = {}
 ): Promise<DistillReport> {
-  const report: DistillReport = {
-    descriptorId: descriptor.id,
-    scopeId: scope.id,
+  const empty: DistillCoreReport = {
     unitsConsidered: 0,
     unitsDistilled: 0,
     entriesWritten: 0,
     skipped: 0,
+    unchanged: 0,
   }
 
   const target = await descriptor.target(scope)
@@ -46,36 +47,22 @@ export async function runDistill<S extends DistillScope>(
   const binding = descriptor.bind(scope, target)
   const config = await binding.prepare(distilled)
   // null ⇒ the binding found nothing fresh to import this run.
-  if (!config) return report
+  if (!config) {
+    return { descriptorId: descriptor.id, scopeId: scope.id, ...empty }
+  }
 
-  const runner = new DistillRunner({
+  // The descriptor owns SOURCE selection (binding.prepare) + provenance keying;
+  // the shared core owns the import → distill → (ledger) loop.
+  const core = await distillFromImporter({
     fs: target.fs,
     clock: target.clock,
     distiller: descriptor.distiller(scope),
-  })
-
-  for await (const imported of binding.importer.enumerate({
+    importer: binding.importer,
     importerId: descriptor.id,
     config,
-  })) {
-    report.unitsConsidered++
-    // Provenance id is binding-defined (window slug, URL, …) so the skip-scan
-    // matches it on the next run — not the slugified entry slug.
-    const source: DistillSource = {
-      id: binding.provenanceId(imported),
-      title: imported.title,
-      body: imported.body,
-      ...(imported.tags ? { tags: imported.tags } : {}),
-    }
-    try {
-      const r = await runner.run(source)
-      if (r.entryPaths.length > 0) report.unitsDistilled++
-      report.entriesWritten += r.entryPaths.length
-      report.skipped += r.skipped.length
-    } catch {
-      // One unit failing (rate cap, transient) must not abort the rest — it
-      // stays undistilled and is retried next run.
-    }
-  }
-  return report
+    provenanceId: binding.provenanceId,
+    ...(opts.index ? { index: opts.index } : {}),
+    ...(opts.engine ? { engine: opts.engine } : {}),
+  })
+  return { descriptorId: descriptor.id, scopeId: scope.id, ...core }
 }

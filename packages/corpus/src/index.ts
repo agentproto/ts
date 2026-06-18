@@ -126,7 +126,20 @@ export type {
   DistillTarget,
 } from "./distill/registry.js"
 export { runDistill } from "./distill/run.js"
-export type { DistillReport } from "./distill/run.js"
+export type { DistillReport, RunDistillOptions } from "./distill/run.js"
+// The shared import → distill core that both cron (runDistill) and the
+// standalone CLI / runtime tool ride on.
+export { distillFromImporter } from "./distill/generate.js"
+export type {
+  DistillCoreReport,
+  DistillFromImporterOptions,
+} from "./distill/generate.js"
+// DistillIndex — the persistent "what was distilled when" ledger sidecar.
+export { DistillIndex, DISTILL_INDEX_PATH } from "./distill/distill-index.js"
+export type {
+  DistillIndexRecord,
+  DistillIndexOptions,
+} from "./distill/distill-index.js"
 
 // ClaudeDistiller — a DistillPort over the Messages API (host-injected key).
 export { ClaudeDistiller } from "./distill/claude-distiller.js"
