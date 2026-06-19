@@ -15,6 +15,7 @@
 import { scanDistilledSourceIds } from "./scan.js"
 import { distillFromImporter, type DistillCoreReport } from "./generate.js"
 import type { DistillIndex } from "./distill-index.js"
+import type { Lens } from "./lens.js"
 import type { DistillDescriptor, DistillScope } from "./registry.js"
 
 export interface DistillReport extends DistillCoreReport {
@@ -27,6 +28,8 @@ export interface RunDistillOptions {
   readonly index?: DistillIndex
   /** Engine label written into the ledger. */
   readonly engine?: string
+  /** Optional lens — distill the descriptor's sources THROUGH this aspect. */
+  readonly lens?: Lens
 }
 
 export async function runDistill<S extends DistillScope>(
@@ -63,6 +66,7 @@ export async function runDistill<S extends DistillScope>(
     provenanceId: binding.provenanceId,
     ...(opts.index ? { index: opts.index } : {}),
     ...(opts.engine ? { engine: opts.engine } : {}),
+    ...(opts.lens ? { lens: opts.lens } : {}),
   })
   return { descriptorId: descriptor.id, scopeId: scope.id, ...core }
 }

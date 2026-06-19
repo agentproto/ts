@@ -34,6 +34,19 @@ export interface DistillSource {
   /** Access scope inherited by every entry distilled from this source. */
   readonly access?: string
   readonly domain?: string
+  /**
+   * Lens instruction threaded to the distiller (what to extract under the
+   * lens's aspect). See {@link Lens}.
+   */
+  readonly instruction?: string
+  /** Lens kind restriction — the distiller may emit only these kinds. */
+  readonly kinds?: readonly RefinedKind[]
+  /**
+   * Lens aspect — stamped on every produced entry as the faceted tag
+   * `aspect:<aspect>` (preserved verbatim past the topic-tag sanitizer, since
+   * `aspect:` is an AIP-10 facet, not a plain tag).
+   */
+  readonly aspect?: string
 }
 
 export interface DistillRunReport {
@@ -64,6 +77,8 @@ export class DistillRunner {
       title: source.title,
       body: source.body,
       ...(source.tags ? { tags: source.tags } : {}),
+      ...(source.kinds ? { kinds: source.kinds } : {}),
+      ...(source.instruction ? { instruction: source.instruction } : {}),
     })
 
     const year = this.opts.clock.now().getUTCFullYear()
@@ -108,7 +123,7 @@ function serializeEntry(
     updated_at: now,
     sources: [source.id], // ← derivedFrom / provenance edge
     confidence: typeof item.confidence === "number" ? item.confidence : 0.7,
-    tags: dedupeTags(item.tags, source.tags),
+    tags: withAspect(dedupeTags(item.tags, source.tags), source.aspect),
     metadata: {
       corpus: {
         status: "active",
@@ -123,6 +138,22 @@ function serializeEntry(
   }
   const body = item.body.trim()
   return matter.stringify(body.startsWith("\n") ? body : "\n" + body, fm)
+}
+
+/**
+ * Prepend a lens's `aspect:<value>` facet tag, kept verbatim past the topic
+ * sanitizer (only the value is sanitized — the `aspect:` facet prefix and its
+ * `:` are AIP-10 structure, not a plain tag). No-op without an aspect.
+ */
+function withAspect(
+  tags: readonly string[],
+  aspect: string | undefined
+): string[] {
+  if (!aspect) return [...tags]
+  const value = sanitizeTag(aspect)
+  if (!value) return [...tags]
+  const facet = `aspect:${value}`
+  return tags.includes(facet) ? [...tags] : [facet, ...tags]
 }
 
 function dedupeTags(

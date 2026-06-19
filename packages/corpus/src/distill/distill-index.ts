@@ -26,10 +26,16 @@ import type { FsPort } from "../ports/fs.port.js"
 /** Default corpus-relative location of the ledger. */
 export const DISTILL_INDEX_PATH = "_distill-index.yaml" as const
 
-/** One distillation record — the provenance id is the key. */
+/** One distillation record — keyed by `(sourceId, lensId)`. */
 export interface DistillIndexRecord {
   /** Raw source provenance id (matches the entries' `sources:` backlink). */
   readonly sourceId: string
+  /**
+   * Lens id this run distilled under, when a lens was applied. Part of the key:
+   * the same source distilled under "diary" and "marketing" is two rows with
+   * independent cadence. Absent (undefined) = the generic, lens-less pass.
+   */
+  readonly lensId?: string
   /** Human title of the source at distill time (for greppable diffs). */
   readonly title?: string
   /** ISO-8601 instant the distillation ran. */
@@ -73,27 +79,43 @@ export class DistillIndex {
     return parsed.runs as readonly DistillIndexRecord[]
   }
 
-  /** The record for a source id, or null if never distilled. */
-  async get(sourceId: string): Promise<DistillIndexRecord | null> {
+  /**
+   * The record for a `(sourceId, lensId)` pair, or null if never distilled.
+   * `lensId` undefined matches the generic lens-less row (back-compat).
+   */
+  async get(
+    sourceId: string,
+    lensId?: string
+  ): Promise<DistillIndexRecord | null> {
     const rows = await this.load()
-    return rows.find(r => r.sourceId === sourceId) ?? null
+    return rows.find(r => r.sourceId === sourceId && r.lensId === lensId) ?? null
   }
 
-  /** True if the source was distilled with a matching content hash (when given). */
-  async isDistilled(sourceId: string, contentHash?: string): Promise<boolean> {
-    const row = await this.get(sourceId)
+  /**
+   * True if the `(source, lens)` pair was distilled with a matching content
+   * hash (when given). Each lens has independent cadence over the same source.
+   */
+  async isDistilled(
+    sourceId: string,
+    contentHash?: string,
+    lensId?: string
+  ): Promise<boolean> {
+    const row = await this.get(sourceId, lensId)
     if (!row) return false
     if (contentHash === undefined) return true
     return row.contentHash === contentHash
   }
 
   /**
-   * Upsert a record by `sourceId`. Re-distilling a source overwrites its row
-   * (cadence is "latest run wins"); a new source appends. Returns the full list.
+   * Upsert a record by `(sourceId, lensId)`. Re-distilling overwrites that
+   * pair's row (cadence is "latest run wins") while leaving the same source's
+   * other lens rows untouched; a new pair appends. Returns the full list.
    */
   async record(row: DistillIndexRecord): Promise<readonly DistillIndexRecord[]> {
     const existing = await this.load()
-    const idx = existing.findIndex(r => r.sourceId === row.sourceId)
+    const idx = existing.findIndex(
+      r => r.sourceId === row.sourceId && r.lensId === row.lensId
+    )
     const next =
       idx === -1
         ? [...existing, row]

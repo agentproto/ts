@@ -31,10 +31,21 @@ export function buildDistillPrompt(
   input: DistillInput,
   maxItems: number
 ): string {
-  return `You distill a raw source (a video transcript or article) into REFINED, reusable knowledge for an AI operator. Extract the durable insights — not a summary of the video, but the transferable lessons.
+  // A lens narrows the extraction to one aspect; without one, the generic
+  // durable-insight pass runs (back-compat — existing callers pass no lens).
+  const lensBlock = input.instruction?.trim()
+    ? `LENS — read the source THROUGH this aspect, extract ONLY what serves it:\n${input.instruction.trim()}\n\n`
+    : ""
+  // A lens may restrict which kinds are valid; default to the full set.
+  const kinds = input.kinds?.length
+    ? input.kinds
+    : (["principle", "pattern", "critique", "summary", "example"] as const)
+  const kindUnion = kinds.map(k => `"${k}"`).join(" | ")
+
+  return `${lensBlock}You distill a raw source (a video transcript or article) into REFINED, reusable knowledge for an AI operator. Extract the durable insights — not a summary of the video, but the transferable lessons.
 
 Return a JSON array (max ${maxItems} items). Each item:
-{ "kind": one of "principle" | "pattern" | "critique" | "summary" | "example",
+{ "kind": one of ${kindUnion},
   "title": short imperative/declarative title,
   "body": 2-5 sentences, SELF-CONTAINED (no "the speaker says"), the actual insight,
   "confidence": 0-1, "tags": [short topic tags] }

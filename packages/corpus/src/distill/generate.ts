@@ -23,6 +23,7 @@
 import { DistillRunner, type DistillSource, type EntryLayout } from "./runner.js"
 import type { DistillPort } from "./types.js"
 import type { DistillIndex } from "./distill-index.js"
+import { lensAspect, type Lens } from "./lens.js"
 import type { ClockPort } from "../ports/clock.port.js"
 import type { FsPort } from "../ports/fs.port.js"
 import type {
@@ -68,6 +69,13 @@ export interface DistillFromImporterOptions {
   readonly index?: DistillIndex
   /** Engine label written into the ledger (e.g. "claude-code"). */
   readonly engine?: string
+  /**
+   * Optional lens — read every source THROUGH this aspect: its `prompt` is
+   * threaded to the distiller, its `kinds` constrain output, its `aspect:` tag
+   * is stamped on every entry, and the ledger keys by `(source, lens.id)` so
+   * this lens's cadence is independent of any other over the same sources.
+   */
+  readonly lens?: Lens
 }
 
 export async function distillFromImporter(
@@ -88,6 +96,7 @@ export async function distillFromImporter(
     ...(opts.layout ? { layout: opts.layout } : {}),
   })
   const provenanceId = opts.provenanceId ?? (s => s.slug)
+  const lensId = opts.lens?.id
 
   for await (const imported of opts.importer.enumerate({
     importerId: opts.importerId,
@@ -96,10 +105,11 @@ export async function distillFromImporter(
     report.unitsConsidered++
     const sourceId = provenanceId(imported)
 
-    // Ledger fast-path: an unchanged source (same content hash) needs no LLM.
+    // Ledger fast-path: an unchanged (source, lens) pair needs no LLM. Keyed by
+    // lens so re-running one lens never short-circuits another over the source.
     if (
       opts.index &&
-      (await opts.index.isDistilled(sourceId, imported.contentHash))
+      (await opts.index.isDistilled(sourceId, imported.contentHash, lensId))
     ) {
       report.unchanged++
       continue
@@ -110,6 +120,9 @@ export async function distillFromImporter(
       title: imported.title,
       body: imported.body,
       ...(imported.tags ? { tags: imported.tags } : {}),
+      ...(opts.lens?.prompt ? { instruction: opts.lens.prompt } : {}),
+      ...(opts.lens?.kinds ? { kinds: opts.lens.kinds } : {}),
+      ...(opts.lens ? { aspect: lensAspect(opts.lens) } : {}),
     }
     try {
       const r = await runner.run(source)
@@ -122,6 +135,7 @@ export async function distillFromImporter(
       if (opts.index) {
         await opts.index.record({
           sourceId,
+          ...(lensId ? { lensId } : {}),
           title: imported.title,
           distilledAt: opts.clock.now().toISOString(),
           ...(opts.engine ? { engine: opts.engine } : {}),

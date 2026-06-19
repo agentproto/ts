@@ -140,6 +140,26 @@ export type {
   DistillIndexRecord,
   DistillIndexOptions,
 } from "./distill/distill-index.js"
+// Lens — a named, time-aware projection over the shared source pool.
+export { lensAspect, lensAspectTag } from "./distill/lens.js"
+export type { Lens, LensMode, SourceSelector } from "./distill/lens.js"
+// Synthesis — the mode:"synthesis" rebuild (current atoms → consolidated artifact).
+export {
+  synthesizeLens,
+  currentLensAtoms,
+  lensSynthesisStale,
+  defaultSynthesisPath,
+  buildSynthesisPrompt,
+  SYNTHESIS_ROLE_TAG,
+} from "./distill/synthesize.js"
+export type {
+  SynthesisPort,
+  SynthesisInput,
+  SynthesisAtom,
+  SynthesizeLensOptions,
+  SynthesizeLensReport,
+  LensStaleness,
+} from "./distill/synthesize.js"
 
 // ClaudeDistiller — a DistillPort over the Messages API (host-injected key).
 export { ClaudeDistiller } from "./distill/claude-distiller.js"

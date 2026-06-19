@@ -45,6 +45,13 @@ export interface DistillInput {
   readonly tags?: readonly string[]
   /** Hint for the kinds worth extracting (e.g. only principles). */
   readonly kinds?: readonly RefinedKind[]
+  /**
+   * Lens instruction — an extra "what to look for under this aspect" directive
+   * prepended to the base distill prompt. When set, distillation reads the
+   * source THROUGH a lens (e.g. "extract marketing decisions and positioning")
+   * instead of the generic durable-insight pass. See {@link Lens}.
+   */
+  readonly instruction?: string
 }
 
 /**
