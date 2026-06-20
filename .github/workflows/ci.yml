@@ -136,6 +136,9 @@ jobs:
         run: |
           DECISION=$(gh pr view "$PR_NUMBER" --json reviewDecision -q '.reviewDecision')
           BLOCKING="${{ vars.AGENTIC_REVIEW_BLOCKING }}"
+          if [ -z "$BLOCKING" ] && [ -f .github/agentic-review.json ]; then
+            BLOCKING=$(node -p "String(require('./.github/agentic-review.json').blocking ?? '')" 2>/dev/null || echo "")
+          fi
           [ -z "$BLOCKING" ] && BLOCKING="true"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "blocking=$BLOCKING" >> "$GITHUB_OUTPUT"

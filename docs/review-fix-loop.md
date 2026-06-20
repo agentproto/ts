@@ -152,22 +152,52 @@ EOF
 **Impact:** every PR targeting `main` must have a passing "Agentic review" check before
 it can be merged — including human-authored PRs.
 
-### AGENTIC_REVIEW_BLOCKING variable
+### Blocking mode configuration
 
-Set the **repository variable** `AGENTIC_REVIEW_BLOCKING` to control whether a
-`CHANGES_REQUESTED` decision blocks the merge:
+Two sources control whether a `CHANGES_REQUESTED` decision blocks the merge,
+resolved in this order of precedence:
 
-| Value | Behaviour |
-|-------|-----------|
-| `true` or unset (default) | `CHANGES_REQUESTED` → status `failure`, job exits 1, merge blocked |
+1. **`vars.AGENTIC_REVIEW_BLOCKING`** (repository variable) — if set and non-empty,
+   this value wins. Use for instant, no-PR-required overrides (e.g. emergency disable).
+2. **`.github/agentic-review.json`** (versioned file, field `blocking`) — read when
+   the variable is absent. Changing this goes through a PR and the review gate itself,
+   making the intent traceable in git history.
+3. **`true`** (hard-coded fallback) — if both sources are absent or unreadable.
+
+```
+vars.AGENTIC_REVIEW_BLOCKING set? ──yes──► use it
+         │ no
+         ▼
+.github/agentic-review.json present? ──yes──► use .blocking field
+         │ no
+         ▼
+       true  (fallback)
+```
+
+**`.github/agentic-review.json`** (committed in repo, default):
+
+```json
+{
+  "blocking": true
+}
+```
+
+| `blocking` value | Behaviour |
+|-----------------|-----------|
+| `true` (default) | `CHANGES_REQUESTED` → status `failure`, job exits 1, merge blocked |
 | `false` | Status always `success`; review is informative only, never blocks merge |
 
-To set via CLI:
+**Emergency disable** (no PR needed — takes effect on the next CI run):
 
 ```bash
-gh variable set AGENTIC_REVIEW_BLOCKING --body "true"   # blocking (default)
-gh variable set AGENTIC_REVIEW_BLOCKING --body "false"  # non-blocking / advisory
+gh variable set AGENTIC_REVIEW_BLOCKING --body "false"
+# restore default behaviour
+gh variable delete AGENTIC_REVIEW_BLOCKING
 ```
+
+**Permanent change** (versioned, goes through review gate):
+
+Edit `.github/agentic-review.json` and open a PR.
 
 ## Force-merge (bypass)
 
