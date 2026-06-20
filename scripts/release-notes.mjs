@@ -322,7 +322,7 @@ Your job: compose a **consolidated, human-readable release announcement** for th
 
 | Package | Version | Bump |
 |---|---|---|
-| `@agentproto/agent` | `0.2.0` | minor |
+| \`@agentproto/agent\` | \`0.2.0\` | minor |
 | ... | | |
 
 ## Installing / upgrading
