@@ -20,9 +20,18 @@
     "clean": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" clean",
     "scaffold-aip": "node scripts/scaffold-aip.mjs",
     "sync-specs": "node scripts/sync-specs.mjs",
-    "sync-specs:check": "node scripts/sync-specs.mjs --check"
+    "sync-specs:check": "node scripts/sync-specs.mjs --check",
+    "changeset": "changeset",
+    "changeset:auto": "node scripts/auto-changeset.mjs",
+    "version": "changeset version",
+    "release": "scripts/release.sh",
+    "release:ci": "pnpm build && changeset publish",
+    "release:npm": "scripts/release.sh --npm-only",
+    "release:server": "scripts/release.sh --server-only",
+    "release:dry": "scripts/release.sh --dry-run"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "gray-matter": "^4.0.3",
     "json-schema-to-typescript": "^15.0.4",
     "json-schema-to-zod": "^2.6.1",

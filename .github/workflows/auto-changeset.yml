@@ -1,0 +1,67 @@
+name: Auto Changeset
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# Write access to push the generated changeset back to the branch.
+# Only works for PRs from the same repo (not forks) — which is the
+# normal case for an internal monorepo.
+permissions:
+  contents: write
+
+jobs:
+  auto-changeset:
+    name: Generate changeset
+    runs-on: ubuntu-latest
+    # Skip the "Version Packages" PR that changesets/action opens itself.
+    if: |
+      !startsWith(github.event.pull_request.title, 'chore(release):')
+
+    steps:
+      - name: Checkout branch (with write token)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Check out the head of the PR branch so we can push back to it.
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if changeset already exists
+        id: check
+        run: |
+          ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
+            | grep -v '^\.changeset/README\.md$' || true)
+          if [ -n "$ADDED" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "✓ Changeset already present: $ADDED"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No changeset found — will auto-generate."
+          fi
+
+      - name: Setup Node.js
+        if: steps.check.outputs.present == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate changeset via Claude
+        if: steps.check.outputs.present == 'false'
+        run: node scripts/auto-changeset.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Commit generated changeset
+        if: steps.check.outputs.present == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Stage only new .changeset/*.md files (not README, not existing ones)
+          git add '.changeset/*.md'
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (no packages changed, changeset not needed)."
+          else
+            git commit -m "chore: auto-generate changeset [skip ci]"
+            git push
+          fi
