@@ -12,17 +12,21 @@ PR opened / push
       │ (passes)                                                        │
       ▼                                                                 │
   pr-review  (agentic reviewer — scripts/review-pr.mjs)               │
+      │  ↳ posts explicit "Agentic review" commit-status on HEAD       │
       │                                                                 │
-      ├── APPROVE ──► merge gate passes, human merges                  │
+      ├── APPROVE ──► status=success, merge gate passes, human merges  │
       │                                                                 │
       └── CHANGES_REQUESTED                                            │
-              │                                                         │
+              │ (status=failure when AGENTIC_REVIEW_BLOCKING=true)     │
               ▼                                                         │
           pr-fix  (scripts/apply-review.mjs)                          │
               │                                                         │
               ├── iter < MAX (3) ──► apply fixes, commit, push         │
               │                              │                          │
-              │                              └── re-triggers CI ────────┘
+              │         (BOT_PAT present?) ──┤                         │
+              │              yes → re-triggers CI ──────────────────────┘
+              │              no  → HEAD moves, status must be re-posted │
+              │                   by the NEXT pr-review run             │
               │
               └── iter >= MAX ──► post escalation comment, exit 0
                                       (no commit → loop terminates)
@@ -45,7 +49,8 @@ sentinel string `"auto-fix from review"` in the commit headline.
 **MAX_ITER = 3** (constant in `apply-review.mjs`).
 
 - Iterations 1–3: fixer applies changes, commits `chore: auto-fix from review (iter N)`, pushes.  
-  The push re-triggers CI. `pr-review` runs again. If it approves, done. If not, `pr-fix` picks up.
+  If `BOT_PAT` is configured, the push re-triggers CI and `pr-review` runs again.  
+  If only `GITHUB_TOKEN` is available, re-triggering does NOT happen (see below).
 - Iteration 4 attempt: fixer detects `pastIter >= MAX_ITER`, posts escalation comment, exits 0.  
   No files written → `git diff --cached --quiet` → no commit → CI cycle terminates.
 
@@ -75,17 +80,50 @@ Do not use `[skip ci]` — the push must re-trigger CI to re-review.
 The branch ruleset (`id: 16835849`, "No Delete Main") requires the **"Agentic review"** check
 to pass before any PR can be merged into `main`.
 
-### How the gate works (wired in CI)
+### Root cause: GITHUB_TOKEN does not re-trigger workflows
 
-The `pr-review` job ends with a **"Gate — fail if changes requested"** step
-(`.github/workflows/ci.yml`). It runs _after_ the changeset is committed and pushed, then
-checks `gh pr view --json reviewDecision`:
+GitHub's anti-recursion policy means **a workflow that pushes via `GITHUB_TOKEN` will NOT
+trigger a new workflow run on that commit**. This is by design and cannot be overridden.
 
-- `CHANGES_REQUESTED` → `exit 1` → job fails → check turns **red** → merge blocked.
-- `APPROVED` or `COMMENT` → `exit 0` → job passes → check turns **green** → merge allowed.
+Consequence: when `pr-review` (or `pr-fix`) commits the changeset/fixes and pushes via
+`GITHUB_TOKEN`, the PR HEAD advances to a new commit with **no CI run and no check-run or
+commit-status attached to it**. The required `Agentic review` status check therefore never
+lands on the new HEAD, and the PR stays permanently blocked — even when a human approves it.
 
-The `pr-fix` job uses `always()` so it still runs even when `pr-review` fails, applies
-auto-fixes, and re-triggers CI.
+### Fix level 1 — explicit status on HEAD (always active)
+
+After committing and pushing the changeset, `pr-review` now **explicitly posts a
+`Agentic review` commit-status** on the current HEAD SHA via `gh api
+repos/{repo}/statuses/{sha}`. The ruleset accepts either a check-run or a commit-status
+with the same context name, so this guarantees the required check is always present on the
+correct commit — regardless of whether CI was re-triggered.
+
+The status state is determined by the `gate` step:
+
+| `AGENTIC_REVIEW_BLOCKING` | review decision | status posted | job result |
+|--------------------------|-----------------|---------------|------------|
+| `true` (default)         | `CHANGES_REQUESTED` | `failure` | exit 1 |
+| `true` (default)         | `APPROVED` / other  | `success` | exit 0 |
+| `false`                  | any             | `success` | exit 0 |
+
+### Fix level 2 — BOT_PAT (optional, enables full re-trigger loop)
+
+Both `pr-review` and `pr-fix` checkout steps use:
+
+```yaml
+token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+```
+
+- **`BOT_PAT` absent**: falls back to `GITHUB_TOKEN`; level 1 (explicit status) ensures the
+  check still lands, but the loop does not self-drive on bot commits.
+- **`BOT_PAT` present**: pushes are attributed to the bot identity, bypassing the anti-recursion
+  guard. A new CI run fires on every bot commit, and the full review-fix loop operates as
+  originally designed. The explicit status step is still present (idempotent — the check-run
+  from the new CI run will also satisfy the ruleset).
+
+To activate: create a **fine-grained PAT** (or GitHub App installation token) with
+`contents: write` and `pull-requests: write` scopes on this repo, and add it as the
+repository secret `BOT_PAT`.
 
 ### Ruleset applied (run once by admin)
 
@@ -112,9 +150,24 @@ EOF
 ```
 
 **Impact:** every PR targeting `main` must have a passing "Agentic review" check before
-it can be merged — including human-authored PRs. PRs with `APPROVED` pass; PRs with
-`CHANGES_REQUESTED` are blocked until the auto-fix loop resolves it or an admin
-force-merges.
+it can be merged — including human-authored PRs.
+
+### AGENTIC_REVIEW_BLOCKING variable
+
+Set the **repository variable** `AGENTIC_REVIEW_BLOCKING` to control whether a
+`CHANGES_REQUESTED` decision blocks the merge:
+
+| Value | Behaviour |
+|-------|-----------|
+| `true` or unset (default) | `CHANGES_REQUESTED` → status `failure`, job exits 1, merge blocked |
+| `false` | Status always `success`; review is informative only, never blocks merge |
+
+To set via CLI:
+
+```bash
+gh variable set AGENTIC_REVIEW_BLOCKING --body "true"   # blocking (default)
+gh variable set AGENTIC_REVIEW_BLOCKING --body "false"  # non-blocking / advisory
+```
 
 ## Force-merge (bypass)
 
@@ -128,11 +181,11 @@ gh pr merge --admin <PR_NUMBER>
 Alternatively, a repository admin can temporarily set the ruleset enforcement to `disabled`
 or `evaluate` via **Settings → Rules**, merge, then restore it.
 
-## Secrets required
+## Secrets and variables required
 
-| Secret | Used by |
-|--------|---------|
-| `ANTHROPIC_API_KEY` | Both `pr-review` and `pr-fix` jobs (Claude API calls) |
-| `GITHUB_TOKEN` | Both jobs (posting reviews, comments, pushing commits) |
-
-Both are already configured in the repository (used by the existing `pr-review` job).
+| Name | Kind | Required | Used by |
+|------|------|----------|---------|
+| `ANTHROPIC_API_KEY` | Secret | Yes | Both `pr-review` and `pr-fix` jobs (Claude API calls) |
+| `GITHUB_TOKEN` | Secret (auto) | Yes | Both jobs (posting reviews, comments, pushing commits) |
+| `BOT_PAT` | Secret | No | Both checkout steps — enables re-trigger loop when present |
+| `AGENTIC_REVIEW_BLOCKING` | Variable | No | `pr-review` gate step — defaults to `true` |

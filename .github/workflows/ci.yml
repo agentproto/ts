@@ -91,13 +91,14 @@ jobs:
     permissions:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
+      statuses: write       # post explicit commit-status on HEAD after push
     steps:
       - name: Checkout branch (with write token)
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -127,21 +128,43 @@ jobs:
             git push
           fi
 
-      # Gate: fail the job (red check) when the reviewer posted CHANGES_REQUESTED.
-      # Runs after the changeset is committed so the push still lands before the
-      # job turns red. pr-fix (below) uses always() so it still runs to apply fixes.
-      - name: Gate — fail if changes requested
+      # Gate: resolve decision + blocking config, post explicit status on HEAD,
+      # then fail the job if blocking mode + CHANGES_REQUESTED.
+      # Three steps so pr-fix (always()) still sees a red job and triggers.
+      - name: Resolve review decision + blocking config
+        id: gate
         run: |
           DECISION=$(gh pr view "$PR_NUMBER" --json reviewDecision -q '.reviewDecision')
-          echo "Review decision: $DECISION"
-          if [ "$DECISION" = "CHANGES_REQUESTED" ]; then
-            echo "::error::Agentic reviewer requested changes — PR is blocked until fixes are applied or a human admin force-merges."
-            exit 1
+          BLOCKING="${{ vars.AGENTIC_REVIEW_BLOCKING }}"
+          [ -z "$BLOCKING" ] && BLOCKING="true"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "blocking=$BLOCKING" >> "$GITHUB_OUTPUT"
+          if [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=success" >> "$GITHUB_OUTPUT"
           fi
-          echo "✅ Review decision: $DECISION — merge gate open."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Post "Agentic review" status on PR HEAD
+        run: |
+          SHA=$(git rev-parse HEAD)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f context="Agentic review" \
+            -f state="${{ steps.gate.outputs.state }}" \
+            -f target_url="$RUN_URL" \
+            -f description="decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate — fail run if blocking changes requested
+        if: steps.gate.outputs.state == 'failure'
+        run: |
+          echo "::error::Agentic reviewer requested changes (blocking mode) — merge blocked until fixes or admin force-merge."
+          exit 1
 
   # On PRs: if pr-review posted CHANGES_REQUESTED, apply the fixes automatically.
   # Runs after pr-review; checks the live review decision before spending tokens.
@@ -176,7 +199,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
