@@ -4,7 +4,7 @@
   "title": "TOOL.md frontmatter — agenttool/v1 (abstract agent contract)",
   "description": "Validates the YAML frontmatter portion of an AIP-14 TOOL.md manifest. Implementation-specific fields (code/run/runner/secrets/network/entry) are NOT part of this schema — they live on the AIP-30 PROVIDER schema.",
   "type": "object",
-  "required": ["name", "id", "description", "version", "inputs", "outputs"],
+  "required": ["name", "id", "description", "version"],
   "additionalProperties": false,
   "properties": {
     "name": {

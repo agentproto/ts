@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { z } from "zod"
-import { parseToolManifest, toolFromManifest } from "../manifest/index.js"
+import { parseToolManifest, toolFromManifest, toolFromManifestOnly } from "../manifest/index.js"
+import { validateInput, validateOutput } from "../define-tool.js"
+import { ToolError } from "../errors.js"
 
 const SAMPLE_MD = `---
 schema: agentproto/tool/v1
@@ -73,6 +75,37 @@ describe("toolFromManifest", () => {
     expect(tool.contextSchema).toBe(ctx)
   })
 
+  it("propagates AIP-16 inputs/outputs onto the handle when declared in the manifest", () => {
+    const md = `---
+schema: agentproto/tool/v1
+name: Calc
+id: calc
+description: Adds two numbers.
+version: 1.0.0
+inputs:
+  type: object
+  properties:
+    a: { type: number }
+    b: { type: number }
+  required: [a, b]
+outputs:
+  type: object
+  properties:
+    sum: { type: number }
+  required: [sum]
+---
+`
+    const manifest = parseToolManifest(md)
+    const tool = toolFromManifest({
+      manifest,
+      inputSchema: z.object({ a: z.number(), b: z.number() }),
+      outputSchema: z.object({ sum: z.number() }),
+    })
+    expect(tool.inputs).toBeDefined()
+    expect((tool.inputs as Record<string, unknown>)["type"]).toBe("object")
+    expect(tool.outputs).toBeDefined()
+  })
+
   it("propagates AIP-14 invariants — invalid id (e.g. caps) is rejected by parser, never reaches defineTool", () => {
     const bad = `---
 name: Bad
@@ -82,5 +115,79 @@ version: 1.0.0
 ---
 `
     expect(() => parseToolManifest(bad)).toThrow(/id/)
+  })
+})
+
+describe("toolFromManifestOnly", () => {
+  const MANIFEST_ONLY_MD = `---
+schema: agentproto/tool/v1
+name: Calc
+id: calc
+description: Adds two numbers via JSON Schema IO (no TS module).
+version: 1.0.0
+inputs:
+  type: object
+  properties:
+    a: { type: number }
+    b: { type: number }
+  required: [a, b]
+outputs:
+  type: object
+  properties:
+    sum: { type: number }
+  required: [sum]
+---
+`
+
+  it("creates a handle without zod schemas, preserving JSON Schema IO", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+
+    expect(tool.id).toBe("calc")
+    expect(tool.name).toBe("Calc")
+    expect(tool.inputSchema).toBeUndefined()
+    expect(tool.outputSchema).toBeUndefined()
+    expect(tool.inputs).toBeDefined()
+    expect(tool.outputs).toBeDefined()
+  })
+
+  it("validateInput falls back to JSON Schema and accepts valid input", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+    const result = validateInput(tool, { a: 1, b: 2 })
+    expect(result.ok).toBe(true)
+  })
+
+  it("validateInput rejects input that violates the JSON Schema", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+    const result = validateInput(tool, { a: "not-a-number", b: 2 })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("input_invalid")
+  })
+
+  it("validateOutput falls back to JSON Schema and accepts valid output", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+    expect(() => validateOutput(tool, { sum: 3 })).not.toThrow()
+  })
+
+  it("validateOutput rejects output that violates the JSON Schema", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+    let err: unknown
+    try {
+      validateOutput(tool, { sum: "wrong" })
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(ToolError)
+    expect((err as ToolError).code).toBe("output_invalid")
+  })
+
+  it("handle is frozen (defineTool invariants apply)", () => {
+    const manifest = parseToolManifest(MANIFEST_ONLY_MD)
+    const tool = toolFromManifestOnly(manifest)
+    expect(Object.isFrozen(tool)).toBe(true)
   })
 })
