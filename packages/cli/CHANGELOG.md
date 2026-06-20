@@ -1,5 +1,15 @@
 # @agentproto/cli
 
+## 0.1.3
+
+### Patch Changes
+
+- 1fc1750: Add loadAgent, updateManifestSet, self_inspect MCP tool, and extends-chain validation
+- 1fc1750: Add loadAgent, validateExtendsChain, updateManifestSet, and self_inspect MCP tool
+- Updated dependencies [1fc1750]
+- Updated dependencies [1fc1750]
+  - @agentproto/driver@0.1.1
+
 ## 0.1.2
 
 ### Patch Changes
