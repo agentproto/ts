@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-52/HARNESS.schema.json",
+  "title": "HarnessDefinition",
+  "description": "Validates the YAML frontmatter of a .harness/<slug>.md file. A Harness is a stateful conversational shell with modes, threads, tool-approval gates, subagents, and observational memory. Today the canonical runtime is Mastra's Harness class (@mastra/core/harness); the spec is implementation-agnostic.",
+  "$comment": "Relationship to other AIPs: a Harness HAS agents (via modes[].agent and HarnessConfig.agent) but IS NOT a subtype of AIP-42. AIP-42 agents are referenced from harness manifests via $resolver. See also AIP-12 for agent pack ingestion — packs can auto-generate .harness/ manifests from modes/*.md files.",
+  "type": "object",
+  "required": ["spec", "id", "name", "version", "storage", "modes", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "const": "harness/v1",
+      "description": "Pins the spec version this manifest conforms to."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Unique harness identifier (kebab-case). Used as the $id in the resolver registry."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable harness name."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-sentence description of this harness's purpose."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Manifest semver. Bump on breaking mode/subagent changes."
+    },
+    "storage": {
+      "$ref": "#/$defs/refOrString",
+      "description": "Storage backend resolver. Must resolve to a MastraCompositeStore."
+    },
+    "stateSchema": {
+      "$ref": "#/$defs/refOrString",
+      "description": "Optional JSON Schema defining the conversation state shape (validated by the Harness)."
+    },
+    "initialState": {
+      "description": "Default values for the state schema fields."
+    },
+    "modes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/mode" },
+      "description": "Operational modes (e.g. plan/execute, brief/draft/review). At least one required."
+    },
+    "memory": {
+      "$ref": "#/$defs/refOrString",
+      "description": "Optional memory resolver. Observational Memory is configured via omConfig on the Harness constructor, not here."
+    },
+    "workspace": {
+      "$ref": "#/$defs/refOrString",
+      "description": "Optional workspace resolver (Mastra Workspace or WorkspaceConfig)."
+    },
+    "models": {
+      "type": "object",
+      "required": ["resolver"],
+      "properties": {
+        "resolver": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Resolver for (modelId: string) => LanguageModel. Used as Harness.resolveModel."
+        },
+        "access": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Optional model access checker resolver (ModelAuthChecker)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "subagents": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "#/$defs/subagent" },
+      "description": "Child agents that can be spawned by the builtin subagent tool."
+    },
+    "extensions": {
+      "type": "object",
+      "properties": {
+        "consumes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extension slugs this harness consumes from the host (e.g. 'workspace:files')."
+        },
+        "exposes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extension slugs this harness makes available to subagents."
+        }
+      },
+      "additionalProperties": false
+    },
+    "heartbeats": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/refOrString" },
+      "default": [],
+      "description": "Periodic background handlers (e.g. OM reflector, progress reporter)."
+    },
+    "observability": {
+      "$ref": "#/$defs/refOrString",
+      "description": "Optional observability entrypoint resolver."
+    }
+  },
+  "$defs": {
+    "refOrString": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Inline string value."
+        },
+        {
+          "type": "object",
+          "required": ["$ref"],
+          "properties": {
+            "$ref": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false,
+          "description": "Reference to a named value in the resolver registry."
+        },
+        {
+          "type": "object",
+          "required": ["$resolver"],
+          "properties": {
+            "$resolver": { "type": "string", "minLength": 1 },
+            "input": {}
+          },
+          "additionalProperties": false,
+          "description": "Dynamic resolver invocation with optional typed input."
+        }
+      ]
+    },
+    "mode": {
+      "type": "object",
+      "required": ["id", "agent", "model"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique mode identifier within this harness (e.g. 'plan', 'execute', 'review')."
+        },
+        "name": { "type": "string", "description": "Human-readable mode label." },
+        "description": { "type": "string" },
+        "default": {
+          "type": "boolean",
+          "description": "If true, this mode is activated on new sessions."
+        },
+        "color": {
+          "type": "string",
+          "description": "UI hint — hex or CSS color name."
+        },
+        "transitionsTo": {
+          "type": "string",
+          "description": "Mode id to switch to after submit_plan approval completes."
+        },
+        "defaultModelId": {
+          "type": "string",
+          "description": "Bootstrap model id for this mode. Falls back to the harness-level resolveModel."
+        },
+        "agent": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Backing Mastra Agent. Prefer a single shared agent on HarnessConfig.agent with per-mode instructions layered on top."
+        },
+        "model": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Model resolution config for this mode. Resolver must produce a { modelId, defaultModelId?, allowed? } object."
+        },
+        "tools": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Tools for this mode. Mutually exclusive with additionalTools — setting this REPLACES agent tools."
+        },
+        "prompt": {
+          "type": "object",
+          "properties": {
+            "blocks": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/refOrString" },
+              "default": [],
+              "description": "Ordered instruction blocks. Resolved to strings and concatenated for the mode's instructions field."
+            }
+          }
+        },
+        "builtins": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ask_user": { "type": "boolean", "default": true },
+            "submit_plan": {
+              "oneOf": [{ "type": "boolean" }, { "const": "required" }],
+              "default": false
+            },
+            "task_write": { "type": "boolean", "default": true },
+            "task_check": { "type": "boolean", "default": true },
+            "subagent": { "type": "boolean", "default": false }
+          }
+        },
+        "permissions": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Default permission rules for this mode (PermissionRules from @mastra/core/harness)."
+        }
+      }
+    },
+    "subagent": {
+      "type": "object",
+      "required": ["id", "name", "description", "agent"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "agent": {
+          "$ref": "#/$defs/refOrString",
+          "description": "Backing agent resolver. The bridge instantiateHarness() derives instructions from prompt.blocks."
+        },
+        "model": { "$ref": "#/$defs/refOrString" },
+        "tools": { "$ref": "#/$defs/refOrString" },
+        "forked": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, inherits parent thread + prompt cache (cheaper). If false, gets a fresh isolated thread."
+        },
+        "maxSteps": { "type": "integer", "minimum": 1 },
+        "allowedHarnessTools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Subset of parent harness builtin tools available to this subagent."
+        },
+        "allowedWorkspaceTools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Subset of workspace tools available to this subagent."
+        },
+        "prompt": {
+          "type": "object",
+          "properties": {
+            "blocks": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/refOrString" },
+              "description": "Instruction blocks. Flattened to a string and passed as HarnessSubagent.instructions (required by Mastra API)."
+            }
+          }
+        }
+      }
+    }
+  }
+}
