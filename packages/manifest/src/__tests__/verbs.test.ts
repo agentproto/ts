@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest"
 import matter from "gray-matter"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createVerbs, type DoctypeSpec } from "../index.js"
+import { createVerbs, updateManifestSet, type DoctypeSpec, type ManifestOp } from "../index.js"
 
 // Minimal fake doctype to test verbs in isolation. The real packages
 // (@agentproto/tool, …) wire createVerbs against their own define +
@@ -202,6 +202,111 @@ describe("createVerbs — delete", () => {
       )
       await verbs.delete(r.path)
       await expect(verbs.load(r.path)).rejects.toThrow()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// updateManifestSet
+// ---------------------------------------------------------------------------
+
+describe("updateManifestSet — success", () => {
+  it("writes all files when every op is valid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-manifest-set-"))
+    try {
+      const ops: ManifestOp[] = [
+        () => verbs.create({ id: "alpha", description: "First" },  { dir, dryRun: true }),
+        () => verbs.create({ id: "beta",  description: "Second" }, { dir, dryRun: true }),
+      ]
+      const results = await updateManifestSet(ops)
+
+      expect(results).toHaveLength(2)
+      // Both targets must exist and contain the rendered content.
+      for (const { path, rendered } of results) {
+        expect(existsSync(path)).toBe(true)
+        expect(readFileSync(path, "utf8")).toBe(rendered)
+      }
+      // No stray .tmp files anywhere in dir.
+      const allEntries = readdirSync(dir, { recursive: true }) as string[]
+      expect(allEntries.every((e) => !String(e).includes(".tmp-"))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("update+create mixed ops both land atomically", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-manifest-set-"))
+    try {
+      // Pre-create alpha so we can update it.
+      const existing = await verbs.create({ id: "alpha", description: "Old" }, { dir })
+      const ops: ManifestOp[] = [
+        () => verbs.update(existing.path, (p) => ({ ...p, description: "New" }), { dryRun: true }),
+        () => verbs.create({ id: "beta", description: "Second" }, { dir, dryRun: true }),
+      ]
+      await updateManifestSet(ops)
+
+      const reloaded = await verbs.load(existing.path)
+      expect(reloaded.handle.description).toBe("New")
+      expect(existsSync(join(dir, "beta/FAKE.md"))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("updateManifestSet — validation failure (phase 1)", () => {
+  it("aborts before writing when one op has an invalid id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-manifest-set-"))
+    try {
+      const ops: ManifestOp[] = [
+        // Valid op — should NOT be written because the set fails.
+        () => verbs.create({ id: "alpha", description: "Valid" }, { dir, dryRun: true }),
+        // Invalid id causes spec.define to throw during the thunk call.
+        () => verbs.create({ id: "INVALID!!!", description: "Bad" }, { dir, dryRun: true }),
+      ]
+
+      await expect(updateManifestSet(ops)).rejects.toThrow(/invalid id/i)
+
+      // Neither target must exist — phase 1 aborted before any write.
+      expect(existsSync(join(dir, "alpha/FAKE.md"))).toBe(false)
+      // No .tmp files either.
+      const allEntries = readdirSync(dir, { recursive: true }) as string[]
+      expect(allEntries.every((e) => !String(e).includes(".tmp-"))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("updateManifestSet — write failure (phase 2)", () => {
+  it("cleans up staged .tmp files and leaves all targets untouched when staging fails mid-batch", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-manifest-set-"))
+    try {
+      // Create a FILE at the path op2 would use as a parent directory.
+      // mkdir(dirname(op2Target)) will fail with ENOTDIR/EEXIST.
+      const blockerPath = join(dir, "blocker")
+      writeFileSync(blockerPath, "I am a file, not a directory")
+
+      const op2TargetPath = join(blockerPath, "FAKE.md")
+
+      const ops: ManifestOp[] = [
+        // Op1: valid, will stage its .tmp before op2 fails.
+        () => verbs.create({ id: "alpha", description: "Valid" }, { dir, dryRun: true }),
+        // Op2: thunk itself succeeds (dryRun), but staging will fail because
+        // dirname(op2TargetPath) = blockerPath which is a file, not a dir.
+        async () => ({ path: op2TargetPath, rendered: "---\nschema: x\n---\n" }),
+      ]
+
+      await expect(updateManifestSet(ops)).rejects.toThrow()
+
+      // Op1's staged .tmp must have been cleaned up.
+      const allEntries = readdirSync(dir, { recursive: true }) as string[]
+      expect(allEntries.every((e) => !String(e).includes(".tmp-"))).toBe(true)
+
+      // Op1's target must NOT exist — rename never happened.
+      expect(existsSync(join(dir, "alpha/FAKE.md"))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
