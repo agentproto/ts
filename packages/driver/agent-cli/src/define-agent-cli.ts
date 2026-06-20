@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
+import { createPrintSession } from "./protocol/print-arm.js"
 import { composeSpawn } from "./manifest/compose.js"
 import type {
   AgentCliClient,
@@ -80,6 +81,21 @@ export function createAgentCliRuntime(
         ...filterStringEnv(process.env),
         ...composed.env,
         ...(opts?.env ?? {}),
+      }
+
+      // The print arm spawns a fresh subprocess per turn — no
+      // long-lived child, no AgentCliClient connect/events cycle.
+      // Short-circuit here so buildProtocolArm is never called for it.
+      if (definition.protocol === "print") {
+        return createPrintSession({
+          bin: definition.bin,
+          baseArgs: composed.binArgs,
+          cwd,
+          env,
+          ...(opts?.resumeSessionId
+            ? { resumeSessionId: opts.resumeSessionId }
+            : {}),
+        })
       }
 
       const child = spawn(definition.bin, composed.binArgs, {
@@ -191,6 +207,9 @@ function buildProtocolArm(
       throw new Error(
         "createAgentCliRuntime: proprietary protocol arm not yet implemented",
       )
+    case "print":
+      // Unreachable: print is handled by the early-return in start() above.
+      throw new Error("createAgentCliRuntime: print arm bypasses buildProtocolArm")
   }
 }
 

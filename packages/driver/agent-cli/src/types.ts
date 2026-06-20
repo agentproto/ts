@@ -11,7 +11,7 @@ import type { StreamEvent } from "@agentproto/acp"
 
 export type { StreamEvent }
 
-export type AgentCliProtocol = "acp" | "mcp" | "proprietary"
+export type AgentCliProtocol = "acp" | "mcp" | "proprietary" | "print"
 export type AgentCliSessionMode = "ephemeral" | "persistent" | "resumable"
 
 export interface AgentCliInstallMethod {

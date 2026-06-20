@@ -47,6 +47,10 @@ export {
   type AcpPermissionRequestParams,
 } from "./protocol/acp-client.js"
 export {
+  createPrintSession,
+  type PrintArmOptions,
+} from "./protocol/print-arm.js"
+export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,
   type AgentCliFrontmatter,
