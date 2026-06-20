@@ -78,6 +78,10 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
+    /** Model identifier forwarded from `start_agent_session`. Adapters
+     *  that support model selection (e.g. via a `--model` CLI flag) may
+     *  honour this; others silently ignore it. */
+    model?: string
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
