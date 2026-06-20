@@ -11,6 +11,7 @@ concurrency:
 permissions:
   contents: write        # create tags + GitHub releases
   pull-requests: write   # open "Version Packages" PR
+  id-token: write        # npm provenance attestation
 
 jobs:
   release:
@@ -49,6 +50,7 @@ jobs:
       #    merged) → publishes every package whose version isn't yet on npm
       #    and creates a GitHub release per package.
       - name: Version or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm changeset version
@@ -62,3 +64,14 @@ jobs:
           # scoped to the @agentproto org. Set it in the repo's Secrets.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
+
+      # Only runs when changesets/action actually published packages (not when
+      # it just opened the "Version Packages" PR). The agent reads every
+      # per-package CHANGELOG, greps the codebase for context, and posts a
+      # consolidated human-readable release to GitHub Releases.
+      - name: Generate agentic release notes
+        if: steps.changesets.outputs.published == 'true'
+        run: node scripts/release-notes.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
