@@ -17,6 +17,7 @@ export default createTsupConfig({
     "gray-matter",
     "@agentproto/tool",
     "@agentproto/define-doctype",
+    "@agentproto/manifest",
   ],
   noExternal: [],
 })
