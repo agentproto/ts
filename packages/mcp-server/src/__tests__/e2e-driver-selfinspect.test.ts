@@ -43,9 +43,15 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const result = await client.callTool({ name, arguments: args })
-  const item = result.content[0] as TextContent | undefined
+  // `result` has index signature `[x: string]: unknown` so `.content` is unknown.
+  // Array.isArray narrows unknown → any[], making raw[0] implicitly any.
+  const raw = result.content
+  if (!Array.isArray(raw)) {
+    throw new Error(`Expected array content from tool '${name}'; got ${JSON.stringify(raw)}`)
+  }
+  const item: TextContent | undefined = raw[0]
   if (!item || item.type !== "text") {
-    throw new Error(`Expected text content from tool '${name}'; got ${JSON.stringify(result.content)}`)
+    throw new Error(`Expected text content from tool '${name}'; got ${JSON.stringify(raw)}`)
   }
   return JSON.parse(item.text) as Record<string, unknown>
 }
