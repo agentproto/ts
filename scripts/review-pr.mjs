@@ -21,7 +21,21 @@ import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, relative } from 'node:path'
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+// ROOT is always the repo root — when the script is invoked from a different
+// worktree (e.g. `node /path/to/ts-pr-reviewer/scripts/review-pr.mjs`), we
+// still want to operate on the caller's cwd, not the script's directory.
+// Exception: if cwd is NOT a git repo, fall back to the script's own worktree.
+function findGitRoot(start) {
+  try {
+    return execSync('git rev-parse --show-toplevel', { cwd: start, encoding: 'utf8', stdio: 'pipe' }).trim()
+  } catch {
+    return null
+  }
+}
+const ROOT =
+  findGitRoot(process.cwd()) ??
+  findGitRoot(new URL('..', import.meta.url).pathname) ??
+  new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
@@ -62,8 +76,25 @@ function randomSlug() {
 
 const BASE_REF = 'origin/main'
 
-function tool_git_diff({ from = BASE_REF, to = 'HEAD', maxChars = 40_000 } = {}) {
-  const diff = run(`git diff "${from}...${to}" -- "packages/**" "adapters/**" "scripts/**" ".github/**" "specs/**"`)
+function tool_git_diff({ from, to, maxChars = 40_000 } = {}) {
+  let diff
+  // When reviewing a specific PR, fetch the canonical diff from GitHub so we
+  // always analyze the right branch regardless of the caller's cwd.
+  if (PR_NUMBER && !from && !to) {
+    try {
+      diff = execFileSync('gh', ['pr', 'diff', PR_NUMBER, '--patch'], {
+        cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+      }).trim()
+    } catch {
+      diff = ''
+    }
+  }
+  // Fall back to local git diff (branch review or explicit from/to).
+  if (!diff) {
+    diff = run(
+      `git diff "${from ?? BASE_REF}...${to ?? 'HEAD'}" -- "packages/**" "adapters/**" "scripts/**" ".github/**" "specs/**"`
+    )
+  }
   if (!diff) return '(no diff)'
   return diff.length > maxChars
     ? diff.slice(0, maxChars) + `\n\n... (truncated at ${maxChars} chars)`
@@ -71,6 +102,17 @@ function tool_git_diff({ from = BASE_REF, to = 'HEAD', maxChars = 40_000 } = {})
 }
 
 function tool_git_log({ from = BASE_REF, to = 'HEAD' } = {}) {
+  // When a PR number is set, use gh to get the correct commit log.
+  if (PR_NUMBER) {
+    try {
+      const info = JSON.parse(
+        execFileSync('gh', ['pr', 'view', PR_NUMBER, '--json', 'commits'], {
+          cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+        })
+      )
+      return (info.commits ?? []).map((c) => `${c.oid.slice(0, 7)} ${c.messageHeadline}`).join('\n') || '(no commits)'
+    } catch {}
+  }
   return run(`git log --oneline "${from}...${to}"`) || '(no commits)'
 }
 
