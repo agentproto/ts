@@ -79,7 +79,7 @@ export interface AgentStreamEvent {
 export const SESSIONS_FILE_PATH = (): string =>
   resolve(homedir(), ".agentproto", "sessions.json")
 
-export type SessionKind = "terminal" | "agent-cli" | "command"
+export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
   | "starting"
   | "running"
@@ -141,6 +141,13 @@ export interface SessionDescriptor {
    *  Keys are adapter-specific so future adapters can add their own
    *  ("hermesResumeId", etc.) without changing this type. */
   resumeMetadata?: Record<string, string>
+  // ── Browser-session fields (kind="browser") ──────────────────────────────
+  /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
+  browserAdapterId?: string
+  /** Port the browser service listens on. */
+  browserPort?: number
+  /** Base URL of the browser service (e.g. "http://127.0.0.1:9377"). */
+  browserBaseUrl?: string
 }
 
 interface SessionRuntime {
@@ -188,6 +195,10 @@ interface SessionRuntime {
    *  the adapter, the rest await this promise. Cleared once
    *  resolved (success or failure). */
   resumePromise?: Promise<void>
+  /** Async stop callback for browser sessions (kind="browser").
+   *  Called by kill() best-effort — the descriptor is already flipped
+   *  to "killed" before this fires. */
+  browserStop?: () => Promise<void>
 }
 
 const RECENT_LINES_CAP = 500
@@ -228,6 +239,11 @@ export interface SessionsRegistry {
    *  `attachPty(id, ...)`. Throws when the registry was constructed
    *  without a `spawnPty` factory (node-pty optional dep missing). */
   spawnPty(input: SpawnPtyInput): SessionDescriptor
+  /** Register an already-running browser service adapter as a tracked
+   *  session (kind="browser"). Idempotent by identity — each call
+   *  mints a fresh session id. The `stop` callback is invoked by
+   *  `kill()` best-effort. */
+  registerBrowser(input: RegisterBrowserInput): SessionDescriptor
   /** Send a follow-up turn to a live agent session. Throws when the
    *  session is missing, not an agent-cli kind, or busy. The events
    *  stream into the existing ring buffer + line emitter so /stream
@@ -287,6 +303,22 @@ export interface SessionsRegistry {
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
+}
+
+export interface RegisterBrowserInput {
+  /** Adapter id (e.g. "camofox", "bureau", "chromium"). */
+  adapterId: string
+  /** Port the browser service listens on. */
+  port: number
+  /** Base URL of the browser service (e.g. "http://127.0.0.1:9377"). */
+  baseUrl: string
+  /** PID of the service process — undefined when managed by launchd/systemd. */
+  pid?: number
+  /** True when the service was already healthy before this call (idempotent start). */
+  wasAlreadyRunning: boolean
+  /** Async shutdown callback — called by kill() best-effort. */
+  stop: () => Promise<void>
+  label?: string
 }
 
 export interface RegisterSessionInput {
@@ -1073,6 +1105,37 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       return desc
     },
+    registerBrowser(input) {
+      const id = `sess_${randomUUID().slice(0, 8)}`
+      const desc: SessionDescriptor = {
+        id,
+        kind: "browser",
+        workspaceSlug: "",
+        command: `${input.adapterId} (browser)`,
+        pid: input.pid ?? null,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        browserAdapterId: input.adapterId,
+        browserPort: input.port,
+        browserBaseUrl: input.baseUrl,
+        ...(input.label ? { label: input.label } : {}),
+      }
+      const rt: SessionRuntime = {
+        desc,
+        browserStop: input.stop,
+        recentLines: [],
+        recentBytes: [],
+        recentBytesSize: 0,
+        emitter: new EventEmitter(),
+        busy: false,
+        textBuf: "",
+        thoughtBuf: "",
+      }
+      rt.emitter.setMaxListeners(50)
+      sessions.set(id, rt)
+      schedulePersist()
+      return desc
+    },
     async sendPrompt(id, message) {
       const rtPre = sessions.get(id)
       if (rtPre) await maybeResumeAgent(rtPre)
@@ -1233,6 +1296,9 @@ export function createSessionsRegistry(opts?: {
         }
       }
       rt.child?.kill(signal)
+      if (rt.browserStop) {
+        void rt.browserStop().catch(() => undefined)
+      }
       schedulePersist()
       return true
     },
