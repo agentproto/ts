@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/driver-sdk",
   "version": "0.1.1",
-  "description": "agentproto/sdk-runtime — AIP-33 SDK provider specialisation. Sugar over @agentproto/driver for in-process npm/pip/cargo packages: module loading, function ref resolution, args templating.",
+  "description": "agentproto/sdk-runtime \u2014 AIP-33 SDK provider specialisation. Sugar over @agentproto/driver for in-process npm/pip/cargo packages: module loading, function ref resolution, args templating.",
   "keywords": [
     "agentproto",
     "aip-33",
@@ -50,5 +50,10 @@
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "zod": "^4.4.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/driver/sdk"
   }
 }

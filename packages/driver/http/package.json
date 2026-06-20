@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/driver-http",
   "version": "0.1.1",
-  "description": "agentproto/http-runtime — AIP-31 HTTP provider specialisation. Sugar over @agentproto/driver's defineDriver({ kind: 'http' }) plus body templating, JSONPath-lite response extraction, and SSE streaming.",
+  "description": "agentproto/http-runtime \u2014 AIP-31 HTTP provider specialisation. Sugar over @agentproto/driver's defineDriver({ kind: 'http' }) plus body templating, JSONPath-lite response extraction, and SSE streaming.",
   "keywords": [
     "agentproto",
     "aip-31",
@@ -49,5 +49,10 @@
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "zod": "^4.4.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/driver/http"
   }
 }

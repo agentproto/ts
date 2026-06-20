@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/driver-mcp",
   "version": "0.1.1",
-  "description": "agentproto/mcp-runtime — AIP-32 MCP provider specialisation. Sugar over @agentproto/driver for Model Context Protocol servers (stdio/SSE/HTTP transports). v0.1 ships frontmatter-driven dispatch; full MCP client wraps @modelcontextprotocol/sdk in v0.2.",
+  "description": "agentproto/mcp-runtime \u2014 AIP-32 MCP provider specialisation. Sugar over @agentproto/driver for Model Context Protocol servers (stdio/SSE/HTTP transports). v0.1 ships frontmatter-driven dispatch; full MCP client wraps @modelcontextprotocol/sdk in v0.2.",
   "keywords": [
     "agentproto",
     "aip-32",
@@ -50,5 +50,10 @@
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "zod": "^4.4.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/driver/mcp"
   }
 }

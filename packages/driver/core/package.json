@@ -15,10 +15,10 @@
   "homepage": "https://agentproto.sh/docs/aip-30",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agentproto/specs"
+    "url": "https://github.com/agentproto/ts"
   },
   "bugs": {
-    "url": "https://github.com/agentproto/specs/issues"
+    "url": "https://github.com/agentproto/ts/issues"
   },
   "license": "MIT",
   "type": "module",
