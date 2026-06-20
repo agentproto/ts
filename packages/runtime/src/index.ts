@@ -28,6 +28,8 @@ import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
 import { registerSessionTools } from "./session-tools.js"
+import { registerMcpApps } from "./mcp-apps-adapter.js"
+import { makeSessionsPanelApp } from "./sessions-panel-app.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -301,6 +303,17 @@ export async function createGateway(
         : {}),
     })
     registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing })
+    // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
+    // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
+    registerMcpApps(server, [
+      makeSessionsPanelApp({ listSessions: (filter) => {
+        let rows = sessions.list()
+        if (filter === "running") {
+          rows = rows.filter(s => s.status === "running" || s.status === "starting")
+        }
+        return rows
+      }}),
+    ])
     return server
   }
 
