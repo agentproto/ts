@@ -39,6 +39,9 @@ describe("createTool", () => {
     expect(parsed.frontmatter.id).toBe("echo")
     expect(parsed.frontmatter.name).toBe("Echo")
     expect(parsed.frontmatter.tags).toEqual(["example", "fs"])
+    expect(parsed.frontmatter.risk_level).toBe(1)
+    expect(parsed.frontmatter.cost_class).toBe("trivial")
+    expect(parsed.frontmatter.timeout_ms).toBe(5000)
     expect(parsed.body).toContain("# Echo")
   })
 
