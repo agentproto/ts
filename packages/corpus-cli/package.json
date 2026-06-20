@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/corpus-cli",
-  "version": "0.1.0-alpha.5",
-  "description": "@agentproto/corpus-cli \u2014 the `corpus` binary. Validate, lint, and operate an AIP-10 corpus workspace from the command line. Local-topology host for @agentproto/corpus \u2014 pair with a local backing engine (qdrant docker / gbrain) for a fully offline corpus runtime.",
+  "version": "0.1.0",
+  "description": "@agentproto/corpus-cli — the `corpus` binary. Validate, lint, and operate an AIP-10 corpus workspace from the command line. Local-topology host for @agentproto/corpus — pair with a local backing engine (qdrant docker / gbrain) for a fully offline corpus runtime.",
   "keywords": [
     "agentproto",
     "corpus",

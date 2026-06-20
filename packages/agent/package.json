@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agent",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/agent — AIP-42 AGENT.md reference implementation. A markdown + frontmatter format for declaring a runnable agent — composes identity, persona, model, tools, actions, skills, workflows, runner, memory, governance, policy, and routines into a single manifest. Standalone runnable in any AIP-9 OPERATOR-conforming runtime. Body is the system prompt. Operators (AIP-9) extend AGENT with organizational context (role, company binding, dynamic per-request resolution).",
   "keywords": [
     "agentproto",
