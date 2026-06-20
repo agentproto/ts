@@ -17,7 +17,13 @@ import { promises as fs } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, resolve as resolvePath } from "node:path"
 import { homedir } from "node:os"
-import type { AgentCliHandle, AgentCliCommand } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+
+/** Slash-command declared in an adapter manifest (AIP-45 `commands[]`). */
+export interface AgentCliCommand {
+  name: string
+  description?: string
+}
 
 export interface ResolvedAdapter {
   readonly slug: string
