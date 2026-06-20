@@ -88,8 +88,7 @@
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest",
-    "prepublishOnly": "pnpm build"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@agentproto/cli-exec": "workspace:*",
