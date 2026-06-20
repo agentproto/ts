@@ -21,6 +21,7 @@ import { createMcpServer } from "../index.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { TextContent } from "@modelcontextprotocol/sdk/types.js"
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -42,8 +43,7 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const result = await client.callTool({ name, arguments: args })
-  const content = result.content as Array<{ type: string; text: string }>
-  const item = content[0]
+  const item = result.content[0] as TextContent | undefined
   if (!item || item.type !== "text") {
     throw new Error(`Expected text content from tool '${name}'; got ${JSON.stringify(result.content)}`)
   }
