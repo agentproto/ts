@@ -61,6 +61,28 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  adapters/browser:
+    dependencies:
+      '@agentproto/browser-process':
+        specifier: workspace:*
+        version: link:../../packages/browser-process
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../../packages/tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
   adapters/claude-code:
     dependencies:
       '@agentproto/driver-agent-cli':
@@ -502,6 +524,24 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
 
+  packages/browser-process:
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.13)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(yaml@2.8.4)
+
   packages/canvakit:
     dependencies:
       '@agentproto/define-doctype':
@@ -553,6 +593,9 @@ importers:
       '@agentproto/acp':
         specifier: workspace:*
         version: link:../acp
+      '@agentproto/adapter-browser':
+        specifier: workspace:*
+        version: link:../../adapters/browser
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
@@ -1918,6 +1961,9 @@ importers:
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
