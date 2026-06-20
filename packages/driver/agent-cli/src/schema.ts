@@ -297,7 +297,7 @@ export const agentCliFrontmatterSchema = z
     auth: authSchema.optional(),
     sandbox: z.union([z.string(), z.record(z.string(), z.unknown())]),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
-    protocol: z.enum(["acp", "mcp", "proprietary"]),
+    protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),
     mcp: mcpBlockSchema.optional(),
     adapter: z.string().regex(ADAPTER_PATTERN).optional(),

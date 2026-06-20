@@ -66,6 +66,7 @@
   },
   "files": [
     "dist",
+    "skill",
     "README.md"
   ],
   "scripts": {
