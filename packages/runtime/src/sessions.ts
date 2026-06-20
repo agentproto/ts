@@ -141,6 +141,10 @@ export interface SessionDescriptor {
    *  Keys are adapter-specific so future adapters can add their own
    *  ("hermesResumeId", etc.) without changing this type. */
   resumeMetadata?: Record<string, string>
+  /** Set by the orchestration layer when the agent emits an
+   *  "awaiting-input" turn-end. Cleared on the next turn start.
+   *  Used by `wait_for_any` to fast-return without subscribing. */
+  awaitingInput?: boolean
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string

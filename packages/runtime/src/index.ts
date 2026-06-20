@@ -41,6 +41,9 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { McpProxyRegistry } from "./mcp-proxy.js"
+import { registerOrchestrationTools } from "./orchestration-tools.js"
+import { createSessionEventBus } from "./session-event-bus.js"
+import { createEventRing } from "./event-ring.js"
 
 export type {
   AgentAdapterResolver,
@@ -250,6 +253,10 @@ export async function createGateway(
   // browser-loaded localhost page can't.
   const token = opts.token ?? randomUUID()
 
+  // Event bus + ring for orchestration tools (poll_events / wait_for_any).
+  const sessionEvents = createSessionEventBus()
+  const eventRing = createEventRing()
+
   // MCP proxy — single registry that holds open Client connections
   // to every imported MCP server. The per-request mcpServerFactory
   // captures it so each /mcp request reuses the same upstream
@@ -293,6 +300,7 @@ export async function createGateway(
         ? { listAgentAdapters: opts.listAgentAdapters }
         : {}),
     })
+    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing })
     return server
   }
 

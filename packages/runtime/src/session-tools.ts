@@ -37,6 +37,11 @@ import {
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 
+/** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
+export function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
 interface RegisterSessionToolsOptions {
   registry: SessionsRegistry
   /** Optional adapter resolver — required for `start_agent_session`
