@@ -54,9 +54,10 @@ const csDir = resolve(ROOT, '.changeset')
 const existing = readdirSync(csDir)
   .filter((f) => f.endsWith('.md') && f !== 'README.md')
   .filter((f) => {
-    // only count files added in this branch (not already on main)
+    // only count files added in this branch (not already on main).
+    // Use execSync with stdio:'pipe' so git show errors don't leak to stderr.
     try {
-      run(`git show origin/main:.changeset/${f}`)
+      execSync(`git show origin/main:.changeset/${f}`, { cwd: ROOT, stdio: 'pipe' })
       return false // exists on main → not new
     } catch {
       return true // not on main → added in this branch
