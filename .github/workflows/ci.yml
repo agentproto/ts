@@ -103,6 +103,10 @@ jobs:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
@@ -156,6 +160,11 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "No changeset found — will auto-generate."
           fi
+
+      - name: Setup pnpm
+        if: steps.check.outputs.present == 'false'
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
 
       - name: Setup Node.js
         if: steps.check.outputs.present == 'false'

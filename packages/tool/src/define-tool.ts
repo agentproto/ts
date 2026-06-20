@@ -1,4 +1,5 @@
 import { createDoctype } from "@agentproto/define-doctype"
+import Ajv from "ajv"
 import type { ZodType } from "zod"
 import { ToolError } from "./errors.js"
 import type {
@@ -65,6 +66,8 @@ const constructTool = createDoctype<
       version: def.version,
       inputSchema: def.inputSchema,
       outputSchema: def.outputSchema,
+      inputs: def.inputs ? Object.freeze({ ...def.inputs }) : undefined,
+      outputs: def.outputs ? Object.freeze({ ...def.outputs }) : undefined,
       contextSchema: def.contextSchema,
       mutates: Object.freeze([...(def.mutates ?? [])]),
       requires: freezeCapabilities(def.requires),
@@ -104,23 +107,34 @@ export function defineTool<
  * Validate input against a tool's `inputSchema`. Returns a typed
  * {@link ValidationResult}; provider runtimes MUST call this BEFORE
  * dispatching to the provider's body.
+ *
+ * Priority:
+ *  1. zod `inputSchema` (v0.1) — used when present.
+ *  2. JSON Schema `inputs` (v0.2) — fallback for manifest-only tools.
+ *  3. No schema — passthrough (returns `ok: true`).
  */
 export function validateInput<TInput>(
-  handle: Pick<ToolHandle<TInput>, "id" | "inputSchema">,
+  handle: Pick<ToolHandle<TInput>, "id" | "inputSchema" | "inputs">,
   input: unknown,
 ): ValidationResult<TInput> {
-  const result = handle.inputSchema.safeParse(input)
-  if (!result.success) {
-    return {
-      ok: false,
-      error: {
-        code: "input_invalid",
-        message: `id='${handle.id}': ${formatZodIssues(result.error.issues)}`,
-        cause: result.error.issues,
-      },
+  if (handle.inputSchema) {
+    const result = handle.inputSchema.safeParse(input)
+    if (!result.success) {
+      return {
+        ok: false,
+        error: {
+          code: "input_invalid",
+          message: `id='${handle.id}': ${formatZodIssues(result.error.issues)}`,
+          cause: result.error.issues,
+        },
+      }
     }
+    return { ok: true, value: result.data as TInput }
   }
-  return { ok: true, value: result.data as TInput }
+  if (handle.inputs) {
+    return validateJsonSchema<TInput>(handle.id, handle.inputs, input)
+  }
+  return { ok: true, value: input as TInput }
 }
 
 /**
@@ -130,6 +144,9 @@ export function validateInput<TInput>(
  *
  * Tools without a contextSchema accept any context shape; this helper
  * returns the input verbatim in that case.
+ *
+ * Context validation uses only zod (no JSON Schema fallback) — context
+ * schemas are always authored in TS, never in manifests.
  */
 export function validateContext<TContext extends ToolContext = ToolContext>(
   handle: Pick<ToolHandle<unknown, unknown, TContext>, "id" | "contextSchema">,
@@ -155,25 +172,41 @@ export function validateContext<TContext extends ToolContext = ToolContext>(
 
 /**
  * Validate output against a tool's `outputSchema`. Returns the typed
- * {@link ValidationResult}; provider runtimes MUST call this AFTER
- * the body returns and BEFORE handing the value to the caller.
+ * value on success; throws {@link ToolError} with code `"output_invalid"`
+ * on contract violation.
  *
- * On failure, hosts SHOULD throw {@link ToolError} with code
- * `"output_invalid"` — the tool produced a contract violation.
+ * Priority:
+ *  1. zod `outputSchema` (v0.1) — used when present.
+ *  2. JSON Schema `outputs` (v0.2) — fallback for manifest-only tools.
+ *  3. No schema — passthrough (returns the value as-is).
  */
 export function validateOutput<TOutput>(
-  handle: Pick<ToolHandle<unknown, TOutput>, "id" | "outputSchema">,
+  handle: Pick<ToolHandle<unknown, TOutput>, "id" | "outputSchema" | "outputs">,
   output: unknown,
 ): TOutput {
-  const result = handle.outputSchema.safeParse(output)
-  if (!result.success) {
-    throw new ToolError({
-      code: "output_invalid",
-      message: `id='${handle.id}': provider produced output that does not match outputSchema — ${formatZodIssues(result.error.issues)}`,
-      cause: result.error.issues,
-    })
+  if (handle.outputSchema) {
+    const result = handle.outputSchema.safeParse(output)
+    if (!result.success) {
+      throw new ToolError({
+        code: "output_invalid",
+        message: `id='${handle.id}': provider produced output that does not match outputSchema — ${formatZodIssues(result.error.issues)}`,
+        cause: result.error.issues,
+      })
+    }
+    return result.data as TOutput
   }
-  return result.data as TOutput
+  if (handle.outputs) {
+    const result = validateJsonSchema<TOutput>(handle.id, handle.outputs, output)
+    if (!result.ok) {
+      throw new ToolError({
+        code: "output_invalid",
+        message: result.error.message,
+        cause: result.error.cause,
+      })
+    }
+    return result.value
+  }
+  return output as TOutput
 }
 
 function defaultApproval(
@@ -215,6 +248,46 @@ function formatZodIssues(
   return issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join("; ")
+}
+
+// Shared Ajv instance — created once at module load.
+// allErrors: true so we surface all violations, not just the first.
+const _ajv = new Ajv({ allErrors: true })
+
+// Validator cache keyed by schema object identity. Avoids repeated _ajv.compile()
+// calls (which go through Ajv's internal registry) and lets GC collect validators
+// when a tool handle is no longer referenced.
+const _validatorCache = new WeakMap<
+  object,
+  ReturnType<typeof _ajv.compile>
+>()
+
+function validateJsonSchema<T>(
+  toolId: string,
+  schema: Record<string, unknown>,
+  value: unknown,
+): ValidationResult<T> {
+  let validate = _validatorCache.get(schema)
+  if (!validate) {
+    validate = _ajv.compile(schema as Parameters<typeof _ajv.compile>[0])
+    _validatorCache.set(schema, validate)
+  }
+  const valid = validate(value)
+  if (!valid) {
+    const errors = validate.errors ?? []
+    const message = errors
+      .map((e) => `${e.instancePath || "/"} ${e.message}`)
+      .join("; ")
+    return {
+      ok: false,
+      error: {
+        code: "input_invalid",
+        message: `id='${toolId}': ${message}`,
+        cause: errors,
+      },
+    }
+  }
+  return { ok: true, value: value as T }
 }
 
 export type { ZodType }

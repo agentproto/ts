@@ -55,6 +55,13 @@ export const toolManifestFrontmatterSchema = z.object({
   tags: z.array(z.string()).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 
+  // AIP-16 IO blocks — `inputs`/`outputs` as JSON Schema objects. Kept
+  // structurally loose here (validated as objects, not deep-checked against
+  // the AIP-16 meta-schema); preserved so a manifest's declared IO contract
+  // survives the parse → handle round-trip instead of being silently dropped.
+  inputs: z.record(z.string(), z.unknown()).optional(),
+  outputs: z.record(z.string(), z.unknown()).optional(),
+
   // AIP-26 / AIP-17 / AIP-19 references — kept loose; validated by their
   // respective AIPs' adapters when consumed.
   code: z.unknown().optional(),
@@ -132,6 +139,8 @@ export function toolFromManifest<
     version: fm.version,
     inputSchema: args.inputSchema,
     outputSchema: args.outputSchema,
+    inputs: fm.inputs,
+    outputs: fm.outputs,
     contextSchema: args.contextSchema,
     mutates: fm.mutates,
     requires: fm.requires,
