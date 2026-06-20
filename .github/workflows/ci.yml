@@ -93,12 +93,20 @@ jobs:
       pull-requests: write  # post review + comments
       statuses: write       # post explicit commit-status on HEAD after push
     steps:
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout branch (with write token)
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -196,13 +204,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED' && vars.BOT_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Checkout branch (with write token)
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Setup pnpm
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'

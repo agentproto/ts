@@ -106,24 +106,62 @@ The status state is determined by the `gate` step:
 | `true` (default)         | `APPROVED` / other  | `success` | exit 0 |
 | `false`                  | any             | `success` | exit 0 |
 
-### Fix level 2 — BOT_PAT (optional, enables full re-trigger loop)
+### Fix level 2 — bot identity (optional, enables full re-trigger loop)
 
-Both `pr-review` and `pr-fix` checkout steps use:
+Both `pr-review` and `pr-fix` mint a short-lived token before checkout, with this
+precedence:
 
-```yaml
-token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+```
+App token (BOT_APP_ID set?) ──yes──► mint via actions/create-github-app-token@v1
+        │ no
+        ▼
+BOT_PAT set? ──yes──► use PAT
+        │ no
+        ▼
+GITHUB_TOKEN  (default — no re-trigger)
 ```
 
-- **`BOT_PAT` absent**: falls back to `GITHUB_TOKEN`; level 1 (explicit status) ensures the
-  check still lands, but the loop does not self-drive on bot commits.
-- **`BOT_PAT` present**: pushes are attributed to the bot identity, bypassing the anti-recursion
-  guard. A new CI run fires on every bot commit, and the full review-fix loop operates as
-  originally designed. The explicit status step is still present (idempotent — the check-run
-  from the new CI run will also satisfy the ruleset).
+The checkout token is:
 
-To activate: create a **fine-grained PAT** (or GitHub App installation token) with
-`contents: write` and `pull-requests: write` scopes on this repo, and add it as the
-repository secret `BOT_PAT`.
+```yaml
+token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+```
+
+When a bot identity is in use, pushes are attributed to a different actor and bypass
+GitHub's anti-recursion guard — a new CI run fires on every bot commit, fully activating
+the review-fix loop. The explicit status step (level 1) remains idempotent alongside it.
+
+#### Option A — GitHub App (recommended)
+
+Short-lived installation tokens, no rotation needed, scoped to the repo.
+
+**Setup (one-time, in the GitHub UI):**
+
+1. Go to **github.com/settings/apps** → **New GitHub App**.
+2. Set permissions: `Contents: Read & write`, `Pull requests: Read & write`.
+3. Install the App on the `agentproto/ts` repository.
+4. Download the **private key** (PEM file).
+5. Note the **App ID** from the App's settings page.
+
+**Wire it up:**
+
+```bash
+# Repository variable (public — just an integer ID)
+gh variable set BOT_APP_ID --body "<your-app-id>"
+
+# Repository secret (the PEM content, including header/footer lines)
+gh secret set BOT_APP_PRIVATE_KEY < /path/to/private-key.pem
+```
+
+#### Option B — Fine-grained PAT (simpler, requires rotation)
+
+```bash
+# Create a fine-grained PAT with Contents + Pull requests write on this repo
+gh secret set BOT_PAT --body "<your-pat>"
+```
+
+- **`BOT_PAT` present, `BOT_APP_ID` absent**: PAT is used.
+- Both absent: falls back to `GITHUB_TOKEN` (no re-trigger; level 1 still posts the status).
 
 ### Ruleset applied (run once by admin)
 
@@ -217,5 +255,7 @@ or `evaluate` via **Settings → Rules**, merge, then restore it.
 |------|------|----------|---------|
 | `ANTHROPIC_API_KEY` | Secret | Yes | Both `pr-review` and `pr-fix` jobs (Claude API calls) |
 | `GITHUB_TOKEN` | Secret (auto) | Yes | Both jobs (posting reviews, comments, pushing commits) |
-| `BOT_PAT` | Secret | No | Both checkout steps — enables re-trigger loop when present |
-| `AGENTIC_REVIEW_BLOCKING` | Variable | No | `pr-review` gate step — defaults to `true` |
+| `BOT_APP_PRIVATE_KEY` | Secret | No (App path) | Mint step — PEM private key of the GitHub App |
+| `BOT_PAT` | Secret | No (PAT path) | Checkout fallback if App not configured |
+| `BOT_APP_ID` | Variable | No (App path) | Mint step — integer App ID; activates App token minting |
+| `AGENTIC_REVIEW_BLOCKING` | Variable | No | `pr-review` gate step — overrides `.github/agentic-review.json` |
