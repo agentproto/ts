@@ -42,7 +42,8 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const result = await client.callTool({ name, arguments: args })
-  const item = result.content[0]
+  const content = result.content as Array<{ type: string; text: string }>
+  const item = content[0]
   if (!item || item.type !== "text") {
     throw new Error(`Expected text content from tool '${name}'; got ${JSON.stringify(result.content)}`)
   }
@@ -170,8 +171,8 @@ tools:
       const tools = result.tools as Array<{ id: string; description: string }>
       expect(Array.isArray(tools)).toBe(true)
       expect(tools).toHaveLength(1)
-      expect(tools[0].id).toBe("echo")
-      expect(tools[0].description).toBe("Echo tool for e2e testing")
+      expect(tools[0]?.id).toBe("echo")
+      expect(tools[0]?.description).toBe("Echo tool for e2e testing")
 
       const routines = result.routines as unknown[]
       expect(routines).toEqual([])
