@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a release in progress
+
+permissions:
+  contents: write        # create tags + GitHub releases
+  pull-requests: write   # open "Version Packages" PR
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  release:
+    name: Version or publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (full history for changesets)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      # changesets/action does one of two things depending on state:
+      #
+      # A) Pending changesets exist → opens (or updates) a "Version Packages"
+      #    PR that bumps versions + regenerates CHANGELOGs.
+      #
+      # B) No pending changesets (i.e. the "Version Packages" PR was just
+      #    merged) → publishes every package whose version isn't yet on npm
+      #    and creates a GitHub release per package.
+      - name: Version or publish
+        uses: changesets/action@v1
+        with:
+          version: pnpm changeset version
+          publish: pnpm release:ci
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NPM_TOKEN must be a granular access token with "Bypass 2FA"
+          # scoped to the @agentproto org. Set it in the repo's Secrets.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'

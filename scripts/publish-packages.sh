@@ -57,34 +57,88 @@ if [ -z "${NPM_TOKEN:-}" ]; then
   done
 fi
 
-# Packages to publish, in dependency order. The cli's workspace:* deps
-# (define-doctype, acp, driver-agent-cli, runtime-profile-standard) are
-# resolved to exact versions at pack time, so each must already be on
-# the registry before the cli packs — hence they publish first.
+# Packages to publish, in dependency order.
+#
+# NOTE: In CI the release is driven by `changesets/action` (see
+# .github/workflows/release.yml), which calls `pnpm release` = `pnpm build &&
+# changeset publish`. This script is kept for manual one-shot publishes and
+# for publishing packages changesets doesn't track (e.g. freshly added ones
+# before their first changeset).
+#
+# Order: leaves first so workspace:* deps are already on the registry when
+# packages that depend on them pack. The idempotency guard in publish_one
+# skips any version already published, so re-runs and shared deps are safe.
 PACKAGES=(
+  # ── Layer 0: primitives (no @agentproto/* deps) ──────────────────────────
   "@agentproto/define-doctype|define-doctype"
-  "@agentproto/acp|acp"
-  "@agentproto/driver-agent-cli|driver-agent-cli"
-  "@agentproto/runtime-profile-standard|runtime-profile-standard"
-  "@agentproto/cli|cli"
-  "@agentproto/plugin-local-browser|plugin-local-browser"
+  "@agentproto/tool|tool"
+  "@agentproto/ref|ref"
+  "@agentproto/identity|identity"
+  "@agentproto/io|io"
 
-  # corpus-cli dependency closure (the AIP-10 `corpus` binary). define-doctype
-  # is shared with the cli closure above and publishes there first. Order
-  # within this block is dep-first; the idempotency guard in publish_one skips
-  # any version already on the registry, so the shared deps and re-runs are safe.
-  "@agentproto/cli-exec|cli-exec"
-  "@agentproto/collection|collection"
+  # ── Layer 1: ACP + auth ───────────────────────────────────────────────────
+  "@agentproto/acp|acp"
+  "@agentproto/auth|auth"
+  "@agentproto/secrets|secrets"
+
+  # ── Layer 2: agent CLI driver + wallet ────────────────────────────────────
+  "@agentproto/driver-agent-cli|driver/agent-cli"
+  "@agentproto/wallet|wallet"
+
+  # ── Layer 3: core primitives ──────────────────────────────────────────────
+  "@agentproto/runtime-profile-standard|runtime-profile-standard"
+  "@agentproto/manifest|manifest"
+  "@agentproto/registry|registry"
+  "@agentproto/policy|policy"
+  "@agentproto/skill|skill"
+  "@agentproto/role|role"
+  "@agentproto/role-catalog|role-catalog"
+  "@agentproto/lifecycle|lifecycle"
+  "@agentproto/sandbox|sandbox"
+  "@agentproto/storage|storage"
+
+  # ── Layer 4: knowledge + operator ────────────────────────────────────────
   "@agentproto/knowledge|knowledge"
   "@agentproto/operator|operator"
   "@agentproto/playbook|playbook"
-  "@agentproto/registry|registry"
-  "@agentproto/manifest|manifest"
+  "@agentproto/collection|collection"
   "@agentproto/routine|routine"
   "@agentproto/workflow|workflow"
+  "@agentproto/workflow-loader|workflow-loader"
+  "@agentproto/workflow-runtime|workflow-runtime"
+
+  # ── Layer 5: higher-level packages ────────────────────────────────────────
+  "@agentproto/action|action"
+  "@agentproto/agent|agent"
+  "@agentproto/agent-runtime|agent-runtime"
+  "@agentproto/assembly|assembly"
+  "@agentproto/canvakit|canvakit"
+  "@agentproto/catalog|catalog"
+  "@agentproto/cli-exec|cli-exec"
+  "@agentproto/code|code"
+  "@agentproto/company|company"
+  "@agentproto/design|design"
+  "@agentproto/egress|egress"
+  "@agentproto/extension|extension"
+  "@agentproto/intent|intent"
+  "@agentproto/lesson|lesson"
+  "@agentproto/mastra|mastra"
+  "@agentproto/mcp-server|mcp-server"
+  "@agentproto/office|office"
+  "@agentproto/persona|persona"
+  "@agentproto/runner|runner"
+  "@agentproto/runtime|runtime"
+  "@agentproto/work|work"
+  "@agentproto/workspace|workspace"
+
+  # ── Layer 6: corpus + CLI (depends on most of the above) ─────────────────
   "@agentproto/corpus|corpus"
   "@agentproto/corpus-presets|corpus-presets"
   "@agentproto/corpus-cli|corpus-cli"
+
+  # ── Layer 7: CLI + plugins (depend on acp + runtime-profile-standard) ─────
+  "@agentproto/cli|cli"
+  "@agentproto/plugin-local-browser|plugin-local-browser"
 )
 
 prompt_otp() {

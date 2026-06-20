@@ -287,7 +287,8 @@ function serializeSynthesis(
     },
   }
   const trimmed = body.trim()
-  return matter.stringify(trimmed.startsWith("\n") ? trimmed : "\n" + trimmed, fm)
+  // gray-matter needs a leading newline to separate frontmatter from body
+  return matter.stringify("\n" + trimmed, fm)
 }
 
 /** Build the synthesis prompt — the model-agnostic core (mirrors buildDistillPrompt). */
