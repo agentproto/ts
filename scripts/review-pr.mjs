@@ -18,7 +18,7 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { resolve, relative } from 'node:path'
 
 // ROOT is always the repo root — when the script is invoked from a different
@@ -177,21 +177,28 @@ function tool_write_changeset({ packages, summary }) {
   if (!Array.isArray(packages) || !summary) return '(invalid args)'
   const csDir = resolve(ROOT, '.changeset')
 
-  // Remove any existing auto-generated changesets on this branch
+  // Remove any existing auto-generated changesets on this branch.
+  // Use execSync directly (not run()) so the try/catch can detect git show failure.
+  // stdio:'pipe' suppresses stderr noise from git show when the file is not in origin/main.
   const existing = readdirSync(csDir)
     .filter((f) => f.endsWith('.md') && f !== 'README.md')
     .filter((f) => {
-      try { run(`git show "${BASE_REF}:.changeset/${f}"`); return false } catch { return true }
+      try {
+        execSync(`git show "${BASE_REF}:.changeset/${f}"`, { cwd: ROOT, stdio: 'pipe' })
+        return false // present on main → not a branch-only file
+      } catch {
+        return true // not on main → added on this branch, clean it up
+      }
     })
   for (const f of existing) {
+    const fp = resolve(csDir, f)
     try {
+      // --ignore-unmatch prevents a fatal error when the file is in the index but
+      // git rm still fails; the outer catch handles the fully-untracked case.
       execSync(`git rm -f ".changeset/${f}"`, { cwd: ROOT, stdio: 'pipe' })
     } catch {
-      // File tracked on branch but git rm can't stage the removal — just delete.
-      const fp = resolve(csDir, f)
-      if (existsSync(fp)) {
-        execSync(`rm -f "${fp}"`, { cwd: ROOT, stdio: 'pipe' })
-      }
+      // File exists on disk but is not tracked in the git index (untracked) — delete directly.
+      if (existsSync(fp)) unlinkSync(fp)
     }
   }
 

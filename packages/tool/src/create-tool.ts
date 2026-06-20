@@ -24,6 +24,12 @@ import { dirname, join } from "node:path"
 import { defineTool } from "./define-tool.js"
 import type { ToolContext, ToolDefinition, ToolHandle } from "./types.js"
 
+function toSnakeCaseKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(obj).map(([k, v]) => [k.replace(/([A-Z])/g, "_$1").toLowerCase(), v]),
+  )
+}
+
 export interface CreateToolOptions {
   /** Workspace-relative or absolute directory under which to write `<id>/TOOL.md`. */
   dir: string
@@ -58,7 +64,7 @@ export async function createTool<
   const path = join(opts.dir, handle.id, "TOOL.md")
   const frontmatter = filterSerializable({
     schema: "agentproto/tool/v1",
-    ...params,
+    ...toSnakeCaseKeys(params as unknown as Record<string, unknown>),
   }) as Record<string, unknown>
   const rendered = matter.stringify(
     opts.body ?? `# ${handle.name}\n\n${handle.description}\n`,
