@@ -11,9 +11,12 @@ export default createTsupConfig({
   dts: true,
   external: [
     "zod",
+    "@agentproto/agent",
     "@agentproto/define-doctype",
     "@agentproto/extension",
     "@agentproto/manifest",
+    "@agentproto/routine",
+    "@agentproto/tool",
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/server/index.js",
     "@modelcontextprotocol/sdk/server/mcp.js",
