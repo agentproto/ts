@@ -12,9 +12,6 @@ permissions:
   contents: write        # create tags + GitHub releases
   pull-requests: write   # open "Version Packages" PR
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   release:
     name: Version or publish
