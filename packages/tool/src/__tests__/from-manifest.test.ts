@@ -47,8 +47,8 @@ describe("toolFromManifest", () => {
     expect(tool.metadata).toEqual({ "vendor.namespace": "anything" })
 
     // Schemas come from the TS module.
-    expect(tool.inputSchema.parse({ msg: "hi" })).toEqual({ msg: "hi" })
-    expect(() => tool.inputSchema.parse({ msg: 7 })).toThrow()
+    expect(tool.inputSchema!.parse({ msg: "hi" })).toEqual({ msg: "hi" })
+    expect(() => tool.inputSchema!.parse({ msg: 7 })).toThrow()
   })
 
   it("freezes the handle (defineTool invariants apply)", () => {

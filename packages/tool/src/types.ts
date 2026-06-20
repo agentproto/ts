@@ -30,14 +30,29 @@ export interface ToolDefinition<
   version?: string
 
   /**
-   * Input shape — zod schema in v0.1. Hosts validate args.input against
-   * it before dispatching to the resolved provider; bodies MUST NOT
-   * re-validate.
+   * Input shape — zod schema (v0.1). Hosts validate args.input against it
+   * before dispatching to the resolved provider; bodies MUST NOT re-validate.
    *
-   * v0.2 will also accept JSON Schema directly.
+   * v0.2: when absent, `validateInput` falls back to the AIP-16 `inputs`
+   * JSON Schema below (if present). Omit both for a passthrough (no
+   * validation) tool — e.g. a manifest-only tool that only declares `inputs`.
    */
-  inputSchema: ZodType<TInput>
-  outputSchema: ZodType<TOutput>
+  inputSchema?: ZodType<TInput>
+  outputSchema?: ZodType<TOutput>
+
+  /**
+   * AIP-16 IO blocks — `inputs`/`outputs` as raw JSON Schema. This is the
+   * manifest-native shape: a TOOL.md authored in YAML (e.g. by an agent
+   * self-constructing a tool) declares its contract here, since it cannot
+   * ship a compiled zod module. Carried through load/create so a
+   * manifest-only tool still exposes a declared IO contract.
+   *
+   * Runtime validation from these JSON Schemas (compiling them to a
+   * validator) is the remaining v0.2 step; v0.1 validates via the zod
+   * `inputSchema`/`outputSchema` above when present.
+   */
+  inputs?: Record<string, unknown>
+  outputs?: Record<string, unknown>
 
   /**
    * Optional context schema. When provided, the host validates
@@ -123,8 +138,11 @@ export interface ToolHandle<
   readonly name: string
   readonly description: string
   readonly version?: string
-  readonly inputSchema: ZodType<TInput>
-  readonly outputSchema: ZodType<TOutput>
+  readonly inputSchema?: ZodType<TInput>
+  readonly outputSchema?: ZodType<TOutput>
+  /** AIP-16 IO blocks (raw JSON Schema) as declared in the manifest. */
+  readonly inputs?: Record<string, unknown>
+  readonly outputs?: Record<string, unknown>
   readonly contextSchema?: ZodType<TContext>
   readonly mutates: readonly string[]
   readonly requires: ToolCapabilities

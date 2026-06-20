@@ -7,6 +7,7 @@ import {
   validateOutput,
 } from "../define-tool.js"
 import { ToolError } from "../errors.js"
+import type { ToolHandle } from "../types.js"
 
 describe("defineTool — basic shape", () => {
   it("applies defaults and exposes immutable handle", () => {
@@ -176,5 +177,131 @@ describe("validateContext — contextSchema", () => {
     const result = validateContext(noCtx, { foo: "bar", signal: undefined })
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value).toEqual({ foo: "bar", signal: undefined })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v0.2 JSON Schema fallback — manifest-only handles (no zod schemas present)
+// ---------------------------------------------------------------------------
+
+/** Simulates a handle as loaded via toolSpec.parse → toolSpec.define from a TOOL.md */
+function makeManifestHandle(
+  inputs?: Record<string, unknown>,
+  outputs?: Record<string, unknown>,
+): Pick<ToolHandle, "id" | "inputSchema" | "inputs" | "outputSchema" | "outputs"> {
+  return {
+    id: "manifest-tool",
+    inputSchema: undefined,
+    outputSchema: undefined,
+    inputs,
+    outputs,
+  }
+}
+
+describe("validateInput — JSON Schema fallback (v0.2, no zod inputSchema)", () => {
+  const inputs = {
+    type: "object",
+    required: ["url"],
+    properties: {
+      url: { type: "string" },
+      maxLen: { type: "integer" },
+    },
+    additionalProperties: false,
+  }
+
+  it("accepts a valid input conforming to the JSON Schema", () => {
+    const handle = makeManifestHandle(inputs)
+    const result = validateInput(handle, { url: "https://example.com" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toEqual({ url: "https://example.com" })
+  })
+
+  it("rejects input missing a required field with code='input_invalid'", () => {
+    const handle = makeManifestHandle(inputs)
+    const result = validateInput(handle, {})
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("input_invalid")
+  })
+
+  it("rejects input with wrong type with code='input_invalid'", () => {
+    const handle = makeManifestHandle(inputs)
+    const result = validateInput(handle, { url: "https://example.com", maxLen: "not-a-number" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("input_invalid")
+  })
+
+  it("rejects input with additional properties when schema disallows them", () => {
+    const handle = makeManifestHandle(inputs)
+    const result = validateInput(handle, { url: "https://example.com", extra: true })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("input_invalid")
+  })
+
+  it("passes through any input when neither inputSchema nor inputs is defined", () => {
+    const handle = makeManifestHandle(undefined, undefined)
+    const result = validateInput(handle, { anything: 42 })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toEqual({ anything: 42 })
+  })
+})
+
+describe("validateOutput — JSON Schema fallback (v0.2, no zod outputSchema)", () => {
+  const outputs = {
+    type: "object",
+    required: ["summary"],
+    properties: {
+      summary: { type: "string" },
+    },
+    additionalProperties: false,
+  }
+
+  it("returns the value when output conforms to the JSON Schema", () => {
+    const handle = makeManifestHandle(undefined, outputs)
+    const value = validateOutput(handle, { summary: "All good." })
+    expect(value).toEqual({ summary: "All good." })
+  })
+
+  it("throws ToolError(output_invalid) when output violates the JSON Schema", () => {
+    const handle = makeManifestHandle(undefined, outputs)
+    expect(() => validateOutput(handle, {})).toThrow(ToolError)
+    try {
+      validateOutput(handle, {})
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError)
+      if (e instanceof ToolError) expect(e.code).toBe("output_invalid")
+    }
+  })
+})
+
+describe("validateInput / validateOutput — zod present → v0.1 behaviour unchanged", () => {
+  const tool = defineTool({
+    id: "zod-wins",
+    description: "Zod schemas present — v0.1 path must be used.",
+    inputSchema: z.object({ n: z.number() }),
+    outputSchema: z.object({ doubled: z.number() }),
+    // inputs/outputs also provided — zod must take priority
+    inputs: { type: "object", properties: { n: { type: "string" } } },
+    outputs: { type: "object", properties: { doubled: { type: "string" } } },
+  })
+
+  it("validateInput uses zod when inputSchema is present (accepts conformant)", () => {
+    const result = validateInput(tool, { n: 3 })
+    expect(result.ok).toBe(true)
+  })
+
+  it("validateInput uses zod when inputSchema is present (rejects non-conformant)", () => {
+    // zod rejects string; JSON Schema inputs would accept it — confirms zod wins
+    const result = validateInput(tool, { n: "three" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error.code).toBe("input_invalid")
+  })
+
+  it("validateOutput uses zod when outputSchema is present (accepts conformant)", () => {
+    const value = validateOutput(tool, { doubled: 6 })
+    expect(value).toEqual({ doubled: 6 })
+  })
+
+  it("validateOutput uses zod when outputSchema is present (rejects non-conformant)", () => {
+    expect(() => validateOutput(tool, { doubled: "six" })).toThrow(ToolError)
   })
 })
