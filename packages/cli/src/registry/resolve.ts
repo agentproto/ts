@@ -14,8 +14,16 @@
  */
 
 import { promises as fs } from "node:fs"
-import { resolve as resolvePath } from "node:path"
+import { fileURLToPath } from "node:url"
+import { dirname, join, resolve as resolvePath } from "node:path"
+import { homedir } from "node:os"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+
+/** Slash-command declared in an adapter manifest (AIP-45 `commands[]`). */
+export interface AgentCliCommand {
+  name: string
+  description?: string
+}
 
 export interface ResolvedAdapter {
   readonly slug: string
@@ -45,6 +53,15 @@ export interface AdapterInfo {
   streaming: boolean
   /** npm package name (for install hints / "open in npmjs.com" links). */
   packageName: string
+  /** Slash-commands the agent CLI accepts as ordinary text turns.
+   *  Empty when the adapter doesn't declare any. */
+  commands: AgentCliCommand[]
+  /** Known-valid model identifiers for this adapter, drawn from the
+   *  adapter manifest's `models.allowed` field. Empty when the adapter
+   *  doesn't declare a model list (accepts whatever the underlying
+   *  binary accepts). Pass one of these as `model` in `start_agent_session`
+   *  to avoid trial-and-error validation errors. */
+  models: string[]
 }
 
 const slugToCamel = (slug: string): string =>
@@ -58,18 +75,40 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   }
 
   const packageName = `@agentproto/adapter-${slug}`
+  const camel = slugToCamel(slug)
   let mod: Record<string, unknown>
+  let resolvedPackageName = packageName
   try {
     mod = (await import(packageName)) as Record<string, unknown>
-  } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err)
+  } catch (primaryErr) {
+    // Fallback: strip the last hyphen-segment and try the parent package,
+    // looking for the full camelCase export there.
+    // e.g. "claude-code-print" → "@agentproto/adapter-claude-code" + export "claudeCodePrint"
+    const hyphen = slug.lastIndexOf("-")
+    if (hyphen > 0) {
+      const parentPkg = `@agentproto/adapter-${slug.slice(0, hyphen)}`
+      try {
+        const parentMod = (await import(parentPkg)) as Record<string, unknown>
+        const parentCandidate = parentMod[camel] as AgentCliHandle | undefined
+        if (
+          parentCandidate &&
+          typeof parentCandidate === "object" &&
+          "name" in parentCandidate
+        ) {
+          return { slug, handle: parentCandidate, source: "npm", packageName: parentPkg }
+        }
+      } catch {
+        /* parent also missing — fall through to original error */
+      }
+    }
+
+    const cause = primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
     throw new Error(
       `agentproto: could not load adapter '${slug}'. ` +
         `Tried '${packageName}'. Install it with: npm i -g ${packageName}\n  cause: ${cause}`
     )
   }
 
-  const camel = slugToCamel(slug)
   const candidate =
     (mod[camel] as AgentCliHandle | undefined) ??
     (mod.default as AgentCliHandle | undefined) ??
@@ -77,12 +116,12 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
 
   if (!candidate || typeof candidate !== "object" || !("name" in candidate)) {
     throw new Error(
-      `agentproto: adapter '${packageName}' does not export an AgentCliHandle ` +
+      `agentproto: adapter '${resolvedPackageName}' does not export an AgentCliHandle ` +
         `(looked for export '${camel}', 'default', or 'handle').`
     )
   }
 
-  return { slug, handle: candidate, source: "npm", packageName }
+  return { slug, handle: candidate, source: "npm", packageName: resolvedPackageName }
 }
 
 /**
@@ -134,6 +173,7 @@ export async function listInstalledAdapters(opts?: {
       try {
         const resolved = await resolveAdapter(slug)
         const handle = resolved.handle as Record<string, unknown>
+        const modelsField = (handle.models as { allowed?: unknown } | undefined)?.allowed
         const info: AdapterInfo = {
           slug,
           name: typeof handle.name === "string" ? handle.name : slug,
@@ -145,6 +185,10 @@ export async function listInstalledAdapters(opts?: {
           streaming: !!(handle.capabilities as { streaming?: boolean })
             ?.streaming,
           packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
+          commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
+          models: Array.isArray(modelsField)
+            ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
+            : [],
         }
         out.push(info)
       } catch (err) {
@@ -191,33 +235,140 @@ export async function listInstalledAdapters(opts?: {
 async function collectAgentprotoNamespaceRoots(
   start?: string
 ): Promise<string[]> {
+  const seen = new Set<string>()
   const roots: string[] = []
-  // Start from this package's own dir — works in ESM (import.meta.url
-  // route would be cleaner but isn't needed; cwd is reliable enough
-  // for the daemon use case where it boots from a known dir).
-  let cur = start ?? process.cwd()
-  // Both classic + pnpm-hoist locations. Classic npm puts the
-  // namespace at node_modules/@agentproto; pnpm hoists to
-  // node_modules/.pnpm/node_modules/@agentproto and symlinks
-  // individual packages from there. We need to scan the hoist dir
-  // for the listing because the namespace dir is the only place
-  // where every adapter package is enumerable.
   const candidatesAt = (dir: string): string[] => [
     resolvePath(dir, "node_modules", "@agentproto"),
     resolvePath(dir, "node_modules", ".pnpm", "node_modules", "@agentproto"),
   ]
-  for (let depth = 0; depth < 16; depth++) {
-    for (const candidate of candidatesAt(cur)) {
-      try {
-        const stat = await fs.stat(candidate)
-        if (stat.isDirectory()) roots.push(candidate)
-      } catch {
-        /* not present at this level */
+
+  async function walkUp(from: string): Promise<void> {
+    let cur = from
+    for (let depth = 0; depth < 20; depth++) {
+      if (seen.has(cur)) break
+      seen.add(cur)
+      for (const candidate of candidatesAt(cur)) {
+        try {
+          const s = await fs.stat(candidate)
+          if (s.isDirectory() && !roots.includes(candidate)) roots.push(candidate)
+        } catch { /* not present */ }
       }
+      const parent = resolvePath(cur, "..")
+      if (parent === cur) break
+      cur = parent
     }
-    const parent = resolvePath(cur, "..")
-    if (parent === cur) break
-    cur = parent
   }
+
+  // Walk from the caller-supplied root (or cwd) — covers the workspace root.
+  await walkUp(start ?? process.cwd())
+  // Also walk from this file's location so pnpm-linked adapters in
+  // packages/cli/node_modules/@agentproto/ are found regardless of cwd.
+  // Resolves correctly whether running from dist (node file.mjs) or ts-node.
+  try {
+    await walkUp(dirname(fileURLToPath(import.meta.url)))
+  } catch { /* ESM not available in this context */ }
+
   return roots
+}
+
+// ── catalog-aware lister ─────────────────────────────────────────────────────
+
+/** Minimal catalog shape consumed by `listAdaptersWithCatalog`. */
+export interface CatalogEntry {
+  slug: string
+  name: string
+  description: string
+  packageName: string
+  hint?: string
+}
+
+/**
+ * Enumerate adapters starting from a static catalog and enriching each entry
+ * with its runtime availability status:
+ *
+ *   "supported" — known to agentproto, package not importable (not installed)
+ *   "available" — package resolves; setup ledger absent or adapter has no setup
+ *   "ready"     — package resolves + setup ledger present
+ *
+ * Also appends any adapters discovered by `listInstalledAdapters` that aren't
+ * in the catalog, so locally-installed custom adapters still appear.
+ *
+ * This replaces `listInstalledAdapters` as the source for `list_adapters` so
+ * the MCP tool always returns the supported set — not just what happens to be
+ * discoverable from the daemon's node_modules at that moment.
+ */
+export async function listAdaptersWithCatalog(
+  catalog: readonly CatalogEntry[]
+): Promise<(AdapterInfo & { status: "supported" | "available" | "ready"; hint?: string })[]> {
+  const seenSlugs = new Set<string>()
+  const out: (AdapterInfo & { status: "supported" | "available" | "ready"; hint?: string })[] = []
+
+  const agentprotoHome = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
+
+  async function hasSetupLedger(slug: string): Promise<boolean> {
+    try {
+      await fs.access(join(agentprotoHome, "setup", `${slug}.json`))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // Process catalog entries first (preserves catalog order for known adapters).
+  for (const entry of catalog) {
+    seenSlugs.add(entry.slug)
+    try {
+      const resolved = await resolveAdapter(entry.slug)
+      const handle = resolved.handle as Record<string, unknown>
+      const setupSteps = Array.isArray((handle as { setup?: unknown[] }).setup)
+        ? (handle as { setup: unknown[] }).setup
+        : []
+      const ledgerPresent = await hasSetupLedger(entry.slug)
+      const status: "available" | "ready" =
+        setupSteps.length === 0 || ledgerPresent ? "ready" : "available"
+      const catalogModels = (handle.models as { allowed?: unknown } | undefined)?.allowed
+      out.push({
+        slug: entry.slug,
+        name: typeof handle.name === "string" ? handle.name : entry.name,
+        version: typeof handle.version === "string" ? handle.version : "?",
+        description:
+          typeof handle.description === "string" ? handle.description : entry.description,
+        protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
+        streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
+        packageName: resolved.packageName ?? entry.packageName,
+        commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
+        models: Array.isArray(catalogModels)
+          ? (catalogModels as unknown[]).filter((m): m is string => typeof m === "string")
+          : [],
+        status,
+        hint: entry.hint,
+      })
+    } catch {
+      // Package not importable — show as "supported" (known but not installed).
+      out.push({
+        slug: entry.slug,
+        name: entry.name,
+        version: "not installed",
+        description: entry.description,
+        protocol: "unknown",
+        streaming: false,
+        packageName: entry.packageName,
+        commands: [],
+        models: [],
+        status: "supported",
+        hint: entry.hint,
+      })
+    }
+  }
+
+  // Append any installed adapters not in the catalog (custom / third-party).
+  const installed = await listInstalledAdapters()
+  for (const info of installed) {
+    if (seenSlugs.has(info.slug)) continue
+    seenSlugs.add(info.slug)
+    const ledgerPresent = await hasSetupLedger(info.slug)
+    out.push({ ...info, status: ledgerPresent ? "ready" : "available" })
+  }
+
+  return out
 }

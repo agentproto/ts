@@ -10,30 +10,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   build-and-test:
     name: Build + test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # Build first — `tsc --noEmit` resolves workspace package imports
       # through their published `.d.ts` files in `dist/`, which only
@@ -41,10 +38,99 @@ jobs:
       # produced "Cannot find module '@agentproto/<pkg>'" cascades on
       # every commit since the multi-package extraction.
       - name: Build all packages
-        run: pnpm -r --filter "./packages/**" --filter "./adapters/**" build
+        run: pnpm build
 
       - name: Type-check all packages
-        run: pnpm -r --filter "./packages/**" --filter "./adapters/**" check-types
+        run: pnpm check-types
 
       - name: Run tests
-        run: pnpm -r --filter "./packages/**" --filter "./adapters/**" test
+        run: pnpm test
+
+  # On PRs: verify a changeset was added. Quick git-only check that
+  # runs in parallel with build-and-test to give fast feedback.
+  # If the changeset is missing, auto-changeset (below) will generate
+  # one after the build passes — a new CI run then makes this pass.
+  changeset-check:
+    name: Changeset present?
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check for changeset
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if [[ "$TITLE" == chore\(release\):* ]]; then
+            echo "Version Packages PR — no changeset required."
+            exit 0
+          fi
+          ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
+            | grep -v '^\.changeset/README\.md$' || true)
+          if [ -z "$ADDED" ]; then
+            echo "No changeset found. Run 'pnpm changeset' or wait for auto-changeset to generate one."
+            exit 1
+          fi
+          echo "✓ Changeset present: $ADDED"
+
+  # On PRs: auto-generate a changeset via Claude if one is missing.
+  # Only runs AFTER build-and-test passes — no point generating a
+  # changeset for a broken build, and avoids wasting API tokens.
+  # Commits the generated file back to the branch, which triggers a
+  # new CI run where changeset-check then passes.
+  auto-changeset:
+    name: Generate changeset
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: |
+      github.event_name == 'pull_request' &&
+      !startsWith(github.event.pull_request.title, 'chore(release):')
+    permissions:
+      contents: write   # push generated changeset back to the branch
+    steps:
+      - name: Checkout branch (with write token)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if changeset already exists
+        id: check
+        run: |
+          ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
+            | grep -v '^\.changeset/README\.md$' || true)
+          if [ -n "$ADDED" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "✓ Changeset already present: $ADDED"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No changeset found — will auto-generate."
+          fi
+
+      - name: Setup Node.js
+        if: steps.check.outputs.present == 'false'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Generate changeset via Claude
+        if: steps.check.outputs.present == 'false'
+        run: node scripts/auto-changeset.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Commit generated changeset
+        if: steps.check.outputs.present == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add '.changeset/*.md'
+          if git diff --cached --quiet; then
+            echo "Nothing to commit (no packages changed, changeset not needed)."
+          else
+            git commit -m "chore: auto-generate changeset [skip ci]"
+            git push
+          fi

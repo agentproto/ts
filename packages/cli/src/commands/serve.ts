@@ -64,10 +64,12 @@ import {
   type GatewayHandle,
 } from "@agentproto/runtime"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
-  listInstalledAdapters,
+  listAdaptersWithCatalog,
 } from "../registry/resolve.js"
+import { CATALOG } from "../registry/catalog.js"
 import WebSocket from "ws"
 
 interface ServeOpts {
@@ -258,10 +260,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId }) {
+        async startSession({ cwd, resumeSessionId, model }) {
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(model ? { config: { options: { model } } } : {}),
           })
         },
         commandPreview:
@@ -296,15 +299,15 @@ export async function runServe(args: readonly string[]): Promise<number> {
       workspace: opts.workspace,
       port: opts.port,
       bind: opts.bind,
-      specs: [],
+      specs: [driverSpec],
       name: "agentproto-serve",
       // BOOT.md is silly for a tunnel daemon — skip it.
       boot: false,
       resolveAgentAdapter,
       // Discovery for UIs / operators — `GET /adapters` + `list_adapters`
-      // MCP tool. Walks node_modules @agentproto/adapter-* on each call;
-      // cheap enough that we don't bother caching here.
-      listAgentAdapters: listInstalledAdapters,
+      // MCP tool. Starts from the bundled catalog so known adapters always
+      // appear (with status "supported") even when not yet installed.
+      listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),
       ...(spawnPty ? { spawnPty } : {}),
       ...(opts.allowedOrigins
         ? { allowedOrigins: opts.allowedOrigins }
@@ -325,8 +328,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // The adapters are what differentiate one daemon from another (every daemon
   // registers the same base doctypes), so a multi-daemon host routes on them.
   // Computed once at boot — the adapter walk is cheap but not worth per-reconnect.
-  const installedAdapterSlugs = await listInstalledAdapters()
-    .then(list => list.map(a => a.slug))
+  const installedAdapterSlugs = await listAdaptersWithCatalog(CATALOG)
+    .then(list => list.filter(a => a.status !== "supported").map(a => a.slug))
     .catch(() => [] as string[])
   const announcedTools = [
     ...new Set([...gateway.registered, ...installedAdapterSlugs]),

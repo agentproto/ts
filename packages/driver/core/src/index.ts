@@ -47,3 +47,5 @@ export type {
 } from "./types.js"
 
 export type { DriverAvailability } from "./resolver.js"
+
+export { driverSpec, driverVerbs } from "./spec.js"

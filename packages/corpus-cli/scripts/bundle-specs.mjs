@@ -9,7 +9,7 @@
  * Path-resolved from this file's own location, not cwd, so it works
  * regardless of where the build is invoked.
  */
-import { cpSync, existsSync } from "node:fs"
+import { cpSync, existsSync, rmSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -22,5 +22,7 @@ if (!existsSync(src)) {
   process.exit(1)
 }
 
+// Clean first so stale AIP directories (moved or renamed) don't linger in dist.
+rmSync(dest, { recursive: true, force: true })
 cpSync(src, dest, { recursive: true })
 console.log(`bundle-specs: copied specs/resources -> dist/specs/resources`)

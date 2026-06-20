@@ -30,9 +30,11 @@ export const defineAgent = createDoctype<AgentDefinition, AgentHandle>({
           .join("; ")}`,
       )
     }
-    // TODO: spec-42-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
+    // Extends-chain depth (≤5) and cycle checks require loading parent
+    // manifests and are therefore async. Call `validateExtendsChain`
+    // (exported from this package) in any context with file/registry
+    // access before running the agent. Other cross-field rules (e.g.
+    // autonomy=gated patterns from @agentproto/operator) go here.
   },
   build(def) {
     // Default build: spread the validated definition into a fresh object.

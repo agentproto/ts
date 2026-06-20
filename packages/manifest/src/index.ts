@@ -21,8 +21,9 @@
 import { filterSerializable } from "@agentproto/define-doctype"
 import matter from "gray-matter"
 import type { Dirent } from "node:fs"
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { access, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
+import { randomBytes } from "node:crypto"
 
 /**
  * Per-package descriptor consumed by `createVerbs`.
@@ -283,6 +284,113 @@ export function createVerbs<
   }
 
   return { create, load, list, update, resolve, delete: deleteFn }
+}
+
+/**
+ * A render-and-validate thunk for use with {@link updateManifestSet}.
+ *
+ * Wrap an existing verb call with `dryRun: true` so that validation and
+ * rendering happen without touching disk. `updateManifestSet` calls the thunk
+ * in its phase-1 pass; if it throws the entire operation is aborted before
+ * any file is written.
+ *
+ * @example
+ * ```ts
+ * const ops: ManifestOp[] = [
+ *   () => toolVerbs.create(toolParams,   { dir, dryRun: true }),
+ *   () => agentVerbs.update(agentPath, mutator, { dryRun: true }),
+ * ]
+ * await updateManifestSet(ops)
+ * ```
+ */
+export type ManifestOp = () => Promise<{ path: string; rendered: string }>
+
+export interface ManifestSetOptions {
+  /**
+   * If true, copy each existing target to `<path>.bak` before the commit
+   * (rename) phase. The backup is created before any rename so the original
+   * content survives a partial failure. Backup files are never removed on
+   * error — the caller can inspect them for recovery.
+   */
+  backup?: boolean
+}
+
+/**
+ * Write multiple manifests as a best-effort atomic set.
+ *
+ * ## Sequence
+ * 1. **Render + validate** — call every `op()` thunk concurrently. Any
+ *    validation error aborts here; nothing is written.
+ * 2. **Stage** — write each rendered string to a sibling temp file
+ *    `<path>.tmp-<hex>` in the same directory.
+ * 3. **Backup** *(optional)* — if `opts.backup`, copy each existing target to
+ *    `<path>.bak`.
+ * 4. **Commit** — `rename(tmp, target)` for each file sequentially.
+ *
+ * ## Atomicity guarantee (honest)
+ * Each individual `rename()` is atomic on POSIX (same-device, same-dir swap).
+ * The **sequence** of renames is NOT globally atomic. A process crash between
+ * two renames leaves some targets at their new content and others unchanged —
+ * there is no cross-file rollback. This is an inherent POSIX limitation;
+ * true multi-file atomicity requires a WAL or journal outside this package.
+ *
+ * ## Error handling
+ * On any error in the stage or commit phase all remaining `.tmp-*` temp files
+ * are removed before rethrowing. Targets that were already committed in the
+ * same run are **not** rolled back — they hold their new content. Targets not
+ * yet reached remain unchanged.
+ */
+export async function updateManifestSet(
+  ops: ManifestOp[],
+  opts: ManifestSetOptions = {},
+): Promise<Array<{ path: string; rendered: string }>> {
+  // Phase 1: Render + validate all ops. Fail early; nothing written yet.
+  const results = await Promise.all(ops.map((op) => op()))
+
+  const suffix = randomBytes(4).toString("hex")
+  // Mirrors `results` index-for-index. Empty string = not yet staged (skip cleanup).
+  const tmps: string[] = new Array(results.length).fill("")
+
+  try {
+    // Phase 2: Stage — write each to a sibling .tmp file.
+    // entries() yields [index, element] with element fully typed (no undefined).
+    for (const [i, { path, rendered }] of results.entries()) {
+      const tmp = `${path}.tmp-${suffix}`
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(tmp, rendered, "utf8")
+      tmps[i] = tmp
+    }
+
+    // Phase 3: Backup (optional) — copy existing targets before rename.
+    if (opts.backup) {
+      for (const { path } of results) {
+        try {
+          await access(path)
+          await copyFile(path, `${path}.bak`)
+        } catch {
+          // File doesn't exist yet — no backup needed.
+        }
+      }
+    }
+
+    // Phase 4: Commit — atomic rename of each staged tmp → target.
+    // Each rename() is individually atomic (POSIX same-device).
+    // The loop is NOT globally atomic; see the doc-comment above.
+    for (const [i, { path }] of results.entries()) {
+      // tmps[i] is guaranteed non-null: same length as results, set in phase 2.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await rename(tmps[i]!, path)
+      tmps[i] = "" // Committed; exclude from cleanup if a later rename fails.
+    }
+  } catch (err) {
+    // Remove staged .tmp files that were not yet committed.
+    await Promise.allSettled(
+      tmps.filter(Boolean).map((t) => rm(t, { force: true })),
+    )
+    throw err
+  }
+
+  return results
 }
 
 function defaultBody<P, H>(

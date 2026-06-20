@@ -50,10 +50,12 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
+    "@agentproto/agent": "workspace:*",
     "@agentproto/define-doctype": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/extension": "workspace:*",
     "@agentproto/manifest": "workspace:*",
+    "@agentproto/routine": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"

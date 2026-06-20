@@ -34,6 +34,7 @@ export default createTsupConfig({
   },
   external: [
     "@agentproto/acp",
+    "@agentproto/driver",
     "@agentproto/driver-agent-cli",
     // Third-party deps — externalised so the published cli installs
     // them via npm at runtime. `gray-matter` is CJS + does dynamic

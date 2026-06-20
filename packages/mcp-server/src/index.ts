@@ -26,6 +26,7 @@ import {
   parseExtensionManifest,
   specFromExtension,
 } from "@agentproto/extension"
+import { registerSelfInspectTool } from "./self-inspect-tool.js"
 
 // `RegisterableSpec<TParams, THandle>` is just `DoctypeSpec` plus the
 // constraint that callers passing different generics across the array
@@ -92,6 +93,13 @@ export async function createMcpServer(
     registerVerbs(server, spec, anchor)
   }
 
+  // self_inspect: contextual tool injected when a workspace is provided so
+  // agents can query their own AIP-42 manifest by logical id — no disk path
+  // knowledge required.
+  if (opts.workspace) {
+    registerSelfInspectTool(server, { workspace: opts.workspace })
+  }
+
   return {
     server,
     registered: allSpecs.map((s) => s.name),
@@ -117,6 +125,14 @@ export {
   type ToMcpToolOptions,
   type McpToolRegistration,
 } from "./to-mcp-tool.js"
+export {
+  registerSelfInspectTool,
+  selfInspect,
+  summarizeToolRef,
+  summarizeRoutineRef,
+  type RefSummary,
+  type SelfInspectResult,
+} from "./self-inspect-tool.js"
 
 // ── verb registration ───────────────────────────────────────────────
 
@@ -238,7 +254,9 @@ function registerVerbs(
           z.object({ ref: z.string() }),
           z.object({ file: z.string() }),
         ])
-        .describe("The composition block."),
+        .describe(
+          'The composition block. Exactly one of: { "inline": {...params} } | { "ref": "@scope/id" } | { "file": "relative/path.md" }. Omitting the wrapping key causes invalid_union.',
+        ),
       baseDir: z
         .string()
         .optional()
