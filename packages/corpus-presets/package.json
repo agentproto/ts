@@ -66,8 +66,7 @@
     "check-types": "tsc --noEmit",
     "pretest": "node scripts/gen-marketing.mjs",
     "test": "vitest run --passWithNoTests",
-    "gen:marketing": "node scripts/gen-marketing.mjs",
-    "prepublishOnly": "pnpm build"
+    "gen:marketing": "node scripts/gen-marketing.mjs"
   },
   "dependencies": {
     "@agentproto/corpus": "workspace:*"

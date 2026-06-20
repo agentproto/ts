@@ -50,8 +50,7 @@
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "build:hooks": "node scripts/build-hooks.mjs",
-    "prepublishOnly": "pnpm build"
+    "build:hooks": "node scripts/build-hooks.mjs"
   },
   "dependencies": {},
   "devDependencies": {
