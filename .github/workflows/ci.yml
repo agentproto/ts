@@ -131,15 +131,33 @@ jobs:
             git push
           fi
 
+      # Gate: fail the job (red check) when the reviewer posted CHANGES_REQUESTED.
+      # Runs after the changeset is committed so the push still lands before the
+      # job turns red. pr-fix (below) uses always() so it still runs to apply fixes.
+      - name: Gate — fail if changes requested
+        run: |
+          DECISION=$(gh pr view "$PR_NUMBER" --json reviewDecision -q '.reviewDecision')
+          echo "Review decision: $DECISION"
+          if [ "$DECISION" = "CHANGES_REQUESTED" ]; then
+            echo "::error::Agentic reviewer requested changes — PR is blocked until fixes are applied or a human admin force-merges."
+            exit 1
+          fi
+          echo "✅ Review decision: $DECISION — merge gate open."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
   # On PRs: if pr-review posted CHANGES_REQUESTED, apply the fixes automatically.
   # Runs after pr-review; checks the live review decision before spending tokens.
   # The fix commit (no [skip ci]) re-triggers the full CI cycle, including pr-review,
   # creating the review-fix loop. Loop is bounded by MAX_ITER in apply-review.mjs.
+  # always() is required so this job runs even when pr-review fails (gate step exits 1).
   pr-fix:
     name: Auto-fix from review
     runs-on: ubuntu-latest
     needs: [pr-review]
     if: |
+      always() &&
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
     permissions:

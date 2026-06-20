@@ -72,13 +72,24 @@ Do not use `[skip ci]` — the push must re-trigger CI to re-review.
 
 ## Gate: requiring approval before merge
 
-The current branch ruleset (`id: 16835849`, "No Delete Main") only prevents deletion and
-force-pushes. It does **not** currently require a passing review before merge.
+The branch ruleset (`id: 16835849`, "No Delete Main") requires the **"Agentic review"** check
+to pass before any PR can be merged into `main`.
 
-To add the **"Agentic review" required-status gate** (run once by a repo admin):
+### How the gate works (wired in CI)
+
+The `pr-review` job ends with a **"Gate — fail if changes requested"** step
+(`.github/workflows/ci.yml`). It runs _after_ the changeset is committed and pushed, then
+checks `gh pr view --json reviewDecision`:
+
+- `CHANGES_REQUESTED` → `exit 1` → job fails → check turns **red** → merge blocked.
+- `APPROVED` or `COMMENT` → `exit 0` → job passes → check turns **green** → merge allowed.
+
+The `pr-fix` job uses `always()` so it still runs even when `pr-review` fails, applies
+auto-fixes, and re-triggers CI.
+
+### Ruleset applied (run once by admin)
 
 ```bash
-# 1. Add a required status check for the "Agentic review" CI job
 gh api repos/agentproto/ts/rulesets/16835849 \
   --method PATCH \
   --input - <<'EOF'
@@ -100,8 +111,10 @@ gh api repos/agentproto/ts/rulesets/16835849 \
 EOF
 ```
 
-Or via the UI: **Settings → Rules → Rulesets → "No Delete Main" → Add rule → Require status checks
-→ search "Agentic review" → Save**.
+**Impact:** every PR targeting `main` must have a passing "Agentic review" check before
+it can be merged — including human-authored PRs. PRs with `APPROVED` pass; PRs with
+`CHANGES_REQUESTED` are blocked until the auto-fix loop resolves it or an admin
+force-merges.
 
 ## Force-merge (bypass)
 
