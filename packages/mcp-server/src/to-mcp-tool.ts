@@ -81,10 +81,14 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
   opts: ToMcpToolOptions<TInput, TOutput, TContext>,
 ): McpToolRegistration {
   const { tool, candidates } = opts
-  const objectShape = asObjectShape(tool.inputSchema)
-  const inputShape: ZodRawShape = objectShape ?? {
-    input: tool.inputSchema,
-  }
+  // `inputSchema` is optional (manifest-only tools declare IO via JSON Schema,
+  // not a zod schema). Guard against undefined: a zod object → its shape; a
+  // non-object zod schema → a single `input` field; no zod schema → no declared
+  // MCP params (`{}`).
+  const objectShape =
+    tool.inputSchema != null ? asObjectShape(tool.inputSchema) : undefined
+  const inputShape: ZodRawShape =
+    objectShape ?? (tool.inputSchema != null ? { input: tool.inputSchema } : {})
 
   const resolveContext = async (): Promise<unknown> =>
     typeof opts.context === "function"

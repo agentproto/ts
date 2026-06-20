@@ -250,16 +250,28 @@ function formatZodIssues(
     .join("; ")
 }
 
-// Shared Ajv instance — created once, schemas compiled on first use per call.
+// Shared Ajv instance — created once at module load.
 // allErrors: true so we surface all violations, not just the first.
 const _ajv = new Ajv({ allErrors: true })
+
+// Validator cache keyed by schema object identity. Avoids repeated _ajv.compile()
+// calls (which go through Ajv's internal registry) and lets GC collect validators
+// when a tool handle is no longer referenced.
+const _validatorCache = new WeakMap<
+  object,
+  ReturnType<typeof _ajv.compile>
+>()
 
 function validateJsonSchema<T>(
   toolId: string,
   schema: Record<string, unknown>,
   value: unknown,
 ): ValidationResult<T> {
-  const validate = _ajv.compile(schema as Parameters<typeof _ajv.compile>[0])
+  let validate = _validatorCache.get(schema)
+  if (!validate) {
+    validate = _ajv.compile(schema as Parameters<typeof _ajv.compile>[0])
+    _validatorCache.set(schema, validate)
+  }
   const valid = validate(value)
   if (!valid) {
     const errors = validate.errors ?? []

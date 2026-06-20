@@ -273,6 +273,14 @@ describe("validateOutput — JSON Schema fallback (v0.2, no zod outputSchema)", 
   })
 })
 
+describe("validateOutput — passthrough when neither outputSchema nor outputs is defined", () => {
+  it("returns any value unchanged when no output contract is present", () => {
+    const handle = makeManifestHandle(undefined, undefined)
+    const value = validateOutput(handle, { anything: 42 })
+    expect(value).toEqual({ anything: 42 })
+  })
+})
+
 describe("validateInput / validateOutput — zod present → v0.1 behaviour unchanged", () => {
   const tool = defineTool({
     id: "zod-wins",
