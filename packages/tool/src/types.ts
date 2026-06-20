@@ -33,12 +33,15 @@ export interface ToolDefinition<
    * Input shape — zod schema (v0.1). Hosts validate args.input against it
    * before dispatching to the resolved provider; bodies MUST NOT re-validate.
    *
-   * v0.2: when absent, `validateInput` falls back to the AIP-16 `inputs`
-   * JSON Schema below (if present). Omit both for a passthrough (no
-   * validation) tool — e.g. a manifest-only tool that only declares `inputs`.
+   * v0.2: a manifest-only tool (loaded from a TOOL.md, no TS module) carries
+   * no zod schema at runtime — `validateInput`/`validateOutput` then fall back
+   * to the AIP-16 `inputs`/`outputs` JSON Schema below. The field stays typed
+   * (not optional) so the many consumers that read `tool.inputSchema`
+   * (mastra / ai-sdk / mcp-server adapters) don't each need an undefined guard;
+   * the absence is a runtime-only reality, narrowed by the helpers below.
    */
-  inputSchema?: ZodType<TInput>
-  outputSchema?: ZodType<TOutput>
+  inputSchema: ZodType<TInput>
+  outputSchema: ZodType<TOutput>
 
   /**
    * AIP-16 IO blocks — `inputs`/`outputs` as raw JSON Schema. This is the
@@ -138,8 +141,8 @@ export interface ToolHandle<
   readonly name: string
   readonly description: string
   readonly version?: string
-  readonly inputSchema?: ZodType<TInput>
-  readonly outputSchema?: ZodType<TOutput>
+  readonly inputSchema: ZodType<TInput>
+  readonly outputSchema: ZodType<TOutput>
   /** AIP-16 IO blocks (raw JSON Schema) as declared in the manifest. */
   readonly inputs?: Record<string, unknown>
   readonly outputs?: Record<string, unknown>

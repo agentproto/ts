@@ -189,13 +189,17 @@ function makeManifestHandle(
   inputs?: Record<string, unknown>,
   outputs?: Record<string, unknown>,
 ): Pick<ToolHandle, "id" | "inputSchema" | "inputs" | "outputSchema" | "outputs"> {
+  // A manifest-only handle has no zod schema at runtime — `inputSchema`/
+  // `outputSchema` are typed (non-optional) but absent here, which is exactly
+  // the case `validateInput`/`validateOutput` guard against. Cast to model it.
   return {
     id: "manifest-tool",
-    inputSchema: undefined,
-    outputSchema: undefined,
     inputs,
     outputs,
-  }
+  } as unknown as Pick<
+    ToolHandle,
+    "id" | "inputSchema" | "inputs" | "outputSchema" | "outputs"
+  >
 }
 
 describe("validateInput — JSON Schema fallback (v0.2, no zod inputSchema)", () => {
