@@ -80,6 +80,53 @@ jobs:
   # changeset for a broken build, and avoids wasting API tokens.
   # Commits the generated file back to the branch, which triggers a
   # new CI run where changeset-check then passes.
+  # On PRs: agentic reviewer — reads the full diff, greps the codebase,
+  # writes an accurate changeset, and posts a structured review.
+  # Runs after build-and-test so it never reviews a broken build.
+  # Replaces auto-changeset when present: the reviewer writes the
+  # changeset AND posts the review in one pass.
+  pr-review:
+    name: Agentic review
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: |
+      github.event_name == 'pull_request' &&
+      !startsWith(github.event.pull_request.title, 'chore(release):')
+    permissions:
+      contents: write       # push generated changeset back to the branch
+      pull-requests: write  # post review + comments
+    steps:
+      - name: Checkout branch (with write token)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Run agentic PR reviewer
+        run: node scripts/review-pr.mjs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Commit changeset (if written by reviewer)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add '.changeset/*.md'
+          if git diff --cached --quiet; then
+            echo "No changeset changes to commit."
+          else
+            git commit -m "chore: agentic reviewer — write/update changeset [skip ci]"
+            git push
+          fi
+
   auto-changeset:
     name: Generate changeset
     runs-on: ubuntu-latest
