@@ -108,6 +108,13 @@ export function registerSessionTools(
           "Free-text label that surfaces in `list_agent_sessions` and the UI — useful " +
             "for tagging sessions with a conversation id or operator name."
         ),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          "Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). " +
+            "Adapters that expose a `--model` flag honour this; others ignore it."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -170,7 +177,7 @@ export function registerSessionTools(
         }
       }
       try {
-        const agentSession = await resolved.startSession({ cwd })
+        const agentSession = await resolved.startSession({ cwd, ...(input.model ? { model: input.model } : {}) })
         const desc = registry.spawnAgent({
           workspaceSlug: resolvedSlug,
           cwd,
