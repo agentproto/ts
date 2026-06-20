@@ -13,6 +13,7 @@ export default createTsupConfig({
   splitting: true,
   dts: true,
   external: [
+    "ajv",
     "zod",
     "gray-matter",
     "@agentproto/define-doctype",

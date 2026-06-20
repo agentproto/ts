@@ -59,6 +59,8 @@ export type {
   SpawnSessionInput,
   SpawnAgentInput,
   SessionsRegistry,
+  RegisterBrowserInput,
+  RegisterSessionInput,
 } from "./sessions.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
