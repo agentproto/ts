@@ -19,6 +19,11 @@ When an issue is opened/reopened, the agent reads it, applies existing labels,
 and posts a concise triage note (type · area · actionable? · next step). Re-run
 on demand with `/triage`.
 
+### Automatic (on discussion) — `.github/workflows/discussion.yml`
+New discussions get an agent answer grounded in the code; discussion comments
+that `/answer` or @mention the bot get a reply. Requires the App permission
+**Discussions: Read & write** (the API is GraphQL-only).
+
 ### On-demand (comment a command) — `.github/workflows/agent-command.yml`
 Triggered by **slash-commands** or an **@mention** on a PR or issue. Only
 write-access authors (OWNER / MEMBER / COLLABORATOR) can invoke it.
@@ -31,6 +36,7 @@ write-access authors (OWNER / MEMBER / COLLABORATOR) can invoke it.
 | `/pr <request>` | PR/issue | Implement `<request>` on a new branch, open a PR |
 | `/implement` | issue | Implement the issue, open a PR |
 | `/triage` | issue | Re-triage: summarize, apply labels, suggest next step |
+| `/wiki <page>: <instruction>` | PR/issue | Create/update a wiki page, grounded in the code |
 | `/explain <question>` | PR/issue | Investigate and answer as a comment |
 | `/help` | anywhere | Post the command list |
 | `@agentproto-bot <free text>` | PR/issue | Interpret intent and act (defaults to proposing a PR) |
@@ -85,14 +91,16 @@ from a flow.
   so the bot acts under its own identity with `contents`/`pull-requests` write.
   Falls back to `secrets.GITHUB_TOKEN` when absent.
 
-## Deferred (next phase)
-**Discussions** (`on: discussion_comment`, answer/triage) and **Wiki** edits
-(clone `<repo>.wiki.git`, edit, push). Both layer onto the same dispatcher but
-need the GitHub App's permissions widened first:
-- Discussions → App permission **Discussions: Read & write** (API is GraphQL:
-  `gh api graphql`).
-- Wiki → the wiki is a separate git repo; the App token can push to it once the
-  wiki is enabled. Add a `gh_wiki_edit` tool that clones/edits/pushes.
+## Required App permission grants
 
-Issues-as-actionable is **shipped**: auto-triage on open + `/triage`, `/implement`,
-and `/pr` from an issue.
+The harness code is complete; two surfaces need the GitHub App's permissions
+widened in **Settings → GitHub Apps → (this app) → Permissions** before they
+work live:
+
+- **Discussions: Read & write** — for `discussion.yml` / the `discussion` tools
+  (GraphQL `addDiscussionComment`). Also enable Discussions on the repo.
+- **Wiki** — enable the repo wiki (Settings → Features → Wikis). The App token
+  pushes to `<repo>.wiki.git` via `contents` write (already granted).
+
+Everything else (review, fix, PRs, issues/triage, explain) runs on the
+permissions already configured.

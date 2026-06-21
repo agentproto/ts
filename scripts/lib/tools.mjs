@@ -19,10 +19,25 @@
 
 import { execSync, execFileSync } from 'node:child_process'
 import {
-  existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync,
+  existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, mkdtempSync,
 } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { resolve, dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { ROOT, run } from './agent-core.mjs'
+
+// ── GitHub GraphQL helper (Discussions API is GraphQL-only) ──────────────────
+function ghGraphql(query, fields = {}) {
+  const args = ['api', 'graphql', '-f', `query=${query}`]
+  for (const [k, v] of Object.entries(fields)) {
+    args.push(typeof v === 'number' ? '-F' : '-f', `${k}=${v}`)
+  }
+  return execFileSync('gh', args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' }).trim()
+}
+
+function ownerRepo() {
+  const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? '/').split('/')
+  return { owner, repo }
+}
 
 // ── allow-listed shell commands for run_command ──────────────────────────────
 // Keep this tight: only the build/test/type-check verbs the agent needs to
@@ -51,7 +66,10 @@ function randomSlug() {
 // allTools(ctx) returns { name: { def, impl } }. buildToolset selects a subset.
 
 function allTools(ctx) {
-  const { prNumber = null, dryRun = false, baseRef = 'origin/main' } = ctx
+  const {
+    prNumber = null, dryRun = false, baseRef = 'origin/main',
+    discussionNumber = null, discussionNodeId = null,
+  } = ctx
 
   // ---- read / search ----
 
@@ -581,11 +599,126 @@ function allTools(ctx) {
     },
   }
 
+  // ---- GitHub Discussions (GraphQL) ----
+
+  const gh_get_discussion = {
+    def: {
+      name: 'gh_get_discussion',
+      description: 'Read a discussion: title, body, url, category, and comments.',
+      input_schema: {
+        type: 'object',
+        properties: { number: { type: 'number', description: 'Discussion number (default: current)' } },
+      },
+    },
+    impl: ({ number } = {}) => {
+      const n = number ?? discussionNumber
+      if (!n) return '(no discussion number)'
+      const { owner, repo } = ownerRepo()
+      const q = `query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){discussion(number:$num){id title body url category{name} comments(first:30){nodes{author{login} body}}}}}`
+      try {
+        return ghGraphql(q, { owner, repo, num: Number(n) })
+      } catch (e) {
+        return `(error fetching discussion: ${e.message})`
+      }
+    },
+  }
+
+  const gh_discussion_comment = {
+    def: {
+      name: 'gh_discussion_comment',
+      description: 'Post a markdown comment on a discussion. Requires the discussion node id (provided by the workflow).',
+      input_schema: {
+        type: 'object',
+        required: ['body'],
+        properties: {
+          body: { type: 'string', description: 'Markdown comment body' },
+          discussionId: { type: 'string', description: 'Discussion node id (default: current)' },
+        },
+      },
+    },
+    impl: ({ body, discussionId } = {}) => {
+      const id = discussionId ?? discussionNodeId
+      if (!body) return '(no body)'
+      if (!id) return '(no discussion node id)'
+      if (dryRun) {
+        console.log(`\n[dry-run] Would comment on discussion ${id}:\n---\n${body}\n---`)
+        return 'dry-run: discussion comment not posted'
+      }
+      const m = `mutation($id:ID!,$body:String!){addDiscussionComment(input:{discussionId:$id,body:$body}){comment{url}}}`
+      try {
+        const out = ghGraphql(m, { id, body })
+        return `Discussion comment posted. ${out}`
+      } catch (e) {
+        return `(error posting discussion comment: ${e.message})`
+      }
+    },
+  }
+
+  // ---- GitHub Wiki (separate <repo>.wiki.git) ----
+
+  const gh_wiki = {
+    def: {
+      name: 'gh_wiki',
+      description: 'Read, list, or write the repository wiki (a separate git repo). To edit a page: read it, then write the COMPLETE new content.',
+      input_schema: {
+        type: 'object',
+        required: ['action'],
+        properties: {
+          action: { type: 'string', enum: ['read', 'list', 'write'] },
+          page: { type: 'string', description: 'Page name without .md, e.g. "Home" or "Getting-Started"' },
+          content: { type: 'string', description: 'Complete page markdown (write only)' },
+          message: { type: 'string', description: 'Commit message (write only)' },
+        },
+      },
+    },
+    impl: ({ action, page, content, message }) => {
+      const { owner, repo } = ownerRepo()
+      const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
+      if (!owner || !repo) return '(GITHUB_REPOSITORY not set)'
+      const url = token
+        ? `https://x-access-token:${token}@github.com/${owner}/${repo}.wiki.git`
+        : `https://github.com/${owner}/${repo}.wiki.git`
+      let dir
+      try {
+        dir = mkdtempSync(join(tmpdir(), 'wiki-'))
+        execSync(`git clone --depth 1 ${url} ${dir}`, { stdio: 'pipe' })
+      } catch (e) {
+        return `(could not clone wiki — is it enabled? ${e.message})`
+      }
+      try {
+        if (action === 'list') {
+          return readdirSync(dir).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, '')).join('\n') || '(empty wiki)'
+        }
+        if (action === 'read') {
+          if (!page) return '(no page)'
+          const p = join(dir, `${page}.md`)
+          return existsSync(p) ? readFileSync(p, 'utf8') : `(page not found: ${page})`
+        }
+        if (action === 'write') {
+          if (!page || content === undefined) return '(write needs page and content)'
+          if (dryRun) return `[dry-run] would write wiki page ${page} (${content.length} chars)`
+          writeFileSync(join(dir, `${page}.md`), content, 'utf8')
+          execSync('git config user.name "github-actions[bot]"', { cwd: dir })
+          execSync('git config user.email "github-actions[bot]@users.noreply.github.com"', { cwd: dir })
+          execSync('git add -A', { cwd: dir })
+          if (run('git diff --cached --name-only', { cwd: dir }) === '') return '(no change to wiki page)'
+          execFileSync('git', ['commit', '-m', message ?? `wiki: update ${page}`], { cwd: dir, stdio: 'pipe' })
+          execSync('git push', { cwd: dir, stdio: 'pipe' })
+          return `Wiki page "${page}" updated.`
+        }
+        return `(unknown action: ${action})`
+      } catch (e) {
+        return `(wiki ${action} error: ${e.message})`
+      }
+    },
+  }
+
   return {
     git_diff, git_log, grep_repo, read_file, list_dir, list_changed_packages,
     write_file, run_command, write_changeset,
     gh_get_pr, gh_get_issue, get_review, gh_list_labels,
     gh_pr_comment, gh_pr_review, gh_open_pr, gh_label,
+    gh_get_discussion, gh_discussion_comment, gh_wiki,
   }
 }
 
@@ -597,6 +730,8 @@ export const TOOL_GROUPS = {
   pr: ['write_file', 'run_command', 'write_changeset', 'gh_open_pr', 'gh_get_issue', 'gh_pr_comment'],
   explain: ['gh_pr_comment'],
   triage: ['gh_get_issue', 'gh_list_labels', 'gh_label', 'gh_pr_comment'],
+  discussion: ['gh_get_discussion', 'gh_discussion_comment'],
+  wiki: ['gh_wiki'],
 }
 
 /** Expand a list of tool names and/or @group references into a flat name list. */

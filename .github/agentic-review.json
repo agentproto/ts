@@ -23,6 +23,12 @@
     "triage": {
       "skills": ["aip-conventions"]
     },
+    "discussion": {
+      "skills": ["aip-conventions"]
+    },
+    "wiki": {
+      "skills": ["aip-conventions"]
+    },
     "explain": {
       "skills": []
     }

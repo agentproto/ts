@@ -35,7 +35,7 @@ const ISSUE_NUMBER = process.env.ISSUE_NUMBER || null
 if (!apiKey) { console.error('Error: ANTHROPIC_API_KEY is required.'); process.exit(1) }
 
 const config = loadConfig()
-const KNOWN_VERBS = ['review', 'fix', 'pr', 'implement', 'triage', 'explain', 'help']
+const KNOWN_VERBS = ['review', 'fix', 'pr', 'implement', 'triage', 'wiki', 'explain', 'help']
 
 // ── parse the comment into { verb, args, freeText } ──────────────────────────
 
@@ -133,6 +133,7 @@ Comment any of these (slash-command, or \`${config.botMention} <verb> …\`):
 | \`/pr <request>\` | Implement \`<request>\` on a new branch and open a PR |
 | \`/implement\` | (on an issue) Implement the issue and open a PR |
 | \`/triage\` | (on an issue) Re-triage: summarize, label, suggest next step |
+| \`/wiki <page>: <instruction>\` | Create/update a wiki page (grounded in the code) |
 | \`/explain <question>\` | Answer a question about the diff/codebase |
 | \`/help\` | Show this list |
 
@@ -189,6 +190,25 @@ Workflow:
 
 Only make changes required by the request. Keep the diff tight.`,
       userPrompt: `Implement ${targetDesc} and open a PR. ${onIssue ? '' : `Request: ${requestText}`}`,
+    })
+    break
+  }
+
+  case 'wiki': {
+    await runFlow({
+      command: 'wiki',
+      toolNames: ['@wiki', '@read', 'gh_pr_comment'],
+      maxTokens: 8192,
+      system: `You maintain the GitHub wiki for the @agentproto/ts monorepo (a separate git repo). Carry out the requested wiki change.
+
+Workflow:
+1. \`gh_wiki\` with action "list" to see existing pages, and action "read" to load any page you will change.
+2. Ground content in the actual code with the read tools (\`read_file\`, \`grep_repo\`) — wiki docs must be accurate.
+3. \`gh_wiki\` with action "write" to save the COMPLETE new page content (page name without .md).
+4. Post a one-line confirmation with \`gh_pr_comment\` linking what changed.
+
+Keep edits scoped to the request. Do not rewrite unrelated pages.`,
+      userPrompt: `Wiki request:\n\n${requestText || COMMENT_BODY}`,
     })
     break
   }
