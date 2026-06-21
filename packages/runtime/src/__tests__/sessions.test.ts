@@ -157,6 +157,59 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("orchestrator WP1: threads persisted mcpServers through the resume path", async () => {
+    const mcpServers = [
+      { name: "orchestration", transport: "http" as const, ref: "agentproto://gateway" },
+    ]
+    // Seed a dead-but-resumable agent-cli row (daemon-restart shape):
+    // adapterSlug/adapterSessionId/cwd present, no live agentSession,
+    // and the spawn-time mcpServers persisted on the descriptor.
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-06-21T00:00:00Z",
+        sessions: [
+          {
+            id: "sess_mcpmcp01",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "claude (agent)",
+            pid: null,
+            status: "running",
+            startedAt: "2026-06-21T00:00:00Z",
+            adapterSlug: "claude-code",
+            adapterSessionId: "acp-resume-me",
+            cwd: "/tmp",
+            mcpServers,
+          },
+        ],
+      }),
+    )
+
+    // Capture what the resumer was handed.
+    let captured: { mcpServers?: unknown } | undefined
+    const resumeAgent = vi.fn(async (input: { mcpServers?: unknown }) => {
+      captured = input
+      const fresh: AgentSessionLike = {
+        sessionId: "acp-resume-me",
+        async *send() {
+          yield { kind: "turn-end", reason: "completed" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      return fresh
+    })
+
+    const reg = createSessionsRegistry({ persistPath, resumeAgent })
+    // A prompt to the dead row triggers maybeResumeAgent → resumeAgent.
+    await reg.sendPrompt("sess_mcpmcp01", "ping")
+
+    expect(resumeAgent).toHaveBeenCalledTimes(1)
+    expect(captured?.mcpServers).toEqual(mcpServers)
+    reg.shutdown()
+  })
+
   it("WP0: emits session:turn-end on bus when a real agent turn completes", async () => {
     const bus = createSessionEventBus()
     const handler = vi.fn()

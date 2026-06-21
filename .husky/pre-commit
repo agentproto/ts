@@ -1,0 +1,1 @@
+node scripts/agentflow/hook.mjs commit

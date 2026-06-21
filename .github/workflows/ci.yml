@@ -121,14 +121,20 @@ jobs:
         run: node scripts/review-pr.mjs
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use the App token so the review + comments are authored by the
+          # bot identity (mentionable) instead of github-actions[bot].
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
         id: changeset
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Attribute the commit to the App bot (mentionable identity) when an
+          # App token was minted; fall back to github-actions[bot] otherwise.
+          bash scripts/configure-bot-git.sh
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
@@ -183,6 +189,10 @@ jobs:
             -f target_url="$RUN_URL" \
             -f description="written by agentic reviewer"
         env:
+          # Commit statuses are checks, not authored content — no bot identity
+          # to gain here. Keep the default GITHUB_TOKEN, which carries this
+          # job's `statuses: write` permission. The App token would 403 unless
+          # the App is granted "Commit statuses: write".
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Gate — fail run if blocking changes requested
@@ -254,14 +264,17 @@ jobs:
         run: node scripts/apply-review.mjs --delivery commit
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # App token so any escalation comment is authored by the bot identity.
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit and push fixes
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          bash scripts/configure-bot-git.sh
           git add -A
           if git diff --cached --quiet; then
             echo "No file changes to commit (loop exhausted — escalation was posted)."

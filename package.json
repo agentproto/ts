@@ -22,7 +22,9 @@
     "sync-specs": "node scripts/sync-specs.mjs",
     "sync-specs:check": "node scripts/sync-specs.mjs --check",
     "changeset": "changeset",
-    "changeset:auto": "node scripts/auto-changeset.mjs",
+    "changeset:auto": "node scripts/auto-changeset.mjs --engine cloud",
+    "changeset:ai": "node scripts/auto-changeset.mjs",
+    "prepare": "husky",
     "version": "changeset version",
     "release": "scripts/release.sh",
     "release:ci": "pnpm build && changeset publish",
@@ -33,6 +35,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
     "gray-matter": "^4.0.3",
+    "husky": "^9.1.7",
     "json-schema-to-typescript": "^15.0.4",
     "json-schema-to-zod": "^2.6.1",
     "tsup": "^8.5.1",
