@@ -401,8 +401,11 @@ jobs:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
-      - name: Checkout (read merge config)
+      - name: Checkout (read merge config + diff)
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
 
       - name: Enable auto-merge when approved + opted-in
         env:
