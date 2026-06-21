@@ -8,7 +8,17 @@
     "auto": false,
     "method": "squash",
     "requireAck": false,
-    "ackLabel": "agentflow:ack"
+    "ackLabel": "agentflow:ack",
+    "maintainer": false,
+    "escalateTo": "agentiknet",
+    "alwaysEscalateGlobs": [
+      "**/migrations/**",
+      "**/*.sql",
+      "**/auth/**",
+      "**/security/**",
+      ".github/workflows/**",
+      "**/*.env*"
+    ]
   },
   "skills": ["aip-conventions"],
   "externalSkills": {

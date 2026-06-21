@@ -53,10 +53,16 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
   "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound
   "merge": {                        // OPT-IN auto-merge (off by default)
-    "auto": false,                  //   true → enable GitHub auto-merge after APPROVED
+    "auto": false,                  //   true → arm GitHub auto-merge after APPROVED
     "method": "squash",             //   squash | merge | rebase
     "requireAck": false,            //   true → also need the ack label below
-    "ackLabel": "agentflow:ack"     //   human ack gate when requireAck
+    "ackLabel": "agentflow:ack",    //   human ack gate when requireAck
+    "maintainer": false,            //   true → a judge decides merge vs escalate-to-human
+    "escalateTo": "agentiknet",     //   who gets @-tagged on escalation
+    "alwaysEscalateGlobs": [        //   changed paths that ALWAYS go to a human
+      "**/migrations/**", "**/*.sql", "**/auth/**", "**/security/**",
+      ".github/workflows/**", "**/*.env*"
+    ]
   },
   "skills": ["aip-conventions"],    // injected into every flow
   "externalSkills": { "allow": ["DietrichGebert/ponytail@ponytail-review"] },
@@ -95,6 +101,15 @@ decides *when to arm* the auto switch.
 Optional gates: `merge.requireAck: true` holds the merge until a human adds the
 `merge.ackLabel` (default `agentflow:ack`) to the PR; `merge.method` picks
 squash/merge/rebase. Requires "Allow auto-merge" enabled in repo settings.
+
+**Maintainer layer (`merge.maintainer: true`).** A further gate on top of the
+auto switch: after APPROVED, a `maintainer` judge (`scripts/maintainer.mjs`)
+decides **merge vs escalate-to-human** instead of merging blindly. Anything
+critical — or matching `merge.alwaysEscalateGlobs` (migrations, auth/security,
+secrets, CI, …) — is handed off: it @-tags `merge.escalateTo` and labels the PR
+`needs-human-review` rather than arming the merge. The judge fails *safe* (any
+error → escalate). Use this when you want autonomy for routine PRs but a human
+in the loop for risky ones.
 
 ## Skills — `.github/agent-skills/*.md`
 
