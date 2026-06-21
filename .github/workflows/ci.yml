@@ -125,19 +125,26 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
+        id: changeset
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
             echo "No changeset changes to commit."
           else
-            git commit -m "chore: agentic reviewer — changeset"
+            # [skip ci] prevents a redundant build cycle — explicit statuses
+            # below cover both "Agentic review" and "Changeset present?" on
+            # the new HEAD, so the merge gate stays green without a second run.
+            git commit -m "chore: agentic reviewer — changeset [skip ci]"
             git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Gate: resolve decision + blocking config, post explicit status on HEAD,
-      # then fail the job if blocking mode + CHANGES_REQUESTED.
+      # Gate: resolve decision + blocking config, post explicit statuses on
+      # HEAD for both "Agentic review" and "Changeset present?" so the merge
+      # gate is covered even when [skip ci] suppresses a new CI run.
       # Three steps so pr-fix (always()) still sees a red job and triggers.
       - name: Resolve review decision + blocking config
         id: gate
@@ -159,7 +166,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
-      - name: Post "Agentic review" status on PR HEAD
+      - name: Post explicit statuses on PR HEAD
         run: |
           SHA=$(git rev-parse HEAD)
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -168,6 +175,13 @@ jobs:
             -f state="${{ steps.gate.outputs.state }}" \
             -f target_url="$RUN_URL" \
             -f description="decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}"
+          # Mirror "Changeset present?" so the merge gate stays green after a
+          # [skip ci] changeset commit (which suppresses the changeset-check job).
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f context="Changeset present?" \
+            -f state="success" \
+            -f target_url="$RUN_URL" \
+            -f description="written by agentic reviewer"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
