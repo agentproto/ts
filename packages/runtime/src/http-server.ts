@@ -40,6 +40,10 @@ import {
 } from "./workspaces-config.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import type {
+  OrchestratorScope,
+  OrchestratorMcpServerFactory,
+} from "./orchestrator-gateway.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -146,6 +150,22 @@ export interface RuntimeHttpServerOptions {
    * the server is locked in.
    */
   mcpServerFactory: () => Promise<McpServer>
+  /**
+   * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
+   * `verifyOrchestratorScope` are wired, the server mounts a second MCP
+   * endpoint at `/mcp/orchestrator` that — unlike `/mcp` — has NO
+   * loopback auth bypass: every request must present a valid scope-token
+   * (`?scope=<token>` query or `X-Orchestrator-Scope` header). The token
+   * resolves to a scope, and the factory builds a server exposing only
+   * that scope's curated tool subset. This is what makes it safe to
+   * point a child agent at the daemon (WP3 auto-injects the URL).
+   */
+  orchestratorMcpServerFactory?: OrchestratorMcpServerFactory
+  /** Resolve a presented scope-token to its scope, or null when
+   *  unknown/missing. Paired with `orchestratorMcpServerFactory`. */
+  verifyOrchestratorScope?: (
+    token: string | null | undefined,
+  ) => OrchestratorScope | null
   conversations: ConversationStore
   events: RuntimeEvents
   heartbeat: HeartbeatRunner
@@ -393,12 +413,17 @@ export async function startHttpServer(
     return false
   }
 
-  async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!authorize(req, res)) return
-    // Per-request server + transport, per the SDK's stateless pattern.
-    // Sharing either across requests breaks after the first one because
-    // `Protocol.connect` rejects re-attachment.
-    const server = await opts.mcpServerFactory()
+  /**
+   * Drive one MCP request over a fresh server+transport pair, per the
+   * SDK's stateless pattern. Sharing either across requests breaks after
+   * the first one because `Protocol.connect` rejects re-attachment.
+   * Shared by `/mcp` and the scoped `/mcp/orchestrator` endpoint.
+   */
+  async function serveMcp(
+    req: IncomingMessage,
+    res: ServerResponse,
+    server: McpServer,
+  ): Promise<void> {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     })
@@ -431,6 +456,67 @@ export async function startHttpServer(
         )
       }
     }
+  }
+
+  async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!authorize(req, res)) return
+    const server = await opts.mcpServerFactory()
+    await serveMcp(req, res, server)
+  }
+
+  /**
+   * Scoped orchestrator sub-gateway (WP2). Mounted at
+   * `/mcp/orchestrator`. CRITICALLY this does NOT call `authorize()`:
+   * the loopback bypass that makes `/mcp` open to any local process is
+   * exactly what we must not inherit here — a child gets the
+   * orchestration subset ONLY by presenting a valid scope-token. The
+   * token arrives via `?scope=<token>` (the injected URL form) or the
+   * `X-Orchestrator-Scope` header.
+   */
+  async function handleOrchestratorMcp(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!opts.orchestratorMcpServerFactory || !opts.verifyOrchestratorScope) {
+      res.writeHead(501, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "orchestrator_gateway_not_configured",
+          message:
+            "The daemon was started without the scoped orchestrator " +
+            "sub-gateway. Wire `orchestratorMcpServerFactory` + " +
+            "`verifyOrchestratorScope` in createGateway.",
+        }),
+      )
+      return
+    }
+    const urlStr = req.url ?? ""
+    let token: string | null = null
+    if (urlStr.includes("?")) {
+      token = new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1)).get(
+        "scope",
+      )
+    }
+    if (!token) {
+      const headerTok = req.headers["x-orchestrator-scope"]
+      if (typeof headerTok === "string") token = headerTok
+    }
+    const scope = opts.verifyOrchestratorScope(token)
+    if (!scope) {
+      res.writeHead(401, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "orchestrator_scope_required",
+          message:
+            "A valid scope-token is required on /mcp/orchestrator " +
+            "(pass `?scope=<token>` or the `X-Orchestrator-Scope` header). " +
+            "Unlike /mcp, this endpoint has no loopback bypass.",
+        }),
+      )
+      return
+    }
+    const server = await opts.orchestratorMcpServerFactory(scope)
+    await serveMcp(req, res, server)
   }
 
   function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
@@ -671,6 +757,10 @@ export async function startHttpServer(
         }
         if (path === "/events" && req.method === "GET") {
           handleEvents(req, res)
+          return
+        }
+        if (path === "/mcp/orchestrator") {
+          await handleOrchestratorMcp(req, res)
           return
         }
         if (path === "/mcp") {

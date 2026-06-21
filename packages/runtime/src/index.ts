@@ -53,6 +53,12 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
+import {
+  createScopeTokenRegistry,
+  createOrchestratorMcpServerFactory,
+  createOrchestratorInjector,
+  type OrchestratorScope,
+} from "./orchestrator-gateway.js"
 
 export type {
   AgentAdapterResolver,
@@ -92,6 +98,20 @@ export {
   type RuntimeMeta,
 } from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"
+export {
+  DEFAULT_ORCHESTRATOR_TOOLS,
+  narrowOrchestratorTools,
+  createScopeTokenRegistry,
+  createOrchestratorMcpServerFactory,
+  createOrchestratorInjector,
+  type OrchestratorScope,
+  type ScopeTokenRegistry,
+  type OrchestratorMcpServerFactory,
+  type OrchestratorGatewayDeps,
+  type OrchestratorInjector,
+  type OrchestratorInjection,
+  type OrchestratorInjectorDeps,
+} from "./orchestrator-gateway.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>
@@ -181,6 +201,14 @@ export interface GatewayHandle {
    *  shell that hosts the gateway in-process) can pass it to child
    *  tools without re-reading the runtime.json file. */
   token: string
+  /** Mint a scope-token for the scoped orchestrator sub-gateway
+   *  (`/mcp/orchestrator`). The returned `token` gates that endpoint
+   *  and `tools` is the effective allowlist (⊆ the default orchestrator
+   *  subset). WP3 will call this at spawn time and inject the URL into
+   *  the child's `mcpServers`; for WP2 it's the internal primitive. */
+  mintOrchestratorScope(opts?: {
+    tools?: readonly string[]
+  }): OrchestratorScope
   stop(): Promise<void>
 }
 
@@ -348,6 +376,58 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // Scope-token registry (WP2) — mints/validates the per-child tokens
+  // that gate `/mcp/orchestrator` and carry each orchestrator's identity
+  // (owner session, depth, tools, limits — WP4). The injector + scoped
+  // factory below both close over it.
+  const scopeTokens = createScopeTokenRegistry()
+
+  // Orchestrator auto-injection (WP3). Closed over the scope-token
+  // registry + the session-event bus + the HTTP port: when
+  // `start_agent_session` is called with `orchestrator`, this mints a
+  // scoped token, builds the `mcpServers` entry pointing the child at
+  // `/mcp/orchestrator?scope=<token>` on the daemon's own loopback
+  // port, and revokes the token on the child's `session:exited`. The
+  // port is the daemon's configured listener port (`startHttpServer`
+  // binds `opts.port` directly), reachable by the co-located child
+  // over loopback.
+  // The injected entry is named "agentproto" (the default) so the
+  // child's orchestration tools surface under a stable namespace,
+  // independent of the daemon's advertised server name.
+  // Defined BEFORE the scoped factory so the factory can hand it to the
+  // scoped server's `start_agent_session` — that's what lets a child
+  // orchestrator recursively spawn its OWN sub-orchestrators (WP4),
+  // bounded by depth/quota/tools inheritance.
+  const orchestratorInjector = createOrchestratorInjector({
+    scopeTokens,
+    sessionEvents,
+    port,
+  })
+
+  // Scoped orchestrator sub-gateway (WP2). The scope-token registry
+  // mints/validates per-child tokens; the factory builds a scoped MCP
+  // server exposing only the curated orchestration subset for a verified
+  // scope. Mounted by the HTTP server at `/mcp/orchestrator` (no
+  // loopback bypass — token required). The verified scope is also the
+  // calling orchestrator's identity, so the scoped server enforces the
+  // WP4 depth/quota guards + subtree scoping against it.
+  const orchestratorMcpServerFactory = createOrchestratorMcpServerFactory({
+    workspace,
+    name: opts.name ?? "agentproto-runtime",
+    version: opts.version ?? "0.1.0-alpha",
+    registry: sessions,
+    sessionEvents,
+    eventRing,
+    supervisor,
+    orchestratorInjector,
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
+    ...(opts.listAgentAdapters
+      ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+  })
+
   const mcpServerFactory = async () => {
     const { server } = await createMcpServer({
       specs: opts.specs,
@@ -378,6 +458,7 @@ export async function createGateway(
       registry: sessions,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
+      buildOrchestratorMcp: orchestratorInjector,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -445,6 +526,8 @@ export async function createGateway(
       return opts.auth ?? { mode: "none" }
     },
     mcpServerFactory,
+    orchestratorMcpServerFactory,
+    verifyOrchestratorScope: scopeTokens.verify,
     conversations,
     events,
     heartbeat,
@@ -495,6 +578,7 @@ export async function createGateway(
     sessions,
     tunnels,
     token,
+    mintOrchestratorScope: scopeTokens.mint,
     async stop() {
       heartbeat.stop()
       // Flush completion-policy state before sessions shut down so
