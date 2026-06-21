@@ -146,7 +146,11 @@ jobs:
           fi
 
       - name: Run agentic PR reviewer
+        id: reviewer
         if: steps.bypass.outputs.skip != 'true'
+        # Don't abort the job on a non-posting reviewer — capture the outcome so
+        # the gate can turn it into an honest red instead of a false green.
+        continue-on-error: true
         run: node scripts/review-pr.mjs
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -193,7 +197,17 @@ jobs:
           [ -z "$BLOCKING" ] && BLOCKING="true"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "blocking=$BLOCKING" >> "$GITHUB_OUTPUT"
-          if [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
+          # Honest gate, in precedence:
+          #   bypassed            → success (local review vouched, reviewer skipped)
+          #   reviewer didn't post → failure (no false green — the #72 bug)
+          #   CHANGES_REQUESTED + blocking → failure
+          #   else                → success
+          if [ "$BYPASS" = "true" ]; then
+            echo "state=success" >> "$GITHUB_OUTPUT"
+          elif [ "$REVIEWER_OUTCOME" != "success" ]; then
+            echo "::error::Agentic reviewer did not post a review (outcome=$REVIEWER_OUTCOME)."
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+          elif [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
             echo "state=failure" >> "$GITHUB_OUTPUT"
           else
             echo "state=success" >> "$GITHUB_OUTPUT"
@@ -201,6 +215,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BYPASS: ${{ steps.bypass.outputs.skip }}
+          REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
 
       - name: Post explicit statuses on PR HEAD
         run: |

@@ -51,18 +51,22 @@ Call the available tools to understand the PR:
 4. Form a clear picture of: correctness, type safety, AIP alignment, test coverage, and changeset accuracy.
 
 ## Phase 2: Act
-When you have enough context, take ALL of the following actions in sequence:
+When you have enough context, take these actions IN THIS ORDER. Keep Phase 1
+exploration tight — posting the review is the single most important action, so
+do it FIRST so it can never be lost if you run low on turns:
 
-1. Call \`write_changeset\` with an accurate package list and bump levels:
+1. Call \`gh_pr_review\` (DO THIS FIRST — it is mandatory):
+   - event: APPROVE if the PR looks correct and complete, REQUEST_CHANGES if something is wrong, COMMENT for observations only
+   - body: a structured markdown review (see format below)
+
+2. Call \`write_changeset\` with an accurate package list and bump levels:
    - patch: bug fix, internal refactor, test, docs, CI, dependency bump
    - minor: new exported function/type/class, new optional parameter, new feature (backward-compatible)
    - major: removed/renamed export, incompatible signature change, breaking behavior
 
-2. Call \`gh_pr_review\` with:
-   - event: APPROVE if the PR looks correct and complete, REQUEST_CHANGES if something is wrong, COMMENT for observations only
-   - body: a structured markdown review (see format below)
-
 3. Optionally call \`gh_pr_comment\` for supplementary inline observations.
+
+You MUST call \`gh_pr_review\` exactly once before finishing. Never end without it.
 
 ## Review format
 
@@ -99,8 +103,8 @@ const { defs, impls } = buildToolset(
 )
 
 const userPrompt = PR_NUMBER
-  ? `Please review PR #${PR_NUMBER} on the @agentproto/ts monorepo. Start by calling git_log and git_diff to understand the changes, then explore further as needed before writing the changeset and submitting your review.`
-  : `Please review the current branch (vs origin/main) of the @agentproto/ts monorepo. Start by calling git_log and git_diff, then explore further, then write the changeset and post your review (dry-run mode: print to stdout instead of posting).`
+  ? `Please review PR #${PR_NUMBER} on the @agentproto/ts monorepo. Call git_log and git_diff (and a few targeted reads) to understand the change, then POST your review with gh_pr_review FIRST, and write the changeset after. Keep exploration efficient.`
+  : `Please review the current branch (vs origin/main) of the @agentproto/ts monorepo. Call git_log and git_diff, post your review first, then write the changeset (dry-run mode: print to stdout instead of posting).`
 
 console.log(`\n🔍 PR Reviewer starting${DRY_RUN ? ' (dry-run)' : ''}…  model=${cmd.model}  skills=[${skills.map((s) => s.name).join(', ')}]`)
 if (PR_NUMBER) console.log(`   PR: #${PR_NUMBER}`)
@@ -113,11 +117,27 @@ const result = await runAgentLoop({
   toolImpls: impls,
   userPrompt,
   maxTokens: 4096,
-  maxTurns: 20,
+  maxTurns: 30,
   onTurn: (t) => console.log(`\n⟳  Turn ${t}`),
   onToolCall: (name, input) => console.log(`   🔧 ${name}(${Object.keys(input).join(', ')})`),
 })
 
 if (result.finalText) console.log('\n' + result.finalText)
 if (result.maxedOut) console.warn('\n⚠️  Reached max iterations — stopping.')
+
+// Guard: the review MUST be posted. Scan the transcript for the gh_pr_review
+// tool call. If it never happened (e.g. the agent ran out of turns mid-explore,
+// as on #72), fail loudly instead of letting the gate post a false green.
+const postedReview = result.messages.some(
+  (m) =>
+    Array.isArray(m.content) &&
+    m.content.some((b) => b.type === 'tool_use' && b.name === 'gh_pr_review'),
+)
 console.log('\n✅ Review complete.')
+if (!postedReview && !DRY_RUN) {
+  console.error(
+    '\n❌ Reviewer finished WITHOUT calling gh_pr_review — no review was posted. ' +
+      'Failing so the gate does not report a false success.',
+  )
+  process.exit(2)
+}
