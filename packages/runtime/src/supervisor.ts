@@ -1,5 +1,5 @@
 /**
- * Completion-policy supervisor — WP1 + WP2 + WP3.
+ * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4.
  *
  * State machine per attached policy:
  *   watching → gating → acting → done
@@ -7,12 +7,12 @@
  *                    ↘ blocked                                     (gate failed, retries exhausted)
  *   watching → cancelled  (watched session exited before turn-end)
  *
- * Trigger: session:turn-end on the watched session.
+ * Trigger: session:turn-end on the watched session(s).
  * Gate: optional shell command via the same allowlist + cwd-anchor as
  *       execute_command. exit 0 = pass.
  * Action (then:"emit"): emits policy:passed / policy:failed on the bus
  *       (readable via poll_events).
- * onFail (WP2): when gate fails, re-prompts the session (sendPrompt) up to
+ * onFail (WP2): when gate fails, re-prompts the session(s) (sendPrompt) up to
  *       maxRetries times, then transitions to blocked + emits policy:failed.
  *
  * WP3: persists PolicyRunState + input to ~/.agentproto/policies.json (or an
@@ -20,6 +20,24 @@
  * at shutdown(). On boot, active policies (watching/gating/nudging/acting) are
  * re-armed to "watching" and re-subscribed to the bus. Terminal states (done/
  * blocked/cancelled) are kept for history. Session absent at reload → cancelled.
+ *
+ * WP4 (fan-in): a policy may watch a GROUP of sessions (`sessionIds`). The gate
+ * runs ONCE, only after EVERY member of the group has finished its turn. Members
+ * are tracked in an idempotent `pending` set: a member is removed on its first
+ * `session:turn-end`; a repeated turn-end for an already-removed member is a
+ * no-op (no double-count). When the set empties → gating.
+ *
+ * A member that emits `session:exited` is treated as "this member is done": it
+ * is removed from the pending set exactly like a turn-end (a dead session will
+ * never emit one), so a partially-crashed group can still complete. If every
+ * member exits, the set empties and the gate runs once. The one exception is the
+ * degenerate group of size 1 (the legacy single-`sessionId` form): a lone
+ * watched session that exits has nothing left to gate on, so the policy is
+ * cancelled — preserving the original single-session contract.
+ *
+ * Back-compat: the legacy `sessionId` (single) form is a group of one. `state.
+ * sessionId` is retained as the group's representative (group[0]) and is the id
+ * carried on policy:passed / policy:failed events.
  */
 
 import { randomUUID } from "node:crypto"
@@ -62,8 +80,18 @@ export interface OnFailSpec {
 }
 
 export interface AttachPolicyInput {
-  /** Session id whose turn-end triggers the policy. */
-  sessionId: string
+  /**
+   * Session id whose turn-end triggers the policy (single-session / legacy
+   * form). Equivalent to `sessionIds: [sessionId]`. Provide this OR
+   * `sessionIds`; if both are given, `sessionIds` wins.
+   */
+  sessionId?: string
+  /**
+   * Fan-in group (WP4): the gate runs once, only after EVERY listed session
+   * has finished its turn (turn-end or exit). Supersedes `sessionId` when
+   * present and non-empty. A single-element array behaves like `sessionId`.
+   */
+  sessionIds?: string[]
   /** Optional shell gate. Absent → always pass immediately. */
   gate?: ShellGateSpec
   /** Only "emit" is supported in WP1/WP2. */
@@ -87,9 +115,18 @@ export type PolicyRunStatus =
 
 export interface PolicyRunState {
   policyId: string
+  /** Representative session id (the fan-in group's first member, group[0]).
+   *  Carried on policy:passed / policy:failed events. */
   sessionId: string
+  /** The full fan-in group being watched. Always present; a length-1 group is
+   *  the legacy single-session form. */
+  sessionIds: string[]
+  /** Sessions in the group that have NOT yet finished their turn. The gate
+   *  fires once this set empties. Idempotent: a member is removed on its first
+   *  turn-end/exit; repeats are no-ops. Reset to the full group on each nudge. */
+  pending: string[]
   status: PolicyRunStatus
-  /** Number of nudges sent so far (incremented after each sendPrompt call). */
+  /** Number of nudges sent so far (incremented after each nudge round). */
   retries: number
   startedAt: string
   endedAt?: string
@@ -118,9 +155,32 @@ export interface CompletionPolicySupervisor {
 
 interface RunEntry {
   input: AttachPolicyInput
+  /** Resolved fan-in group (deduped, order-preserved). group[0] is the repr. */
+  group: string[]
+  /** Live idempotent set of sessions still awaited. Mirrored to state.pending. */
+  pending: Set<string>
   state: PolicyRunState
   unsubscribes: Array<() => void>
   cancelled: boolean
+}
+
+/**
+ * Resolve the watched group from an attach input. `sessionIds` (when present
+ * and non-empty) wins over the legacy `sessionId`. Deduped, order-preserved.
+ * Throws if neither yields a session id.
+ */
+function resolveGroup(input: AttachPolicyInput): string[] {
+  const raw =
+    input.sessionIds && input.sessionIds.length > 0
+      ? input.sessionIds
+      : input.sessionId
+        ? [input.sessionId]
+        : []
+  const group = Array.from(new Set(raw))
+  if (group.length === 0) {
+    throw new Error("attach_policy requires sessionId or a non-empty sessionIds")
+  }
+  return group
 }
 
 /** Persisted envelope written to policies.json. */
@@ -199,6 +259,15 @@ export function createCompletionPolicySupervisor(opts: {
    */
   function armEntry(entry: RunEntry): void {
     const { input, state, unsubscribes } = entry
+    const group = entry.group
+    // Representative session id used for cwd resolution and event payloads.
+    // group is guaranteed non-empty by resolveGroup.
+    const repr = group[0]!
+
+    // Keep the serializable mirror (state.pending) in sync with the live set.
+    const syncPending = () => {
+      state.pending = Array.from(entry.pending)
+    }
 
     let settled = false
     const cleanup = () => {
@@ -215,7 +284,7 @@ export function createCompletionPolicySupervisor(opts: {
       sessionEvents.emit({
         type: "policy:failed",
         policyId: state.policyId,
-        sessionId: input.sessionId,
+        sessionId: repr,
         ...(exitCode !== undefined ? { exitCode } : {}),
         ts: new Date().toISOString(),
       })
@@ -232,7 +301,7 @@ export function createCompletionPolicySupervisor(opts: {
         sessionEvents.emit({
           type: "policy:passed",
           policyId: state.policyId,
-          sessionId: input.sessionId,
+          sessionId: repr,
           ts: new Date().toISOString(),
         })
         state.status = "done"
@@ -242,25 +311,33 @@ export function createCompletionPolicySupervisor(opts: {
         return
       }
 
-      // Gate failed — attempt bounded nudge if configured (WP2)
+      // Gate failed — attempt bounded nudge if configured (WP2).
       if (input.onFail !== undefined) {
         const maxRetries = input.onFail.maxRetries ?? DEFAULT_MAX_RETRIES
         if (state.retries < maxRetries) {
-          const session = registry.get(input.sessionId)
-          if (session && session.status === "running") {
+          // Nudge every still-running member of the group (fan-in: WP4).
+          const running = group.filter(
+            id => registry.get(id)?.status === "running",
+          )
+          if (running.length > 0) {
             const template = input.onFail.nudge ?? DEFAULT_NUDGE_TEMPLATE
             const nudgeMsg = template.replace("{code}", String(exitCode))
             state.status = "nudging"
             schedulePersist()
             try {
-              await registry.sendPrompt(input.sessionId, nudgeMsg)
+              for (const id of running) {
+                await registry.sendPrompt(id, nudgeMsg)
+              }
             } catch {
               emitFailed(exitCode, "nudge prompt delivery failed")
               return
             }
             state.retries++
-            // Return to watching — bus subscriptions remain active;
-            // the next session:turn-end will re-trigger runGate.
+            // Reset the fan-in set to the full group and return to watching —
+            // bus subscriptions remain active; the gate fires again only once
+            // every member has finished another turn.
+            entry.pending = new Set(group)
+            syncPending()
             state.status = "watching"
             schedulePersist()
             return
@@ -268,7 +345,7 @@ export function createCompletionPolicySupervisor(opts: {
         }
       }
 
-      // No nudge configured, session not running, or retries exhausted → block
+      // No nudge configured, no running member, or retries exhausted → block
       emitFailed(exitCode)
     }
 
@@ -290,7 +367,7 @@ export function createCompletionPolicySupervisor(opts: {
           return
         }
 
-        const sessionCwd = registry.get(input.sessionId)?.cwd ?? workspace
+        const sessionCwd = registry.get(repr)?.cwd ?? workspace
         const resolvedCwd = anchorCwd(input.gate.cwd ?? sessionCwd)
 
         const result = await runCommand({
@@ -311,32 +388,57 @@ export function createCompletionPolicySupervisor(opts: {
       }
     }
 
-    // Watch for turn-end on the target session
+    /** Remove a member from the pending set (idempotent); gate once empty. */
+    const markMemberDone = (sessionId: string) => {
+      if (state.status !== "watching") return
+      if (!entry.pending.has(sessionId)) return // idempotent — no double-count
+      entry.pending.delete(sessionId)
+      syncPending()
+      schedulePersist()
+      if (entry.pending.size === 0) void runGate()
+    }
+
+    // Fan-in: a member's first turn-end removes it from the pending set; the
+    // gate runs once the set empties.
     unsubscribes.push(
       sessionEvents.on("session:turn-end", ev => {
-        if (ev.sessionId !== input.sessionId) return
-        if (state.status !== "watching") return
-        void runGate()
+        if (!group.includes(ev.sessionId)) return
+        markMemberDone(ev.sessionId)
       }),
     )
 
-    // If the session exits while we're watching, gating, or nudging → cancel
+    // Member exit handling:
+    //  - group of 1 (legacy single-session form): a lone watched session that
+    //    exits before turn-end has nothing to gate on → cancel (unchanged).
+    //  - fan-in group (>1): the exited member is treated as "done" and removed
+    //    from the pending set, exactly like a turn-end. If every member exits,
+    //    the set empties and the gate runs once.
     unsubscribes.push(
       sessionEvents.on("session:exited", ev => {
-        if (ev.sessionId !== input.sessionId) return
-        if (
-          state.status === "watching" ||
-          state.status === "gating" ||
-          state.status === "nudging"
-        ) {
-          entry.cancelled = true
-          state.status = "cancelled"
-          state.endedAt = new Date().toISOString()
-          schedulePersist()
-          cleanup()
+        if (!group.includes(ev.sessionId)) return
+        if (group.length === 1) {
+          if (
+            state.status === "watching" ||
+            state.status === "gating" ||
+            state.status === "nudging"
+          ) {
+            entry.cancelled = true
+            state.status = "cancelled"
+            state.endedAt = new Date().toISOString()
+            schedulePersist()
+            cleanup()
+          }
+          return
         }
+        markMemberDone(ev.sessionId)
       }),
     )
+
+    // If the pending set was already empty at arm time (e.g. re-armed after a
+    // reload where every still-awaited member had exited), gate immediately.
+    if (!entry.cancelled && state.status === "watching" && entry.pending.size === 0) {
+      void runGate()
+    }
   }
 
   // ── boot-time reload ─────────────────────────────────────────────
@@ -362,10 +464,23 @@ export function createCompletionPolicySupervisor(opts: {
             state.status === "blocked" ||
             state.status === "cancelled"
 
+          // Reconstruct the fan-in group + pending set defensively (older
+          // snapshots predate sessionIds/pending and carry only sessionId).
+          const group =
+            state.sessionIds && state.sessionIds.length > 0
+              ? Array.from(new Set(state.sessionIds))
+              : resolveGroup(input)
+          const persistedPending =
+            state.pending && state.pending.length >= 0
+              ? state.pending
+              : [...group]
+
           if (isTerminal) {
             // Keep for history, no re-arm needed.
             const entry: RunEntry = {
               input,
+              group,
+              pending: new Set(persistedPending),
               state,
               unsubscribes: [],
               cancelled: true,
@@ -374,18 +489,28 @@ export function createCompletionPolicySupervisor(opts: {
             continue
           }
 
-          // Active state at crash time — check if the session still exists.
-          const session = registry.get(input.sessionId)
-          if (!session || (session.status !== "running" && session.status !== "starting")) {
-            // Session gone — cancel proprely instead of hanging.
+          // Active state at crash time. A member still counts as alive only if
+          // the registry still reports it running/starting.
+          const isAlive = (id: string): boolean => {
+            const s = registry.get(id)
+            return !!s && (s.status === "running" || s.status === "starting")
+          }
+          const aliveGroup = group.filter(isAlive)
+
+          if (aliveGroup.length === 0) {
+            // No member survived the restart — cancel instead of hanging.
             const cancelledState: PolicyRunState = {
               ...state,
+              sessionIds: group,
+              pending: [],
               status: "cancelled",
               endedAt: state.endedAt ?? new Date().toISOString(),
               error: "session absent at reload",
             }
             runs.set(state.policyId, {
               input,
+              group,
+              pending: new Set(),
               state: cancelledState,
               unsubscribes: [],
               cancelled: true,
@@ -393,13 +518,23 @@ export function createCompletionPolicySupervisor(opts: {
             continue
           }
 
-          // Re-arm to watching and re-subscribe.
+          // Re-arm to watching. Re-subscribe only to members still awaited AND
+          // still alive: a pending member that died while the daemon was down
+          // counts as "done" (same rule as a live exit), so it drops out of the
+          // pending set rather than wedging the fan-in forever.
+          const rearmedPending = persistedPending.filter(
+            id => group.includes(id) && isAlive(id),
+          )
           const rearmedState: PolicyRunState = {
             ...state,
+            sessionIds: group,
+            pending: rearmedPending,
             status: "watching",
           }
           const entry: RunEntry = {
             input,
+            group,
+            pending: new Set(rearmedPending),
             state: rearmedState,
             unsubscribes: [],
             cancelled: false,
@@ -415,16 +550,21 @@ export function createCompletionPolicySupervisor(opts: {
 
   return {
     attach(input) {
+      const group = resolveGroup(input)
       const policyId = `policy_${randomUUID().slice(0, 8)}`
       const state: PolicyRunState = {
         policyId,
-        sessionId: input.sessionId,
+        sessionId: group[0]!,
+        sessionIds: group,
+        pending: [...group],
         status: "watching",
         retries: 0,
         startedAt: new Date().toISOString(),
       }
       const entry: RunEntry = {
         input,
+        group,
+        pending: new Set(group),
         state,
         unsubscribes: [],
         cancelled: false,
