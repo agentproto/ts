@@ -210,6 +210,7 @@ export function registerSessionTools(
           adapterSlug: input.adapter,
           ...(input.prompt ? { initialPrompt: input.prompt } : {}),
           ...(input.label ? { label: input.label } : {}),
+          ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
           ...(resolved.commandPreview
             ? { commandPreview: resolved.commandPreview }
             : {}),

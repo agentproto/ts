@@ -20,6 +20,7 @@
  *   - guilde-web Active tab (session cards + terminal viewer)
  */
 
+import type { AcpMcpServer } from "@agentproto/acp"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
@@ -131,6 +132,14 @@ export interface SessionDescriptor {
    *  via sessions.json so `restart` can pass it as `resumeSessionId`
    *  and reattach to the prior conversation history. */
   adapterSessionId?: string
+  /** MCP servers mounted into the agent's session at spawn time
+   *  (orchestrator WP1). Persisted so the resume/re-spawn path can
+   *  re-mount the same host-chosen toolset instead of resuming a
+   *  capability-stripped agent. The current `AcpMcpServer` shape is
+   *  `{ name, transport, ref? }` — a reference, NOT inline credentials
+   *  — so this carries no secrets today. Should the shape ever grow
+   *  headers/tokens, NEVER log this field's contents. */
+  mcpServers?: AcpMcpServer[]
   /** Provider-specific resume hints sniffed from the session's
    *  output. claude-code prints `claude --resume <uuid>` on exit;
    *  we capture that uuid as `claudeResumeId`. On `restart`, when a
@@ -364,6 +373,10 @@ export interface SpawnAgentInput {
   label?: string
   /** Pretty command for the descriptor (display only). */
   commandPreview?: string
+  /** MCP servers mounted at spawn time. Persisted on the descriptor so
+   *  the resume/re-spawn path can re-mount the same toolset (orchestrator
+   *  WP1). */
+  mcpServers?: AcpMcpServer[]
 }
 
 export interface SpawnSessionInput {
@@ -428,6 +441,11 @@ export type AgentSessionResumer = (input: {
   adapterSlug: string
   cwd: string
   resumeSessionId: string
+  /** MCP servers to re-mount on the resumed session — threaded from the
+   *  descriptor's persisted `mcpServers` so the re-spawned agent keeps the
+   *  same host-chosen toolset it had on the initial spawn (orchestrator
+   *  WP1). Omitted for legacy rows spawned before this was persisted. */
+  mcpServers?: AcpMcpServer[]
 }) => Promise<AgentSessionLike | null>
 
 export function createSessionsRegistry(opts?: {
@@ -785,6 +803,8 @@ export function createSessionsRegistry(opts?: {
           adapterSlug,
           cwd,
           resumeSessionId: adapterSessionId,
+          // Re-mount the persisted spawn-time toolset (orchestrator WP1).
+          ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
         })
         if (!fresh) {
           appendLine(
@@ -1041,6 +1061,9 @@ export function createSessionsRegistry(opts?: {
         // conversation rather than starting blank.
         adapterSessionId: input.agentSession.sessionId,
         ...(input.label ? { label: input.label } : {}),
+        // Persist the spawn-time MCP mounts so resume re-mounts the same
+        // toolset (orchestrator WP1). Reference-only shape — no secrets.
+        ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
       }
       const rt: SessionRuntime = {
         desc,
