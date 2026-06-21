@@ -37,6 +37,11 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
   any feature whose `stage` matches. Failures warn but don't block (a
   `review` with `blocking: true` is the one exception — it can stop a push).
 
+  **changeset at `stage: "push"`:** a pre-push hook can't add a file to the
+  in-flight push, so when a changeset is generated the hook commits it and
+  **holds the push** with `run git push again` — the second push includes it.
+  At `stage: "commit"` it's folded straight into the commit instead.
+
 ## Auto-fix after review
 
 `review.fix` (or the `--fix` / `--fix-auto` flags) controls what happens when a
