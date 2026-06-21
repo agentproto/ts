@@ -28,6 +28,7 @@ import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runTunnel } from "./commands/tunnel.js"
+import { runBrowser } from "./commands/browser.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -54,6 +55,11 @@ Usage:
                                              [--cols <n>] [--rows <n>] [--attach]
   agentproto sessions  mirror <id-or-name>   read-only tail (Ctrl-C to exit)
   agentproto sessions  stop <id-or-name>
+  agentproto browser   install <adapter> [--force] [--dry-run]
+  agentproto browser   start <adapter> [--port N] [--camofox-port N] [--label L]
+  agentproto browser   list  [--alive] [--json]
+  agentproto browser   stop  <session-id>
+  agentproto browser   status <session-id>
   agentproto tunnel    create --port <n> [--provider quick] [--name <slug>]
                               [--label <text>] [--host <host>] [--json]
   agentproto tunnel    list   [--active] [--json]
@@ -94,6 +100,7 @@ const VERBS = new Set([
   "workspace",
   "sessions",
   "tunnel",
+  "browser",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -150,6 +157,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSessions(rest)
     case "tunnel":
       return runTunnel(rest)
+    case "browser":
+      return runBrowser(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
