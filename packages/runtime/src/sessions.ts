@@ -155,6 +155,19 @@ export interface SessionDescriptor {
    *  "awaiting-input" turn-end. Cleared on the next turn start.
    *  Used by `wait_for_any` to fast-return without subscribing. */
   awaitingInput?: boolean
+  /** Session id of the orchestrator that spawned this session, set when
+   *  the spawn arrived via the scoped orchestrator sub-gateway (the
+   *  token carried the spawner's identity). Absent for direct `/mcp`
+   *  spawns (the root operator). Powers the subtree scoping of
+   *  list/kill and the per-parent child quota (orchestrator WP4).
+   *  Persisted so the tree survives a daemon restart. */
+  parentSessionId?: string
+  /** Recursion depth in the orchestrator tree: a direct (root) spawn is
+   *  depth 0; a session spawned by a depth-d orchestrator is d+1. Used
+   *  by the depth-cap guard. Persisted alongside `parentSessionId`.
+   *  Treated as 0 when absent (legacy rows / direct spawns that predate
+   *  WP4). */
+  depth?: number
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -377,6 +390,13 @@ export interface SpawnAgentInput {
    *  the resume/re-spawn path can re-mount the same toolset (orchestrator
    *  WP1). */
   mcpServers?: AcpMcpServer[]
+  /** Spawning orchestrator's session id — set when the spawn arrived
+   *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
+   *  descriptor for subtree scoping + quota accounting. */
+  parentSessionId?: string
+  /** Recursion depth for the new session (orchestrator WP4). Defaults to
+   *  0 when omitted (direct/root spawn). */
+  depth?: number
 }
 
 export interface SpawnSessionInput {
@@ -1064,6 +1084,13 @@ export function createSessionsRegistry(opts?: {
         // Persist the spawn-time MCP mounts so resume re-mounts the same
         // toolset (orchestrator WP1). Reference-only shape — no secrets.
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        // Parent attribution + depth (orchestrator WP4). Depth is always
+        // recorded (defaults to 0) so subtree/depth logic never has to
+        // distinguish "absent" from "root".
+        ...(input.parentSessionId
+          ? { parentSessionId: input.parentSessionId }
+          : {}),
+        depth: input.depth ?? 0,
       }
       const rt: SessionRuntime = {
         desc,

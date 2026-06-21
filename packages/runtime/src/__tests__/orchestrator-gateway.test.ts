@@ -24,6 +24,7 @@ import {
   narrowOrchestratorTools,
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
+  type OrchestratorScope,
 } from "../orchestrator-gateway.js"
 import { startHttpServer } from "../http-server.js"
 import { createSessionsRegistry } from "../sessions.js"
@@ -62,7 +63,7 @@ function makeFactoryDeps() {
 
 async function listToolNames(
   factory: ReturnType<typeof createOrchestratorMcpServerFactory>,
-  scope: { token: string; tools: ReadonlySet<string> },
+  scope: OrchestratorScope,
 ): Promise<string[]> {
   const server = await factory(scope)
   const [clientTransport, serverTransport] =

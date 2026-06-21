@@ -376,28 +376,11 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
-  // Scoped orchestrator sub-gateway (WP2). The scope-token registry
-  // mints/validates per-child tokens; the factory builds a scoped MCP
-  // server exposing only the curated orchestration subset for a verified
-  // scope. Mounted by the HTTP server at `/mcp/orchestrator` (no
-  // loopback bypass — token required). WP3 wires the auto-injection at
-  // spawn time; here we only stand up the primitive + expose `mint`.
+  // Scope-token registry (WP2) — mints/validates the per-child tokens
+  // that gate `/mcp/orchestrator` and carry each orchestrator's identity
+  // (owner session, depth, tools, limits — WP4). The injector + scoped
+  // factory below both close over it.
   const scopeTokens = createScopeTokenRegistry()
-  const orchestratorMcpServerFactory = createOrchestratorMcpServerFactory({
-    workspace,
-    name: opts.name ?? "agentproto-runtime",
-    version: opts.version ?? "0.1.0-alpha",
-    registry: sessions,
-    sessionEvents,
-    eventRing,
-    supervisor,
-    ...(opts.resolveAgentAdapter
-      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
-      : {}),
-    ...(opts.listAgentAdapters
-      ? { listAgentAdapters: opts.listAgentAdapters }
-      : {}),
-  })
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when
@@ -411,10 +394,38 @@ export async function createGateway(
   // The injected entry is named "agentproto" (the default) so the
   // child's orchestration tools surface under a stable namespace,
   // independent of the daemon's advertised server name.
+  // Defined BEFORE the scoped factory so the factory can hand it to the
+  // scoped server's `start_agent_session` — that's what lets a child
+  // orchestrator recursively spawn its OWN sub-orchestrators (WP4),
+  // bounded by depth/quota/tools inheritance.
   const orchestratorInjector = createOrchestratorInjector({
     scopeTokens,
     sessionEvents,
     port,
+  })
+
+  // Scoped orchestrator sub-gateway (WP2). The scope-token registry
+  // mints/validates per-child tokens; the factory builds a scoped MCP
+  // server exposing only the curated orchestration subset for a verified
+  // scope. Mounted by the HTTP server at `/mcp/orchestrator` (no
+  // loopback bypass — token required). The verified scope is also the
+  // calling orchestrator's identity, so the scoped server enforces the
+  // WP4 depth/quota guards + subtree scoping against it.
+  const orchestratorMcpServerFactory = createOrchestratorMcpServerFactory({
+    workspace,
+    name: opts.name ?? "agentproto-runtime",
+    version: opts.version ?? "0.1.0-alpha",
+    registry: sessions,
+    sessionEvents,
+    eventRing,
+    supervisor,
+    orchestratorInjector,
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
+    ...(opts.listAgentAdapters
+      ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
   })
 
   const mcpServerFactory = async () => {

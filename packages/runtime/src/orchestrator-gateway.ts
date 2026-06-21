@@ -67,34 +67,95 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "kill_agent_session",
 ]
 
+/**
+ * Recursion guardrail defaults (ADR §4.5 / WP4).
+ *   DEFAULT_MAX_DEPTH  — how deep the orchestrator tree may grow by
+ *                        default (root spawns at depth 0; a session
+ *                        spawned by a depth-d orchestrator is d+1, so
+ *                        depth 3 means at most 4 levels: 0,1,2,3).
+ *   HARD_MAX_DEPTH     — an unconditional ceiling the schema bound +
+ *                        mint both clamp to, so no caller can lift the
+ *                        cap past this even with an explicit request.
+ *   DEFAULT_MAX_CHILDREN — per-orchestrator alive-child quota.
+ */
+export const DEFAULT_MAX_DEPTH = 3
+export const HARD_MAX_DEPTH = 8
+export const DEFAULT_MAX_CHILDREN = 8
+
 export interface OrchestratorScope {
   /** The opaque scope-token handed to (and presented by) the child. */
   token: string
-  /** The effective tool allowlist for this scope (⊆ the default). */
+  /** The effective tool allowlist for this scope (⊆ the default and,
+   *  for a recursively-spawned child, ⊆ its parent's allowlist). */
   tools: ReadonlySet<string>
+  /**
+   * Session id of the orchestrator that OWNS this token — i.e. the
+   * child session that presents it back on `/mcp/orchestrator`. The
+   * token is minted *before* the child session exists (the injector
+   * needs the URL to compose the spawn), so this is bound late, after
+   * `spawnAgent` returns the id, via `bindOwner`. Until bound, spawns
+   * through this scope are attributed to no parent and its subtree is
+   * empty (safe degradation). (ADR §4.5 / WP4) */
+  ownerSessionId?: string
+  /** Recursion depth of the owning orchestrator session. A spawn made
+   *  *through* this scope produces a child at `depth + 1`. Root scopes
+   *  (minted for a direct `/mcp` spawn) are depth 0. */
+  depth: number
+  /** Max recursion depth reachable through this scope. A spawn whose
+   *  child depth (`depth + 1`) would exceed this is rejected. Clamped
+   *  to `HARD_MAX_DEPTH`. */
+  maxDepth: number
+  /** Max concurrently-alive children the owning orchestrator may spawn
+   *  before further spawns are rejected. */
+  maxChildren: number
 }
 
 /**
- * Narrow a caller-requested tool list to ⊆ the default subset.
+ * Narrow a caller-requested tool list to ⊆ a ceiling subset.
  *
- * The `{ tools: [...] }` form a caller supplies can only REMOVE tools,
- * never add: any name outside `DEFAULT_ORCHESTRATOR_TOOLS` is dropped.
- * Omitting `requested` yields the full default. This is the invariant
- * that stops a caller from widening their own scope.
+ * The `ceiling` is the maximum a caller may end up with — the global
+ * `DEFAULT_ORCHESTRATOR_TOOLS` for a root scope, or the *parent's*
+ * effective tools for a recursively-spawned child (non-re-grant: a
+ * child can never widen beyond what its parent holds — ADR §4.5 #5).
+ * The `{ tools: [...] }` form can only REMOVE from the ceiling, never
+ * add: any name outside it is dropped. Omitting `requested` yields the
+ * full ceiling. Omitting `ceiling` defaults to the global default.
  */
 export function narrowOrchestratorTools(
   requested?: readonly string[],
+  ceiling?: ReadonlySet<string>,
 ): Set<string> {
-  const def = new Set(DEFAULT_ORCHESTRATOR_TOOLS)
-  if (!requested) return def
-  return new Set(requested.filter(t => def.has(t)))
+  const cap = ceiling ?? new Set(DEFAULT_ORCHESTRATOR_TOOLS)
+  if (!requested) return new Set(cap)
+  return new Set(requested.filter(t => cap.has(t)))
+}
+
+export interface MintScopeOptions {
+  /** Caller-requested allowlist — narrowed ⊆ `ceiling` (or the default
+   *  when no ceiling is given). */
+  tools?: readonly string[]
+  /** Upper bound on the minted tools (the parent's effective tools for
+   *  a recursive child). Omit for a root scope (defaults to the global
+   *  default subset). */
+  ceiling?: ReadonlySet<string>
+  /** Depth of the owning orchestrator (default 0). */
+  depth?: number
+  /** Max depth reachable through this scope (default DEFAULT_MAX_DEPTH,
+   *  clamped to HARD_MAX_DEPTH). */
+  maxDepth?: number
+  /** Per-orchestrator alive-child quota (default DEFAULT_MAX_CHILDREN). */
+  maxChildren?: number
 }
 
 export interface ScopeTokenRegistry {
-  /** Mint a fresh scope-token. `tools` (when given) narrows ⊆ default. */
-  mint(opts?: { tools?: readonly string[] }): OrchestratorScope
+  /** Mint a fresh scope-token. See `MintScopeOptions`. */
+  mint(opts?: MintScopeOptions): OrchestratorScope
   /** Resolve a presented token to its scope, or null when unknown. */
   verify(token: string | null | undefined): OrchestratorScope | null
+  /** Late-bind the owning child session id onto a minted scope (the
+   *  token is minted before the child exists). No-op when the token is
+   *  unknown. Mutates the live scope object so `verify` reflects it. */
+  bindOwner(token: string, sessionId: string): void
   /** Drop a token (e.g. when the child session ends). */
   revoke(token: string): void
 }
@@ -111,7 +172,10 @@ export function createScopeTokenRegistry(): ScopeTokenRegistry {
       const token = randomBytes(32).toString("hex")
       const scope: OrchestratorScope = {
         token,
-        tools: narrowOrchestratorTools(opts?.tools),
+        tools: narrowOrchestratorTools(opts?.tools, opts?.ceiling),
+        depth: opts?.depth ?? 0,
+        maxDepth: Math.min(opts?.maxDepth ?? DEFAULT_MAX_DEPTH, HARD_MAX_DEPTH),
+        maxChildren: opts?.maxChildren ?? DEFAULT_MAX_CHILDREN,
       }
       scopes.set(token, scope)
       return scope
@@ -119,6 +183,10 @@ export function createScopeTokenRegistry(): ScopeTokenRegistry {
     verify(token) {
       if (!token) return null
       return scopes.get(token) ?? null
+    },
+    bindOwner(token, sessionId) {
+      const scope = scopes.get(token)
+      if (scope) scope.ownerSessionId = sessionId
     },
     revoke(token) {
       scopes.delete(token)
@@ -136,6 +204,13 @@ export interface OrchestratorGatewayDeps {
   supervisor?: CompletionPolicySupervisor
   resolveAgentAdapter?: AgentAdapterResolver
   listAgentAdapters?: AgentAdapterLister
+  /** Orchestrator injector (WP3/WP4). When wired, a child orchestrator
+   *  driving the scoped server can itself spawn sub-orchestrators
+   *  (`orchestrator: true` on its `start_agent_session`) — the new
+   *  token inherits depth+1 and is bounded by the caller's tools
+   *  (non-re-grant). Omitted → recursion injection is unavailable on
+   *  the scoped surface (a child can still spawn plain sub-agents). */
+  orchestratorInjector?: OrchestratorInjector
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -163,6 +238,14 @@ export function createOrchestratorMcpServerFactory(
     registerSessionTools(server, {
       registry: deps.registry,
       toolSubset: scope.tools,
+      // The verified scope IS the calling orchestrator's identity:
+      // spawns through this server are attributed to `scope.ownerSessionId`
+      // at `scope.depth + 1`, depth/quota guards fire against it, and
+      // list/kill are filtered to its subtree (WP4).
+      callerScope: scope,
+      ...(deps.orchestratorInjector
+        ? { buildOrchestratorMcp: deps.orchestratorInjector }
+        : {}),
       ...(deps.resolveAgentAdapter
         ? { resolveAgentAdapter: deps.resolveAgentAdapter }
         : {}),
@@ -230,6 +313,19 @@ export interface OrchestratorInjectorDeps {
 
 export type OrchestratorInjector = (opts?: {
   tools?: readonly string[]
+  /** The calling orchestrator's scope, when this spawn arrives via the
+   *  scoped sub-gateway (recursive spawn). The minted child token then
+   *  inherits `depth = caller.depth + 1`, its tools are bounded by the
+   *  caller's tools (non-re-grant — ADR §4.5 #5), and its depth/child
+   *  limits never exceed the caller's. Omit for a root spawn (direct
+   *  `/mcp`) → depth 0, full default subset, default limits. */
+  caller?: OrchestratorScope
+  /** Override the max depth reachable through the minted scope (clamped
+   *  to the caller's, then to HARD_MAX_DEPTH). Root-only knob. */
+  maxDepth?: number
+  /** Override the per-orchestrator child quota for the minted scope
+   *  (clamped to the caller's). Root-only knob. */
+  maxChildren?: number
 }) => OrchestratorInjection
 
 /**
@@ -244,15 +340,37 @@ export function createOrchestratorInjector(
   const host = deps.host ?? "127.0.0.1"
   const name = deps.entryName ?? "agentproto"
   return (opts) => {
-    const scope = deps.scopeTokens.mint(
-      opts?.tools ? { tools: opts.tools } : {},
-    )
+    const caller = opts?.caller
+    // A recursive child lands one level below its caller; a root spawn
+    // (no caller) is depth 0. Limits never escalate past the caller's.
+    const depth = caller ? caller.depth + 1 : 0
+    const maxDepth = caller
+      ? Math.min(opts?.maxDepth ?? caller.maxDepth, caller.maxDepth)
+      : (opts?.maxDepth ?? DEFAULT_MAX_DEPTH)
+    const maxChildren = caller
+      ? Math.min(opts?.maxChildren ?? caller.maxChildren, caller.maxChildren)
+      : (opts?.maxChildren ?? DEFAULT_MAX_CHILDREN)
+    const scope = deps.scopeTokens.mint({
+      ...(opts?.tools ? { tools: opts.tools } : {}),
+      // Non-re-grant: bound the child's tools by the caller's effective
+      // tools (not just the global default) — a child can never widen
+      // beyond what its parent holds.
+      ...(caller ? { ceiling: caller.tools } : {}),
+      depth,
+      maxDepth,
+      maxChildren,
+    })
     const entry: AcpMcpServer = {
       name,
       transport: "http",
       ref: `http://${host}:${deps.port}/mcp/orchestrator?scope=${scope.token}`,
     }
     const bindLifecycle = (sessionId: string): (() => void) => {
+      // Late-bind the owner: the token was minted before this child
+      // session existed; now that we have its id, attribute the scope to
+      // it so its own spawns inherit `parentSessionId = sessionId` and
+      // its subtree filters resolve.
+      deps.scopeTokens.bindOwner(scope.token, sessionId)
       const off = deps.sessionEvents.on("session:exited", ev => {
         if (ev.sessionId !== sessionId) return
         deps.scopeTokens.revoke(scope.token)

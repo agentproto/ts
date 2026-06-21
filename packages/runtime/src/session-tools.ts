@@ -38,10 +38,48 @@ import {
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { withToolSubset } from "./tool-subset.js"
+import type { OrchestratorScope } from "./orchestrator-gateway.js"
+import type { SessionDescriptor } from "./sessions.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
+/**
+ * Compute the set of session ids in the subtree rooted at `rootId` —
+ * the root itself plus every descendant reachable through the
+ * `parentSessionId` chain (orchestrator WP4). Used to scope
+ * `list`/`kill` on the scoped sub-gateway so a child orchestrator only
+ * ever sees/affects the sessions it (transitively) spawned, never the
+ * whole daemon. Returns an empty set when `rootId` is undefined (an
+ * unbound scope sees nothing — safe default).
+ */
+export function collectSubtree(
+  rootId: string | undefined,
+  all: readonly SessionDescriptor[],
+): Set<string> {
+  const result = new Set<string>()
+  if (!rootId) return result
+  const childrenOf = new Map<string, string[]>()
+  for (const s of all) {
+    if (!s.parentSessionId) continue
+    const arr = childrenOf.get(s.parentSessionId)
+    if (arr) arr.push(s.id)
+    else childrenOf.set(s.parentSessionId, [s.id])
+  }
+  const queue = [rootId]
+  result.add(rootId)
+  while (queue.length > 0) {
+    const id = queue.shift() as string
+    for (const child of childrenOf.get(id) ?? []) {
+      if (!result.has(child)) {
+        result.add(child)
+        queue.push(child)
+      }
+    }
+  }
+  return result
 }
 
 interface RegisterSessionToolsOptions {
@@ -75,10 +113,33 @@ interface RegisterSessionToolsOptions {
    *  the gateway's scope-token registry + HTTP port + session-event
    *  bus in `createGateway`. Omitted → `orchestrator` is rejected with
    *  a clear "not enabled" error. */
-  buildOrchestratorMcp?: (opts: { tools?: readonly string[] }) => {
+  buildOrchestratorMcp?: (opts: {
+    tools?: readonly string[]
+    /** Caller orchestrator scope (WP4) — when a child orchestrator
+     *  spawns its OWN sub-orchestrator, the new token inherits depth+1
+     *  and is bounded by the caller's tools (non-re-grant). */
+    caller?: OrchestratorScope
+    /** Override max depth for the minted child scope (clamped to the
+     *  caller's, then HARD_MAX_DEPTH). */
+    maxDepth?: number
+    /** Override the child quota for the minted child scope (clamped to
+     *  the caller's). */
+    maxChildren?: number
+  }) => {
     entry: AcpMcpServer
     bindLifecycle: (sessionId: string) => () => void
   }
+  /** Calling orchestrator's scope (orchestrator WP4). Present ONLY on
+   *  the scoped sub-gateway server (built per-request from a verified
+   *  scope-token), absent on the root `/mcp` server. When present it is
+   *  the identity of the orchestrator driving these tools, so:
+   *    - spawns are attributed (`parentSessionId = ownerSessionId`,
+   *      `depth = depth + 1`) and gated by the depth cap + child quota;
+   *    - `list_sessions`/`list_agent_sessions`/`kill_agent_session` are
+   *      restricted to the caller's subtree.
+   *  Absent → full visibility, depth-0 spawns, no parent (today's root
+   *  behaviour). */
+  callerScope?: OrchestratorScope
 }
 
 export function registerSessionTools(
@@ -96,6 +157,7 @@ export function registerSessionTools(
     listAgentAdapters,
     mcpProxy,
     buildOrchestratorMcp,
+    callerScope,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -178,6 +240,26 @@ export function registerSessionTools(
                   "default subset. Names outside the default are dropped (a child " +
                   "can never widen its own scope). Omit for the full default subset."
               ),
+            maxDepth: z
+              .number()
+              .int()
+              .min(1)
+              .max(8)
+              .optional()
+              .describe(
+                "Max recursion depth reachable through this child (default 3, hard " +
+                  "ceiling 8). A spawn that would exceed it is rejected. For a " +
+                  "recursive spawn it can only LOWER the inherited cap, never raise it."
+              ),
+            maxChildren: z
+              .number()
+              .int()
+              .min(1)
+              .optional()
+              .describe(
+                "Max concurrently-alive sub-agents this child may spawn (default 8). " +
+                  "For a recursive spawn it can only lower the inherited quota."
+              ),
           }),
         ])
         .optional()
@@ -252,12 +334,82 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      // ── Recursion guardrails (WP4) ──────────────────────────────
+      // When this call arrives through the scoped sub-gateway,
+      // `callerScope` is the spawning orchestrator's identity. Enforce
+      // the depth cap and per-parent child quota BEFORE spawning, and
+      // compute the new session's parent attribution. A direct `/mcp`
+      // spawn (no callerScope) is a root: depth 0, no parent, no caps.
+      const childDepth = callerScope ? callerScope.depth + 1 : 0
+      const parentSessionId = callerScope?.ownerSessionId
+      if (callerScope) {
+        if (childDepth > callerScope.maxDepth) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: "orchestrator_max_depth_exceeded",
+                    message:
+                      `Spawn rejected: this orchestrator is at depth ${callerScope.depth}; ` +
+                      `a child would be depth ${childDepth}, exceeding the max depth ` +
+                      `${callerScope.maxDepth}. No session was created.`,
+                    depth: callerScope.depth,
+                    childDepth,
+                    maxDepth: callerScope.maxDepth,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+            isError: true,
+          }
+        }
+        // Count this orchestrator's currently-alive children. Killed/
+        // exited children free a slot (the cap bounds concurrent load,
+        // not lifetime spawns).
+        const aliveChildren = parentSessionId
+          ? registry.list().filter(
+              s =>
+                s.parentSessionId === parentSessionId &&
+                (s.status === "running" || s.status === "starting"),
+            ).length
+          : 0
+        if (aliveChildren >= callerScope.maxChildren) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: "orchestrator_child_quota_exceeded",
+                    message:
+                      `Spawn rejected: this orchestrator already has ${aliveChildren} ` +
+                      `alive children, at the max of ${callerScope.maxChildren}. ` +
+                      `Kill one before spawning another. No session was created.`,
+                    aliveChildren,
+                    maxChildren: callerScope.maxChildren,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
       // Orchestrator role (WP3): when requested, mint a scoped
       // sub-gateway token and MERGE its `mcpServers` entry with any
       // caller-provided ones (WP1) — both coexist on the child's
       // session. The child thus receives the curated orchestration
       // toolset and can spawn + supervise its own sub-agents. The
       // token is revoked when the session exits (bindLifecycle below).
+      // When the spawn is itself recursive (callerScope present), the
+      // child's token inherits depth+1 and is bounded by the caller's
+      // tools (non-re-grant — a child can't widen past its parent).
       let mcpServers = input.mcpServers
       let bindOrchestratorLifecycle:
         | ((sessionId: string) => () => void)
@@ -278,13 +430,21 @@ export function registerSessionTools(
             isError: true,
           }
         }
-        const requestedTools =
+        const orchestratorOpts =
           typeof input.orchestrator === "object"
-            ? input.orchestrator.tools
+            ? input.orchestrator
             : undefined
-        const injection = buildOrchestratorMcp(
-          requestedTools ? { tools: requestedTools } : {},
-        )
+        const requestedTools = orchestratorOpts?.tools
+        const injection = buildOrchestratorMcp({
+          ...(requestedTools ? { tools: requestedTools } : {}),
+          ...(callerScope ? { caller: callerScope } : {}),
+          ...(orchestratorOpts?.maxDepth !== undefined
+            ? { maxDepth: orchestratorOpts.maxDepth }
+            : {}),
+          ...(orchestratorOpts?.maxChildren !== undefined
+            ? { maxChildren: orchestratorOpts.maxChildren }
+            : {}),
+        })
         mcpServers = [...(input.mcpServers ?? []), injection.entry]
         bindOrchestratorLifecycle = injection.bindLifecycle
       }
@@ -302,6 +462,11 @@ export function registerSessionTools(
           ...(input.prompt ? { initialPrompt: input.prompt } : {}),
           ...(input.label ? { label: input.label } : {}),
           ...(mcpServers ? { mcpServers } : {}),
+          // Parent attribution + depth (WP4) — only set for spawns that
+          // arrived via the scoped sub-gateway; root spawns stay
+          // parentless at depth 0.
+          ...(parentSessionId ? { parentSessionId } : {}),
+          depth: childDepth,
           ...(resolved.commandPreview
             ? { commandPreview: resolved.commandPreview }
             : {}),
@@ -404,6 +569,13 @@ export function registerSessionTools(
     },
     async input => {
       let rows = registry.list()
+      // Subtree scoping (WP4): on the scoped sub-gateway a child
+      // orchestrator only sees the sessions in its own subtree, never
+      // the whole daemon.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
+      }
       if (input.kind && input.kind !== "all") {
         rows = rows.filter(s => s.kind === input.kind)
       }
@@ -435,7 +607,12 @@ export function registerSessionTools(
         .describe("Filter to status running/starting only. Default false."),
     },
     async input => {
-      const all = registry.list()
+      let all = registry.list()
+      // Subtree scoping (WP4) — same as list_sessions.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, all)
+        all = all.filter(s => subtree.has(s.id))
+      }
       const filtered = input.onlyAlive
         ? all.filter(s => s.status === "running" || s.status === "starting")
         : all
@@ -888,6 +1065,38 @@ export function registerSessionTools(
       sessionId: z.string().describe("Session id."),
     },
     async input => {
+      // Subtree scoping (WP4): on the scoped sub-gateway a child
+      // orchestrator may only kill sessions in its own subtree — never
+      // an arbitrary id (e.g. a sibling's, or the root operator's).
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list(),
+        )
+        if (!subtree.has(input.sessionId)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: "orchestrator_session_out_of_scope",
+                    message:
+                      `kill_agent_session: session "${input.sessionId}" is not in ` +
+                      `your subtree — a scoped orchestrator can only kill sessions ` +
+                      `it (transitively) spawned. No action taken.`,
+                    ok: false,
+                    sessionId: input.sessionId,
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
       const ok = registry.kill(input.sessionId)
       return {
         content: [
