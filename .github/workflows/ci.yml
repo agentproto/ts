@@ -134,15 +134,7 @@ jobs:
         run: |
           # Attribute the commit to the App bot (mentionable identity) when an
           # App token was minted; fall back to github-actions[bot] otherwise.
-          if [ -n "$BOT_SLUG" ]; then
-            BOT_USER="${BOT_SLUG}[bot]"
-            BOT_ID=$(gh api "/users/${BOT_USER}" --jq .id)
-            git config user.name "$BOT_USER"
-            git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-          fi
+          bash scripts/configure-bot-git.sh
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
@@ -282,15 +274,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
           BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
         run: |
-          if [ -n "$BOT_SLUG" ]; then
-            BOT_USER="${BOT_SLUG}[bot]"
-            BOT_ID=$(gh api "/users/${BOT_USER}" --jq .id)
-            git config user.name "$BOT_USER"
-            git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-          fi
+          bash scripts/configure-bot-git.sh
           git add -A
           if git diff --cached --quiet; then
             echo "No file changes to commit (loop exhausted — escalation was posted)."

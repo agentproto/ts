@@ -114,15 +114,7 @@ jobs:
           BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
         run: |
           # Attribute the commit to the App bot (mentionable) when available.
-          if [ -n "$BOT_SLUG" ]; then
-            BOT_USER="${BOT_SLUG}[bot]"
-            BOT_ID=$(gh api "/users/${BOT_USER}" --jq .id)
-            git config user.name "$BOT_USER"
-            git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-          fi
+          bash scripts/configure-bot-git.sh
           CUR=$(git rev-parse --abbrev-ref HEAD)
           case "$CUR" in
             bot/*) echo "On bot branch $CUR — agent opened its own PR, nothing to push."; exit 0 ;;
