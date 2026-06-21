@@ -12,7 +12,7 @@ function resolveCmd(
 
   // Default pnpm filter command — requires the workspace root as cwd.
   const cwd = resolveCwd(env, log)
-  return { file: "/bin/sh", args: ["-c", "pnpm --filter=@browser/service start"], cwd }
+  return { file: "/bin/sh", args: ["-c", "pnpm --filter=@agstudio/browser-service start"], cwd }
 }
 
 /**
@@ -32,7 +32,7 @@ function resolveCwd(
   if (explicit) return explicit
   log?.(
     "[chromium] warning: CHROMIUM_SERVE_CWD is not set; relying on daemon cwd for " +
-      "`pnpm --filter=@browser/service start`. Set CHROMIUM_SERVE_CWD or run the daemon " +
+      "`pnpm --filter=@agstudio/browser-service start`. Set CHROMIUM_SERVE_CWD or run the daemon " +
       "from the repo root, or override with CHROMIUM_SERVE_CMD."
   )
   return undefined
@@ -51,7 +51,7 @@ export const chromiumAdapter: BrowserAdapterHandle = {
   install: [
     {
       method: "path",
-      // Local: `pnpm --filter=@browser/service start` from the monorepo root,
+      // Local: `pnpm --filter=@agstudio/browser-service start` from the monorepo root,
       // or set CHROMIUM_SERVE_CMD / CHROMIUM_SERVE_CWD to point at a custom launcher.
       // Cloud variant (future — not yet wired into ensure):
       //   method: "cloud", url: process.env.BROWSER_SERVICE_URL, secret: "BROWSER_SERVICE_KEY"
@@ -62,7 +62,7 @@ export const chromiumAdapter: BrowserAdapterHandle = {
     {
       id: "chromium-serve-cmd",
       kind: "prompt",
-      prompt: "Shell command to start the browser service (default: pnpm --filter=@browser/service start)",
+      prompt: "Shell command to start the browser service (default: pnpm --filter=@agstudio/browser-service start)",
       description:
         "Override CHROMIUM_SERVE_CMD.  When blank, the default pnpm filter command is used and " +
         "CHROMIUM_SERVE_CWD must point to the monorepo root.",
