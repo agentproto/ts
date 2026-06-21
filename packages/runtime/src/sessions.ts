@@ -324,6 +324,12 @@ export interface RegisterBrowserInput {
   pid?: number
   /** True when the service was already healthy before this call (idempotent start). */
   wasAlreadyRunning: boolean
+  /** Initial lifecycle status. "running" when the service is confirmed
+   *  healthy; "starting" when a non-blocking cold start returned before the
+   *  service finished converging (health-wait continues in the background and
+   *  `browser_status` / `list_browsers` flip it to running once up).
+   *  Defaults to "running" when omitted. */
+  status?: Extract<SessionStatus, "running" | "starting">
   /** Async shutdown callback — called by kill() best-effort. */
   stop: () => Promise<void>
   label?: string
@@ -1168,7 +1174,7 @@ export function createSessionsRegistry(opts?: {
         workspaceSlug: "",
         command: `${input.adapterId} (browser)`,
         pid: input.pid ?? null,
-        status: "running",
+        status: input.status ?? "running",
         startedAt: new Date().toISOString(),
         browserAdapterId: input.adapterId,
         browserPort: input.port,

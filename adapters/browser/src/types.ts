@@ -161,6 +161,14 @@ export interface BrowserAdapterStartOptions {
    * Required (and only used) when `location === "cloud"`.
    */
   baseUrl?: string
+  /**
+   * Opt-in non-blocking cold start. When set, `ensure` waits only this many
+   * milliseconds for the freshly-spawned service to become healthy. If it does
+   * not, `ensure` returns promptly with `status: "starting"` while health
+   * convergence continues in the background. When unset (default), `ensure`
+   * blocks up to `timeoutMs` (existing behaviour).
+   */
+  initialWaitMs?: number
 }
 
 // ─── Instance ─────────────────────────────────────────────────────────────────
@@ -175,6 +183,14 @@ export interface BrowserAdapterInstance {
    */
   pid?: number
   wasAlreadyRunning: boolean
+  /**
+   * Whether the service is confirmed healthy at return time. Always true on
+   * the warm path and on a blocking cold start. Only `false` when
+   * `opts.initialWaitMs` was set and the service had not converged within the
+   * bounded window — health-wait continues in the background and
+   * `browser_status` / `list_browsers` will flip it to running once up.
+   */
+  healthy: boolean
   /**
    * Best-effort stop. Sends SIGTERM to `pid` if known; otherwise a no-op
    * (externally-managed services must be stopped via their own manager).

@@ -36,6 +36,9 @@ interface BrowserInstanceLike {
   baseUrl: string
   pid?: number
   wasAlreadyRunning: boolean
+  /** False when a non-blocking cold start returned before the service
+   *  finished converging (background health-wait still running). */
+  healthy: boolean
   stop(): Promise<void>
 }
 
@@ -56,9 +59,21 @@ interface BrowserAdapterLike {
     launchCmd?: string
     env?: Record<string, string>
     timeoutMs?: number
+    /** Opt-in non-blocking cold start: wait only this long for a freshly
+     *  spawned service before returning `healthy:false` and converging
+     *  in the background. */
+    initialWaitMs?: number
     log?: (s: string) => void
   }): Promise<BrowserInstanceLike>
 }
+
+/**
+ * Bounded window `start_browser` waits for a freshly-spawned service to become
+ * healthy before returning `starting`. Heavy services (chromium, bureau) take
+ * >60s to boot (pnpm + Chrome launch) and would otherwise time out the MCP
+ * request; we return promptly and let health converge in the background.
+ */
+const START_BROWSER_INITIAL_WAIT_MS = 6_000
 
 export type BrowserAdapterResolver = (id: string) => BrowserAdapterLike | undefined
 export type BrowserAdapterLister = () => {
@@ -180,6 +195,11 @@ export function registerBrowserTools(
         const instance = await adapter.ensure({
           port: input.port,
           camofoxPort: input.camofoxPort,
+          // Non-blocking cold start: if the freshly spawned service isn't
+          // healthy within this bounded window, register it as `starting`
+          // and let health converge in the background instead of blocking
+          // the MCP request until the full health timeout.
+          initialWaitMs: START_BROWSER_INITIAL_WAIT_MS,
           log: msg => log?.(`[start_browser:${input.adapter}] ${msg}`),
         })
         const desc = registry.registerBrowser({
@@ -188,9 +208,11 @@ export function registerBrowserTools(
           baseUrl: instance.baseUrl,
           pid: instance.pid,
           wasAlreadyRunning: instance.wasAlreadyRunning,
+          status: instance.healthy ? "running" : "starting",
           stop: instance.stop.bind(instance),
           label: input.label,
         })
+        const stillStarting = !instance.healthy
         return {
           content: [
             {
@@ -203,6 +225,14 @@ export function registerBrowserTools(
                   browserBaseUrl: desc.browserBaseUrl,
                   wasAlreadyRunning: instance.wasAlreadyRunning,
                   status: desc.status,
+                  ...(stillStarting
+                    ? {
+                        hint:
+                          `Service is still booting (cold start). It was spawned successfully ` +
+                          `and is converging to healthy in the background — poll ` +
+                          `\`browser_status\` with sessionId "${desc.id}" until status is "running".`,
+                      }
+                    : {}),
                 },
                 null,
                 2

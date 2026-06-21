@@ -127,6 +127,7 @@ export async function resolveLaunch(cfg: ResolveLaunchConfig): Promise<BrowserAd
       timeoutMs,
       intervalMs: 1000,
       log,
+      ...(opts.initialWaitMs !== undefined ? { initialWaitMs: opts.initialWaitMs } : {}),
     })
     return {
       id: handle.id,
@@ -134,6 +135,7 @@ export async function resolveLaunch(cfg: ResolveLaunchConfig): Promise<BrowserAd
       baseUrl: result.baseUrl,
       pid: undefined,
       wasAlreadyRunning: result.wasAlreadyRunning,
+      healthy: result.healthy,
       stop: async () => {},
     }
   }
@@ -177,6 +179,7 @@ export async function resolveLaunch(cfg: ResolveLaunchConfig): Promise<BrowserAd
     timeoutMs,
     intervalMs: 1000,
     log,
+    ...(opts.initialWaitMs !== undefined ? { initialWaitMs: opts.initialWaitMs } : {}),
   })
 
   return {
@@ -185,6 +188,7 @@ export async function resolveLaunch(cfg: ResolveLaunchConfig): Promise<BrowserAd
     baseUrl: result.baseUrl,
     pid: result.pid,
     wasAlreadyRunning: result.wasAlreadyRunning,
+    healthy: result.healthy,
     stop: makeStop(result.pid, cfg.killProcessGroup ?? false),
   }
 }
