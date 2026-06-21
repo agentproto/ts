@@ -68,7 +68,7 @@ interface AllowlistCacheEntry {
 
 let allowlistCache: { path: string; entry: AllowlistCacheEntry } | null = null
 
-async function loadAllowlist(workspace: string): Promise<Set<string>> {
+export async function loadAllowlist(workspace: string): Promise<Set<string>> {
   const path = resolve(workspace, ALLOWLIST_REL)
   if (!existsSync(path)) {
     allowlistCache = null
@@ -105,7 +105,7 @@ async function loadAllowlist(workspace: string): Promise<Set<string>> {
   }
 }
 
-function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
+export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
   const root = resolve(workspace)
   return (input?: string) => {
     if (!input || input.length === 0) return root
@@ -208,7 +208,7 @@ export function registerCommandTools(
   )
 }
 
-interface RunCommandInput {
+export interface RunCommandInput {
   command: string
   args: string[]
   cwd: string
@@ -218,7 +218,7 @@ interface RunCommandInput {
 
 const STREAM_BUFFER_CAP = 1_048_576 // 1 MiB per stream
 
-async function runCommand(input: RunCommandInput): Promise<ExecuteResult> {
+export async function runCommand(input: RunCommandInput): Promise<ExecuteResult> {
   return new Promise<ExecuteResult>(resolvePromise => {
     const startedAt = Date.now()
     const child = spawn(input.command, input.args, {

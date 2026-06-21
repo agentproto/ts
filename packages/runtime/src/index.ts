@@ -45,6 +45,7 @@ import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createCompletionPolicySupervisor } from "./supervisor.js"
 
 export type {
   AgentAdapterResolver,
@@ -260,6 +261,14 @@ export async function createGateway(
       : {}),
   })
 
+  // Completion-policy supervisor — watches sessions and runs shell gates.
+  // Declared after `sessions` so it can resolve session cwd at gate time.
+  const supervisor = createCompletionPolicySupervisor({
+    registry: sessions,
+    sessionEvents,
+    workspace,
+  })
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -309,7 +318,7 @@ export async function createGateway(
         ? { listAgentAdapters: opts.listAgentAdapters }
         : {}),
     })
-    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing })
+    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor })
     return server
   }
 
