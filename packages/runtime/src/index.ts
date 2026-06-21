@@ -302,6 +302,7 @@ export async function createGateway(
     registry: sessions,
     sessionEvents,
     workspace,
+    persist: true,
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes
@@ -465,6 +466,10 @@ export async function createGateway(
     token,
     async stop() {
       heartbeat.stop()
+      // Flush completion-policy state before sessions shut down so
+      // policies referencing live sessions are persisted with their
+      // current status (not "killed" sessions).
+      supervisor.shutdown()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.
