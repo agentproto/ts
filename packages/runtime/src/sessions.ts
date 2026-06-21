@@ -24,6 +24,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import type { SessionEventBus } from "./session-event-bus.js"
 import { dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -203,6 +204,9 @@ interface SessionRuntime {
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
   browserStop?: () => Promise<void>
+  /** Guard: true once session:exited has been emitted to sessionEvents.
+   *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
+  exitedEmitted?: boolean
 }
 
 const RECENT_LINES_CAP = 500
@@ -436,11 +440,15 @@ export function createSessionsRegistry(opts?: {
    *  killed agent-cli sessions surface the legacy "not an agent
    *  session" error and the user must spawn fresh. */
   resumeAgent?: AgentSessionResumer
+  /** When provided, the registry translates internal lifecycle transitions
+   *  (turn-end, awaiting-input, exit) into SessionEvents on this bus. */
+  sessionEvents?: SessionEventBus
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
+  const sessionEvents = opts?.sessionEvents
   const sessions = new Map<string, SessionRuntime>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonically-growing PTY-subscriber id. Detach is O(1) on
@@ -482,6 +490,20 @@ export function createSessionsRegistry(opts?: {
   }
   if (persist) {
     process.on("exit", onProcessExit)
+  }
+
+  // Emit session:exited once per session, deduplicated via exitedEmitted flag.
+  const emitExited = (rt: SessionRuntime): void => {
+    if (!sessionEvents || rt.exitedEmitted) return
+    rt.exitedEmitted = true
+    sessionEvents.emit({
+      type: "session:exited",
+      sessionId: rt.desc.id,
+      exitCode: rt.desc.exitCode,
+      status: rt.desc.status as "exited" | "killed" | "error",
+      label: rt.desc.label,
+      ts: new Date().toISOString(),
+    })
   }
 
   const schedulePersist = (): void => {
@@ -639,9 +661,11 @@ export function createSessionsRegistry(opts?: {
           appendLine(rt, `\x1b[31m[tool-error]\x1b[0m`, "stderr")
         break
       case "agent-prompt":
+        rt.desc.awaitingInput = true
         appendLine(rt, `\x1b[33m[awaiting input]\x1b[0m`, "stdout")
         break
       case "turn-end": {
+        if (evt.reason === "awaiting-input") rt.desc.awaitingInput = true
         // Flush any buffered text/thought fragments as final lines.
         if (rt.thoughtBuf.trim()) {
           appendLine(
@@ -794,6 +818,8 @@ export function createSessionsRegistry(opts?: {
       throw new Error("runAgentTurn: session has no agentSession")
     }
     rt.busy = true
+    rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
+    let turnCompleted = false
     try {
       appendLine(
         rt,
@@ -809,6 +835,7 @@ export function createSessionsRegistry(opts?: {
       for await (const evt of rt.agentSession.send(wrapped)) {
         projectEvent(rt, evt)
       }
+      turnCompleted = true
     } catch (err) {
       rt.desc.status = "error"
       rt.desc.endedAt = new Date().toISOString()
@@ -818,8 +845,27 @@ export function createSessionsRegistry(opts?: {
         "stderr"
       )
       schedulePersist()
+      emitExited(rt)
     } finally {
       rt.busy = false
+      if (turnCompleted && sessionEvents) {
+        const ts = new Date().toISOString()
+        sessionEvents.emit({
+          type: "session:turn-end",
+          sessionId: rt.desc.id,
+          awaitingInput: rt.desc.awaitingInput ?? false,
+          label: rt.desc.label,
+          ts,
+        })
+        if (rt.desc.awaitingInput) {
+          sessionEvents.emit({
+            type: "session:awaiting-input",
+            sessionId: rt.desc.id,
+            label: rt.desc.label,
+            ts,
+          })
+        }
+      }
     }
   }
 
@@ -901,6 +947,7 @@ export function createSessionsRegistry(opts?: {
         appendLine(rt, `[spawn error] ${err.message}`, "stderr")
         rt.emitter.emit("status", desc.status)
         schedulePersist()
+        emitExited(rt)
       })
       child.once("exit", (code, signal) => {
         if (signal && desc.status !== "killed") desc.status = "killed"
@@ -911,6 +958,7 @@ export function createSessionsRegistry(opts?: {
         if (typeof code === "number") desc.exitCode = code
         rt.emitter.emit("status", desc.status)
         schedulePersist()
+        emitExited(rt)
       })
       schedulePersist()
       return desc
@@ -956,6 +1004,7 @@ export function createSessionsRegistry(opts?: {
         if (typeof code === "number") desc.exitCode = code
         rt.emitter.emit("status", desc.status)
         schedulePersist()
+        emitExited(rt)
       })
       input.child.once("error", err => {
         desc.status = "error"
@@ -963,6 +1012,7 @@ export function createSessionsRegistry(opts?: {
         appendLine(rt, `[child error] ${err.message}`, "stderr")
         rt.emitter.emit("status", desc.status)
         schedulePersist()
+        emitExited(rt)
       })
       schedulePersist()
       return desc
@@ -1105,6 +1155,7 @@ export function createSessionsRegistry(opts?: {
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
         schedulePersist()
+        emitExited(rt)
       })
       schedulePersist()
       return desc
@@ -1304,6 +1355,10 @@ export function createSessionsRegistry(opts?: {
         void rt.browserStop().catch(() => undefined)
       }
       schedulePersist()
+      // Agent-cli sessions have no OS exit event — emit here.
+      // Child/PTY sessions emit from their exit handlers; the
+      // exitedEmitted guard prevents a duplicate from kill() AND exit.
+      emitExited(rt)
       return true
     },
     forget(id) {

@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { createSessionEventBus } from "../session-event-bus.js"
 
 /**
  * Tests covering the registry behaviours that have historically
@@ -153,6 +154,160 @@ describe("createSessionsRegistry", () => {
     expect(after?.resumeMetadata?.claudeResumeId).toBe(
       "0e483f81-1a44-4bec-9667-b37158450296",
     )
+    reg.shutdown()
+  })
+
+  it("WP0: emits session:turn-end on bus when a real agent turn completes", async () => {
+    const bus = createSessionEventBus()
+    const handler = vi.fn()
+    bus.on("session:turn-end", handler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-wp0-test",
+      async *send() {
+        yield { kind: "text-delta", text: "hello" }
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    // Wait for the fire-and-forget runAgentTurn to drain.
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session:turn-end",
+        sessionId: desc.id,
+        awaitingInput: false,
+      }),
+    )
+    reg.shutdown()
+  })
+
+  it("WP0: emits session:turn-end with awaitingInput=true when agent-prompt fires", async () => {
+    const bus = createSessionEventBus()
+    const turnEndHandler = vi.fn()
+    const awaitingHandler = vi.fn()
+    bus.on("session:turn-end", turnEndHandler)
+    bus.on("session:awaiting-input", awaitingHandler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-wp0-awaiting",
+      async *send() {
+        yield { kind: "agent-prompt" }
+        yield { kind: "turn-end", reason: "awaiting-input" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(turnEndHandler).toHaveBeenCalledTimes(1)
+    expect(turnEndHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: desc.id, awaitingInput: true }),
+    )
+    expect(awaitingHandler).toHaveBeenCalledTimes(1)
+    expect(awaitingHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session:awaiting-input", sessionId: desc.id }),
+    )
+    // awaitingInput flag must be set on the descriptor too (routine-runner reads it).
+    expect(reg.get(desc.id)?.awaitingInput).toBe(true)
+    reg.shutdown()
+  })
+
+  it("WP0: emits session:exited when kill() is called on an agent-cli session", async () => {
+    const bus = createSessionEventBus()
+    const exitedHandler = vi.fn()
+    bus.on("session:exited", exitedHandler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-wp0-kill",
+      async *send() {
+        // Never yields — simulates a long-running turn
+        await new Promise(() => {})
+        yield { kind: "turn-end" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+    })
+
+    reg.kill(desc.id)
+
+    expect(exitedHandler).toHaveBeenCalledTimes(1)
+    expect(exitedHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session:exited",
+        sessionId: desc.id,
+        status: "killed",
+      }),
+    )
+    reg.shutdown()
+  })
+
+  it("WP0: awaitingInput is cleared at the start of each new turn", async () => {
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    // First turn: agent-prompt fires → awaitingInput=true
+    let sendCount = 0
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-wp0-clear",
+      async *send() {
+        sendCount++
+        if (sendCount === 1) {
+          yield { kind: "agent-prompt" }
+          yield { kind: "turn-end", reason: "awaiting-input" }
+        } else {
+          yield { kind: "turn-end", reason: "completed" }
+        }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "first",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+    expect(reg.get(desc.id)?.awaitingInput).toBe(true)
+
+    // Second turn: should clear awaitingInput at start
+    await reg.sendPrompt(desc.id, "second")
+    expect(reg.get(desc.id)?.awaitingInput).toBe(false)
+
     reg.shutdown()
   })
 
