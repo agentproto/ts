@@ -349,4 +349,135 @@ describe("TunnelRegistry", () => {
     ) as { tunnels: TunnelDescriptor[] }
     expect(raw.tunnels).toHaveLength(1)
   })
+
+  // ── named provider + autostart ───────────────────────────────────────────────
+
+  it("create with provider named requires hostname and tunnelId", async () => {
+    const { reg } = makeRegistry(tmp)
+    await expect(
+      reg.create({ targetPort: 3040, provider: "named" }),
+    ).rejects.toThrow(/requires both "hostname" and "tunnelId"/)
+    await expect(
+      reg.create({ targetPort: 3040, provider: "named", hostname: "h.example.com" }),
+    ).rejects.toThrow(/requires both "hostname" and "tunnelId"/)
+  })
+
+  it("create named stores hostname/tunnelId/autostart on the descriptor", async () => {
+    const { reg } = makeRegistry(tmp)
+    const desc = await reg.create({
+      targetPort: 3040,
+      provider: "named",
+      hostname: "guilde-local.example.com",
+      tunnelId: "guilde",
+      autostart: true,
+    })
+
+    expect(desc.provider).toBe("named")
+    expect(desc.hostname).toBe("guilde-local.example.com")
+    expect(desc.tunnelId).toBe("guilde")
+    expect(desc.autostart).toBe(true)
+    expect(desc.status).toBe("active")
+  })
+
+  it("restoreOnBoot relaunches a ghosted autostart named tunnel", async () => {
+    const persistPath = join(tmp, "tunnels.json")
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-01-01T00:00:00Z",
+        tunnels: [
+          {
+            id: "tun_named",
+            name: "guilde",
+            provider: "named",
+            targetHost: "127.0.0.1",
+            targetPort: 3040,
+            publicUrl: "https://guilde-local.example.com",
+            status: "active",
+            pid: 4242,
+            createdAt: "2026-01-01T00:00:00Z",
+            autostart: true,
+            hostname: "guilde-local.example.com",
+            tunnelId: "guilde",
+          },
+        ],
+      }),
+    )
+
+    const mock = makeMockProvider({ startUrl: "https://guilde-local.example.com" })
+    const { reg } = makeRegistry(tmp, mock)
+
+    // Ghosted to stopped on load…
+    expect(reg.get("tun_named")?.status).toBe("stopped")
+
+    await reg.restoreOnBoot()
+
+    expect(reg.get("tun_named")?.status).toBe("active")
+    expect(reg.get("tun_named")?.publicUrl).toBe("https://guilde-local.example.com")
+    expect(mock.startCalled).toBe(1)
+  })
+
+  it("restoreOnBoot skips quick tunnels (would get a new URL)", async () => {
+    const persistPath = join(tmp, "tunnels.json")
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-01-01T00:00:00Z",
+        tunnels: [
+          {
+            id: "tun_quick_auto",
+            provider: "quick",
+            targetHost: "127.0.0.1",
+            targetPort: 3000,
+            publicUrl: "https://old.trycloudflare.com",
+            status: "active",
+            pid: 9999,
+            createdAt: "2026-01-01T00:00:00Z",
+            autostart: true,
+          },
+        ],
+      }),
+    )
+
+    const mock = makeMockProvider()
+    const { reg } = makeRegistry(tmp, mock)
+
+    await reg.restoreOnBoot()
+
+    // Quick autostart is intentionally not relaunched.
+    expect(reg.get("tun_quick_auto")?.status).toBe("stopped")
+    expect(mock.startCalled).toBe(0)
+  })
+
+  it("restoreOnBoot leaves non-autostart tunnels stopped", async () => {
+    const persistPath = join(tmp, "tunnels.json")
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-01-01T00:00:00Z",
+        tunnels: [
+          {
+            id: "tun_no_auto",
+            provider: "named",
+            targetHost: "127.0.0.1",
+            targetPort: 3040,
+            publicUrl: "https://h.example.com",
+            status: "active",
+            pid: 1,
+            createdAt: "2026-01-01T00:00:00Z",
+            hostname: "h.example.com",
+            tunnelId: "h",
+          },
+        ],
+      }),
+    )
+
+    const mock = makeMockProvider()
+    const { reg } = makeRegistry(tmp, mock)
+
+    await reg.restoreOnBoot()
+
+    expect(reg.get("tun_no_auto")?.status).toBe("stopped")
+    expect(mock.startCalled).toBe(0)
+  })
 })

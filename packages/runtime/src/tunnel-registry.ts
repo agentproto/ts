@@ -26,11 +26,12 @@ import { mkdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { quickTunnelProvider } from "./remote-providers/quick.js"
+import { namedTunnelProvider } from "./remote-providers/named.js"
 import type { RemoteProvider } from "./remote-providers/types.js"
 
 export type TunnelStatus = "starting" | "active" | "stopped" | "error"
 
-export type TunnelProvider = "quick"
+export type TunnelProvider = "quick" | "named"
 
 export interface TunnelDescriptor {
   id: string
@@ -47,6 +48,20 @@ export interface TunnelDescriptor {
   createdAt: string
   stoppedAt?: string
   lastError?: string
+  /**
+   * When true, the tunnel is relaunched on daemon boot (see
+   * `restoreOnBoot`). Only meaningful for `named` tunnels — a relaunched
+   * `quick` tunnel gets a fresh random URL, so autostart for it merely
+   * keeps *a* tunnel up, not a stable URL.
+   */
+  autostart?: boolean
+  // ── named-provider fields (unset for quick) ──────────────────────
+  /** Stable public hostname routed to this tunnel. */
+  hostname?: string
+  /** Cloudflare tunnel id or name (the `run` target). */
+  tunnelId?: string
+  /** Path to the tunnel credentials JSON (defaults under ~/.cloudflared). */
+  credentialsFile?: string
 }
 
 interface TunnelEntry {
@@ -60,6 +75,15 @@ export interface CreateTunnelInput {
   name?: string
   label?: string
   targetHost?: string
+  /** Relaunch this tunnel on daemon boot. See `TunnelDescriptor.autostart`. */
+  autostart?: boolean
+  // ── required when provider === "named" ───────────────────────────
+  /** Stable public hostname (e.g. app.example.com). */
+  hostname?: string
+  /** Cloudflare tunnel id or name to `run`. */
+  tunnelId?: string
+  /** Path to the credentials JSON (defaults to ~/.cloudflared/<tunnelId>.json). */
+  credentialsFile?: string
 }
 
 export interface TunnelRegistryOptions {
@@ -101,6 +125,17 @@ export class TunnelRegistry {
     const provider = input.provider ?? "quick"
     const targetHost = input.targetHost ?? "127.0.0.1"
 
+    // Named tunnels need a stable hostname + a tunnel id to `run`. Fail
+    // fast here rather than letting cloudflared error out cryptically.
+    if (provider === "named") {
+      if (!input.hostname || !input.tunnelId) {
+        throw new Error(
+          'named tunnel requires both "hostname" and "tunnelId" ' +
+            "(the cloudflared tunnel you provisioned with `cloudflared tunnel create`).",
+        )
+      }
+    }
+
     if (input.name) {
       const conflict = this.findByIdOrName(input.name)
       if (conflict && (conflict.status === "starting" || conflict.status === "active")) {
@@ -121,11 +156,31 @@ export class TunnelRegistry {
       createdAt: new Date().toISOString(),
       ...(input.name ? { name: input.name } : {}),
       ...(input.label ? { label: input.label } : {}),
+      ...(input.autostart ? { autostart: true } : {}),
+      ...(input.hostname ? { hostname: input.hostname } : {}),
+      ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+      ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
     }
 
-    const prov = this.pickProviderForTest(provider)
+    const prov = this.pickProviderForTest(provider, desc)
     const entry: TunnelEntry = { desc, provider: prov }
     this.tunnels.set(id, entry)
+    this.schedulePersist()
+
+    await this.startEntry(entry)
+    return { ...desc }
+  }
+
+  /**
+   * Drive an entry's provider through start and fold the result back into
+   * its descriptor. On failure the descriptor is marked `error` and the
+   * error re-thrown (callers that want best-effort — e.g. boot restore —
+   * catch it). Shared by `create` and `restoreOnBoot`.
+   */
+  private async startEntry(entry: TunnelEntry): Promise<void> {
+    const { desc, provider } = entry
+    desc.status = "starting"
+    delete desc.lastError
     this.schedulePersist()
 
     const workspaceDir = this.workspace
@@ -135,8 +190,8 @@ export class TunnelRegistry {
 
     let result: { publicUrl: string; pid: number | null }
     try {
-      result = await prov.start({
-        target: { host: targetHost, port: input.targetPort },
+      result = await provider.start({
+        target: { host: desc.targetHost, port: desc.targetPort },
         workspace: workspaceDir,
         onLog: line => this.onLog?.(line),
       })
@@ -150,9 +205,44 @@ export class TunnelRegistry {
     desc.publicUrl = result.publicUrl
     desc.pid = result.pid
     desc.status = "active"
+    delete desc.stoppedAt
     this.schedulePersist()
+  }
 
-    return { ...desc }
+  /**
+   * Relaunch every `autostart` tunnel that isn't currently running. Called
+   * once on daemon boot — `loadFromDisk` has already ghosted formerly-live
+   * entries to `stopped` and given autostart ones a real provider. Quick
+   * tunnels are skipped (a relaunch yields a fresh random URL, defeating
+   * the point); named tunnels come back on their stable hostname.
+   *
+   * Best-effort: a provider that fails to start leaves its descriptor in
+   * `error` and the others still come up.
+   */
+  async restoreOnBoot(): Promise<void> {
+    const toStart = Array.from(this.tunnels.values()).filter(
+      e => e.desc.autostart === true && e.desc.status === "stopped",
+    )
+    for (const entry of toStart) {
+      if (entry.desc.provider === "quick") {
+        this.onLog?.(
+          `[tunnel] skipping autostart for quick tunnel ${entry.desc.name ?? entry.desc.id} ` +
+            `(URL would change on relaunch — use a named tunnel for a stable URL)`,
+        )
+        continue
+      }
+      this.onLog?.(
+        `[tunnel] autostart: relaunching ${entry.desc.name ?? entry.desc.id} → ${entry.desc.hostname ?? "?"}`,
+      )
+      try {
+        await this.startEntry(entry)
+      } catch (err) {
+        this.onLog?.(
+          `[tunnel] autostart failed for ${entry.desc.name ?? entry.desc.id}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
   }
 
   list(): TunnelDescriptor[] {
@@ -214,9 +304,15 @@ export class TunnelRegistry {
   }
 
   // ── test seam ─────────────────────────────────────────────────────
+  // Subclasses (tests) override this to inject a mock provider. The
+  // descriptor is passed so a real `named` provider can be constructed
+  // with its hostname / tunnelId / credentials.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  protected pickProviderForTest(_id: TunnelProvider): RemoteProvider {
-    return pickProvider(_id)
+  protected pickProviderForTest(
+    _provider: TunnelProvider,
+    desc: TunnelDescriptor,
+  ): RemoteProvider {
+    return pickProvider(desc)
   }
 
   // ── private ──────────────────────────────────────────────────────
@@ -287,19 +383,35 @@ export class TunnelRegistry {
           ? { stoppedAt: new Date().toISOString() }
           : {}),
       }
-      // Ghost entries need a stub provider so the entry shape is valid,
-      // but its start/stop are never called (the entry is already stopped).
-      const stubProvider = makeStubProvider()
-      this.tunnels.set(desc.id, { desc: ghosted, provider: stubProvider })
+      // Autostart entries need a REAL provider so `restoreOnBoot` can
+      // relaunch them (via the test seam so suites can inject mocks).
+      // Everything else gets a stub (start/stop never called — the entry
+      // is already stopped, kept only for history).
+      const provider = ghosted.autostart
+        ? this.pickProviderForTest(ghosted.provider, ghosted)
+        : makeStubProvider()
+      this.tunnels.set(desc.id, { desc: ghosted, provider })
     }
   }
 }
 
 // ── module-level helpers ───────────────────────────────────────────
 
-function pickProvider(id: TunnelProvider): RemoteProvider {
-  if (id === "quick") return quickTunnelProvider()
-  const _exhaustive: never = id
+function pickProvider(desc: TunnelDescriptor): RemoteProvider {
+  if (desc.provider === "quick") return quickTunnelProvider()
+  if (desc.provider === "named") {
+    if (!desc.hostname || !desc.tunnelId) {
+      throw new Error(
+        `named tunnel ${desc.id} is missing hostname/tunnelId — cannot build provider`,
+      )
+    }
+    return namedTunnelProvider({
+      hostname: desc.hostname,
+      tunnelId: desc.tunnelId,
+      ...(desc.credentialsFile ? { credentialsFile: desc.credentialsFile } : {}),
+    })
+  }
+  const _exhaustive: never = desc.provider
   throw new Error(`unknown tunnel provider: ${String(_exhaustive)}`)
 }
 
