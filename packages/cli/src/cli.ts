@@ -27,6 +27,7 @@ import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
+import { runTunnel } from "./commands/tunnel.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -53,6 +54,11 @@ Usage:
                                              [--cols <n>] [--rows <n>] [--attach]
   agentproto sessions  mirror <id-or-name>   read-only tail (Ctrl-C to exit)
   agentproto sessions  stop <id-or-name>
+  agentproto tunnel    create --port <n> [--provider quick] [--name <slug>]
+                              [--label <text>] [--host <host>] [--json]
+  agentproto tunnel    list   [--active] [--json]
+  agentproto tunnel    stop   <id-or-name> [--json]
+  agentproto tunnel    status <id-or-name> [--json]
   agentproto --help
   agentproto --version
 
@@ -87,6 +93,7 @@ const VERBS = new Set([
   "serve",
   "workspace",
   "sessions",
+  "tunnel",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -141,6 +148,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runWorkspace(rest)
     case "sessions":
       return runSessions(rest)
+    case "tunnel":
+      return runTunnel(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)

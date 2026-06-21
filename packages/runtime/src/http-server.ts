@@ -31,6 +31,7 @@ import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
+import type { TunnelRegistry } from "./tunnel-registry.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -196,6 +197,9 @@ export interface RuntimeHttpServerOptions {
    *  SessionsRegistry. When false, the terminal HTTP route returns
    *  501 and the WS upgrade rejects. */
   ptyEnabled?: boolean
+  /** Optional — when wired, exposes /tunnels/* routes for creating and
+   *  managing public tunnels for local ports. Without it the routes 404. */
+  tunnels?: TunnelRegistry
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -917,6 +921,13 @@ export async function startHttpServer(
           return
         }
 
+        // Tunnel routes — only registered when the gateway was built with
+        // a TunnelRegistry. /tunnels, /tunnels/:id.
+        if (opts.tunnels && path.startsWith("/tunnels")) {
+          const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
         res.writeHead(404, { "content-type": "application/json" })
         res.end(JSON.stringify({ error: "not_found", path }))
       } catch (err) {
@@ -1618,6 +1629,106 @@ async function handleSessions(
   if (!suffix && req.method === "DELETE") {
     const ok = registry.forget(id)
     json(ok ? 200 : 404, { ok, id })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /tunnels routes — create, list, get, and stop public tunnels.
+ * Returns `true` when it handled the request so the dispatcher
+ * skips the 404 path.
+ *
+ *   GET    /tunnels              → { tunnels: TunnelDescriptor[] }
+ *   POST   /tunnels              → TunnelDescriptor (creates a new tunnel)
+ *   GET    /tunnels/:id          → TunnelDescriptor
+ *   DELETE /tunnels/:id          → { ok, tunnelId }
+ */
+async function handleTunnels(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: TunnelRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/tunnels" && req.method === "GET") {
+    const urlStr = req.url ?? ""
+    const qs = urlStr.includes("?")
+      ? new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1))
+      : new URLSearchParams()
+    const onlyActive = qs.get("onlyActive") === "true"
+    let tunnels = registry.list()
+    if (onlyActive) {
+      tunnels = tunnels.filter(
+        t => t.status === "starting" || t.status === "active",
+      )
+    }
+    json(200, { tunnels })
+    return true
+  }
+
+  if (path === "/tunnels" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const targetPort =
+      typeof b.targetPort === "number" && b.targetPort > 0
+        ? Math.floor(b.targetPort)
+        : null
+    if (!targetPort) {
+      json(400, {
+        error: "missing_targetPort",
+        message: "body must include `targetPort` (integer 1-65535)",
+      })
+      return true
+    }
+    try {
+      const desc = await registry.create({
+        targetPort,
+        ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
+        ...(typeof b.name === "string" ? { name: b.name } : {}),
+        ...(typeof b.label === "string" ? { label: b.label } : {}),
+        ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+      })
+      json(201, desc)
+    } catch (err) {
+      json(500, {
+        error: "create_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  const tunnelMatch = path.match(/^\/tunnels\/([^/]+)$/)
+  if (!tunnelMatch) return false
+  const rawIdOrName = decodeURIComponent(tunnelMatch[1] ?? "")
+
+  if (req.method === "GET") {
+    const desc = registry.findByIdOrName(rawIdOrName)
+    if (!desc) {
+      json(404, { error: "tunnel_not_found", id: rawIdOrName })
+      return true
+    }
+    json(200, desc)
+    return true
+  }
+
+  if (req.method === "DELETE") {
+    const ok = await registry.stop(rawIdOrName)
+    if (!ok) {
+      json(404, { error: "tunnel_not_found", id: rawIdOrName })
+      return true
+    }
+    json(200, { ok, tunnelId: rawIdOrName })
     return true
   }
 

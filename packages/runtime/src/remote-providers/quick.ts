@@ -46,7 +46,7 @@ import type {
   ProviderStartOptions,
   ProviderStartResult,
   RemoteProvider,
-} from "../remote-controller.js"
+} from "./types.js"
 
 const execFileAsync = promisify(execFile)
 
