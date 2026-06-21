@@ -275,7 +275,18 @@ export function registerSessionTools(
         .optional()
         .describe(
           "Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). " +
-            "Adapters that expose a `--model` flag honour this; others ignore it."
+            "For ACP adapters (claude-code) applied via session/set_config_option " +
+            "after newSession — NOT via a CLI flag. Others may ignore it."
+        ),
+      effort: z
+        .string()
+        .optional()
+        .describe(
+          "Reasoning effort level (e.g. 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'). " +
+            "IMPORTANT: effort is calibrated per model — the same label maps to different " +
+            "compute budgets across models, and defaults differ by model " +
+            "(Sonnet 4.6 / Opus 4.8 default 'high'; Opus 4.7 default 'xhigh'). " +
+            "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
         ),
       mcpServers: jsonTolerant(
         z.array(
@@ -519,6 +530,7 @@ export function registerSessionTools(
         const agentSession = await resolved.startSession({
           cwd,
           ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
           ...(mcpServers ? { mcpServers } : {}),
         })
         const desc = registry.spawnAgent({

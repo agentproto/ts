@@ -98,6 +98,19 @@ export interface AcpClient {
   newSession(params: {
     cwd: string
     mcpServers?: unknown[]
+    /**
+     * Model to select via `session/set_config_option` immediately after
+     * `newSession`. The claude-agent-acp wrapper supports this as
+     * `configId:"model"`. Omit to keep the agent's own default.
+     */
+    model?: string
+    /**
+     * Effort level to select via `session/set_config_option` after
+     * `newSession`. Effort is model-dependent — same label ≠ same
+     * budget across models; defaults differ too (see AgentCliConnectOptions).
+     * Omit to keep the model's own default.
+     */
+    effort?: string
   }): Promise<AcpClientSession>
   /**
    * Reattach to an existing session by id. Available only when the
@@ -177,6 +190,26 @@ export async function createAcpClient(
         active: false,
       }
       sessions.set(sessionId, state)
+      // Apply model + effort via session/set_config_option immediately
+      // after newSession. The claude-agent-acp wrapper handles these as
+      // configId:"model" and configId:"effort". Both are optional — when
+      // omitted the agent keeps its own defaults (which vary by model).
+      // We call these sequentially so a model switch (which rebuilds the
+      // effort options) always precedes the effort set.
+      if (params.model) {
+        await connection.setSessionConfigOption({
+          configId: "model",
+          value: params.model,
+          sessionId,
+        } as never)
+      }
+      if (params.effort) {
+        await connection.setSessionConfigOption({
+          configId: "effort",
+          value: params.effort,
+          sessionId,
+        } as never)
+      }
       return buildSession(connection, sessionId, state, sessions)
     },
     async loadSession(params) {

@@ -45,7 +45,13 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   },
   models: {
     default: "claude-sonnet-4-6",
-    allowed: ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"],
+    allowed: [
+      "claude-sonnet-4-6",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-haiku-4-5",
+    ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
   capabilities: {
@@ -98,14 +104,37 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   options: [
     {
       id: "model",
-      type: "enum",
-      enum: ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"],
-      description: "Override the default model for this operator binding.",
-      bin_args_template: ["--model", "{value}"],
+      // string (not enum) so any valid Anthropic model ID is accepted
+      // without requiring a code change to expand the list. Applied via
+      // ACP session/set_config_option(configId:"model") after newSession
+      // — the claude-agent-acp wrapper does not forward its own CLI args
+      // to the underlying claude process, so bin_args_template alone
+      // cannot select the model.
+      type: "string" as const,
+      description:
+        "Anthropic model ID (e.g. 'claude-opus-4-8', 'claude-sonnet-4-6'). " +
+        "Applied via ACP session/set_config_option after the session is created. " +
+        "Omit to use the claude-code default.",
+    },
+    {
+      id: "effort",
+      type: "enum" as const,
+      // Effort is model-dependent: the same label maps to different
+      // underlying compute budgets across models, and the model's own
+      // default differs (Sonnet 4.6 / Opus 4.8 default to "high";
+      // Opus 4.7 defaults to "xhigh"). "max" and "ultracode" are
+      // session-only — not valid in persisted settings. Omit to keep
+      // the model's own default rather than hardcoding one here.
+      enum: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      description:
+        "Reasoning effort level. Model-dependent: the same label ≠ the same " +
+        "compute budget across models, and defaults differ by model " +
+        "(e.g. Sonnet 4.6 / Opus 4.8 default to 'high'; Opus 4.7 to 'xhigh'). " +
+        "'max' and 'ultracode' are session-only. Omit to keep the model's own default.",
     },
     {
       id: "max_turns",
-      type: "integer",
+      type: "integer" as const,
       min: 1,
       max: 200,
       description:
