@@ -1,7 +1,7 @@
 import type { BrowserAdapterHandle, BrowserAdapterStartOptions, BrowserAdapterInstance } from "../types.js"
 import { resolveLaunch } from "../lib/resolve-launch.js"
 
-function resolveCmd(
+export function resolveCmd(
   launchCmd: string | undefined,
   env: Record<string, string> | undefined,
   log: ((s: string) => void) | undefined
