@@ -13,7 +13,7 @@
     "method": "squash",
     "requireAck": false,
     "ackLabel": "agentflow:ack",
-    "maintainer": false,
+    "maintainer": true,
     "escalateTo": "agentiknet",
     "alwaysEscalateGlobs": [
       "**/migrations/**",
