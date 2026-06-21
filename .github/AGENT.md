@@ -50,7 +50,7 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
   "blocking": true,                 // CHANGES_REQUESTED fails the merge gate
   "model": "claude-sonnet-4-6",     // model for all flows
   "fixDelivery": "commit",          // default for on-demand /fix: "commit" | "pr"
-  "botMention": "@agentproto-bot",  // literal string the workflow matches
+  "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound
   "skills": ["aip-conventions"],    // injected into every flow
   "externalSkills": { "allow": ["DietrichGebert/ponytail@ponytail-review"] },
@@ -61,9 +61,18 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
 }
 ```
 
-> `botMention` is matched literally against comment text — set it to whatever
-> handle you want to type. To @-mention the actual GitHub App bot, set it to the
-> App's `<slug>[bot]` login.
+> **`botMention` is a fixed command word, decoupled from the App's name.** It's
+> matched literally against comment text — set it to whatever handle you want to
+> type to summon the bot. It does NOT have to equal the installed App's name: the
+> bot's *identity* (how its comments/commits appear) is derived automatically
+> from the App token's `app-slug` at runtime, so you can rename or swap the App
+> with no change here. Example: trigger `@agentproto-bot` while the App installed
+> is "Ponytail Coder" → replies appear as `ponytail-coder[bot]`.
+>
+> Caveat: the **job-level gate** in `agent-command.yml` (`if:`) also hardcodes
+> `@agentproto-bot`, because a workflow `if:` can't read this JSON. If you change
+> `botMention`, update that gate string too (two places). Keeping the default
+> `@agentproto-bot` as a stable convention avoids ever touching either.
 
 ## Skills — `.github/agent-skills/*.md`
 

@@ -67,10 +67,19 @@ jobs:
             echo "Version Packages PR — no changeset required."
             exit 0
           fi
+          # A changeset is only required when a publishable package changed.
+          # PRs that touch only scripts/, .github/, root configs, etc. ship no
+          # npm version bump — mirror the reviewer's rule and skip the gate so
+          # these don't show a (non-blocking but ugly) red check.
+          PKG_CHANGES=$(git diff --name-only origin/main...HEAD -- 'packages/**' 'adapters/**' || true)
+          if [ -z "$PKG_CHANGES" ]; then
+            echo "No @agentproto/* package changes — no changeset required."
+            exit 0
+          fi
           ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
             | grep -v '^\.changeset/README\.md$' || true)
           if [ -z "$ADDED" ]; then
-            echo "No changeset found. Run 'pnpm changeset' locally or wait for pr-review to generate one."
+            echo "Package changes present but no changeset. Run 'pnpm changeset' / 'pnpm changeset:ai', or wait for pr-review to generate one."
             exit 1
           fi
           echo "✓ Changeset present: $ADDED"
@@ -117,7 +126,27 @@ jobs:
         with:
           node-version: 22
 
+      # agentflow bypass: if the dev ran `review:ai --stamp` locally, an
+      # empty `[agentflow-reviewed]` marker commit rides the branch. Honor it
+      # and skip the cloud reviewer (the dev vouched + ran local changeset).
+      # Trust note: any commit in-range can carry the marker, so this is a
+      # convenience for trusted contributors, not a security boundary.
+      - name: Check local-review bypass
+        id: bypass
+        run: |
+          # Ensure origin/main is present so the range resolves (checkout is
+          # fetch-depth:0, but make the tracking ref explicit). Fail-safe: if
+          # the range can't resolve, skip stays false and the cloud reviewer runs.
+          git fetch --quiet origin main || true
+          if git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Local-review marker found — skipping the cloud reviewer."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run agentic PR reviewer
+        if: steps.bypass.outputs.skip != 'true'
         run: node scripts/review-pr.mjs
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -127,6 +156,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
+        if: steps.bypass.outputs.skip != 'true'
         id: changeset
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}

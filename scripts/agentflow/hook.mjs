@@ -46,9 +46,16 @@ if (cfg.changeset?.stage === trigger) {
   }
 }
 
-// ── review (wired in Task 2) ─────────────────────────────────────────────────
+// ── review ───────────────────────────────────────────────────────────────────
 if (cfg.review?.stage === trigger) {
-  console.log('[agentflow] local review is not wired yet (Task 2) — skipping.')
+  // review.mjs self-handles the CI-bypass marker when review.bypassCi is set.
+  // It exits non-zero only when blocking + request_changes; surface that so a
+  // blocking review can stop a push.
+  const ok = runNode(['scripts/agentflow/review.mjs', '--hook'], 'AI review')
+  if (!ok && cfg.review.blocking === true) {
+    console.error('[agentflow] blocking review requested changes — aborting.')
+    process.exit(1)
+  }
 }
 
 process.exit(0)
