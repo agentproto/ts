@@ -1,0 +1,270 @@
+/**
+ * Orchestrator sub-gateway (WP2) — scoped MCP surface + scope-token gate.
+ *
+ * Proves the three load-bearing security properties:
+ *   (a) the scoped server exposes ONLY the curated subset — danger tools
+ *       like execute_command are absent;
+ *   (b) a caller-requested subset wider than the default is narrowed
+ *       (⊆ default) — it can never widen;
+ *   (c) the `/mcp/orchestrator` HTTP endpoint requires a valid
+ *       scope-token even over loopback (no auth bypass) — unknown /
+ *       missing tokens are rejected, a valid token gets the subset.
+ */
+
+import { describe, it, expect } from "vitest"
+import { createServer } from "node:http"
+import { AddressInfo } from "node:net"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { createMcpServer } from "@agentproto/mcp-server"
+
+import {
+  DEFAULT_ORCHESTRATOR_TOOLS,
+  narrowOrchestratorTools,
+  createScopeTokenRegistry,
+  createOrchestratorMcpServerFactory,
+} from "../orchestrator-gateway.js"
+import { startHttpServer } from "../http-server.js"
+import { createSessionsRegistry } from "../sessions.js"
+import { createSessionEventBus } from "../session-event-bus.js"
+import { createEventRing } from "../event-ring.js"
+import { createRuntimeEvents } from "../events.js"
+import type { ConversationStore } from "../conversations.js"
+import type { HeartbeatRunner } from "../heartbeat.js"
+
+// Tools that MUST NEVER appear on the scoped surface (the danger set —
+// ADR §4.3). Used to assert absence rather than just checking the
+// allowlist, so a future leak via createMcpServer/register* is caught.
+const FORBIDDEN_TOOLS = [
+  "execute_command",
+  "read_file",
+  "write_file",
+  "delete_file",
+  "create_directory",
+  "remote_enable",
+  "remote_disable",
+  "import_mcp",
+  "mcp_imported_call",
+  "mcp_imported_list_tools",
+  "start_terminal_session",
+  "write_terminal_input",
+  "self_inspect",
+]
+
+function makeFactoryDeps() {
+  const sessionEvents = createSessionEventBus()
+  const eventRing = createEventRing()
+  eventRing.wire(sessionEvents)
+  const registry = createSessionsRegistry({ sessionEvents })
+  return { registry, sessionEvents, eventRing }
+}
+
+async function listToolNames(
+  factory: ReturnType<typeof createOrchestratorMcpServerFactory>,
+  scope: { token: string; tools: ReadonlySet<string> },
+): Promise<string[]> {
+  const server = await factory(scope)
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair()
+  await server.connect(serverTransport)
+  const client = new Client({ name: "test", version: "0.0.1" })
+  await client.connect(clientTransport)
+  const { tools } = await client.listTools()
+  await client.close()
+  return tools.map(t => t.name).sort()
+}
+
+describe("orchestrator sub-gateway — scoped tool subset", () => {
+  it("(a) exposes exactly the default subset; danger tools are absent", async () => {
+    const deps = makeFactoryDeps()
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+    })
+    const scope = createScopeTokenRegistry().mint()
+    const names = await listToolNames(factory, scope)
+
+    expect(names).toEqual([...DEFAULT_ORCHESTRATOR_TOOLS].sort())
+    for (const forbidden of FORBIDDEN_TOOLS) {
+      expect(names).not.toContain(forbidden)
+    }
+    // Spot-check the headline danger tool explicitly.
+    expect(names).not.toContain("execute_command")
+  })
+
+  it("(b) narrows a caller-requested subset to ⊆ default (cannot widen)", async () => {
+    // Caller asks for a danger tool + a phantom tool + one legit tool.
+    const requested = [
+      "execute_command", // danger — must be dropped
+      "remote_enable", // danger — must be dropped
+      "totally_made_up", // unknown — must be dropped
+      "start_agent_session", // legit — survives
+      "poll_events", // legit — survives
+    ]
+    const narrowed = narrowOrchestratorTools(requested)
+    // Pure-logic invariant: result ⊆ default, danger excluded.
+    expect(narrowed.has("execute_command")).toBe(false)
+    expect(narrowed.has("remote_enable")).toBe(false)
+    expect(narrowed.has("totally_made_up")).toBe(false)
+    expect([...narrowed].sort()).toEqual(["poll_events", "start_agent_session"])
+    for (const t of narrowed) {
+      expect(DEFAULT_ORCHESTRATOR_TOOLS).toContain(t)
+    }
+
+    // End-to-end: the scoped server reflects the narrowed set, nothing more.
+    const deps = makeFactoryDeps()
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+    })
+    const scope = createScopeTokenRegistry().mint({ tools: requested })
+    const names = await listToolNames(factory, scope)
+    expect(names).toEqual(["poll_events", "start_agent_session"])
+    expect(names).not.toContain("execute_command")
+  })
+
+  it("scope-token registry: mint → verify roundtrip; bad/missing → null", () => {
+    const reg = createScopeTokenRegistry()
+    const scope = reg.mint()
+    expect(scope.token).toMatch(/^[0-9a-f]{64}$/) // 256-bit hex
+    expect(reg.verify(scope.token)).toBe(scope)
+    expect(reg.verify("not-a-real-token")).toBeNull()
+    expect(reg.verify(null)).toBeNull()
+    expect(reg.verify(undefined)).toBeNull()
+    reg.revoke(scope.token)
+    expect(reg.verify(scope.token)).toBeNull()
+  })
+})
+
+describe("orchestrator sub-gateway — HTTP scope-token gate (no loopback bypass)", () => {
+  async function withServer(
+    fn: (base: string, scopeToken: string) => Promise<void>,
+  ): Promise<void> {
+    const deps = makeFactoryDeps()
+    const scopeTokens = createScopeTokenRegistry()
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+    })
+    const port = await freePort()
+    const conversations = noopConversations()
+    const heartbeat = noopHeartbeat()
+    const http = await startHttpServer({
+      port,
+      // Configure bearer auth to prove the orchestrator endpoint does NOT
+      // honour the loopback bypass that /mcp does (it requires the scope
+      // token regardless of where the request comes from).
+      auth: { mode: "none" },
+      mcpServerFactory: async () =>
+        (await createMcpServer({ specs: [], name: "main", version: "0" }))
+          .server,
+      orchestratorMcpServerFactory: factory,
+      verifyOrchestratorScope: scopeTokens.verify,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const scope = scopeTokens.mint()
+    try {
+      await fn(`http://127.0.0.1:${port}`, scope.token)
+    } finally {
+      await http.stop()
+    }
+  }
+
+  // A minimal JSON-RPC initialize body — enough to get past the gate to
+  // the transport layer. We only assert the HTTP status differs from the
+  // 401 the gate emits, so we don't need a full MCP handshake here.
+  const initBody = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "raw", version: "0" },
+    },
+  })
+  const mcpHeaders = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  }
+
+  it("(c) rejects a request with NO scope-token (loopback, 401)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/mcp/orchestrator`, {
+        method: "POST",
+        headers: mcpHeaders,
+        body: initBody,
+      })
+      expect(res.status).toBe(401)
+      const body = (await res.json()) as { error: string }
+      expect(body.error).toBe("orchestrator_scope_required")
+    })
+  })
+
+  it("(c) rejects a request with a BOGUS scope-token (401)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/mcp/orchestrator?scope=deadbeef`, {
+        method: "POST",
+        headers: mcpHeaders,
+        body: initBody,
+      })
+      expect(res.status).toBe(401)
+    })
+  })
+
+  it("(c) accepts a VALID scope-token and serves only the subset", async () => {
+    await withServer(async (base, scopeToken) => {
+      // Negative path proven above is on loopback — so passing here proves
+      // the token (not the origin) is what unlocks the endpoint.
+      const client = new Client({ name: "child", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${base}/mcp/orchestrator?scope=${scopeToken}`),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      const names = tools.map(t => t.name).sort()
+      expect(names).toEqual([...DEFAULT_ORCHESTRATOR_TOOLS].sort())
+      expect(names).not.toContain("execute_command")
+      await client.close()
+    })
+  })
+})
+
+// ── tiny stubs ──────────────────────────────────────────────────────
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function noopConversations(): ConversationStore {
+  return {
+    async open() {},
+    async appendTurn() {},
+    async read() {
+      return { meta: {} as never, turns: [] }
+    },
+    async list() {
+      return []
+    },
+    pathFor: (id: string) => id,
+  }
+}
+
+function noopHeartbeat(): HeartbeatRunner {
+  return {
+    start() {},
+    stop() {},
+    async fireNow() {},
+  }
+}

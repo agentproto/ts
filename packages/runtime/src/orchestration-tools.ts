@@ -15,6 +15,7 @@ import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
+import { withToolSubset } from "./tool-subset.js"
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
@@ -22,12 +23,21 @@ export interface RegisterOrchestrationToolsOptions {
   eventRing: EventRing
   routineRunner?: RoutineRunner
   supervisor?: CompletionPolicySupervisor
+  /** Optional allowlist — when set, only tools whose name is in the
+   *  set are registered (the scoped orchestrator sub-gateway, WP2).
+   *  Omitted → register everything, today's behaviour. */
+  toolSubset?: ReadonlySet<string>
 }
 
 export function registerOrchestrationTools(
-  server: McpServer,
+  rawServer: McpServer,
   opts: RegisterOrchestrationToolsOptions,
 ): void {
+  // When a subset is requested, every `server.tool(...)` below is
+  // filtered through this one guard (ADR §4.2). No subset → raw server.
+  const server = opts.toolSubset
+    ? withToolSubset(rawServer, opts.toolSubset)
+    : rawServer
   const { registry, sessionEvents, eventRing } = opts
 
   // ── poll_events ──────────────────────────────────────────────────

@@ -36,6 +36,7 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import { withToolSubset } from "./tool-subset.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
@@ -60,12 +61,21 @@ interface RegisterSessionToolsOptions {
    *  true, expose the four terminal session tools. When false, the
    *  tools return a clear "not configured" error. */
   ptyEnabled?: boolean
+  /** Optional allowlist — when set, only tools whose name is in the
+   *  set are registered (the scoped orchestrator sub-gateway, WP2).
+   *  Omitted → register everything, today's behaviour. */
+  toolSubset?: ReadonlySet<string>
 }
 
 export function registerSessionTools(
-  server: McpServer,
+  rawServer: McpServer,
   opts: RegisterSessionToolsOptions
 ): void {
+  // When a subset is requested, every `server.tool(...)` below is
+  // filtered through this one guard (ADR §4.2). No subset → raw server.
+  const server = opts.toolSubset
+    ? withToolSubset(rawServer, opts.toolSubset)
+    : rawServer
   const { registry, resolveAgentAdapter, listAgentAdapters, mcpProxy } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
