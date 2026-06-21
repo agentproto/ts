@@ -117,7 +117,23 @@ jobs:
         with:
           node-version: 22
 
+      # agentflow bypass: if the dev ran `review:ai --stamp` locally, an
+      # empty `[agentflow-reviewed]` marker commit rides the branch. Honor it
+      # and skip the cloud reviewer (the dev vouched + ran local changeset).
+      # Trust note: any commit in-range can carry the marker, so this is a
+      # convenience for trusted contributors, not a security boundary.
+      - name: Check local-review bypass
+        id: bypass
+        run: |
+          if git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Local-review marker found — skipping the cloud reviewer."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run agentic PR reviewer
+        if: steps.bypass.outputs.skip != 'true'
         run: node scripts/review-pr.mjs
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -127,6 +143,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
+        if: steps.bypass.outputs.skip != 'true'
         id: changeset
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}

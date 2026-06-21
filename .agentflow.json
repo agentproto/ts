@@ -1,5 +1,5 @@
 {
   "$comment": "agentflow team defaults. Per-dev opt-in lives in .agentflow.local.json (gitignored). See scripts/agentflow/README.md. stage: manual|commit|push — engine: local (Claude Code CLI) | cloud (ANTHROPIC_API_KEY).",
   "changeset": { "stage": "manual", "engine": "local", "model": null, "command": "claude" },
-  "review": { "stage": "manual", "engine": "local", "bypassCi": false, "model": null, "command": "claude" }
+  "review": { "stage": "manual", "engine": "local", "bypassCi": false, "blocking": false, "model": null, "command": "claude" }
 }

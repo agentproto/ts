@@ -29,9 +29,32 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
 
 - `pnpm changeset:ai`  — generate a changeset now (engine from config).
 - `pnpm changeset:auto` — same, pinned to `--engine cloud` (CI path).
+- `pnpm review:ai`      — review the branch vs `origin/main` now (engine from
+  config). Add `--stamp` to also write the CI-bypass marker.
 - On `git commit` / `git push` — the husky hooks (`.husky/pre-commit`,
   `.husky/pre-push`) call `scripts/agentflow/hook.mjs <trigger>`, which runs
-  any feature whose `stage` matches. Failures warn but don't block.
+  any feature whose `stage` matches. Failures warn but don't block (a
+  `review` with `blocking: true` is the one exception — it can stop a push).
+
+## Review + CI bypass
+
+`review.mjs` is a fast single-shot diff review (vs `origin/main`) — the
+lightweight sibling of the CI agentic reviewer (`../review-pr.mjs`). Run it
+locally for quick feedback before pushing.
+
+To bypass the cloud reviewer, run `pnpm review:ai --stamp` **before** you push:
+an *approving* review writes an empty `[agentflow-reviewed]` marker commit,
+which the CI `pr-review` job detects and **skips the cloud reviewer** — you
+reviewed locally, so it isn't re-done.
+
+Stamping must happen before `git push` (manual `--stamp`, or `bypassCi: true` on
+a non-hook run): a commit created *inside* the pre-push hook is **not** part of
+the in-flight push, so the push-stage hook reviews for feedback but never
+stamps — it just reminds you to run `--stamp` if you want the bypass.
+
+Default OFF: the local single-shot pass is lighter than CI's agentic review, and
+the marker is a trust convenience (any in-range commit can carry it), not a
+security boundary. When you bypass, make sure a changeset exists too.
 
 ## Pieces (the composable seams)
 
@@ -40,14 +63,13 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
 | `config.mjs`                  | load + merge config, resolve engine                         |
 | `llm.mjs`                     | engine router: `runLlm({engine})` → CLI or API; `stripFences`|
 | `hook.mjs`                    | git-hook dispatcher (`commit`/`push` → matching features)   |
-| `../auto-changeset.mjs`       | changeset engine (now engine-routed via `llm.mjs`)          |
+| `review.mjs`                  | local diff review (engine-routed) + CI-bypass marker        |
+| `../auto-changeset.mjs`       | changeset engine (engine-routed via `llm.mjs`)              |
 
 ## Extending
 
 - **New engine** (e.g. `ollama`): add a branch in `llm.mjs#runLlm` and accept
   it in `config.mjs#resolveEngine`.
-- **New feature** (e.g. `lint`, `review`): add a key to `DEFAULTS` in
-  `config.mjs`, a block in `hook.mjs`, and an engine script that calls
-  `runLlm`. CI and local share the engine — that's the point.
-- **CI bypass** (Task 2): a local feature that passes will stamp a commit
-  trailer the CI step checks, so local work isn't re-done in the cloud.
+- **New feature** (e.g. `lint`): add a key to `DEFAULTS` in `config.mjs`, a
+  block in `hook.mjs`, and an engine script that calls `runLlm`. CI and local
+  share the engine — that's the point.
