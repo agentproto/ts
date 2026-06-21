@@ -18,6 +18,7 @@
 
 import { dynamicTool } from "ai"
 import type { Tool as AiTool, ToolCallOptions } from "ai"
+import { z } from "zod"
 import type { ToolContext } from "@agentproto/tool"
 import type {
   DriverContext,
@@ -78,7 +79,7 @@ export function toAiSdkTool<TInput, TOutput, TContext extends ToolContext>(
     description: impl.tool.description,
     // AI SDK v5 uses `inputSchema` and accepts Zod schemas natively
     // via `FlexibleSchema<unknown>`; our Zod handle widens cleanly.
-    inputSchema: impl.tool.inputSchema,
+    inputSchema: impl.tool.inputSchema ?? z.unknown(),
     execute: async (input: unknown, options: ToolCallOptions) => {
       // AI SDK validates `input` against `inputSchema` BEFORE calling
       // execute (per its docs and verified in `@ai-sdk/provider-
