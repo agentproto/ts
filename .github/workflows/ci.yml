@@ -364,14 +364,17 @@ jobs:
       - name: Enable auto-merge when approved + opted-in
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           VAR_AUTOMERGE: ${{ vars.AGENTFLOW_AUTOMERGE }}
         run: |
           cfg() { node -p "String((require('./.github/agentic-review.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
           AUTO=$(cfg auto); METHOD=$(cfg method); REQ_ACK=$(cfg requireAck); ACK_LABEL=$(cfg ackLabel)
+          MAINT=$(cfg maintainer); ESC_TO=$(cfg escalateTo)
           [ -z "$METHOD" ] && METHOD="squash"
           [ -z "$ACK_LABEL" ] && ACK_LABEL="agentflow:ack"
+          [ -z "$ESC_TO" ] && ESC_TO="agentiknet"
 
           # Master switch — OFF unless the repo var OR config opts in.
           if [ "$VAR_AUTOMERGE" != "true" ] && [ "$AUTO" != "true" ]; then
@@ -392,6 +395,22 @@ jobs:
               echo "requireAck is on and label '$ACK_LABEL' is absent — waiting for a dev ack."
               exit 0
             fi
+          fi
+
+          # Maintainer layer (optional, on top of the auto switch): a judge
+          # decides merge vs escalate-to-human. Too-critical changes are handed
+          # off instead of merged.
+          if [ "$MAINT" = "true" ]; then
+            VERDICT=$(node scripts/maintainer.mjs) || true
+            MDEC=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).decision}catch{'escalate'}")
+            MWHY=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).reason}catch{'maintainer output unreadable'}")
+            if [ "$MDEC" != "merge" ]; then
+              echo "Maintainer escalated — handing off to @$ESC_TO."
+              gh pr comment "$PR" --repo "$REPO" --body "🛑 Auto-merge withheld by the maintainer — @$ESC_TO please review. Reason: $MWHY"
+              gh pr edit "$PR" --repo "$REPO" --add-label "needs-human-review" 2>/dev/null || true
+              exit 0
+            fi
+            echo "Maintainer cleared the PR ($MWHY) — arming auto-merge."
           fi
 
           # Flip GitHub-native auto-merge: GitHub performs the merge once every
