@@ -52,6 +52,10 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
   "fixDelivery": "commit",          // default for on-demand /fix: "commit" | "pr"
   "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound
+  "describe": {                     // auto-fill an EMPTY PR body on open
+    "auto": true,                   //   false → off; never clobbers a written body
+    "minBodyChars": 80              //   bodies longer than this are left alone
+  },
   "merge": {                        // OPT-IN auto-merge (off by default)
     "auto": false,                  //   true → enable GitHub auto-merge after APPROVED
     "method": "squash",             //   squash | merge | rebase

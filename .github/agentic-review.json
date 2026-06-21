@@ -4,6 +4,10 @@
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
+  "describe": {
+    "auto": true,
+    "minBodyChars": 80
+  },
   "merge": {
     "auto": false,
     "method": "squash",

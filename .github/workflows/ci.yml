@@ -84,6 +84,49 @@ jobs:
           fi
           echo "✓ Changeset present: $ADDED"
 
+  # On PR open: fill an empty description from the diff (never clobbers a
+  # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
+  describe:
+    name: Describe PR
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' &&
+      (github.event.action == 'opened' || github.event.action == 'reopened') &&
+      !startsWith(github.event.pull_request.title, 'chore(release):')
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Fill PR description (if empty + enabled)
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          AUTO=$(node -p "String((require('./.github/agentic-review.json').describe||{}).auto ?? '')" 2>/dev/null || echo "")
+          if [ "$AUTO" != "true" ]; then echo "describe.auto is off — skipping."; exit 0; fi
+          git fetch --quiet origin main || true
+          node scripts/describe-pr.mjs --pr "$PR_NUMBER"
+
   # On PRs: agentic reviewer — reads the full diff, greps the codebase,
   # writes an accurate changeset, and posts a structured review.
   # Runs after build-and-test so it never reviews a broken build.
