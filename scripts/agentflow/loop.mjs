@@ -30,7 +30,8 @@ const flag = (name) => {
 }
 
 const engine = resolveEngine(cfg.review, { flag: flag('--engine') })
-const maxLoops = Number(flag('--max') ?? cfg.review.maxLoops ?? 3)
+const maxParsed = Number(flag('--max'))
+const maxLoops = Number.isFinite(maxParsed) && maxParsed > 0 ? maxParsed : (cfg.review.maxLoops ?? 3)
 const model = cfg.review.model ?? undefined
 const claudeBin = cfg.review.command ?? 'claude'
 
@@ -73,8 +74,13 @@ while (round < maxLoops) {
   console.log(`  ${verdict.decision === 'approve' ? '✓ APPROVE' : '✗ REQUEST CHANGES'} — ${verdict.summary ?? ''}`)
   for (const f of verdict.findings) console.log(`    [${f.severity ?? '?'}] ${f.file ?? ''}: ${f.note ?? ''}`)
 
-  if (verdict.decision === 'approve' || verdict.findings.length === 0) {
+  // `decision` is authoritative — never infer approval from empty findings.
+  if (verdict.decision === 'approve') {
     approved = true
+    break
+  }
+  if (verdict.findings.length === 0) {
+    console.warn('[agentflow] loop: request_changes with no actionable findings — stopping.')
     break
   }
   if (round === maxLoops) break
