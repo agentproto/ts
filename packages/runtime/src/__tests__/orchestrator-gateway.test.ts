@@ -18,6 +18,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpServer } from "@agentproto/mcp-server"
+import type { CompletionPolicySupervisor, PolicyRunState } from "../supervisor.js"
+import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
 
 import {
   DEFAULT_ORCHESTRATOR_TOOLS,
@@ -231,6 +233,179 @@ describe("orchestrator sub-gateway — HTTP scope-token gate (no loopback bypass
       expect(names).toEqual([...DEFAULT_ORCHESTRATOR_TOOLS].sort())
       expect(names).not.toContain("execute_command")
       await client.close()
+    })
+  })
+})
+
+// ── WP6 — subtree-scoped supervisor composition ──────────────────────
+
+describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scoping)", () => {
+  /**
+   * Build a minimal stub supervisor. attach() records the call and returns a
+   * synthetic PolicyRunState so the handler can JSON.stringify the result.
+   * list() / getStatus() / cancel() / ack() are stubs — just enough for the
+   * scoping assertions.
+   */
+  function makeStubSupervisor(): CompletionPolicySupervisor & {
+    attached: Array<{ sessionId?: string; sessionIds?: string[] }>
+  } {
+    let seq = 0
+    const policies = new Map<string, PolicyRunState>()
+    const attached: Array<{ sessionId?: string; sessionIds?: string[] }> = []
+    const now = new Date().toISOString()
+    return {
+      attached,
+      attach(input) {
+        const policyId = `p-${++seq}`
+        const ids =
+          input.sessionIds && input.sessionIds.length > 0
+            ? input.sessionIds
+            : input.sessionId
+              ? [input.sessionId]
+              : []
+        const state: PolicyRunState = {
+          policyId,
+          sessionId: ids[0] ?? "",
+          sessionIds: ids,
+          pending: [...ids],
+          status: "watching",
+          retries: 0,
+          startedAt: now,
+        }
+        policies.set(policyId, state)
+        attached.push({ sessionId: input.sessionId, sessionIds: input.sessionIds })
+        return state
+      },
+      getStatus(policyId) {
+        return policies.get(policyId)
+      },
+      cancel(policyId) {
+        const s = policies.get(policyId)
+        if (s) s.status = "cancelled"
+      },
+      async ack(_policyId: string, _approve: boolean) {
+        return undefined
+      },
+      list() {
+        return [...policies.values()]
+      },
+      async shutdown() {},
+    }
+  }
+
+  /**
+   * Build a factory wired with a stub supervisor and a prepopulated registry
+   * that already has two sessions forming a parent→child tree:
+   *   ownerSessionId ("owner") → childSessionId ("child")
+   *
+   * We then build a scoped server with callerScope = { ownerSessionId: "owner" }
+   * and verify that:
+   *   1. attach_policy on "child" (in subtree) → succeeds (policyId returned)
+   *   2. attach_policy on "outside" (not in subtree) → error denied
+   *   3. attach_policy with then:"commit" via scoped token → error refused
+   */
+  let fakeSessionSeq = 0
+  function fakeSession(): AgentSessionLike {
+    return {
+      sessionId: `fake_${fakeSessionSeq++}`,
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }
+  }
+
+  async function withScopedClient(
+    fn: (client: Client, ownerSessionId: string, childSessionId: string) => Promise<void>,
+  ): Promise<void> {
+    const supervisor = makeStubSupervisor()
+    const sessionEvents = createSessionEventBus()
+    const eventRing = createEventRing()
+    eventRing.wire(sessionEvents)
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+
+    // Spawn owner + child so collectSubtree(owner.id) returns {owner.id, child.id}.
+    const owner = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession(),
+      adapterSlug: "mock",
+      depth: 0,
+    })
+    const child = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession(),
+      adapterSlug: "mock",
+      parentSessionId: owner.id,
+      depth: 1,
+    })
+
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      registry,
+      sessionEvents,
+      eventRing,
+      supervisor,
+    })
+
+    // Mint a scope bound to owner.id so callerScope is active.
+    const scopeTokens = createScopeTokenRegistry()
+    const scope = scopeTokens.mint()
+    scopeTokens.bindOwner(scope.token, owner.id)
+    const boundScope = scopeTokens.verify(scope.token)!
+
+    const server = await factory(boundScope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "wp6-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+    try {
+      await fn(client, owner.id, child.id)
+    } finally {
+      await client.close()
+    }
+  }
+
+  it("attach_policy on a session in the caller's subtree → ok (policyId returned)", async () => {
+    await withScopedClient(async (client, _owner, child) => {
+      const result = await client.callTool({
+        name: "attach_policy",
+        arguments: { sessionId: child, then: "emit" },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { policyId?: string; error?: string }
+      expect(parsed.error).toBeUndefined()
+      expect(parsed.policyId).toMatch(/^p-/)
+    })
+  })
+
+  it("attach_policy on a session outside the caller's subtree → denied", async () => {
+    await withScopedClient(async client => {
+      const result = await client.callTool({
+        name: "attach_policy",
+        arguments: { sessionId: "outside-session", then: "emit" },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { error?: string; forbidden?: string[] }
+      expect(parsed.error).toMatch(/denied|subtree/)
+      expect(parsed.forbidden).toContain("outside-session")
+    })
+  })
+
+  it('attach_policy with then:"commit" via a scoped (child) token → refused', async () => {
+    await withScopedClient(async (client, _owner, child) => {
+      const result = await client.callTool({
+        name: "attach_policy",
+        arguments: {
+          sessionId: child,
+          then: "commit",
+          commit: { paths: ["README.md"], message: "test" },
+        },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { error?: string }
+      expect(parsed.error).toMatch(/commit.*not permitted|child orchestrator/i)
     })
   })
 })
