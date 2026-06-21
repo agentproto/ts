@@ -177,11 +177,23 @@ function tool_write_changeset({ packages, summary }) {
   if (!Array.isArray(packages) || !summary) return '(invalid args)'
   const csDir = resolve(ROOT, '.changeset')
 
+  // Deterministic slug when running in CI against a known PR so repeated runs
+  // are idempotent and don't churn the file (which would loop CI forever).
+  const slug = PR_NUMBER ? `pr-${PR_NUMBER}-review` : randomSlug()
+  const outPath = resolve(csDir, `${slug}.md`)
+
+  // Idempotency short-circuit: if the deterministic file is already on disk
+  // (committed on a previous CI run), leave it untouched and skip the cleanup
+  // sweep so nothing is staged and the "Commit changeset" step finds no diff.
+  if (PR_NUMBER && existsSync(outPath)) {
+    return `.changeset/${slug}.md already present — left as-is (idempotent)`
+  }
+
   // Remove any existing auto-generated changesets on this branch.
   // Use execSync directly (not run()) so the try/catch can detect git show failure.
   // stdio:'pipe' suppresses stderr noise from git show when the file is not in origin/main.
   const existing = readdirSync(csDir)
-    .filter((f) => f.endsWith('.md') && f !== 'README.md')
+    .filter((f) => f.endsWith('.md') && f !== 'README.md' && f !== `${slug}.md`)
     .filter((f) => {
       try {
         execSync(`git show "${BASE_REF}:.changeset/${f}"`, { cwd: ROOT, stdio: 'pipe' })
@@ -203,8 +215,6 @@ function tool_write_changeset({ packages, summary }) {
   }
 
   const frontmatter = packages.map((p) => `"${p.name}": ${p.bump}`).join('\n')
-  const slug = randomSlug()
-  const outPath = resolve(csDir, `${slug}.md`)
   writeFileSync(outPath, `---\n${frontmatter}\n---\n\n${summary}\n`)
   execSync(`git add ".changeset/${slug}.md"`, { cwd: ROOT })
   return `Written .changeset/${slug}.md`

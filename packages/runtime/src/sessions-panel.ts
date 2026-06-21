@@ -25,7 +25,7 @@ const MIME_TYPE = "text/html;profile=mcp-app"
 
 // ── HTML bundle ─────────────────────────────────────────────────────────────
 
-const PANEL_HTML = `<!DOCTYPE html>
+export const PANEL_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
