@@ -35,6 +35,11 @@ import {
 } from "./browser-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeSessionsPanelApp } from "./sessions-panel-app.js"
+import {
+  makeAgentsOverviewApp,
+  registerSummarizeSessionTool,
+} from "./agents-overview-app.js"
+import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -478,15 +483,31 @@ export async function createGateway(
     registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
+    const listSessionsFiltered = (filter?: "running" | "all") => {
+      let rows = sessions.list()
+      if (filter === "running") {
+        rows = rows.filter(s => s.status === "running" || s.status === "starting")
+      }
+      return rows
+    }
     registerMcpApps(server, [
-      makeSessionsPanelApp({ listSessions: (filter) => {
-        let rows = sessions.list()
-        if (filter === "running") {
-          rows = rows.filter(s => s.status === "running" || s.status === "starting")
-        }
-        return rows
-      }}),
+      makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
+      makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
+      makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
     ])
+    // Server-side per-session summariser backing the agents-overview panel.
+    // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
+    registerSummarizeSessionTool(server, {
+      getSession: (id) => sessions.get(id),
+      tailLines: (id, lastN) => {
+        // Same source as get_agent_session_output: attach replays the ring
+        // buffer synchronously, then we unsubscribe immediately.
+        const lines: string[] = []
+        const unsub = sessions.attach(id, (line) => { lines.push(line) })
+        if (unsub) unsub()
+        return lines.slice(-lastN)
+      },
+    })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
     return server
