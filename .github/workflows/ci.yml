@@ -125,6 +125,10 @@ jobs:
       - name: Check local-review bypass
         id: bypass
         run: |
+          # Ensure origin/main is present so the range resolves (checkout is
+          # fetch-depth:0, but make the tracking ref explicit). Fail-safe: if
+          # the range can't resolve, skip stays false and the cloud reviewer runs.
+          git fetch --quiet origin main || true
           if git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Local-review marker found — skipping the cloud reviewer."
