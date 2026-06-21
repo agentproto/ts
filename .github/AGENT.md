@@ -52,6 +52,12 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
   "fixDelivery": "commit",          // default for on-demand /fix: "commit" | "pr"
   "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound
+  "merge": {                        // OPT-IN auto-merge (off by default)
+    "auto": false,                  //   true → enable GitHub auto-merge after APPROVED
+    "method": "squash",             //   squash | merge | rebase
+    "requireAck": false,            //   true → also need the ack label below
+    "ackLabel": "agentflow:ack"     //   human ack gate when requireAck
+  },
   "skills": ["aip-conventions"],    // injected into every flow
   "externalSkills": { "allow": ["DietrichGebert/ponytail@ponytail-review"] },
   "commands": {                     // per-command overrides (model, skills, fixDelivery)
@@ -73,6 +79,22 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
 > `@agentproto-bot`, because a workflow `if:` can't read this JSON. If you change
 > `botMention`, update that gate string too (two places). Keeping the default
 > `@agentproto-bot` as a stable convention avoids ever touching either.
+
+### Auto-merge (opt-in)
+
+The `auto-merge` job lets the bot close its own loop — once the agentic review
+**APPROVES**, it flips on GitHub-native auto-merge so the PR merges itself when
+all **required** checks pass. The merge *conditions* live in branch
+protection / rulesets (required checks, required approvals); agentflow only
+decides *when to arm* the auto switch.
+
+**It is OFF by default.** Enable it either way:
+- repo variable `AGENTFLOW_AUTOMERGE=true` (ops toggle), or
+- `merge.auto: true` in this file (code-side toggle).
+
+Optional gates: `merge.requireAck: true` holds the merge until a human adds the
+`merge.ackLabel` (default `agentflow:ack`) to the PR; `merge.method` picks
+squash/merge/rebase. Requires "Allow auto-merge" enabled in repo settings.
 
 ## Skills — `.github/agent-skills/*.md`
 
