@@ -199,12 +199,27 @@ export function registerOrchestrationTools(
   if (supervisor) {
     server.tool(
       "attach_policy",
-      "Attach a completion policy to a running session. When the session emits " +
-        "turn-end, an optional shell gate runs (exit 0 = pass). The result is " +
-        "emitted as `policy:passed` or `policy:failed` on the event bus " +
+      "Attach a completion policy to a running session (or a fan-in group). When " +
+        "the watched session emits turn-end — or, for a group, once EVERY member " +
+        "has finished its turn — an optional shell gate runs (exit 0 = pass). The " +
+        "result is emitted as `policy:passed` or `policy:failed` on the event bus " +
         "(readable via poll_events). Returns the policyId immediately.",
       {
-        sessionId: z.string().describe("Session id to watch."),
+        sessionId: z
+          .string()
+          .optional()
+          .describe(
+            "Session id to watch (single-session form). Provide this OR " +
+              "`sessionIds`. Equivalent to `sessionIds: [sessionId]`.",
+          ),
+        sessionIds: z
+          .array(z.string())
+          .min(1)
+          .optional()
+          .describe(
+            "Fan-in group: the gate runs once, only after EVERY listed session " +
+              "has finished its turn (turn-end or exit). Supersedes `sessionId`.",
+          ),
         gate: z
           .object({
             command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
@@ -248,8 +263,19 @@ export function registerOrchestrationTools(
           ),
       },
       async input => {
+        if (!input.sessionId && !(input.sessionIds && input.sessionIds.length > 0)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: "attach_policy requires sessionId or a non-empty sessionIds" }),
+              },
+            ],
+          }
+        }
         const state = supervisor.attach({
           sessionId: input.sessionId,
+          sessionIds: input.sessionIds,
           gate: input.gate,
           then: input.then,
           onFail: input.onFail,

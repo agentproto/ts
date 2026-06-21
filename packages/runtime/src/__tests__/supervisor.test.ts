@@ -450,6 +450,304 @@ describe("WP2 — bounded nudge + escalate", () => {
   })
 })
 
+// ── WP4: fan-in (all-of group) ───────────────────────────────────────
+
+/**
+ * Registry that knows about an arbitrary set of session ids, all "running"
+ * by default. A subset can be reported with a different status (e.g. "exited")
+ * to exercise the absent-member / reload paths.
+ */
+function makeMultiRegistry(
+  cwd: string,
+  ids: string[],
+  overrides: Record<string, SessionDescriptor["status"]> = {},
+): SessionsRegistry {
+  const descs = new Map<string, SessionDescriptor>()
+  for (const id of ids) {
+    descs.set(id, {
+      id,
+      kind: "agent-cli",
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: overrides[id] ?? "running",
+      startedAt: new Date().toISOString(),
+      cwd,
+    })
+  }
+  return {
+    get: vi.fn((id: string) => descs.get(id)),
+    findByIdOrName: vi.fn((q: string) => descs.get(q)),
+    spawn: vi.fn(),
+    register: vi.fn(),
+    spawnAgent: vi.fn(),
+    spawnPty: vi.fn(),
+    sendPrompt: vi.fn(async () => {}),
+    enqueuePrompt: vi.fn(),
+    list: vi.fn(() => []),
+    attach: vi.fn(() => null),
+    attachPty: vi.fn(() => null),
+    writeTerminalInput: vi.fn(() => false),
+    readTerminalOutput: vi.fn(async () => ({ lines: [], nextCursor: 0 })),
+    tailLines: vi.fn(async () => ({ lines: [], nextCursor: 0, skipped: 0 })),
+    kill: vi.fn(),
+    forget: vi.fn(),
+    shutdown: vi.fn(),
+  } as unknown as SessionsRegistry
+}
+
+function fireExit(bus: SessionEventBus, sessionId: string): void {
+  bus.emit({
+    type: "session:exited",
+    sessionId,
+    status: "exited",
+    ts: new Date().toISOString(),
+  })
+}
+
+describe("WP4 — fan-in (all-turn-end group)", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false"])
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("(a) gate runs ONLY after all 3 group members fire turn-end", async () => {
+    const ids = ["s1", "s2", "s3"]
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    let passedAt: number | null = null
+    bus.on("policy:passed", () => {
+      passedAt = Date.now()
+    })
+
+    const state = supervisor.attach({
+      sessionIds: ids,
+      gate: { command: "true" },
+      then: "emit",
+    })
+    expect(state.sessionIds).toEqual(ids)
+    expect(state.pending).toEqual(ids)
+
+    // After 1st turn-end: still watching, pending shrinks, no gate yet.
+    fireTurnEnd(bus, "s1")
+    await wait(30)
+    expect(state.status).toBe("watching")
+    expect(state.pending).toEqual(["s2", "s3"])
+    expect(passedAt).toBeNull()
+
+    // After 2nd turn-end: still watching, still no gate.
+    fireTurnEnd(bus, "s2")
+    await wait(30)
+    expect(state.status).toBe("watching")
+    expect(state.pending).toEqual(["s3"])
+    expect(passedAt).toBeNull()
+
+    // 3rd turn-end empties the set → gate runs → policy:passed → done.
+    fireTurnEnd(bus, "s3")
+    await waitFor(() => state.status === "done")
+    expect(passedAt).not.toBeNull()
+  })
+
+  it("(b) repeated turn-end of one member does not trigger prematurely", async () => {
+    const ids = ["s1", "s2", "s3"]
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const passed = vi.fn()
+    bus.on("policy:passed", passed)
+
+    const state = supervisor.attach({
+      sessionIds: ids,
+      gate: { command: "true" },
+      then: "emit",
+    })
+
+    // s1 fires turn-end three times — must only count once (idempotent set).
+    fireTurnEnd(bus, "s1")
+    fireTurnEnd(bus, "s1")
+    fireTurnEnd(bus, "s1")
+    await wait(50)
+    expect(state.status).toBe("watching")
+    expect(state.pending).toEqual(["s2", "s3"])
+    expect(passed).not.toHaveBeenCalled()
+
+    // The remaining two members still need to finish.
+    fireTurnEnd(bus, "s2")
+    await wait(30)
+    expect(passed).not.toHaveBeenCalled()
+    expect(state.pending).toEqual(["s3"])
+
+    fireTurnEnd(bus, "s3")
+    await waitFor(() => state.status === "done")
+    expect(passed).toHaveBeenCalledTimes(1)
+  })
+
+  it("(c) a member that exits counts as done (completes the fan-in)", async () => {
+    const ids = ["s1", "s2", "s3"]
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const passed = vi.fn()
+    bus.on("policy:passed", passed)
+
+    const state = supervisor.attach({
+      sessionIds: ids,
+      gate: { command: "true" },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "s1")
+    // s2 exits instead of finishing a turn — still removes it from pending.
+    fireExit(bus, "s2")
+    await wait(30)
+    expect(state.status).toBe("watching")
+    expect(state.pending).toEqual(["s3"])
+    expect(passed).not.toHaveBeenCalled()
+
+    // Last member turn-ends → gate runs once.
+    fireTurnEnd(bus, "s3")
+    await waitFor(() => state.status === "done")
+    expect(passed).toHaveBeenCalledTimes(1)
+  })
+
+  it("(c2) all members exiting also completes the fan-in (gate runs once)", async () => {
+    const ids = ["s1", "s2"]
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const state = supervisor.attach({
+      sessionIds: ids,
+      gate: { command: "true" },
+      then: "emit",
+    })
+
+    fireExit(bus, "s1")
+    await wait(20)
+    expect(state.status).toBe("watching")
+    fireExit(bus, "s2")
+    await waitFor(() => state.status === "done")
+  })
+
+  it("(d) back-compat: single sessionId still gates after one turn-end", async () => {
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const passed = vi.fn()
+    bus.on("policy:passed", passed)
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "emit",
+    })
+    // Normalised into a group of one.
+    expect(state.sessionIds).toEqual(["sess_test"])
+    expect(state.pending).toEqual(["sess_test"])
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => state.status === "done")
+    expect(passed).toHaveBeenCalledTimes(1)
+  })
+
+  it("(d2) back-compat: single sessionId exit still cancels (not gates)", async () => {
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const passed = vi.fn()
+    bus.on("policy:passed", passed)
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "emit",
+    })
+    fireExit(bus, "sess_test")
+    await wait(30)
+    expect(state.status).toBe("cancelled")
+    expect(passed).not.toHaveBeenCalled()
+  })
+
+  it("(e) fan-in group persists + re-arms only still-pending members", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agentproto-sup-fanin-"))
+    const persistPath = join(tmp, "policies.json")
+    const ids = ["s1", "s2", "s3"]
+
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+    })
+    const state = sup1.attach({
+      sessionIds: ids,
+      gate: { command: "true" },
+      then: "emit",
+    })
+    // s1 finishes before the crash; s2 + s3 still pending.
+    fireTurnEnd(bus1, "s1")
+    await waitFor(() => state.pending.length === 2)
+    sup1.shutdown()
+
+    // Restart — all three sessions still alive.
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+    })
+    const restored = sup2.getStatus(state.policyId)
+    expect(restored?.status).toBe("watching")
+    expect(restored?.pending).toEqual(["s2", "s3"])
+
+    const passed = vi.fn()
+    bus2.on("policy:passed", passed)
+
+    // s1 already done before the crash — its re-fire must not complete the group.
+    fireTurnEnd(bus2, "s1")
+    await wait(30)
+    expect(passed).not.toHaveBeenCalled()
+
+    fireTurnEnd(bus2, "s2")
+    fireTurnEnd(bus2, "s3")
+    await waitFor(() => sup2.getStatus(state.policyId)?.status === "done")
+    expect(passed).toHaveBeenCalledTimes(1)
+
+    await rm(tmp, { recursive: true, force: true })
+  })
+})
+
 // ── WP3: persistence ─────────────────────────────────────────────────
 
 /**
