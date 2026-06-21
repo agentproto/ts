@@ -18,6 +18,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import type { AcpMcpServer } from "@agentproto/acp"
 import type { SessionsRegistry } from "./sessions.js"
 import type {
   AgentAdapterResolver,
@@ -65,6 +66,19 @@ interface RegisterSessionToolsOptions {
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
   toolSubset?: ReadonlySet<string>
+  /** Optional orchestrator-injection builder (WP3). When wired, the
+   *  `orchestrator` field on `start_agent_session` mints a scoped
+   *  sub-gateway token, builds the `mcpServers` entry pointing the
+   *  child at `/mcp/orchestrator?scope=<token>`, and returns a
+   *  `bindLifecycle` hook the handler calls (with the spawned session
+   *  id) so the token is revoked when that session exits. Closed over
+   *  the gateway's scope-token registry + HTTP port + session-event
+   *  bus in `createGateway`. Omitted → `orchestrator` is rejected with
+   *  a clear "not enabled" error. */
+  buildOrchestratorMcp?: (opts: { tools?: readonly string[] }) => {
+    entry: AcpMcpServer
+    bindLifecycle: (sessionId: string) => () => void
+  }
 }
 
 export function registerSessionTools(
@@ -76,7 +90,13 @@ export function registerSessionTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, resolveAgentAdapter, listAgentAdapters, mcpProxy } = opts
+  const {
+    registry,
+    resolveAgentAdapter,
+    listAgentAdapters,
+    mcpProxy,
+    buildOrchestratorMcp,
+  } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
   // ── start_agent_session ────────────────────────────────────────
@@ -146,6 +166,31 @@ export function registerSessionTools(
             "orchestration gateway so it can spawn + supervise sub-agents). " +
             "Adapters that don't model MCP mounting ignore it."
         ),
+      orchestrator: z
+        .union([
+          z.boolean(),
+          z.object({
+            tools: z
+              .array(z.string())
+              .optional()
+              .describe(
+                "Explicit allowlist — narrows the orchestration toolset to ⊆ the " +
+                  "default subset. Names outside the default are dropped (a child " +
+                  "can never widen its own scope). Omit for the full default subset."
+              ),
+          }),
+        ])
+        .optional()
+        .describe(
+          "Make this child a SCOPED orchestrator — auto-mount the daemon's own " +
+            "orchestration MCP tools (start/prompt/wait/poll/output + subtree " +
+            "list/kill) so it can spawn and supervise its OWN sub-agents. " +
+            "`true` = the default curated subset; `{ tools: [...] }` narrows it. " +
+            "The daemon mints a per-child scope-token, injects the scoped " +
+            "sub-gateway URL into the child's session (alongside any `mcpServers` " +
+            "you pass), and revokes the token when the session exits. Shell/fs/" +
+            "remote/import/terminal tools are NEVER exposed this way."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -207,11 +252,47 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      // Orchestrator role (WP3): when requested, mint a scoped
+      // sub-gateway token and MERGE its `mcpServers` entry with any
+      // caller-provided ones (WP1) — both coexist on the child's
+      // session. The child thus receives the curated orchestration
+      // toolset and can spawn + supervise its own sub-agents. The
+      // token is revoked when the session exits (bindLifecycle below).
+      let mcpServers = input.mcpServers
+      let bindOrchestratorLifecycle:
+        | ((sessionId: string) => () => void)
+        | undefined
+      if (input.orchestrator !== undefined && input.orchestrator !== false) {
+        if (!buildOrchestratorMcp) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "start_agent_session: `orchestrator` is not enabled — the daemon " +
+                  "was started without the scoped orchestrator sub-gateway. Wire " +
+                  "`buildOrchestratorMcp` in createGateway (it needs the scope-token " +
+                  "registry + HTTP port + session-event bus).",
+              },
+            ],
+            isError: true,
+          }
+        }
+        const requestedTools =
+          typeof input.orchestrator === "object"
+            ? input.orchestrator.tools
+            : undefined
+        const injection = buildOrchestratorMcp(
+          requestedTools ? { tools: requestedTools } : {},
+        )
+        mcpServers = [...(input.mcpServers ?? []), injection.entry]
+        bindOrchestratorLifecycle = injection.bindLifecycle
+      }
       try {
         const agentSession = await resolved.startSession({
           cwd,
           ...(input.model ? { model: input.model } : {}),
-          ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+          ...(mcpServers ? { mcpServers } : {}),
         })
         const desc = registry.spawnAgent({
           workspaceSlug: resolvedSlug,
@@ -220,11 +301,14 @@ export function registerSessionTools(
           adapterSlug: input.adapter,
           ...(input.prompt ? { initialPrompt: input.prompt } : {}),
           ...(input.label ? { label: input.label } : {}),
-          ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+          ...(mcpServers ? { mcpServers } : {}),
           ...(resolved.commandPreview
             ? { commandPreview: resolved.commandPreview }
             : {}),
         })
+        // Bind the scope-token's lifetime to the child session — once
+        // it exits, the token is revoked so it can't outlive its child.
+        bindOrchestratorLifecycle?.(desc.id)
         return {
           content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
         }

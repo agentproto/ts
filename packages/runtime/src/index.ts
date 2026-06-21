@@ -56,6 +56,7 @@ import { createCompletionPolicySupervisor } from "./supervisor.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
+  createOrchestratorInjector,
   type OrchestratorScope,
 } from "./orchestrator-gateway.js"
 
@@ -102,10 +103,14 @@ export {
   narrowOrchestratorTools,
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
+  createOrchestratorInjector,
   type OrchestratorScope,
   type ScopeTokenRegistry,
   type OrchestratorMcpServerFactory,
   type OrchestratorGatewayDeps,
+  type OrchestratorInjector,
+  type OrchestratorInjection,
+  type OrchestratorInjectorDeps,
 } from "./orchestrator-gateway.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -394,6 +399,24 @@ export async function createGateway(
       : {}),
   })
 
+  // Orchestrator auto-injection (WP3). Closed over the scope-token
+  // registry + the session-event bus + the HTTP port: when
+  // `start_agent_session` is called with `orchestrator`, this mints a
+  // scoped token, builds the `mcpServers` entry pointing the child at
+  // `/mcp/orchestrator?scope=<token>` on the daemon's own loopback
+  // port, and revokes the token on the child's `session:exited`. The
+  // port is the daemon's configured listener port (`startHttpServer`
+  // binds `opts.port` directly), reachable by the co-located child
+  // over loopback.
+  // The injected entry is named "agentproto" (the default) so the
+  // child's orchestration tools surface under a stable namespace,
+  // independent of the daemon's advertised server name.
+  const orchestratorInjector = createOrchestratorInjector({
+    scopeTokens,
+    sessionEvents,
+    port,
+  })
+
   const mcpServerFactory = async () => {
     const { server } = await createMcpServer({
       specs: opts.specs,
@@ -424,6 +447,7 @@ export async function createGateway(
       registry: sessions,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
+      buildOrchestratorMcp: orchestratorInjector,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
