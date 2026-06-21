@@ -16,6 +16,7 @@ import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
+import { jsonTolerant } from "./json-tolerant.js"
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
@@ -217,16 +218,16 @@ export function registerOrchestrationTools(
           "Session id to watch (single-session form). Provide this OR " +
             "`sessionIds`. Equivalent to `sessionIds: [sessionId]`.",
         ),
-      sessionIds: z
-        .array(z.string())
-        .min(1)
+      sessionIds: jsonTolerant(
+        z.array(z.string()).min(1),
+      )
         .optional()
         .describe(
           "Fan-in group: the gate runs once, only after EVERY listed session " +
             "has finished its turn (turn-end or exit). Supersedes `sessionId`.",
         ),
-      gate: z
-        .object({
+      gate: jsonTolerant(
+        z.object({
           command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
           args: z.array(z.string()).optional().describe("Argv passed verbatim."),
           cwd: z
@@ -234,7 +235,8 @@ export function registerOrchestrationTools(
             .optional()
             .describe("Working directory for the gate. Defaults to the session's cwd."),
           timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
-        })
+        }),
+      )
         .optional()
         .describe("Shell gate. Absent → always passes immediately after turn-end."),
       then: z
@@ -244,8 +246,8 @@ export function registerOrchestrationTools(
             "stages the explicit `commit.paths` and commits on the host " +
             "(requires `commit`; git must be allowlisted).",
         ),
-      commit: z
-        .object({
+      commit: jsonTolerant(
+        z.object({
           paths: z
             .array(z.string().min(1))
             .min(1)
@@ -263,11 +265,12 @@ export function registerOrchestrationTools(
                 "ack_policy(approve:true). When false, commits directly. " +
                 "Never pushes, never --force.",
             ),
-        })
+        }),
+      )
         .optional()
         .describe("Required when then === 'commit' (WP5)."),
-      onFail: z
-        .object({
+      onFail: jsonTolerant(
+        z.object({
           nudge: z
             .string()
             .optional()
@@ -285,7 +288,8 @@ export function registerOrchestrationTools(
             .describe(
               "Maximum consecutive gate failures before blocking. Default: 2.",
             ),
-        })
+        }),
+      )
         .optional()
         .describe(
           "What to do when the gate fails (WP2). Absent → immediately blocked. " +
@@ -298,10 +302,13 @@ export function registerOrchestrationTools(
     // attached automatically when this policy reaches `done`. Chains over
     // already-running sessions named in the child's own spec.
     const policyInputSchema: z.ZodTypeAny = z.lazy(() =>
-      z.object({ ...policyShapeBase, next: policyInputSchema.optional() }),
+      z.object({
+        ...policyShapeBase,
+        next: jsonTolerant(policyInputSchema).optional(),
+      }),
     )
     const nextField = {
-      next: policyInputSchema
+      next: jsonTolerant(policyInputSchema)
         .optional()
         .describe(
           "DAG chaining (WP6): a full completion policy (recursive) attached " +

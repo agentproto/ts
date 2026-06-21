@@ -38,6 +38,7 @@ import {
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { withToolSubset } from "./tool-subset.js"
+import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionDescriptor } from "./sessions.js"
 
@@ -212,14 +213,15 @@ export function registerSessionTools(
           "Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). " +
             "Adapters that expose a `--model` flag honour this; others ignore it."
         ),
-      mcpServers: z
-        .array(
+      mcpServers: jsonTolerant(
+        z.array(
           z.object({
             name: z.string(),
             transport: z.enum(["stdio", "http", "sse"]),
             ref: z.string().optional(),
           })
         )
+      )
         .optional()
         .describe(
           "MCP servers to mount into the spawned agent's session at spawn time. " +
@@ -228,8 +230,8 @@ export function registerSessionTools(
             "orchestration gateway so it can spawn + supervise sub-agents). " +
             "Adapters that don't model MCP mounting ignore it."
         ),
-      orchestrator: z
-        .union([
+      orchestrator: jsonTolerant(
+        z.union([
           z.boolean(),
           z.object({
             tools: z
@@ -262,6 +264,7 @@ export function registerSessionTools(
               ),
           }),
         ])
+      )
         .optional()
         .describe(
           "Make this child a SCOPED orchestrator — auto-mount the daemon's own " +
