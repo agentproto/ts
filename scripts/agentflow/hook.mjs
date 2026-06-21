@@ -38,11 +38,25 @@ function runNode(args, label) {
 
 // ── changeset ──────────────────────────────────────────────────────────────
 if (cfg.changeset?.stage === trigger) {
-  const wrote = runNode(['scripts/auto-changeset.mjs'], 'AI changeset')
-  // On pre-commit, fold a freshly written changeset into THIS commit so it
-  // isn't left dangling as an untracked file.
-  if (wrote && trigger === 'commit') {
-    spawnSync('git', ['add', '.changeset'], { cwd: ROOT, stdio: 'inherit' })
+  runNode(['scripts/auto-changeset.mjs'], 'AI changeset')
+  // Did auto-changeset leave a new, uncommitted changeset? (It exits 0 both
+  // when it writes one and when none is needed, so check the tree.)
+  const pending = spawnSync('git', ['status', '--porcelain', '.changeset'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  }).stdout.trim()
+  if (pending) {
+    if (trigger === 'commit') {
+      // pre-commit: fold it into THIS commit.
+      spawnSync('git', ['add', '.changeset'], { cwd: ROOT, stdio: 'inherit' })
+    } else if (trigger === 'push') {
+      // pre-push CAN'T add to the in-flight push (refs are already computed),
+      // so commit the changeset and HOLD the push — the next push includes it.
+      spawnSync('git', ['add', '.changeset'], { cwd: ROOT, stdio: 'inherit' })
+      spawnSync('git', ['commit', '-m', 'chore: add changeset'], { cwd: ROOT, stdio: 'inherit' })
+      console.error('\n[agentflow] ✗ push held — added a changeset commit. Run `git push` again to include it.')
+      process.exit(1)
+    }
   }
 }
 
