@@ -18,6 +18,31 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 
+/**
+ * Zod schema for the `gate` field of `attach_policy`.
+ * Exported so tests can validate the schema directly.
+ *
+ * Union of two variants:
+ *   • shell  — `{ command, args?, cwd?, timeoutMs? }`
+ *   • judge  — `{ judge: { adapter, model?, prompt, timeoutMs? } }` (WP7)
+ */
+export const gateInputSchema = z.union([
+  z.object({
+    command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
+    args: z.array(z.string()).optional().describe("Argv passed verbatim."),
+    cwd: z.string().optional().describe("Working directory for the gate. Defaults to the session's cwd."),
+    timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
+  }),
+  z.object({
+    judge: z.object({
+      adapter: z.string().min(1).describe("Agent adapter slug to spawn (e.g. \"claude-code\")."),
+      model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
+      prompt: z.string().min(1).describe("Rubric / instructions for the judge. The supervisor appends a VERDICT instruction."),
+      timeoutMs: z.number().int().positive().optional().describe("Max wall-clock for the judge before kill + FAIL. Default 120 000."),
+    }),
+  }),
+])
+
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
@@ -226,19 +251,12 @@ export function registerOrchestrationTools(
           "Fan-in group: the gate runs once, only after EVERY listed session " +
             "has finished its turn (turn-end or exit). Supersedes `sessionId`.",
         ),
-      gate: jsonTolerant(
-        z.object({
-          command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
-          args: z.array(z.string()).optional().describe("Argv passed verbatim."),
-          cwd: z
-            .string()
-            .optional()
-            .describe("Working directory for the gate. Defaults to the session's cwd."),
-          timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
-        }),
-      )
+      gate: jsonTolerant(gateInputSchema)
         .optional()
-        .describe("Shell gate. Absent → always passes immediately after turn-end."),
+        .describe(
+          "Gate: shell (exit 0 = pass) or judge-agent (WP7 — `{ judge: { adapter, prompt } }`). " +
+            "Absent → always passes immediately after turn-end.",
+        ),
       then: z
         .enum(["emit", "commit"])
         .describe(
