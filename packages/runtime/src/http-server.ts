@@ -1700,18 +1700,10 @@ async function handleTunnels(
     try {
       const desc = await registry.create({
         targetPort,
-        ...(b.provider === "quick" || b.provider === "named"
-          ? { provider: b.provider }
-          : {}),
+        ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
-        ...(b.autostart === true ? { autostart: true } : {}),
-        ...(typeof b.hostname === "string" ? { hostname: b.hostname } : {}),
-        ...(typeof b.tunnelId === "string" ? { tunnelId: b.tunnelId } : {}),
-        ...(typeof b.credentialsFile === "string"
-          ? { credentialsFile: b.credentialsFile }
-          : {}),
       })
       json(201, desc)
     } catch (err) {
