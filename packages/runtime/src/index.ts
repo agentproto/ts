@@ -310,6 +310,13 @@ export async function createGateway(
     sessionEvents,
     workspace,
     persist: true,
+    // WP6: daemon-wide cap on policies concurrently gating/acting. Excess
+    // queue (FIFO) until a slot frees. Override via AGENTPROTO_POLICY_CONCURRENCY.
+    concurrencyCap: (() => {
+      const raw = process.env.AGENTPROTO_POLICY_CONCURRENCY
+      const n = raw ? Number.parseInt(raw, 10) : NaN
+      return Number.isFinite(n) && n > 0 ? n : undefined
+    })(),
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes

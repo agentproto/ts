@@ -1237,3 +1237,171 @@ describe("WP3 — persistence", () => {
     expect(passed).not.toHaveBeenCalled()
   })
 })
+
+// ── WP6: DAG chaining + concurrency cap ───────────────────────────────
+
+describe("WP6 — DAG chaining + concurrency cap", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false"])
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("(a) policy A with `next` B → when A is done, B is attached and watching", async () => {
+    const ids = ["sA", "sB"]
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const stateA = supervisor.attach({
+      sessionId: "sA",
+      gate: { command: "true" },
+      then: "emit",
+      next: { sessionId: "sB", gate: { command: "true" }, then: "emit" },
+    })
+
+    // Before A completes, only A exists — B is NOT attached yet.
+    expect(supervisor.list()).toHaveLength(1)
+
+    // A finishes its turn → gate passes → A done → B chained.
+    fireTurnEnd(bus, "sA")
+    await waitFor(() => supervisor.getStatus(stateA.policyId)?.status === "done")
+
+    const childId = supervisor.getStatus(stateA.policyId)?.nextPolicyId
+    expect(childId).toBeDefined()
+    expect(childId).toMatch(/^policy_/)
+    expect(childId).not.toBe(stateA.policyId)
+
+    const childB = supervisor.getStatus(childId!)
+    expect(childB?.status).toBe("watching")
+    expect(childB?.sessionIds).toEqual(["sB"])
+    expect(supervisor.list()).toHaveLength(2)
+
+    // Idempotent: A's subscriptions are gone, and even a stray re-fire must not
+    // chain a second child.
+    fireTurnEnd(bus, "sA")
+    await wait(30)
+    expect(supervisor.list()).toHaveLength(2)
+    expect(supervisor.getStatus(stateA.policyId)?.nextPolicyId).toBe(childId)
+
+    // The chain advances independently: B's own turn-end completes B.
+    const passedB = new Promise<string>(resolve => {
+      bus.on("policy:passed", ev => {
+        if (ev.policyId === childId) resolve(ev.policyId)
+      })
+    })
+    fireTurnEnd(bus, "sB")
+    await waitFor(() => supervisor.getStatus(childId!)?.status === "done")
+    expect(await passedB).toBe(childId)
+  })
+
+  it("(b) concurrency cap: with cap=2, a 3rd triggered policy waits for a slot", async () => {
+    const ids = ["s1", "s2", "s3"]
+    const bus = createSessionEventBus()
+
+    // Controllable gate runner: each gate call blocks until its resolver is
+    // invoked, letting the test hold policies in `gating`.
+    const gates: Array<() => void> = []
+    const exec = vi.fn(async () => {
+      await new Promise<void>(res => gates.push(res))
+      return mkResult({ exitCode: 0 })
+    })
+
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+      concurrencyCap: 2,
+    })
+
+    const states = ids.map(id =>
+      supervisor.attach({ sessionId: id, gate: { command: "true" }, then: "emit" }),
+    )
+
+    // Trigger all three at once.
+    ids.forEach(id => fireTurnEnd(bus, id))
+
+    // Cap=2 → exactly two gates run; the third is parked in `queued`.
+    await waitFor(() => exec.mock.calls.length === 2)
+    await wait(30)
+    expect(exec).toHaveBeenCalledTimes(2)
+    expect(supervisor.getStatus(states[0]!.policyId)?.status).toBe("gating")
+    expect(supervisor.getStatus(states[1]!.policyId)?.status).toBe("gating")
+    expect(supervisor.getStatus(states[2]!.policyId)?.status).toBe("queued")
+
+    // Release the first gate → its policy reaches done → a slot frees → the
+    // queued policy is admitted and its gate finally runs. (Which of the two
+    // initially-running policies resolves first is non-deterministic — both
+    // sit behind an async allowlist read — so assert on aggregate invariants,
+    // not on a specific policy id.)
+    gates[0]!()
+    await waitFor(() => exec.mock.calls.length === 3)
+    const statuses = states.map(s => supervisor.getStatus(s.policyId)?.status)
+    // The queued policy (s3) has been admitted and is now gating.
+    expect(supervisor.getStatus(states[2]!.policyId)?.status).toBe("gating")
+    // Exactly one of the first two completed (that's what freed the slot), and
+    // nothing remains queued.
+    expect(statuses.filter(s => s === "done")).toHaveLength(1)
+    expect(statuses.filter(s => s === "queued")).toHaveLength(0)
+
+    // Drain the remaining gates so nothing dangles.
+    gates[1]!()
+    gates[2]!()
+    await waitFor(() =>
+      states.every(s => supervisor.getStatus(s.policyId)?.status === "done"),
+    )
+  })
+
+  it("(c) chaining (`next`) persists + re-arms across a restart", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agentproto-sup-wp6-"))
+    const persistPath = join(tmp, "policies.json")
+    const ids = ["sA", "sB"]
+
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+    })
+    const stateA = sup1.attach({
+      sessionId: "sA",
+      gate: { command: "true" },
+      then: "emit",
+      next: { sessionId: "sB", gate: { command: "true" }, then: "emit" },
+    })
+    // Persist while A is still watching (its turn-end hasn't fired).
+    sup1.shutdown()
+
+    // Restart — A re-armed to watching, with its `next` spec intact.
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeMultiRegistry(workspace, ids),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+    })
+    expect(sup2.getStatus(stateA.policyId)?.status).toBe("watching")
+
+    // Completing A AFTER the reload must chain B — proving `next` survived the
+    // restart (if it hadn't, no child would ever appear).
+    fireTurnEnd(bus2, "sA")
+    await waitFor(() => sup2.getStatus(stateA.policyId)?.status === "done")
+
+    const childId = sup2.getStatus(stateA.policyId)?.nextPolicyId
+    expect(childId).toBeDefined()
+    const childB = sup2.getStatus(childId!)
+    expect(childB?.status).toBe("watching")
+    expect(childB?.sessionIds).toEqual(["sB"])
+
+    await rm(tmp, { recursive: true, force: true })
+  })
+})

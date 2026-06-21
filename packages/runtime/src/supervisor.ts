@@ -1,5 +1,5 @@
 /**
- * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5.
+ * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6.
  *
  * State machine per attached policy:
  *   watching → gating → acting → done
@@ -36,6 +36,25 @@
  * at shutdown(). On boot, active policies (watching/gating/nudging/acting) are
  * re-armed to "watching" and re-subscribed to the bus. Terminal states (done/
  * blocked/cancelled) are kept for history. Session absent at reload → cancelled.
+ *
+ * WP6 (DAG + concurrency cap):
+ *   - CHAINING: a policy may declare `next` — a recursive AttachPolicyInput.
+ *     When the policy reaches `done` (emit-passed or commit-committed), the
+ *     supervisor automatically attaches `next` as a fresh completion policy on
+ *     the session(s) named in its own spec (chaining policies over EXISTING
+ *     sessions — this WP does NOT spawn new sessions). The child's policyId is
+ *     recorded on the parent as `nextPolicyId`. Chaining is idempotent (a parent
+ *     already carrying a `nextPolicyId` never re-chains, so a re-armed/re-acked
+ *     parent after a restart won't double-attach). `next` persists as part of the
+ *     parent's `input`, so the whole chain survives a restart.
+ *   - CONCURRENCY CAP: a daemon-wide cap (`concurrencyCap`, default 8) on how
+ *     many policies may be in `gating`/`acting` at once. When a trigger fires
+ *     and the cap is already saturated, the policy parks in `queued` (a FIFO
+ *     gate queue) instead of gating. As each active policy settles (done /
+ *     blocked / awaiting-ack / back-to-watching after a nudge), the queue is
+ *     pumped and the oldest queued policy proceeds to gate. Queued policies hold
+ *     NO slot, so a chained DAG can't deadlock behind the cap. The queued state
+ *     persists and is re-armed to `watching` on reload (then re-evaluated).
  *
  * WP4 (fan-in): a policy may watch a GROUP of sessions (`sessionIds`). The gate
  * runs ONCE, only after EVERY member of the group has finished its turn. Members
@@ -145,10 +164,19 @@ export interface AttachPolicyInput {
    * times before blocking; the session must still be running to nudge.
    */
   onFail?: OnFailSpec
+  /**
+   * DAG chaining (WP6). When this policy reaches `done`, the supervisor
+   * automatically attaches `next` as a fresh completion policy. `next` is a
+   * full AttachPolicyInput (recursive — it may declare its own `next`), and it
+   * carries the session(s) it watches in its own spec. Chaining only attaches
+   * policies onto already-running sessions; it never spawns new sessions.
+   */
+  next?: AttachPolicyInput
 }
 
 export type PolicyRunStatus =
   | "watching"
+  | "queued"
   | "gating"
   | "acting"
   | "nudging"
@@ -184,6 +212,11 @@ export interface PolicyRunState {
   commitPlan?: { paths: string[]; message: string; cwd: string }
   /** The resulting commit sha once `then:"commit"` has committed. */
   commitSha?: string
+  /**
+   * DAG chaining (WP6): the policyId of the child policy attached when this
+   * policy reached `done`. Set exactly once (idempotent chaining guard).
+   */
+  nextPolicyId?: string
   error?: string
 }
 
@@ -222,6 +255,9 @@ interface RunEntry {
   state: PolicyRunState
   unsubscribes: Array<() => void>
   cancelled: boolean
+  /** Per-entry gate runner, set by armEntry; invoked by the concurrency-cap
+   *  queue pump (WP6) when a slot frees. */
+  runGate?: () => Promise<void>
 }
 
 /**
@@ -253,6 +289,8 @@ const DEFAULT_NUDGE_TEMPLATE =
   "Le gate a échoué (exit {code}). Corrige et termine jusqu'à ce qu'il passe."
 const DEFAULT_MAX_RETRIES = 2
 const PERSIST_DEBOUNCE_MS = 1_500
+/** Daemon-wide default cap on policies concurrently in gating/acting (WP6). */
+const DEFAULT_CONCURRENCY_CAP = 8
 
 export const POLICIES_FILE_PATH = (): string =>
   resolve(homedir(), ".agentproto", "policies.json")
@@ -272,10 +310,19 @@ export function createCompletionPolicySupervisor(opts: {
    * no real subprocess/commit runs. Defaults to the host runCommand.
    */
   runCommand?: (input: RunCommandInput) => Promise<ExecuteResult>
+  /**
+   * Daemon-wide cap on policies concurrently in gating/acting (WP6). Excess
+   * triggered policies queue (FIFO) until a slot frees. Default 8. Values < 1
+   * are clamped to 1.
+   */
+  concurrencyCap?: number
 }): CompletionPolicySupervisor {
   const { registry, sessionEvents, workspace } = opts
   const exec = opts.runCommand ?? defaultRunCommand
   const persistPath = opts.persistPath ?? POLICIES_FILE_PATH()
+  const cap = Math.max(1, opts.concurrencyCap ?? DEFAULT_CONCURRENCY_CAP)
+  /** FIFO queue of entries whose trigger fired while the cap was saturated. */
+  const gateQueue: RunEntry[] = []
   // Default false: WP1/WP2 tests (no opts.persist, no opts.persistPath)
   // don't touch ~/.agentproto. Set opts.persist:true in production
   // (createGateway) or supply persistPath to implicitly enable it.
@@ -314,6 +361,56 @@ export function createCompletionPolicySupervisor(opts: {
         }
       })()
     }, PERSIST_DEBOUNCE_MS)
+  }
+
+  // ── concurrency cap (WP6) ────────────────────────────────────────
+
+  /** Policies currently holding a slot — i.e. in gating or acting. */
+  const countActive = (): number => {
+    let n = 0
+    for (const e of runs.values()) {
+      if (e.state.status === "gating" || e.state.status === "acting") n++
+    }
+    return n
+  }
+
+  /**
+   * Release-time pump: while there is a free slot, dequeue the oldest queued
+   * entry and run its gate. A dequeued entry is flipped back to `watching` so
+   * its runGate() guard passes; runGate() then synchronously sets `gating`
+   * (before its first await), so the loop's next countActive() sees the slot
+   * taken — no over-admission. Cancelled / no-longer-queued entries are skipped.
+   */
+  const pumpQueue = (): void => {
+    while (gateQueue.length > 0 && countActive() < cap) {
+      const entry = gateQueue.shift()!
+      if (entry.cancelled || entry.state.status !== "queued") continue
+      entry.state.status = "watching"
+      schedulePersist()
+      void entry.runGate?.()
+    }
+  }
+
+  // ── DAG chaining (WP6) ───────────────────────────────────────────
+
+  /**
+   * When `entry` reaches `done`, attach its `next` policy (if any) onto the
+   * session(s) named in the `next` spec. Idempotent: a parent that already
+   * carries a `nextPolicyId` never re-chains, so a re-armed or re-acked parent
+   * after a restart won't double-attach the child.
+   */
+  const maybeChain = (entry: RunEntry): void => {
+    const next = entry.input.next
+    if (!next) return
+    if (entry.state.nextPolicyId) return
+    try {
+      const child = attachPolicy(next)
+      entry.state.nextPolicyId = child.policyId
+      schedulePersist()
+    } catch (err) {
+      entry.state.error = `next chain failed: ${err instanceof Error ? err.message : String(err)}`
+      schedulePersist()
+    }
   }
 
   // ── commit action (WP5) ──────────────────────────────────────────
@@ -415,6 +512,7 @@ export function createCompletionPolicySupervisor(opts: {
         ts: new Date().toISOString(),
       })
       schedulePersist()
+      pumpQueue() // WP6: release the slot this commit held
       return
     }
 
@@ -431,6 +529,8 @@ export function createCompletionPolicySupervisor(opts: {
       ts: new Date().toISOString(),
     })
     schedulePersist()
+    maybeChain(entry) // WP6: attach `next` now that this policy is done
+    pumpQueue() // WP6: release the slot this commit held
   }
 
   // ── arm logic (shared by attach() and reload) ────────────────────
@@ -473,6 +573,7 @@ export function createCompletionPolicySupervisor(opts: {
       })
       schedulePersist()
       cleanup()
+      pumpQueue() // WP6: release the slot (if any) this run held
     }
 
     const act = async (passed: boolean, exitCode: number) => {
@@ -506,9 +607,11 @@ export function createCompletionPolicySupervisor(opts: {
             // Stop watching the bus; ack_policy drives the rest. The entry
             // stays in `runs` so ack() can find it.
             cleanup()
+            pumpQueue() // WP6: parked awaiting ack — release the slot
             return
           }
           // Unattended commit — run it directly at the green gate.
+          // finishCommit handles maybeChain + pumpQueue on settle.
           await finishCommit(entry)
           cleanup()
           return
@@ -525,6 +628,8 @@ export function createCompletionPolicySupervisor(opts: {
         state.endedAt = new Date().toISOString()
         schedulePersist()
         cleanup()
+        maybeChain(entry) // WP6: attach `next` now that this policy is done
+        pumpQueue() // WP6: release the slot this run held
         return
       }
 
@@ -557,6 +662,7 @@ export function createCompletionPolicySupervisor(opts: {
             syncPending()
             state.status = "watching"
             schedulePersist()
+            pumpQueue() // WP6: nudged back to watching — release the slot
             return
           }
         }
@@ -604,6 +710,23 @@ export function createCompletionPolicySupervisor(opts: {
         emitFailed(-1, err instanceof Error ? err.message : String(err))
       }
     }
+    entry.runGate = runGate
+
+    /**
+     * WP6: gate-entry through the daemon-wide concurrency cap. If a slot is
+     * free, run the gate now; otherwise park in `queued` (FIFO) and let
+     * pumpQueue() admit this entry when a slot frees. Holds no slot while queued.
+     */
+    const requestGate = () => {
+      if (entry.cancelled || state.status !== "watching") return
+      if (countActive() >= cap) {
+        state.status = "queued"
+        if (!gateQueue.includes(entry)) gateQueue.push(entry)
+        schedulePersist()
+        return
+      }
+      void runGate()
+    }
 
     /** Remove a member from the pending set (idempotent); gate once empty. */
     const markMemberDone = (sessionId: string) => {
@@ -612,7 +735,7 @@ export function createCompletionPolicySupervisor(opts: {
       entry.pending.delete(sessionId)
       syncPending()
       schedulePersist()
-      if (entry.pending.size === 0) void runGate()
+      if (entry.pending.size === 0) requestGate()
     }
 
     // Fan-in: a member's first turn-end removes it from the pending set; the
@@ -654,7 +777,7 @@ export function createCompletionPolicySupervisor(opts: {
     // If the pending set was already empty at arm time (e.g. re-armed after a
     // reload where every still-awaited member had exited), gate immediately.
     if (!entry.cancelled && state.status === "watching" && entry.pending.size === 0) {
-      void runGate()
+      requestGate()
     }
   }
 
@@ -779,47 +902,58 @@ export function createCompletionPolicySupervisor(opts: {
     }
   }
 
+  // ── attach core (shared by public attach() + WP6 chaining) ───────
+
+  /**
+   * Validate + register + arm a fresh policy. Used both by the public
+   * `attach()` and by `maybeChain()` when a parent policy reaches `done`.
+   * Hoisted (function declaration) so maybeChain can reference it.
+   */
+  function attachPolicy(input: AttachPolicyInput): PolicyRunState {
+    const group = resolveGroup(input)
+    if (input.then === "commit") {
+      if (!input.commit) {
+        throw new Error('then:"commit" requires a commit spec')
+      }
+      if (!Array.isArray(input.commit.paths) || input.commit.paths.length === 0) {
+        throw new Error('then:"commit" requires a non-empty paths[]')
+      }
+      if (input.commit.paths.some(p => typeof p !== "string" || p.length === 0)) {
+        throw new Error("commit paths must be non-empty strings")
+      }
+      if (typeof input.commit.message !== "string" || input.commit.message.length === 0) {
+        throw new Error('then:"commit" requires a non-empty message')
+      }
+    }
+    const policyId = `policy_${randomUUID().slice(0, 8)}`
+    const state: PolicyRunState = {
+      policyId,
+      sessionId: group[0]!,
+      sessionIds: group,
+      pending: [...group],
+      status: "watching",
+      retries: 0,
+      startedAt: new Date().toISOString(),
+    }
+    const entry: RunEntry = {
+      input,
+      group,
+      pending: new Set(group),
+      state,
+      unsubscribes: [],
+      cancelled: false,
+    }
+    runs.set(policyId, entry)
+    schedulePersist()
+    armEntry(entry)
+    return state
+  }
+
   // ── public interface ─────────────────────────────────────────────
 
   return {
     attach(input) {
-      const group = resolveGroup(input)
-      if (input.then === "commit") {
-        if (!input.commit) {
-          throw new Error('then:"commit" requires a commit spec')
-        }
-        if (!Array.isArray(input.commit.paths) || input.commit.paths.length === 0) {
-          throw new Error('then:"commit" requires a non-empty paths[]')
-        }
-        if (input.commit.paths.some(p => typeof p !== "string" || p.length === 0)) {
-          throw new Error("commit paths must be non-empty strings")
-        }
-        if (typeof input.commit.message !== "string" || input.commit.message.length === 0) {
-          throw new Error('then:"commit" requires a non-empty message')
-        }
-      }
-      const policyId = `policy_${randomUUID().slice(0, 8)}`
-      const state: PolicyRunState = {
-        policyId,
-        sessionId: group[0]!,
-        sessionIds: group,
-        pending: [...group],
-        status: "watching",
-        retries: 0,
-        startedAt: new Date().toISOString(),
-      }
-      const entry: RunEntry = {
-        input,
-        group,
-        pending: new Set(group),
-        state,
-        unsubscribes: [],
-        cancelled: false,
-      }
-      runs.set(policyId, entry)
-      schedulePersist()
-      armEntry(entry)
-      return state
+      return attachPolicy(input)
     },
 
     getStatus(policyId) {
@@ -832,14 +966,21 @@ export function createCompletionPolicySupervisor(opts: {
       entry.cancelled = true
       if (
         entry.state.status === "watching" ||
+        entry.state.status === "queued" ||
         entry.state.status === "gating" ||
         entry.state.status === "nudging"
       ) {
+        const wasActive =
+          entry.state.status === "gating" || entry.state.status === "queued"
         entry.state.status = "cancelled"
         entry.state.endedAt = new Date().toISOString()
         for (const u of entry.unsubscribes) u()
         entry.unsubscribes.length = 0
+        // WP6: drop from the gate queue and release any held slot.
+        const qi = gateQueue.indexOf(entry)
+        if (qi >= 0) gateQueue.splice(qi, 1)
         schedulePersist()
+        if (wasActive) pumpQueue()
       }
     },
 
