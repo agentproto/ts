@@ -19,8 +19,18 @@
 import { execSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { loadAgentflowConfig, resolveEngine } from './agentflow/config.mjs'
+import { runLlm, stripFences } from './agentflow/llm.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
+
+// Engine is config-driven (.agentflow.json / .agentflow.local.json), with
+// `--engine local|cloud` as an override. Local = Claude Code CLI.
+const ENGINE_FLAG = (() => {
+  const i = process.argv.indexOf('--engine')
+  return i !== -1 ? process.argv[i + 1] : undefined
+})()
+const AGENTFLOW = loadAgentflowConfig(ROOT)
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -116,13 +126,9 @@ const rawDiff = run(
   'git diff origin/main...HEAD -- "packages/**" "adapters/**"'
 ).slice(0, 12_000)
 
-// ── call Claude ───────────────────────────────────────────────────────────────
+// ── call the model (engine-routed) ─────────────────────────────────────────────
 
-const apiKey = process.env.ANTHROPIC_API_KEY
-if (!apiKey) {
-  console.error('Error: ANTHROPIC_API_KEY is not set.')
-  process.exit(1)
-}
+const engine = resolveEngine(AGENTFLOW.changeset, { flag: ENGINE_FLAG })
 
 const systemPrompt = `You are a release engineer for the @agentproto npm monorepo.
 Given a git diff and a list of changed packages, produce a changeset.
@@ -145,37 +151,27 @@ const userPrompt = `Changed packages: ${[...touchedPackages].join(', ')}
 Diff (may be truncated):
 ${rawDiff}`
 
-console.log('Calling Claude to analyse the diff…')
+console.log(`Calling Claude to analyse the diff… (engine: ${engine})`)
 
-const response = await fetch('https://api.anthropic.com/v1/messages', {
-  method: 'POST',
-  headers: {
-    'x-api-key': apiKey,
-    'anthropic-version': '2023-06-01',
-    'content-type': 'application/json',
-  },
-  body: JSON.stringify({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 512,
+let raw
+try {
+  raw = await runLlm({
     system: systemPrompt,
-    messages: [{ role: 'user', content: userPrompt }],
-  }),
-})
-
-if (!response.ok) {
-  const body = await response.text()
-  console.error(`Claude API error ${response.status}: ${body}`)
+    user: userPrompt,
+    engine,
+    model: AGENTFLOW.changeset.model ?? undefined,
+    claudeBin: AGENTFLOW.changeset.command ?? 'claude',
+  })
+} catch (err) {
+  console.error(err.message)
   process.exit(1)
 }
 
-const data = await response.json()
-const raw = data.content?.[0]?.text?.trim() ?? ''
-
 let parsed
 try {
-  parsed = JSON.parse(raw)
+  parsed = JSON.parse(stripFences(raw))
 } catch {
-  console.error('Failed to parse Claude response as JSON:', raw)
+  console.error('Failed to parse model response as JSON:', raw)
   process.exit(1)
 }
 
