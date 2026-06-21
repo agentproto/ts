@@ -23,11 +23,29 @@ export interface BrowserProcessSpec {
   timeoutMs?: number
   intervalMs?: number
   log?: (msg: string) => void
+  /**
+   * Opt-in non-blocking cold start. When set, `ensureBrowserProcess` polls
+   * health for only this many milliseconds after `launch()`. If the service
+   * becomes healthy in that window it returns `{ healthy: true }` as usual;
+   * if not, it kicks off a detached background `waitHealthy` (up to
+   * `timeoutMs`) so the booting process keeps converging, and returns
+   * IMMEDIATELY with `{ healthy: false }`. When unset (default), behaviour is
+   * unchanged — blocking wait up to `timeoutMs`.
+   */
+  initialWaitMs?: number
 }
 
 export interface BrowserProcessResult {
   baseUrl: string
   wasAlreadyRunning: boolean
+  /**
+   * Whether the service is confirmed healthy at return time. Always true on
+   * the warm path (`wasAlreadyRunning: true`) and on the blocking cold path.
+   * Only `false` when `spec.initialWaitMs` was set and the service had not
+   * become healthy within that bounded window — convergence continues in the
+   * background.
+   */
+  healthy: boolean
   pid?: number
   stop?: () => Promise<void>
 }
@@ -92,11 +110,49 @@ export async function ensureBrowserProcess(
   const baseUrl = new URL(spec.healthUrl).origin
 
   if (await probe(spec.healthUrl)) {
-    return { baseUrl, wasAlreadyRunning: true }
+    return { baseUrl, wasAlreadyRunning: true, healthy: true }
   }
 
   const child = spec.launch()
 
+  // ── Non-blocking cold start (opt-in via spec.initialWaitMs) ─────────────────
+  if (spec.initialWaitMs !== undefined) {
+    try {
+      const res = await waitHealthy(spec.healthUrl, {
+        timeoutMs: spec.initialWaitMs,
+        intervalMs: spec.intervalMs,
+        log: spec.log,
+      })
+      await res.body?.cancel().catch(() => {})
+      return { baseUrl, pid: child?.pid, wasAlreadyRunning: false, healthy: true }
+    } catch {
+      // Not healthy within the bounded window — keep converging in the
+      // background (fire-and-forget) so the booting process isn't abandoned,
+      // and return promptly with healthy: false.
+      spec.log?.(
+        `[${spec.kind}] not healthy within ${spec.initialWaitMs}ms — continuing health-wait in background`
+      )
+      void waitHealthy(spec.healthUrl, {
+        timeoutMs: spec.timeoutMs,
+        intervalMs: spec.intervalMs,
+        log: spec.log,
+      })
+        .then(async res => {
+          await res.body?.cancel().catch(() => {})
+          spec.log?.(`[${spec.kind}] became healthy (background)`)
+        })
+        .catch(err => {
+          spec.log?.(
+            `[${spec.kind}] background health-wait gave up: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        })
+      return { baseUrl, pid: child?.pid, wasAlreadyRunning: false, healthy: false }
+    }
+  }
+
+  // ── Blocking cold start (default) ───────────────────────────────────────────
   const res = await waitHealthy(spec.healthUrl, {
     timeoutMs: spec.timeoutMs,
     intervalMs: spec.intervalMs,
@@ -104,5 +160,5 @@ export async function ensureBrowserProcess(
   })
   await res.body?.cancel().catch(() => {})
 
-  return { baseUrl, pid: child?.pid, wasAlreadyRunning: false }
+  return { baseUrl, pid: child?.pid, wasAlreadyRunning: false, healthy: true }
 }
