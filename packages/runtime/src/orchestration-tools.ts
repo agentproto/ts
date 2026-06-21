@@ -52,7 +52,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -233,8 +233,34 @@ export function registerOrchestrationTools(
           .optional()
           .describe("Shell gate. Absent → always passes immediately after turn-end."),
         then: z
-          .literal("emit")
-          .describe("Action to take after the gate. Only 'emit' is supported in WP1/WP2."),
+          .enum(["emit", "commit"])
+          .describe(
+            "Action on a GREEN gate. 'emit' → emits policy:passed. 'commit' → " +
+              "stages the explicit `commit.paths` and commits on the host " +
+              "(requires `commit`; git must be allowlisted).",
+          ),
+        commit: z
+          .object({
+            paths: z
+              .array(z.string().min(1))
+              .min(1)
+              .describe(
+                "Explicit literal paths to stage (workspace-relative). Staged " +
+                  "via `git add -- <paths>` — never `-A`, never a glob.",
+              ),
+            message: z.string().min(1).describe("Commit message (passed as argv, no shell)."),
+            requireHumanAck: z
+              .boolean()
+              .optional()
+              .describe(
+                "Default TRUE. When true, the green gate parks in awaiting-ack " +
+                  "and emits policy:commit-ready; the commit runs only on " +
+                  "ack_policy(approve:true). When false, commits directly. " +
+                  "Never pushes, never --force.",
+              ),
+          })
+          .optional()
+          .describe("Required when then === 'commit' (WP5)."),
         onFail: z
           .object({
             nudge: z
@@ -273,15 +299,37 @@ export function registerOrchestrationTools(
             ],
           }
         }
-        const state = supervisor.attach({
-          sessionId: input.sessionId,
-          sessionIds: input.sessionIds,
-          gate: input.gate,
-          then: input.then,
-          onFail: input.onFail,
-        })
-        return {
-          content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+        if (input.then === "commit" && !input.commit) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: 'then:"commit" requires a commit spec' }),
+              },
+            ],
+          }
+        }
+        try {
+          const state = supervisor.attach({
+            sessionId: input.sessionId,
+            sessionIds: input.sessionIds,
+            gate: input.gate,
+            then: input.then,
+            commit: input.commit,
+            onFail: input.onFail,
+          })
+          return {
+            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+          }
         }
       },
     )
@@ -314,6 +362,45 @@ export function registerOrchestrationTools(
         const state = supervisor.getStatus(input.policyId)
         return {
           content: [{ type: "text", text: JSON.stringify({ policyId: input.policyId, status: state?.status ?? "not_found" }) }],
+        }
+      },
+    )
+
+    server.tool(
+      "ack_policy",
+      "Acknowledge a `then:\"commit\"` policy parked in `awaiting-ack` (WP5). " +
+        "`approve:true` runs the prepared host commit (git add <paths> + git " +
+        "commit; never -A/push/--force) → emits policy:committed (+sha) → done. " +
+        "`approve:false` cancels it (no commit). No-op on any other state.",
+      {
+        policyId: z.string().describe("Policy id returned by `attach_policy`."),
+        approve: z
+          .boolean()
+          .describe("true → run the commit; false → cancel without committing."),
+      },
+      async input => {
+        const state = await supervisor.ack(input.policyId, input.approve)
+        if (!state) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "policy not found", policyId: input.policyId }) }],
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  policyId: state.policyId,
+                  status: state.status,
+                  ...(state.commitSha ? { sha: state.commitSha } : {}),
+                  ...(state.error ? { error: state.error } : {}),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
         }
       },
     )

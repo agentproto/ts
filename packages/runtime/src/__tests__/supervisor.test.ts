@@ -748,6 +748,313 @@ describe("WP4 — fan-in (all-turn-end group)", () => {
   })
 })
 
+// ── WP5: commit action + requireHumanAck gate ────────────────────────
+
+import type { RunCommandInput, ExecuteResult } from "../command-tools.js"
+
+const FAKE_SHA = "deadbeefcafe1234567890abcdef0987654321aa"
+
+/**
+ * Mock command runner standing in for git (and the gate command). Records
+ * every (command, args) so tests can assert the EXACT argv — proving we never
+ * pass -A / push / --force and that the message goes through argv, not a shell.
+ * `git rev-parse` returns a fixed sha; everything else exits 0.
+ */
+function makeGitMock(opts: { commitExitCode?: number; commitOut?: string } = {}) {
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const exec = vi.fn(async (input: RunCommandInput): Promise<ExecuteResult> => {
+    calls.push({ command: input.command, args: input.args, cwd: input.cwd })
+    const base = (s: string) => s.split("/").pop() ?? s
+    if (base(input.command) === "git") {
+      if (input.args[0] === "rev-parse") {
+        return mkResult({ stdout: FAKE_SHA + "\n" })
+      }
+      if (input.args[0] === "commit") {
+        return mkResult({
+          exitCode: opts.commitExitCode ?? 0,
+          stdout: opts.commitOut ?? "[feat abc1234] msg\n",
+        })
+      }
+      // git add
+      return mkResult({})
+    }
+    // gate command (e.g. "true") → pass
+    return mkResult({})
+  })
+  return { exec, calls }
+}
+
+function mkResult(p: Partial<ExecuteResult>): ExecuteResult {
+  return {
+    exitCode: p.exitCode ?? 0,
+    signal: null,
+    stdout: p.stdout ?? "",
+    stderr: p.stderr ?? "",
+    durationMs: 1,
+  }
+}
+
+/** Assert no git invocation ever used a forbidden flag/subcommand. */
+function assertNoForbiddenArgv(
+  calls: Array<{ command: string; args: string[] }>,
+): void {
+  const flat = calls.flatMap(c => [c.command, ...c.args])
+  for (const tok of flat) {
+    expect(tok).not.toBe("-A")
+    expect(tok).not.toBe("--all")
+    expect(tok).not.toBe("-f")
+    expect(tok).not.toBe("--force")
+    expect(tok).not.toBe("push")
+  }
+}
+
+describe("WP5 — commit action + requireHumanAck gate", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false", "git"])
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("(a) green gate + requireHumanAck → policy:commit-ready, NO commit before ack", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    const readyEvent = new Promise<{ paths: string[]; message: string }>(resolve => {
+      bus.on("policy:commit-ready", ev => resolve({ paths: ev.paths, message: ev.message }))
+    })
+    const committed = vi.fn()
+    bus.on("policy:committed", committed)
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts", "src/b.ts"], message: "feat: x" },
+    })
+
+    fireTurnEnd(bus)
+
+    const ev = await readyEvent
+    expect(ev.paths).toEqual(["src/a.ts", "src/b.ts"])
+    expect(ev.message).toBe("feat: x")
+
+    await wait(30)
+    // Parked awaiting ack — NO git add/commit happened.
+    expect(supervisor.getStatus(state.policyId)?.status).toBe("awaiting-ack")
+    expect(committed).not.toHaveBeenCalled()
+    expect(calls.some(c => c.command === "git")).toBe(false)
+  })
+
+  it("(b) ack(approve:true) → git add <paths> + git commit (argv, no -A/push) → policy:committed", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    const committedEvent = new Promise<{ sha: string }>(resolve => {
+      bus.on("policy:committed", ev => resolve({ sha: ev.sha }))
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts"], message: "feat: commit me" },
+    })
+
+    fireTurnEnd(bus)
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "awaiting-ack")
+
+    const acked = await supervisor.ack(state.policyId, true)
+    expect(acked?.status).toBe("done")
+
+    const ev = await committedEvent
+    expect(ev.sha).toBe(FAKE_SHA)
+    expect(supervisor.getStatus(state.policyId)?.commitSha).toBe(FAKE_SHA)
+
+    // Exact argv: git add -- src/a.ts ; git commit -m "feat: commit me"
+    const addCall = calls.find(c => c.command === "git" && c.args[0] === "add")
+    expect(addCall?.args).toEqual(["add", "--", "src/a.ts"])
+    const commitCall = calls.find(c => c.command === "git" && c.args[0] === "commit")
+    expect(commitCall?.args).toEqual(["commit", "-m", "feat: commit me"])
+    assertNoForbiddenArgv(calls)
+  })
+
+  it("(c) ack(approve:false) → cancelled, NO commit", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    const committed = vi.fn()
+    bus.on("policy:committed", committed)
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts"], message: "feat: nope" },
+    })
+
+    fireTurnEnd(bus)
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "awaiting-ack")
+
+    const acked = await supervisor.ack(state.policyId, false)
+    expect(acked?.status).toBe("cancelled")
+    await wait(20)
+    expect(committed).not.toHaveBeenCalled()
+    expect(calls.some(c => c.command === "git")).toBe(false)
+  })
+
+  it("(d) requireHumanAck:false → commit directly at green gate", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    const ready = vi.fn()
+    bus.on("policy:commit-ready", ready)
+    const committedEvent = new Promise<{ sha: string }>(resolve => {
+      bus.on("policy:committed", ev => resolve({ sha: ev.sha }))
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts"], message: "feat: auto", requireHumanAck: false },
+    })
+
+    fireTurnEnd(bus)
+
+    const ev = await committedEvent
+    expect(ev.sha).toBe(FAKE_SHA)
+    await wait(20)
+    expect(supervisor.getStatus(state.policyId)?.status).toBe("done")
+    // No human gate when requireHumanAck:false.
+    expect(ready).not.toHaveBeenCalled()
+    const addCall = calls.find(c => c.command === "git" && c.args[0] === "add")
+    expect(addCall?.args).toEqual(["add", "--", "src/a.ts"])
+    assertNoForbiddenArgv(calls)
+  })
+
+  it("(e) empty paths → attach throws (no commit possible)", () => {
+    const { exec } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    expect(() =>
+      supervisor.attach({
+        sessionId: "sess_test",
+        then: "commit",
+        commit: { paths: [], message: "feat: empty" },
+      }),
+    ).toThrow(/non-empty paths/)
+  })
+
+  it("(f) 'nothing to commit' is treated as success", async () => {
+    const { exec } = makeGitMock({
+      commitExitCode: 1,
+      commitOut: "nothing to commit, working tree clean\n",
+    })
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(workspace),
+      sessionEvents: bus,
+      workspace,
+      runCommand: exec,
+    })
+
+    const committedEvent = new Promise<string>(resolve => {
+      bus.on("policy:committed", ev => resolve(ev.sha))
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts"], message: "feat: noop", requireHumanAck: false },
+    })
+
+    fireTurnEnd(bus)
+    expect(await committedEvent).toBe(FAKE_SHA)
+    expect(supervisor.getStatus(state.policyId)?.status).toBe("done")
+  })
+
+  it("(g) awaiting-ack persists + re-arms (still ack-able after reload)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agentproto-sup-wp5-"))
+    const persistPath = join(tmp, "policies.json")
+
+    const mock1 = makeGitMock()
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+      runCommand: mock1.exec,
+    })
+    const state = sup1.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "commit",
+      commit: { paths: ["src/a.ts"], message: "feat: persist" },
+    })
+    fireTurnEnd(bus1)
+    await waitFor(() => sup1.getStatus(state.policyId)?.status === "awaiting-ack")
+    sup1.shutdown()
+
+    // Restart — policy must still be awaiting-ack, and ack must commit.
+    const mock2 = makeGitMock()
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+      runCommand: mock2.exec,
+    })
+    expect(sup2.getStatus(state.policyId)?.status).toBe("awaiting-ack")
+    expect(sup2.getStatus(state.policyId)?.commitPlan?.paths).toEqual(["src/a.ts"])
+
+    const acked = await sup2.ack(state.policyId, true)
+    expect(acked?.status).toBe("done")
+    expect(acked?.commitSha).toBe(FAKE_SHA)
+    const addCall = mock2.calls.find(c => c.command === "git" && c.args[0] === "add")
+    expect(addCall?.args).toEqual(["add", "--", "src/a.ts"])
+    assertNoForbiddenArgv(mock2.calls)
+
+    await rm(tmp, { recursive: true, force: true })
+  })
+})
+
 // ── WP3: persistence ─────────────────────────────────────────────────
 
 /**
