@@ -308,6 +308,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
       name: a.name,
       description: a.description,
       defaultPort: a.defaultPort,
+      location: a.location,
+      install: a.install,
+      config: a.config,
     }))
 
   // ── boot the gateway ──
