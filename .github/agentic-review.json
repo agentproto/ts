@@ -1,3 +1,27 @@
 {
-  "blocking": true
+  "blocking": true,
+  "model": "claude-sonnet-4-6",
+  "fixDelivery": "commit",
+  "botMention": "@agentproto-bot",
+  "maxFixIterations": 3,
+  "skills": ["aip-conventions"],
+  "externalSkills": {
+    "allow": ["DietrichGebert/ponytail@ponytail-review"]
+  },
+  "commands": {
+    "review": {
+      "skills": ["aip-conventions", "ponytail-review"]
+    },
+    "fix": {
+      "skills": ["aip-conventions"],
+      "fixDelivery": "commit"
+    },
+    "pr": {
+      "skills": ["aip-conventions"],
+      "fixDelivery": "pr"
+    },
+    "explain": {
+      "skills": []
+    }
+  }
 }
