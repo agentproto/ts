@@ -22,7 +22,8 @@
  * you trust it for a given branch.
  */
 
-import { execSync } from 'node:child_process'
+import { execSync, spawnSync } from 'node:child_process'
+import { openSync, readSync, closeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadAgentflowConfig, resolveEngine } from './config.mjs'
 import { runLlm, stripFences } from './llm.mjs'
@@ -36,6 +37,14 @@ const ENGINE_FLAG = (() => {
 })()
 // `--hook` is set when invoked from the pre-push/pre-commit dispatcher.
 const FROM_HOOK = argv.includes('--hook')
+// Fix mode: --fix → interactive y/n; --fix-auto → apply without asking; else
+// fall back to config (review.fix: off|prompt|auto). Applying fixes is a
+// MANUAL flow only — never from a hook (a hook can't usefully edit a push).
+const FIX_MODE = argv.includes('--fix-auto')
+  ? 'auto'
+  : argv.includes('--fix')
+    ? 'prompt'
+    : (AGENTFLOW.review.fix ?? 'off')
 // Stamping during a PRE-PUSH hook is futile: a commit created in pre-push is
 // NOT part of the in-flight push (the refs to push are already computed), so
 // the marker never reaches the remote. So only stamp on an explicit --stamp,
@@ -128,6 +137,69 @@ for (const f of findings) {
 }
 console.log('')
 
+// ── propose / apply fixes (manual flow only) ───────────────────────────────────
+
+/** Read y/n from the terminal directly, so it works even when stdin is busy. */
+function promptYesNo(question) {
+  let fd
+  try {
+    fd = openSync('/dev/tty', 'rs')
+  } catch {
+    return false // no terminal (CI / piped) — treat as "no"
+  }
+  try {
+    process.stdout.write(question)
+    const buf = Buffer.alloc(16)
+    const n = readSync(fd, buf, 0, 16, null)
+    const ans = buf.toString('utf8', 0, n).trim().toLowerCase()
+    return ans === 'y' || ans === 'yes'
+  } catch {
+    return false
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** Apply the findings via the local Claude Code CLI (edits the working tree). */
+function applyFixes(items) {
+  const instructions = items
+    .map((f, i) => `${i + 1}. [${f.severity ?? '?'}] ${f.file ?? ''}: ${f.note ?? ''}`)
+    .join('\n')
+  const prompt =
+    `Apply minimal edits to this repository to fix ONLY the code-review findings ` +
+    `below. Do not reformat unrelated code and do not create commits.\n\nFindings:\n${instructions}`
+  console.log('[agentflow] applying fixes with the local Claude CLI…\n')
+  const res = spawnSync(
+    AGENTFLOW.review.command ?? 'claude',
+    ['-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'Edit', 'Read', 'Grep'],
+    { cwd: ROOT, stdio: 'inherit' },
+  )
+  if (res.status !== 0) {
+    console.error('[agentflow] fixer exited non-zero — inspect the working tree.')
+    return false
+  }
+  console.log('\n[agentflow] fixes applied (uncommitted). Review and commit:')
+  console.log(run('git diff --stat'))
+  return true
+}
+
+let fixed = false
+if (findings.length > 0 && FIX_MODE !== 'off') {
+  if (FROM_HOOK) {
+    // Hooks can't usefully edit a push (and shouldn't prompt). Point to the
+    // manual flow instead.
+    console.log('[agentflow] to apply these, run: `pnpm review:ai --fix`')
+  } else if (engine !== 'local') {
+    console.log('[agentflow] auto-fix runs on the local Claude CLI — set engine "local" (or use CI `/fix`).')
+  } else {
+    const go =
+      FIX_MODE === 'auto' ||
+      promptYesNo(`Apply ${findings.length} fix(es) with the local Claude CLI? [y/N] `)
+    if (go) fixed = applyFixes(findings)
+    else console.log('[agentflow] skipped fixes.')
+  }
+}
+
 // ── CI-bypass marker ──────────────────────────────────────────────────────────
 
 if (STAMP && verdict.decision === 'approve') {
@@ -149,7 +221,12 @@ if (STAMP && verdict.decision === 'approve') {
   )
 }
 
-if (verdict.decision === 'request_changes' && AGENTFLOW.review.blocking === true) {
+if (verdict.decision === 'request_changes' && AGENTFLOW.review.blocking === true && !fixed) {
+  console.error(
+    `\n[agentflow] ✗ ${FROM_HOOK ? 'push blocked' : 'review requested changes'} — review.blocking is on.`,
+  )
+  console.error('  Fix now:   `pnpm review:ai --fix`')
+  if (FROM_HOOK) console.error('  Skip once: `git push --no-verify`')
   process.exit(1)
 }
 process.exit(0)

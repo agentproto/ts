@@ -30,11 +30,34 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
 - `pnpm changeset:ai`  — generate a changeset now (engine from config).
 - `pnpm changeset:auto` — same, pinned to `--engine cloud` (CI path).
 - `pnpm review:ai`      — review the branch vs `origin/main` now (engine from
-  config). Add `--stamp` to also write the CI-bypass marker.
+  config). Add `--stamp` to also write the CI-bypass marker, `--fix` to be
+  offered a y/n auto-fix, or `--fix-auto` to apply without asking.
 - On `git commit` / `git push` — the husky hooks (`.husky/pre-commit`,
   `.husky/pre-push`) call `scripts/agentflow/hook.mjs <trigger>`, which runs
   any feature whose `stage` matches. Failures warn but don't block (a
   `review` with `blocking: true` is the one exception — it can stop a push).
+
+## Auto-fix after review
+
+`review.fix` (or the `--fix` / `--fix-auto` flags) controls what happens when a
+review surfaces findings:
+
+| `review.fix` | behavior (manual run)                                              |
+| ------------ | ----------------------------------------------------------------- |
+| `off`        | report only (default)                                             |
+| `prompt`     | show findings, ask **y/n**, then apply with the local Claude CLI  |
+| `auto`       | apply with the local Claude CLI without asking                    |
+
+Fixes edit your **working tree** (uncommitted) via the Claude Code CLI
+(`--permission-mode acceptEdits`); you review the diff and commit. Auto-fix is a
+**manual** flow — a hook can't usefully edit a push, so the push hook just
+prints `run \`pnpm review:ai --fix\``. The y/n prompt reads `/dev/tty`, so it
+works even when stdin is busy.
+
+**Blocking a push:** set `review.blocking: true` + `review.stage: "push"`. Then a
+`request_changes` review makes the pre-push hook exit non-zero — a "nope" with
+fix instructions (`pnpm review:ai --fix`, or `git push --no-verify` to skip
+once).
 
 ## Review + CI bypass
 
