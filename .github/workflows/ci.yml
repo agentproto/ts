@@ -115,6 +115,10 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          # describe needs no deps (node built-ins + the dep-free llm.mjs), so
+          # disable setup-node's auto package-manager cache — it would otherwise
+          # try to run pnpm (from packageManager) and fail (no pnpm installed).
+          package-manager-cache: false
 
       - name: Fill PR description (if empty + enabled)
         env:
