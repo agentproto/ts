@@ -1,0 +1,68 @@
+name: agent-setup
+description: >
+  Shared harness for agentflow CI jobs — mints the bot App token, checks out the
+  PR branch with full history + origin/main available, and sets up node (and
+  pnpm + install when deps are needed). Every agent job uses this so setup can't
+  drift per-job (the origin/main + node-cache bugs came from hand-rolled setup).
+
+  NOTE: a local composite action needs the repo checked out first, so each job
+  does a tiny bootstrap `actions/checkout` before `uses: ./.github/actions/agent-setup`.
+
+inputs:
+  app-id:
+    description: GitHub App id (vars.BOT_APP_ID). Empty → no App token, falls back.
+    required: false
+    default: ''
+  private-key:
+    description: GitHub App private key (secrets.BOT_APP_PRIVATE_KEY).
+    required: false
+    default: ''
+  fallback-token:
+    description: Token to use when no App is configured (secrets.GITHUB_TOKEN).
+    required: true
+  pnpm:
+    description: '"true" → put pnpm on PATH (for jobs whose scripts shell out to it).'
+    required: false
+    default: 'false'
+
+outputs:
+  token:
+    description: The bot App token if minted, else the fallback token.
+    value: ${{ steps.bot.outputs.token || inputs.fallback-token }}
+  app-slug:
+    description: The App slug (for committer identity via configure-bot-git.sh). Empty if no App.
+    value: ${{ steps.bot.outputs.app-slug }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint bot token (GitHub App — optional)
+      id: bot
+      if: ${{ inputs.app-id != '' }}
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+
+    - name: Checkout (full history + write token)
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+        ref: ${{ github.head_ref }}
+        token: ${{ steps.bot.outputs.token || inputs.fallback-token }}
+
+    - name: Ensure origin/main is available
+      shell: bash
+      run: git fetch --quiet origin main || true
+
+    - name: Setup pnpm
+      if: ${{ inputs.pnpm == 'true' }}
+      uses: pnpm/action-setup@v6
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: 22
+        # Cache off: these agent jobs don't `pnpm install`, and setup-node's
+        # auto-cache would try to run pnpm (from packageManager) and fail.
+        package-manager-cache: false
