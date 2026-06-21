@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises"
+import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { createCompletionPolicySupervisor } from "../supervisor.js"
@@ -54,6 +54,18 @@ async function makeWorkspace(commands: string[]): Promise<string> {
 
 function wait(ms: number): Promise<void> {
   return new Promise(res => setTimeout(res, ms))
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 3000,
+  intervalMs = 10,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("waitFor timed out")
+    await wait(intervalMs)
+  }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -329,7 +341,7 @@ describe("WP2 — bounded nudge + escalate", () => {
     })
 
     fireTurnEnd(bus)
-    await wait(300)
+    await waitFor(() => state.retries === 1)
 
     expect(registry.sendPrompt).toHaveBeenCalledWith("sess_test", "fix it (exit 1)")
     expect(state.status).toBe("watching")
@@ -354,12 +366,12 @@ describe("WP2 — bounded nudge + escalate", () => {
 
     // First failure → nudge → watching (retries=1)
     fireTurnEnd(bus)
-    await wait(300)
+    await waitFor(() => vi.mocked(registry.sendPrompt).mock.calls.length >= 1)
     expect(registry.sendPrompt).toHaveBeenCalledTimes(1)
 
     // Second turn-end → gate runs again → fails → nudge (retries=2)
     fireTurnEnd(bus)
-    await wait(300)
+    await waitFor(() => vi.mocked(registry.sendPrompt).mock.calls.length >= 2)
 
     expect(registry.sendPrompt).toHaveBeenCalledTimes(2)
   })
@@ -387,7 +399,7 @@ describe("WP2 — bounded nudge + escalate", () => {
 
     // First turn-end → gate fails (flag present) → nudge → watching
     fireTurnEnd(bus)
-    await wait(300)
+    await waitFor(() => state.retries === 1)
     expect(state.retries).toBe(1)
     expect(state.status).toBe("watching")
 
@@ -422,7 +434,7 @@ describe("WP2 — bounded nudge + escalate", () => {
 
     // First failure → nudge sent (retries=1, now at maxRetries)
     fireTurnEnd(bus)
-    await wait(300)
+    await waitFor(() => state.retries === 1)
     expect(state.retries).toBe(1)
     expect(state.status).toBe("watching")
 
@@ -435,5 +447,188 @@ describe("WP2 — bounded nudge + escalate", () => {
     expect(state.status).toBe("blocked")
     // sendPrompt called exactly once (only the first failure nudgeable)
     expect(registry.sendPrompt).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── WP3: persistence ─────────────────────────────────────────────────
+
+/**
+ * Build a minimal registry where sess_test is "running" by default,
+ * but can be swapped to a different status for the "session absent" case.
+ */
+function makeRegistryWithStatus(
+  cwd: string,
+  status: SessionDescriptor["status"] = "running",
+): SessionsRegistry {
+  const desc: SessionDescriptor = {
+    id: "sess_test",
+    kind: "agent-cli",
+    workspaceSlug: "test",
+    command: "mock",
+    pid: null,
+    status,
+    startedAt: new Date().toISOString(),
+    cwd,
+  }
+  return {
+    get: vi.fn((id: string) => (id === "sess_test" ? desc : undefined)),
+    findByIdOrName: vi.fn((q: string) => (q === "sess_test" ? desc : undefined)),
+    spawn: vi.fn(),
+    register: vi.fn(),
+    spawnAgent: vi.fn(),
+    spawnPty: vi.fn(),
+    sendPrompt: vi.fn(async () => {}),
+    enqueuePrompt: vi.fn(),
+    list: vi.fn(() => []),
+    attach: vi.fn(() => null),
+    attachPty: vi.fn(() => null),
+    writeTerminalInput: vi.fn(() => false),
+    readTerminalOutput: vi.fn(async () => ({ lines: [], nextCursor: 0 })),
+    tailLines: vi.fn(async () => ({ lines: [], nextCursor: 0, skipped: 0 })),
+    kill: vi.fn(),
+    forget: vi.fn(),
+    shutdown: vi.fn(),
+  } as unknown as SessionsRegistry
+}
+
+describe("WP3 — persistence", () => {
+  let workspace: string
+  let persistPath: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false"])
+    const tmp = await mkdtemp(join(tmpdir(), "agentproto-sup-persist-"))
+    persistPath = join(tmp, "policies.json")
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+    await rm(join(persistPath, ".."), { recursive: true, force: true })
+  })
+
+  it("(a) policy is written to disk after attach + shutdown", async () => {
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus,
+      workspace,
+      persistPath,
+    })
+
+    const state = supervisor.attach({ sessionId: "sess_test", then: "emit" })
+    supervisor.shutdown()
+
+    const raw = await readFile(persistPath, "utf8")
+    const snap = JSON.parse(raw)
+    expect(snap.policies).toHaveLength(1)
+    expect(snap.policies[0].state.policyId).toBe(state.policyId)
+    expect(snap.policies[0].state.status).toBe("watching")
+    expect(snap.policies[0].input.sessionId).toBe("sess_test")
+  })
+
+  it("(b) reload restores policy state from disk", async () => {
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+    })
+    const state = sup1.attach({ sessionId: "sess_test", then: "emit" })
+    sup1.shutdown()
+
+    // Simulate restart: new supervisor loads the file
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+    })
+
+    const restored = sup2.getStatus(state.policyId)
+    expect(restored).toBeDefined()
+    expect(restored?.policyId).toBe(state.policyId)
+    expect(restored?.status).toBe("watching")
+  })
+
+  it("(c) re-arm: turn-end after reload triggers gate", async () => {
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+    })
+    const state = sup1.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "emit",
+    })
+    sup1.shutdown()
+
+    // Restart
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+    })
+
+    const passedEvent = new Promise<string>(resolve => {
+      bus2.on("policy:passed", ev => resolve(ev.policyId))
+    })
+
+    // Fire turn-end on the new bus → re-armed policy should run the gate
+    bus2.emit({
+      type: "session:turn-end",
+      sessionId: "sess_test",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+
+    const policyId = await passedEvent
+    expect(policyId).toBe(state.policyId)
+
+    await wait(20)
+    expect(sup2.getStatus(state.policyId)?.status).toBe("done")
+  })
+
+  it("(d) session absent at reload → policy cancelled, no crash", async () => {
+    const bus1 = createSessionEventBus()
+    const sup1 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace, "running"),
+      sessionEvents: bus1,
+      workspace,
+      persistPath,
+    })
+    const state = sup1.attach({ sessionId: "sess_test", then: "emit" })
+    sup1.shutdown()
+
+    // Restart with a registry that reports the session as "killed"
+    const bus2 = createSessionEventBus()
+    const sup2 = createCompletionPolicySupervisor({
+      registry: makeRegistryWithStatus(workspace, "killed"),
+      sessionEvents: bus2,
+      workspace,
+      persistPath,
+    })
+
+    const restored = sup2.getStatus(state.policyId)
+    expect(restored?.status).toBe("cancelled")
+    expect(restored?.error).toMatch(/session absent/)
+
+    // No gate should run even if a turn-end fires
+    const passed = vi.fn()
+    bus2.on("policy:passed", passed)
+    bus2.emit({
+      type: "session:turn-end",
+      sessionId: "sess_test",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+    await wait(100)
+    expect(passed).not.toHaveBeenCalled()
   })
 })
