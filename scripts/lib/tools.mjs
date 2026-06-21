@@ -534,11 +534,58 @@ function allTools(ctx) {
     },
   }
 
+  const gh_list_labels = {
+    def: {
+      name: 'gh_list_labels',
+      description: 'List the labels that exist in this repository (name + description). Apply only labels from this list.',
+      input_schema: { type: 'object', properties: {} },
+    },
+    impl: () => {
+      try {
+        const out = execFileSync('gh', ['label', 'list', '--limit', '100', '--json', 'name,description'],
+          { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+        return out.trim() || '(no labels)'
+      } catch (e) {
+        return `(error listing labels: ${e.message})`
+      }
+    },
+  }
+
+  const gh_label = {
+    def: {
+      name: 'gh_label',
+      description: 'Add (and/or remove) labels on an issue or PR. Use only labels that exist (call gh_list_labels first).',
+      input_schema: {
+        type: 'object',
+        properties: {
+          number: { type: 'string', description: 'Issue/PR number (default: current)' },
+          add: { type: 'array', items: { type: 'string' }, description: 'Labels to add' },
+          remove: { type: 'array', items: { type: 'string' }, description: 'Labels to remove' },
+        },
+      },
+    },
+    impl: ({ number, add = [], remove = [] } = {}) => {
+      const n = number ?? prNumber
+      if (!n) return '(no issue/PR number)'
+      if (dryRun) return `[dry-run] would add [${add.join(', ')}] remove [${remove.join(', ')}] on #${n}`
+      const flags = ['issue', 'edit', String(n)]
+      for (const l of add) flags.push('--add-label', l)
+      for (const l of remove) flags.push('--remove-label', l)
+      if (add.length === 0 && remove.length === 0) return '(no labels specified)'
+      try {
+        execFileSync('gh', flags, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+        return `Labels updated on #${n} (+[${add.join(', ')}] -[${remove.join(', ')}])`
+      } catch (e) {
+        return `(error updating labels: ${e.message})`
+      }
+    },
+  }
+
   return {
     git_diff, git_log, grep_repo, read_file, list_dir, list_changed_packages,
     write_file, run_command, write_changeset,
-    gh_get_pr, gh_get_issue, get_review,
-    gh_pr_comment, gh_pr_review, gh_open_pr,
+    gh_get_pr, gh_get_issue, get_review, gh_list_labels,
+    gh_pr_comment, gh_pr_review, gh_open_pr, gh_label,
   }
 }
 
@@ -549,6 +596,7 @@ export const TOOL_GROUPS = {
   fix: ['write_file', 'run_command', 'get_review', 'gh_pr_comment'],
   pr: ['write_file', 'run_command', 'write_changeset', 'gh_open_pr', 'gh_get_issue', 'gh_pr_comment'],
   explain: ['gh_pr_comment'],
+  triage: ['gh_get_issue', 'gh_list_labels', 'gh_label', 'gh_pr_comment'],
 }
 
 /** Expand a list of tool names and/or @group references into a flat name list. */

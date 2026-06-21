@@ -35,7 +35,7 @@ const ISSUE_NUMBER = process.env.ISSUE_NUMBER || null
 if (!apiKey) { console.error('Error: ANTHROPIC_API_KEY is required.'); process.exit(1) }
 
 const config = loadConfig()
-const KNOWN_VERBS = ['review', 'fix', 'pr', 'implement', 'explain', 'help']
+const KNOWN_VERBS = ['review', 'fix', 'pr', 'implement', 'triage', 'explain', 'help']
 
 // ── parse the comment into { verb, args, freeText } ──────────────────────────
 
@@ -132,6 +132,7 @@ Comment any of these (slash-command, or \`${config.botMention} <verb> …\`):
 | \`/fix --pr\` | Apply them on a new \`bot/fix-<pr>\` branch and open a stacked PR |
 | \`/pr <request>\` | Implement \`<request>\` on a new branch and open a PR |
 | \`/implement\` | (on an issue) Implement the issue and open a PR |
+| \`/triage\` | (on an issue) Re-triage: summarize, label, suggest next step |
 | \`/explain <question>\` | Answer a question about the diff/codebase |
 | \`/help\` | Show this list |
 
@@ -146,6 +147,15 @@ switch (parsed.verb) {
   case 'review': {
     if (!PR_NUMBER) { postComment('`/review` only works on a pull request.'); break }
     execScript('review-pr.mjs', ['--pr', PR_NUMBER])
+    break
+  }
+
+  case 'triage': {
+    const n = ISSUE_NUMBER ?? PR_NUMBER
+    if (!n) { postComment('`/triage` needs an issue or PR.'); break }
+    execFileSync('node', ['scripts/triage-issue.mjs'], {
+      cwd: ROOT, stdio: 'inherit', env: { ...process.env, ISSUE_NUMBER: String(n) },
+    })
     break
   }
 

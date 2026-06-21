@@ -14,6 +14,11 @@ surfaces share one core.
 4. `pr-fix` — if the review requested changes, the agent applies them and pushes
    to the PR branch. Bounded by `maxFixIterations`, then escalates to a human.
 
+### Automatic (on issue open) — `.github/workflows/issue-triage.yml`
+When an issue is opened/reopened, the agent reads it, applies existing labels,
+and posts a concise triage note (type · area · actionable? · next step). Re-run
+on demand with `/triage`.
+
 ### On-demand (comment a command) — `.github/workflows/agent-command.yml`
 Triggered by **slash-commands** or an **@mention** on a PR or issue. Only
 write-access authors (OWNER / MEMBER / COLLABORATOR) can invoke it.
@@ -25,6 +30,7 @@ write-access authors (OWNER / MEMBER / COLLABORATOR) can invoke it.
 | `/fix --pr` | PR | Apply them on `bot/fix-<pr>` and open a **stacked PR** |
 | `/pr <request>` | PR/issue | Implement `<request>` on a new branch, open a PR |
 | `/implement` | issue | Implement the issue, open a PR |
+| `/triage` | issue | Re-triage: summarize, apply labels, suggest next step |
 | `/explain <question>` | PR/issue | Investigate and answer as a comment |
 | `/help` | anywhere | Post the command list |
 | `@agentproto-bot <free text>` | PR/issue | Interpret intent and act (defaults to proposing a PR) |
@@ -80,6 +86,13 @@ from a flow.
   Falls back to `secrets.GITHUB_TOKEN` when absent.
 
 ## Deferred (next phase)
-Issues-as-actionable (auto-triage, label, implement), Discussions, and Wiki
-edits — the App token already carries the scopes; they layer onto the same
-dispatcher.
+**Discussions** (`on: discussion_comment`, answer/triage) and **Wiki** edits
+(clone `<repo>.wiki.git`, edit, push). Both layer onto the same dispatcher but
+need the GitHub App's permissions widened first:
+- Discussions → App permission **Discussions: Read & write** (API is GraphQL:
+  `gh api graphql`).
+- Wiki → the wiki is a separate git repo; the App token can push to it once the
+  wiki is enabled. Add a `gh_wiki_edit` tool that clones/edits/pushes.
+
+Issues-as-actionable is **shipped**: auto-triage on open + `/triage`, `/implement`,
+and `/pr` from an issue.

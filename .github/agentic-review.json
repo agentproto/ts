@@ -20,6 +20,9 @@
       "skills": ["aip-conventions"],
       "fixDelivery": "pr"
     },
+    "triage": {
+      "skills": ["aip-conventions"]
+    },
     "explain": {
       "skills": []
     }
