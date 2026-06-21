@@ -25,6 +25,7 @@
     "changeset:auto": "node scripts/auto-changeset.mjs --engine cloud",
     "changeset:ai": "node scripts/auto-changeset.mjs",
     "review:ai": "node scripts/agentflow/review.mjs",
+    "review:loop": "node scripts/agentflow/loop.mjs",
     "prepare": "husky",
     "version": "changeset version",
     "release": "scripts/release.sh",

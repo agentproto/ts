@@ -22,11 +22,11 @@
  * you trust it for a given branch.
  */
 
-import { execSync, spawnSync } from 'node:child_process'
+import { execSync } from 'node:child_process'
 import { openSync, readSync, closeSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { loadAgentflowConfig, resolveEngine } from './config.mjs'
-import { runLlm, stripFences } from './llm.mjs'
+import { gatherDiff, reviewDiff, DIFF_CAP } from './primitives/review.mjs'
+import { runCode } from './primitives/code.mjs'
 
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '')
 const AGENTFLOW = loadAgentflowConfig(ROOT)
@@ -56,81 +56,45 @@ function run(cmd) {
   return execSync(cmd, { cwd: ROOT, encoding: 'utf8' }).trim()
 }
 
-// ── gather the diff ──────────────────────────────────────────────────────────
+// ── gather + review (via primitives) ───────────────────────────────────────────
 
-let changedFiles = ''
+const engine = resolveEngine(AGENTFLOW.review, { flag: ENGINE_FLAG })
+
+let diffInfo
 try {
-  changedFiles = run('git diff --name-only origin/main...HEAD')
+  diffInfo = gatherDiff(ROOT)
 } catch {
   console.error('[agentflow] review: cannot diff against origin/main (fetch it first?).')
   process.exit(0) // non-fatal for a hook
 }
+const { changedFiles, fileCount, diff: rawDiff, truncated } = diffInfo
 if (!changedFiles) {
   console.log('[agentflow] review: no changes vs origin/main — nothing to review.')
   process.exit(0)
 }
-
-// Three-dot (merge-base) for the diff: review what the branch *introduces*,
-// independent of how far main has moved. (CI's bypass marker check uses
-// two-dot `origin/main..HEAD` — it scans the branch's commit range for the
-// marker, a different question, so the asymmetry is intentional.)
-const DIFF_CAP = 16_000
-const fullDiff = run('git diff origin/main...HEAD')
-const truncated = fullDiff.length > DIFF_CAP
-const rawDiff = fullDiff.slice(0, DIFF_CAP)
 if (truncated) {
-  console.warn(
-    `[agentflow] review: diff is ${fullDiff.length} chars — reviewing the first ${DIFF_CAP} only (partial).`,
-  )
+  console.warn(`[agentflow] review: diff truncated — reviewing the first ${DIFF_CAP} chars (partial).`)
 }
 
-// ── review (engine-routed) ────────────────────────────────────────────────────
+console.log(`[agentflow] reviewing ${fileCount} file(s) vs origin/main (engine: ${engine})…`)
 
-const engine = resolveEngine(AGENTFLOW.review, { flag: ENGINE_FLAG })
-
-const systemPrompt = `You are a senior code reviewer for the @agentproto/ts monorepo.
-Review the diff for correctness bugs and obvious simplifications. Be terse and
-high-signal: only flag things that matter. Do NOT nitpick style.
-
-Reply ONLY with valid JSON — no markdown fences, no prose:
-{
-  "decision": "approve" | "request_changes",
-  "summary": "one-line verdict",
-  "findings": [{ "severity": "high|medium|low", "file": "path", "note": "what + why" }]
-}
-
-Use "request_changes" only for real correctness problems (bugs, broken contracts,
-security). Simplifications are "low" findings under an "approve".`
-
-const userPrompt = `Changed files:\n${changedFiles}\n\nDiff (may be truncated):\n${rawDiff}`
-
-console.log(`[agentflow] reviewing ${changedFiles.split('\n').length} file(s) vs origin/main (engine: ${engine})…`)
-
-let raw
+let verdict
 try {
-  raw = await runLlm({
-    system: systemPrompt,
-    user: userPrompt,
+  verdict = await reviewDiff({
+    changedFiles,
+    diff: rawDiff,
     engine,
     model: AGENTFLOW.review.model ?? undefined,
     claudeBin: AGENTFLOW.review.command ?? 'claude',
   })
 } catch (err) {
-  console.error(err.message)
+  console.error('[agentflow] review:', err.message)
   process.exit(0) // a flaky review must not wedge a push
-}
-
-let verdict
-try {
-  verdict = JSON.parse(stripFences(raw))
-} catch {
-  console.error('[agentflow] review: could not parse model output as JSON:\n', raw)
-  process.exit(0)
 }
 
 // ── report ────────────────────────────────────────────────────────────────────
 
-const findings = Array.isArray(verdict.findings) ? verdict.findings : []
+const findings = verdict.findings
 console.log(`\n  ${verdict.decision === 'approve' ? '✓ APPROVE' : '✗ REQUEST CHANGES'} — ${verdict.summary ?? ''}`)
 for (const f of findings) {
   console.log(`    [${f.severity ?? '?'}] ${f.file ?? ''}: ${f.note ?? ''}`)
@@ -160,21 +124,22 @@ function promptYesNo(question) {
   }
 }
 
-/** Apply the findings via the local Claude Code CLI (edits the working tree). */
+/** Apply the findings via the `code` primitive (local Claude CLI edits). */
 function applyFixes(items) {
   const instructions = items
     .map((f, i) => `${i + 1}. [${f.severity ?? '?'}] ${f.file ?? ''}: ${f.note ?? ''}`)
     .join('\n')
-  const prompt =
+  const goal =
     `Apply minimal edits to this repository to fix ONLY the code-review findings ` +
     `below. Do not reformat unrelated code and do not create commits.\n\nFindings:\n${instructions}`
   console.log('[agentflow] applying fixes with the local Claude CLI…\n')
-  const res = spawnSync(
-    AGENTFLOW.review.command ?? 'claude',
-    ['-p', prompt, '--permission-mode', 'acceptEdits', '--allowedTools', 'Edit', 'Read', 'Grep'],
-    { cwd: ROOT, stdio: 'inherit' },
-  )
-  if (res.status !== 0) {
+  const { ok } = runCode({
+    goal,
+    engine,
+    claudeBin: AGENTFLOW.review.command ?? 'claude',
+    root: ROOT,
+  })
+  if (!ok) {
     console.error('[agentflow] fixer exited non-zero — inspect the working tree.')
     return false
   }
