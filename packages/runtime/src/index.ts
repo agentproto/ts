@@ -28,6 +28,11 @@ import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
 import { registerSessionTools } from "./session-tools.js"
+import {
+  registerBrowserTools,
+  type BrowserAdapterResolver,
+  type BrowserAdapterLister,
+} from "./browser-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeSessionsPanelApp } from "./sessions-panel-app.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
@@ -54,6 +59,7 @@ export type {
   AgentAdapterLister,
   AdapterListEntry,
 } from "./http-server.js"
+export type { BrowserAdapterResolver, BrowserAdapterLister } from "./browser-tools.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
@@ -130,6 +136,12 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional browser adapter resolver — when provided, enables the
+   *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
+  resolveBrowserAdapter?: BrowserAdapterResolver
+  /** Optional browser adapter lister — when provided, enables the
+   *  `list_adapter_browsers` MCP tool. */
+  listBrowserAdapters?: BrowserAdapterLister
   /** Optional PTY factory (node-pty wrapper, typically from the cli
    *  layer's `loadNodePtyFactory()`). When provided, enables
    *  `POST /sessions/terminal`, the `start_terminal_session` MCP
@@ -339,6 +351,15 @@ export async function createGateway(
         : {}),
       ...(opts.listAgentAdapters
         ? { listAgentAdapters: opts.listAgentAdapters }
+        : {}),
+    })
+    registerBrowserTools(server, {
+      registry: sessions,
+      ...(opts.resolveBrowserAdapter
+        ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
+        : {}),
+      ...(opts.listBrowserAdapters
+        ? { listBrowserAdapters: opts.listBrowserAdapters }
         : {}),
     })
     registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor })

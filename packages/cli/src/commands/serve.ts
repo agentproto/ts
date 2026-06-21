@@ -63,6 +63,7 @@ import {
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
+import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { driverSpec } from "@agentproto/driver"
 import {
@@ -290,6 +291,16 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // pty:true spawns.
   const spawnPty = await loadNodePtyFactory()
 
+  // ── browser adapter resolver + lister (powers MCP start_browser / list_adapter_browsers) ──
+  const resolveBrowserAdapter = (id: string) => getBrowserAdapter(id)
+  const listBrowserAdapters = () =>
+    Object.values(browserAdapters).map(a => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      defaultPort: a.defaultPort,
+    }))
+
   // ── boot the gateway ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
@@ -308,6 +319,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed.
       listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),
+      resolveBrowserAdapter,
+      listBrowserAdapters,
       ...(spawnPty ? { spawnPty } : {}),
       ...(opts.allowedOrigins
         ? { allowedOrigins: opts.allowedOrigins }
