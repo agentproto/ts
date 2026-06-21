@@ -6,6 +6,7 @@ import { createCompletionPolicySupervisor } from "../supervisor.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { SessionEventBus } from "../session-event-bus.js"
+import type { AgentAdapterResolver } from "../http-server.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -67,11 +68,11 @@ function makeJudgeRegistry(
 }
 
 /** Resolver that hands back a no-op agent session (no real LLM). */
-function makeResolver() {
+function makeResolver(): AgentAdapterResolver {
   return vi.fn(async (_slug: string) => ({
     startSession: vi.fn(async () => ({}) as unknown),
     commandPreview: "judge (agent)",
-  }))
+  })) as unknown as AgentAdapterResolver
 }
 
 async function makeWorkspace(): Promise<string> {

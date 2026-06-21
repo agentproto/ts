@@ -1,0 +1,4 @@
+{
+  "$comment": "Copy to .agentflow.local.json (gitignored) to opt in. Example: auto-generate a changeset locally before each push using the Claude Code CLI.",
+  "changeset": { "stage": "push", "engine": "local" }
+}
