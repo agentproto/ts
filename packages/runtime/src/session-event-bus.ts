@@ -17,6 +17,8 @@ export type SessionEventType =
   | "session:command-done"
   | "policy:passed"
   | "policy:failed"
+  | "policy:commit-ready"
+  | "policy:committed"
 
 export interface SessionTurnEndEvent {
   type: "session:turn-end"
@@ -69,6 +71,34 @@ export interface PolicyFailedEvent {
   ts: string
 }
 
+/**
+ * Emitted by the supervisor (WP5) when a `then:"commit"` policy's gate passes
+ * but `requireHumanAck` is set: the commit is staged-and-ready but NOT yet
+ * executed. Carries the exact paths + message that `ack_policy(approve:true)`
+ * will commit. The policy sits in `awaiting-ack` until acked.
+ */
+export interface PolicyCommitReadyEvent {
+  type: "policy:commit-ready"
+  policyId: string
+  sessionId: string
+  paths: string[]
+  message: string
+  ts: string
+}
+
+/** Emitted by the supervisor (WP5) when a `then:"commit"` policy has actually
+ *  committed — either directly (requireHumanAck:false) or after an approving
+ *  `ack_policy`. Carries the resulting commit sha. */
+export interface PolicyCommittedEvent {
+  type: "policy:committed"
+  policyId: string
+  sessionId: string
+  sha: string
+  paths: string[]
+  message: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -76,6 +106,8 @@ export type SessionEvent =
   | SessionCommandDoneEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
+  | PolicyCommitReadyEvent
+  | PolicyCommittedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

@@ -14,7 +14,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
-import type { CompletionPolicySupervisor } from "./supervisor.js"
+import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
@@ -52,7 +52,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -197,70 +197,121 @@ export function registerOrchestrationTools(
   // ── Supervisor tools (optional — only registered when supervisor is provided) ─
   const { supervisor } = opts
   if (supervisor) {
+    // Base shape of a completion policy (shared by attach_policy and, via
+    // z.lazy, the recursive `next` DAG chain — WP6).
+    const policyShapeBase = {
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Session id to watch (single-session form). Provide this OR " +
+            "`sessionIds`. Equivalent to `sessionIds: [sessionId]`.",
+        ),
+      sessionIds: z
+        .array(z.string())
+        .min(1)
+        .optional()
+        .describe(
+          "Fan-in group: the gate runs once, only after EVERY listed session " +
+            "has finished its turn (turn-end or exit). Supersedes `sessionId`.",
+        ),
+      gate: z
+        .object({
+          command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
+          args: z.array(z.string()).optional().describe("Argv passed verbatim."),
+          cwd: z
+            .string()
+            .optional()
+            .describe("Working directory for the gate. Defaults to the session's cwd."),
+          timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
+        })
+        .optional()
+        .describe("Shell gate. Absent → always passes immediately after turn-end."),
+      then: z
+        .enum(["emit", "commit"])
+        .describe(
+          "Action on a GREEN gate. 'emit' → emits policy:passed. 'commit' → " +
+            "stages the explicit `commit.paths` and commits on the host " +
+            "(requires `commit`; git must be allowlisted).",
+        ),
+      commit: z
+        .object({
+          paths: z
+            .array(z.string().min(1))
+            .min(1)
+            .describe(
+              "Explicit literal paths to stage (workspace-relative). Staged " +
+                "via `git add -- <paths>` — never `-A`, never a glob.",
+            ),
+          message: z.string().min(1).describe("Commit message (passed as argv, no shell)."),
+          requireHumanAck: z
+            .boolean()
+            .optional()
+            .describe(
+              "Default TRUE. When true, the green gate parks in awaiting-ack " +
+                "and emits policy:commit-ready; the commit runs only on " +
+                "ack_policy(approve:true). When false, commits directly. " +
+                "Never pushes, never --force.",
+            ),
+        })
+        .optional()
+        .describe("Required when then === 'commit' (WP5)."),
+      onFail: z
+        .object({
+          nudge: z
+            .string()
+            .optional()
+            .describe(
+              "Message sent to the session when the gate fails. " +
+                "Use {code} as a placeholder for the exit code. " +
+                "Default: built-in message in French.",
+            ),
+          maxRetries: z
+            .number()
+            .int()
+            .min(1)
+            .max(10)
+            .optional()
+            .describe(
+              "Maximum consecutive gate failures before blocking. Default: 2.",
+            ),
+        })
+        .optional()
+        .describe(
+          "What to do when the gate fails (WP2). Absent → immediately blocked. " +
+            "Present → re-prompt the session up to maxRetries times then block. " +
+            "The session must still be running to receive a nudge.",
+        ),
+    }
+
+    // WP6: a policy may declare `next` — a full (recursive) completion policy
+    // attached automatically when this policy reaches `done`. Chains over
+    // already-running sessions named in the child's own spec.
+    const policyInputSchema: z.ZodTypeAny = z.lazy(() =>
+      z.object({ ...policyShapeBase, next: policyInputSchema.optional() }),
+    )
+    const nextField = {
+      next: policyInputSchema
+        .optional()
+        .describe(
+          "DAG chaining (WP6): a full completion policy (recursive) attached " +
+            "automatically when THIS policy reaches done. It watches the " +
+            "session(s) named in its own spec. Chains policies over existing " +
+            "sessions — does not spawn new sessions.",
+        ),
+    }
+
     server.tool(
       "attach_policy",
       "Attach a completion policy to a running session (or a fan-in group). When " +
         "the watched session emits turn-end — or, for a group, once EVERY member " +
         "has finished its turn — an optional shell gate runs (exit 0 = pass). The " +
         "result is emitted as `policy:passed` or `policy:failed` on the event bus " +
-        "(readable via poll_events). Returns the policyId immediately.",
+        "(readable via poll_events). A policy may declare `next` to chain another " +
+        "policy when it completes (WP6 DAG). Returns the policyId immediately.",
       {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            "Session id to watch (single-session form). Provide this OR " +
-              "`sessionIds`. Equivalent to `sessionIds: [sessionId]`.",
-          ),
-        sessionIds: z
-          .array(z.string())
-          .min(1)
-          .optional()
-          .describe(
-            "Fan-in group: the gate runs once, only after EVERY listed session " +
-              "has finished its turn (turn-end or exit). Supersedes `sessionId`.",
-          ),
-        gate: z
-          .object({
-            command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
-            args: z.array(z.string()).optional().describe("Argv passed verbatim."),
-            cwd: z
-              .string()
-              .optional()
-              .describe("Working directory for the gate. Defaults to the session's cwd."),
-            timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
-          })
-          .optional()
-          .describe("Shell gate. Absent → always passes immediately after turn-end."),
-        then: z
-          .literal("emit")
-          .describe("Action to take after the gate. Only 'emit' is supported in WP1/WP2."),
-        onFail: z
-          .object({
-            nudge: z
-              .string()
-              .optional()
-              .describe(
-                "Message sent to the session when the gate fails. " +
-                  "Use {code} as a placeholder for the exit code. " +
-                  "Default: built-in message in French.",
-              ),
-            maxRetries: z
-              .number()
-              .int()
-              .min(1)
-              .max(10)
-              .optional()
-              .describe(
-                "Maximum consecutive gate failures before blocking. Default: 2.",
-              ),
-          })
-          .optional()
-          .describe(
-            "What to do when the gate fails (WP2). Absent → immediately blocked. " +
-              "Present → re-prompt the session up to maxRetries times then block. " +
-              "The session must still be running to receive a nudge.",
-          ),
+        ...policyShapeBase,
+        ...nextField,
       },
       async input => {
         if (!input.sessionId && !(input.sessionIds && input.sessionIds.length > 0)) {
@@ -273,15 +324,38 @@ export function registerOrchestrationTools(
             ],
           }
         }
-        const state = supervisor.attach({
-          sessionId: input.sessionId,
-          sessionIds: input.sessionIds,
-          gate: input.gate,
-          then: input.then,
-          onFail: input.onFail,
-        })
-        return {
-          content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+        if (input.then === "commit" && !input.commit) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: 'then:"commit" requires a commit spec' }),
+              },
+            ],
+          }
+        }
+        try {
+          const state = supervisor.attach({
+            sessionId: input.sessionId,
+            sessionIds: input.sessionIds,
+            gate: input.gate,
+            then: input.then,
+            commit: input.commit,
+            onFail: input.onFail,
+            next: input.next as AttachPolicyInput["next"],
+          })
+          return {
+            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+          }
         }
       },
     )
@@ -314,6 +388,45 @@ export function registerOrchestrationTools(
         const state = supervisor.getStatus(input.policyId)
         return {
           content: [{ type: "text", text: JSON.stringify({ policyId: input.policyId, status: state?.status ?? "not_found" }) }],
+        }
+      },
+    )
+
+    server.tool(
+      "ack_policy",
+      "Acknowledge a `then:\"commit\"` policy parked in `awaiting-ack` (WP5). " +
+        "`approve:true` runs the prepared host commit (git add <paths> + git " +
+        "commit; never -A/push/--force) → emits policy:committed (+sha) → done. " +
+        "`approve:false` cancels it (no commit). No-op on any other state.",
+      {
+        policyId: z.string().describe("Policy id returned by `attach_policy`."),
+        approve: z
+          .boolean()
+          .describe("true → run the commit; false → cancel without committing."),
+      },
+      async input => {
+        const state = await supervisor.ack(input.policyId, input.approve)
+        if (!state) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "policy not found", policyId: input.policyId }) }],
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  policyId: state.policyId,
+                  status: state.status,
+                  ...(state.commitSha ? { sha: state.commitSha } : {}),
+                  ...(state.error ? { error: state.error } : {}),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
         }
       },
     )

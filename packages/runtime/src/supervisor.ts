@@ -1,10 +1,27 @@
 /**
- * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4.
+ * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6 + WP7.
+ *
+ * WP7 (judge-gate): a gate may be a judge AGENT instead of a shell command —
+ * `gate: { judge: { adapter, model?, prompt, timeoutMs? } }`. When the trigger
+ * fires the supervisor spawns a short-lived agent (resolveAgentAdapter →
+ * spawnAgent), prompts it with the rubric (+ a minimal context tail of the
+ * watched session output), waits for its turn-end on the bus, reads the final
+ * reply and parses the LAST `VERDICT: PASS|FAIL` line (case-insensitive). PASS
+ * = gate pass (then-action), FAIL = gate fail (existing nudge/escalate path).
+ * Fail-safe: no resolver / spawn fail / timeout (default 120s) / unparseable
+ * verdict → FAIL (+ reason on state.error). The judge session is ALWAYS killed
+ * when the gate settles. The judge runs while the policy holds its `gating`
+ * slot, so it is accounted for in the WP6 concurrency cap. Persistence: a judge
+ * gate left in `gating` at crash is re-armed to `watching` like any active
+ * policy and simply re-runs the judge — no in-flight judge is persisted.
+ *
  *
  * State machine per attached policy:
  *   watching → gating → acting → done
  *                    ↘ nudging (retries < maxRetries) → watching  (gate failed, nudge sent)
  *                    ↘ blocked                                     (gate failed, retries exhausted)
+ *                    ↘ awaiting-ack → done       (then:"commit" + requireHumanAck, ack approve)
+ *                                  ↘ cancelled    (ack reject)
  *   watching → cancelled  (watched session exited before turn-end)
  *
  * Trigger: session:turn-end on the watched session(s).
@@ -12,6 +29,20 @@
  *       execute_command. exit 0 = pass.
  * Action (then:"emit"): emits policy:passed / policy:failed on the bus
  *       (readable via poll_events).
+ *
+ * WP5 (then:"commit"): on a GREEN gate, prepare a host-side git commit in the
+ * watched session's cwd — `git add -- <explicit paths>` then `git commit -m
+ * <message>` via the same allowlisted runCommand path (argv array, shell:false).
+ * GUARDRAILS: never `git add -A`/glob, never `git push`, never `--force`, never
+ * a branch the policy didn't ask for (commits the cwd's current branch), message
+ * passed as argv (no shell injection), empty paths → error (no commit). A `--`
+ * separator precedes the paths so a path can never be parsed as a git flag.
+ * "nothing to commit" is treated as SUCCESS (idempotent re-commit after a
+ * restart). `requireHumanAck` defaults to TRUE: the gate-green transition goes
+ * to `awaiting-ack` and emits `policy:commit-ready` (paths + message) instead of
+ * committing; the commit runs only on `ack_policy(approve:true)` →
+ * `policy:committed` (+ sha) → done; `approve:false` → cancelled. With
+ * `requireHumanAck:false` the commit runs directly at the green gate.
  * onFail (WP2): when gate fails, re-prompts the session(s) (sendPrompt) up to
  *       maxRetries times, then transitions to blocked + emits policy:failed.
  *
@@ -20,6 +51,25 @@
  * at shutdown(). On boot, active policies (watching/gating/nudging/acting) are
  * re-armed to "watching" and re-subscribed to the bus. Terminal states (done/
  * blocked/cancelled) are kept for history. Session absent at reload → cancelled.
+ *
+ * WP6 (DAG + concurrency cap):
+ *   - CHAINING: a policy may declare `next` — a recursive AttachPolicyInput.
+ *     When the policy reaches `done` (emit-passed or commit-committed), the
+ *     supervisor automatically attaches `next` as a fresh completion policy on
+ *     the session(s) named in its own spec (chaining policies over EXISTING
+ *     sessions — this WP does NOT spawn new sessions). The child's policyId is
+ *     recorded on the parent as `nextPolicyId`. Chaining is idempotent (a parent
+ *     already carrying a `nextPolicyId` never re-chains, so a re-armed/re-acked
+ *     parent after a restart won't double-attach). `next` persists as part of the
+ *     parent's `input`, so the whole chain survives a restart.
+ *   - CONCURRENCY CAP: a daemon-wide cap (`concurrencyCap`, default 8) on how
+ *     many policies may be in `gating`/`acting` at once. When a trigger fires
+ *     and the cap is already saturated, the policy parks in `queued` (a FIFO
+ *     gate queue) instead of gating. As each active policy settles (done /
+ *     blocked / awaiting-ack / back-to-watching after a nudge), the queue is
+ *     pumped and the oldest queued policy proceeds to gate. Queued policies hold
+ *     NO slot, so a chained DAG can't deadlock behind the cap. The queued state
+ *     persists and is re-armed to `watching` on reload (then re-evaluated).
  *
  * WP4 (fan-in): a policy may watch a GROUP of sessions (`sessionIds`). The gate
  * runs ONCE, only after EVERY member of the group has finished its turn. Members
@@ -52,7 +102,13 @@ import {
 } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
-import { runCommand, loadAllowlist, makeCwdAnchor } from "./command-tools.js"
+import type { AgentAdapterResolver } from "./http-server.js"
+import {
+  runCommand as defaultRunCommand,
+  loadAllowlist,
+  makeCwdAnchor,
+} from "./command-tools.js"
+import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -63,6 +119,41 @@ export interface ShellGateSpec {
    *  session's cwd, anchored to the workspace. */
   cwd?: string
   timeoutMs?: number
+}
+
+/**
+ * Judge-agent gate (WP7). Instead of a shell command, the gate spawns a
+ * short-lived LLM agent (via the daemon's `resolveAgentAdapter`), prompts it
+ * with `prompt` (+ a minimal context tail of the watched session output, if
+ * readable), waits for its turn to end, reads the final reply and parses a
+ * verdict line (`VERDICT: PASS` / `VERDICT: FAIL`, last occurrence,
+ * case-insensitive). PASS = gate pass (exit 0 equivalent), FAIL = gate fail
+ * (→ the existing nudge/escalate path). Fail-safe: a judge timeout OR an
+ * unparseable reply is treated as FAIL. The judge session is always killed
+ * when the gate settles (success or failure).
+ */
+export interface JudgeGateSpec {
+  judge: {
+    /** Agent CLI adapter slug used to spawn the judge (e.g. "claude-code"). */
+    adapter: string
+    /** Optional model identifier forwarded to the adapter. */
+    model?: string
+    /** The rubric / instructions for the judge. The supervisor appends a
+     *  fixed instruction to end the reply with `VERDICT: PASS` or
+     *  `VERDICT: FAIL`. */
+    prompt: string
+    /** Max wall-clock for the judge turn before it is killed + FAIL.
+     *  Default 120_000ms. */
+    timeoutMs?: number
+  }
+}
+
+/** A gate is either a shell command (exit 0 = pass) or a judge agent. */
+export type GateSpec = ShellGateSpec | JudgeGateSpec
+
+/** Narrow a gate spec to the judge variant. */
+function isJudgeGate(gate: GateSpec): gate is JudgeGateSpec {
+  return typeof (gate as JudgeGateSpec).judge === "object"
 }
 
 export interface OnFailSpec {
@@ -79,6 +170,23 @@ export interface OnFailSpec {
   maxRetries?: number
 }
 
+export interface CommitSpec {
+  /**
+   * Explicit, literal paths to stage — workspace/cwd-relative. NEVER a glob,
+   * NEVER `-A`/`--all`. Staged via `git add -- <paths>` (the `--` guards each
+   * path from being parsed as a flag). An empty array is rejected at attach.
+   */
+  paths: string[]
+  /** Commit message. Passed as a single `-m` argv value — no shell. */
+  message: string
+  /**
+   * Human-in-the-loop gate before the commit actually runs. Default TRUE:
+   * the green gate transitions to `awaiting-ack` + emits `policy:commit-ready`
+   * and waits for `ack_policy`. Set false to commit directly at the green gate.
+   */
+  requireHumanAck?: boolean
+}
+
 export interface AttachPolicyInput {
   /**
    * Session id whose turn-end triggers the policy (single-session / legacy
@@ -92,23 +200,41 @@ export interface AttachPolicyInput {
    * present and non-empty. A single-element array behaves like `sessionId`.
    */
   sessionIds?: string[]
-  /** Optional shell gate. Absent → always pass immediately. */
-  gate?: ShellGateSpec
-  /** Only "emit" is supported in WP1/WP2. */
-  then: "emit"
+  /**
+   * Optional gate. Absent → always pass immediately. Either a shell gate
+   * (exit 0 = pass) or a judge-agent gate (WP7: `{ judge: {...} }`).
+   */
+  gate?: GateSpec
+  /**
+   * Action on a GREEN gate. "emit" (WP1) emits policy:passed. "commit" (WP5)
+   * stages explicit paths and commits on the host — see `commit`.
+   */
+  then: "emit" | "commit"
+  /** Required when then === "commit". Ignored otherwise. */
+  commit?: CommitSpec
   /**
    * What to do when the gate fails (WP2). Absent → immediately blocked
    * (WP1 behaviour). Present → re-prompt the session up to maxRetries
    * times before blocking; the session must still be running to nudge.
    */
   onFail?: OnFailSpec
+  /**
+   * DAG chaining (WP6). When this policy reaches `done`, the supervisor
+   * automatically attaches `next` as a fresh completion policy. `next` is a
+   * full AttachPolicyInput (recursive — it may declare its own `next`), and it
+   * carries the session(s) it watches in its own spec. Chaining only attaches
+   * policies onto already-running sessions; it never spawns new sessions.
+   */
+  next?: AttachPolicyInput
 }
 
 export type PolicyRunStatus =
   | "watching"
+  | "queued"
   | "gating"
   | "acting"
   | "nudging"
+  | "awaiting-ack"
   | "done"
   | "blocked"
   | "cancelled"
@@ -131,6 +257,20 @@ export interface PolicyRunState {
   startedAt: string
   endedAt?: string
   lastGate?: { exitCode: number; at: string }
+  /**
+   * The exact commit prepared at the green gate (WP5). Set when entering
+   * `awaiting-ack` (or just before a direct commit) so that an ack arriving
+   * after a daemon restart commits the same paths/message in the same cwd,
+   * independent of whether the watched session still exists.
+   */
+  commitPlan?: { paths: string[]; message: string; cwd: string }
+  /** The resulting commit sha once `then:"commit"` has committed. */
+  commitSha?: string
+  /**
+   * DAG chaining (WP6): the policyId of the child policy attached when this
+   * policy reached `done`. Set exactly once (idempotent chaining guard).
+   */
+  nextPolicyId?: string
   error?: string
 }
 
@@ -143,6 +283,13 @@ export interface CompletionPolicySupervisor {
   attach(input: AttachPolicyInput): PolicyRunState
   getStatus(policyId: string): PolicyRunState | undefined
   cancel(policyId: string): void
+  /**
+   * Human acknowledgement for a `then:"commit"` policy parked in
+   * `awaiting-ack` (WP5). `approve:true` runs the prepared commit (→ done,
+   * emits policy:committed); `approve:false` cancels it (no commit). No-op on
+   * any other state. Returns the (possibly updated) state.
+   */
+  ack(policyId: string, approve: boolean): Promise<PolicyRunState | undefined>
   list(): PolicyRunState[]
   /**
    * Sync flush of the policy snapshot to disk. Call from the daemon
@@ -162,6 +309,9 @@ interface RunEntry {
   state: PolicyRunState
   unsubscribes: Array<() => void>
   cancelled: boolean
+  /** Per-entry gate runner, set by armEntry; invoked by the concurrency-cap
+   *  queue pump (WP6) when a slot frees. */
+  runGate?: () => Promise<void>
 }
 
 /**
@@ -192,7 +342,36 @@ interface PolicySnapshot {
 const DEFAULT_NUDGE_TEMPLATE =
   "Le gate a échoué (exit {code}). Corrige et termine jusqu'à ce qu'il passe."
 const DEFAULT_MAX_RETRIES = 2
+/** Judge-gate (WP7) wall-clock default before timeout → kill + FAIL. */
+const DEFAULT_JUDGE_TIMEOUT_MS = 120_000
+/** Fixed instruction appended to the judge prompt so its verdict is parseable. */
+const JUDGE_VERDICT_INSTRUCTION =
+  "\n\nWhen you are done, end your reply with a single line containing exactly " +
+  "`VERDICT: PASS` (if the criteria are met) or `VERDICT: FAIL` (if not). " +
+  "Do not write anything after that line."
+/** Strip ANSI escape sequences (mirrors session-tools.stripAnsi). */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "")
+}
+/**
+ * Parse the judge verdict from its final reply. Scans for `VERDICT: PASS|FAIL`
+ * (case-insensitive) and returns the LAST occurrence. Returns null when no
+ * verdict line is present → caller treats as FAIL (fail-safe).
+ */
+function parseVerdict(text: string): "PASS" | "FAIL" | null {
+  const re = /VERDICT:\s*(PASS|FAIL)/gi
+  let last: "PASS" | "FAIL" | null = null
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    last = m[1]!.toUpperCase() as "PASS" | "FAIL"
+  }
+  return last
+}
 const PERSIST_DEBOUNCE_MS = 1_500
+/** Daemon-wide default cap on policies concurrently in gating/acting (WP6). */
+const DEFAULT_CONCURRENCY_CAP = 8
 
 export const POLICIES_FILE_PATH = (): string =>
   resolve(homedir(), ".agentproto", "policies.json")
@@ -207,9 +386,31 @@ export function createCompletionPolicySupervisor(opts: {
   persistPath?: string
   /** Disable persistence entirely (e.g. for unit tests that don't need it). */
   persist?: boolean
+  /**
+   * Inject the command runner — used by tests to mock git (gate + commit) so
+   * no real subprocess/commit runs. Defaults to the host runCommand.
+   */
+  runCommand?: (input: RunCommandInput) => Promise<ExecuteResult>
+  /**
+   * Daemon-wide cap on policies concurrently in gating/acting (WP6). Excess
+   * triggered policies queue (FIFO) until a slot frees. Default 8. Values < 1
+   * are clamped to 1.
+   */
+  concurrencyCap?: number
+  /**
+   * Adapter resolver used to spawn a judge agent for a judge-gate (WP7).
+   * Same resolver the daemon passes to `start_agent_session`. When absent, a
+   * judge-gate fails fail-safe (FAIL) with a clear reason — shell gates are
+   * unaffected.
+   */
+  resolveAgentAdapter?: AgentAdapterResolver
 }): CompletionPolicySupervisor {
-  const { registry, sessionEvents, workspace } = opts
+  const { registry, sessionEvents, workspace, resolveAgentAdapter } = opts
+  const exec = opts.runCommand ?? defaultRunCommand
   const persistPath = opts.persistPath ?? POLICIES_FILE_PATH()
+  const cap = Math.max(1, opts.concurrencyCap ?? DEFAULT_CONCURRENCY_CAP)
+  /** FIFO queue of entries whose trigger fired while the cap was saturated. */
+  const gateQueue: RunEntry[] = []
   // Default false: WP1/WP2 tests (no opts.persist, no opts.persistPath)
   // don't touch ~/.agentproto. Set opts.persist:true in production
   // (createGateway) or supply persistPath to implicitly enable it.
@@ -248,6 +449,176 @@ export function createCompletionPolicySupervisor(opts: {
         }
       })()
     }, PERSIST_DEBOUNCE_MS)
+  }
+
+  // ── concurrency cap (WP6) ────────────────────────────────────────
+
+  /** Policies currently holding a slot — i.e. in gating or acting. */
+  const countActive = (): number => {
+    let n = 0
+    for (const e of runs.values()) {
+      if (e.state.status === "gating" || e.state.status === "acting") n++
+    }
+    return n
+  }
+
+  /**
+   * Release-time pump: while there is a free slot, dequeue the oldest queued
+   * entry and run its gate. A dequeued entry is flipped back to `watching` so
+   * its runGate() guard passes; runGate() then synchronously sets `gating`
+   * (before its first await), so the loop's next countActive() sees the slot
+   * taken — no over-admission. Cancelled / no-longer-queued entries are skipped.
+   */
+  const pumpQueue = (): void => {
+    while (gateQueue.length > 0 && countActive() < cap) {
+      const entry = gateQueue.shift()!
+      if (entry.cancelled || entry.state.status !== "queued") continue
+      entry.state.status = "watching"
+      schedulePersist()
+      void entry.runGate?.()
+    }
+  }
+
+  // ── DAG chaining (WP6) ───────────────────────────────────────────
+
+  /**
+   * When `entry` reaches `done`, attach its `next` policy (if any) onto the
+   * session(s) named in the `next` spec. Idempotent: a parent that already
+   * carries a `nextPolicyId` never re-chains, so a re-armed or re-acked parent
+   * after a restart won't double-attach the child.
+   */
+  const maybeChain = (entry: RunEntry): void => {
+    const next = entry.input.next
+    if (!next) return
+    if (entry.state.nextPolicyId) return
+    try {
+      const child = attachPolicy(next)
+      entry.state.nextPolicyId = child.policyId
+      schedulePersist()
+    } catch (err) {
+      entry.state.error = `next chain failed: ${err instanceof Error ? err.message : String(err)}`
+      schedulePersist()
+    }
+  }
+
+  // ── commit action (WP5) ──────────────────────────────────────────
+
+  /**
+   * Stage explicit paths and commit on the host. Fixed argv, shell:false:
+   *   git add -- <paths...>      (the `--` guards paths from flag-parsing)
+   *   git commit -m <message>    (message is one argv value, never a shell str)
+   *   git rev-parse HEAD         (read back the sha)
+   * No `-A`, no glob, no push, no --force, no branch switch — the commit lands
+   * on whatever branch the cwd is already on. "nothing to commit" → success.
+   */
+  async function performCommit(plan: {
+    paths: string[]
+    message: string
+    cwd: string
+  }): Promise<{ sha: string } | { error: string }> {
+    if (plan.paths.length === 0) {
+      return { error: "commit requires a non-empty paths[]" }
+    }
+    // Defensive: argv-only, but still refuse blatantly unsafe path entries.
+    if (plan.paths.some(p => typeof p !== "string" || p.length === 0)) {
+      return { error: "commit paths must be non-empty strings" }
+    }
+
+    const allowlist = await loadAllowlist(workspace)
+    if (!allowlist.has("git")) {
+      return { error: "commit command 'git' not in allowlist" }
+    }
+
+    const add = await exec({
+      command: "git",
+      args: ["add", "--", ...plan.paths],
+      cwd: plan.cwd,
+      timeoutMs: 60_000,
+    })
+    if (add.exitCode !== 0) {
+      return { error: `git add failed (exit ${add.exitCode}): ${add.stderr.trim()}` }
+    }
+
+    const commit = await exec({
+      command: "git",
+      args: ["commit", "-m", plan.message],
+      cwd: plan.cwd,
+      timeoutMs: 60_000,
+    })
+    // "nothing to commit" is success — a re-armed policy after a crash may find
+    // the tree already committed (design §5.4).
+    const out = `${commit.stdout}\n${commit.stderr}`
+    const nothingToCommit = /nothing to commit|no changes added|nothing added to commit/i.test(out)
+    if (commit.exitCode !== 0 && !nothingToCommit) {
+      return { error: `git commit failed (exit ${commit.exitCode}): ${commit.stderr.trim()}` }
+    }
+
+    const head = await exec({
+      command: "git",
+      args: ["rev-parse", "HEAD"],
+      cwd: plan.cwd,
+      timeoutMs: 30_000,
+    })
+    if (head.exitCode !== 0) {
+      return { error: `git rev-parse HEAD failed (exit ${head.exitCode}): ${head.stderr.trim()}` }
+    }
+    return { sha: head.stdout.trim() }
+  }
+
+  /**
+   * Run the prepared commit for `entry` and settle its state. Does NOT touch
+   * bus subscriptions (callers handle that). Used by both the direct-commit
+   * path and the ack-approve path.
+   */
+  async function finishCommit(entry: RunEntry): Promise<void> {
+    const state = entry.state
+    const repr = entry.group[0]!
+    const plan = state.commitPlan
+    if (!plan) {
+      state.status = "blocked"
+      state.error = "no commit plan"
+      state.endedAt = new Date().toISOString()
+      sessionEvents.emit({
+        type: "policy:failed",
+        policyId: state.policyId,
+        sessionId: repr,
+        ts: new Date().toISOString(),
+      })
+      schedulePersist()
+      return
+    }
+
+    const result = await performCommit(plan)
+    if ("error" in result) {
+      state.status = "blocked"
+      state.error = result.error
+      state.endedAt = new Date().toISOString()
+      sessionEvents.emit({
+        type: "policy:failed",
+        policyId: state.policyId,
+        sessionId: repr,
+        ts: new Date().toISOString(),
+      })
+      schedulePersist()
+      pumpQueue() // WP6: release the slot this commit held
+      return
+    }
+
+    state.commitSha = result.sha
+    state.status = "done"
+    state.endedAt = new Date().toISOString()
+    sessionEvents.emit({
+      type: "policy:committed",
+      policyId: state.policyId,
+      sessionId: repr,
+      sha: result.sha,
+      paths: plan.paths,
+      message: plan.message,
+      ts: new Date().toISOString(),
+    })
+    schedulePersist()
+    maybeChain(entry) // WP6: attach `next` now that this policy is done
+    pumpQueue() // WP6: release the slot this commit held
   }
 
   // ── arm logic (shared by attach() and reload) ────────────────────
@@ -290,6 +661,7 @@ export function createCompletionPolicySupervisor(opts: {
       })
       schedulePersist()
       cleanup()
+      pumpQueue() // WP6: release the slot (if any) this run held
     }
 
     const act = async (passed: boolean, exitCode: number) => {
@@ -298,6 +670,42 @@ export function createCompletionPolicySupervisor(opts: {
       schedulePersist()
 
       if (passed) {
+        // WP5: commit action. Prepare the plan in the watched session's cwd.
+        if (input.then === "commit") {
+          const commit = input.commit!
+          const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+          state.commitPlan = {
+            paths: commit.paths,
+            message: commit.message,
+            cwd,
+          }
+          const requireAck = commit.requireHumanAck !== false // default true
+          if (requireAck) {
+            // Don't commit yet — park in awaiting-ack and surface the plan.
+            state.status = "awaiting-ack"
+            schedulePersist()
+            sessionEvents.emit({
+              type: "policy:commit-ready",
+              policyId: state.policyId,
+              sessionId: repr,
+              paths: commit.paths,
+              message: commit.message,
+              ts: new Date().toISOString(),
+            })
+            // Stop watching the bus; ack_policy drives the rest. The entry
+            // stays in `runs` so ack() can find it.
+            cleanup()
+            pumpQueue() // WP6: parked awaiting ack — release the slot
+            return
+          }
+          // Unattended commit — run it directly at the green gate.
+          // finishCommit handles maybeChain + pumpQueue on settle.
+          await finishCommit(entry)
+          cleanup()
+          return
+        }
+
+        // then === "emit" (WP1)
         sessionEvents.emit({
           type: "policy:passed",
           policyId: state.policyId,
@@ -308,6 +716,8 @@ export function createCompletionPolicySupervisor(opts: {
         state.endedAt = new Date().toISOString()
         schedulePersist()
         cleanup()
+        maybeChain(entry) // WP6: attach `next` now that this policy is done
+        pumpQueue() // WP6: release the slot this run held
         return
       }
 
@@ -340,6 +750,7 @@ export function createCompletionPolicySupervisor(opts: {
             syncPending()
             state.status = "watching"
             schedulePersist()
+            pumpQueue() // WP6: nudged back to watching — release the slot
             return
           }
         }
@@ -349,6 +760,136 @@ export function createCompletionPolicySupervisor(opts: {
       emitFailed(exitCode)
     }
 
+    /**
+     * Read the recent ring-buffer tail of a session (best-effort) — used to
+     * give the judge a minimal context of the watched session's output. Mirrors
+     * get_agent_session_output: attach captures the backfill synchronously, then
+     * unsubscribe. Returns "" when the session/attach is unavailable.
+     */
+    const readTail = (sessionId: string, lastN: number): string => {
+      const lines: string[] = []
+      let unsub: (() => void) | null = null
+      try {
+        unsub = registry.attach(sessionId, line => {
+          lines.push(line)
+        })
+      } catch {
+        return ""
+      }
+      if (unsub) unsub()
+      return lines.slice(-lastN).map(stripAnsi).join("\n").trim()
+    }
+
+    /**
+     * WP7: run a judge-agent gate. Spawns a short-lived agent via
+     * resolveAgentAdapter, prompts it with the rubric (+ a minimal context tail),
+     * waits for its turn-end (or a timeout), parses VERDICT: PASS/FAIL from the
+     * final reply, and ALWAYS kills the judge session before returning.
+     * Fail-safe: no resolver / spawn failure / timeout / unparseable → FAIL.
+     * The judge runs while this policy holds its `gating` slot, so it is already
+     * accounted for in the WP6 concurrency cap.
+     */
+    const runJudge = async (
+      spec: JudgeGateSpec["judge"],
+    ): Promise<{ passed: boolean; exitCode: number; reason?: string }> => {
+      if (!resolveAgentAdapter) {
+        return { passed: false, exitCode: 1, reason: "judge gate not enabled (no adapter resolver)" }
+      }
+      let resolved
+      try {
+        resolved = await resolveAgentAdapter(spec.adapter)
+      } catch (err) {
+        return { passed: false, exitCode: 1, reason: `judge adapter resolve failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (!resolved) {
+        return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
+      }
+
+      const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+      const timeoutMs = spec.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS
+
+      // Minimal context: the tail of each watched session's output, if readable.
+      const contextBlocks = group
+        .map(id => {
+          const tail = readTail(id, 60)
+          return tail ? `--- output of session ${id} ---\n${tail}` : ""
+        })
+        .filter(Boolean)
+      const context = contextBlocks.length > 0
+        ? `\n\nContext — recent output of the watched session(s):\n${contextBlocks.join("\n\n")}`
+        : ""
+      const fullPrompt = `${spec.prompt}${context}${JUDGE_VERDICT_INSTRUCTION}`
+
+      // Spawn the judge agent.
+      let judgeId: string
+      try {
+        const agentSession = await resolved.startSession({
+          cwd,
+          ...(spec.model ? { model: spec.model } : {}),
+        })
+        const desc = registry.spawnAgent({
+          workspaceSlug: "default",
+          cwd,
+          agentSession,
+          adapterSlug: spec.adapter,
+          label: `judge:${state.policyId}`,
+          ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+        })
+        judgeId = desc.id
+      } catch (err) {
+        return { passed: false, exitCode: 1, reason: `judge spawn failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+
+      try {
+        // Subscribe to the judge's turn-end BEFORE prompting so we never miss it.
+        const ended = new Promise<"ended" | "timeout">(resolveEnd => {
+          const unsubs: Array<() => void> = []
+          let done = false
+          const finish = (r: "ended" | "timeout") => {
+            if (done) return
+            done = true
+            clearTimeout(timer)
+            for (const u of unsubs) u()
+            resolveEnd(r)
+          }
+          const timer = setTimeout(() => finish("timeout"), timeoutMs)
+          const onEnd = (ev: { sessionId: string }) => {
+            if (ev.sessionId === judgeId) finish("ended")
+          }
+          unsubs.push(sessionEvents.on("session:turn-end", onEnd))
+          unsubs.push(sessionEvents.on("session:awaiting-input", onEnd))
+          unsubs.push(sessionEvents.on("session:exited", onEnd))
+        })
+
+        try {
+          await registry.sendPrompt(judgeId, fullPrompt)
+        } catch (err) {
+          return { passed: false, exitCode: 1, reason: `judge prompt failed: ${err instanceof Error ? err.message : String(err)}` }
+        }
+
+        const outcome = await ended
+        if (outcome === "timeout") {
+          return { passed: false, exitCode: 1, reason: `judge timed out after ${timeoutMs}ms` }
+        }
+
+        const reply = readTail(judgeId, 200)
+        const verdict = parseVerdict(reply)
+        if (verdict === null) {
+          return { passed: false, exitCode: 1, reason: "judge reply had no parseable VERDICT line" }
+        }
+        return verdict === "PASS"
+          ? { passed: true, exitCode: 0 }
+          : { passed: false, exitCode: 1, reason: "judge verdict: FAIL" }
+      } finally {
+        // Always kill the judge session — success or failure.
+        try {
+          registry.kill(judgeId)
+        } catch {
+          // best-effort
+        }
+      }
+    }
+
     const runGate = async () => {
       if (entry.cancelled || state.status !== "watching") return
       state.status = "gating"
@@ -356,6 +897,16 @@ export function createCompletionPolicySupervisor(opts: {
 
       if (!input.gate) {
         await act(true, 0)
+        return
+      }
+
+      // WP7: judge-agent gate.
+      if (isJudgeGate(input.gate)) {
+        const { passed, exitCode, reason } = await runJudge(input.gate.judge)
+        state.lastGate = { exitCode, at: new Date().toISOString() }
+        if (!passed && reason) state.error = reason
+        schedulePersist()
+        await act(passed, exitCode)
         return
       }
 
@@ -370,7 +921,7 @@ export function createCompletionPolicySupervisor(opts: {
         const sessionCwd = registry.get(repr)?.cwd ?? workspace
         const resolvedCwd = anchorCwd(input.gate.cwd ?? sessionCwd)
 
-        const result = await runCommand({
+        const result = await exec({
           command: input.gate.command,
           args: input.gate.args ?? [],
           cwd: resolvedCwd,
@@ -387,6 +938,23 @@ export function createCompletionPolicySupervisor(opts: {
         emitFailed(-1, err instanceof Error ? err.message : String(err))
       }
     }
+    entry.runGate = runGate
+
+    /**
+     * WP6: gate-entry through the daemon-wide concurrency cap. If a slot is
+     * free, run the gate now; otherwise park in `queued` (FIFO) and let
+     * pumpQueue() admit this entry when a slot frees. Holds no slot while queued.
+     */
+    const requestGate = () => {
+      if (entry.cancelled || state.status !== "watching") return
+      if (countActive() >= cap) {
+        state.status = "queued"
+        if (!gateQueue.includes(entry)) gateQueue.push(entry)
+        schedulePersist()
+        return
+      }
+      void runGate()
+    }
 
     /** Remove a member from the pending set (idempotent); gate once empty. */
     const markMemberDone = (sessionId: string) => {
@@ -395,7 +963,7 @@ export function createCompletionPolicySupervisor(opts: {
       entry.pending.delete(sessionId)
       syncPending()
       schedulePersist()
-      if (entry.pending.size === 0) void runGate()
+      if (entry.pending.size === 0) requestGate()
     }
 
     // Fan-in: a member's first turn-end removes it from the pending set; the
@@ -437,7 +1005,7 @@ export function createCompletionPolicySupervisor(opts: {
     // If the pending set was already empty at arm time (e.g. re-armed after a
     // reload where every still-awaited member had exited), gate immediately.
     if (!entry.cancelled && state.status === "watching" && entry.pending.size === 0) {
-      void runGate()
+      requestGate()
     }
   }
 
@@ -474,6 +1042,22 @@ export function createCompletionPolicySupervisor(opts: {
             state.pending && state.pending.length >= 0
               ? state.pending
               : [...group]
+
+          // WP5: a commit parked awaiting human ack stays awaiting-ack across a
+          // restart — re-armed neither to watching nor to a terminal state. No
+          // bus subscription (it's past gating); ack_policy drives it. The
+          // commitPlan persisted with it carries the exact paths/message/cwd.
+          if (state.status === "awaiting-ack") {
+            runs.set(state.policyId, {
+              input,
+              group,
+              pending: new Set(persistedPending),
+              state: { ...state, sessionIds: group },
+              unsubscribes: [],
+              cancelled: false,
+            })
+            continue
+          }
 
           if (isTerminal) {
             // Keep for history, no re-arm needed.
@@ -546,33 +1130,67 @@ export function createCompletionPolicySupervisor(opts: {
     }
   }
 
+  // ── attach core (shared by public attach() + WP6 chaining) ───────
+
+  /**
+   * Validate + register + arm a fresh policy. Used both by the public
+   * `attach()` and by `maybeChain()` when a parent policy reaches `done`.
+   * Hoisted (function declaration) so maybeChain can reference it.
+   */
+  function attachPolicy(input: AttachPolicyInput): PolicyRunState {
+    const group = resolveGroup(input)
+    if (input.gate && isJudgeGate(input.gate)) {
+      const j = input.gate.judge
+      if (typeof j.adapter !== "string" || j.adapter.length === 0) {
+        throw new Error("judge gate requires a non-empty adapter")
+      }
+      if (typeof j.prompt !== "string" || j.prompt.length === 0) {
+        throw new Error("judge gate requires a non-empty prompt")
+      }
+    }
+    if (input.then === "commit") {
+      if (!input.commit) {
+        throw new Error('then:"commit" requires a commit spec')
+      }
+      if (!Array.isArray(input.commit.paths) || input.commit.paths.length === 0) {
+        throw new Error('then:"commit" requires a non-empty paths[]')
+      }
+      if (input.commit.paths.some(p => typeof p !== "string" || p.length === 0)) {
+        throw new Error("commit paths must be non-empty strings")
+      }
+      if (typeof input.commit.message !== "string" || input.commit.message.length === 0) {
+        throw new Error('then:"commit" requires a non-empty message')
+      }
+    }
+    const policyId = `policy_${randomUUID().slice(0, 8)}`
+    const state: PolicyRunState = {
+      policyId,
+      sessionId: group[0]!,
+      sessionIds: group,
+      pending: [...group],
+      status: "watching",
+      retries: 0,
+      startedAt: new Date().toISOString(),
+    }
+    const entry: RunEntry = {
+      input,
+      group,
+      pending: new Set(group),
+      state,
+      unsubscribes: [],
+      cancelled: false,
+    }
+    runs.set(policyId, entry)
+    schedulePersist()
+    armEntry(entry)
+    return state
+  }
+
   // ── public interface ─────────────────────────────────────────────
 
   return {
     attach(input) {
-      const group = resolveGroup(input)
-      const policyId = `policy_${randomUUID().slice(0, 8)}`
-      const state: PolicyRunState = {
-        policyId,
-        sessionId: group[0]!,
-        sessionIds: group,
-        pending: [...group],
-        status: "watching",
-        retries: 0,
-        startedAt: new Date().toISOString(),
-      }
-      const entry: RunEntry = {
-        input,
-        group,
-        pending: new Set(group),
-        state,
-        unsubscribes: [],
-        cancelled: false,
-      }
-      runs.set(policyId, entry)
-      schedulePersist()
-      armEntry(entry)
-      return state
+      return attachPolicy(input)
     },
 
     getStatus(policyId) {
@@ -585,15 +1203,40 @@ export function createCompletionPolicySupervisor(opts: {
       entry.cancelled = true
       if (
         entry.state.status === "watching" ||
+        entry.state.status === "queued" ||
         entry.state.status === "gating" ||
         entry.state.status === "nudging"
       ) {
+        const wasActive =
+          entry.state.status === "gating" || entry.state.status === "queued"
         entry.state.status = "cancelled"
         entry.state.endedAt = new Date().toISOString()
         for (const u of entry.unsubscribes) u()
         entry.unsubscribes.length = 0
+        // WP6: drop from the gate queue and release any held slot.
+        const qi = gateQueue.indexOf(entry)
+        if (qi >= 0) gateQueue.splice(qi, 1)
         schedulePersist()
+        if (wasActive) pumpQueue()
       }
+    },
+
+    async ack(policyId, approve) {
+      const entry = runs.get(policyId)
+      if (!entry) return undefined
+      // Only meaningful while parked awaiting a human ack.
+      if (entry.state.status !== "awaiting-ack") return entry.state
+
+      if (!approve) {
+        entry.cancelled = true
+        entry.state.status = "cancelled"
+        entry.state.endedAt = new Date().toISOString()
+        schedulePersist()
+        return entry.state
+      }
+
+      await finishCommit(entry)
+      return entry.state
     },
 
     list() {
