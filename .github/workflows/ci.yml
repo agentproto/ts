@@ -168,6 +168,7 @@ jobs:
         id: decision
         run: |
           DECISION=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
             --json reviewDecision -q '.reviewDecision')
           echo "Review decision: $DECISION"
           echo "value=$DECISION" >> "$GITHUB_OUTPUT"
