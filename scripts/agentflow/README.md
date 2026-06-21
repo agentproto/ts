@@ -32,6 +32,8 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
 - `pnpm review:ai`      — review the branch vs `origin/main` now (engine from
   config). Add `--stamp` to also write the CI-bypass marker, `--fix` to be
   offered a y/n auto-fix, or `--fix-auto` to apply without asking.
+- `pnpm review:loop`    — review → fix → re-review until approve or `maxLoops`
+  (`--max N` to override). Fixes edit the working tree (uncommitted).
 - On `git commit` / `git push` — the husky hooks (`.husky/pre-commit`,
   `.husky/pre-push`) call `scripts/agentflow/hook.mjs <trigger>`, which runs
   any feature whose `stage` matches. Failures warn but don't block (a
@@ -84,20 +86,40 @@ Default OFF: the local single-shot pass is lighter than CI's agentic review, and
 the marker is a trust convenience (any in-range commit can carry it), not a
 security boundary. When you bypass, make sure a changeset exists too.
 
+## Two primitives, composed into flows
+
+There aren't really separate "review / fix / changeset" features — there are
+**two primitives over the repo**, told apart by what they may do:
+
+- **`review`** (`primitives/review.mjs`) — read-only **judge** → a verdict
+  `{decision, findings}`. Fresh every call (independence is what makes it
+  trustworthy). A re-review takes `priorFindings` as *data* to verify resolution.
+- **`code`** (`primitives/code.mjs`) — read-write **actor** → mutates the working
+  tree toward a goal, carrying a Claude session (`--session-id` then `--resume`)
+  so it remembers its prior rounds.
+
+Everything else composes them: **fix** = `code(goal from findings)`, **changeset**
+= `code(goal: "write a changeset")`, **review-loop** = review → code → review.
+The loop keeps the *actor* on one session (continuity) but the *judge* fresh
+(independence) — `loop.mjs`.
+
 ## Pieces (the composable seams)
 
 | file                          | role                                                        |
 | ----------------------------- | ----------------------------------------------------------- |
 | `config.mjs`                  | load + merge config, resolve engine                         |
 | `llm.mjs`                     | engine router: `runLlm({engine})` → CLI or API; `stripFences`|
+| `primitives/review.mjs`       | review primitive — `gatherDiff` + `reviewDiff` (judge)      |
+| `primitives/code.mjs`         | code primitive — `runCode` (actor, session-carrying)        |
+| `loop.mjs`                    | review→fix→re-review loop (composes the two primitives)     |
 | `hook.mjs`                    | git-hook dispatcher (`commit`/`push` → matching features)   |
-| `review.mjs`                  | local diff review (engine-routed) + CI-bypass marker        |
+| `review.mjs`                  | single-shot review CLI (uses the primitives) + bypass marker|
 | `../auto-changeset.mjs`       | changeset engine (engine-routed via `llm.mjs`)              |
 
 ## Extending
 
 - **New engine** (e.g. `ollama`): add a branch in `llm.mjs#runLlm` and accept
   it in `config.mjs#resolveEngine`.
-- **New feature** (e.g. `lint`): add a key to `DEFAULTS` in `config.mjs`, a
-  block in `hook.mjs`, and an engine script that calls `runLlm`. CI and local
-  share the engine — that's the point.
+- **New flow** (e.g. `describe` = PR-body generator, or `lint`): compose the
+  primitives — `review` for read-only analysis, `code` to act — keyed off config.
+  CI and local share the engine + primitives; that's the point.

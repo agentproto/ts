@@ -22,6 +22,7 @@ export function runCode({
   resume = false,
   engine = 'local',
   claudeBin = 'claude',
+  model,
   root,
   allowedTools = ['Edit', 'Read', 'Grep'],
 }) {
@@ -32,7 +33,13 @@ export function runCode({
     )
   }
   const args = ['-p', goal, '--permission-mode', 'acceptEdits', '--allowedTools', ...allowedTools]
-  if (sessionId) args.push(resume ? '--resume' : '--session-id', sessionId)
+  if (model) args.push('--model', model)
+  // `--resume <id>` resumes that specific session (the id IS a valid arg to
+  // --resume); `--session-id <uuid>` seeds a new one. Branch explicitly.
+  if (sessionId) {
+    if (resume) args.push('--resume', sessionId)
+    else args.push('--session-id', sessionId)
+  }
   const res = spawnSync(claudeBin, args, { cwd: root, stdio: 'inherit' })
   return { ok: res.status === 0, sessionId }
 }

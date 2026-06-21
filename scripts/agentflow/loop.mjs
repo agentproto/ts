@@ -47,7 +47,14 @@ let approved = false
 
 while (round < maxLoops) {
   round++
-  const { changedFiles, fileCount, diff, truncated } = gatherDiff(ROOT)
+  let diffInfo
+  try {
+    diffInfo = gatherDiff(ROOT)
+  } catch (err) {
+    console.error('[agentflow] loop: cannot diff against origin/main (fetch it first?) —', err.message)
+    process.exit(1)
+  }
+  const { changedFiles, fileCount, diff, truncated } = diffInfo
   if (!changedFiles) {
     console.log('[agentflow] loop: nothing to review vs origin/main.')
     approved = true
@@ -77,7 +84,7 @@ while (round < maxLoops) {
     'unrelated code and do not create commits.\n\n' +
     verdict.findings.map((f, i) => `${i + 1}. [${f.severity ?? '?'}] ${f.file ?? ''}: ${f.note ?? ''}`).join('\n')
   console.log(`\n[agentflow] ── round ${round}: applying fixes (session ${resume ? 'resumed' : sessionId.slice(0, 8)}) ──`)
-  const { ok } = runCode({ goal, sessionId, resume, engine, claudeBin, root: ROOT })
+  const { ok } = runCode({ goal, sessionId, resume, engine, claudeBin, model, root: ROOT })
   resume = true
   priorFindings = verdict.findings
   if (!ok) {

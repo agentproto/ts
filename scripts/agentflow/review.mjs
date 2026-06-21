@@ -137,6 +137,7 @@ function applyFixes(items) {
     goal,
     engine,
     claudeBin: AGENTFLOW.review.command ?? 'claude',
+    model: AGENTFLOW.review.model ?? undefined,
     root: ROOT,
   })
   if (!ok) {
