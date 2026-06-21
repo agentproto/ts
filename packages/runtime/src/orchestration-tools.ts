@@ -219,13 +219,40 @@ export function registerOrchestrationTools(
           .describe("Shell gate. Absent → always passes immediately after turn-end."),
         then: z
           .literal("emit")
-          .describe("Action to take after the gate. Only 'emit' is supported in WP1."),
+          .describe("Action to take after the gate. Only 'emit' is supported in WP1/WP2."),
+        onFail: z
+          .object({
+            nudge: z
+              .string()
+              .optional()
+              .describe(
+                "Message sent to the session when the gate fails. " +
+                  "Use {code} as a placeholder for the exit code. " +
+                  "Default: built-in message in French.",
+              ),
+            maxRetries: z
+              .number()
+              .int()
+              .min(1)
+              .max(10)
+              .optional()
+              .describe(
+                "Maximum consecutive gate failures before blocking. Default: 2.",
+              ),
+          })
+          .optional()
+          .describe(
+            "What to do when the gate fails (WP2). Absent → immediately blocked. " +
+              "Present → re-prompt the session up to maxRetries times then block. " +
+              "The session must still be running to receive a nudge.",
+          ),
       },
       async input => {
         const state = supervisor.attach({
           sessionId: input.sessionId,
           gate: input.gate,
           then: input.then,
+          onFail: input.onFail,
         })
         return {
           content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],

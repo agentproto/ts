@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { createCompletionPolicySupervisor } from "../supervisor.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
+import type { SessionEventBus } from "../session-event-bus.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -240,7 +241,7 @@ describe("CompletionPolicySupervisor", () => {
     expect(supervisor.list()).toHaveLength(2)
   })
 
-  it("gate command not in allowlist → policy:failed (blocked)", async () => {
+  it("WP1 gate command not in allowlist → policy:failed (blocked)", async () => {
     const bus = createSessionEventBus()
     const supervisor = createCompletionPolicySupervisor({
       registry: makeMockRegistry(workspace),
@@ -263,5 +264,176 @@ describe("CompletionPolicySupervisor", () => {
 
     expect(supervisor.getStatus(state.policyId)?.status).toBe("blocked")
     expect(supervisor.getStatus(state.policyId)?.error).toMatch(/not in allowlist/)
+  })
+})
+
+// ── WP2: bounded nudge + escalate ────────────────────────────────────
+
+/**
+ * Creates a shell script that exits 1 on the first invocation (removing a
+ * flag file) and exits 0 on all subsequent ones. Allowlist must include
+ * "fail-once.sh". Returns the absolute path to the script.
+ */
+async function addFailOnceScript(ws: string): Promise<string> {
+  const dir = join(ws, ".agentproto")
+  const flagPath = join(dir, "fail-once.flag")
+  const scriptPath = join(dir, "fail-once.sh")
+  await writeFile(flagPath, "1", "utf8")
+  const script = [
+    "#!/bin/sh",
+    `if [ -f "${flagPath}" ]; then`,
+    `  rm "${flagPath}"`,
+    "  exit 1",
+    "fi",
+    "exit 0",
+    "",
+  ].join("\n")
+  await writeFile(scriptPath, script, { mode: 0o755 })
+  return scriptPath
+}
+
+function fireTurnEnd(bus: SessionEventBus, sessionId = "sess_test"): void {
+  bus.emit({
+    type: "session:turn-end",
+    sessionId,
+    awaitingInput: false,
+    ts: new Date().toISOString(),
+  })
+}
+
+describe("WP2 — bounded nudge + escalate", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false", "fail-once.sh"])
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("(a) gate failure sends nudge to session and returns to watching", async () => {
+    const registry = makeMockRegistry(workspace)
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "false" },
+      then: "emit",
+      onFail: { nudge: "fix it (exit {code})", maxRetries: 2 },
+    })
+
+    fireTurnEnd(bus)
+    await wait(300)
+
+    expect(registry.sendPrompt).toHaveBeenCalledWith("sess_test", "fix it (exit 1)")
+    expect(state.status).toBe("watching")
+    expect(state.retries).toBe(1)
+  })
+
+  it("(b) after nudge, next turn-end re-triggers the gate", async () => {
+    const registry = makeMockRegistry(workspace)
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+    })
+
+    supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "false" },
+      then: "emit",
+      onFail: { nudge: "retry", maxRetries: 3 },
+    })
+
+    // First failure → nudge → watching (retries=1)
+    fireTurnEnd(bus)
+    await wait(300)
+    expect(registry.sendPrompt).toHaveBeenCalledTimes(1)
+
+    // Second turn-end → gate runs again → fails → nudge (retries=2)
+    fireTurnEnd(bus)
+    await wait(300)
+
+    expect(registry.sendPrompt).toHaveBeenCalledTimes(2)
+  })
+
+  it("(c) gate passes at retry → policy:passed (done)", async () => {
+    const scriptPath = await addFailOnceScript(workspace)
+    const registry = makeMockRegistry(workspace)
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const passedEvent = new Promise<{ policyId: string }>(resolve => {
+      bus.on("policy:passed", ev => resolve({ policyId: ev.policyId }))
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: scriptPath },
+      then: "emit",
+      onFail: { nudge: "try again", maxRetries: 2 },
+    })
+
+    // First turn-end → gate fails (flag present) → nudge → watching
+    fireTurnEnd(bus)
+    await wait(300)
+    expect(state.retries).toBe(1)
+    expect(state.status).toBe("watching")
+
+    // Second turn-end → gate passes (flag removed) → policy:passed
+    fireTurnEnd(bus)
+
+    const ev = await passedEvent
+    expect(ev.policyId).toBe(state.policyId)
+    await wait(20)
+    expect(state.status).toBe("done")
+  })
+
+  it("(d) maxRetries exhausted → blocked + policy:failed emitted", async () => {
+    const registry = makeMockRegistry(workspace)
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+    })
+
+    const failedEvent = new Promise<{ policyId: string; exitCode?: number }>(resolve => {
+      bus.on("policy:failed", ev => resolve({ policyId: ev.policyId, exitCode: ev.exitCode }))
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "false" },
+      then: "emit",
+      onFail: { nudge: "try again (exit {code})", maxRetries: 1 },
+    })
+
+    // First failure → nudge sent (retries=1, now at maxRetries)
+    fireTurnEnd(bus)
+    await wait(300)
+    expect(state.retries).toBe(1)
+    expect(state.status).toBe("watching")
+
+    // Second failure → retries exhausted → blocked + policy:failed
+    fireTurnEnd(bus)
+
+    const ev = await failedEvent
+    expect(ev.exitCode).toBe(1)
+    await wait(20)
+    expect(state.status).toBe("blocked")
+    // sendPrompt called exactly once (only the first failure nudgeable)
+    expect(registry.sendPrompt).toHaveBeenCalledTimes(1)
   })
 })

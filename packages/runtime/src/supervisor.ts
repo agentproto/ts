@@ -1,9 +1,10 @@
 /**
- * Completion-policy supervisor — WP1 (MVP).
+ * Completion-policy supervisor — WP1 + WP2.
  *
  * State machine per attached policy:
  *   watching → gating → acting → done
- *                    ↘ blocked   (gate failed)
+ *                    ↘ nudging (retries < maxRetries) → watching  (gate failed, nudge sent)
+ *                    ↘ blocked                                     (gate failed, retries exhausted)
  *   watching → cancelled  (watched session exited before turn-end)
  *
  * Trigger: session:turn-end on the watched session.
@@ -11,8 +12,10 @@
  *       execute_command. exit 0 = pass.
  * Action (then:"emit"): emits policy:passed / policy:failed on the bus
  *       (readable via poll_events).
+ * onFail (WP2): when gate fails, re-prompts the session (sendPrompt) up to
+ *       maxRetries times, then transitions to blocked + emits policy:failed.
  *
- * In-memory only for WP1. Persistence is WP3.
+ * In-memory only. Persistence is WP3.
  */
 
 import { randomUUID } from "node:crypto"
@@ -32,19 +35,40 @@ export interface ShellGateSpec {
   timeoutMs?: number
 }
 
+export interface OnFailSpec {
+  /**
+   * Message sent to the watched session via sendPrompt when the gate fails.
+   * Use the placeholder {code} to embed the actual exit code.
+   * Default: "Le gate a échoué (exit {code}). Corrige et termine jusqu'à ce qu'il passe."
+   */
+  nudge?: string
+  /**
+   * Maximum number of consecutive gate failures before transitioning to
+   * blocked. Must be >= 1. Default: 2.
+   */
+  maxRetries?: number
+}
+
 export interface AttachPolicyInput {
   /** Session id whose turn-end triggers the policy. */
   sessionId: string
   /** Optional shell gate. Absent → always pass immediately. */
   gate?: ShellGateSpec
-  /** Only "emit" is supported in WP1. */
+  /** Only "emit" is supported in WP1/WP2. */
   then: "emit"
+  /**
+   * What to do when the gate fails (WP2). Absent → immediately blocked
+   * (WP1 behaviour). Present → re-prompt the session up to maxRetries
+   * times before blocking; the session must still be running to nudge.
+   */
+  onFail?: OnFailSpec
 }
 
 export type PolicyRunStatus =
   | "watching"
   | "gating"
   | "acting"
+  | "nudging"
   | "done"
   | "blocked"
   | "cancelled"
@@ -53,6 +77,8 @@ export interface PolicyRunState {
   policyId: string
   sessionId: string
   status: PolicyRunStatus
+  /** Number of nudges sent so far (incremented after each sendPrompt call). */
+  retries: number
   startedAt: string
   endedAt?: string
   lastGate?: { exitCode: number; at: string }
@@ -79,6 +105,10 @@ interface RunEntry {
   cancelled: boolean
 }
 
+const DEFAULT_NUDGE_TEMPLATE =
+  "Le gate a échoué (exit {code}). Corrige et termine jusqu'à ce qu'il passe."
+const DEFAULT_MAX_RETRIES = 2
+
 // ── Factory ──────────────────────────────────────────────────────────
 
 export function createCompletionPolicySupervisor(opts: {
@@ -97,6 +127,7 @@ export function createCompletionPolicySupervisor(opts: {
         policyId,
         sessionId: input.sessionId,
         status: "watching",
+        retries: 0,
         startedAt: new Date().toISOString(),
       }
       const unsubs: Array<() => void> = []
@@ -138,9 +169,35 @@ export function createCompletionPolicySupervisor(opts: {
           state.status = "done"
           state.endedAt = new Date().toISOString()
           cleanup()
-        } else {
-          emitFailed(exitCode)
+          return
         }
+
+        // Gate failed — attempt bounded nudge if configured (WP2)
+        if (input.onFail !== undefined) {
+          const maxRetries = input.onFail.maxRetries ?? DEFAULT_MAX_RETRIES
+          if (state.retries < maxRetries) {
+            const session = registry.get(input.sessionId)
+            if (session && session.status === "running") {
+              const template = input.onFail.nudge ?? DEFAULT_NUDGE_TEMPLATE
+              const nudgeMsg = template.replace("{code}", String(exitCode))
+              state.status = "nudging"
+              try {
+                await registry.sendPrompt(input.sessionId, nudgeMsg)
+              } catch {
+                emitFailed(exitCode, "nudge prompt delivery failed")
+                return
+              }
+              state.retries++
+              // Return to watching — bus subscriptions remain active;
+              // the next session:turn-end will re-trigger runGate.
+              state.status = "watching"
+              return
+            }
+          }
+        }
+
+        // No nudge configured, session not running, or retries exhausted → block
+        emitFailed(exitCode)
       }
 
       const runGate = async () => {
@@ -186,11 +243,15 @@ export function createCompletionPolicySupervisor(opts: {
         }),
       )
 
-      // If the session exits before we gate, cancel the policy
+      // If the session exits while we're watching, gating, or nudging → cancel
       unsubs.push(
         sessionEvents.on("session:exited", ev => {
           if (ev.sessionId !== input.sessionId) return
-          if (state.status === "watching" || state.status === "gating") {
+          if (
+            state.status === "watching" ||
+            state.status === "gating" ||
+            state.status === "nudging"
+          ) {
             entry.cancelled = true
             state.status = "cancelled"
             state.endedAt = new Date().toISOString()
@@ -210,7 +271,11 @@ export function createCompletionPolicySupervisor(opts: {
       const entry = runs.get(policyId)
       if (!entry) return
       entry.cancelled = true
-      if (entry.state.status === "watching" || entry.state.status === "gating") {
+      if (
+        entry.state.status === "watching" ||
+        entry.state.status === "gating" ||
+        entry.state.status === "nudging"
+      ) {
         entry.state.status = "cancelled"
         entry.state.endedAt = new Date().toISOString()
         for (const u of entry.unsubscribes) u()
