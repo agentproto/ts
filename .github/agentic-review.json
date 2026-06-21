@@ -4,6 +4,12 @@
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
+  "merge": {
+    "auto": false,
+    "method": "squash",
+    "requireAck": false,
+    "ackLabel": "agentflow:ack"
+  },
   "skills": ["aip-conventions"],
   "externalSkills": {
     "allow": ["DietrichGebert/ponytail@ponytail-review"]

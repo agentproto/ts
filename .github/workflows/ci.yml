@@ -332,3 +332,72 @@ jobs:
             git push
           fi
 
+  # On PRs: once the agentic review APPROVES, optionally enable GitHub-native
+  # auto-merge so the PR merges itself when all required checks pass. This is the
+  # bot closing its own loop (open → review → fix → merge). OFF by default: it
+  # only acts when opted in via `vars.AGENTFLOW_AUTOMERGE=true` or `merge.auto`
+  # in .github/agentic-review.json. "merge with conditions" = GitHub's required
+  # checks (rulesets/branch protection) — we only flip the auto switch.
+  auto-merge:
+    name: Auto-merge (opt-in)
+    runs-on: ubuntu-latest
+    needs: [pr-review]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      !startsWith(github.event.pull_request.title, 'chore(release):')
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Checkout (read merge config)
+        uses: actions/checkout@v5
+
+      - name: Enable auto-merge when approved + opted-in
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          VAR_AUTOMERGE: ${{ vars.AGENTFLOW_AUTOMERGE }}
+        run: |
+          cfg() { node -p "String((require('./.github/agentic-review.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
+          AUTO=$(cfg auto); METHOD=$(cfg method); REQ_ACK=$(cfg requireAck); ACK_LABEL=$(cfg ackLabel)
+          [ -z "$METHOD" ] && METHOD="squash"
+          [ -z "$ACK_LABEL" ] && ACK_LABEL="agentflow:ack"
+
+          # Master switch — OFF unless the repo var OR config opts in.
+          if [ "$VAR_AUTOMERGE" != "true" ] && [ "$AUTO" != "true" ]; then
+            echo "auto-merge disabled — set vars.AGENTFLOW_AUTOMERGE=true or merge.auto in .github/agentic-review.json. Skipping."
+            exit 0
+          fi
+
+          # Condition 1: the agentic review must be APPROVED.
+          DECISION=$(gh pr view "$PR" --repo "$REPO" --json reviewDecision -q '.reviewDecision')
+          if [ "$DECISION" != "APPROVED" ]; then
+            echo "review decision is '$DECISION' (need APPROVED) — not enabling auto-merge."
+            exit 0
+          fi
+
+          # Condition 2 (optional): a human ack label must be present.
+          if [ "$REQ_ACK" = "true" ]; then
+            if ! gh pr view "$PR" --repo "$REPO" --json labels -q '.labels[].name' | grep -qx "$ACK_LABEL"; then
+              echo "requireAck is on and label '$ACK_LABEL' is absent — waiting for a dev ack."
+              exit 0
+            fi
+          fi
+
+          # Flip GitHub-native auto-merge: GitHub performs the merge once every
+          # REQUIRED check passes (the conditions live in branch protection /
+          # rulesets, not here).
+          echo "Enabling auto-merge (method=$METHOD) on #$PR…"
+          gh pr merge "$PR" --repo "$REPO" --auto --"$METHOD" --delete-branch \
+            || echo "::warning::Could not enable auto-merge — ensure 'Allow auto-merge' is enabled in repo settings and required checks exist."
+
