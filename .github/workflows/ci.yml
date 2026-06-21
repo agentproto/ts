@@ -246,9 +246,12 @@ jobs:
         with:
           node-version: 22
 
+      # The auto-fix loop is pinned to commit-mode (push onto the PR branch) so
+      # the review→fix→re-review cycle stays tight. Stacked-PR delivery is an
+      # on-demand choice via `/fix --pr` (config.fixDelivery sets that default).
       - name: Apply review fixes
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
-        run: node scripts/apply-review.mjs
+        run: node scripts/apply-review.mjs --delivery commit
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

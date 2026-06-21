@@ -1,0 +1,136 @@
+name: Agent command
+
+# On-demand agent: slash-commands (/review, /fix, /pr, /explain, /help) and
+# @mention free-text on PRs and issues. The auto-review/fix on push lives in
+# ci.yml; this is the human-in-the-loop trigger.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+# Gate at the job level: only write-access authors, only comments that look like
+# a command. The dispatcher (scripts/agent-command.mjs) is the real parser and
+# exits cleanly if it finds no command.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  command:
+    name: Run agent command
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      (startsWith(github.event.comment.body, '/') ||
+       contains(github.event.comment.body, '@agentproto-bot'))
+    steps:
+      - name: Mint bot token (GitHub App — optional)
+        id: bot
+        if: ${{ vars.BOT_APP_ID != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Resolve target (PR vs issue) + comment reactions path
+        id: ctx
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          CID="${{ github.event.comment.id }}"
+          if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            echo "is_pr=true" >> "$GITHUB_OUTPUT"
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "head_ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+            echo "reactions=repos/$REPO/pulls/comments/$CID/reactions" >> "$GITHUB_OUTPUT"
+          else
+            NUM="${{ github.event.issue.number }}"
+            echo "reactions=repos/$REPO/issues/comments/$CID/reactions" >> "$GITHUB_OUTPUT"
+            if [ -n "${{ github.event.issue.pull_request.url }}" ]; then
+              HEAD=$(gh pr view "$NUM" --repo "$REPO" --json headRefName -q .headRefName)
+              echo "is_pr=true" >> "$GITHUB_OUTPUT"
+              echo "number=$NUM" >> "$GITHUB_OUTPUT"
+              echo "head_ref=$HEAD" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_pr=false" >> "$GITHUB_OUTPUT"
+              echo "number=$NUM" >> "$GITHUB_OUTPUT"
+              echo "head_ref=main" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: React 👀 (acknowledge)
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+        run: gh api "${{ steps.ctx.outputs.reactions }}" -f content=eyes || true
+
+      - name: Checkout target branch (with write token)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.ctx.outputs.head_ref }}
+          token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Dependencies are needed for run_command (build/test/check-types) and for
+      # gh_open_pr changesets. Skip-able for /help and /explain but cheap enough
+      # with the pnpm cache to always install.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run agent command
+        id: run
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ steps.ctx.outputs.is_pr == 'true' && steps.ctx.outputs.number || '' }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.is_pr == 'false' && steps.ctx.outputs.number || '' }}
+        run: node scripts/agent-command.mjs
+
+      # Commit-mode /fix (and any verb that edited the tree without opening its
+      # own PR) leaves changes on the checked-out head branch — commit + push.
+      # gh_open_pr-based flows already switched to a bot/* branch (clean tree),
+      # so this is a no-op for them.
+      - name: Commit + push working-tree changes (commit-mode)
+        if: always() && steps.ctx.outputs.is_pr == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          CUR=$(git rev-parse --abbrev-ref HEAD)
+          case "$CUR" in
+            bot/*) echo "On bot branch $CUR — agent opened its own PR, nothing to push."; exit 0 ;;
+          esac
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No working-tree changes to push."
+          else
+            git commit -m "chore: agent-command edit (from comment) [skip ci]"
+            git push origin "HEAD:${{ steps.ctx.outputs.head_ref }}"
+          fi
+
+      - name: React result (✅ / ❌)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+        run: |
+          CONTENT="hooray"
+          [ "${{ steps.run.outcome }}" != "success" ] && CONTENT="-1"
+          gh api "${{ steps.ctx.outputs.reactions }}" -f content="$CONTENT" || true
