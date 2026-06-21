@@ -64,6 +64,7 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "poll_events",
   "list_sessions",
   "list_agent_sessions",
+  "session_tree",
   "kill_agent_session",
 ]
 

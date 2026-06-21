@@ -48,6 +48,70 @@ export function stripAnsi(s: string): string {
 }
 
 /**
+ * One node in the session-tree output (WP5). Mirrors the descriptor
+ * fields most useful for observability + recursion, plus a `children`
+ * array so consumers can walk the tree without building the index
+ * themselves, and an `isOrchestrator` flag that's true when the
+ * session spawned at least one child (i.e. any session carries its id
+ * as `parentSessionId`).
+ */
+export interface SessionTreeNode {
+  id: string
+  label?: string
+  status: string
+  depth: number
+  adapterSlug?: string
+  parentSessionId?: string
+  isOrchestrator: boolean
+  children: SessionTreeNode[]
+}
+
+/**
+ * Build a nested session tree from a (scoped) flat list. Roots are
+ * sessions whose `parentSessionId` is absent or points outside the
+ * provided list (the list is already scoped when called from the
+ * tool handler). Each root carries its descendants as nested
+ * `children`, breadth-first insertion, depth-sorted within siblings.
+ *
+ * Exported for testing.
+ */
+export function buildSessionTree(
+  sessions: readonly SessionDescriptor[],
+): SessionTreeNode[] {
+  const idSet = new Set(sessions.map(s => s.id))
+  // Build parent→children index.
+  const childrenOf = new Map<string, SessionDescriptor[]>()
+  for (const s of sessions) {
+    if (s.parentSessionId && idSet.has(s.parentSessionId)) {
+      const arr = childrenOf.get(s.parentSessionId)
+      if (arr) arr.push(s)
+      else childrenOf.set(s.parentSessionId, [s])
+    }
+  }
+  // Identify nodes that spawned at least one child (isOrchestrator).
+  const orchestratorIds = new Set(childrenOf.keys())
+
+  const toNode = (s: SessionDescriptor): SessionTreeNode => ({
+    id: s.id,
+    ...(s.label ? { label: s.label } : {}),
+    status: s.status,
+    depth: s.depth ?? 0,
+    ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+    ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+    isOrchestrator: orchestratorIds.has(s.id),
+    children: (childrenOf.get(s.id) ?? [])
+      .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
+      .map(toNode),
+  })
+
+  // Roots: no parentSessionId, or parent is outside the scoped list.
+  return sessions
+    .filter(s => !s.parentSessionId || !idSet.has(s.parentSessionId))
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+    .map(toNode)
+}
+
+/**
  * Compute the set of session ids in the subtree rooted at `rootId` —
  * the root itself plus every descendant reachable through the
  * `parentSessionId` chain (orchestrator WP4). Used to scope
@@ -1056,6 +1120,46 @@ export function registerSessionTools(
         isError?: boolean
       }
     }
+  )
+
+  // ── session_tree (WP5) ────────────────────────────────────────
+  server.tool(
+    "session_tree",
+    "Return the orchestrator session hierarchy as a nested tree. Each root " +
+      "is a session with no parent (or whose parent is outside the visible scope); " +
+      "its `children` array holds direct sub-sessions, recursively. Each node " +
+      "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
+      "and `isOrchestrator` (true when the session itself spawned sub-agents). " +
+      "Via a scoped orchestrator token only the caller's subtree is returned; " +
+      "from the root `/mcp` endpoint the full daemon tree is visible.",
+    {
+      onlyAlive: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, only include sessions with status running/starting. " +
+            "Pruned nodes also hide their subtree. Default false.",
+        ),
+    },
+    async input => {
+      let rows = registry.list()
+      // Subtree scoping (WP5 / WP4): same gate as list_sessions.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
+      }
+      if (input.onlyAlive) {
+        rows = rows.filter(
+          s => s.status === "running" || s.status === "starting",
+        )
+      }
+      const tree = buildSessionTree(rows)
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ tree }, null, 2) },
+        ],
+      }
+    },
   )
 
   // ── kill_agent_session ─────────────────────────────────────────
