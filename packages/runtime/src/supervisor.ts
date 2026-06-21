@@ -1,5 +1,20 @@
 /**
- * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6.
+ * Completion-policy supervisor — WP1 + WP2 + WP3 + WP4 + WP5 + WP6 + WP7.
+ *
+ * WP7 (judge-gate): a gate may be a judge AGENT instead of a shell command —
+ * `gate: { judge: { adapter, model?, prompt, timeoutMs? } }`. When the trigger
+ * fires the supervisor spawns a short-lived agent (resolveAgentAdapter →
+ * spawnAgent), prompts it with the rubric (+ a minimal context tail of the
+ * watched session output), waits for its turn-end on the bus, reads the final
+ * reply and parses the LAST `VERDICT: PASS|FAIL` line (case-insensitive). PASS
+ * = gate pass (then-action), FAIL = gate fail (existing nudge/escalate path).
+ * Fail-safe: no resolver / spawn fail / timeout (default 120s) / unparseable
+ * verdict → FAIL (+ reason on state.error). The judge session is ALWAYS killed
+ * when the gate settles. The judge runs while the policy holds its `gating`
+ * slot, so it is accounted for in the WP6 concurrency cap. Persistence: a judge
+ * gate left in `gating` at crash is re-armed to `watching` like any active
+ * policy and simply re-runs the judge — no in-flight judge is persisted.
+ *
  *
  * State machine per attached policy:
  *   watching → gating → acting → done
@@ -87,6 +102,7 @@ import {
 } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
+import type { AgentAdapterResolver } from "./http-server.js"
 import {
   runCommand as defaultRunCommand,
   loadAllowlist,
@@ -103,6 +119,41 @@ export interface ShellGateSpec {
    *  session's cwd, anchored to the workspace. */
   cwd?: string
   timeoutMs?: number
+}
+
+/**
+ * Judge-agent gate (WP7). Instead of a shell command, the gate spawns a
+ * short-lived LLM agent (via the daemon's `resolveAgentAdapter`), prompts it
+ * with `prompt` (+ a minimal context tail of the watched session output, if
+ * readable), waits for its turn to end, reads the final reply and parses a
+ * verdict line (`VERDICT: PASS` / `VERDICT: FAIL`, last occurrence,
+ * case-insensitive). PASS = gate pass (exit 0 equivalent), FAIL = gate fail
+ * (→ the existing nudge/escalate path). Fail-safe: a judge timeout OR an
+ * unparseable reply is treated as FAIL. The judge session is always killed
+ * when the gate settles (success or failure).
+ */
+export interface JudgeGateSpec {
+  judge: {
+    /** Agent CLI adapter slug used to spawn the judge (e.g. "claude-code"). */
+    adapter: string
+    /** Optional model identifier forwarded to the adapter. */
+    model?: string
+    /** The rubric / instructions for the judge. The supervisor appends a
+     *  fixed instruction to end the reply with `VERDICT: PASS` or
+     *  `VERDICT: FAIL`. */
+    prompt: string
+    /** Max wall-clock for the judge turn before it is killed + FAIL.
+     *  Default 120_000ms. */
+    timeoutMs?: number
+  }
+}
+
+/** A gate is either a shell command (exit 0 = pass) or a judge agent. */
+export type GateSpec = ShellGateSpec | JudgeGateSpec
+
+/** Narrow a gate spec to the judge variant. */
+function isJudgeGate(gate: GateSpec): gate is JudgeGateSpec {
+  return typeof (gate as JudgeGateSpec).judge === "object"
 }
 
 export interface OnFailSpec {
@@ -149,8 +200,11 @@ export interface AttachPolicyInput {
    * present and non-empty. A single-element array behaves like `sessionId`.
    */
   sessionIds?: string[]
-  /** Optional shell gate. Absent → always pass immediately. */
-  gate?: ShellGateSpec
+  /**
+   * Optional gate. Absent → always pass immediately. Either a shell gate
+   * (exit 0 = pass) or a judge-agent gate (WP7: `{ judge: {...} }`).
+   */
+  gate?: GateSpec
   /**
    * Action on a GREEN gate. "emit" (WP1) emits policy:passed. "commit" (WP5)
    * stages explicit paths and commits on the host — see `commit`.
@@ -288,6 +342,33 @@ interface PolicySnapshot {
 const DEFAULT_NUDGE_TEMPLATE =
   "Le gate a échoué (exit {code}). Corrige et termine jusqu'à ce qu'il passe."
 const DEFAULT_MAX_RETRIES = 2
+/** Judge-gate (WP7) wall-clock default before timeout → kill + FAIL. */
+const DEFAULT_JUDGE_TIMEOUT_MS = 120_000
+/** Fixed instruction appended to the judge prompt so its verdict is parseable. */
+const JUDGE_VERDICT_INSTRUCTION =
+  "\n\nWhen you are done, end your reply with a single line containing exactly " +
+  "`VERDICT: PASS` (if the criteria are met) or `VERDICT: FAIL` (if not). " +
+  "Do not write anything after that line."
+/** Strip ANSI escape sequences (mirrors session-tools.stripAnsi). */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "")
+}
+/**
+ * Parse the judge verdict from its final reply. Scans for `VERDICT: PASS|FAIL`
+ * (case-insensitive) and returns the LAST occurrence. Returns null when no
+ * verdict line is present → caller treats as FAIL (fail-safe).
+ */
+function parseVerdict(text: string): "PASS" | "FAIL" | null {
+  const re = /VERDICT:\s*(PASS|FAIL)/gi
+  let last: "PASS" | "FAIL" | null = null
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    last = m[1]!.toUpperCase() as "PASS" | "FAIL"
+  }
+  return last
+}
 const PERSIST_DEBOUNCE_MS = 1_500
 /** Daemon-wide default cap on policies concurrently in gating/acting (WP6). */
 const DEFAULT_CONCURRENCY_CAP = 8
@@ -316,8 +397,15 @@ export function createCompletionPolicySupervisor(opts: {
    * are clamped to 1.
    */
   concurrencyCap?: number
+  /**
+   * Adapter resolver used to spawn a judge agent for a judge-gate (WP7).
+   * Same resolver the daemon passes to `start_agent_session`. When absent, a
+   * judge-gate fails fail-safe (FAIL) with a clear reason — shell gates are
+   * unaffected.
+   */
+  resolveAgentAdapter?: AgentAdapterResolver
 }): CompletionPolicySupervisor {
-  const { registry, sessionEvents, workspace } = opts
+  const { registry, sessionEvents, workspace, resolveAgentAdapter } = opts
   const exec = opts.runCommand ?? defaultRunCommand
   const persistPath = opts.persistPath ?? POLICIES_FILE_PATH()
   const cap = Math.max(1, opts.concurrencyCap ?? DEFAULT_CONCURRENCY_CAP)
@@ -672,6 +760,136 @@ export function createCompletionPolicySupervisor(opts: {
       emitFailed(exitCode)
     }
 
+    /**
+     * Read the recent ring-buffer tail of a session (best-effort) — used to
+     * give the judge a minimal context of the watched session's output. Mirrors
+     * get_agent_session_output: attach captures the backfill synchronously, then
+     * unsubscribe. Returns "" when the session/attach is unavailable.
+     */
+    const readTail = (sessionId: string, lastN: number): string => {
+      const lines: string[] = []
+      let unsub: (() => void) | null = null
+      try {
+        unsub = registry.attach(sessionId, line => {
+          lines.push(line)
+        })
+      } catch {
+        return ""
+      }
+      if (unsub) unsub()
+      return lines.slice(-lastN).map(stripAnsi).join("\n").trim()
+    }
+
+    /**
+     * WP7: run a judge-agent gate. Spawns a short-lived agent via
+     * resolveAgentAdapter, prompts it with the rubric (+ a minimal context tail),
+     * waits for its turn-end (or a timeout), parses VERDICT: PASS/FAIL from the
+     * final reply, and ALWAYS kills the judge session before returning.
+     * Fail-safe: no resolver / spawn failure / timeout / unparseable → FAIL.
+     * The judge runs while this policy holds its `gating` slot, so it is already
+     * accounted for in the WP6 concurrency cap.
+     */
+    const runJudge = async (
+      spec: JudgeGateSpec["judge"],
+    ): Promise<{ passed: boolean; exitCode: number; reason?: string }> => {
+      if (!resolveAgentAdapter) {
+        return { passed: false, exitCode: 1, reason: "judge gate not enabled (no adapter resolver)" }
+      }
+      let resolved
+      try {
+        resolved = await resolveAgentAdapter(spec.adapter)
+      } catch (err) {
+        return { passed: false, exitCode: 1, reason: `judge adapter resolve failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (!resolved) {
+        return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
+      }
+
+      const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+      const timeoutMs = spec.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS
+
+      // Minimal context: the tail of each watched session's output, if readable.
+      const contextBlocks = group
+        .map(id => {
+          const tail = readTail(id, 60)
+          return tail ? `--- output of session ${id} ---\n${tail}` : ""
+        })
+        .filter(Boolean)
+      const context = contextBlocks.length > 0
+        ? `\n\nContext — recent output of the watched session(s):\n${contextBlocks.join("\n\n")}`
+        : ""
+      const fullPrompt = `${spec.prompt}${context}${JUDGE_VERDICT_INSTRUCTION}`
+
+      // Spawn the judge agent.
+      let judgeId: string
+      try {
+        const agentSession = await resolved.startSession({
+          cwd,
+          ...(spec.model ? { model: spec.model } : {}),
+        })
+        const desc = registry.spawnAgent({
+          workspaceSlug: "default",
+          cwd,
+          agentSession,
+          adapterSlug: spec.adapter,
+          label: `judge:${state.policyId}`,
+          ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+        })
+        judgeId = desc.id
+      } catch (err) {
+        return { passed: false, exitCode: 1, reason: `judge spawn failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+
+      try {
+        // Subscribe to the judge's turn-end BEFORE prompting so we never miss it.
+        const ended = new Promise<"ended" | "timeout">(resolveEnd => {
+          const unsubs: Array<() => void> = []
+          let done = false
+          const finish = (r: "ended" | "timeout") => {
+            if (done) return
+            done = true
+            clearTimeout(timer)
+            for (const u of unsubs) u()
+            resolveEnd(r)
+          }
+          const timer = setTimeout(() => finish("timeout"), timeoutMs)
+          const onEnd = (ev: { sessionId: string }) => {
+            if (ev.sessionId === judgeId) finish("ended")
+          }
+          unsubs.push(sessionEvents.on("session:turn-end", onEnd))
+          unsubs.push(sessionEvents.on("session:awaiting-input", onEnd))
+          unsubs.push(sessionEvents.on("session:exited", onEnd))
+        })
+
+        try {
+          await registry.sendPrompt(judgeId, fullPrompt)
+        } catch (err) {
+          return { passed: false, exitCode: 1, reason: `judge prompt failed: ${err instanceof Error ? err.message : String(err)}` }
+        }
+
+        const outcome = await ended
+        if (outcome === "timeout") {
+          return { passed: false, exitCode: 1, reason: `judge timed out after ${timeoutMs}ms` }
+        }
+
+        const reply = readTail(judgeId, 200)
+        const verdict = parseVerdict(reply)
+        if (verdict === null) {
+          return { passed: false, exitCode: 1, reason: "judge reply had no parseable VERDICT line" }
+        }
+        return verdict === "PASS"
+          ? { passed: true, exitCode: 0 }
+          : { passed: false, exitCode: 1, reason: "judge verdict: FAIL" }
+      } finally {
+        // Always kill the judge session — success or failure.
+        try {
+          registry.kill(judgeId)
+        } catch {
+          // best-effort
+        }
+      }
+    }
+
     const runGate = async () => {
       if (entry.cancelled || state.status !== "watching") return
       state.status = "gating"
@@ -679,6 +897,16 @@ export function createCompletionPolicySupervisor(opts: {
 
       if (!input.gate) {
         await act(true, 0)
+        return
+      }
+
+      // WP7: judge-agent gate.
+      if (isJudgeGate(input.gate)) {
+        const { passed, exitCode, reason } = await runJudge(input.gate.judge)
+        state.lastGate = { exitCode, at: new Date().toISOString() }
+        if (!passed && reason) state.error = reason
+        schedulePersist()
+        await act(passed, exitCode)
         return
       }
 
@@ -911,6 +1139,15 @@ export function createCompletionPolicySupervisor(opts: {
    */
   function attachPolicy(input: AttachPolicyInput): PolicyRunState {
     const group = resolveGroup(input)
+    if (input.gate && isJudgeGate(input.gate)) {
+      const j = input.gate.judge
+      if (typeof j.adapter !== "string" || j.adapter.length === 0) {
+        throw new Error("judge gate requires a non-empty adapter")
+      }
+      if (typeof j.prompt !== "string" || j.prompt.length === 0) {
+        throw new Error("judge gate requires a non-empty prompt")
+      }
+    }
     if (input.then === "commit") {
       if (!input.commit) {
         throw new Error('then:"commit" requires a commit spec')

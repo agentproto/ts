@@ -317,6 +317,11 @@ export async function createGateway(
       const n = raw ? Number.parseInt(raw, 10) : NaN
       return Number.isFinite(n) && n > 0 ? n : undefined
     })(),
+    // WP7: judge-agent gate spawns a short-lived agent via the same resolver
+    // start_agent_session uses. Absent → judge gates fail-safe (FAIL).
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes
