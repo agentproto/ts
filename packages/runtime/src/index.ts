@@ -278,11 +278,23 @@ export async function createGateway(
     // session" error, user must spawn fresh.
     ...(opts.resolveAgentAdapter
       ? {
-          resumeAgent: async ({ adapterSlug, cwd, resumeSessionId }) => {
+          resumeAgent: async ({
+            adapterSlug,
+            cwd,
+            resumeSessionId,
+            mcpServers,
+          }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
             if (!adapter) return null
             try {
-              return await adapter.startSession({ cwd, resumeSessionId })
+              return await adapter.startSession({
+                cwd,
+                resumeSessionId,
+                // Re-mount the persisted spawn-time toolset on resume
+                // (orchestrator WP1) — closes the gap where re-spawn
+                // dropped mcpServers.
+                ...(mcpServers ? { mcpServers } : {}),
+              })
             } catch (err) {
               console.warn(
                 `[agentproto] resumeAgent('${adapterSlug}', ${resumeSessionId}) failed: ${
