@@ -139,6 +139,7 @@ export function createAgentCliRuntime(
         ...(opts?.resumeSessionId
           ? { resumeSessionId: opts.resumeSessionId }
           : {}),
+        ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
       })
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host

@@ -237,6 +237,13 @@ export async function createGateway(
         line,
       }),
   })
+  // Relaunch any `autostart` (named) tunnels that were live before this
+  // daemon restarted. Non-blocking — boot must not wait on cloudflared,
+  // and a failed restore leaves that one tunnel `error` without gating
+  // the rest of the gateway.
+  void tunnels.restoreOnBoot().catch(() => {
+    // restoreOnBoot already logs per-tunnel failures via onLog.
+  })
 
   // Build a server once eagerly so we can capture `registered` for
   // `/health`. The server is NOT used for serving — every `/mcp`

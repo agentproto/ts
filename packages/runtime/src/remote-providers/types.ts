@@ -28,7 +28,7 @@ export interface ProviderStartResult {
  * must not throw.
  */
 export interface RemoteProvider {
-  readonly id: "quick"
+  readonly id: "quick" | "named"
   start(opts: ProviderStartOptions): Promise<ProviderStartResult>
   stop(): Promise<void>
 }

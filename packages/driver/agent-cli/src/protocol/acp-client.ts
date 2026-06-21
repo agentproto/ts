@@ -145,9 +145,10 @@ export function createAcpProtocolArm(
         session = await client.loadSession({
           sessionId: opts.resumeSessionId,
           cwd,
+          mcpServers: opts.mcpServers,
         })
       } else {
-        session = await client.newSession({ cwd })
+        session = await client.newSession({ cwd, mcpServers: opts.mcpServers })
       }
     },
     async send(turnId, message) {

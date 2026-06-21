@@ -84,6 +84,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/acp": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",

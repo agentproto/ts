@@ -23,19 +23,33 @@ import type { TunnelDescriptor } from "@agentproto/runtime"
 const USAGE = `agentproto tunnel — manage public cloudflared tunnels
 
 Usage:
-  agentproto tunnel create --port <n> [--provider quick] [--name <slug>]
-                           [--label <text>] [--host <host>] [--json]
+  agentproto tunnel create --port <n> [--provider quick|named] [--name <slug>]
+                           [--label <text>] [--host <host>] [--autostart]
+                           [--hostname <fqdn>] [--tunnel-id <id>]
+                           [--credentials-file <path>] [--json]
   agentproto tunnel list   [--active] [--json]
   agentproto tunnel stop   <id-or-name> [--json]       (alias: delete, rm)
   agentproto tunnel status <id-or-name> [--json]
 
-Discovers the daemon via ~/.agentproto/runtime.json. Tunnels are
-Cloudflare Quick Tunnels (no API key, ephemeral *.trycloudflare.com URL).
+Discovers the daemon via ~/.agentproto/runtime.json.
+
+Providers:
+  quick (default)  Cloudflare Quick Tunnel — no API key, ephemeral
+                   *.trycloudflare.com URL (changes every run).
+  named            A tunnel you provisioned once with the cloudflared CLI,
+                   bound to a STABLE hostname that survives restarts. Needs
+                   --hostname and --tunnel-id. Add --autostart to relaunch
+                   it automatically when the daemon boots.
+
+One-time named-tunnel setup:
+  cloudflared tunnel create <name>
+  cloudflared tunnel route dns <name> <hostname>
 
 Examples:
   agentproto tunnel create --port 3000
   agentproto tunnel create --port 5173 --name vite-preview --json
-  agentproto tunnel list
+  agentproto tunnel create --port 3040 --name guilde --provider named \\
+    --hostname guilde-local.example.com --tunnel-id guilde --autostart
   agentproto tunnel list --active
   agentproto tunnel stop vite-preview
   agentproto tunnel status vite-preview
@@ -77,6 +91,10 @@ async function runCreate(args: readonly string[]): Promise<number> {
       name: { type: "string" },
       label: { type: "string" },
       host: { type: "string" },
+      autostart: { type: "boolean" },
+      hostname: { type: "string" },
+      "tunnel-id": { type: "string" },
+      "credentials-file": { type: "string" },
       json: { type: "boolean" },
     },
   })
@@ -103,11 +121,23 @@ async function runCreate(args: readonly string[]): Promise<number> {
   }
   const endpoint = report.found
 
+  if (values.provider === "named" && (!values.hostname || !values["tunnel-id"])) {
+    process.stderr.write(
+      "agentproto tunnel create: --provider named requires --hostname and --tunnel-id.\n" +
+        "  Provision once: cloudflared tunnel create <name> && cloudflared tunnel route dns <name> <hostname>\n",
+    )
+    return 2
+  }
+
   const body: Record<string, unknown> = { targetPort }
   if (values.provider) body.provider = values.provider
   if (values.name) body.name = values.name
   if (values.label) body.label = values.label
   if (values.host) body.targetHost = values.host
+  if (values.autostart) body.autostart = true
+  if (values.hostname) body.hostname = values.hostname
+  if (values["tunnel-id"]) body.tunnelId = values["tunnel-id"]
+  if (values["credentials-file"]) body.credentialsFile = values["credentials-file"]
 
   let desc: TunnelDescriptor
   try {
@@ -296,6 +326,9 @@ async function runStatus(args: readonly string[]): Promise<number> {
         (desc.name ? `name     ${desc.name}\n` : "") +
         (desc.label ? `label    ${desc.label}\n` : "") +
         `provider ${desc.provider}\n` +
+        (desc.hostname ? `hostname ${desc.hostname}\n` : "") +
+        (desc.tunnelId ? `tunnelId ${desc.tunnelId}\n` : "") +
+        (desc.autostart ? `autostart yes\n` : "") +
         `target   ${desc.targetHost}:${desc.targetPort}\n` +
         `url      ${desc.publicUrl || "—"}\n` +
         `status   ${desc.status}\n` +
