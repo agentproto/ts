@@ -21,7 +21,7 @@ import { resolve } from 'node:path'
 
 export const DEFAULTS = {
   changeset: { stage: 'manual', engine: 'local', model: null, command: 'claude' },
-  review: { stage: 'manual', engine: 'local', bypassCi: false, blocking: false, fix: 'off', model: null, command: 'claude' },
+  review: { stage: 'manual', engine: 'local', bypassCi: false, blocking: false, fix: 'off', maxLoops: 3, model: null, command: 'claude' },
 }
 
 function readJson(path) {
