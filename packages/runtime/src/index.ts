@@ -46,6 +46,8 @@ import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
+import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createCompletionPolicySupervisor } from "./supervisor.js"
 
 export type {
   AgentAdapterResolver,
@@ -215,12 +217,24 @@ export async function createGateway(
     version: opts.version ?? "0.1.0-alpha",
   })
 
+  // Event bus + ring for orchestration tools (poll_events / wait_for_any).
+  // Declared before the sessions registry so we can pass the bus into it.
+  const sessionEvents = createSessionEventBus()
+  const eventRing = createEventRing()
+  // Wire the ring so every session:* event is buffered for poll_events.
+  eventRing.wire(sessionEvents)
+  // Wire the webhook notifier so per-session and global URLs are
+  // notified on turn-end / awaiting-input / exited events.
+  const webhookNotifier = createWebhookNotifier()
+  sessionEvents.onAny(ev => webhookNotifier.onSessionEvent(ev))
+
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
   // startHttpServer for the /sessions HTTP routes. Declared here
   // (above the factory) so its identifier is visible at closure-
   // build time, even though the factory only invokes later.
   const sessions = createSessionsRegistry({
+    sessionEvents,
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     // Resume hook: when a prompt arrives for a dead agent-cli row
     // (typical after daemon restart), the registry calls back into
@@ -249,15 +263,19 @@ export async function createGateway(
       : {}),
   })
 
+  // Completion-policy supervisor — watches sessions and runs shell gates.
+  // Declared after `sessions` so it can resolve session cwd at gate time.
+  const supervisor = createCompletionPolicySupervisor({
+    registry: sessions,
+    sessionEvents,
+    workspace,
+  })
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
   // browser-loaded localhost page can't.
   const token = opts.token ?? randomUUID()
-
-  // Event bus + ring for orchestration tools (poll_events / wait_for_any).
-  const sessionEvents = createSessionEventBus()
-  const eventRing = createEventRing()
 
   // MCP proxy — single registry that holds open Client connections
   // to every imported MCP server. The per-request mcpServerFactory
@@ -302,7 +320,7 @@ export async function createGateway(
         ? { listAgentAdapters: opts.listAgentAdapters }
         : {}),
     })
-    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing })
+    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     registerMcpApps(server, [

@@ -29,6 +29,13 @@ export {
 } from "./create-tool.js"
 export { toolSpec, toolVerbs } from "./spec.js"
 export {
+  parseToolManifest,
+  toolFromManifest,
+  toolFromManifestOnly,
+  type ToolManifest,
+  type ToolManifestFrontmatter,
+} from "./manifest/index.js"
+export {
   ToolError,
   toToolError,
   toToolResult,

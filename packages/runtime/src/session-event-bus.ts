@@ -15,6 +15,8 @@ export type SessionEventType =
   | "session:awaiting-input"
   | "session:exited"
   | "session:command-done"
+  | "policy:passed"
+  | "policy:failed"
 
 export interface SessionTurnEndEvent {
   type: "session:turn-end"
@@ -50,11 +52,30 @@ export interface SessionCommandDoneEvent {
   ts: string
 }
 
+/** Emitted by the supervisor when a completion policy's gate passes. */
+export interface PolicyPassedEvent {
+  type: "policy:passed"
+  policyId: string
+  sessionId: string
+  ts: string
+}
+
+/** Emitted by the supervisor when a completion policy's gate fails. */
+export interface PolicyFailedEvent {
+  type: "policy:failed"
+  policyId: string
+  sessionId: string
+  exitCode?: number
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
   | SessionExitedEvent
   | SessionCommandDoneEvent
+  | PolicyPassedEvent
+  | PolicyFailedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

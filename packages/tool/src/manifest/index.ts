@@ -101,6 +101,41 @@ export function parseToolManifest(source: string): ToolManifest {
 }
 
 /**
+ * Build a {@link ToolHandle} from a manifest that has no companion TS module.
+ *
+ * `inputSchema`/`outputSchema` are omitted; IO validation falls back to the
+ * AIP-16 `inputs`/`outputs` JSON Schema blocks declared in the frontmatter
+ * (via `validateInput`/`validateOutput`). The returned handle is typed as
+ * `ToolHandle<unknown, unknown>` since the generic shapes are not statically
+ * known.
+ *
+ * Use this when loading an agent-generated TOOL.md whose IO contract is
+ * expressed in YAML (`inputs:`/`outputs:`) rather than a compiled TS module.
+ */
+export function toolFromManifestOnly(
+  manifest: ToolManifest,
+): ToolHandle<unknown, unknown> {
+  const fm = manifest.frontmatter
+  return defineTool({
+    id: fm.id,
+    name: fm.name,
+    description: fm.description,
+    version: fm.version,
+    inputs: fm.inputs,
+    outputs: fm.outputs,
+    mutates: fm.mutates,
+    requires: fm.requires,
+    approval: fm.approval,
+    riskLevel: fm.risk_level,
+    costClass: fm.cost_class,
+    timeoutMs: fm.timeout_ms,
+    idempotent: fm.idempotent,
+    tags: fm.tags,
+    metadata: fm.metadata,
+  })
+}
+
+/**
  * Build a fully-typed {@link ToolHandle} from a parsed `TOOL.md` manifest
  * + caller-supplied schemas. The .md is the single source of truth for
  * metadata (id, name, description, version, mutates, approval, …); the

@@ -14,12 +14,14 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
+import type { CompletionPolicySupervisor } from "./supervisor.js"
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
   eventRing: EventRing
   routineRunner?: RoutineRunner
+  supervisor?: CompletionPolicySupervisor
 }
 
 export function registerOrchestrationTools(
@@ -50,7 +52,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done"]))
+        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -188,6 +190,88 @@ export function registerOrchestrationTools(
       async () => {
         const runs = routineRunner.list()
         return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
+      },
+    )
+  }
+
+  // ── Supervisor tools (optional — only registered when supervisor is provided) ─
+  const { supervisor } = opts
+  if (supervisor) {
+    server.tool(
+      "attach_policy",
+      "Attach a completion policy to a running session. When the session emits " +
+        "turn-end, an optional shell gate runs (exit 0 = pass). The result is " +
+        "emitted as `policy:passed` or `policy:failed` on the event bus " +
+        "(readable via poll_events). Returns the policyId immediately.",
+      {
+        sessionId: z.string().describe("Session id to watch."),
+        gate: z
+          .object({
+            command: z.string().min(1).describe("Gate command basename (must be allowlisted)."),
+            args: z.array(z.string()).optional().describe("Argv passed verbatim."),
+            cwd: z
+              .string()
+              .optional()
+              .describe("Working directory for the gate. Defaults to the session's cwd."),
+            timeoutMs: z.number().int().positive().optional().describe("Gate timeout in ms. Default 60 000."),
+          })
+          .optional()
+          .describe("Shell gate. Absent → always passes immediately after turn-end."),
+        then: z
+          .literal("emit")
+          .describe("Action to take after the gate. Only 'emit' is supported in WP1."),
+      },
+      async input => {
+        const state = supervisor.attach({
+          sessionId: input.sessionId,
+          gate: input.gate,
+          then: input.then,
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+        }
+      },
+    )
+
+    server.tool(
+      "get_policy_status",
+      "Get the current status of a completion policy attached with `attach_policy`.",
+      {
+        policyId: z.string().describe("Policy id returned by `attach_policy`."),
+      },
+      async input => {
+        const state = supervisor.getStatus(input.policyId)
+        if (!state) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "policy not found", policyId: input.policyId }) }],
+          }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "cancel_policy",
+      "Cancel a watching or gating completion policy. No-op on done/blocked policies.",
+      {
+        policyId: z.string().describe("Policy id to cancel."),
+      },
+      async input => {
+        supervisor.cancel(input.policyId)
+        const state = supervisor.getStatus(input.policyId)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ policyId: input.policyId, status: state?.status ?? "not_found" }) }],
+        }
+      },
+    )
+
+    server.tool(
+      "list_policies",
+      "List all completion policies (watching, gating, done, blocked, cancelled).",
+      {},
+      async () => {
+        const policies = supervisor.list()
+        return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
       },
     )
   }
