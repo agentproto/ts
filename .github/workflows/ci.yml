@@ -197,7 +197,11 @@ jobs:
             -f target_url="$RUN_URL" \
             -f description="written by agentic reviewer"
         env:
-          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          # Commit statuses are checks, not authored content — no bot identity
+          # to gain here. Keep the default GITHUB_TOKEN, which carries this
+          # job's `statuses: write` permission. The App token would 403 unless
+          # the App is granted "Commit statuses: write".
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Gate — fail run if blocking changes requested
         if: steps.gate.outputs.state == 'failure'
