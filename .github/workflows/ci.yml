@@ -67,10 +67,19 @@ jobs:
             echo "Version Packages PR — no changeset required."
             exit 0
           fi
+          # A changeset is only required when a publishable package changed.
+          # PRs that touch only scripts/, .github/, root configs, etc. ship no
+          # npm version bump — mirror the reviewer's rule and skip the gate so
+          # these don't show a (non-blocking but ugly) red check.
+          PKG_CHANGES=$(git diff --name-only origin/main...HEAD -- 'packages/**' 'adapters/**' || true)
+          if [ -z "$PKG_CHANGES" ]; then
+            echo "No @agentproto/* package changes — no changeset required."
+            exit 0
+          fi
           ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
             | grep -v '^\.changeset/README\.md$' || true)
           if [ -z "$ADDED" ]; then
-            echo "No changeset found. Run 'pnpm changeset' locally or wait for pr-review to generate one."
+            echo "Package changes present but no changeset. Run 'pnpm changeset' / 'pnpm changeset:ai', or wait for pr-review to generate one."
             exit 1
           fi
           echo "✓ Changeset present: $ADDED"
