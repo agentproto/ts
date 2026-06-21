@@ -120,6 +120,22 @@ export function registerSessionTools(
           "Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). " +
             "Adapters that expose a `--model` flag honour this; others ignore it."
         ),
+      mcpServers: z
+        .array(
+          z.object({
+            name: z.string(),
+            transport: z.enum(["stdio", "http", "sse"]),
+            ref: z.string().optional(),
+          })
+        )
+        .optional()
+        .describe(
+          "MCP servers to mount into the spawned agent's session at spawn time. " +
+            "Forwarded verbatim to `session/new.mcpServers` on the ACP arm — gives " +
+            "the child agent a host-chosen scoped toolset (e.g. the daemon's own " +
+            "orchestration gateway so it can spawn + supervise sub-agents). " +
+            "Adapters that don't model MCP mounting ignore it."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -182,7 +198,11 @@ export function registerSessionTools(
         }
       }
       try {
-        const agentSession = await resolved.startSession({ cwd, ...(input.model ? { model: input.model } : {}) })
+        const agentSession = await resolved.startSession({
+          cwd,
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        })
         const desc = registry.spawnAgent({
           workspaceSlug: resolvedSlug,
           cwd,

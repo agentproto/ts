@@ -261,11 +261,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, model }) {
+        async startSession({ cwd, resumeSessionId, model, mcpServers }) {
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             ...(model ? { config: { options: { model } } } : {}),
+            ...(mcpServers ? { mcpServers } : {}),
           })
         },
         commandPreview:

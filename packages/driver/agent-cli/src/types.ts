@@ -7,9 +7,9 @@
  * proprietary adapter arms.
  */
 
-import type { StreamEvent } from "@agentproto/acp"
+import type { AcpMcpServer, StreamEvent } from "@agentproto/acp"
 
-export type { StreamEvent }
+export type { AcpMcpServer, StreamEvent }
 
 export type AgentCliProtocol = "acp" | "mcp" | "proprietary" | "print"
 export type AgentCliSessionMode = "ephemeral" | "persistent" | "resumable"
@@ -344,6 +344,16 @@ export interface AgentCliConnectOptions {
    * because per-protocol semantics aren't visible at this layer.
    */
   resumeSessionId?: string
+  /**
+   * MCP servers to mount into the agent's session at spawn time. For
+   * the ACP arm these are forwarded verbatim into
+   * `session/new.mcpServers` (and `session/load.mcpServers` on resume),
+   * giving the child agent a scoped toolset the host chose — e.g. the
+   * daemon's own orchestration gateway so a spawned agent can itself
+   * spawn + supervise sub-agents. Arms that don't model MCP mounting
+   * ignore this field.
+   */
+  mcpServers?: AcpMcpServer[]
 }
 
 /**
@@ -412,6 +422,13 @@ export interface AgentCliStartOptions {
    * Forwarded verbatim to `protocolArm.connect({ resumeSessionId })`.
    */
   resumeSessionId?: string
+  /**
+   * MCP servers to mount into the spawned agent's session. Threaded
+   * through to `protocolArm.connect({ mcpServers })` → the ACP arm's
+   * `session/new.mcpServers`. Lets the host inject a scoped toolset
+   * (e.g. the daemon's orchestration gateway) at spawn time.
+   */
+  mcpServers?: AcpMcpServer[]
 }
 
 /**

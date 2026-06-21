@@ -1779,6 +1779,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@agentproto/acp':
+        specifier: workspace:*
+        version: link:../acp
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent

@@ -24,6 +24,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream"
 import { mkdir, stat, writeFile } from "node:fs/promises"
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
+import type { AcpMcpServer } from "@agentproto/acp"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
@@ -83,6 +84,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  that support model selection (e.g. via a `--model` CLI flag) may
      *  honour this; others silently ignore it. */
     model?: string
+    /** MCP servers to mount into the spawned agent's session at spawn
+     *  time. Forwarded verbatim to the driver's `start({ mcpServers })`
+     *  → the ACP arm's `session/new.mcpServers`, giving the child agent
+     *  a host-chosen scoped toolset (e.g. the daemon's own orchestration
+     *  gateway). Adapters that don't model MCP mounting ignore it. */
+    mcpServers?: AcpMcpServer[]
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -1693,10 +1700,18 @@ async function handleTunnels(
     try {
       const desc = await registry.create({
         targetPort,
-        ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
+        ...(b.provider === "quick" || b.provider === "named"
+          ? { provider: b.provider }
+          : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+        ...(b.autostart === true ? { autostart: true } : {}),
+        ...(typeof b.hostname === "string" ? { hostname: b.hostname } : {}),
+        ...(typeof b.tunnelId === "string" ? { tunnelId: b.tunnelId } : {}),
+        ...(typeof b.credentialsFile === "string"
+          ? { credentialsFile: b.credentialsFile }
+          : {}),
       })
       json(201, desc)
     } catch (err) {
