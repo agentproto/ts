@@ -132,6 +132,14 @@ export function createAgentCliRuntime(
           once: true,
         })
       }
+      // Extract model + effort from the config options so the protocol
+      // arm can apply them via ACP session/set_config_option — the ACP
+      // wrapper (claude-agent-acp) does not read its own CLI args and
+      // forward them to claude, so bin_args_template alone is not
+      // sufficient. The compose step still adds them to binArgs as a
+      // best-effort fallback for non-ACP arms.
+      const optModel = opts?.config?.options?.model
+      const optEffort = opts?.config?.options?.effort
       await arm.connect({
         cwd,
         env,
@@ -140,6 +148,8 @@ export function createAgentCliRuntime(
           ? { resumeSessionId: opts.resumeSessionId }
           : {}),
         ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
+        ...(optModel ? { model: String(optModel) } : {}),
+        ...(optEffort ? { effort: String(optEffort) } : {}),
       })
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host

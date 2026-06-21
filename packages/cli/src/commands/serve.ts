@@ -261,11 +261,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, model, mcpServers }) {
+        async startSession({ cwd, resumeSessionId, model, effort, mcpServers }) {
+          // Build config.options only when there's something to set — an
+          // empty object would pass undefined validation but trips the
+          // "no declared options" early-return in composeSpawn.
+          const optionOverrides: Record<string, string> = {}
+          if (model) optionOverrides.model = model
+          if (effort) optionOverrides.effort = effort
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
-            ...(model ? { config: { options: { model } } } : {}),
+            ...(Object.keys(optionOverrides).length > 0
+              ? { config: { options: optionOverrides } }
+              : {}),
             ...(mcpServers ? { mcpServers } : {}),
           })
         },

@@ -84,10 +84,16 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
-    /** Model identifier forwarded from `start_agent_session`. Adapters
-     *  that support model selection (e.g. via a `--model` CLI flag) may
-     *  honour this; others silently ignore it. */
+    /** Model identifier forwarded from `start_agent_session`. For ACP
+     *  adapters this is applied via session/set_config_option after
+     *  newSession (the ACP wrapper does not forward CLI args to claude).
+     *  Adapters that don't support model selection ignore it. */
     model?: string
+    /** Effort level forwarded from `start_agent_session`. Effort is
+     *  model-dependent — same label ≠ same budget across models; defaults
+     *  differ by model. Omit to keep the model's own default. Applied
+     *  via session/set_config_option on ACP adapters; others ignore it. */
+    effort?: string
     /** MCP servers to mount into the spawned agent's session at spawn
      *  time. Forwarded verbatim to the driver's `start({ mcpServers })`
      *  → the ACP arm's `session/new.mcpServers`, giving the child agent
@@ -1402,9 +1408,17 @@ async function handleSessions(
         typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
           ? b.resumeSessionId
           : undefined
+      const bodyModel = typeof b.model === "string" && b.model.length > 0
+        ? b.model
+        : undefined
+      const bodyEffort = typeof b.effort === "string" && b.effort.length > 0
+        ? b.effort
+        : undefined
       const agentSession = await resolved.startSession({
         cwd,
         ...(resumeSessionId ? { resumeSessionId } : {}),
+        ...(bodyModel ? { model: bodyModel } : {}),
+        ...(bodyEffort ? { effort: bodyEffort } : {}),
       })
       const desc = registry.spawnAgent({
         workspaceSlug,

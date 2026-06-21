@@ -148,7 +148,12 @@ export function createAcpProtocolArm(
           mcpServers: opts.mcpServers,
         })
       } else {
-        session = await client.newSession({ cwd, mcpServers: opts.mcpServers })
+        session = await client.newSession({
+          cwd,
+          mcpServers: opts.mcpServers,
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(opts.effort ? { effort: opts.effort } : {}),
+        })
       }
     },
     async send(turnId, message) {

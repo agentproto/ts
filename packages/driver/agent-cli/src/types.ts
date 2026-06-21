@@ -354,6 +354,23 @@ export interface AgentCliConnectOptions {
    * ignore this field.
    */
   mcpServers?: AcpMcpServer[]
+  /**
+   * Model to activate at session start. For the ACP arm this is
+   * applied via `session/set_config_option` with `configId:"model"`
+   * immediately after `newSession` — the ACP wrapper (claude-agent-acp)
+   * does not forward CLI flags to the underlying claude process so
+   * bin_args_template alone cannot change the model.
+   */
+  model?: string
+  /**
+   * Effort level to apply at session start. Effort is model-dependent:
+   * the same label ("high", "xhigh", …) maps to different underlying
+   * computation budgets per model, and the default differs by model
+   * (e.g. Sonnet 4.6 / Opus 4.8 default to "high"; Opus 4.7 to
+   * "xhigh"). Omit to keep the model's own default. Applied via
+   * `session/set_config_option` with `configId:"effort"` on ACP arms.
+   */
+  effort?: string
 }
 
 /**
