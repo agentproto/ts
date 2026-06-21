@@ -157,17 +157,18 @@ export async function resolveLaunch(cfg: ResolveLaunchConfig): Promise<BrowserAd
           `[${label}] service is not running on :${port} and no launch command is available.${platformHint}`
         )
       }
-      log?.(`[${label}] starting: ${[cmd.file, ...cmd.args].join(" ")}`)
+      const cmdFile = opts.binPath ?? cmd.file
+      log?.(`[${label}] starting: ${[cmdFile, ...cmd.args].join(" ")}`)
       if (cmd.isLaunchctl) {
         // Launcher exits immediately — spawn for side-effect only; pid stays undefined.
-        spawn(cmd.file, cmd.args, {
+        spawn(cmdFile, cmd.args, {
           detached: true,
           stdio: "ignore",
           env: { ...process.env, ...persistedEnv, ...opts.env, ...resolvedExtraEnv },
         }).unref()
         return null
       }
-      const child = spawn(cmd.file, cmd.args, {
+      const child = spawn(cmdFile, cmd.args, {
         detached: true,
         stdio: "ignore",
         env: { ...process.env, ...persistedEnv, ...opts.env, ...resolvedExtraEnv },

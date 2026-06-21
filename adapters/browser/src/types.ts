@@ -162,6 +162,12 @@ export interface BrowserAdapterStartOptions {
    */
   baseUrl?: string
   /**
+   * Override the binary path used for the local spawn.
+   * When set, takes precedence over the adapter's own resolved binary path.
+   * Only used on the local path (`location !== "cloud"`).
+   */
+  binPath?: string
+  /**
    * Opt-in non-blocking cold start. When set, `ensure` waits only this many
    * milliseconds for the freshly-spawned service to become healthy. If it does
    * not, `ensure` returns promptly with `status: "starting"` while health

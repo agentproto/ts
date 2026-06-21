@@ -52,6 +52,8 @@ interface BrowserAdapterLike {
   description: string
   defaultPort: number
   healthPath: string
+  /** Where this adapter runs — "local" (default) or "cloud". */
+  location?: "local" | "cloud"
   ensure(opts: {
     port?: number
     /** forwarded to dependent adapters (e.g. bureau→camofox) */
@@ -64,6 +66,12 @@ interface BrowserAdapterLike {
      *  in the background. */
     initialWaitMs?: number
     log?: (s: string) => void
+    /** Override execution location ("local" or "cloud"). */
+    location?: "local" | "cloud"
+    /** Base URL of the remote service when location="cloud". */
+    baseUrl?: string
+    /** Override the binary path for a local spawn. */
+    binPath?: string
   }): Promise<BrowserInstanceLike>
 }
 
@@ -81,6 +89,12 @@ export type BrowserAdapterLister = () => {
   name: string
   description: string
   defaultPort: number
+  /** Where this adapter runs — "local" (default) or "cloud". */
+  location?: "local" | "cloud"
+  /** Install methods — informational metadata from the adapter manifest. */
+  install?: unknown[]
+  /** Config prompts — informational metadata from the adapter manifest. */
+  config?: unknown[]
 }[]
 
 // ── Registration ──────────────────────────────────────────────────────────────
@@ -159,6 +173,27 @@ export function registerBrowserTools(
         .string()
         .optional()
         .describe("Free-text label surfaced in `list_browsers` and the UI."),
+      location: z
+        .enum(["local", "cloud"])
+        .optional()
+        .describe(
+          "Override execution location. 'local' spawns the adapter process on this machine (default). " +
+            "'cloud' health-checks a remote endpoint at `baseUrl` without spawning anything."
+        ),
+      baseUrl: z
+        .string()
+        .optional()
+        .describe(
+          "Base URL of the remote service when location='cloud' " +
+            "(e.g. 'https://browser-service.example.com'). Required when location='cloud'."
+        ),
+      binPath: z
+        .string()
+        .optional()
+        .describe(
+          "Override the binary path used for the local spawn. " +
+            "When unset, the adapter resolves its own default binary."
+        ),
     },
     async input => {
       if (!resolveBrowserAdapter) {
@@ -195,6 +230,9 @@ export function registerBrowserTools(
         const instance = await adapter.ensure({
           port: input.port,
           camofoxPort: input.camofoxPort,
+          location: input.location,
+          baseUrl: input.baseUrl,
+          binPath: input.binPath,
           // Non-blocking cold start: if the freshly spawned service isn't
           // healthy within this bounded window, register it as `starting`
           // and let health converge in the background instead of blocking
