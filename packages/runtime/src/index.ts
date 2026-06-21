@@ -68,12 +68,15 @@ export type {
 } from "./sessions.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
+import { TunnelRegistry } from "./tunnel-registry.js"
+import { registerTunnelTools } from "./tunnel-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
 export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./heartbeat.js"
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
+export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {
@@ -157,6 +160,10 @@ export interface GatewayHandle {
    *  inside the same process can register their child processes for
    *  visibility through /sessions and the CLI TUI. */
   sessions: SessionsRegistry
+  /** Tunnel registry — manages public cloudflared tunnels for any
+   *  local port. Exposed so embedding hosts can open tunnels
+   *  programmatically without going through the HTTP/MCP surface. */
+  tunnels: TunnelRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -197,6 +204,20 @@ export async function createGateway(
   const remote = new RemoteController({
     workspace,
     port,
+    onLog: line =>
+      events.emit({
+        type: "remote-log",
+        at: new Date().toISOString(),
+        line,
+      }),
+  })
+
+  // Multi-tunnel registry — independent from RemoteController. Manages
+  // the general "create a public URL for any local port" surface
+  // (create_tunnel / list_tunnels / stop_tunnel MCP tools + /tunnels HTTP
+  // routes). Logs flow through the same events stream.
+  const tunnels = new TunnelRegistry({
+    workspace,
     onLog: line =>
       events.emit({
         type: "remote-log",
@@ -332,6 +353,8 @@ export async function createGateway(
         return rows
       }}),
     ])
+    // Multi-tunnel tools — same closure-rebind pattern.
+    registerTunnelTools(server, { registry: tunnels })
     return server
   }
 
@@ -376,6 +399,7 @@ export async function createGateway(
     mcpProxy,
     token,
     ptyEnabled: opts.spawnPty != null,
+    tunnels,
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
@@ -416,6 +440,7 @@ export async function createGateway(
     workspaceFs,
     registered,
     sessions,
+    tunnels,
     token,
     async stop() {
       heartbeat.stop()
@@ -426,9 +451,10 @@ export async function createGateway(
       // Close upstream MCP clients (their stdio children would
       // otherwise leak the same way).
       await mcpProxy.closeAll()
-      // Tear the tunnel before the HTTP listener — otherwise cloudflared
-      // briefly proxies to a dead port and surfaces 502s to any in-flight
-      // remote client.
+      // Stop all active tunnels (TunnelRegistry) then the remote
+      // controller's single-gateway tunnel. Both before HTTP so
+      // cloudflared doesn't briefly proxy to a dead port.
+      await tunnels.shutdown()
       await remote.shutdown()
       await http.stop()
     },

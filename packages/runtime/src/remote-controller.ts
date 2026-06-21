@@ -41,6 +41,13 @@ import { join } from "node:path"
 
 import type { AuthOptions } from "./http-server.js"
 import { quickTunnelProvider } from "./remote-providers/quick.js"
+import type {
+  ProviderStartOptions,
+  ProviderStartResult,
+  RemoteProvider,
+} from "./remote-providers/types.js"
+
+export type { ProviderStartOptions, ProviderStartResult, RemoteProvider }
 
 export interface RemoteState {
   provider: "quick"
@@ -110,34 +117,6 @@ export interface RemoteStatus {
   exposesGateway?: boolean
   /** Last error from the provider, if any (since last enable). */
   lastError?: string
-}
-
-/**
- * A pluggable tunnel provider.
- *
- * `start` returns the public URL once the upstream tunnel is ready
- * (e.g. for cloudflared, after parsing the trycloudflare.com URL out of
- * its stderr). `stop` is idempotent — calling it twice or on an
- * already-dead child must not throw.
- */
-export interface RemoteProvider {
-  readonly id: "quick"
-  start(opts: ProviderStartOptions): Promise<ProviderStartResult>
-  stop(): Promise<void>
-}
-
-export interface ProviderStartOptions {
-  /** Local target the tunnel forwards to. */
-  target: { host: string; port: number }
-  /** Workspace path — for log / state files. */
-  workspace: string
-  /** Called whenever the provider has a status update worth logging. */
-  onLog?: (line: string) => void
-}
-
-export interface ProviderStartResult {
-  publicUrl: string
-  pid: number | null
 }
 
 export interface RemoteControllerOptions {
