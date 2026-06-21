@@ -87,6 +87,7 @@ import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
+import { registerTunnelAdapterTools } from "./tunnel-adapters.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -510,6 +511,10 @@ export async function createGateway(
     })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
+    // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
+    // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
+    // gateway — creds/ledger live under ~/.agentproto.
+    registerTunnelAdapterTools(server, {})
     return server
   }
 

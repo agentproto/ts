@@ -1809,6 +1809,9 @@ importers:
       '@agentproto/acp':
         specifier: workspace:*
         version: link:../acp
+      '@agentproto/adapter-kit':
+        specifier: workspace:*
+        version: link:../adapter-kit
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent

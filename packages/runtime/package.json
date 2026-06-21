@@ -85,6 +85,7 @@
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
+    "@agentproto/adapter-kit": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",

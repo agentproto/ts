@@ -46,6 +46,7 @@ import type {
   ProviderStartOptions,
   ProviderStartResult,
   RemoteProvider,
+  TunnelProviderHandle,
 } from "./types.js"
 
 const execFileAsync = promisify(execFile)
@@ -54,12 +55,36 @@ const URL_REGEX = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i
 
 const STARTUP_TIMEOUT_MS = 30_000
 
-export function quickTunnelProvider(): RemoteProvider {
+/** Adapter-kit slug for the quick provider (catalog key). */
+export const CLOUDFLARE_QUICK_SLUG = "cloudflare-quick"
+
+/** Quick tunnels need no credentials and offer no stability guarantees. */
+export const QUICK_CAPABILITIES = {
+  stableUrl: false,
+  autostart: false,
+  customDomain: false,
+  requiresAuth: false,
+  hasApi: false,
+} as const
+
+export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
   let child: ChildProcess | null = null
   let configPath: string | null = null
 
   return {
     id: "quick",
+    // ── adapter-kit handle surface ──────────────────────────────────
+    slug: CLOUDFLARE_QUICK_SLUG,
+    name: "Cloudflare Quick Tunnel",
+    // In-process provider — no npm package version to report.
+    version: "builtin",
+    description:
+      "Zero-credential Cloudflare tunnel. Ephemeral *.trycloudflare.com URL, fresh each run.",
+    requiresSetup: false,
+    capabilities: { ...QUICK_CAPABILITIES },
+    async check(): Promise<boolean> {
+      return cloudflaredOnPath()
+    },
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
       await assertCloudflaredOnPath()
       const targetUrl = `http://${opts.target.host}:${opts.target.port}`
@@ -196,6 +221,21 @@ export function quickTunnelProvider(): RemoteProvider {
         })
       })
     },
+  }
+}
+
+/**
+ * Non-throwing variant for the adapter-kit `check()` health probe — true
+ * when `cloudflared` is reachable on PATH. NOT called during listing (the
+ * kit derives status from resolvability + creds, per OQ-5); reserved for
+ * on-demand health checks.
+ */
+async function cloudflaredOnPath(): Promise<boolean> {
+  try {
+    await execFileAsync("cloudflared", ["--version"], { timeout: 3_000 })
+    return true
+  } catch {
+    return false
   }
 }
 

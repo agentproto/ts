@@ -53,6 +53,7 @@ import type {
   ProviderStartOptions,
   ProviderStartResult,
   RemoteProvider,
+  TunnelProviderHandle,
 } from "./types.js"
 
 const execFileAsync = promisify(execFile)
@@ -61,6 +62,18 @@ const execFileAsync = promisify(execFile)
 const READY_REGEX = /Registered tunnel connection/i
 
 const STARTUP_TIMEOUT_MS = 30_000
+
+/** Adapter-kit slug for the named provider (catalog key). */
+export const CLOUDFLARE_NAMED_SLUG = "cloudflare-named"
+
+/** Named tunnels are stable, autostart-able, and require BYO credentials. */
+export const NAMED_CAPABILITIES = {
+  stableUrl: true,
+  autostart: true,
+  customDomain: true,
+  requiresAuth: true,
+  hasApi: false,
+} as const
 
 export interface NamedTunnelConfig {
   /** Stable public hostname routed to this tunnel (e.g. app.example.com). */
@@ -74,7 +87,9 @@ export interface NamedTunnelConfig {
   credentialsFile?: string
 }
 
-export function namedTunnelProvider(cfg: NamedTunnelConfig): RemoteProvider {
+export function namedTunnelProvider(
+  cfg: NamedTunnelConfig,
+): RemoteProvider & TunnelProviderHandle {
   let child: ChildProcess | null = null
   let configPath: string | null = null
 
@@ -84,6 +99,25 @@ export function namedTunnelProvider(cfg: NamedTunnelConfig): RemoteProvider {
 
   return {
     id: "named",
+    // ── adapter-kit handle surface ──────────────────────────────────
+    slug: CLOUDFLARE_NAMED_SLUG,
+    name: "Cloudflare Named Tunnel",
+    // In-process provider — no npm package version to report.
+    version: "builtin",
+    description:
+      "Persistent Cloudflare tunnel bound to a stable hostname you control (BYO credentials).",
+    requiresSetup: true,
+    capabilities: { ...NAMED_CAPABILITIES },
+    async check(): Promise<boolean> {
+      // Reachable = cloudflared on PATH AND the tunnel credentials file
+      // exists. NOT called during listing (kit derives status from creds
+      // existence); reserved for on-demand health probes.
+      const [bin, creds] = await Promise.all([
+        cloudflaredOnPath(),
+        fileExists(credentialsFile),
+      ])
+      return bin && creds
+    },
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
       await assertCloudflaredOnPath()
       await assertCredentialsExist(credentialsFile)
@@ -215,6 +249,26 @@ export function namedTunnelProvider(cfg: NamedTunnelConfig): RemoteProvider {
         })
       })
     },
+  }
+}
+
+/** Non-throwing PATH probe for the adapter-kit `check()` health surface. */
+async function cloudflaredOnPath(): Promise<boolean> {
+  try {
+    await execFileAsync("cloudflared", ["--version"], { timeout: 3_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Non-throwing existence check (no value read — purely a boolean probe). */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
   }
 }
 
