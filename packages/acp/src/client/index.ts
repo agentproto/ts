@@ -14,9 +14,60 @@ import {
   type Client as AcpClientHandlers,
   type Stream,
 } from "@agentclientprotocol/sdk"
-import type { StreamEvent } from "../types.js"
+import type { AcpMcpServer, StreamEvent } from "../types.js"
 
 const PROTOCOL_VERSION_DEFAULT = 1
+
+/**
+ * Map our internal `AcpMcpServer` (`{ name, transport, ref }`) onto the
+ * `@agentclientprotocol/sdk` wire shape expected by
+ * `session/new.mcpServers` (and `session/load.mcpServers`).
+ *
+ * The ACP `McpServer` union is transport-tagged and field-named
+ * differently from our compact internal form:
+ *   - http → `{ type: "http", name, url, headers: [] }`
+ *   - sse  → `{ type: "sse",  name, url, headers: [] }`
+ *   - stdio → `{ name, command, args: [], env: [] }` (untagged variant)
+ *
+ * Without this mapping the raw `{ transport, ref }` entry reaches the
+ * agent verbatim and `session/new` rejects with `Invalid params` — the
+ * symptom that broke orchestrator spawns (the auto-injected scoped
+ * gateway is an `http` entry).
+ *
+ * Retro-compat: an entry that already carries an ACP-native discriminator
+ * (`type`/`url`/`command`) is passed through untouched, so callers that
+ * pre-shape their entries keep working.
+ */
+export function toAcpMcpServers(servers: readonly unknown[]): unknown[] {
+  return servers.map(toAcpMcpServer)
+}
+
+function toAcpMcpServer(server: unknown): unknown {
+  if (!server || typeof server !== "object") return server
+  const entry = server as Record<string, unknown>
+
+  // Already ACP-native (has a wire discriminator) → leave as-is.
+  if ("type" in entry || "url" in entry || "command" in entry) return entry
+
+  const transport = entry.transport
+  // Not our `{ name, transport, ref }` shape → nothing to map.
+  if (typeof transport !== "string") return entry
+
+  const { name, ref } = entry as Pick<AcpMcpServer, "name" | "ref"> & {
+    transport: string
+  }
+
+  switch (transport) {
+    case "http":
+      return { type: "http", name, url: ref ?? "", headers: [] }
+    case "sse":
+      return { type: "sse", name, url: ref ?? "", headers: [] }
+    case "stdio":
+      return { name, command: ref ?? "", args: [], env: [] }
+    default:
+      return entry
+  }
+}
 
 export interface AcpClientOptions {
   /** Output bytes go here (subprocess stdin). */
@@ -116,7 +167,7 @@ export async function createAcpClient(
     async newSession(params) {
       const response = await connection.newSession({
         cwd: params.cwd,
-        mcpServers: (params.mcpServers ?? []) as never,
+        mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
       const sessionId = (response as { sessionId: string }).sessionId
       const state: SessionState = {
@@ -137,7 +188,7 @@ export async function createAcpClient(
       await connection.loadSession({
         sessionId: params.sessionId,
         cwd: params.cwd,
-        mcpServers: (params.mcpServers ?? []) as never,
+        mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
       const state: SessionState = {
         events: [],
