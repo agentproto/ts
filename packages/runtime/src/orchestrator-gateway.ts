@@ -65,6 +65,14 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "list_sessions",
   "list_agent_sessions",
   "kill_agent_session",
+  // WP6 — supervisor composition: a child orchestrator may attach /
+  // inspect / cancel completion policies on sessions within its own
+  // subtree. `ack_policy` is intentionally absent: triggering a host
+  // commit is an operator-or-human gesture, not a child-orchestrator one.
+  "attach_policy",
+  "get_policy_status",
+  "list_policies",
+  "cancel_policy",
 ]
 
 /**
@@ -258,6 +266,10 @@ export function createOrchestratorMcpServerFactory(
       sessionEvents: deps.sessionEvents,
       eventRing: deps.eventRing,
       toolSubset: scope.tools,
+      // WP6: pass the caller's scope so supervisor tools can enforce
+      // subtree-scoped access (attach only to own sub-agents; list/cancel
+      // only policies on own sub-agents; commit refused).
+      callerScope: scope,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
     })
     return server

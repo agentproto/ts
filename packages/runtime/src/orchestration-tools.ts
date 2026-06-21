@@ -17,6 +17,8 @@ import type { RoutineRunner } from "./routine-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
+import { collectSubtree } from "./session-tools.js"
+import type { PolicyRunState } from "./supervisor.js"
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
@@ -28,6 +30,16 @@ export interface RegisterOrchestrationToolsOptions {
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
   toolSubset?: ReadonlySet<string>
+  /**
+   * When set, this is the calling orchestrator's scope (WP6 supervisor
+   * composition). Enables subtree-scoped policy operations:
+   *   - attach_policy may only target sessions in the caller's subtree
+   *   - then:"commit" is refused (host commit is an operator gesture)
+   *   - get_policy_status / list_policies / cancel_policy only see
+   *     policies whose watched sessions are all within the caller's subtree
+   * Absent → operator/root context, no additional restrictions.
+   */
+  callerScope?: { ownerSessionId?: string }
 }
 
 export function registerOrchestrationTools(
@@ -39,7 +51,20 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing } = opts
+  const { registry, sessionEvents, eventRing, callerScope } = opts
+
+  /**
+   * WP6: check whether ALL watched sessions of a policy fall within the
+   * subtree rooted at `ownerId`. Rebuilds the subtree from the live
+   * registry on each call so newly-spawned children are visible without
+   * any explicit invalidation. The subtree is tiny and the build is O(n)
+   * over all sessions — cheap relative to any surrounding I/O.
+   */
+  const isPolicyInSubtree = (policy: PolicyRunState, ownerId: string): boolean => {
+    const subtree = collectSubtree(ownerId, registry.list())
+    const ids = policy.sessionIds.length > 0 ? policy.sessionIds : [policy.sessionId]
+    return ids.every(id => subtree.has(id))
+  }
 
   // ── poll_events ──────────────────────────────────────────────────
   server.tool(
@@ -205,11 +230,18 @@ export function registerOrchestrationTools(
     )
   }
 
-  // ── Supervisor tools (optional — only registered when supervisor is provided) ─
+  // ── Supervisor tools ─────────────────────────────────────────────────────────
+  // attach_policy / get_policy_status / list_policies / cancel_policy are
+  // registered UNCONDITIONALLY because they appear in DEFAULT_ORCHESTRATOR_TOOLS
+  // and therefore in every scoped subset. A tool declared in the subset but not
+  // registered on the server causes the MCP handshake to hang indefinitely
+  // (empirically verified). When no supervisor is wired the handlers return a
+  // structured error instead of a live result — clean fail, no hang.
   const { supervisor } = opts
-  if (supervisor) {
-    // Base shape of a completion policy (shared by attach_policy and, via
-    // z.lazy, the recursive `next` DAG chain — WP6).
+
+  // Base shape of a completion policy (shared by attach_policy and, via
+  // z.lazy, the recursive `next` DAG chain — WP6).
+  {
     const policyShapeBase = {
       sessionId: z
         .string()
@@ -331,6 +363,9 @@ export function registerOrchestrationTools(
         ...nextField,
       },
       async input => {
+        if (!supervisor) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+        }
         if (!input.sessionId && !(input.sessionIds && input.sessionIds.length > 0)) {
           return {
             content: [
@@ -349,6 +384,54 @@ export function registerOrchestrationTools(
                 text: JSON.stringify({ error: 'then:"commit" requires a commit spec' }),
               },
             ],
+          }
+        }
+        // WP6 scoping: a child orchestrator may only attach policies on
+        // sessions within its own subtree, and may not request a commit
+        // action (host commits are an operator/human gesture).
+        if (callerScope) {
+          if (input.then === "commit") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: 'then:"commit" is not permitted from a child orchestrator scope; use then:"emit" and let the operator or human ack the commit',
+                  }),
+                },
+              ],
+            }
+          }
+          if (!callerScope.ownerSessionId) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ error: "scope is not yet bound to a session; cannot attach policy" }),
+                },
+              ],
+            }
+          }
+          const targetIds =
+            input.sessionIds && input.sessionIds.length > 0
+              ? input.sessionIds
+              : input.sessionId
+                ? [input.sessionId]
+                : []
+          const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+          const outside = targetIds.filter(id => !subtree.has(id))
+          if (outside.length > 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: `attach_policy denied: sessions not in caller subtree: ${outside.join(", ")}`,
+                    forbidden: outside,
+                  }),
+                },
+              ],
+            }
           }
         }
         try {
@@ -384,10 +467,23 @@ export function registerOrchestrationTools(
         policyId: z.string().describe("Policy id returned by `attach_policy`."),
       },
       async input => {
+        if (!supervisor) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+        }
         const state = supervisor.getStatus(input.policyId)
         if (!state) {
           return {
             content: [{ type: "text", text: JSON.stringify({ error: "policy not found", policyId: input.policyId }) }],
+          }
+        }
+        // WP6 scoping: only reveal policies whose watched sessions are all
+        // within the caller's subtree. Return "not found" for out-of-scope
+        // policies (no information leak about existence).
+        if (callerScope) {
+          if (!callerScope.ownerSessionId || !isPolicyInSubtree(state, callerScope.ownerSessionId)) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: "policy not found", policyId: input.policyId }) }],
+            }
           }
         }
         return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] }
@@ -401,6 +497,18 @@ export function registerOrchestrationTools(
         policyId: z.string().describe("Policy id to cancel."),
       },
       async input => {
+        if (!supervisor) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+        }
+        // WP6 scoping: a child may only cancel policies on its own subtree.
+        if (callerScope) {
+          const state = supervisor.getStatus(input.policyId)
+          if (!state || !callerScope.ownerSessionId || !isPolicyInSubtree(state, callerScope.ownerSessionId)) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: "cancel denied: policy not found or outside caller subtree", policyId: input.policyId }) }],
+            }
+          }
+        }
         supervisor.cancel(input.policyId)
         const state = supervisor.getStatus(input.policyId)
         return {
@@ -409,6 +517,11 @@ export function registerOrchestrationTools(
       },
     )
 
+    // ack_policy is intentionally absent from DEFAULT_ORCHESTRATOR_TOOLS (host
+    // commits are an operator gesture, not a child-orchestrator one — WP6).
+    // Register it only when a supervisor is present, consistent with the
+    // declared ≡ registered invariant.
+    if (supervisor) {
     server.tool(
       "ack_policy",
       "Acknowledge a `then:\"commit\"` policy parked in `awaiting-ack` (WP5). " +
@@ -447,13 +560,28 @@ export function registerOrchestrationTools(
         }
       },
     )
+    } // end if (supervisor) for ack_policy
 
     server.tool(
       "list_policies",
       "List all completion policies (watching, gating, done, blocked, cancelled).",
       {},
       async () => {
-        const policies = supervisor.list()
+        if (!supervisor) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+        }
+        let policies = supervisor.list()
+        // WP6 scoping: a child orchestrator only sees policies whose watched
+        // sessions are all within its own subtree. An unbound scope (no
+        // ownerSessionId yet) sees nothing — safe default.
+        if (callerScope) {
+          if (!callerScope.ownerSessionId) {
+            policies = []
+          } else {
+            const ownerId = callerScope.ownerSessionId
+            policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
+          }
+        }
         return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
       },
     )
