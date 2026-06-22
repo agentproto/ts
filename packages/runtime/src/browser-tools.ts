@@ -21,6 +21,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import type { AdapterLister } from "@agentproto/adapter-kit"
 import type { SessionsRegistry } from "./sessions.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
@@ -97,6 +98,18 @@ export type BrowserAdapterLister = () => {
   config?: unknown[]
 }[]
 
+/**
+ * Family-specific descriptor surfaced in the kit-path `list_adapter_browsers`
+ * response. Fields match the legacy lister shape so the tool output is
+ * unchanged regardless of which path is active.
+ */
+export interface BrowserAdapterInfo {
+  id: string
+  name: string
+  description: string
+  defaultPort: number
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 interface RegisterBrowserToolsOptions {
@@ -107,6 +120,13 @@ interface RegisterBrowserToolsOptions {
   /** Lister for available browser adapters — when unset, `list_adapter_browsers`
    *  returns a "not configured" message. */
   listBrowserAdapters?: BrowserAdapterLister
+  /**
+   * Kit-path lister (Phase 3). When provided, `list_adapter_browsers` calls
+   * this async lister and extracts `AdapterEntry.info` fields for the response,
+   * preserving the existing `{ id, name, description, defaultPort }[]` shape.
+   * When absent, the legacy `listBrowserAdapters` path is used.
+   */
+  lister?: AdapterLister<BrowserAdapterInfo>
   log?: (msg: string) => void
 }
 
@@ -114,7 +134,7 @@ export function registerBrowserTools(
   server: McpServer,
   opts: RegisterBrowserToolsOptions
 ): void {
-  const { registry, resolveBrowserAdapter, listBrowserAdapters, log } = opts
+  const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
 
   // ── list_adapter_browsers ────────────────────────────────────────────────────
   server.tool(
@@ -123,6 +143,16 @@ export function registerBrowserTools(
       "Use the `id` field to reference an adapter in `start_browser`.",
     {},
     async () => {
+      // Kit path: async lister supplied — extract info fields to preserve the
+      // existing { id, name, description, defaultPort }[] response shape.
+      if (lister) {
+        const entries = await lister()
+        const adapters = entries.flatMap(e => (e.info ? [e.info] : []))
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
+        }
+      }
+      // Legacy path: synchronous injected lister.
       if (!listBrowserAdapters) {
         return {
           content: [

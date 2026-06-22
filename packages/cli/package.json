@@ -78,6 +78,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/adapter-kit": "workspace:*",
     "@agentproto/adapter-browser": "workspace:*",
     "@agentproto/acp": "workspace:*",
     "@agentproto/driver": "workspace:*",
