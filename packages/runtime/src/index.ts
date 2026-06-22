@@ -70,7 +70,9 @@ export type {
   AgentAdapterLister,
   AdapterListEntry,
 } from "./http-server.js"
-export type { BrowserAdapterResolver, BrowserAdapterLister } from "./browser-tools.js"
+export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"
+export { makeBrowserAdapterLister } from "./browser-adapters.js"
+export type { BrowserAdapterHandle } from "./browser-adapters.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
