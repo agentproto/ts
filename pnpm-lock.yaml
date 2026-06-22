@@ -1401,6 +1401,9 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/corpus':
+        specifier: workspace:*
+        version: link:../corpus
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*

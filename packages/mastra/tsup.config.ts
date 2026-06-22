@@ -12,6 +12,6 @@ export default createTsupConfig({
   // .d.ts has variance issues that break rollup-plugin-dts even when
   // @mastra/core is marked external. tsc with skipLibCheck handles it.
   dts: false,
-  external: ["@agentproto/agent", "@mastra/core", "@mastra/core/agent"],
+  external: ["@agentproto/agent", "@agentproto/corpus", "@mastra/core", "@mastra/core/agent", "@mastra/core/processors"],
   noExternal: [],
 })
