@@ -20,7 +20,7 @@ import { execSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadAgentflowConfig, resolveEngine } from './agentflow/config.mjs'
-import { runLlm, stripFences } from './agentflow/llm.mjs'
+import { runLlm, parseJsonLoose } from './agentflow/llm.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
@@ -169,7 +169,7 @@ try {
 
 let parsed
 try {
-  parsed = JSON.parse(stripFences(raw))
+  parsed = parseJsonLoose(raw)
 } catch {
   console.error('Failed to parse model response as JSON:', raw)
   process.exit(1)

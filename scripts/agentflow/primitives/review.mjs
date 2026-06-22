@@ -13,7 +13,7 @@
  */
 
 import { execSync } from 'node:child_process'
-import { runLlm, stripFences } from '../llm.mjs'
+import { runLlm, parseJsonLoose } from '../llm.mjs'
 
 export const DIFF_CAP = 16_000
 
@@ -63,7 +63,7 @@ export async function reviewDiff({ changedFiles, diff, priorFindings, engine, mo
         .join('\n')
   }
   const raw = await runLlm({ system: SYSTEM, user, engine, model, claudeBin })
-  const verdict = JSON.parse(stripFences(raw))
+  const verdict = parseJsonLoose(raw)
   verdict.findings = Array.isArray(verdict.findings) ? verdict.findings : []
   return verdict
 }
