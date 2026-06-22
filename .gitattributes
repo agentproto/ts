@@ -1,0 +1,13 @@
+# Force source files to be treated as TEXT in diffs, so a stray byte never makes
+# a file "Binary files differ" — which blinds the agentic reviewer/maintainer
+# (it can't read an opaque diff and escalates). See the maintainer.mjs NUL bug.
+*.mjs   text
+*.ts    text
+*.js    text
+*.cjs   text
+*.mts   text
+*.json  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.sh    text
