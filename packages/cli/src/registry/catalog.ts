@@ -10,21 +10,21 @@
  * first-run UX affordance, not a complete registry.
  */
 
+import type { AdapterCatalogEntry } from "@agentproto/adapter-kit"
+
 export type CatalogEntryType = "agent-cli" | "pack" | "mcp"
 
-export interface CatalogEntry {
+/**
+ * Agent-CLI catalog entry. Extends the kit's `AdapterCatalogEntry` with the
+ * family-specific `type` discriminator so entries can be filtered by kind
+ * without resolving the package.
+ */
+export interface CatalogEntry extends AdapterCatalogEntry {
   type: CatalogEntryType
-  /** Adapter slug — matches `@agentproto/adapter-<slug>`. */
-  slug: string
-  /** Display name shown in the picker. */
-  name: string
-  /** One-line description (fits in a select hint). */
-  description: string
-  /** npm package that provides the adapter. */
-  packageName: string
-  /** Short hint shown inline in the picker (protocol, provider, key capability). */
-  hint?: string
 }
+
+// Re-export the kit type so consumers can use the canonical name.
+export type { AdapterCatalogEntry }
 
 export const CATALOG: readonly CatalogEntry[] = [
   // ── Agent CLIs ────────────────────────────────────────────────────────
