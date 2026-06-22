@@ -14,11 +14,12 @@
  *   - `makeAdapterResolver` → wraps the throwing `load` into null-on-miss
  *   - `makeAdapterLister`   → catalog → status-classified `AdapterEntry[]`
  *   - `makeListTool`        → registers `list_tunnel_adapters`
- *   - `makeSetupTool`       → registers `setup_tunnel_provider` (value sensitive)
+ *   - `makeSetupTool`       → registers `setup_tunnel_provider` (multi-field form:
+ *                             hostname + tunnelId + credentialsFile?, all sensitive)
  *
  * Security: `toTunnelInfo` exposes only `capabilities` — never a cred value
- * (Appendix B). The setup tool's `value` is forwarded verbatim to the creds
- * store and NEVER echoed back.
+ * (Appendix B). The setup tool's fields are marked SENSITIVE and the result
+ * NEVER echoes any field value back.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -32,6 +33,7 @@ import {
   type AdapterCatalog,
   type AdapterLister,
   type CredsStore,
+  type SetupField,
   type SetupLedger,
 } from "@agentproto/adapter-kit"
 
@@ -62,9 +64,8 @@ export interface TunnelAdapterInfo {
 }
 
 /**
- * Structured credentials for `cloudflare-named`. The kit's setup tool wires
- * a single opaque `value: string`, so these are JSON-encoded into `value`
- * (see {@link registerTunnelAdapterTools}) and parsed back here.
+ * Structured credentials for `cloudflare-named`. Collected from the
+ * multi-field setup tool (hostname + tunnelId + credentialsFile?).
  */
 export interface TunnelNamedCreds {
   hostname: string
@@ -146,6 +147,28 @@ export function makeTunnelLister(opts: {
 /** Slugs that accept a `setup_tunnel_provider` pass (those with creds). */
 const SETUP_SLUGS = [CLOUDFLARE_NAMED_SLUG] as const
 
+/** Multi-field schema for cloudflare-named setup. */
+const NAMED_TUNNEL_FIELDS: readonly SetupField[] = [
+  {
+    name: "hostname",
+    description: "Cloudflare tunnel hostname (e.g. agent.example.com)",
+    required: true,
+    sensitive: true,
+  },
+  {
+    name: "tunnelId",
+    description: "Cloudflare tunnel UUID (e.g. 11111111-2222-3333-4444-555555555555)",
+    required: true,
+    sensitive: true,
+  },
+  {
+    name: "credentialsFile",
+    description: "Optional path to cloudflared credentials JSON file",
+    required: false,
+    sensitive: true,
+  },
+]
+
 export interface RegisterTunnelAdapterToolsOptions {
   /** Home dir override (tests). Defaults to `AGENTPROTO_HOME ?? ~/.agentproto`. */
   home?: string
@@ -154,7 +177,8 @@ export interface RegisterTunnelAdapterToolsOptions {
 /**
  * Register the tunnel family's adapter-kit MCP tools on the server:
  *   - `list_tunnel_adapters`  (parameterless; status + capabilities, no creds)
- *   - `setup_tunnel_provider` (slug + sensitive `value`; stores creds + ledger)
+ *   - `setup_tunnel_provider` (multi-field: slug + hostname + tunnelId + credentialsFile?;
+ *     all field values marked SENSITIVE and never echoed)
  */
 export function registerTunnelAdapterTools(
   server: McpServer,
@@ -162,7 +186,6 @@ export function registerTunnelAdapterTools(
 ): void {
   const credsStore = makeTunnelCredsStore(opts.home)
   const ledger = makeSetupLedger(opts.home ? { home: opts.home } : {})
-  const lister = makeTunnelLister({ credsStore, ledger })
 
   makeListTool<TunnelAdapterInfo>({
     server,
@@ -172,38 +195,30 @@ export function registerTunnelAdapterTools(
       "ready), version, and declared capabilities (stableUrl, autostart, " +
       "customDomain, requiresAuth, hasApi). Credentials are never returned. " +
       "Use `setup_tunnel_provider` to configure a provider that needs creds.",
-    lister,
+    lister: makeTunnelLister({ credsStore, ledger }),
   })
 
-  makeSetupTool<string>({
+  makeSetupTool({
     server,
     toolName: "setup_tunnel_provider",
     description:
       "Configure a tunnel provider that requires credentials (e.g. " +
-      "cloudflare-named). Pass `value` as a JSON object string " +
-      '{"hostname","tunnelId","credentialsFile"?}. The value is SENSITIVE — ' +
-      "stored 0600 and never echoed back.",
+      "cloudflare-named). Each field is SENSITIVE — stored 0600 and " +
+      "never echoed back in tool results.",
     validSlugs: SETUP_SLUGS,
-    onSetup: async (slug: string, value: string) => {
-      let creds: TunnelNamedCreds
-      try {
-        creds = JSON.parse(value) as TunnelNamedCreds
-      } catch {
-        return {
-          ok: false,
-          hint: 'value must be a JSON object string {"hostname","tunnelId","credentialsFile"?}',
-        }
-      }
-      if (!creds || !creds.hostname || !creds.tunnelId) {
+    fields: NAMED_TUNNEL_FIELDS,
+    onSetup: async (slug: string, fields: Record<string, string>) => {
+      if (!fields.hostname || !fields.tunnelId) {
         return { ok: false, hint: "hostname and tunnelId are required" }
       }
-      await credsStore.write(slug, {
-        hostname: creds.hostname,
-        tunnelId: creds.tunnelId,
-        ...(creds.credentialsFile
-          ? { credentialsFile: creds.credentialsFile }
+      const creds: TunnelNamedCreds = {
+        hostname: fields.hostname,
+        tunnelId: fields.tunnelId,
+        ...(fields.credentialsFile
+          ? { credentialsFile: fields.credentialsFile }
           : {}),
-      })
+      }
+      await credsStore.write(slug, creds)
       const now = new Date().toISOString()
       await ledger.write(slug, {
         slug,

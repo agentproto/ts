@@ -163,7 +163,7 @@ describe("list_tunnel_adapters tool", () => {
   })
 })
 
-// ── setup_tunnel_provider tool ───────────────────────────────────────────────────
+// ── setup_tunnel_provider tool (multi-field form) ────────────────────────────────
 
 describe("setup_tunnel_provider tool", () => {
   function setupTool() {
@@ -172,26 +172,52 @@ describe("setup_tunnel_provider tool", () => {
     return tools.find(t => t.name === "setup_tunnel_provider")!
   }
 
-  it("flags the value param as sensitive in its schema", () => {
+  it("schema exposes hostname, tunnelId, credentialsFile fields — no single 'value'", () => {
     const tool = setupTool()
-    const valueField = tool.shape["value"] as { description?: string }
-    expect(valueField.description?.toLowerCase()).toContain("sensitive")
+    const shapeKeys = Object.keys(tool.shape).sort()
+    expect(shapeKeys).toEqual(
+      ["credentialsFile", "hostname", "slug", "tunnelId"].sort(),
+    )
+    expect(tool.shape).not.toHaveProperty("value")
   })
 
-  it("stores creds via the kit creds store and NEVER echoes the value", async () => {
+  it("marks every cred field as sensitive in its schema annotation", () => {
     const tool = setupTool()
-    const value = JSON.stringify(SECRET_CREDS)
-    const res = await tool.handler({ slug: "cloudflare-named", value })
+    const hostnameField = tool.shape["hostname"] as { description?: string }
+    expect(hostnameField.description?.toLowerCase()).toContain("sensitive")
 
-    // Response shape: { ok, slug, hint } — no value, no secret substring.
+    const tunnelIdField = tool.shape["tunnelId"] as { description?: string }
+    expect(tunnelIdField.description?.toLowerCase()).toContain("sensitive")
+
+    const credsFileField = tool.shape["credentialsFile"] as { description?: string }
+    expect(credsFileField.description?.toLowerCase()).toContain("sensitive")
+  })
+
+  it("stores creds via the kit creds store and NEVER echoes field values", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "cloudflare-named",
+      hostname: SECRET_CREDS.hostname,
+      tunnelId: SECRET_CREDS.tunnelId,
+      credentialsFile: SECRET_CREDS.credentialsFile,
+    })
+
+    // Response shape: { ok, slug, hint } — no field values.
     expect(res.isError).toBeFalsy()
     const text = res.content[0]!.text
+
+    // Never echo any secret value in the response.
     expect(text).not.toContain(SECRET_CREDS.tunnelId)
-    expect(text).not.toContain(value)
+    expect(text).not.toContain(SECRET_CREDS.hostname)
+    expect(text).not.toContain(SECRET_CREDS.credentialsFile)
+
     const parsed = JSON.parse(text)
     expect(parsed.ok).toBe(true)
     expect(parsed.slug).toBe("cloudflare-named")
     expect(parsed).not.toHaveProperty("value")
+    expect(parsed).not.toHaveProperty("hostname")
+    expect(parsed).not.toHaveProperty("tunnelId")
+    expect(parsed).not.toHaveProperty("credentialsFile")
 
     // Creds actually persisted via the kit store, under the tunnel family.
     const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-named.json")
@@ -204,7 +230,8 @@ describe("setup_tunnel_provider tool", () => {
     const tool = setupTool()
     await tool.handler({
       slug: "cloudflare-named",
-      value: JSON.stringify(SECRET_CREDS),
+      hostname: SECRET_CREDS.hostname,
+      tunnelId: SECRET_CREDS.tunnelId,
     })
 
     const credsStore = makeTunnelCredsStore(home)
@@ -215,9 +242,13 @@ describe("setup_tunnel_provider tool", () => {
     expect(await ledger.exists("cloudflare-named")).toBe(true)
   })
 
-  it("rejects malformed JSON without writing creds", async () => {
+  it("rejects setup when hostname is missing", async () => {
     const tool = setupTool()
-    const res = await tool.handler({ slug: "cloudflare-named", value: "not-json" })
+    const res = await tool.handler({
+      slug: "cloudflare-named",
+      hostname: "",
+      tunnelId: "some-id",
+    })
     expect(res.isError).toBe(true)
     const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-named.json")
     expect(existsSync(credFile)).toBe(false)
@@ -225,7 +256,11 @@ describe("setup_tunnel_provider tool", () => {
 
   it("rejects an unknown slug (only setup-requiring slugs are valid)", async () => {
     const tool = setupTool()
-    const res = await tool.handler({ slug: "cloudflare-quick", value: "{}" })
+    const res = await tool.handler({
+      slug: "cloudflare-quick",
+      hostname: "x",
+      tunnelId: "y",
+    })
     expect(res.isError).toBe(true)
   })
 
