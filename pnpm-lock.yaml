@@ -623,6 +623,9 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
+      '@agentproto/adapter-kit':
+        specifier: workspace:*
+        version: link:../adapter-kit
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core

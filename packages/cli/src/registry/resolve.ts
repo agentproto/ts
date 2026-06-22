@@ -18,6 +18,13 @@ import { fileURLToPath } from "node:url"
 import { dirname, join, resolve as resolvePath } from "node:path"
 import { homedir } from "node:os"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import {
+  makeAdapterResolver,
+  makeAdapterLister,
+  makeSetupLedger,
+  type AdapterHandle,
+  type AdapterCatalogEntry,
+} from "@agentproto/adapter-kit"
 
 /** Slash-command declared in an adapter manifest (AIP-45 `commands[]`). */
 export interface AgentCliCommand {
@@ -273,13 +280,82 @@ async function collectAgentprotoNamespaceRoots(
 
 // ── catalog-aware lister ─────────────────────────────────────────────────────
 
-/** Minimal catalog shape consumed by `listAdaptersWithCatalog`. */
-export interface CatalogEntry {
-  slug: string
-  name: string
-  description: string
+/**
+ * `AgentCliHandle` wrapped to satisfy the kit's `AdapterHandle` contract.
+ * The extra fields (protocol/streaming/commands/models/originalHandle) carry
+ * the info the lister needs without requiring the kit to know about the
+ * family-specific handle shape.
+ */
+export interface AgentCliWrappedHandle extends AdapterHandle {
+  readonly protocol: string
+  readonly streaming: boolean
+  readonly commands: AgentCliCommand[]
+  readonly models: string[]
+  readonly packageName: string
+  readonly originalHandle: AgentCliHandle
+}
+
+/** Extract the family descriptor from a wrapped handle (never includes secrets). */
+type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models">
+
+function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
+  return {
+    protocol: h.protocol,
+    streaming: h.streaming,
+    commands: h.commands,
+    models: h.models,
+  }
+}
+
+/** Wrap a resolved slug+handle into the kit's `AdapterHandle` shape. */
+export function wrapCliHandle(
+  slug: string,
+  handle: AgentCliHandle,
   packageName: string
-  hint?: string
+): AgentCliWrappedHandle {
+  const h = handle as Record<string, unknown>
+  const modelsField = (h.models as { allowed?: unknown } | undefined)?.allowed
+  return {
+    slug,
+    name: typeof h.name === "string" ? h.name : slug,
+    version: typeof h.version === "string" ? h.version : "?",
+    description: typeof h.description === "string" ? h.description : "",
+    requiresSetup: Array.isArray(h.setup) && (h.setup as unknown[]).length > 0,
+    check: async () => false,
+    protocol: typeof h.protocol === "string" ? h.protocol : "unknown",
+    streaming: !!(h.capabilities as { streaming?: boolean })?.streaming,
+    packageName,
+    commands: Array.isArray(h.commands) ? (h.commands as AgentCliCommand[]) : [],
+    models: Array.isArray(modelsField)
+      ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
+      : [],
+    originalHandle: handle,
+  }
+}
+
+/** Walk node_modules for adapter slugs not in `catalogSlugs`, resolve each once. */
+async function discoverExtraHandles(
+  catalogSlugs: Set<string>
+): Promise<AgentCliWrappedHandle[]> {
+  const roots = await collectAgentprotoNamespaceRoots()
+  const seen = new Set(catalogSlugs)
+  const out: AgentCliWrappedHandle[] = []
+
+  for (const root of roots) {
+    let entries: string[] = []
+    try { entries = await fs.readdir(root) } catch { continue }
+    for (const entry of entries) {
+      if (!entry.startsWith("adapter-")) continue
+      const slug = entry.slice("adapter-".length)
+      if (seen.has(slug)) continue
+      seen.add(slug)
+      try {
+        const resolved = await resolveAdapter(slug)
+        out.push(wrapCliHandle(slug, resolved.handle, resolved.packageName ?? `@agentproto/adapter-${slug}`))
+      } catch { /* not importable */ }
+    }
+  }
+  return out.sort((a, b) => a.slug.localeCompare(b.slug))
 }
 
 /**
@@ -287,88 +363,48 @@ export interface CatalogEntry {
  * with its runtime availability status:
  *
  *   "supported" — known to agentproto, package not importable (not installed)
- *   "available" — package resolves; setup ledger absent or adapter has no setup
- *   "ready"     — package resolves + setup ledger present
+ *   "available" — package resolves; requiresSetup but no ledger yet
+ *   "ready"     — package resolves + setup complete (or no setup needed)
  *
- * Also appends any adapters discovered by `listInstalledAdapters` that aren't
- * in the catalog, so locally-installed custom adapters still appear.
+ * Also appends any adapters discovered in node_modules that aren't in the
+ * catalog, so locally-installed custom adapters still appear.
  *
- * This replaces `listInstalledAdapters` as the source for `list_adapters` so
- * the MCP tool always returns the supported set — not just what happens to be
- * discoverable from the daemon's node_modules at that moment.
+ * Status is derived via the kit's `computeStatus`: resolved × requiresSetup ×
+ * ledger-exists — never via `handle.check()` (per OQ-5).
  */
 export async function listAdaptersWithCatalog(
-  catalog: readonly CatalogEntry[]
+  catalog: readonly AdapterCatalogEntry[]
 ): Promise<(AdapterInfo & { status: "supported" | "available" | "ready"; hint?: string })[]> {
-  const seenSlugs = new Set<string>()
-  const out: (AdapterInfo & { status: "supported" | "available" | "ready"; hint?: string })[] = []
+  const resolver = makeAdapterResolver<AgentCliWrappedHandle>({
+    load: async (slug: string) => {
+      const resolved = await resolveAdapter(slug)
+      return wrapCliHandle(slug, resolved.handle, resolved.packageName ?? `@agentproto/adapter-${slug}`)
+    },
+  })
 
-  const agentprotoHome = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
+  const ledger = makeSetupLedger()
 
-  async function hasSetupLedger(slug: string): Promise<boolean> {
-    try {
-      await fs.access(join(agentprotoHome, "setup", `${slug}.json`))
-      return true
-    } catch {
-      return false
-    }
-  }
+  const catalogSlugs = new Set(catalog.map((e) => e.slug))
+  const lister = makeAdapterLister<AgentCliWrappedHandle, AgentCliInfo>({
+    catalog,
+    resolver,
+    ledger,
+    toInfo: toAgentCliInfo,
+    discoverExtras: () => discoverExtraHandles(catalogSlugs),
+  })
 
-  // Process catalog entries first (preserves catalog order for known adapters).
-  for (const entry of catalog) {
-    seenSlugs.add(entry.slug)
-    try {
-      const resolved = await resolveAdapter(entry.slug)
-      const handle = resolved.handle as Record<string, unknown>
-      const setupSteps = Array.isArray((handle as { setup?: unknown[] }).setup)
-        ? (handle as { setup: unknown[] }).setup
-        : []
-      const ledgerPresent = await hasSetupLedger(entry.slug)
-      const status: "available" | "ready" =
-        setupSteps.length === 0 || ledgerPresent ? "ready" : "available"
-      const catalogModels = (handle.models as { allowed?: unknown } | undefined)?.allowed
-      out.push({
-        slug: entry.slug,
-        name: typeof handle.name === "string" ? handle.name : entry.name,
-        version: typeof handle.version === "string" ? handle.version : "?",
-        description:
-          typeof handle.description === "string" ? handle.description : entry.description,
-        protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
-        streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
-        packageName: resolved.packageName ?? entry.packageName,
-        commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
-        models: Array.isArray(catalogModels)
-          ? (catalogModels as unknown[]).filter((m): m is string => typeof m === "string")
-          : [],
-        status,
-        hint: entry.hint,
-      })
-    } catch {
-      // Package not importable — show as "supported" (known but not installed).
-      out.push({
-        slug: entry.slug,
-        name: entry.name,
-        version: "not installed",
-        description: entry.description,
-        protocol: "unknown",
-        streaming: false,
-        packageName: entry.packageName,
-        commands: [],
-        models: [],
-        status: "supported",
-        hint: entry.hint,
-      })
-    }
-  }
-
-  // Append any installed adapters not in the catalog (custom / third-party).
-  const installed = await listInstalledAdapters()
-  for (const info of installed) {
-    if (seenSlugs.has(info.slug)) continue
-    seenSlugs.add(info.slug)
-    const ledgerPresent = await hasSetupLedger(info.slug)
-    out.push({ ...info, status: ledgerPresent ? "ready" : "available" })
-  }
-
-  return out
+  const entries = await lister()
+  return entries.map((e) => ({
+    slug: e.slug,
+    name: e.name,
+    version: e.version,
+    description: e.description,
+    protocol: e.info?.protocol ?? "unknown",
+    streaming: e.info?.streaming ?? false,
+    packageName: e.packageName,
+    commands: e.info?.commands ?? [],
+    models: e.info?.models ?? [],
+    status: e.status,
+    ...(e.hint !== undefined ? { hint: e.hint } : {}),
+  }))
 }
