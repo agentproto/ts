@@ -401,6 +401,17 @@ export type {
   MatchAttachmentsOptions,
 } from "./binding/index.js"
 
+// CorpusHost — the runtime wiring that attaches a corpus to a scope and
+// makes its knowledge reachable to an agent's turn (Component A + B).
+export type { CorpusHost } from "./host/index.js"
+export { MemFsCorpusHost } from "./host/index.js"
+export type {
+  DimensionProvider,
+  DimensionValue,
+  StandardSubject,
+} from "./host/index.js"
+export { assembleDimensions, standardDimensionProvider } from "./host/index.js"
+
 // Playbooks (AIP-12)
 export { PlaybookRegistry } from "./playbooks/registry.js"
 export type { PlaybookRegistryOptions } from "./playbooks/registry.js"

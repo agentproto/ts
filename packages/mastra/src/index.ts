@@ -35,3 +35,16 @@ export type {
   ModelRef,
   MemoryConfig,
 } from "./types.js"
+
+// Component C — portable playbook overlay InputProcessor factory (AIP-12).
+// Guilde's guildePlaybookOverlayProcessor can become a thin wrapper around this.
+export { makePlaybookOverlayProcessor } from "./playbook-overlay-processor.js"
+export type { PlaybookOverlayProcessorOptions } from "./playbook-overlay-processor.js"
+
+// Component D — on-demand knowledge recall tool factory.
+export { makeQueryKnowledgeTool } from "./tools/query-knowledge.js"
+export type {
+  QueryKnowledgeToolOptions,
+  QueryKnowledgeTool,
+  QueryKnowledgeInput,
+} from "./tools/query-knowledge.js"
