@@ -55,6 +55,7 @@ Usage:
                                             [--name <slug>] [--label <text>]
                                             [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
+  agentproto sessions export <id-or-name> [--json] [-o <file>]
   agentproto sessions stop <id-or-name> [--json]
 
 Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
@@ -84,6 +85,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
+  if (sub === "export") return runExport(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
 
@@ -403,6 +405,89 @@ async function runTerminal(args: readonly string[]): Promise<number> {
       idOrName: desc.id,
       colour: !values["no-color"],
     })
+  }
+  return 0
+}
+
+/**
+ * `agentproto sessions export <id-or-name> [--json] [-o <file>]`
+ *
+ * Reads the adapter's native persistence layer (claude-code JSONL / hermes
+ * SQLite) via the daemon's GET /sessions/:id/export route and renders a clean
+ * transcript. Defaults to markdown on stdout; --json switches to the raw JSON
+ * representation; -o writes to a file instead of stdout.
+ */
+async function runExport(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      output: { type: "string", short: "o" },
+      adapter: { type: "string" },
+      cwd: { type: "string" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto sessions export: missing session id.\n" +
+        "  Try: agentproto sessions export <id-or-name>\n" +
+        "       agentproto sessions export <id-or-name> --json -o transcript.json\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions export: unexpected extra positionals: ${positionals.slice(1).join(" ")}\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions export")
+    return 2
+  }
+  const endpoint = report.found
+
+  const fmt = values.json ? "json" : "markdown"
+  const qs = new URLSearchParams({ format: fmt })
+  if (values.adapter) qs.set("adapter", values.adapter)
+  if (values.cwd) qs.set("cwd", values.cwd)
+
+  let result: { content: string; format: string; adapter: string }
+  try {
+    result = await httpGetJson<{ content: string; format: string; adapter: string }>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/export?${qs.toString()}`,
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions export: session "${id}" not found or export failed.\n`,
+      )
+      return 2
+    }
+    if (/HTTP 422/.test(msg)) {
+      process.stderr.write(`agentproto sessions export: ${msg}\n`)
+      return 1
+    }
+    process.stderr.write(`agentproto sessions export: ${msg}\n`)
+    return 1
+  }
+
+  const outFile = values.output
+  if (outFile) {
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(outFile, result.content, "utf8")
+    process.stderr.write(
+      `agentproto sessions export: wrote ${result.content.length} bytes to ${outFile}\n`,
+    )
+  } else {
+    process.stdout.write(result.content)
+    if (!result.content.endsWith("\n")) process.stdout.write("\n")
   }
   return 0
 }

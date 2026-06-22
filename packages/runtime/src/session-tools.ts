@@ -20,6 +20,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SessionsRegistry } from "./sessions.js"
+import {
+  exportAgentSession,
+  type ExportAgentSessionInput,
+  type ExportAgentSessionResult,
+} from "./transcript-export.js"
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
@@ -1490,5 +1495,69 @@ export function registerSessionTools(
         ],
       }
     }
+  )
+}
+
+// ── export_session tool ───────────────────────────────────────────────────────
+
+export interface ExportSessionOps {
+  registry: SessionsRegistry
+  /**
+   * Override the export function — primarily for testing so callers can inject
+   * a stub without needing real JSONL / SQLite fixtures.
+   */
+  exportFn?: (input: ExportAgentSessionInput) => Promise<ExportAgentSessionResult>
+}
+
+/**
+ * Register the `export_session` MCP tool.
+ *
+ * Wraps `exportAgentSession` from transcript-export.ts. Resolves the session
+ * descriptor via the registry (same registry-access pattern as `summarize_session`)
+ * then delegates to the per-adapter exporter (claude-code JSONL / hermes SQLite).
+ * Returns the rendered transcript as a text content block.
+ */
+export function registerExportSessionTool(server: McpServer, ops: ExportSessionOps): void {
+  const doExport = ops.exportFn ?? exportAgentSession
+  server.tool(
+    "export_session",
+    "Export a clean, human-readable transcript of an agent session. " +
+      "Reads the source the adapter already persists (claude-code: JSONL in " +
+      "~/.claude/projects/; hermes: state.db in ~/.hermes/). Returns markdown " +
+      "(default) or JSON. Works on stopped and running sessions alike. Use " +
+      "after a long agent run to review the full conversation without the " +
+      "ANSI noise of the ring buffer.",
+    {
+      sessionId: z.string().describe(
+        "agentproto session id (sess_xxx), adapter-native id, or session name."
+      ),
+      adapter: z.string().optional().describe(
+        "Override adapter slug (e.g. 'claude-code', 'hermes') when the session " +
+          "is not in the registry. Required when passing a raw adapter-native id."
+      ),
+      cwd: z.string().optional().describe(
+        "Override cwd (absolute path) — required for claude-code when the session " +
+          "is not in the registry (used to locate the JSONL file)."
+      ),
+      format: z.enum(["markdown", "json"]).optional().describe(
+        "Output format. `markdown` (default) renders a human-friendly transcript " +
+          "with a metadata table and role-labelled messages; `json` returns the raw " +
+          "ExportedSession object for programmatic processing."
+      ),
+    },
+    async input => {
+      const result = await doExport({
+        sessionId: input.sessionId,
+        registry: ops.registry,
+        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.format ? { format: input.format } : {}),
+      })
+      const isError = result.content.startsWith("Error:")
+      return {
+        content: [{ type: "text" as const, text: result.content }],
+        ...(isError ? { isError: true as const } : {}),
+      }
+    },
   )
 }
