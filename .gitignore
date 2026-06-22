@@ -17,6 +17,12 @@ packages/runtime-profile-standard/files/.claude/hooks/user-prompt-submit.mjs
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 
+# git worktrees for parallel agent WPs (orchestration-local, never commit).
+# Kept inside the repo root so the cowork sandbox can reach them; ignored here
+# so they never pollute git status. gcloud auto-inherits .gitignore when no
+# .gcloudignore exists, so Cloud Build/Run uploads skip them too.
+.worktrees/
+
 # agentflow per-dev opt-in overrides (committed defaults live in .agentflow.json)
 .agentflow.local.json
 
