@@ -22,6 +22,32 @@ export function stripFences(text) {
   return (m ? m[1] : t).trim()
 }
 
+/**
+ * Robustly parse a JSON object a model returned, even when it ignored
+ * "reply with only JSON" — handles ```json fences anywhere, leading/trailing
+ * prose, etc. Tries: a fenced block → the raw text → the first `{`…last `}`
+ * slice. Throws only if no parseable object is found. Use this instead of
+ * `JSON.parse(stripFences(...))` for any model output.
+ */
+export function parseJsonLoose(text) {
+  const raw = String(text)
+  const candidates = []
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) candidates.push(fence[1])
+  candidates.push(raw)
+  const s = raw.indexOf('{')
+  const e = raw.lastIndexOf('}')
+  if (s !== -1 && e > s) candidates.push(raw.slice(s, e + 1))
+  for (const c of candidates) {
+    try {
+      return JSON.parse(c.trim())
+    } catch {
+      /* try next */
+    }
+  }
+  throw new Error(`no parseable JSON object in model output: ${raw.slice(0, 120)}…`)
+}
+
 export async function runLlm({ system, user, engine = 'local', model, claudeBin = 'claude' }) {
   return engine === 'cloud'
     ? runCloud({ system, user, model })
