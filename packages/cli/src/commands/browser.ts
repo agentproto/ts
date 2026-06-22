@@ -30,16 +30,16 @@
  */
 
 import { parseArgs } from "node:util"
-import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
-import http from "node:http"
-import https from "node:https"
-import {
-  loadWorkspacesConfig,
-  getActiveWorkspace,
-} from "@agentproto/runtime/workspaces-config"
+import { join } from "node:path"
 import type { SessionDescriptor } from "@agentproto/runtime"
+import {
+  discoverDaemon,
+  printNoDaemonError,
+  httpPostJson,
+  httpGetJson,
+  humaniseDelta,
+} from "./_daemon-helpers.js"
 import { getBrowserAdapter } from "@agentproto/adapter-browser"
 import { runSteps, loadLedger } from "../lib/setup-prompts.js"
 import type { AgentCliSetupStep } from "@agentproto/driver-agent-cli"
@@ -322,7 +322,7 @@ async function runBrowserStop(args: readonly string[]): Promise<number> {
   const endpoint = report.found
 
   try {
-    const result = await httpPostJson<{ ok: boolean; id: string }>(
+    const result = await httpPostJson<{ ok: boolean; sessionId: string }>(
       `${endpoint.url}/sessions/${encodeURIComponent(id)}/kill`,
       {},
       endpoint.token,
@@ -531,179 +531,6 @@ async function runBrowserStatus(args: readonly string[]): Promise<number> {
   return 0
 }
 
-// ── daemon discovery — exact copy of the helpers in sessions.ts ───────────────
-// These are intentionally duplicated (not extracted) to keep each command file
-// self-contained, matching the existing pattern in the CLI package.
-
-interface DaemonEndpoint {
-  url: string
-  token?: string
-  sourcePath?: string
-}
-
-interface DaemonDiscoveryReport {
-  found: DaemonEndpoint | null
-  stale: Array<{ path: string; pid: number | null; mtime: Date | null }>
-}
-
-async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
-  if (process.env.AGENTPROTO_DAEMON_URL) {
-    const url = process.env.AGENTPROTO_DAEMON_URL.replace(/\/+$/, "")
-    let token: string | undefined = process.env.AGENTPROTO_DAEMON_TOKEN
-    if (!token) {
-      const config = await loadWorkspacesConfig().catch(() => null)
-      if (config) {
-        for (const ws of config.workspaces) {
-          const ep = await readRuntimeJsonWithStatus(ws.path)
-          if (ep.endpoint?.url === url && ep.endpoint.token) {
-            token = ep.endpoint.token
-            break
-          }
-        }
-      }
-    }
-    return { found: { url, ...(token ? { token } : {}) }, stale: [] }
-  }
-  const config = await loadWorkspacesConfig().catch(() => null)
-  if (!config) return { found: null, stale: [] }
-  const candidates = [getActiveWorkspace(config), ...config.workspaces].filter(
-    (w, i, arr): w is NonNullable<typeof w> =>
-      !!w && arr.findIndex(x => x?.slug === w.slug) === i,
-  )
-  const stale: DaemonDiscoveryReport["stale"] = []
-  for (const w of candidates) {
-    const result = await readRuntimeJsonWithStatus(w.path)
-    if (result.endpoint) return { found: result.endpoint, stale }
-    if (result.stale) stale.push(result.stale)
-  }
-  return { found: null, stale }
-}
-
-interface RuntimeJsonRead {
-  endpoint: DaemonEndpoint | null
-  stale?: { path: string; pid: number | null; mtime: Date | null }
-}
-
-async function readRuntimeJsonWithStatus(workspacePath: string): Promise<RuntimeJsonRead> {
-  const path = resolve(workspacePath, ".agentproto", "runtime.json")
-  let stat: Awaited<ReturnType<typeof fs.stat>>
-  try {
-    stat = await fs.stat(path)
-  } catch {
-    return { endpoint: null }
-  }
-  let raw: string
-  try {
-    raw = await fs.readFile(path, "utf8")
-  } catch {
-    return { endpoint: null }
-  }
-  let parsed: { port?: number; bind?: string; token?: string; pid?: number }
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return { endpoint: null }
-  }
-  if (typeof parsed.port !== "number") return { endpoint: null }
-  if (typeof parsed.pid === "number" && !isPidAlive(parsed.pid)) {
-    return { endpoint: null, stale: { path, pid: parsed.pid ?? null, mtime: stat.mtime ?? null } }
-  }
-  return {
-    endpoint: {
-      url: `http://${parsed.bind ?? "127.0.0.1"}:${parsed.port}`,
-      sourcePath: path,
-      ...(typeof parsed.token === "string" ? { token: parsed.token } : {}),
-    },
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EPERM") return true
-    return false
-  }
-}
-
-function printNoDaemonError(report: DaemonDiscoveryReport, verb: string): void {
-  const lines: string[] = [
-    `${verb}: no daemon found.`,
-    `  Start one with \`agentproto serve\` or set AGENTPROTO_DAEMON_URL.`,
-  ]
-  if (report.stale.length > 0) {
-    lines.push(``, `  found ${report.stale.length} stale runtime.json file(s) (PID dead):`)
-    for (const s of report.stale) {
-      const age = s.mtime ? humaniseDelta(Date.now() - s.mtime.getTime()) : "?"
-      lines.push(`    ${s.path}  (pid=${s.pid ?? "?"} · ${age} old)`)
-    }
-    lines.push(``, `  these confuse discovery — delete them and re-run:`, ...report.stale.map(s => `    rm ${s.path}`))
-  }
-  process.stderr.write(lines.join("\n") + "\n")
-}
-
-// ── HTTP helpers — exact copy of the helpers in sessions.ts ──────────────────
-
-function httpPostJson<T>(url: string, body: unknown, token?: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const payload = Buffer.from(JSON.stringify(body), "utf8")
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      "content-length": payload.byteLength.toString(),
-    }
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "POST", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(raw) as T)
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.write(payload)
-    req.end()
-  })
-}
-
-async function httpGetJson<T = unknown>(url: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    lib
-      .get(u, res => {
-        let body = ""
-        res.setEncoding("utf8")
-        res.on("data", c => (body += c))
-        res.on("end", () => {
-          const status = res.statusCode ?? 0
-          if (status < 200 || status >= 300) {
-            reject(new Error(`HTTP ${status}: ${body.slice(0, 200)}`))
-            return
-          }
-          try {
-            resolve(JSON.parse(body) as T)
-          } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err)))
-          }
-        })
-      })
-      .on("error", reject)
-  })
-}
-
 // ── display helpers ───────────────────────────────────────────────────────────
 
 function statusColour(status: string): string {
@@ -722,11 +549,4 @@ function pad(s: string, n: number): string {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…"
-}
-
-function humaniseDelta(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
-  return `${Math.floor(ms / 86_400_000)}d`
 }

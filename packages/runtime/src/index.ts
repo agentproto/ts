@@ -565,6 +565,12 @@ export async function createGateway(
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
+    ...(opts.resolveBrowserAdapter
+      ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
+      : {}),
+    ...(opts.listBrowserAdapters
+      ? { listBrowserAdapters: opts.listBrowserAdapters }
+      : {}),
     meta: { workspace, registered },
   })
 

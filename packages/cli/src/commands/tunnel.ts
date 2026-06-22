@@ -10,15 +10,16 @@
  * `agentproto sessions`).
  */
 import { parseArgs } from "node:util"
-import { promises as fs } from "node:fs"
-import { resolve } from "node:path"
 import http from "node:http"
 import https from "node:https"
-import {
-  loadWorkspacesConfig,
-  getActiveWorkspace,
-} from "@agentproto/runtime/workspaces-config"
 import type { TunnelDescriptor } from "@agentproto/runtime"
+import {
+  discoverDaemon,
+  printNoDaemonError,
+  httpPostJson,
+  httpGetJson,
+  humaniseDelta,
+} from "./_daemon-helpers.js"
 
 const USAGE = `agentproto tunnel — manage public cloudflared tunnels
 
@@ -341,182 +342,6 @@ async function runStatus(args: readonly string[]): Promise<number> {
   return 0
 }
 
-// ── daemon discovery (mirrors sessions.ts pattern) ──────────────────
-
-interface DaemonEndpoint {
-  url: string
-  token?: string
-  sourcePath?: string
-}
-
-interface DaemonDiscoveryReport {
-  found: DaemonEndpoint | null
-  stale: Array<{ path: string; pid: number | null; mtime: Date | null }>
-}
-
-async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
-  if (process.env.AGENTPROTO_DAEMON_URL) {
-    const url = process.env.AGENTPROTO_DAEMON_URL.replace(/\/+$/, "")
-    let token: string | undefined = process.env.AGENTPROTO_DAEMON_TOKEN
-    if (!token) {
-      const config = await loadWorkspacesConfig().catch(() => null)
-      if (config) {
-        for (const ws of config.workspaces) {
-          const ep = await readRuntimeJsonWithStatus(ws.path)
-          if (ep.endpoint && ep.endpoint.url === url && ep.endpoint.token) {
-            token = ep.endpoint.token
-            break
-          }
-        }
-      }
-    }
-    return { found: { url, ...(token ? { token } : {}) }, stale: [] }
-  }
-  const config = await loadWorkspacesConfig().catch(() => null)
-  if (!config) return { found: null, stale: [] }
-  const candidates = [
-    getActiveWorkspace(config),
-    ...config.workspaces,
-  ].filter(
-    (w, i, arr): w is NonNullable<typeof w> =>
-      !!w && arr.findIndex(x => x?.slug === w.slug) === i,
-  )
-  const stale: DaemonDiscoveryReport["stale"] = []
-  for (const w of candidates) {
-    const result = await readRuntimeJsonWithStatus(w.path)
-    if (result.endpoint) return { found: result.endpoint, stale }
-    if (result.stale) stale.push(result.stale)
-  }
-  return { found: null, stale }
-}
-
-interface RuntimeJsonRead {
-  endpoint: DaemonEndpoint | null
-  stale?: { path: string; pid: number | null; mtime: Date | null }
-}
-
-async function readRuntimeJsonWithStatus(workspacePath: string): Promise<RuntimeJsonRead> {
-  const path = resolve(workspacePath, ".agentproto", "runtime.json")
-  let stat: Awaited<ReturnType<typeof fs.stat>>
-  try {
-    stat = await fs.stat(path)
-  } catch {
-    return { endpoint: null }
-  }
-  let raw: string
-  try {
-    raw = await fs.readFile(path, "utf8")
-  } catch {
-    return { endpoint: null }
-  }
-  let parsed: { port?: number; bind?: string; token?: string; pid?: number }
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return { endpoint: null }
-  }
-  if (typeof parsed.port !== "number") return { endpoint: null }
-  if (typeof parsed.pid === "number" && !isPidAlive(parsed.pid)) {
-    return {
-      endpoint: null,
-      stale: { path, pid: parsed.pid ?? null, mtime: stat.mtime ?? null },
-    }
-  }
-  return {
-    endpoint: {
-      url: `http://${parsed.bind ?? "127.0.0.1"}:${parsed.port}`,
-      sourcePath: path,
-      ...(typeof parsed.token === "string" ? { token: parsed.token } : {}),
-    },
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === "EPERM") return true
-    return false
-  }
-}
-
-function printNoDaemonError(report: DaemonDiscoveryReport, verb: string): void {
-  const lines: string[] = [
-    `${verb}: no daemon found.`,
-    `  Start one with \`agentproto serve\` or set AGENTPROTO_DAEMON_URL.`,
-  ]
-  if (report.stale.length > 0) {
-    lines.push(``, `  found ${report.stale.length} stale runtime.json file(s) (PID dead):`)
-    for (const s of report.stale) {
-      const age = s.mtime ? humaniseDelta(Date.now() - s.mtime.getTime()) : "?"
-      lines.push(`    ${s.path}  (pid=${s.pid ?? "?"} · ${age} old)`)
-    }
-    lines.push(``, `  these confuse discovery — delete them and re-run:`, ...report.stale.map(s => `    rm ${s.path}`))
-  }
-  process.stderr.write(lines.join("\n") + "\n")
-}
-
-// ── HTTP helpers ──────────────────────────────────────────────────────
-
-function httpGetJson<T>(url: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    lib.get(u, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(raw) as T)
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    }).on("error", reject)
-  })
-}
-
-function httpPostJson<T>(url: string, body: unknown, token?: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const data = JSON.stringify(body)
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      "content-length": String(Buffer.byteLength(data)),
-    }
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "POST", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(raw) as T)
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.write(data)
-    req.end()
-  })
-}
-
 function httpDelete<T>(url: string, token?: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
@@ -543,11 +368,4 @@ function httpDelete<T>(url: string, token?: string): Promise<T> {
     req.on("error", reject)
     req.end()
   })
-}
-
-function humaniseDelta(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
-  return `${Math.floor(ms / 86_400_000)}d`
 }

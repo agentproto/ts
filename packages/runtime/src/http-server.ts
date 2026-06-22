@@ -41,6 +41,10 @@ import {
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type {
+  BrowserAdapterResolver,
+  BrowserAdapterLister,
+} from "./browser-tools.js"
+import type {
   OrchestratorScope,
   OrchestratorMcpServerFactory,
 } from "./orchestrator-gateway.js"
@@ -190,6 +194,13 @@ export interface RuntimeHttpServerOptions {
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional — when wired alongside `sessions`, enables
+   *  `POST /sessions/browser` (same operation as MCP `start_browser`,
+   *  exposed as an HTTP route for the CLI surface). */
+  resolveBrowserAdapter?: BrowserAdapterResolver
+  /** Optional — passed to error messages on `POST /sessions/browser`
+   *  to list available adapter ids when the requested one isn't found. */
+  listBrowserAdapters?: BrowserAdapterLister
   /** Optional — MCP proxy registry. When wired, exposes
    *  `/mcps/proxy/*` routes that let the browser drive imported MCPs
    *  without going through the MCP wire protocol (useful for the
@@ -818,6 +829,8 @@ export async function startHttpServer(
             opts.sessions,
             opts.resolveAgentAdapter,
             opts.ptyEnabled === true,
+            opts.resolveBrowserAdapter,
+            opts.listBrowserAdapters,
           )
           if (handled) return
         }
@@ -1321,6 +1334,10 @@ function clampInt(
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
+ *   POST   /sessions/browser      → start a browser adapter and register
+ *                                    as a tracked session; body:
+ *                                    { adapter, port?, camofoxPort?, label? }
+ *                                    (requires `resolveBrowserAdapter` wired)
  */
 async function handleSessions(
   req: IncomingMessage,
@@ -1329,6 +1346,8 @@ async function handleSessions(
   registry: SessionsRegistry,
   resolveAgentAdapter?: AgentAdapterResolver,
   ptyEnabled = false,
+  resolveBrowserAdapter?: BrowserAdapterResolver,
+  listBrowserAdapters?: BrowserAdapterLister,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -1435,6 +1454,92 @@ async function handleSessions(
     } catch (err) {
       json(500, {
         error: "agent_spawn_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // Browser service session — start the adapter and register as a tracked
+  // session. HTTP equivalent of the MCP `start_browser` tool.
+  // Body: { adapter: string, port?: number, camofoxPort?: number, label?: string }
+  if (path === "/sessions/browser" && req.method === "POST") {
+    if (!resolveBrowserAdapter) {
+      json(501, {
+        error: "browser_resolver_not_configured",
+        message:
+          "POST /sessions/browser needs the host to inject `resolveBrowserAdapter` " +
+          "(e.g. via `agentproto serve`).",
+      })
+      return true
+    }
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const adapterId = typeof b.adapter === "string" ? b.adapter : ""
+    if (!adapterId) {
+      json(400, { error: "missing_adapter" })
+      return true
+    }
+    const rawPort = b.port
+    if (rawPort !== undefined) {
+      const p = typeof rawPort === "number" ? rawPort : Number(rawPort)
+      if (!Number.isInteger(p) || p < 1 || p > 65535) {
+        json(400, {
+          error: "invalid_port",
+          message: `port must be an integer in range 1–65535 (got ${JSON.stringify(rawPort)})`,
+        })
+        return true
+      }
+    }
+    const rawCamofoxPort = b.camofoxPort
+    if (rawCamofoxPort !== undefined) {
+      const p = typeof rawCamofoxPort === "number" ? rawCamofoxPort : Number(rawCamofoxPort)
+      if (!Number.isInteger(p) || p < 1 || p > 65535) {
+        json(400, {
+          error: "invalid_camofox_port",
+          message: `camofoxPort must be an integer in range 1–65535 (got ${JSON.stringify(rawCamofoxPort)})`,
+        })
+        return true
+      }
+    }
+    const adapter = resolveBrowserAdapter(adapterId)
+    if (!adapter) {
+      const available = listBrowserAdapters
+        ? listBrowserAdapters()
+            .map(a => a.id)
+            .join(", ")
+        : "camofox, bureau"
+      json(404, {
+        error: "adapter_not_found",
+        adapter: adapterId,
+        message: `Browser adapter "${adapterId}" not found. Available: ${available}.`,
+      })
+      return true
+    }
+    try {
+      const instance = await adapter.ensure({
+        port: typeof b.port === "number" ? b.port : undefined,
+        camofoxPort: typeof b.camofoxPort === "number" ? b.camofoxPort : undefined,
+        initialWaitMs: 6_000,
+      })
+      const desc = registry.registerBrowser({
+        adapterId: instance.id,
+        port: instance.port,
+        baseUrl: instance.baseUrl,
+        pid: instance.pid,
+        wasAlreadyRunning: instance.wasAlreadyRunning,
+        status: instance.healthy ? "running" : "starting",
+        stop: instance.stop.bind(instance),
+        label: typeof b.label === "string" ? b.label : undefined,
+      })
+      json(201, desc)
+    } catch (err) {
+      json(500, {
+        error: "browser_start_failed",
         message: err instanceof Error ? err.message : String(err),
       })
     }
@@ -1724,7 +1829,7 @@ async function handleSessions(
 
   if (suffix === "/kill" && req.method === "POST") {
     const ok = registry.kill(id)
-    json(ok ? 200 : 404, { ok, id })
+    json(ok ? 200 : 404, { ok, sessionId: id })
     return true
   }
 

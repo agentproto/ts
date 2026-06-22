@@ -1217,6 +1217,17 @@ export function createSessionsRegistry(opts?: {
       return desc
     },
     registerBrowser(input) {
+      // Idempotent: reuse an alive session for the same (adapterId, port)
+      for (const rt of sessions.values()) {
+        if (
+          rt.desc.kind === "browser" &&
+          rt.desc.browserAdapterId === input.adapterId &&
+          rt.desc.browserPort === input.port &&
+          (rt.desc.status === "running" || rt.desc.status === "starting")
+        ) {
+          return rt.desc
+        }
+      }
       const id = `sess_${randomUUID().slice(0, 8)}`
       const desc: SessionDescriptor = {
         id,

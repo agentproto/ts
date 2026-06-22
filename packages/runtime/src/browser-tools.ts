@@ -289,12 +289,12 @@ export function registerBrowserTools(
           isError: true,
         }
       }
-      const killed = registry.kill(input.sessionId)
+      const ok = registry.kill(input.sessionId)
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ sessionId: input.sessionId, killed }, null, 2),
+            text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
           },
         ],
       }
