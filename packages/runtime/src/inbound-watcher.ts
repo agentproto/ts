@@ -8,6 +8,9 @@
  *   → spawn one agent per contact with prompt from promptTemplate
  *   → advance + persist cursor to ~/.agentproto/agentpush-cursors.json
  *
+ * Cursor key = "${alias}:${source}" — stable across daemon restarts so
+ * cursor resume actually works (a random watcherId would break it).
+ *
  * Prompt template variables: {{source}}, {{contact_ref}},
  *   {{messages_json}}, {{count}}.
  *
@@ -107,6 +110,8 @@ interface WatcherState {
   }
   status: "running" | "stopped"
   cursor: number
+  /** True while a poll tick is still in-flight — prevents overlap. */
+  inFlight: boolean
   lastPollAt?: string
   lastFireAt?: string
   spawned: number
@@ -146,12 +151,12 @@ export function createInboundWatcher(opts: {
     }
   }
 
+  // Cursor key uses alias + source — stable identity that survives
+  // daemon restarts (unlike watcherId which is a new UUID per start()).
   const buildSnapshot = (): Record<string, number> => {
     const out: Record<string, number> = {}
     for (const state of watchers.values()) {
-      if (state.cursor > 0) {
-        out[cursorKey(state)] = state.cursor
-      }
+      out[`${state.input.alias}:${state.input.source}`] = state.cursor
     }
     return out
   }
@@ -186,9 +191,6 @@ export function createInboundWatcher(opts: {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────
-
-  const cursorKey = (state: WatcherState): string =>
-    `${state.watcherId}:${state.input.source}`
 
   const renderPrompt = (
     template: string,
@@ -266,62 +268,70 @@ export function createInboundWatcher(opts: {
 
   const doPoll = async (state: WatcherState): Promise<void> => {
     if (state.status !== "running") return
+    // Anti-race: skip this tick if the previous one hasn't finished yet.
+    if (state.inFlight) return
+    state.inFlight = true
     state.lastPollAt = new Date().toISOString()
 
-    const out = await mcpProxy.callTool(state.input.alias, "poll_inbound", {
-      source: state.input.source,
-      ...(state.cursor > 0 ? { since: state.cursor } : {}),
-    })
-
-    if (!out.ok) {
-      console.warn(
-        `[inbound-watcher:${state.watcherId}] poll_inbound error: ${out.error}`,
-      )
-      return
-    }
-
-    // Unwrap MCP content envelope: { content: [{type:"text", text:"...json..."}] }
-    const raw = out.result as {
-      content?: Array<{ type: string; text?: string }>
-    }
-    const text = raw?.content?.find(c => c.type === "text")?.text
-    if (!text) return
-
-    let data: { events?: InboundEvent[] }
     try {
-      data = JSON.parse(text) as { events?: InboundEvent[] }
-    } catch {
-      return
+      const out = await mcpProxy.callTool(state.input.alias, "poll_inbound", {
+        source: state.input.source,
+        ...(state.cursor > 0 ? { since: state.cursor } : {}),
+      })
+
+      if (!out.ok) {
+        console.warn(
+          `[inbound-watcher:${state.watcherId}] poll_inbound error: ${out.error}`,
+        )
+        return
+      }
+
+      // Unwrap MCP content envelope: { content: [{type:"text", text:"...json..."}] }
+      const raw = out.result as {
+        content?: Array<{ type: string; text?: string }>
+      }
+      const text = raw?.content?.find(c => c.type === "text")?.text
+      if (!text) return
+
+      let data: { events?: InboundEvent[] }
+      try {
+        data = JSON.parse(text) as { events?: InboundEvent[] }
+      } catch {
+        return
+      }
+
+      const events = data.events ?? []
+      if (events.length === 0) return
+
+      // Advance cursor past the highest timestamp seen (filter is `>= since`
+      // so +1 avoids re-delivering the last event on the next tick).
+      // Guard against NaN/non-finite values from malformed events.
+      const maxTs = events.reduce((m, e) => {
+        const ts = typeof e.timestamp === "number" ? e.timestamp : -Infinity
+        return Number.isFinite(ts) ? Math.max(m, ts) : m
+      }, -Infinity)
+      if (Number.isFinite(maxTs) && maxTs >= state.cursor) {
+        state.cursor = maxTs + 1
+        schedulePersist()
+      }
+
+      // Group by contact_ref, spawn one agent per contact
+      const byContact = new Map<string, InboundEvent[]>()
+      for (const ev of events) {
+        const ref = typeof ev.contact_ref === "string" ? ev.contact_ref : "unknown"
+        const bucket = byContact.get(ref) ?? []
+        bucket.push(ev)
+        byContact.set(ref, bucket)
+      }
+
+      await Promise.all(
+        Array.from(byContact.entries()).map(([ref, evs]) =>
+          spawnForContact(state, ref, evs),
+        ),
+      )
+    } finally {
+      state.inFlight = false
     }
-
-    const events = data.events ?? []
-    if (events.length === 0) return
-
-    // Advance cursor past the highest timestamp seen (filter is `>= since`
-    // so +1 avoids re-delivering the last event on the next tick).
-    const maxTs = events.reduce(
-      (m, e) => Math.max(m, typeof e.timestamp === "number" ? e.timestamp : 0),
-      0,
-    )
-    if (maxTs >= state.cursor) {
-      state.cursor = maxTs + 1
-      schedulePersist()
-    }
-
-    // Group by contact_ref, spawn one agent per contact
-    const byContact = new Map<string, InboundEvent[]>()
-    for (const ev of events) {
-      const ref = typeof ev.contact_ref === "string" ? ev.contact_ref : "unknown"
-      const bucket = byContact.get(ref) ?? []
-      bucket.push(ev)
-      byContact.set(ref, bucket)
-    }
-
-    await Promise.all(
-      Array.from(byContact.entries()).map(([ref, evs]) =>
-        spawnForContact(state, ref, evs),
-      ),
-    )
   }
 
   // ── Public interface ──────────────────────────────────────────────
@@ -332,9 +342,8 @@ export function createInboundWatcher(opts: {
       const pollIntervalMs = input.pollIntervalMs ?? 5_000
       const cwd = input.cwd ?? process.cwd()
 
-      // Restore any previously persisted cursor for this watcher.
-      // On first start the key won't exist — cursor starts at 0 (= read all
-      // events from the beginning of the store).
+      // Restore persisted cursor using the stable alias:source key so
+      // a restarted daemon picks up where it left off.
       const savedCursors = loadCursors()
 
       const state: WatcherState = {
@@ -350,10 +359,8 @@ export function createInboundWatcher(opts: {
           mcpServersForChild: input.mcpServersForChild,
         },
         status: "running",
-        // New watchers start at 0; a restored key would come from an
-        // explicit reload path (not wired yet — the watcherId is random
-        // per start(), so cursor restore is intentionally a no-op for now).
-        cursor: savedCursors[`${watcherId}:${input.source}`] ?? 0,
+        cursor: savedCursors[`${input.alias}:${input.source}`] ?? 0,
+        inFlight: false,
         spawned: 0,
         timer: null,
       }

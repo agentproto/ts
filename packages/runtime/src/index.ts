@@ -59,6 +59,11 @@ import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
+export type {
+  WatcherStartInput,
+  WatcherDescriptor,
+  InboundWatcher,
+} from "./inbound-watcher.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,

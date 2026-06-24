@@ -284,4 +284,155 @@ describe("InboundWatcher", () => {
 
     watcher.shutdown()
   })
+
+  // ── Fix #1: cursor key = alias:source (stable across restarts) ────
+
+  it("cursor is restored from alias:source key after simulated restart", async () => {
+    const ev = makeEvent("alice", 5000)
+
+    // First "session" — watcher processes one event and advances cursor
+    const callTool1 = vi.fn(async () => mcpOk({ events: [ev] }))
+    const mcpProxy1 = { callTool: callTool1 } as unknown as McpProxyRegistry
+    const registry1 = makeMockRegistry()
+    const resolver1 = makeMockAdapter()
+
+    // Persist to a tmpdir path so we can actually read it back
+    const persistPath = `/tmp/test-cursors-${Math.random().toString(36).slice(2)}.json`
+
+    const watcher1 = createInboundWatcher({
+      mcpProxy: mcpProxy1,
+      registry: registry1,
+      resolveAgentAdapter: resolver1,
+      persistPath,
+    })
+
+    const desc1 = watcher1.start({
+      alias: "ap",
+      source: "+33600000000",
+      adapter: "claude-code",
+      promptTemplate: "{{messages_json}}",
+      pollIntervalMs: 100,
+    })
+
+    await vi.advanceTimersByTimeAsync(150)
+    expect(registry1.spawnAgent).toHaveBeenCalledTimes(1)
+    expect(watcher1.list()[0]?.cursor).toBe(5001)
+
+    // Flush synchronously (simulates daemon shutdown)
+    watcher1.shutdown()
+
+    // Second "session" — new daemon, new watcher factory, same alias:source
+    const callTool2 = vi.fn(async () => mcpOk({ events: [] }))
+    const mcpProxy2 = { callTool: callTool2 } as unknown as McpProxyRegistry
+    const registry2 = makeMockRegistry()
+    const resolver2 = makeMockAdapter()
+
+    const watcher2 = createInboundWatcher({
+      mcpProxy: mcpProxy2,
+      registry: registry2,
+      resolveAgentAdapter: resolver2,
+      persistPath,
+    })
+
+    const desc2 = watcher2.start({
+      alias: "ap",
+      source: "+33600000000",
+      adapter: "claude-code",
+      promptTemplate: "{{messages_json}}",
+      pollIntervalMs: 100,
+    })
+
+    // Cursor must be restored from disk — not 0
+    expect(desc2.cursor).toBe(5001)
+    // Poll call must include `since: 5001`
+    await vi.advanceTimersByTimeAsync(150)
+    expect(callTool2).toHaveBeenCalledWith("ap", "poll_inbound", {
+      source: "+33600000000",
+      since: 5001,
+    })
+
+    watcher2.stop(desc2.watcherId)
+  })
+
+  // ── Fix #3: anti-race guard ───────────────────────────────────────
+
+  it("concurrent ticks are skipped when previous tick is still in-flight", async () => {
+    // Slow poll: takes 200ms to resolve, interval is 50ms → ticks overlap
+    let resolveCurrentPoll: (() => void) | undefined
+    const callTool = vi.fn(async () => {
+      await new Promise<void>(res => { resolveCurrentPoll = res })
+      return mcpOk({ events: [] })
+    })
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const registry = makeMockRegistry()
+    const resolver = makeMockAdapter()
+
+    const watcher = createInboundWatcher({
+      mcpProxy,
+      registry,
+      resolveAgentAdapter: resolver,
+      persist: false,
+    })
+
+    const desc = watcher.start({
+      alias: "ap",
+      source: "test",
+      adapter: "claude-code",
+      promptTemplate: "x",
+      pollIntervalMs: 50,
+    })
+
+    // Advance to trigger 3 ticks — but the first is in-flight, so only 1 callTool call
+    await vi.advanceTimersByTimeAsync(160)
+    expect(callTool).toHaveBeenCalledTimes(1)
+
+    // Unblock the in-flight poll
+    resolveCurrentPoll?.()
+    await vi.advanceTimersByTimeAsync(60)
+    // Now a second tick should have run
+    expect(callTool).toHaveBeenCalledTimes(2)
+
+    watcher.stop(desc.watcherId)
+    resolveCurrentPoll?.()
+  })
+
+  // ── Fix #4: NaN guard ────────────────────────────────────────────
+
+  it("events without valid timestamp do not corrupt the cursor", async () => {
+    const evGood = makeEvent("alice", 1000)
+    // Event with missing timestamp — should not make cursor NaN
+    const evBad = { contact_ref: "bob", direction: "inbound" }
+
+    const callTool = vi.fn(async () => mcpOk({ events: [evGood, evBad] }))
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const registry = makeMockRegistry()
+    const resolver = makeMockAdapter()
+
+    const watcher = createInboundWatcher({
+      mcpProxy,
+      registry,
+      resolveAgentAdapter: resolver,
+      persist: false,
+    })
+
+    const desc = watcher.start({
+      alias: "ap",
+      source: "test",
+      adapter: "claude-code",
+      promptTemplate: "{{messages_json}}",
+      pollIntervalMs: 100,
+    })
+
+    await vi.advanceTimersByTimeAsync(150)
+
+    const cursor = watcher.list()[0]?.cursor
+    // Cursor must be a finite number, not NaN
+    expect(Number.isFinite(cursor)).toBe(true)
+    // Should have advanced past the good event's timestamp
+    expect(cursor).toBe(1001)
+    // Both contacts still got spawned
+    expect(registry.spawnAgent).toHaveBeenCalledTimes(2)
+
+    watcher.stop(desc.watcherId)
+  })
 })
