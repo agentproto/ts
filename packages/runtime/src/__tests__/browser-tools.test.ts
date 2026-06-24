@@ -8,7 +8,7 @@
  * Runs fully in-process — no daemon or real browser adapter needed.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -249,6 +249,314 @@ describe("start_browser — schema accepts manifest runtime knobs", () => {
 
     expect(result.isError).toBeFalsy()
 
+    await cleanup()
+  })
+})
+
+// ── browser_screenshot ────────────────────────────────────────────────────────
+
+/**
+ * Builds a minimal browser session directly in the registry (bypasses
+ * start_browser) so the screenshot tests don't need a real adapter.
+ */
+function registerBrowserSession(
+  registry: ReturnType<typeof import("../sessions.js").createSessionsRegistry>,
+  opts: {
+    adapterId: string
+    baseUrl: string
+  }
+) {
+  return registry.registerBrowser({
+    adapterId: opts.adapterId,
+    port: 9999,
+    baseUrl: opts.baseUrl,
+    wasAlreadyRunning: false,
+    status: "running",
+    stop: async () => {},
+  })
+}
+
+async function makeScreenshotSetup() {
+  const registry = createSessionsRegistry({ persistPath: join(tmp, "sessions-shot.json") })
+  const server = new McpServer({ name: "test-screenshot", version: "0.0.1" })
+  registerBrowserTools(server, { registry })
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await server.connect(serverTransport)
+  const client = new Client({ name: "test-client", version: "0.0.1" })
+  await client.connect(clientTransport)
+
+  const cleanup = async () => {
+    await client.close()
+    registry.shutdown()
+    vi.unstubAllGlobals()
+  }
+
+  return { client, registry, cleanup }
+}
+
+function parseResult(result: Awaited<ReturnType<Client["callTool"]>>) {
+  return JSON.parse((result.content as Array<{ type: string; text: string }>)[0]!.text)
+}
+
+describe("browser_screenshot — error shapes", () => {
+  it("session-not-found returns isError + message", async () => {
+    const { client, cleanup } = await makeScreenshotSetup()
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: "does-not-exist" },
+    })
+
+    expect(result.isError).toBe(true)
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text
+    expect(text).toContain("browser_screenshot:")
+    expect(text).toContain("does-not-exist")
+    expect(text).toContain("not found")
+
+    await cleanup()
+  })
+
+  it("unsupported-adapter returns isError + message listing supported adapters", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }))
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "unknown-adapter",
+      baseUrl: "http://127.0.0.1:9999",
+    })
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id },
+    })
+
+    expect(result.isError).toBe(true)
+    const text = (result.content as Array<{ type: string; text: string }>)[0]!.text
+    expect(text).toContain("browser_screenshot:")
+    expect(text).toContain("unknown-adapter")
+    expect(text).toContain("camofox")
+    expect(text).toContain("bureau")
+    expect(text).toContain("chromium")
+
+    await cleanup()
+  })
+})
+
+describe("browser_screenshot — camofox dispatch", () => {
+  it("returns base64 data + format when tabId is provided", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+
+    const pngBytes = Buffer.from("fake-png-bytes")
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => pngBytes.buffer,
+    })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "camofox",
+      baseUrl: "http://localhost:9377",
+    })
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id, tabId: "tab-1" },
+    })
+
+    expect(result.isError).toBeFalsy()
+    const data = parseResult(result)
+    expect(data.format).toBe("png")
+    expect(typeof data.data).toBe("string")
+    // fetch should have been called with the IPv4-normalised URL
+    expect(mockFetch.mock.calls[0]![0]).toContain("127.0.0.1")
+    expect(mockFetch.mock.calls[0]![0]).toContain("/tabs/tab-1/screenshot")
+
+    await cleanup()
+  })
+
+  it("resolves default tab when tabId is omitted", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+
+    const pngBytes = Buffer.from("fake-png")
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ tabs: [{ tabId: "auto-tab" }] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => pngBytes.buffer,
+      })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "camofox",
+      baseUrl: "http://127.0.0.1:9377",
+    })
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id },
+    })
+
+    expect(result.isError).toBeFalsy()
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    // second call uses the resolved tabId
+    expect(mockFetch.mock.calls[1]![0]).toContain("/tabs/auto-tab/screenshot")
+
+    await cleanup()
+  })
+})
+
+describe("browser_screenshot — bureau dispatch", () => {
+  it("calls bureau /mcp with browser_screenshot tool name and returns data", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ base64: "abc123", format: "png", width: 1280, height: 800 }) }],
+        },
+      }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "bureau",
+      baseUrl: "http://127.0.0.1:8830",
+    })
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id },
+    })
+
+    expect(result.isError).toBeFalsy()
+    const data = parseResult(result)
+    expect(data.data).toBe("abc123")
+    expect(data.format).toBe("png")
+    expect(data.width).toBe(1280)
+    expect(data.height).toBe(800)
+
+    // Verify dispatch used bureau's internal browser_screenshot tool name
+    const body = JSON.parse(mockFetch.mock.calls[0]![1].body as string)
+    expect(body.params.name).toBe("browser_screenshot")
+
+    await cleanup()
+  })
+})
+
+describe("browser_screenshot — chromium dispatch", () => {
+  it("calls chromium /sessions/:id/screenshot and returns data", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+
+    const pngBytes = Buffer.from("chromium-png")
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ sessions: [{ id: "cr-session-1" }] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () => pngBytes.buffer,
+      })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "chromium",
+      baseUrl: "http://127.0.0.1:3200",
+    })
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id },
+    })
+
+    expect(result.isError).toBeFalsy()
+    const data = parseResult(result)
+    expect(data.format).toBe("png")
+    expect(mockFetch.mock.calls[1]![0]).toContain("/sessions/cr-session-1/screenshot")
+
+    await cleanup()
+  })
+
+  it("uses provided tabId as chromium sessionId without listing", async () => {
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+
+    const pngBytes = Buffer.from("cr-png")
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => pngBytes.buffer,
+    })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const desc = registerBrowserSession(registry, {
+      adapterId: "chromium",
+      baseUrl: "http://127.0.0.1:3200",
+    })
+
+    await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: desc.id, tabId: "explicit-cr-session" },
+    })
+
+    // Only one fetch call (no /sessions listing)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch.mock.calls[0]![0]).toContain("/sessions/explicit-cr-session/screenshot")
+
+    await cleanup()
+  })
+})
+
+describe("browser_screenshot — abort timer cleanup", () => {
+  it("guard-return path never invokes fetch (timer never created)", async () => {
+    const { client, cleanup } = await makeScreenshotSetup()
+    // AbortController + timer are created AFTER all guard-returns. If fetch is
+    // never called it means the guard fired before any timer was set up.
+    const mockFetch = vi.fn()
+    vi.stubGlobal("fetch", mockFetch)
+
+    const result = await client.callTool({
+      name: "browser_screenshot",
+      arguments: { sessionId: "ghost-session" },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(mockFetch).not.toHaveBeenCalled()
+    await cleanup()
+  })
+
+  it("abort timer cleared after successful fetch (no extra clearTimeout vs guard baseline)", async () => {
+    // The MCP SDK sets+clears its own request-timeout timer on every tool call.
+    // That accounts for a baseline of N clearTimeout calls even on a guard-return.
+    // A successful network path adds exactly one more (our finally { clearTimeout(timer) }).
+    // We measure the delta to isolate our timer.
+    const { client: guardClient, cleanup: guardCleanup } = await makeScreenshotSetup()
+    vi.stubGlobal("fetch", vi.fn())
+    const guardSpy = vi.spyOn(globalThis, "clearTimeout")
+    await guardClient.callTool({ name: "browser_screenshot", arguments: { sessionId: "ghost" } })
+    const baseline = guardSpy.mock.calls.length
+    guardSpy.mockRestore()
+    vi.unstubAllGlobals()
+    await guardCleanup()
+
+    // Now measure a successful fetch path.
+    const { client, registry, cleanup } = await makeScreenshotSetup()
+    const pngBytes = Buffer.from("ok-png")
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ tabs: [{ tabId: "t1" }] }) })
+      .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => pngBytes.buffer })
+    )
+    const desc = registerBrowserSession(registry, { adapterId: "camofox", baseUrl: "http://127.0.0.1:9377" })
+    const netSpy = vi.spyOn(globalThis, "clearTimeout")
+    await client.callTool({ name: "browser_screenshot", arguments: { sessionId: desc.id } })
+    const netCalls = netSpy.mock.calls.length
+    netSpy.mockRestore()
+
+    // Network path must clear exactly one more timer than the guard baseline
+    expect(netCalls).toBe(baseline + 1)
     await cleanup()
   })
 })
