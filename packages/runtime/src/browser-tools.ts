@@ -110,6 +110,18 @@ export interface BrowserAdapterInfo {
   defaultPort: number
 }
 
+// ── Shared result helpers ─────────────────────────────────────────────────────
+
+const okResult = (r: Record<string, unknown>) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
+  structuredContent: r,
+})
+
+const errResult = (text: string) => ({
+  content: [{ type: "text" as const, text }],
+  isError: true as const,
+})
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 interface RegisterBrowserToolsOptions {
@@ -457,6 +469,148 @@ export function registerBrowserTools(
             text: JSON.stringify({ descriptor: desc, healthy, healthBody }, null, 2),
           },
         ],
+      }
+    }
+  )
+
+  // ── browser_screenshot ───────────────────────────────────────────────────────
+  server.tool(
+    "browser_screenshot",
+    "Capture a base64-encoded screenshot of what an agent's browser session is currently showing. " +
+      "Dispatches to the correct backend by the session's browserAdapterId: " +
+      "camofox → GET /tabs/:tabId/screenshot, " +
+      "bureau → POST /mcp browser_screenshot, " +
+      "chromium → POST /sessions/:id/screenshot. " +
+      "Returns { data (base64, no data: prefix), format, width?, height? } in both text and structuredContent.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` or `list_browsers`."),
+      tabId: z
+        .string()
+        .optional()
+        .describe(
+          "Camofox: tabId to screenshot (default: first active tab). " +
+            "Chromium: service-internal session id (default: first listed session). " +
+            "Bureau: ignored (bureau screenshots its current tab)."
+        ),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc)
+        return errResult(`browser_screenshot: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(
+          `browser_screenshot: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`
+        )
+      if (!desc.browserBaseUrl)
+        return errResult(`browser_screenshot: session "${input.sessionId}" has no browserBaseUrl.`)
+
+      // Normalise to IPv4 — node/undici resolves localhost→::1 first but these
+      // services bind IPv4 only.
+      const rawUrl = new URL(desc.browserBaseUrl)
+      if (rawUrl.hostname === "localhost") rawUrl.hostname = "127.0.0.1"
+      const base = rawUrl.href.replace(/\/$/, "")
+      const adapterId = desc.browserAdapterId ?? ""
+
+      // AbortController created after all guard-returns so the finally block
+      // below covers every path that reaches the network.
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), 15_000)
+
+      try {
+        // ── camofox (port 9377): GET /tabs/:tabId/screenshot ────────────────────
+        if (adapterId === "camofox") {
+          let tabId = input.tabId
+          if (!tabId) {
+            const tabsRes = await fetch(`${base}/tabs?userId=main`, { signal: ac.signal })
+            if (!tabsRes.ok) throw new Error(`camofox /tabs: HTTP ${tabsRes.status}`)
+            const tabsBody = (await tabsRes.json()) as { tabs?: { tabId: string }[] }
+            tabId = tabsBody.tabs?.[0]?.tabId
+            if (!tabId) throw new Error("camofox: no active tabs found")
+          }
+          const shotRes = await fetch(
+            `${base}/tabs/${encodeURIComponent(tabId)}/screenshot?userId=main&format=png`,
+            { signal: ac.signal }
+          )
+          if (!shotRes.ok) throw new Error(`camofox screenshot: HTTP ${shotRes.status}`)
+          const data = Buffer.from(await shotRes.arrayBuffer()).toString("base64")
+          return okResult({ data, format: "png" as const })
+        }
+
+        // ── bureau (port 8830): POST /mcp → browser_screenshot MCP tool ─────────
+        if (adapterId === "bureau") {
+          const mcpBody = {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "browser_screenshot", arguments: { format: "png" } },
+          }
+          const mcpRes = await fetch(`${base}/mcp`, {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json" },
+            body: JSON.stringify(mcpBody),
+            signal: ac.signal,
+          })
+          if (!mcpRes.ok) throw new Error(`bureau /mcp: HTTP ${mcpRes.status}`)
+          const envelope = (await mcpRes.json()) as {
+            result?: { content?: { type: string; text?: string }[] }
+            error?: { message?: string }
+          }
+          if (envelope.error)
+            throw new Error(`bureau MCP error: ${envelope.error.message ?? "unknown"}`)
+          const textBlock = envelope.result?.content?.find(c => c.type === "text")
+          if (!textBlock?.text) throw new Error("bureau MCP: no text content block in response")
+          const shot = JSON.parse(textBlock.text) as {
+            base64?: string
+            format?: string
+            width?: number
+            height?: number
+          }
+          if (!shot.base64) throw new Error("bureau MCP: screenshot result missing base64 field")
+          return okResult({
+            data: shot.base64,
+            format: (shot.format ?? "png") as "png" | "jpeg",
+            ...(shot.width != null ? { width: shot.width } : {}),
+            ...(shot.height != null ? { height: shot.height } : {}),
+          })
+        }
+
+        // ── chromium (port 3200): POST /sessions/:id/screenshot ─────────────────
+        if (adapterId === "chromium") {
+          let chromiumSessionId = input.tabId
+          if (!chromiumSessionId) {
+            const listRes = await fetch(`${base}/sessions`, { signal: ac.signal })
+            if (!listRes.ok) throw new Error(`chromium /sessions: HTTP ${listRes.status}`)
+            const listBody = (await listRes.json()) as { sessions?: { id: string }[] }
+            chromiumSessionId = listBody.sessions?.[0]?.id
+            if (!chromiumSessionId) throw new Error("chromium: no active sessions found")
+          }
+          const shotRes = await fetch(
+            `${base}/sessions/${encodeURIComponent(chromiumSessionId)}/screenshot`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ format: "png" }),
+              signal: ac.signal,
+            }
+          )
+          if (!shotRes.ok) throw new Error(`chromium screenshot: HTTP ${shotRes.status}`)
+          const data = Buffer.from(await shotRes.arrayBuffer()).toString("base64")
+          return okResult({ data, format: "png" as const })
+        }
+
+        return errResult(
+          `browser_screenshot: adapter "${adapterId}" is not supported. ` +
+            "Supported adapters: camofox, bureau, chromium."
+        )
+      } catch (err) {
+        return errResult(
+          `browser_screenshot: ${err instanceof Error ? err.message : String(err)}`
+        )
+      } finally {
+        clearTimeout(timer)
       }
     }
   )
