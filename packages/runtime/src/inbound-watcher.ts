@@ -350,10 +350,8 @@ export function createInboundWatcher(opts: {
       // delivery is at-least-once: a tick in-flight at shutdown advances the
       // cursor as a microtask after flushSync() returns, so the new cursor
       // value is not persisted and those events may be re-fetched on restart.
-      if (nextCursor !== null) {
-        state.cursor = nextCursor
-        schedulePersist()
-      }
+      state.cursor = nextCursor
+      schedulePersist()
     } finally {
       state.inFlight = false
     }
