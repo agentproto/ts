@@ -1233,6 +1233,12 @@ export function createSessionsRegistry(opts?: {
           (rt.desc.browserLocation ?? "local") === inputLocation &&
           (rt.desc.status === "running" || rt.desc.status === "starting")
         ) {
+          // Update label on idempotent hit so callers can stamp correlation
+          // context (guild/op/workItem) onto a long-lived browser session.
+          if (input.label !== undefined) {
+            rt.desc.label = input.label
+            schedulePersist()
+          }
           return rt.desc
         }
       }
