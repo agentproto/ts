@@ -3,8 +3,10 @@
  * injected list/resolve functions. The runtime package keeps importing zero
  * concrete adapters — everything flows through the injected `load` / `toInfo`.
  *
- * Per OQ-5: `makeAdapterLister` NEVER calls `handle.check()`. Status comes
- * solely from resolvability + ledger/creds existence.
+ * Per OQ-5: `makeAdapterLister` defaults to NEVER calling `handle.check()`.
+ * Status comes solely from resolvability + ledger/creds existence. Families
+ * that want binary-presence reflected at listing cost opt in via the
+ * `checkDuringListing` flag.
  */
 
 import type { CredsStore } from "./creds-store.js"
@@ -58,19 +60,27 @@ export interface MakeAdapterListerOpts<THandle extends AdapterHandle, TInfo> {
    * never invoked here either — they are already resolved handles.
    */
   discoverExtras?: () => Promise<THandle[]>
+  /**
+   * When true, `handle.check()` is called for each resolved handle during
+   * listing. If it returns false, `checkFailed: true` is set on the entry.
+   * Default false → OQ-5 behaviour: `check()` is never called.
+   */
+  checkDuringListing?: boolean
 }
 
 /**
  * Build the family's lister. The lister:
  *   1. Iterates the catalog in order.
  *   2. Resolves each slug, reads ledger.exists() + optional credsStore.exists(),
- *      and classifies via computeStatus(). Never calls handle.check().
+ *      and classifies via computeStatus(). When checkDuringListing is true,
+ *      also calls handle.check() and sets checkFailed on the entry if false.
  *   3. Appends discovered extras (not in catalog) sorted by slug.
  */
 export function makeAdapterLister<THandle extends AdapterHandle, TInfo>(
   opts: MakeAdapterListerOpts<THandle, TInfo>
 ): AdapterLister<TInfo> {
-  const { catalog, resolver, ledger, credsStore, toInfo, discoverExtras } = opts
+  const { catalog, resolver, ledger, credsStore, toInfo, discoverExtras, checkDuringListing } =
+    opts
 
   async function entryFor(
     handle: THandle,
@@ -92,7 +102,7 @@ export function makeAdapterLister<THandle extends AdapterHandle, TInfo>(
       ledgerExists,
       credsExist,
     })
-    return {
+    const entry: AdapterEntry<TInfo> = {
       slug: handle.slug,
       name: handle.name || fallback.name,
       description: handle.description || fallback.description,
@@ -102,6 +112,13 @@ export function makeAdapterLister<THandle extends AdapterHandle, TInfo>(
       version: handle.version,
       info: toInfo(handle),
     }
+    if (checkDuringListing) {
+      const ok = await handle.check()
+      if (!ok) {
+        entry.checkFailed = true
+      }
+    }
+    return entry
   }
 
   return async (): Promise<AdapterEntry<TInfo>[]> => {
