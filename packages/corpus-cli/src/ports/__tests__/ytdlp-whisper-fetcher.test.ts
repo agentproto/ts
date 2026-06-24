@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
 import {
   YtDlpWhisperFetcher,
+  buildYtDlpArgs,
   type AudioDownload,
 } from "../ytdlp-whisper-fetcher.adapter.js"
 import { CompositeFetcher } from "../composite-fetcher.js"
@@ -58,6 +59,66 @@ describe("YtDlpWhisperFetcher", () => {
       download: async () => fakeDownload("t"),
     })
     expect(await f.fetch("https://youtu.be/abc")).toBeNull()
+  })
+})
+
+describe("buildYtDlpArgs", () => {
+  const URL = "https://www.youtube.com/watch?v=test"
+  const DIR = "/tmp/fake"
+
+  it("uses bestaudio/best format fallback", () => {
+    const args = buildYtDlpArgs(URL, DIR)
+    expect(args).toContain("bestaudio/best")
+    expect(args).not.toContain("bestaudio")  // bare bestaudio must not appear as its own arg
+  })
+
+  it("includes --remote-components ejs:github for nsig solver", () => {
+    const args = buildYtDlpArgs(URL, DIR)
+    expect(args).toContain("--remote-components")
+    expect(args).toContain("ejs:github")
+  })
+
+  it("uses android client when no cookies (avoids PO-token for unauthenticated)", () => {
+    const args = buildYtDlpArgs(URL, DIR)
+    expect(args).toContain("--extractor-args")
+    expect(args).toContain("youtube:player_client=android")
+  })
+
+  it("uses web_creator client when cookies-from-browser set (android skips authed requests)", () => {
+    const args = buildYtDlpArgs(URL, DIR, { cookiesFromBrowser: "chrome" })
+    expect(args).toContain("--extractor-args")
+    expect(args).toContain("youtube:player_client=web_creator")
+    expect(args).not.toContain("youtube:player_client=android")
+  })
+
+  it("uses web_creator client when cookies-file set", () => {
+    const args = buildYtDlpArgs(URL, DIR, { cookiesFile: "/path/cookies.txt" })
+    expect(args).toContain("youtube:player_client=web_creator")
+    expect(args).not.toContain("youtube:player_client=android")
+  })
+
+  it("appends --ffmpeg-location when ffmpegLocation is set", () => {
+    const args = buildYtDlpArgs(URL, DIR, { ffmpegLocation: "/opt/homebrew/bin" })
+    expect(args).toContain("--ffmpeg-location")
+    expect(args).toContain("/opt/homebrew/bin")
+  })
+
+  it("omits --ffmpeg-location when ffmpegLocation is not set", () => {
+    const args = buildYtDlpArgs(URL, DIR)
+    expect(args).not.toContain("--ffmpeg-location")
+  })
+
+  it("includes --match-filter when maxDurationSec is set", () => {
+    const args = buildYtDlpArgs(URL, DIR, { maxDurationSec: 3600 })
+    expect(args).toContain("--match-filter")
+    expect(args).toContain("duration <= 3600")
+  })
+
+  it("includes --cookies-from-browser when set", () => {
+    const args = buildYtDlpArgs(URL, DIR, { cookiesFromBrowser: "chrome" })
+    expect(args).toContain("--cookies-from-browser")
+    expect(args).toContain("chrome")
+    // covered by the android-exclusion tests above
   })
 })
 
