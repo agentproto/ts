@@ -34,6 +34,11 @@
       "import": "./dist/marketing/index.mjs",
       "default": "./dist/marketing/index.mjs"
     },
+    "./research": {
+      "types": "./dist/research/index.d.ts",
+      "import": "./dist/research/index.mjs",
+      "default": "./dist/research/index.mjs"
+    },
     "./package.json": "./package.json"
   },
   "agentproto-corpus-preset": {
@@ -44,6 +49,12 @@
         "entry": "./dist/marketing/index.mjs",
         "export": "MarketingCorpusPreset",
         "description": "Marketing knowledge corpus — principles, patterns, critiques, playbooks. Composes AIP-10/12/18/9/15/41 into a closed-loop improvement system."
+      },
+      {
+        "slug": "research",
+        "entry": "./dist/research/index.mjs",
+        "export": "ResearchCorpusPreset",
+        "description": "Domain-agnostic research knowledge corpus — principles, patterns, critiques. Composes AIP-10/18/9/15/41 into a closed-loop discovery-and-improvement system."
       }
     ]
   },
@@ -57,16 +68,17 @@
   },
   "sideEffects": false,
   "scripts": {
-    "predev": "node scripts/gen-marketing.mjs",
+    "predev": "node scripts/gen-marketing.mjs && node scripts/gen-research.mjs",
     "dev": "tsup --watch",
-    "prebuild": "node scripts/gen-marketing.mjs",
+    "prebuild": "node scripts/gen-marketing.mjs && node scripts/gen-research.mjs",
     "build": "tsup",
-    "clean": "rm -rf dist src/marketing/files.ts",
-    "precheck-types": "node scripts/gen-marketing.mjs",
+    "clean": "rm -rf dist src/marketing/files.ts src/research/files.ts",
+    "precheck-types": "node scripts/gen-marketing.mjs && node scripts/gen-research.mjs",
     "check-types": "tsc --noEmit",
-    "pretest": "node scripts/gen-marketing.mjs",
+    "pretest": "node scripts/gen-marketing.mjs && node scripts/gen-research.mjs",
     "test": "vitest run --passWithNoTests",
-    "gen:marketing": "node scripts/gen-marketing.mjs"
+    "gen:marketing": "node scripts/gen-marketing.mjs",
+    "gen:research": "node scripts/gen-research.mjs"
   },
   "dependencies": {
     "@agentproto/corpus": "workspace:*"
