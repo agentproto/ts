@@ -240,6 +240,178 @@ describe("RoutineRunner", () => {
   })
 })
 
+// ── Regression tests ──────────────────────────────────────────────────
+
+describe("RoutineRunner regression — fast-session race + cwd threading", () => {
+  it("completes when turn-end fires synchronously inside sendPrompt (fast-session race)", async () => {
+    // Reproduces Bug 1: session fires turn-end DURING sendPrompt (synchronously,
+    // before the old waitTurnEnd() call could subscribe). Without the fix the run
+    // would hang forever waiting for an event that already fired.
+    const bus = createSessionEventBus()
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => ({
+        id: "sess_race",
+        kind: "agent-cli" as const,
+        workspaceSlug: "test",
+        command: "mock",
+        pid: null,
+        status: "running" as const,
+        startedAt: new Date().toISOString(),
+        cwd: input.cwd,
+      })),
+      // Emit turn-end synchronously inside sendPrompt — the exact race scenario.
+      // Old code: waitTurnEnd() is called AFTER sendPrompt returns → event already
+      //   fired, nobody was subscribed → hangs.
+      // New code: waitTurnEnd() is called BEFORE sendPrompt → subscription is live
+      //   when the emit fires → promise resolves → no hang.
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_race"
+          ? {
+              id,
+              kind: "agent-cli" as const,
+              workspaceSlug: "test",
+              command: "mock",
+              pid: null,
+              status: "running" as const,
+              startedAt: "t",
+            }
+          : undefined,
+      ),
+    })
+
+    const runner = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    const run = await runner.start({
+      routineId: "race-regression",
+      steps: [{ label: "fast-step", adapter: "mock", prompt: "go fast" }],
+    })
+
+    // One macrotask (setTimeout 0) drains all pending microtasks.
+    // Fixed code: completes synchronously within the microtask chain.
+    // Broken code: stuck waiting for an event that already fired → status stays "running".
+    await waitNextTick()
+
+    expect(runner.status(run.runId)?.status).toBe("done")
+  }, 500)
+
+  it("completes via belt-and-suspenders when session is already exited before waitTurnEnd", async () => {
+    // Reproduces the case where the session exits between spawn and subscription.
+    // The belt-and-suspenders check in waitTurnEnd reads registry.get() immediately
+    // after subscribing and resolves if the session is already terminal.
+    const bus = createSessionEventBus()
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => ({
+        id: "sess_already_done",
+        kind: "agent-cli" as const,
+        workspaceSlug: "test",
+        command: "mock",
+        pid: null,
+        // Already exited by the time we see it
+        status: "exited" as const,
+        startedAt: new Date().toISOString(),
+        cwd: input.cwd,
+      })),
+      // sendPrompt does NOT emit any event — the session is already exited
+      sendPrompt: vi.fn(async () => {}),
+      get: vi.fn((id) =>
+        id === "sess_already_done"
+          ? {
+              id,
+              kind: "agent-cli" as const,
+              workspaceSlug: "test",
+              command: "mock",
+              pid: null,
+              status: "exited" as const,
+              startedAt: "t",
+            }
+          : undefined,
+      ),
+    })
+
+    const runner = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    const run = await runner.start({
+      routineId: "already-exited",
+      steps: [{ label: "step1", adapter: "mock", prompt: "hello" }],
+    })
+
+    await waitNextTick()
+
+    expect(runner.status(run.runId)?.status).toBe("done")
+  }, 500)
+
+  it("uses the cwd from start() for the first spawned session", async () => {
+    // Reproduces Bug 2: cwd passed to start_routine was silently ignored;
+    // sessions always spawned in process.cwd() of the daemon.
+    const bus = createSessionEventBus()
+    const capturedCwds: string[] = []
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => {
+        capturedCwds.push(input.cwd as string)
+        return {
+          id: "sess_cwd",
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd as string,
+        }
+      }),
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_cwd"
+          ? {
+              id,
+              kind: "agent-cli" as const,
+              workspaceSlug: "test",
+              command: "mock",
+              pid: null,
+              status: "running" as const,
+              startedAt: "t",
+              cwd: "/the/project/root",
+            }
+          : undefined,
+      ),
+    })
+
+    const runner = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    await runner.start({
+      routineId: "cwd-test",
+      steps: [{ label: "step1", adapter: "mock", prompt: "go" }],
+      cwd: "/the/project/root",
+    })
+
+    await waitNextTick()
+
+    // The first (and only) spawned session must use the cwd from start(), not
+    // process.cwd() of the daemon process.
+    expect(capturedCwds[0]).toBe("/the/project/root")
+  })
+})
+
 // ── Persistence tests ─────────────────────────────────────────────────
 
 describe("RoutineRunner persistence", () => {

@@ -119,6 +119,10 @@ export interface RoutineRunner {
 interface RunState {
   run: RoutineRun
   cancelled: boolean
+  /** cwd passed to start() — used as the CWD for all spawned sessions. */
+  cwd?: string
+  /** workspaceSlug passed to start() — forwarded to spawnAgent. */
+  workspaceSlug?: string
   /** Filled by resolve() when a step is in "escalate" mode. */
   pendingResolve?: { stepIndex: number; resolver: (response: string) => void }
 }
@@ -219,7 +223,17 @@ export function createRoutineRunner(opts: {
 
   // ── Helpers ────────────────────────────────────────────────────────
 
-  /** Wait for a session to emit turn-end or exited. */
+  /** Wait for a session to emit turn-end, awaiting-input, or exited.
+   *
+   * Subscribes synchronously so the caller can create this promise BEFORE
+   * sending a prompt — preventing a race where a fast session fires turn-end
+   * between sendPrompt() resolving and the subscription being set up.
+   *
+   * Belt-and-suspenders: after subscribing, checks whether the session is
+   * already in a terminal state (exited/killed/error or awaitingInput) and
+   * resolves immediately if so, covering the gap between session spawn and
+   * this function being called.
+   */
   const waitTurnEnd = (sessionId: string): Promise<void> =>
     new Promise(resolve => {
       const unsubs: Array<() => void> = []
@@ -242,6 +256,15 @@ export function createRoutineRunner(opts: {
           if (ev.sessionId === sessionId) done()
         }),
       )
+      // Belt-and-suspenders: resolve immediately if the session is already done.
+      // Covers the window between session spawn and this subscription being set up.
+      const desc = registry.get(sessionId)
+      const isTerminal =
+        desc?.status === "exited" ||
+        desc?.status === "killed" ||
+        desc?.status === "error" ||
+        desc?.awaitingInput === true
+      if (isTerminal) done()
     })
 
   /** Spawn a new agent session for the given step. */
@@ -252,13 +275,17 @@ export function createRoutineRunner(opts: {
     if (!step.adapter) return null
     const resolved = await resolveAgentAdapter(step.adapter)
     if (!resolved) return null
-    const cwd = state.run.result?.sessionIds.length
-      ? registry.get(state.run.result.sessionIds.at(-1)!)?.cwd ?? process.cwd()
-      : process.cwd()
+    const lastSessionId = state.run.result?.sessionIds.at(-1)
+    // state.cwd wins (explicit caller intent); fall back to last session's cwd;
+    // last resort: daemon's process.cwd().
+    const cwd =
+      state.cwd ??
+      (lastSessionId ? registry.get(lastSessionId)?.cwd : undefined) ??
+      process.cwd()
     try {
       const agentSession = await resolved.startSession({ cwd })
       const desc = registry.spawnAgent({
-        workspaceSlug: "default",
+        workspaceSlug: state.workspaceSlug ?? "default",
         cwd,
         agentSession,
         adapterSlug: step.adapter,
@@ -310,14 +337,15 @@ export function createRoutineRunner(opts: {
         return
       }
 
-      // Send prompt if any
-      if (stepDef.prompt && sessionId) {
-        await registry.sendPrompt(sessionId, stepDef.prompt)
-      }
-
-      // Wait for the session turn to end
+      // Subscribe to turn-end BEFORE sending the prompt so a fast session
+      // cannot fire the event in the window between sendPrompt() resolving
+      // and a later waitTurnEnd() call setting up its listeners.
       if (sessionId) {
-        await waitTurnEnd(sessionId)
+        const turnEnded = waitTurnEnd(sessionId)
+        if (stepDef.prompt) {
+          await registry.sendPrompt(sessionId, stepDef.prompt)
+        }
+        await turnEnded
       }
 
       if (state.cancelled) {
@@ -330,8 +358,9 @@ export function createRoutineRunner(opts: {
       if (desc && (desc as { awaitingInput?: boolean }).awaitingInput) {
         const policy = stepDef.policy ?? { awaiting: "fail" }
         if (policy.awaiting === "auto-allow") {
+          const turnEnded = waitTurnEnd(sessionId!)
           await registry.sendPrompt(sessionId!, policy.prompt)
-          await waitTurnEnd(sessionId!)
+          await turnEnded
         } else if (policy.awaiting === "escalate") {
           const escalateUrl = policy.webhookUrl ?? state.run.notifyUrl
           if (escalateUrl) {
@@ -369,8 +398,9 @@ export function createRoutineRunner(opts: {
           state.run.status = "running"
           persist()
           if (sessionId) {
+            const turnEnded = waitTurnEnd(sessionId)
             await registry.sendPrompt(sessionId, response)
-            await waitTurnEnd(sessionId)
+            await turnEnded
           }
         } else {
           // policy.awaiting === "fail"
@@ -451,7 +481,12 @@ export function createRoutineRunner(opts: {
         })),
         ...(input.notifyUrl ? { notifyUrl: input.notifyUrl } : {}),
       }
-      const state: RunState = { run, cancelled: false }
+      const state: RunState = {
+        run,
+        cancelled: false,
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+      }
       runs.set(runId, state)
       persist()
       // Fire-and-forget: run steps in background
