@@ -202,11 +202,11 @@ export function createRoutineRunner(opts: {
 }): RoutineRunner {
   const { registry, sessionEvents, resolveAgentAdapter, webhookNotifier } = opts
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
+  const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
   // Default false: tests (no opts.persist, no opts.persistPath)
   // don't touch ~/.agentproto. Set opts.persist:true in production
   // (createGateway does this), or supply a persistPath (which also opts in).
-  const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
   // Load persisted runs on init only when persistence is enabled;
   // interrupted runs are marked failed.
@@ -333,12 +333,20 @@ export function createRoutineRunner(opts: {
           await registry.sendPrompt(sessionId!, policy.prompt)
           await waitTurnEnd(sessionId!)
         } else if (policy.awaiting === "escalate") {
-          if (webhookNotifier && policy.webhookUrl) {
-            await webhookNotifier.notify(policy.webhookUrl, {
-              event: "routine:awaiting-input",
-              runId: state.run.runId,
-              stepIndex: stepState.index,
-            })
+          const escalateUrl = policy.webhookUrl ?? state.run.notifyUrl
+          if (escalateUrl) {
+            void fetch(escalateUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "routine:awaiting-input",
+                runId: state.run.runId,
+                routineId: state.run.routineId,
+                stepIndex: stepState.index,
+                stepLabel: stepDef.label,
+              }),
+              signal: AbortSignal.timeout(10_000),
+            }).catch(() => undefined)
           }
           state.run.status = "awaiting-input"
           persist()
@@ -407,11 +415,17 @@ export function createRoutineRunner(opts: {
       persist()
 
       // Fire webhook if requested
-      if (state.run.notifyUrl && webhookNotifier) {
-        await webhookNotifier.notify(state.run.notifyUrl, {
-          event: "routine:completed",
-          run: state.run,
-        }).catch(() => { /* best-effort */ })
+      if (state.run.notifyUrl) {
+        void fetch(state.run.notifyUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: state.cancelled ? "routine:cancelled" : "routine:done",
+            runId: state.run.runId,
+            result: state.run.result,
+          }),
+          signal: AbortSignal.timeout(10_000),
+        }).catch(() => undefined)
       }
     } catch {
       state.run.status = "failed"

@@ -286,8 +286,14 @@ describe("RoutineRunner persistence", () => {
       persistPath,
     })
     const run = await runner1.start({ routineId: "reload-test", steps: [] })
-    // Wait for async steps loop to finish (empty steps → done quickly)
-    await new Promise(res => setTimeout(res, 30))
+    // Poll until the run reaches a terminal state instead of sleeping a fixed
+    // duration — avoids flakiness if the async steps loop is slow under load.
+    const terminal = new Set(["done", "failed", "cancelled"])
+    for (let i = 0; i < 50; i++) {
+      const s = runner1.status(run.runId)
+      if (s && terminal.has(s.status)) break
+      await new Promise(res => setTimeout(res, 10))
+    }
 
     // Second runner — should reload from disk
     const runner2 = createRoutineRunner({
