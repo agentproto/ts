@@ -161,13 +161,21 @@ export function createInboundWatcher(opts: {
     return out
   }
 
+  // Merge current in-memory snapshot with the existing file so cursors
+  // for alias:source pairs that are NOT active in this session are never
+  // erased on shutdown. Current in-memory values win on conflict.
+  const mergedSnapshot = (): Record<string, number> => ({
+    ...loadCursors(),
+    ...buildSnapshot(),
+  })
+
   const schedulePersist = (): void => {
     if (!persist) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       void (async () => {
         try {
-          const snap = buildSnapshot()
+          const snap = mergedSnapshot()
           await fsp.mkdir(dirname(persistPath), { recursive: true })
           await fsp.writeFile(persistPath, JSON.stringify(snap, null, 2) + "\n")
         } catch (err) {
@@ -182,7 +190,7 @@ export function createInboundWatcher(opts: {
   const flushSync = (): void => {
     if (!persist) return
     try {
-      const snap = buildSnapshot()
+      const snap = mergedSnapshot()
       mkdirSync(dirname(persistPath), { recursive: true })
       writeFileSync(persistPath, JSON.stringify(snap, null, 2) + "\n")
     } catch {
@@ -213,16 +221,9 @@ export function createInboundWatcher(opts: {
     state: WatcherState,
     contactRef: string,
     events: InboundEvent[],
+    resolved: Awaited<ReturnType<AgentAdapterResolver>>,
   ): Promise<void> => {
-    const resolved = await resolveAgentAdapter(state.input.adapter).catch(
-      () => null,
-    )
-    if (!resolved) {
-      console.warn(
-        `[inbound-watcher:${state.watcherId}] adapter "${state.input.adapter}" not found`,
-      )
-      return
-    }
+    if (!resolved) return
 
     const prompt = renderPrompt(state.input.promptTemplate, {
       source: state.input.source,
@@ -303,16 +304,29 @@ export function createInboundWatcher(opts: {
       const events = data.events ?? []
       if (events.length === 0) return
 
-      // Advance cursor past the highest timestamp seen (filter is `>= since`
-      // so +1 avoids re-delivering the last event on the next tick).
-      // Guard against NaN/non-finite values from malformed events.
+      // Compute the new cursor value (max timestamp + 1) but do NOT
+      // advance state.cursor yet — see below. Guard against NaN/non-finite
+      // values from malformed events.
       const maxTs = events.reduce((m, e) => {
         const ts = typeof e.timestamp === "number" ? e.timestamp : -Infinity
         return Number.isFinite(ts) ? Math.max(m, ts) : m
       }, -Infinity)
-      if (Number.isFinite(maxTs) && maxTs >= state.cursor) {
-        state.cursor = maxTs + 1
-        schedulePersist()
+      const nextCursor = Number.isFinite(maxTs) && maxTs >= state.cursor
+        ? maxTs + 1
+        : null
+
+      // Resolve adapter once per tick — shared across all contact spawns
+      // so N contacts don't fan out N identical adapter-resolution calls.
+      const resolved = await resolveAgentAdapter(state.input.adapter).catch(
+        () => null,
+      )
+      if (!resolved) {
+        console.warn(
+          `[inbound-watcher:${state.watcherId}] adapter "${state.input.adapter}" not found — events not consumed`,
+        )
+        // Do NOT advance cursor: if the adapter is missing the events
+        // should be re-delivered on the next tick once it's installed.
+        return
       }
 
       // Group by contact_ref, spawn one agent per contact
@@ -326,9 +340,18 @@ export function createInboundWatcher(opts: {
 
       await Promise.all(
         Array.from(byContact.entries()).map(([ref, evs]) =>
-          spawnForContact(state, ref, evs),
+          spawnForContact(state, ref, evs, resolved),
         ),
       )
+
+      // Advance cursor AFTER spawn attempts complete. Delivery is
+      // at-most-once per session: if a spawn throws unexpectedly, the
+      // event is not re-delivered. If the adapter was absent, the early
+      // return above preserves the cursor for retry.
+      if (nextCursor !== null) {
+        state.cursor = nextCursor
+        schedulePersist()
+      }
     } finally {
       state.inFlight = false
     }
