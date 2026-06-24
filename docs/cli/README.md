@@ -55,6 +55,10 @@ Pick whichever matches what you're trying to do:
 - [Swarms](./concepts/swarms.md) — manifest + kernel cycle model
 - [Credentials](./concepts/credentials.md) — how host tokens are stored
 
+### Guides
+
+- [Use agentproto as an MCP server inside coding CLIs](./guides/mcp-in-coding-cli.md) — register the daemon in Claude Code, Codex, and Hermes
+
 ### File reference
 
 - [`~/.agentproto/config.json` schema](./reference/config-schema.md)
