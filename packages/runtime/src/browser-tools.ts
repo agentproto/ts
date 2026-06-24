@@ -274,6 +274,7 @@ export function registerBrowserTools(
           adapterId: instance.id,
           port: instance.port,
           baseUrl: instance.baseUrl,
+          location: input.location ?? adapter.location,
           pid: instance.pid,
           wasAlreadyRunning: instance.wasAlreadyRunning,
           status: instance.healthy ? "running" : "starting",

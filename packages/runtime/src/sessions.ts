@@ -175,6 +175,8 @@ export interface SessionDescriptor {
   browserPort?: number
   /** Base URL of the browser service (e.g. "http://127.0.0.1:9377"). */
   browserBaseUrl?: string
+  /** Execution location — "local" (default) or "cloud". */
+  browserLocation?: "local" | "cloud"
 }
 
 interface SessionRuntime {
@@ -342,6 +344,9 @@ export interface RegisterBrowserInput {
   port: number
   /** Base URL of the browser service (e.g. "http://127.0.0.1:9377"). */
   baseUrl: string
+  /** Execution location — "local" (default) or "cloud". Included in the
+   *  dedup key so a cloud call never returns a pre-existing local session. */
+  location?: "local" | "cloud"
   /** PID of the service process — undefined when managed by launchd/systemd. */
   pid?: number
   /** True when the service was already healthy before this call (idempotent start). */
@@ -1217,12 +1222,15 @@ export function createSessionsRegistry(opts?: {
       return desc
     },
     registerBrowser(input) {
-      // Idempotent: reuse an alive session for the same (adapterId, port)
+      const inputLocation = input.location ?? "local"
+      // Idempotent: reuse an alive session for the same (adapterId, port, location).
+      // Location is part of the key so a cloud call never returns a local session.
       for (const rt of sessions.values()) {
         if (
           rt.desc.kind === "browser" &&
           rt.desc.browserAdapterId === input.adapterId &&
           rt.desc.browserPort === input.port &&
+          (rt.desc.browserLocation ?? "local") === inputLocation &&
           (rt.desc.status === "running" || rt.desc.status === "starting")
         ) {
           return rt.desc
@@ -1240,6 +1248,7 @@ export function createSessionsRegistry(opts?: {
         browserAdapterId: input.adapterId,
         browserPort: input.port,
         browserBaseUrl: input.baseUrl,
+        browserLocation: inputLocation,
         ...(input.label ? { label: input.label } : {}),
       }
       const rt: SessionRuntime = {

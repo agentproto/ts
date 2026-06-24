@@ -1338,7 +1338,8 @@ function clampInt(
  *                                    valid for exited/killed/error)
  *   POST   /sessions/browser      → start a browser adapter and register
  *                                    as a tracked session; body:
- *                                    { adapter, port?, camofoxPort?, label? }
+ *                                    { adapter, port?, camofoxPort?, label?,
+ *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
 async function handleSessions(
@@ -1464,7 +1465,8 @@ async function handleSessions(
 
   // Browser service session — start the adapter and register as a tracked
   // session. HTTP equivalent of the MCP `start_browser` tool.
-  // Body: { adapter: string, port?: number, camofoxPort?: number, label?: string }
+  // Body: { adapter: string, port?: number, camofoxPort?: number, label?: string,
+  //         location?: "local"|"cloud", baseUrl?: string, binPath?: string }
   if (path === "/sessions/browser" && req.method === "POST") {
     if (!resolveBrowserAdapter) {
       json(501, {
@@ -1522,16 +1524,31 @@ async function handleSessions(
       })
       return true
     }
+    const rawLocation = b.location
+    if (rawLocation !== undefined && rawLocation !== "local" && rawLocation !== "cloud") {
+      json(400, {
+        error: "invalid_location",
+        message: `location must be "local" or "cloud" (got ${JSON.stringify(rawLocation)})`,
+      })
+      return true
+    }
+    const location = rawLocation as "local" | "cloud" | undefined
+    const baseUrl = typeof b.baseUrl === "string" ? b.baseUrl : undefined
+    const binPath = typeof b.binPath === "string" ? b.binPath : undefined
     try {
       const instance = await adapter.ensure({
         port: typeof b.port === "number" ? b.port : undefined,
         camofoxPort: typeof b.camofoxPort === "number" ? b.camofoxPort : undefined,
+        location,
+        baseUrl,
+        binPath,
         initialWaitMs: 6_000,
       })
       const desc = registry.registerBrowser({
         adapterId: instance.id,
         port: instance.port,
         baseUrl: instance.baseUrl,
+        location: location ?? adapter.location,
         pid: instance.pid,
         wasAlreadyRunning: instance.wasAlreadyRunning,
         status: instance.healthy ? "running" : "starting",
