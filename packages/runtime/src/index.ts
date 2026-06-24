@@ -303,6 +303,11 @@ export async function createGateway(
   // notified on turn-end / awaiting-input / exited events.
   const webhookNotifier = createWebhookNotifier()
   sessionEvents.onAny(ev => webhookNotifier.onSessionEvent(ev))
+  // Unregister per-session URLs on exit so the notifier map doesn't
+  // leak memory across sessions.
+  sessionEvents.on("session:exited", ev => {
+    webhookNotifier.unregister(ev.sessionId)
+  })
 
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
@@ -428,6 +433,7 @@ export async function createGateway(
     eventRing,
     supervisor,
     orchestratorInjector,
+    webhookNotifier,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -467,6 +473,7 @@ export async function createGateway(
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
+      webhookNotifier,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),

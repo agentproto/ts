@@ -46,6 +46,7 @@ import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionDescriptor } from "./sessions.js"
+import type { WebhookNotifier } from "./webhook-notifier.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
@@ -210,6 +211,10 @@ interface RegisterSessionToolsOptions {
    *  Absent → full visibility, depth-0 spawns, no parent (today's root
    *  behaviour). */
   callerScope?: OrchestratorScope
+  /** Optional webhook notifier — when provided, per-session `notifyUrl`
+   *  values from `start_agent_session` are registered on spawn and
+   *  unregistered on exit via the session-event bus. */
+  webhookNotifier?: WebhookNotifier
 }
 
 export function registerSessionTools(
@@ -228,6 +233,7 @@ export function registerSessionTools(
     mcpProxy,
     buildOrchestratorMcp,
     callerScope,
+    webhookNotifier,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -355,6 +361,15 @@ export function registerSessionTools(
             "sub-gateway URL into the child's session (alongside any `mcpServers` " +
             "you pass), and revokes the token when the session exits. Shell/fs/" +
             "remote/import/terminal tools are NEVER exposed this way."
+        ),
+      notifyUrl: z
+        .string()
+        .url()
+        .optional()
+        .describe(
+          "Optional per-session webhook URL. POSTed (fire-and-forget) on this " +
+            "session's turn-end / awaiting-input / exited events, in addition to " +
+            "any global notify URL."
         ),
     },
     async input => {
@@ -558,6 +573,12 @@ export function registerSessionTools(
         // Bind the scope-token's lifetime to the child session — once
         // it exits, the token is revoked so it can't outlive its child.
         bindOrchestratorLifecycle?.(desc.id)
+        // Per-session webhook: register if notifyUrl was supplied and
+        // the notifier is wired. Unregistered on session:exited by the
+        // gateway's session-event bus handler.
+        if (input.notifyUrl && webhookNotifier) {
+          webhookNotifier.register(desc.id, input.notifyUrl)
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
         }
