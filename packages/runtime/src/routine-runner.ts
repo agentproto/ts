@@ -13,11 +13,26 @@
  *   escalate   → POST webhook, wait for external `resolve()` call
  *   fail       → mark step/run as failed
  *
- * State is in-memory only (MVP). TODO: persist to
- * ~/.agentproto/routine-runs.json for restart resilience.
+ * Persistence: runs are serialised to ~/.agentproto/routine-runs.json
+ * (write-tmp + rename atomic swap) on every state mutation so they
+ * survive daemon restarts. On load, any run with status "running" or
+ * "awaiting-input" is immediately marked "failed" with reason
+ * "interrupted by daemon restart" — these runs have no live sessions
+ * to resume, so marking them failed is the only safe choice (an
+ * in-flight run cannot be replayed without re-executing its steps,
+ * which could trigger unintended side-effects).
+ *
+ * Persistence opt-in: persistence is DISABLED by default (persist defaults to
+ * false when no persistPath is supplied) so that unit tests calling
+ * createRoutineRunner() without a persistPath never touch ~/.agentproto/.
+ * Pass persist:true (or supply a persistPath) to enable durable storage — the
+ * production createGateway() call does both.
  */
 
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
+import { join, dirname } from "node:path"
+import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -110,14 +125,97 @@ interface RunState {
 
 // ── Factory ──────────────────────────────────────────────────────────
 
+const DEFAULT_PERSIST_PATH = (): string =>
+  join(homedir(), ".agentproto", "routine-runs.json")
+
+// ── Persistence helpers ──────────────────────────────────────────────
+
+function loadRuns(persistPath: string): Map<string, RunState> {
+  const result = new Map<string, RunState>()
+  if (!existsSync(persistPath)) return result
+  let raw: string
+  try {
+    raw = readFileSync(persistPath, "utf8")
+  } catch {
+    return result
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Malformed file — start empty (documented: not an error)
+    return result
+  }
+  if (!Array.isArray(parsed)) return result
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || typeof (item as RoutineRun).runId !== "string") continue
+    // item passes only a minimal shape check (runId: string); remaining fields
+    // are trusted as-written. Malformed entries are skipped above — this matches
+    // the "malformed = ignored" recovery policy used by tunnel-registry and
+    // supervisor for the same class of loader.
+    const run = item as RoutineRun
+    // Any run that was mid-flight cannot be resumed: mark it failed.
+    // Reason: the in-process state machine and its live sessions are gone;
+    // replaying steps would trigger unintended side-effects, so the safest
+    // invariant is "interrupted = failed". Callers can re-start a new run.
+    if (run.status === "running" || run.status === "awaiting-input") {
+      run.status = "failed"
+      run.error = "interrupted by daemon restart"
+      run.endedAt = run.endedAt ?? new Date().toISOString()
+    }
+    result.set(run.runId, { run, cancelled: false })
+  }
+  return result
+}
+
+function saveRuns(runs: Map<string, RunState>, persistPath: string): void {
+  try {
+    mkdirSync(dirname(persistPath), { recursive: true })
+    const payload = JSON.stringify(
+      Array.from(runs.values()).map(s => s.run),
+      null,
+      2,
+    ) + "\n"
+    const tmp = `${persistPath}.tmp.${process.pid}`
+    writeFileSync(tmp, payload, "utf8")
+    renameSync(tmp, persistPath)
+  } catch {
+    // Best-effort — a write failure must not crash the daemon.
+  }
+}
+
 export function createRoutineRunner(opts: {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
   resolveAgentAdapter: AgentAdapterResolver
   webhookNotifier?: WebhookNotifier
+  /** Absolute path for the persistence file. Defaults to ~/.agentproto/routine-runs.json */
+  persistPath?: string
+  /**
+   * Enable filesystem persistence. Defaults to `true` when `persistPath` is
+   * explicitly supplied, `false` otherwise. This mirrors the supervisor pattern
+   * so that unit tests calling createRoutineRunner() without a persistPath never
+   * write to ~/.agentproto/ — only the production createGateway() call (which
+   * passes persist:true) opts in to durable storage.
+   */
+  persist?: boolean
 }): RoutineRunner {
   const { registry, sessionEvents, resolveAgentAdapter, webhookNotifier } = opts
-  const runs = new Map<string, RunState>()
+  const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
+  const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
+
+  // Default false: tests (no opts.persist, no opts.persistPath)
+  // don't touch ~/.agentproto. Set opts.persist:true in production
+  // (createGateway does this), or supply a persistPath (which also opts in).
+
+  // Load persisted runs on init only when persistence is enabled;
+  // interrupted runs are marked failed.
+  const runs = shouldPersist ? loadRuns(persistPath) : new Map<string, RunState>()
+
+  /** Flush the in-memory run map to disk atomically. Call on every mutation. */
+  const persist = (): void => {
+    if (shouldPersist) saveRuns(runs, persistPath)
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────
 
@@ -167,217 +265,180 @@ export function createRoutineRunner(opts: {
         label: `routine:${state.run.routineId}:${step.label}`,
         ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
       })
+      state.run.result ??= { sessionIds: [] }
+      state.run.result.sessionIds.push(desc.id)
       return desc.id
     } catch {
       return null
     }
   }
 
-  /** Handle awaiting-input according to the step's policy. */
-  const handleAwaitingInput = async (
-    sessionId: string,
-    step: RoutineStep,
+  // ── Step executor ──────────────────────────────────────────────────
+
+  const executeStep = async (
+    stepDef: RoutineStep,
     stepState: RoutineStepState,
     state: RunState,
-  ): Promise<boolean> => {
-    const policy = step.policy ?? { awaiting: "fail" }
+  ): Promise<void> => {
+    stepState.status = "running"
+    stepState.startedAt = new Date().toISOString()
+    persist()
 
-    if (policy.awaiting === "auto-allow") {
-      try {
-        await registry.sendPrompt(sessionId, policy.prompt)
-        return true
-      } catch {
-        stepState.error = "auto-allow prompt failed"
-        return false
+    try {
+      // Fan-in: wait for all listed sessions
+      if (stepDef.waitFor?.length) {
+        await Promise.all(stepDef.waitFor.map(id => waitTurnEnd(id)))
       }
-    }
 
-    if (policy.awaiting === "escalate") {
-      const escalateUrl = policy.webhookUrl ?? state.run.notifyUrl
-      if (escalateUrl) {
-        void fetch(escalateUrl, {
+      if (state.cancelled) {
+        stepState.status = "skipped"
+        return
+      }
+
+      // Spawn / reuse session
+      let sessionId: string | null = null
+      if (stepDef.adapter) {
+        sessionId = await spawnSession(stepDef, state)
+        if (sessionId) stepState.sessionId = sessionId
+      } else if (state.run.result?.sessionIds.length) {
+        sessionId = state.run.result.sessionIds.at(-1) ?? null
+        if (sessionId) stepState.sessionId = sessionId
+      }
+
+      if (state.cancelled) {
+        stepState.status = "skipped"
+        return
+      }
+
+      // Send prompt if any
+      if (stepDef.prompt && sessionId) {
+        await registry.sendPrompt(sessionId, stepDef.prompt)
+      }
+
+      // Wait for the session turn to end
+      if (sessionId) {
+        await waitTurnEnd(sessionId)
+      }
+
+      if (state.cancelled) {
+        stepState.status = "skipped"
+        return
+      }
+
+      // Check awaiting-input
+      const desc = sessionId ? registry.get(sessionId) : undefined
+      if (desc && (desc as { awaitingInput?: boolean }).awaitingInput) {
+        const policy = stepDef.policy ?? { awaiting: "fail" }
+        if (policy.awaiting === "auto-allow") {
+          await registry.sendPrompt(sessionId!, policy.prompt)
+          await waitTurnEnd(sessionId!)
+        } else if (policy.awaiting === "escalate") {
+          const escalateUrl = policy.webhookUrl ?? state.run.notifyUrl
+          if (escalateUrl) {
+            void fetch(escalateUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "routine:awaiting-input",
+                runId: state.run.runId,
+                routineId: state.run.routineId,
+                stepIndex: stepState.index,
+                stepLabel: stepDef.label,
+              }),
+              signal: AbortSignal.timeout(10_000),
+            }).catch(() => undefined)
+          }
+          state.run.status = "awaiting-input"
+          persist()
+          // Wait for external resolve()
+          const response = await new Promise<string>((res, rej) => {
+            const timeoutMs = policy.timeoutMs ?? 300_000
+            const timer = setTimeout(() => {
+              state.pendingResolve = undefined
+              rej(new Error("escalate timeout"))
+            }, timeoutMs)
+            state.pendingResolve = {
+              stepIndex: stepState.index,
+              resolver: (r: string) => {
+                clearTimeout(timer)
+                state.pendingResolve = undefined
+                res(r)
+              },
+            }
+          })
+          state.run.status = "running"
+          persist()
+          if (sessionId) {
+            await registry.sendPrompt(sessionId, response)
+            await waitTurnEnd(sessionId)
+          }
+        } else {
+          // policy.awaiting === "fail"
+          throw new Error("step failed: session awaiting input")
+        }
+      }
+
+      stepState.status = "done"
+      stepState.endedAt = new Date().toISOString()
+      persist()
+    } catch (err) {
+      stepState.status = "failed"
+      stepState.endedAt = new Date().toISOString()
+      stepState.error = err instanceof Error ? err.message : String(err)
+      persist()
+      throw err
+    }
+  }
+
+  // ── Run executor ───────────────────────────────────────────────────
+
+  const executeRun = async (state: RunState, steps: RoutineStep[]): Promise<void> => {
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        if (state.cancelled) break
+        const stepState = state.run.steps[i]!
+        await executeStep(steps[i]!, stepState, state)
+        if (stepState.status === "failed") {
+          state.run.status = "failed"
+          state.run.error = stepState.error
+          state.run.endedAt = new Date().toISOString()
+          persist()
+          return
+        }
+      }
+      if (state.cancelled) {
+        state.run.status = "cancelled"
+      } else {
+        state.run.status = "done"
+      }
+      state.run.endedAt = new Date().toISOString()
+      persist()
+
+      // Fire webhook if requested
+      if (state.run.notifyUrl) {
+        void fetch(state.run.notifyUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            type: "routine:awaiting-input",
+            type: state.cancelled ? "routine:cancelled" : "routine:done",
             runId: state.run.runId,
-            routineId: state.run.routineId,
-            stepIndex: stepState.index,
-            stepLabel: step.label,
-            sessionId,
+            result: state.run.result,
           }),
           signal: AbortSignal.timeout(10_000),
         }).catch(() => undefined)
       }
-
-      const timeoutMs = policy.timeoutMs ?? 300_000
-      const response = await new Promise<string | null>(resolve => {
-        const timer = setTimeout(() => resolve(null), timeoutMs)
-        state.pendingResolve = {
-          stepIndex: stepState.index,
-          resolver: res => {
-            clearTimeout(timer)
-            resolve(res)
-          },
-        }
-      })
-      state.pendingResolve = undefined
-
-      if (response === null) {
-        stepState.error = "escalate timeout"
-        return false
-      }
-      try {
-        await registry.sendPrompt(sessionId, response)
-        return true
-      } catch {
-        stepState.error = "escalate prompt failed"
-        return false
-      }
-    }
-
-    // policy "fail"
-    stepState.error = "awaiting-input: policy=fail"
-    return false
-  }
-
-  /** Execute a single step. Returns true on success. */
-  const executeStep = async (
-    step: RoutineStep,
-    stepState: RoutineStepState,
-    state: RunState,
-    currentSessionId: string | null,
-  ): Promise<{ ok: boolean; sessionId: string | null }> => {
-    if (state.cancelled) return { ok: false, sessionId: currentSessionId }
-
-    stepState.status = "running"
-    stepState.startedAt = new Date().toISOString()
-
-    // Fan-in: wait for all listed sessions to complete first
-    if (step.waitFor && step.waitFor.length > 0) {
-      await Promise.all(step.waitFor.map(sid => waitTurnEnd(sid)))
-    }
-
-    if (state.cancelled) {
-      stepState.status = "skipped"
-      return { ok: false, sessionId: currentSessionId }
-    }
-
-    let sessionId = currentSessionId
-
-    // Spawn a new session if adapter is specified
-    if (step.adapter) {
-      const newId = await spawnSession(step, state)
-      if (!newId) {
-        stepState.status = "failed"
-        stepState.error = `adapter "${step.adapter}" not found or spawn failed`
-        stepState.endedAt = new Date().toISOString()
-        return { ok: false, sessionId: currentSessionId }
-      }
-      sessionId = newId
-      state.run.result = { sessionIds: [...(state.run.result?.sessionIds ?? []), newId] }
-    }
-
-    // Send prompt if provided (and we have a session)
-    if (step.prompt && sessionId) {
-      try {
-        await registry.sendPrompt(sessionId, step.prompt)
-      } catch (err) {
-        stepState.status = "failed"
-        stepState.error = `sendPrompt failed: ${err instanceof Error ? err.message : String(err)}`
-        stepState.endedAt = new Date().toISOString()
-        return { ok: false, sessionId }
-      }
-
-      // Wait for turn to end
-      await waitTurnEnd(sessionId)
-
-      // Check for awaiting-input
-      const desc = registry.get(sessionId)
-      if (desc?.awaitingInput) {
-        state.run.status = "awaiting-input"
-        const continued = await handleAwaitingInput(sessionId, step, stepState, state)
-        state.run.status = "running"
-        if (!continued) {
-          stepState.status = "failed"
-          stepState.endedAt = new Date().toISOString()
-          return { ok: false, sessionId }
-        }
-        // Wait for the continuation turn to end
-        await waitTurnEnd(sessionId)
-      }
-
-      // Check exit code
-      const descAfter = registry.get(sessionId)
-      if (descAfter?.exitCode !== undefined && descAfter.exitCode !== 0) {
-        stepState.status = "failed"
-        stepState.error = `session exited with code ${descAfter.exitCode}`
-        stepState.endedAt = new Date().toISOString()
-        return { ok: false, sessionId }
-      }
-    }
-
-    stepState.status = "done"
-    stepState.endedAt = new Date().toISOString()
-    return { ok: true, sessionId }
-  }
-
-  /** Main routine execution loop. Runs in background. */
-  const runSteps = async (state: RunState, steps: RoutineStep[]): Promise<void> => {
-    let currentSessionId: string | null = null
-
-    for (let i = 0; i < steps.length; i++) {
-      if (state.cancelled) break
-      const step = steps[i]!
-      const stepState = state.run.steps[i]!
-      const { ok, sessionId } = await executeStep(step, stepState, state, currentSessionId)
-      currentSessionId = sessionId
-      if (!ok) {
-        state.run.status = "failed"
-        state.run.error = stepState.error
-        state.run.endedAt = new Date().toISOString()
-        // Mark remaining steps as skipped
-        for (let j = i + 1; j < state.run.steps.length; j++) {
-          state.run.steps[j]!.status = "skipped"
-        }
-        if (state.run.notifyUrl) {
-          void fetch(state.run.notifyUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: "routine:failed", runId: state.run.runId, error: state.run.error }),
-            signal: AbortSignal.timeout(10_000),
-          }).catch(() => undefined)
-        }
-        return
-      }
-    }
-
-    if (state.cancelled) {
-      state.run.status = "cancelled"
-    } else {
-      state.run.status = "done"
-    }
-    state.run.endedAt = new Date().toISOString()
-
-    if (state.run.notifyUrl && !state.cancelled) {
-      void fetch(state.run.notifyUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "routine:done",
-          runId: state.run.runId,
-          result: state.run.result,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      }).catch(() => undefined)
+    } catch {
+      state.run.status = "failed"
+      state.run.endedAt = new Date().toISOString()
+      persist()
     }
   }
 
   // ── Public interface ───────────────────────────────────────────────
 
   return {
-    async start(input) {
-      const runId = `run_${randomUUID().slice(0, 8)}`
+    start: async (input) => {
+      const runId = `run_${randomUUID()}`
       const run: RoutineRun = {
         runId,
         routineId: input.routineId,
@@ -389,47 +450,37 @@ export function createRoutineRunner(opts: {
           status: "pending",
         })),
         ...(input.notifyUrl ? { notifyUrl: input.notifyUrl } : {}),
-        result: { sessionIds: [] },
       }
       const state: RunState = { run, cancelled: false }
       runs.set(runId, state)
-
-      // Execute in background — caller gets the run descriptor immediately
-      void runSteps(state, input.steps).catch(err => {
-        run.status = "failed"
-        run.error = err instanceof Error ? err.message : String(err)
-        run.endedAt = new Date().toISOString()
-      })
-
+      persist()
+      // Fire-and-forget: run steps in background
+      void executeRun(state, input.steps)
       return run
     },
 
-    status(runId) {
-      return runs.get(runId)?.run
-    },
+    status: (runId) => runs.get(runId)?.run,
 
-    list() {
-      return Array.from(runs.values()).map(s => s.run)
-    },
+    list: () => Array.from(runs.values()).map(s => s.run),
 
-    resolve(runId, stepIndex, response) {
+    resolve: (runId, stepIndex, response) => {
       const state = runs.get(runId)
       if (!state) return
-      if (
-        state.pendingResolve &&
-        state.pendingResolve.stepIndex === stepIndex
-      ) {
-        state.pendingResolve.resolver(response)
+      const pr = state.pendingResolve
+      if (pr && pr.stepIndex === stepIndex) {
+        pr.resolver(response)
       }
     },
 
-    cancel(runId) {
+    cancel: (runId) => {
       const state = runs.get(runId)
       if (!state) return
       state.cancelled = true
-      // Unblock any pending escalate
-      if (state.pendingResolve) {
-        state.pendingResolve.resolver("")
+      // If the run is already terminal, leave it; otherwise mark cancelled
+      if (state.run.status === "running" || state.run.status === "awaiting-input") {
+        state.run.status = "cancelled"
+        state.run.endedAt = new Date().toISOString()
+        persist()
       }
     },
   }

@@ -57,6 +57,7 @@ import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createRoutineRunner } from "./routine-runner.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 export type {
@@ -309,6 +310,11 @@ export async function createGateway(
   // notified on turn-end / awaiting-input / exited events.
   const webhookNotifier = createWebhookNotifier()
   sessionEvents.onAny(ev => webhookNotifier.onSessionEvent(ev))
+  // Unregister per-session URLs on exit so the notifier map doesn't
+  // leak memory across sessions.
+  sessionEvents.on("session:exited", ev => {
+    webhookNotifier.unregister(ev.sessionId)
+  })
 
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
@@ -377,6 +383,22 @@ export async function createGateway(
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
   })
+
+  // Routine runner — singleton per daemon, shared across all MCP connections.
+  // Persists run state to ~/.agentproto/routine-runs.json so runs survive
+  // daemon restarts (interrupted runs are marked "failed" on load).
+  // Declared after `sessions` and `supervisor` so it shares the same
+  // registry + event bus. Only wired when `resolveAgentAdapter` is
+  // available (routine steps need to spawn agent sessions).
+  const routineRunner = opts.resolveAgentAdapter
+    ? createRoutineRunner({
+        registry: sessions,
+        sessionEvents,
+        resolveAgentAdapter: opts.resolveAgentAdapter,
+        webhookNotifier,
+        persist: true,
+      })
+    : undefined
 
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
@@ -447,6 +469,7 @@ export async function createGateway(
     eventRing,
     supervisor,
     orchestratorInjector,
+    webhookNotifier,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -486,6 +509,7 @@ export async function createGateway(
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
+      webhookNotifier,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -507,6 +531,7 @@ export async function createGateway(
       sessionEvents,
       eventRing,
       supervisor,
+      ...(routineRunner ? { routineRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.

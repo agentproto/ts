@@ -35,6 +35,7 @@ import type {
   AgentAdapterResolver,
   AgentAdapterLister,
 } from "./http-server.js"
+import type { WebhookNotifier } from "./webhook-notifier.js"
 
 /**
  * The curated set of tools a scoped child orchestrator may call.
@@ -220,6 +221,11 @@ export interface OrchestratorGatewayDeps {
    *  (non-re-grant). Omitted → recursion injection is unavailable on
    *  the scoped surface (a child can still spawn plain sub-agents). */
   orchestratorInjector?: OrchestratorInjector
+  /** Optional webhook notifier — same singleton as the root /mcp server.
+   *  When provided, per-session notifyUrl values from start_agent_session
+   *  are registered on spawn and unregistered on exit, so child
+   *  orchestrators spawning through this scoped gateway also fire webhooks. */
+  webhookNotifier?: WebhookNotifier
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -260,6 +266,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.listAgentAdapters
         ? { listAgentAdapters: deps.listAgentAdapters }
+        : {}),
+      ...(deps.webhookNotifier
+        ? { webhookNotifier: deps.webhookNotifier }
         : {}),
     })
     registerOrchestrationTools(server, {
