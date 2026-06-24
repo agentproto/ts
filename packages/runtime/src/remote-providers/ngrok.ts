@@ -80,6 +80,20 @@ export interface TunnelNgrokCreds {
   domain?: string
 }
 
+/** Factory options for building an ngrok tunnel provider. */
+export interface NgrokProviderOpts {
+  /** Ngrok authtoken. Pass undefined for descriptor-only handles. */
+  authToken?: string
+  /** Optional reserved static domain. */
+  domain?: string
+  /**
+   * Binary presence probe. Default: real `ngrok version` PATH check.
+   * Injectable so tests can control binary-presence deterministically
+   * without a global `node:child_process` mock.
+   */
+  probeBinary?: () => Promise<boolean>
+}
+
 /**
  * Factory: build an ngrok tunnel provider.
  *
@@ -88,13 +102,14 @@ export interface TunnelNgrokCreds {
  * methods; it only inspects handle metadata.
  */
 export function ngrokTunnelProvider(
-  cfg?: TunnelNgrokCreds,
+  opts?: NgrokProviderOpts,
 ): RemoteProvider & TunnelProviderHandle {
   let child: ChildProcess | null = null
 
-  const authToken = cfg?.authToken ?? null
-  const domain = cfg?.domain ?? null
+  const authToken = opts?.authToken ?? null
+  const domain = opts?.domain ?? null
   const hasDomain = domain != null && domain.length > 0
+  const probeBinary = opts?.probeBinary ?? ngrokOnPath
 
   return {
     id: "ngrok",
@@ -111,11 +126,11 @@ export function ngrokTunnelProvider(
     },
     async check(): Promise<boolean> {
       // Reachable = ngrok binary on PATH AND an authtoken is available.
-      const [bin] = await Promise.all([ngrokOnPath()])
+      const [bin] = await Promise.all([probeBinary()])
       return bin && authToken != null
     },
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
-      await assertNgrokOnPath()
+      await assertNgrokOnPath(probeBinary)
       if (!authToken) {
         throw new Error(
           "ngrok authtoken not configured. Run setup first:\n" +
@@ -298,10 +313,9 @@ async function ngrokOnPath(): Promise<boolean> {
   }
 }
 
-async function assertNgrokOnPath(): Promise<void> {
-  try {
-    await execFileAsync("ngrok", ["version"], { timeout: 3_000 })
-  } catch {
+async function assertNgrokOnPath(probe?: () => Promise<boolean>): Promise<void> {
+  const ok = await (probe ?? ngrokOnPath)()
+  if (!ok) {
     throw new Error(
       "ngrok not found on PATH. Install it first:\n" +
         "  macOS:    brew install ngrok/ngrok/ngrok\n" +

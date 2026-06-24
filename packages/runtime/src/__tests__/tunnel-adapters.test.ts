@@ -333,15 +333,28 @@ describe("ngrok provider", () => {
     expect(ngrok.capabilities.stableUrl).toBe(false)
   })
 
-  it("check() returns true when ngrok binary is on PATH AND authtoken is present", async () => {
-    // ngrok IS installed on this machine, so this should return true.
-    const ngrok = ngrokTunnelProvider({ authToken: "tok_123" })
+  it("check() returns true when binary is present AND authtoken is configured", async () => {
+    const ngrok = ngrokTunnelProvider({
+      authToken: "tok_123",
+      probeBinary: async () => true,
+    })
     expect(await ngrok.check()).toBe(true)
   })
 
+  it("check() returns false when binary is missing (even with authtoken)", async () => {
+    const ngrok = ngrokTunnelProvider({
+      authToken: "tok_123",
+      probeBinary: async () => false,
+    })
+    expect(await ngrok.check()).toBe(false)
+  })
+
   it("check() returns false when creds are absent (descriptor-only handle)", async () => {
-    // Factory with no config — authToken is null.
-    const ngrok = ngrokTunnelProvider()
+    // probeBinary injected so the test is deterministic — binary is "present"
+    // but creds are absent, so check() returns false.
+    const ngrok = ngrokTunnelProvider({
+      probeBinary: async () => true,
+    })
     expect(await ngrok.check()).toBe(false)
   })
 })
