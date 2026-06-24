@@ -549,6 +549,36 @@ creds file exist? That's sufficient for `supported|available|ready`. A
 separate `health_probe` MCP tool (or `browser_status`-equivalent) calls
 `check()` on demand for a single slug.*
 
+### Binary-backed families
+
+Some adapter families ship in-process — their handles are always resolvable
+because the adapter code is already loaded in the same Node.js runtime
+(e.g. tunnel providers, browser adapters). In these families the `supported`
+status is effectively unreachable: every catalog entry resolves, so every
+adapter shows as `available` or `ready` even when its backing binary
+(e.g. `cloudflared`, `ngrok`) is missing from `PATH`.
+
+This is a deliberate consequence of OQ-5: `handle.check()` is never called
+during listing, because doing so would make every `list_adapters` call pay
+for N async health probes — potentially slow HTTP calls to external APIs.
+
+The recommended pattern for families that need binary-presence visibility:
+
+1. **Separate on-demand health probe** — an MCP tool (or the existing
+   `browser_status`/tunnel-health equivalent) that calls `handle.check()`
+   for a single slug on demand. This is the default approach; it keeps
+   listing fast and gives the UI a way to check a specific adapter.
+
+2. **Opt into `checkDuringListing`** — set `checkDuringListing: true` in
+   `makeAdapterLister` opts. Each resolved handle runs `await handle.check()`;
+   if it returns `false`, the entry gets `checkFailed: true`. The status enum
+   and `computeStatus()` are unchanged — this is an additive signal that
+   `status` is `ready`/`available` but the backing binary is not on `PATH`.
+   The cost is one async probe per resolved adapter per list call.
+
+Which approach to use is a per-family decision. The kit itself remains
+generic — no family-specific binary-path logic lives in `adapter-kit`.
+
 ---
 
 ## Appendix A: Status transition diagram

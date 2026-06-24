@@ -147,4 +147,67 @@ describe("makeAdapterLister", () => {
     expect(checkSpy).not.toHaveBeenCalled()
     expect(extraCheck).not.toHaveBeenCalled()
   })
+
+  describe("checkDuringListing", () => {
+    it("calls check() on each resolved handle when flag is on", async () => {
+      const checkSpy = vi.fn(async () => true)
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async (slug) => makeHandle({ slug, requiresSetup: false, check: checkSpy }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        checkDuringListing: true,
+      })
+      await lister()
+      expect(checkSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("sets checkFailed: true when check() returns false", async () => {
+      const handle = makeHandle({ slug: "alpha", requiresSetup: false, check: async () => false })
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async () => handle,
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        checkDuringListing: true,
+      })
+      const out = await lister()
+      expect(out[0]!.checkFailed).toBe(true)
+      // status is still computed normally (ready — no setup needed)
+      expect(out[0]!.status).toBe("ready")
+    })
+
+    it("does NOT set checkFailed when check() returns true", async () => {
+      const handle = makeHandle({ slug: "alpha", requiresSetup: false, check: async () => true })
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async () => handle,
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        checkDuringListing: true,
+      })
+      const out = await lister()
+      expect(out[0]!).not.toHaveProperty("checkFailed")
+    })
+
+    it("also probes discovered extras when flag is on", async () => {
+      const catalogCheck = vi.fn(async () => true)
+      const extraCheck = vi.fn(async () => false)
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async (slug) => makeHandle({ slug, check: catalogCheck }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        checkDuringListing: true,
+        discoverExtras: async () => [makeHandle({ slug: "zulu", check: extraCheck })],
+      })
+      const out = await lister()
+      expect(catalogCheck).toHaveBeenCalled()
+      expect(extraCheck).toHaveBeenCalled()
+      // catalog entry check returned true → no checkFailed
+      expect(out[0]!).not.toHaveProperty("checkFailed")
+      // extra check returned false → checkFailed set
+      expect(out[1]!.checkFailed).toBe(true)
+    })
+  })
 })

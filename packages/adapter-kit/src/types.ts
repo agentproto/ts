@@ -56,6 +56,13 @@ export interface AdapterEntry<TInfo> {
   status: AdapterStatus
   version: string
   info?: TInfo
+  /**
+   * Set true when `checkDuringListing` is enabled and `handle.check()`
+   * returned false (e.g. backing binary not on PATH). Always absent
+   * when `checkDuringListing` is off (default) — existing entries are
+   * byte-identical to the pre-flag era.
+   */
+  checkFailed?: boolean
 }
 
 /**
