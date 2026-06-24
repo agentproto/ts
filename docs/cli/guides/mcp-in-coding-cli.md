@@ -54,6 +54,18 @@ curl -s http://127.0.0.1:18790/health | python3 -m json.tool
 
 ## Step 2 — Register in the coding CLI
 
+agentproto speaks two MCP transports:
+
+- **HTTP** (`http://127.0.0.1:18790/mcp`) — use directly from clients that support MCP Streamable HTTP (Claude Code).
+- **stdio** via the bundled **`agentproto mcp-bridge`** command — a stdio MCP server that proxies the daemon `/mcp` and **forwards the real tool schemas**. Use it for stdio-only clients (Codex, Cursor, Claude Desktop, standalone Hermes); no third-party bridge needed.
+
+```bash
+# stdio entrypoint — same daemon, any stdio MCP client:
+agentproto mcp-bridge
+# honours AGENTPROTO_MCP_URL (default http://127.0.0.1:18790/mcp);
+# set it if daemon.port differs from 18790.
+```
+
 ### Claude Code
 
 Claude Code supports the MCP Streamable HTTP transport natively.
@@ -100,26 +112,27 @@ agent.
 
 ### Codex (`@openai/codex` CLI)
 
-OpenAI's Codex CLI supports MCP server registration via
-`~/.codex/config.toml`.  The agentproto MCP server uses the **HTTP** transport
-(MCP Streamable HTTP); Codex's native MCP client speaks **stdio**.  Bridge
-between the two using `mcp-remote`:
+OpenAI's Codex CLI registers stdio MCP servers via `~/.codex/config.toml`.
+Codex's MCP client speaks **stdio**, so point it at agentproto's bundled
+`mcp-bridge` — no third-party proxy needed:
 
 ```toml
 # ~/.codex/config.toml
 [mcp_servers.agentproto]
-command = "npx"
-args    = ["-y", "mcp-remote", "http://127.0.0.1:18790/mcp"]
+command = "agentproto"
+args    = ["mcp-bridge"]
+# non-default daemon port? pass it through:
+# env = { AGENTPROTO_MCP_URL = "http://127.0.0.1:18791/mcp" }
 ```
 
-The `mcp-remote` package (`npx -y mcp-remote <url>`) proxies an HTTP MCP
-endpoint over stdio, so Codex sees a standard stdio server while traffic flows
-to the running daemon.
+`agentproto mcp-bridge` is a stdio MCP server that relays to the daemon `/mcp`
+and forwards each tool's real input schema — so Codex's agent sees the actual
+tool parameters, not an opaque blob.
 
-> **⚠ Unverified**: the exact `~/.codex/config.toml` key names and whether a
-> newer Codex version supports HTTP MCP directly (removing the need for
-> `mcp-remote`) were not confirmed from the agentproto repo.  Verify against
-> your installed `@openai/codex` version and update accordingly.
+> **⚠ Verify** the `~/.codex/config.toml` key names against your installed
+> `@openai/codex` version. The `mcp-bridge` command ships in `@agentproto/cli`;
+> if `agentproto` isn't on `$PATH`, use `command = "node"` with
+> `args = ["/path/to/@agentproto/cli/dist/cli.mjs", "mcp-bridge"]`.
 
 ---
 
@@ -240,7 +253,7 @@ The scoped `<token>` is minted per-child session; it appears in the
 | Item | Status |
 |------|--------|
 | `claude mcp add` exact flag syntax | Verify against your claude-code version — not exercised in this repo |
-| Codex HTTP MCP support | Unknown; `mcp-remote` bridge recommended until confirmed |
+| Codex registration | Native `agentproto mcp-bridge` stdio entrypoint (no `mcp-remote`); verify `~/.codex/config.toml` keys against your version |
 | `~/.codex/config.toml` key schema | Verify against your `@openai/codex` version |
 | Hermes standalone MCP config file | Unknown; ACP `session/new.mcpServers` is the confirmed path |
 | `@agentproto/adapter-codex` npm release | **Not published** — `agentproto install codex` will fail |
