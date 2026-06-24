@@ -54,6 +54,7 @@ import {
   addImport,
   removeImport,
 } from "./mcp-imports.js"
+import { exportAgentSession } from "./transcript-export.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -1331,6 +1332,7 @@ function clampInt(
  *   GET    /sessions              → list of SessionDescriptor[]
  *   GET    /sessions/:id          → one SessionDescriptor
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
+ *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
@@ -1741,13 +1743,49 @@ async function handleSessions(
   // when one was set at spawn time — `findByIdOrName` resolves both
   // and the rest of the handler operates on the canonical id.
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview)?$/,
+    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
   if (!rawIdOrName) return false
   const resolvedDesc = registry.findByIdOrName(rawIdOrName)
   const id = resolvedDesc?.id ?? rawIdOrName
+
+  if (suffix === "/export" && req.method === "GET") {
+    // Transcript export — reads the adapter's native persistence layer
+    // (claude-code JSONL / hermes SQLite) and returns a rendered
+    // transcript. Query params: format (markdown|json), adapter, cwd.
+    // Read-only GET, no auth gate (same policy as /preview).
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
+    const adapterOverride = qs.get("adapter") ?? undefined
+    const cwdOverride = qs.get("cwd") ?? undefined
+    const result = await exportAgentSession({
+      sessionId: rawIdOrName,
+      registry,
+      format: fmt,
+      ...(adapterOverride ? { adapter: adapterOverride } : {}),
+      ...(cwdOverride ? { cwd: cwdOverride } : {}),
+    })
+    if (result.content.startsWith("Error:")) {
+      const isNotFound =
+        result.content.includes("not found in registry") ||
+        result.content.includes("not found") ||
+        result.content.includes("not found")
+      json(isNotFound ? 404 : 422, {
+        error: "export_failed",
+        message: result.content,
+        sessionId: rawIdOrName,
+        adapter: result.adapter,
+      })
+    } else {
+      json(200, result)
+    }
+    return true
+  }
 
   if (suffix === "/preview" && req.method === "GET") {
     // Read-only snapshot of the recent ring buffer — used by the
