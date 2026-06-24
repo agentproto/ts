@@ -8,6 +8,7 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     "marketing/index": "src/marketing/index.ts",
+    "research/index": "src/research/index.ts",
   },
   format: ["esm"],
   splitting: true,
