@@ -5,12 +5,22 @@
  * transcribes it with an injected SttPort (Whisper). Captions-independent
  * and robust: works whether or not the video has subtitles.
  *
- *   video URL → yt-dlp -f bestaudio -x (mp3) → SttPort.transcribe → text
+ *   video URL → yt-dlp -f bestaudio/best -x (mp3) → SttPort.transcribe → text
  *
- * yt-dlp handles the pot token / SABR negotiation / signature itself, so
- * no browser or cookies are needed for public videos. Non-video URLs
- * resolve to `null` so this fetcher composes ahead of a readability
- * fetcher (see CompositeFetcher).
+ * Modern YouTube requires three workarounds beyond a plain yt-dlp call:
+ *   • `-f bestaudio/best` — many videos no longer expose a standalone
+ *     bestaudio format; the /best fallback avoids "format not available".
+ *   • `--remote-components ejs:github` — solves the nsig "n challenge"
+ *     that otherwise yields "Only images are available".
+ *   • `--extractor-args youtube:player_client=<client>` — both the android
+ *     client (unauthenticated) and the web_creator client (authenticated)
+ *     fall back to progressive format 18, which requires no PO token and
+ *     avoids the HTTP 403 that DASH segment requests trigger. The client is
+ *     chosen based on whether cookies are provided: android does not support
+ *     cookie auth (yt-dlp skips it when cookies are present), so web_creator
+ *     is used instead for authenticated sessions.
+ * Cookies (--cookies-from-browser or --cookies) are still recommended to
+ * avoid bot-check rate-limits on burst downloads.
  *
  * The yt-dlp invocation is injected as `download` so the adapter is unit-
  * testable with a fake downloader + fake SttPort — no binary, no network.
@@ -69,6 +79,13 @@ export interface YtDlpWhisperFetcherOptions {
   readonly cookiesFromBrowser?: string
   /** Path to a Netscape cookies.txt — passed to yt-dlp as `--cookies`. */
   readonly cookiesFile?: string
+  /**
+   * Directory that contains the `ffmpeg` / `ffprobe` binaries (e.g.
+   * `/opt/homebrew/bin`). Passed as `--ffmpeg-location` to yt-dlp so the
+   * postprocessor can find them even when PATH is not inherited by the
+   * subprocess. Omit to rely on yt-dlp's default PATH search.
+   */
+  readonly ffmpegLocation?: string
 }
 
 export class YtDlpWhisperFetcher implements FetcherPort {
@@ -84,6 +101,7 @@ export class YtDlpWhisperFetcher implements FetcherPort {
         maxDurationSec: opts.maxDurationSec,
         cookiesFromBrowser: opts.cookiesFromBrowser,
         cookiesFile: opts.cookiesFile,
+        ffmpegLocation: opts.ffmpegLocation,
       })
     this.extraHosts = opts.extraVideoHosts
       ? new Set(opts.extraVideoHosts)
@@ -153,44 +171,63 @@ function isAuthError(e: unknown): boolean {
 
 // ── Default yt-dlp subprocess downloader ────────────────────────────
 
-function defaultYtDlpDownloader(
-  bin: string,
-  opts?: {
-    readonly maxDurationSec?: number
-    readonly cookiesFromBrowser?: string
-    readonly cookiesFile?: string
-  }
-): AudioDownloader {
+interface YtDlpOpts {
+  readonly maxDurationSec?: number
+  readonly cookiesFromBrowser?: string
+  readonly cookiesFile?: string
+  readonly ffmpegLocation?: string
+}
+
+/** Build the yt-dlp argument list for a given URL and output dir. Exported for unit tests. */
+export function buildYtDlpArgs(url: string, dir: string, opts?: YtDlpOpts): string[] {
+  // `--match-filter` is evaluated before the media is fetched, so an
+  // over-length video pulls zero bytes — it just yields no output file.
+  const durationGuard =
+    opts?.maxDurationSec && opts.maxDurationSec > 0
+      ? ["--match-filter", `duration <= ${Math.floor(opts.maxDurationSec)}`]
+      : []
+  // Authenticate via local browser cookies (or a cookies.txt) to dodge
+  // YouTube's bot-check rate-limit on bursts of public downloads.
+  const cookieArgs = opts?.cookiesFromBrowser
+    ? ["--cookies-from-browser", opts.cookiesFromBrowser]
+    : opts?.cookiesFile
+      ? ["--cookies", opts.cookiesFile]
+      : []
+  // Pass the ffmpeg directory explicitly so the postprocessor finds it even
+  // when PATH is not inherited by the yt-dlp subprocess.
+  const ffmpegArgs = opts?.ffmpegLocation
+    ? ["--ffmpeg-location", opts.ffmpegLocation]
+    : []
+  // Both android (no-cookie) and web_creator (cookie) fall back to format 18
+  // (progressive MP4) which requires no PO token. The default web client uses
+  // DASH formats that do require one → HTTP 403.
+  // android does not support cookie auth so yt-dlp skips it when cookies are
+  // present; web_creator does and its DASH formats are warned-off → fmt 18.
+  const client = cookieArgs.length === 0 ? "android" : "web_creator"
+  const extractorArgs = ["--extractor-args", `youtube:player_client=${client}`]
+  return [
+    "-f", "bestaudio/best",           // /best fallback: many videos lack a standalone bestaudio
+    "-x", "--audio-format", "mp3", "--audio-quality", "64K",
+    "--no-playlist", "--no-progress",
+    "--remote-components", "ejs:github", // solves YouTube nsig "n challenge"
+    ...extractorArgs,
+    ...durationGuard,
+    ...cookieArgs,
+    ...ffmpegArgs,
+    "--write-info-json",
+    "-o", join(dir, "track.%(ext)s"),
+    url,
+  ]
+}
+
+function defaultYtDlpDownloader(bin: string, opts?: YtDlpOpts): AudioDownloader {
   return async (url: string): Promise<AudioDownload> => {
     const dir = await mkdtemp(join(tmpdir(), "corpus-ytdlp-"))
     const cleanup = () => rm(dir, { recursive: true, force: true })
     try {
-      // `--match-filter` is evaluated before the media is fetched, so an
-      // over-length video pulls zero bytes — it just yields no output file,
-      // which the caller treats as a skip.
-      const durationGuard =
-        opts?.maxDurationSec && opts.maxDurationSec > 0
-          ? ["--match-filter", `duration <= ${Math.floor(opts.maxDurationSec)}`]
-          : []
-      // Authenticate via local browser cookies (or a cookies.txt) to dodge
-      // YouTube's bot-check rate-limit on bursts of public downloads.
-      const cookieArgs = opts?.cookiesFromBrowser
-        ? ["--cookies-from-browser", opts.cookiesFromBrowser]
-        : opts?.cookiesFile
-          ? ["--cookies", opts.cookiesFile]
-          : []
       await execFileAsync(
         bin,
-        [
-          "-f", "bestaudio",
-          "-x", "--audio-format", "mp3", "--audio-quality", "64K",
-          "--no-playlist", "--no-progress",
-          ...durationGuard,
-          ...cookieArgs,
-          "--write-info-json",
-          "-o", join(dir, "track.%(ext)s"),
-          url,
-        ],
+        buildYtDlpArgs(url, dir, opts),
         { maxBuffer: 16 * 1024 * 1024 }
       )
       const files = await readdir(dir)

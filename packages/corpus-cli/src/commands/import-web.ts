@@ -75,6 +75,7 @@ interface ParsedArgs {
   maxDurationSec: number | undefined
   cookiesFromBrowser: string | undefined
   cookiesFile: string | undefined
+  ffmpegLocation: string | undefined
   throttleMs: number
   force: boolean
   diarize: boolean
@@ -95,6 +96,7 @@ function parse(args: readonly string[]): ParsedArgs {
     maxDurationSec: undefined,
     cookiesFromBrowser: undefined,
     cookiesFile: undefined,
+    ffmpegLocation: undefined,
     throttleMs: 2000,
     force: false,
     diarize: false,
@@ -115,6 +117,7 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--max-duration": { const v = next(); if (v) out.maxDurationSec = Number(v); break }
       case "--cookies-from-browser": out.cookiesFromBrowser = next(); break
       case "--cookies": out.cookiesFile = next(); break
+      case "--ffmpeg-location": out.ffmpegLocation = next(); break
       case "--throttle": { const v = next(); if (v) out.throttleMs = Number(v); break }
       case "--force": out.force = true; break
       case "--diarize": out.diarize = true; break
@@ -255,6 +258,7 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
           ? { cookiesFromBrowser: parsed.cookiesFromBrowser }
           : {}),
         ...(parsed.cookiesFile ? { cookiesFile: parsed.cookiesFile } : {}),
+        ...(parsed.ffmpegLocation ? { ffmpegLocation: parsed.ffmpegLocation } : {}),
       })
     )
 
