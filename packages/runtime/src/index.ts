@@ -433,6 +433,7 @@ export async function createGateway(
     eventRing,
     supervisor,
     orchestratorInjector,
+    webhookNotifier,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
