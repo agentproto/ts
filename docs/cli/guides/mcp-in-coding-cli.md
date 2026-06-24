@@ -82,8 +82,8 @@ agentproto repo's own root `.mcp.json`.
 # Project scope (writes to .mcp.json):
 claude mcp add --transport http agentproto http://127.0.0.1:18790/mcp
 
-# Global scope (writes to ~/.claude.json):
-claude mcp add --transport http --scope global agentproto http://127.0.0.1:18790/mcp
+# User scope (writes to ~/.claude.json); flag name may be --scope user:
+claude mcp add --transport http --scope user agentproto http://127.0.0.1:18790/mcp
 ```
 
 After registration, restart the Claude Code session.  The `agentproto` server
@@ -91,9 +91,10 @@ will appear in the MCP panel and its tools are immediately available to the
 agent.
 
 > **Note**: The `.mcp.json` snippet is verified from the repo's root config.
-> The `claude mcp add` flag syntax matches Claude Code's CLI reference but is
-> not exercised inside the agentproto repo — verify the exact flags against
-> your installed Claude Code version if they differ.
+> The `claude mcp add` flags above match the published Claude Code reference but
+> are not exercised in the agentproto repo — in particular `--scope user`
+> (not `--scope global`) is the likely flag for user-level registration; verify
+> against your installed version.
 
 ---
 
@@ -168,14 +169,15 @@ visible.
 in the server list.  Or prompt the agent: `List the MCP tools available from
 agentproto`.
 
-**Direct MCP tool call** (from any client):
+**Direct MCP tool call** (from any client) — list all sessions:
 
 ```text
-Tool: list_agent_sessions
+Tool: list_sessions
 Input: {}
 ```
 
-Expected response: an array (possibly empty) of running agent sessions.
+Expected response: an array (possibly empty) of sessions.  Use
+`list_agent_sessions` to filter to agent-only sessions.
 
 **Raw curl smoke test**:
 
