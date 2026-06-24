@@ -1498,7 +1498,7 @@ export function registerSessionTools(
   )
 }
 
-// ── export_session tool ───────────────────────────────────────────────────────
+// ── export_agent_session tool ─────────────────────────────────────────────────
 
 export interface ExportSessionOps {
   registry: SessionsRegistry
@@ -1510,7 +1510,7 @@ export interface ExportSessionOps {
 }
 
 /**
- * Register the `export_session` MCP tool.
+ * Register the `export_agent_session` MCP tool.
  *
  * Wraps `exportAgentSession` from transcript-export.ts. Resolves the session
  * descriptor via the registry (same registry-access pattern as `summarize_session`)
@@ -1520,7 +1520,7 @@ export interface ExportSessionOps {
 export function registerExportSessionTool(server: McpServer, ops: ExportSessionOps): void {
   const doExport = ops.exportFn ?? exportAgentSession
   server.tool(
-    "export_session",
+    "export_agent_session",
     "Export a clean, human-readable transcript of an agent session. " +
       "Reads the source the adapter already persists (claude-code: JSONL in " +
       "~/.claude/projects/; hermes: state.db in ~/.hermes/). Returns markdown " +
