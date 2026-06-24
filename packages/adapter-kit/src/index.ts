@@ -40,7 +40,7 @@ export type {
 
 // MCP tools
 export { makeListTool, makeSetupTool } from "./mcp-tools.js"
-export type { MakeListToolOpts, MakeSetupToolOpts } from "./mcp-tools.js"
+export type { SetupField, MakeListToolOpts, MakeSetupToolOpts } from "./mcp-tools.js"
 
 // wizard
 export { makeAdapterWizard } from "./wizard.js"

@@ -5,11 +5,21 @@
  *
  * Both return `void` and register directly on the passed `McpServer`,
  * mirroring `registerBrowserTools` in the runtime package.
+ *
+ * `makeSetupTool` has two forms:
+ *   1. Single-value (backward compat) — a single `value` string param.
+ *      The `TCreds` generic lets `onSetup` receive any type (the tool
+ *      always sends a string; casting is the caller's responsibility).
+ *   2. Multi-field — when `fields` is provided, the tool accepts one
+ *      zod-string param per declared field. `onSetup` receives a
+ *      `Record<string, string>` keyed by field name.
  */
 
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AdapterLister } from "./types.js"
+
+// ── list tool ────────────────────────────────────────────────────────────
 
 export interface MakeListToolOpts<TInfo> {
   server: McpServer
@@ -49,6 +59,24 @@ export function makeListTool<TInfo>(opts: MakeListToolOpts<TInfo>): void {
   })
 }
 
+// ── setup tool ───────────────────────────────────────────────────────────
+
+/** Declared field for the multi-field `makeSetupTool` variant. */
+export interface SetupField {
+  /** Field name — becomes the zod-param name (kebab-case ok). */
+  name: string
+  /** Human-readable description shown to the client. */
+  description: string
+  /** When true (or absent), the client MUST provide a non-empty value. */
+  required?: boolean
+  /**
+   * When true, the value is marked SENSITIVE in its `.describe()`
+   * annotation and the tool result NEVER echoes it (same guarantee
+   * as the single-`value` param). Default false.
+   */
+  sensitive?: boolean
+}
+
 export interface MakeSetupToolOpts<TCreds> {
   server: McpServer
   /** e.g. "setup_tunnel_provider", "setup_agent_cli". */
@@ -57,26 +85,128 @@ export interface MakeSetupToolOpts<TCreds> {
   /** Slugs for which setup is accepted (drawn from the catalog). */
   validSlugs: readonly string[]
   /**
-   * Called after slug validation. Implementation owns interpreting `value`
-   * (API token, path, JSON blob, …) and writing creds + ledger. The kit
-   * never inspects or echoes `value`.
+   * Multi-field declarations. When provided, the generated tool accepts
+   * one zod-string param per field and `onSetup` receives a
+   * `Record<string, string>` instead of a single `value`. Sensitive
+   * fields are marked in their `.describe()` and values are NEVER
+   * echoed in tool results.
+   *
+   * When absent (or empty), the tool uses the single-`value` form
+   * (backward-compatible with existing families).
+   */
+  fields?: readonly SetupField[]
+  /**
+   * Called after slug validation. For the single-value form, receives
+   * the `value` string as `TCreds`. For the multi-field form (when
+   * `fields` is provided), receives a `Record<string, string>` keyed
+   * by field name.
    */
   onSetup: (slug: string, creds: TCreds) => Promise<{ ok: boolean; hint?: string }>
 }
 
 /**
- * Register an MCP setup tool. The `value` parameter is flagged sensitive
- * (Appendix B.2): its description marks it, and the tool result NEVER echoes
- * the value back — only `{ ok, slug, hint? }`.
- *
- * `TCreds` is the shape `onSetup` expects; the wire schema always passes a
- * single `value: string`, which `onSetup` is free to parse into `TCreds`.
+ * Overload: multi-field form. When `fields` is provided, `onSetup`
+ * receives a `Record<string, string>` and each field becomes its own
+ * zod-param on the MCP tool.
+ */
+export function makeSetupTool(
+  opts: Omit<MakeSetupToolOpts<Record<string, string>>, "fields"> & {
+    fields: readonly SetupField[]
+  }
+): void
+
+/**
+ * Overload: single-value form (backward compat). When `fields` is
+ * absent or empty, the tool exposes a single `value` param and
+ * `onSetup` receives `TCreds` (defaults to `string`).
  */
 export function makeSetupTool<TCreds = string>(
   opts: MakeSetupToolOpts<TCreds>
+): void
+
+// ── implementation ───────────────────────────────────────────────────────
+
+export function makeSetupTool<TCreds = string>(
+  opts: MakeSetupToolOpts<TCreds> & { fields?: readonly SetupField[] }
 ): void {
-  const { server, toolName, description, validSlugs, onSetup } = opts
+  const { server, toolName, description, validSlugs, onSetup, fields } = opts
   const valid = new Set(validSlugs)
+
+  // ── multi-field path ──────────────────────────────────────────────
+
+  if (fields && fields.length > 0) {
+    const shape: Record<string, z.ZodString> = {
+      slug: z.string().describe("Adapter slug to configure"),
+    }
+    const sensitiveNames = new Set<string>()
+
+    for (const f of fields) {
+      let desc = f.description
+      if (f.sensitive) {
+        sensitiveNames.add(f.name)
+        desc = `${desc} SENSITIVE — never logged and never echoed back in tool results.`
+      }
+      shape[f.name] = (f.required !== false
+        ? z.string().min(1, `${f.name} is required`)
+        : z.string()
+      ).describe(desc)
+    }
+
+    server.tool(
+      toolName,
+      description,
+      shape,
+      async (args: Record<string, string>) => {
+        const slug = args.slug ?? ""
+        if (!valid.has(slug)) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `${toolName}: unknown slug '${slug}'. Valid: ${[
+                  ...valid,
+                ].join(", ")}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+
+        // Collect field values into a record — NEVER echo any field value.
+        const fieldValues: Record<string, string> = {}
+        for (const f of fields) {
+          fieldValues[f.name] = args[f.name] ?? ""
+        }
+
+        const setupFn = onSetup as (
+          slug: string,
+          fields: Record<string, string>,
+        ) => Promise<{ ok: boolean; hint?: string }>
+
+        const result = await setupFn(slug, fieldValues)
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  ok: result.ok,
+                  slug,
+                  ...(result.hint ? { hint: result.hint } : {}),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+          isError: !result.ok,
+        }
+      },
+    )
+    return
+  }
+
+  // ── single-value path (backward compat) ────────────────────────────
 
   server.tool(
     toolName,
@@ -87,7 +217,7 @@ export function makeSetupTool<TCreds = string>(
         .string()
         .describe(
           "Credential value (API key, token, …). SENSITIVE — never logged " +
-            "and never echoed back in tool results."
+            "and never echoed back in tool results.",
         ),
     },
     async (args: { slug: string; value: string }) => {
@@ -107,20 +237,27 @@ export function makeSetupTool<TCreds = string>(
       }
       // `value` is forwarded verbatim to onSetup as TCreds and is NEVER
       // placed in the response below.
-      const result = await onSetup(slug, value as unknown as TCreds)
+      const result = await onSetup(
+        slug,
+        value as unknown as TCreds,
+      )
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify(
-              { ok: result.ok, slug, ...(result.hint ? { hint: result.hint } : {}) },
+              {
+                ok: result.ok,
+                slug,
+                ...(result.hint ? { hint: result.hint } : {}),
+              },
               null,
-              2
+              2,
             ),
           },
         ],
         isError: !result.ok,
       }
-    }
+    },
   )
 }

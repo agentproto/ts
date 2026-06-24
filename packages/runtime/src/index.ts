@@ -27,7 +27,7 @@ import { registerCommandTools } from "./command-tools.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
-import { registerSessionTools } from "./session-tools.js"
+import { registerSessionTools, registerExportSessionTool } from "./session-tools.js"
 import {
   registerBrowserTools,
   type BrowserAdapterResolver,
@@ -511,6 +511,11 @@ export async function createGateway(
         return lines.slice(-lastN)
       },
     })
+    // Transcript exporter — reads the adapter's native persistence
+    // (claude-code JSONL / hermes SQLite) and renders a clean markdown or
+    // JSON transcript. Co-located with the session tools; registry access
+    // mirrors the summarise_session pattern above.
+    registerExportSessionTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
     // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
