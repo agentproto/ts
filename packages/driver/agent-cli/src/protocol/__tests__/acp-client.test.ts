@@ -8,11 +8,15 @@ import type { ChildProcess } from "node:child_process"
 const newSessionCalls: Array<Record<string, unknown>> = []
 const loadSessionCalls: Array<Record<string, unknown>> = []
 
+/** Injected per-test: when set, newSession throws with this error. */
+let newSessionError: Error | null = null
+
 vi.mock("@agentproto/acp/client", () => ({
   createAcpClient: vi.fn(async () => ({
     agentCapabilities: {},
     async newSession(params: Record<string, unknown>) {
       newSessionCalls.push(params)
+      if (newSessionError) throw newSessionError
       return { sessionId: "sess-1" }
     },
     async loadSession(params: Record<string, unknown>) {
@@ -40,6 +44,7 @@ describe("AcpProtocolArm.connect — mcpServers threading", () => {
   beforeEach(() => {
     newSessionCalls.length = 0
     loadSessionCalls.length = 0
+    newSessionError = null
   })
 
   it("forwards host mcpServers to client.newSession on a fresh session", async () => {
@@ -77,5 +82,37 @@ describe("AcpProtocolArm.connect — mcpServers threading", () => {
 
     expect(newSessionCalls).toHaveLength(1)
     expect(newSessionCalls[0]).toEqual({ cwd: "/work", mcpServers: undefined })
+  })
+})
+
+describe("AcpProtocolArm.connect — model + effort threading", () => {
+  beforeEach(() => {
+    newSessionCalls.length = 0
+    newSessionError = null
+  })
+
+  it("forwards model and effort to client.newSession", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({
+      ...baseConnect,
+      cwd: "/work",
+      model: "claude-haiku-4-5-20251001",
+      effort: "low",
+    })
+
+    expect(newSessionCalls).toHaveLength(1)
+    expect(newSessionCalls[0]).toMatchObject({
+      cwd: "/work",
+      model: "claude-haiku-4-5-20251001",
+      effort: "low",
+    })
+  })
+
+  it("omits model and effort when not provided", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    expect(newSessionCalls[0]).not.toHaveProperty("model")
+    expect(newSessionCalls[0]).not.toHaveProperty("effort")
   })
 })

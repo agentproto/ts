@@ -204,11 +204,22 @@ export async function createAcpClient(
         } as never)
       }
       if (params.effort) {
-        await connection.setSessionConfigOption({
-          configId: "effort",
-          value: params.effort,
-          sessionId,
-        } as never)
+        try {
+          await connection.setSessionConfigOption({
+            configId: "effort",
+            value: params.effort,
+            sessionId,
+          } as never)
+        } catch (err) {
+          // Best-effort: this ACP server does not support the "effort" config
+          // option (e.g. claude-agent-acp ignores unknown config keys and
+          // some versions reject them outright). A rejected set_config_option
+          // must never kill the spawn — effort is silently ignored instead.
+          console.warn(
+            `[acp] set_config_option effort="${params.effort}" rejected by server (best-effort):`,
+            err instanceof Error ? err.message : err,
+          )
+        }
       }
       return buildSession(connection, sessionId, state, sessions)
     },
