@@ -13,10 +13,16 @@ import {
   toTunnelInfo,
   type TunnelAdapterInfo,
   type TunnelNamedCreds,
+  type TunnelProviderCreds,
 } from "../tunnel-adapters.js"
 import type { AdapterEntry } from "@agentproto/adapter-kit"
 import { quickTunnelProvider } from "../remote-providers/quick.js"
 import { namedTunnelProvider } from "../remote-providers/named.js"
+import {
+  ngrokTunnelProvider,
+  NGROK_SLUG,
+  type TunnelNgrokCreds,
+} from "../remote-providers/ngrok.js"
 
 // ── fake McpServer that captures registered tools ──────────────────────────────
 
@@ -66,16 +72,17 @@ afterEach(() => {
 // ── catalog / lister status integration ─────────────────────────────────────────
 
 describe("tunnel catalog + lister", () => {
-  it("classifies quick as ready and named as available when no creds exist", async () => {
+  it("classifies quick as ready, named as available (no creds), ngrok as available", async () => {
     const credsStore = makeTunnelCredsStore(home)
     const ledger = makeSetupLedger({ home })
     const lister = makeTunnelLister({ credsStore, ledger })
 
     const entries = await lister()
-    // Both catalog entries present, in catalog order.
+    // All three catalog entries present, in catalog order.
     expect(entries.map(e => e.slug)).toEqual([
       "cloudflare-quick",
       "cloudflare-named",
+      "ngrok",
     ])
 
     const quick = entries[0]!
@@ -88,6 +95,14 @@ describe("tunnel catalog + lister", () => {
     expect(named.status).toBe("available") // requiresSetup + no creds
     expect(named.info?.capabilities.requiresAuth).toBe(true)
     expect(named.info?.capabilities.stableUrl).toBe(true)
+
+    const ngrok = entries[2]!
+    expect(ngrok.status).toBe("available") // requiresSetup + no creds
+    expect(ngrok.info?.capabilities.requiresAuth).toBe(true)
+    expect(ngrok.info?.capabilities.hasApi).toBe(true)
+    expect(ngrok.info?.capabilities.autostart).toBe(true)
+    // stableUrl is false when no domain is configured (factory with no cfg).
+    // When a domain IS configured, the instance-level override kicks in.
   })
 
   it("promotes named to ready once creds are stored", async () => {
@@ -151,10 +166,11 @@ describe("list_tunnel_adapters tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<TunnelAdapterInfo>[]
-    expect(entries).toHaveLength(2)
+    expect(entries).toHaveLength(3)
     expect(entries.map(e => e.slug).sort()).toEqual([
       "cloudflare-named",
       "cloudflare-quick",
+      "ngrok",
     ])
     for (const e of entries) {
       expect(typeof e.status).toBe("string")
@@ -163,7 +179,7 @@ describe("list_tunnel_adapters tool", () => {
   })
 })
 
-// ── setup_tunnel_provider tool ───────────────────────────────────────────────────
+// ── setup_tunnel_provider tool (multi-field form) ────────────────────────────────
 
 describe("setup_tunnel_provider tool", () => {
   function setupTool() {
@@ -172,26 +188,59 @@ describe("setup_tunnel_provider tool", () => {
     return tools.find(t => t.name === "setup_tunnel_provider")!
   }
 
-  it("flags the value param as sensitive in its schema", () => {
+  it("schema exposes hostname, tunnelId, credentialsFile, authToken, domain fields — no single 'value'", () => {
     const tool = setupTool()
-    const valueField = tool.shape["value"] as { description?: string }
-    expect(valueField.description?.toLowerCase()).toContain("sensitive")
+    const shapeKeys = Object.keys(tool.shape).sort()
+    expect(shapeKeys).toEqual(
+      [
+        "authToken",
+        "credentialsFile",
+        "domain",
+        "hostname",
+        "slug",
+        "tunnelId",
+      ].sort(),
+    )
+    expect(tool.shape).not.toHaveProperty("value")
   })
 
-  it("stores creds via the kit creds store and NEVER echoes the value", async () => {
+  it("marks every cred field as sensitive in its schema annotation", () => {
     const tool = setupTool()
-    const value = JSON.stringify(SECRET_CREDS)
-    const res = await tool.handler({ slug: "cloudflare-named", value })
+    const hostnameField = tool.shape["hostname"] as { description?: string }
+    expect(hostnameField.description?.toLowerCase()).toContain("sensitive")
 
-    // Response shape: { ok, slug, hint } — no value, no secret substring.
+    const tunnelIdField = tool.shape["tunnelId"] as { description?: string }
+    expect(tunnelIdField.description?.toLowerCase()).toContain("sensitive")
+
+    const credsFileField = tool.shape["credentialsFile"] as { description?: string }
+    expect(credsFileField.description?.toLowerCase()).toContain("sensitive")
+  })
+
+  it("stores creds via the kit creds store and NEVER echoes field values", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "cloudflare-named",
+      hostname: SECRET_CREDS.hostname,
+      tunnelId: SECRET_CREDS.tunnelId,
+      credentialsFile: SECRET_CREDS.credentialsFile,
+    })
+
+    // Response shape: { ok, slug, hint } — no field values.
     expect(res.isError).toBeFalsy()
     const text = res.content[0]!.text
+
+    // Never echo any secret value in the response.
     expect(text).not.toContain(SECRET_CREDS.tunnelId)
-    expect(text).not.toContain(value)
+    expect(text).not.toContain(SECRET_CREDS.hostname)
+    expect(text).not.toContain(SECRET_CREDS.credentialsFile)
+
     const parsed = JSON.parse(text)
     expect(parsed.ok).toBe(true)
     expect(parsed.slug).toBe("cloudflare-named")
     expect(parsed).not.toHaveProperty("value")
+    expect(parsed).not.toHaveProperty("hostname")
+    expect(parsed).not.toHaveProperty("tunnelId")
+    expect(parsed).not.toHaveProperty("credentialsFile")
 
     // Creds actually persisted via the kit store, under the tunnel family.
     const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-named.json")
@@ -204,7 +253,8 @@ describe("setup_tunnel_provider tool", () => {
     const tool = setupTool()
     await tool.handler({
       slug: "cloudflare-named",
-      value: JSON.stringify(SECRET_CREDS),
+      hostname: SECRET_CREDS.hostname,
+      tunnelId: SECRET_CREDS.tunnelId,
     })
 
     const credsStore = makeTunnelCredsStore(home)
@@ -215,9 +265,13 @@ describe("setup_tunnel_provider tool", () => {
     expect(await ledger.exists("cloudflare-named")).toBe(true)
   })
 
-  it("rejects malformed JSON without writing creds", async () => {
+  it("rejects setup when hostname is missing", async () => {
     const tool = setupTool()
-    const res = await tool.handler({ slug: "cloudflare-named", value: "not-json" })
+    const res = await tool.handler({
+      slug: "cloudflare-named",
+      hostname: "",
+      tunnelId: "some-id",
+    })
     expect(res.isError).toBe(true)
     const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "cloudflare-named.json")
     expect(existsSync(credFile)).toBe(false)
@@ -225,14 +279,218 @@ describe("setup_tunnel_provider tool", () => {
 
   it("rejects an unknown slug (only setup-requiring slugs are valid)", async () => {
     const tool = setupTool()
-    const res = await tool.handler({ slug: "cloudflare-quick", value: "{}" })
+    const res = await tool.handler({
+      slug: "cloudflare-quick",
+      hostname: "x",
+      tunnelId: "y",
+    })
     expect(res.isError).toBe(true)
   })
 
-  it("catalog exposes exactly the two pilot providers", () => {
+  it("catalog exposes exactly the three providers", () => {
     expect(TUNNEL_CATALOG.map(c => c.slug)).toEqual([
       "cloudflare-quick",
       "cloudflare-named",
+      "ngrok",
     ])
+  })
+})
+
+// ── ngrok provider: handle + check() logic ──────────────────────────────
+
+describe("ngrok provider", () => {
+  it("satisfies the adapter-kit handle shape (slug/requiresSetup/check/capabilities)", () => {
+    const ngrok = ngrokTunnelProvider()
+    expect(ngrok.slug).toBe("ngrok")
+    expect(ngrok.requiresSetup).toBe(true)
+    expect(typeof ngrok.check).toBe("function")
+    // RemoteProvider lifecycle still intact.
+    expect(ngrok.id).toBe("ngrok")
+    expect(typeof ngrok.start).toBe("function")
+    expect(typeof ngrok.stop).toBe("function")
+
+    // Capabilities: no domain configured → stableUrl false.
+    expect(ngrok.capabilities.stableUrl).toBe(false)
+    expect(ngrok.capabilities.autostart).toBe(true)
+    expect(ngrok.capabilities.customDomain).toBe(true)
+    expect(ngrok.capabilities.requiresAuth).toBe(true)
+    expect(ngrok.capabilities.hasApi).toBe(true)
+  })
+
+  it("stableUrl is true when a domain is provided", () => {
+    const ngrok = ngrokTunnelProvider({
+      authToken: "tok_deadbeef",
+      domain: "myapp.ngrok.io",
+    })
+    expect(ngrok.capabilities.stableUrl).toBe(true)
+  })
+
+  it("stableUrl is false when domain is empty string", () => {
+    const ngrok = ngrokTunnelProvider({
+      authToken: "tok_deadbeef",
+      domain: "",
+    })
+    expect(ngrok.capabilities.stableUrl).toBe(false)
+  })
+
+  it("check() returns true when ngrok binary is on PATH AND authtoken is present", async () => {
+    // ngrok IS installed on this machine, so this should return true.
+    const ngrok = ngrokTunnelProvider({ authToken: "tok_123" })
+    expect(await ngrok.check()).toBe(true)
+  })
+
+  it("check() returns false when creds are absent (descriptor-only handle)", async () => {
+    // Factory with no config — authToken is null.
+    const ngrok = ngrokTunnelProvider()
+    expect(await ngrok.check()).toBe(false)
+  })
+})
+
+// ── ngrok setup_tunnel_provider (multi-field) ───────────────────────────
+
+describe("setup_tunnel_provider — ngrok", () => {
+  function setupTool() {
+    const { server, tools } = fakeServer()
+    registerTunnelAdapterTools(server, { home })
+    return tools.find(t => t.name === "setup_tunnel_provider")!
+  }
+
+  it("schema exposes slug + named fields + ngrok fields (authToken, domain)", () => {
+    const tool = setupTool()
+    const shapeKeys = Object.keys(tool.shape).sort()
+    expect(shapeKeys).toEqual(
+      [
+        "slug",
+        "authToken",
+        "credentialsFile",
+        "domain",
+        "hostname",
+        "tunnelId",
+      ].sort(),
+    )
+    expect(tool.shape).not.toHaveProperty("value")
+  })
+
+  it("marks ngrok fields as sensitive", () => {
+    const tool = setupTool()
+    const authTokenField = tool.shape["authToken"] as { description?: string }
+    expect(authTokenField.description?.toLowerCase()).toContain("sensitive")
+
+    const domainField = tool.shape["domain"] as { description?: string }
+    expect(domainField.description?.toLowerCase()).toContain("sensitive")
+  })
+
+  const NGOK_CREDS: TunnelNgrokCreds = {
+    authToken: "tok_cafebabe123",
+    domain: "mybot.ngrok.io",
+  }
+
+  it("stores ngrok creds and NEVER echoes values", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "ngrok",
+      authToken: NGOK_CREDS.authToken,
+      domain: NGOK_CREDS.domain!,
+    })
+
+    // Response shape: { ok, slug, hint } — no field values.
+    expect(res.isError).toBeFalsy()
+    const text = res.content[0]!.text
+
+    // Never echo any secret value in the response.
+    expect(text).not.toContain(NGOK_CREDS.authToken)
+    expect(text).not.toContain(NGOK_CREDS.domain)
+
+    const parsed = JSON.parse(text)
+    expect(parsed.ok).toBe(true)
+    expect(parsed.slug).toBe("ngrok")
+    expect(parsed).not.toHaveProperty("authToken")
+    expect(parsed).not.toHaveProperty("domain")
+
+    // Creds actually persisted via the kit store.
+    const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "ngrok.json")
+    expect(existsSync(credFile)).toBe(true)
+    const store = makeTunnelCredsStore(home)
+    const stored = (await store.read("ngrok")) as TunnelNgrokCreds | null
+    expect(stored?.authToken).toBe(NGOK_CREDS.authToken)
+    expect(stored?.domain).toBe(NGOK_CREDS.domain)
+  })
+
+  it("stores ngrok creds without optional domain", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "ngrok",
+      authToken: "tok_minimal",
+    })
+
+    expect(res.isError).toBeFalsy()
+    const parsed = JSON.parse(res.content[0]!.text)
+    expect(parsed.ok).toBe(true)
+
+    const store = makeTunnelCredsStore(home)
+    const stored = (await store.read("ngrok")) as TunnelNgrokCreds | null
+    expect(stored?.authToken).toBe("tok_minimal")
+    expect(stored?.domain).toBeUndefined()
+  })
+
+  it("flips ngrok to ready after a successful setup", async () => {
+    const tool = setupTool()
+    await tool.handler({
+      slug: "ngrok",
+      authToken: NGOK_CREDS.authToken,
+    })
+
+    const credsStore = makeTunnelCredsStore(home)
+    const ledger = makeSetupLedger({ home })
+    const entries = await makeTunnelLister({ credsStore, ledger })()
+    expect(entries.find(e => e.slug === "ngrok")!.status).toBe("ready")
+    // Ledger record written too.
+    expect(await ledger.exists("ngrok")).toBe(true)
+  })
+
+  it("rejects ngrok setup when authToken is missing", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "ngrok",
+      authToken: "",
+    })
+    expect(res.isError).toBe(true)
+    const text = res.content[0]!.text
+    expect(JSON.parse(text).hint).toContain("authToken")
+    // No file written on failure.
+    const credFile = join(home, `${TUNNEL_FAMILY}-creds`, "ngrok.json")
+    expect(existsSync(credFile)).toBe(false)
+  })
+
+  it("promotes named promos work independently of ngrok (cross-slug isolation)", async () => {
+    // Setup both and verify each is ready independently.
+    const tool = setupTool()
+    await tool.handler({
+      slug: "cloudflare-named",
+      hostname: "agent.example.com",
+      tunnelId: "11111111-2222-3333-4444-555555555555",
+    })
+    await tool.handler({
+      slug: "ngrok",
+      authToken: "tok_independent",
+    })
+
+    const credsStore = makeTunnelCredsStore(home)
+    const ledger = makeSetupLedger({ home })
+    const entries = await makeTunnelLister({ credsStore, ledger })()
+
+    expect(entries.find(e => e.slug === "cloudflare-named")!.status).toBe("ready")
+    expect(entries.find(e => e.slug === "ngrok")!.status).toBe("ready")
+    expect(await credsStore.exists("cloudflare-named")).toBe(true)
+    expect(await credsStore.exists("ngrok")).toBe(true)
+  })
+
+  it("rejects an unknown slug (not quick, not named, not ngrok)", async () => {
+    const tool = setupTool()
+    const res = await tool.handler({
+      slug: "unknown-provider",
+      authToken: "x",
+    })
+    expect(res.isError).toBe(true)
   })
 })
