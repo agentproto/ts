@@ -19,6 +19,7 @@ import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { collectSubtree } from "./session-tools.js"
 import type { PolicyRunState } from "./supervisor.js"
+import type { InboundWatcher } from "./inbound-watcher.js"
 
 /**
  * Zod schema for the `gate` field of `attach_policy`.
@@ -51,6 +52,8 @@ export interface RegisterOrchestrationToolsOptions {
   eventRing: EventRing
   routineRunner?: RoutineRunner
   supervisor?: CompletionPolicySupervisor
+  /** When wired, exposes start/stop/list_inbound_watcher tools. */
+  inboundWatcher?: InboundWatcher
   /** Optional allowlist — when set, only tools whose name is in the
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
@@ -76,7 +79,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -731,4 +734,126 @@ export function registerOrchestrationTools(
       })
     },
   )
+
+  // ── start_inbound_watcher ────────────────────────────────────────
+  if (inboundWatcher) {
+    server.tool(
+      "start_inbound_watcher",
+      "Start a background poller that watches an agentpush source for new inbound " +
+        "messages and spawns one agent per contact_ref. The agent receives the " +
+        "inbound events inline via the prompt template. Returns a watcherId you " +
+        "can pass to stop_inbound_watcher or list_inbound_watchers.",
+      {
+        alias: z
+          .string()
+          .min(1)
+          .describe(
+            "Imported MCP alias for the agentpush server (e.g. 'agentpush'). " +
+              "Import it first with import_mcp.",
+          ),
+        source: z
+          .string()
+          .min(1)
+          .describe(
+            "Contact ref / channel to poll — forwarded as `source` to poll_inbound " +
+              "(e.g. a phone number '+33612345678' or a webhook channel name).",
+          ),
+        adapter: z
+          .string()
+          .min(1)
+          .describe(
+            "Agent adapter slug to spawn when new messages arrive (e.g. 'claude-code').",
+          ),
+        promptTemplate: z
+          .string()
+          .min(1)
+          .describe(
+            "Prompt sent to the spawned agent. Placeholders: " +
+              "{{source}} (watched source), {{contact_ref}} (sender), " +
+              "{{messages_json}} (JSON array of new events), {{count}} (message count).",
+          ),
+        pollIntervalMs: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(60_000)
+          .optional()
+          .describe("Poll interval in ms. Default 5 000."),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            "Working directory for spawned agents. Defaults to the daemon's cwd.",
+          ),
+        label: z
+          .string()
+          .optional()
+          .describe("Optional label suffix on spawned session names."),
+        mcpServersForChild: jsonTolerant(
+          z.array(
+            z.object({
+              name: z.string(),
+              transport: z.enum(["stdio", "http", "sse"]),
+              ref: z.string().optional(),
+            }),
+          ),
+        )
+          .optional()
+          .describe(
+            "MCP servers to mount in each spawned agent. Pass the agentpush entry " +
+              "here (e.g. [{name:'agentpush',transport:'http',ref:'http://localhost:8080/mcp'}]) " +
+              "so the agent can call dispatch_request to reply.",
+          ),
+      },
+      async input => {
+        const desc = inboundWatcher.start(input)
+        return { content: [{ type: "text", text: JSON.stringify(desc, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "stop_inbound_watcher",
+      "Stop a running inbound watcher. The watcher's cursor position is preserved " +
+        "in memory (and flushed to disk on daemon shutdown) so a new watcher " +
+        "started later can pick up where it left off.",
+      {
+        watcherId: z
+          .string()
+          .min(1)
+          .describe("Watcher id returned by start_inbound_watcher."),
+      },
+      async input => {
+        const ok = inboundWatcher.stop(input.watcherId)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                ok
+                  ? { ok: true, watcherId: input.watcherId, status: "stopped" }
+                  : {
+                      ok: false,
+                      error: `watcher "${input.watcherId}" not found`,
+                    },
+                null,
+                2,
+              ),
+            },
+          ],
+          ...(ok ? {} : { isError: true }),
+        }
+      },
+    )
+
+    server.tool(
+      "list_inbound_watchers",
+      "List all inbound watchers (running and stopped) with their cursor position, " +
+        "last poll time, last fire time, and total spawned session count.",
+      {},
+      async () => {
+        const watchers = inboundWatcher.list()
+        return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
+      },
+    )
+  }
 }

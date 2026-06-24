@@ -59,6 +59,12 @@ import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
+import { createInboundWatcher } from "./inbound-watcher.js"
+export type {
+  WatcherStartInput,
+  WatcherDescriptor,
+  InboundWatcher,
+} from "./inbound-watcher.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
@@ -406,6 +412,19 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // Inbound watcher — polls an agentpush source on a timer and spawns
+  // one agent per new contact_ref. Wired when an adapter resolver is
+  // available (otherwise the watcher would have nowhere to spawn).
+  const inboundWatcher =
+    opts.resolveAgentAdapter
+      ? createInboundWatcher({
+          mcpProxy,
+          registry: sessions,
+          resolveAgentAdapter: opts.resolveAgentAdapter,
+          persist: true,
+        })
+      : undefined
+
   // Scope-token registry (WP2) — mints/validates the per-child tokens
   // that gate `/mcp/orchestrator` and carry each orchestrator's identity
   // (owner session, depth, tools, limits — WP4). The injector + scoped
@@ -507,7 +526,14 @@ export async function createGateway(
         ? { listBrowserAdapters: opts.listBrowserAdapters }
         : {}),
     })
-    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor, ...(routineRunner ? { routineRunner } : {}) })
+    registerOrchestrationTools(server, {
+      registry: sessions,
+      sessionEvents,
+      eventRing,
+      supervisor,
+      ...(routineRunner ? { routineRunner } : {}),
+      ...(inboundWatcher ? { inboundWatcher } : {}),
+    })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     const listSessionsFiltered = (filter?: "running" | "all") => {
@@ -644,6 +670,8 @@ export async function createGateway(
     mintOrchestratorScope: scopeTokens.mint,
     async stop() {
       heartbeat.stop()
+      // Flush inbound-watcher cursor state before sessions shut down.
+      inboundWatcher?.shutdown()
       // Flush completion-policy state before sessions shut down so
       // policies referencing live sessions are persisted with their
       // current status (not "killed" sessions).
