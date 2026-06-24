@@ -13,11 +13,20 @@
  *   escalate   → POST webhook, wait for external `resolve()` call
  *   fail       → mark step/run as failed
  *
- * State is in-memory only (MVP). TODO: persist to
- * ~/.agentproto/routine-runs.json for restart resilience.
+ * Persistence: runs are serialised to ~/.agentproto/routine-runs.json
+ * (write-tmp + rename atomic swap) on every state mutation so they
+ * survive daemon restarts. On load, any run with status "running" or
+ * "awaiting-input" is immediately marked "failed" with reason
+ * "interrupted by daemon restart" — these runs have no live sessions
+ * to resume, so marking them failed is the only safe choice (an
+ * in-flight run cannot be replayed without re-executing its steps,
+ * which could trigger unintended side-effects).
  */
 
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
+import { join, dirname } from "node:path"
+import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -110,14 +119,77 @@ interface RunState {
 
 // ── Factory ──────────────────────────────────────────────────────────
 
+const DEFAULT_PERSIST_PATH = (): string =>
+  join(homedir(), ".agentproto", "routine-runs.json")
+
+// ── Persistence helpers ──────────────────────────────────────────────
+
+function loadRuns(persistPath: string): Map<string, RunState> {
+  const result = new Map<string, RunState>()
+  if (!existsSync(persistPath)) return result
+  let raw: string
+  try {
+    raw = readFileSync(persistPath, "utf8")
+  } catch {
+    return result
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Malformed file — start empty (documented: not an error)
+    return result
+  }
+  if (!Array.isArray(parsed)) return result
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || typeof (item as RoutineRun).runId !== "string") continue
+    const run = item as RoutineRun
+    // Any run that was mid-flight cannot be resumed: mark it failed.
+    // Reason: the in-process state machine and its live sessions are gone;
+    // replaying steps would trigger unintended side-effects, so the safest
+    // invariant is "interrupted = failed". Callers can re-start a new run.
+    if (run.status === "running" || run.status === "awaiting-input") {
+      run.status = "failed"
+      run.error = "interrupted by daemon restart"
+      run.endedAt = run.endedAt ?? new Date().toISOString()
+    }
+    result.set(run.runId, { run, cancelled: false })
+  }
+  return result
+}
+
+function saveRuns(runs: Map<string, RunState>, persistPath: string): void {
+  try {
+    mkdirSync(dirname(persistPath), { recursive: true })
+    const payload = JSON.stringify(
+      Array.from(runs.values()).map(s => s.run),
+      null,
+      2,
+    ) + "\n"
+    const tmp = `${persistPath}.tmp.${process.pid}`
+    writeFileSync(tmp, payload, "utf8")
+    renameSync(tmp, persistPath)
+  } catch {
+    // Best-effort — a write failure must not crash the daemon.
+  }
+}
+
 export function createRoutineRunner(opts: {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
   resolveAgentAdapter: AgentAdapterResolver
   webhookNotifier?: WebhookNotifier
+  /** Absolute path for the persistence file. Defaults to ~/.agentproto/routine-runs.json */
+  persistPath?: string
 }): RoutineRunner {
   const { registry, sessionEvents, resolveAgentAdapter, webhookNotifier } = opts
-  const runs = new Map<string, RunState>()
+  const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
+
+  // Load persisted runs on init; interrupted runs are marked failed.
+  const runs = loadRuns(persistPath)
+
+  /** Flush the in-memory run map to disk atomically. Call on every mutation. */
+  const persist = (): void => saveRuns(runs, persistPath)
 
   // ── Helpers ────────────────────────────────────────────────────────
 
@@ -252,6 +324,7 @@ export function createRoutineRunner(opts: {
 
     stepState.status = "running"
     stepState.startedAt = new Date().toISOString()
+    persist()
 
     // Fan-in: wait for all listed sessions to complete first
     if (step.waitFor && step.waitFor.length > 0) {
@@ -260,6 +333,7 @@ export function createRoutineRunner(opts: {
 
     if (state.cancelled) {
       stepState.status = "skipped"
+      persist()
       return { ok: false, sessionId: currentSessionId }
     }
 
@@ -272,6 +346,7 @@ export function createRoutineRunner(opts: {
         stepState.status = "failed"
         stepState.error = `adapter "${step.adapter}" not found or spawn failed`
         stepState.endedAt = new Date().toISOString()
+        persist()
         return { ok: false, sessionId: currentSessionId }
       }
       sessionId = newId
@@ -286,6 +361,7 @@ export function createRoutineRunner(opts: {
         stepState.status = "failed"
         stepState.error = `sendPrompt failed: ${err instanceof Error ? err.message : String(err)}`
         stepState.endedAt = new Date().toISOString()
+        persist()
         return { ok: false, sessionId }
       }
 
@@ -296,11 +372,14 @@ export function createRoutineRunner(opts: {
       const desc = registry.get(sessionId)
       if (desc?.awaitingInput) {
         state.run.status = "awaiting-input"
+        persist()
         const continued = await handleAwaitingInput(sessionId, step, stepState, state)
         state.run.status = "running"
+        persist()
         if (!continued) {
           stepState.status = "failed"
           stepState.endedAt = new Date().toISOString()
+          persist()
           return { ok: false, sessionId }
         }
         // Wait for the continuation turn to end
@@ -313,12 +392,14 @@ export function createRoutineRunner(opts: {
         stepState.status = "failed"
         stepState.error = `session exited with code ${descAfter.exitCode}`
         stepState.endedAt = new Date().toISOString()
+        persist()
         return { ok: false, sessionId }
       }
     }
 
     stepState.status = "done"
     stepState.endedAt = new Date().toISOString()
+    persist()
     return { ok: true, sessionId }
   }
 
@@ -340,6 +421,7 @@ export function createRoutineRunner(opts: {
         for (let j = i + 1; j < state.run.steps.length; j++) {
           state.run.steps[j]!.status = "skipped"
         }
+        persist()
         if (state.run.notifyUrl) {
           void fetch(state.run.notifyUrl, {
             method: "POST",
@@ -358,6 +440,7 @@ export function createRoutineRunner(opts: {
       state.run.status = "done"
     }
     state.run.endedAt = new Date().toISOString()
+    persist()
 
     if (state.run.notifyUrl && !state.cancelled) {
       void fetch(state.run.notifyUrl, {
@@ -393,12 +476,14 @@ export function createRoutineRunner(opts: {
       }
       const state: RunState = { run, cancelled: false }
       runs.set(runId, state)
+      persist()
 
       // Execute in background — caller gets the run descriptor immediately
       void runSteps(state, input.steps).catch(err => {
         run.status = "failed"
         run.error = err instanceof Error ? err.message : String(err)
         run.endedAt = new Date().toISOString()
+        persist()
       })
 
       return run
@@ -431,6 +516,10 @@ export function createRoutineRunner(opts: {
       if (state.pendingResolve) {
         state.pendingResolve.resolver("")
       }
+      // Note: persist() will be called by the background runSteps loop once
+      // it observes cancelled=true and transitions the run to "cancelled".
+      // We don't persist here because the status is still "running" at this
+      // point — the state machine will write the final "cancelled" status.
     },
   }
 }

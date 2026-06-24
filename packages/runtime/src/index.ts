@@ -57,6 +57,7 @@ import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createRoutineRunner } from "./routine-runner.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import {
   createScopeTokenRegistry,
@@ -372,6 +373,21 @@ export async function createGateway(
       : {}),
   })
 
+  // Routine runner — singleton per daemon, shared across all MCP connections.
+  // Persists run state to ~/.agentproto/routine-runs.json so runs survive
+  // daemon restarts (interrupted runs are marked "failed" on load).
+  // Declared after `sessions` and `supervisor` so it shares the same
+  // registry + event bus. Only wired when `resolveAgentAdapter` is
+  // available (routine steps need to spawn agent sessions).
+  const routineRunner = opts.resolveAgentAdapter
+    ? createRoutineRunner({
+        registry: sessions,
+        sessionEvents,
+        resolveAgentAdapter: opts.resolveAgentAdapter,
+        webhookNotifier,
+      })
+    : undefined
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -483,7 +499,7 @@ export async function createGateway(
         ? { listBrowserAdapters: opts.listBrowserAdapters }
         : {}),
     })
-    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor })
+    registerOrchestrationTools(server, { registry: sessions, sessionEvents, eventRing, supervisor, ...(routineRunner ? { routineRunner } : {}) })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     const listSessionsFiltered = (filter?: "running" | "all") => {

@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { createRoutineRunner } from "../routine-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -221,15 +224,144 @@ describe("RoutineRunner", () => {
   it("list() returns all runs", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
+    // Use an isolated temp path so prior test runs don't pollute list().
+    const isolated = join(mkdtempSync(join(tmpdir(), "runner-list-")), "runs.json")
     const runner = createRoutineRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
+      persistPath: isolated,
     })
 
     await runner.start({ routineId: "r1", steps: [] })
     await runner.start({ routineId: "r2", steps: [] })
 
     expect(runner.list()).toHaveLength(2)
+  })
+})
+
+// ── Persistence tests ─────────────────────────────────────────────────
+
+describe("RoutineRunner persistence", () => {
+  let tmpDir: string
+  let persistPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "routine-runner-test-"))
+    persistPath = join(tmpDir, "routine-runs.json")
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("persists runs to disk on start()", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const runner = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const run = await runner.start({ routineId: "persist-test", steps: [] })
+
+    // File should exist after start
+    expect(existsSync(persistPath)).toBe(true)
+    const raw = readFileSync(persistPath, "utf8")
+    const parsed = JSON.parse(raw) as Array<{ runId: string }>
+    expect(parsed.some(r => r.runId === run.runId)).toBe(true)
+  })
+
+  it("loads persisted runs on init", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    // First runner — write a run
+    const runner1 = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+    const run = await runner1.start({ routineId: "reload-test", steps: [] })
+    // Wait for async steps loop to finish (empty steps → done quickly)
+    await new Promise(res => setTimeout(res, 30))
+
+    // Second runner — should reload from disk
+    const runner2 = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+    expect(runner2.status(run.runId)).toBeDefined()
+    expect(runner2.list()).toHaveLength(1)
+  })
+
+  it("marks running/awaiting-input runs as failed on restart", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    // Manually write a "running" run to the persist file
+    const fakeRun = {
+      runId: "run_fakeid1",
+      routineId: "stale-run",
+      status: "running",
+      startedAt: new Date().toISOString(),
+      steps: [{ index: 0, label: "step1", status: "running" }],
+      result: { sessionIds: [] },
+    }
+    const fakeRun2 = {
+      runId: "run_fakeid2",
+      routineId: "stale-run2",
+      status: "awaiting-input",
+      startedAt: new Date().toISOString(),
+      steps: [],
+      result: { sessionIds: [] },
+    }
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(persistPath, JSON.stringify([fakeRun, fakeRun2], null, 2), "utf8")
+
+    // New runner loads and marks both as failed
+    const runner = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const s1 = runner.status("run_fakeid1")
+    const s2 = runner.status("run_fakeid2")
+    expect(s1?.status).toBe("failed")
+    expect(s1?.error).toBe("interrupted by daemon restart")
+    expect(s2?.status).toBe("failed")
+    expect(s2?.error).toBe("interrupted by daemon restart")
+  })
+
+  it("handles missing or malformed persist file gracefully", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    // Missing file — no error, empty list
+    const runner1 = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath: join(tmpDir, "nonexistent.json"),
+    })
+    expect(runner1.list()).toHaveLength(0)
+
+    // Malformed file
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(persistPath, "not valid json", "utf8")
+    const runner2 = createRoutineRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+    expect(runner2.list()).toHaveLength(0)
   })
 })
