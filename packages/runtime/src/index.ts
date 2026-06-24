@@ -385,6 +385,7 @@ export async function createGateway(
         sessionEvents,
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
+        persist: true,
       })
     : undefined
 

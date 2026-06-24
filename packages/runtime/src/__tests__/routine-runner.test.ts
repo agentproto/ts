@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { createRoutineRunner } from "../routine-runner.js"
@@ -327,7 +327,6 @@ describe("RoutineRunner persistence", () => {
       steps: [],
       result: { sessionIds: [] },
     }
-    const { writeFileSync } = await import("node:fs")
     writeFileSync(persistPath, JSON.stringify([fakeRun, fakeRun2], null, 2), "utf8")
 
     // New runner loads and marks both as failed
@@ -360,7 +359,6 @@ describe("RoutineRunner persistence", () => {
     expect(runner1.list()).toHaveLength(0)
 
     // Malformed file
-    const { writeFileSync } = await import("node:fs")
     writeFileSync(persistPath, "not valid json", "utf8")
     const runner2 = createRoutineRunner({
       registry,
