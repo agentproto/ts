@@ -221,7 +221,7 @@ export function createInboundWatcher(opts: {
     state: WatcherState,
     contactRef: string,
     events: InboundEvent[],
-    resolved: Awaited<ReturnType<AgentAdapterResolver>>,
+    resolved: NonNullable<Awaited<ReturnType<AgentAdapterResolver>>>,
   ): Promise<void> => {
     const prompt = renderPrompt(state.input.promptTemplate, {
       source: state.input.source,
