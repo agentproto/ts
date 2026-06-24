@@ -223,8 +223,6 @@ export function createInboundWatcher(opts: {
     events: InboundEvent[],
     resolved: Awaited<ReturnType<AgentAdapterResolver>>,
   ): Promise<void> => {
-    if (!resolved) return
-
     const prompt = renderPrompt(state.input.promptTemplate, {
       source: state.input.source,
       contact_ref: contactRef,
@@ -304,16 +302,18 @@ export function createInboundWatcher(opts: {
       const events = data.events ?? []
       if (events.length === 0) return
 
-      // Compute the new cursor value (max timestamp + 1) but do NOT
-      // advance state.cursor yet — see below. Guard against NaN/non-finite
-      // values from malformed events.
+      // Compute the new cursor value (max timestamp + 1). Guard against
+      // NaN/non-finite values from malformed events.
+      // If NO event carries a valid timestamp, fall back to Date.now() so
+      // the cursor still advances and the same events are not re-delivered
+      // on the next tick (infinite-loop guard).
       const maxTs = events.reduce((m, e) => {
         const ts = typeof e.timestamp === "number" ? e.timestamp : -Infinity
         return Number.isFinite(ts) ? Math.max(m, ts) : m
       }, -Infinity)
       const nextCursor = Number.isFinite(maxTs) && maxTs >= state.cursor
         ? maxTs + 1
-        : null
+        : Date.now()
 
       // Resolve adapter once per tick — shared across all contact spawns
       // so N contacts don't fan out N identical adapter-resolution calls.
@@ -344,10 +344,12 @@ export function createInboundWatcher(opts: {
         ),
       )
 
-      // Advance cursor AFTER spawn attempts complete. Delivery is
-      // at-most-once per session: if a spawn throws unexpectedly, the
-      // event is not re-delivered. If the adapter was absent, the early
-      // return above preserves the cursor for retry.
+      // Advance cursor AFTER spawn attempts complete.
+      // Delivery contract: at-most-once within a session. If a spawn throws
+      // unexpectedly the event is not re-delivered. Across daemon restarts
+      // delivery is at-least-once: a tick in-flight at shutdown advances the
+      // cursor as a microtask after flushSync() returns, so the new cursor
+      // value is not persisted and those events may be re-fetched on restart.
       if (nextCursor !== null) {
         state.cursor = nextCursor
         schedulePersist()
