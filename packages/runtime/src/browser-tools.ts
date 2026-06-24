@@ -549,7 +549,7 @@ export function registerBrowserTools(
           }
           const mcpRes = await fetch(`${base}/mcp`, {
             method: "POST",
-            headers: { "content-type": "application/json", accept: "application/json" },
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
             body: JSON.stringify(mcpBody),
             signal: ac.signal,
           })

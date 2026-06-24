@@ -444,6 +444,10 @@ describe("browser_screenshot — bureau dispatch", () => {
     const body = JSON.parse(mockFetch.mock.calls[0]![1].body as string)
     expect(body.params.name).toBe("browser_screenshot")
 
+    // Regression: bureau /mcp (StreamableHTTP) returns HTTP 406 unless Accept includes text/event-stream
+    const bureauHeaders = mockFetch.mock.calls[0]![1].headers as Record<string, string>
+    expect(bureauHeaders.accept).toContain("text/event-stream")
+
     await cleanup()
   })
 })
