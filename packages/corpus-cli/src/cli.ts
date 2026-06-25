@@ -60,7 +60,7 @@ Commands:
                                          scrape MCP server (stealth + clean Markdown) for
                                          walled/JS pages, ahead of plain readability.
                                          --diarize: AssemblyAI speaker labels (interviews).
-  distill [path] [--source id --max n --throttle ms --model m]
+  distill [path] [--source id --max n --throttle ms --model m --lang l --engine e]
                                          Distill raw sources → refined entries
                                          (principle/pattern/…) with sources:[id] provenance.
                                          Resumable: skips already-distilled sources.

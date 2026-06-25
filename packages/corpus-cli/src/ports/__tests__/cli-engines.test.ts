@@ -2,11 +2,12 @@ import { describe, it, expect } from "vitest"
 import { CLI_ENGINES } from "../cli-engines.js"
 
 describe("CLI_ENGINES registry", () => {
-  it("registers claude-code + gemini + codex + opencode", () => {
+  it("registers claude-code + gemini + codex + opencode + hermes", () => {
     expect(Object.keys(CLI_ENGINES).sort()).toEqual([
       "claude-code",
       "codex",
       "gemini",
+      "hermes",
       "opencode",
     ])
   })
@@ -60,6 +61,17 @@ describe("buildArgs — model injection", () => {
       "anthropic/claude-haiku-4-5",
     ])
   })
+
+  it("hermes: --oneshot <prompt>, -m <model> when given — uses arg not stdin", () => {
+    const e = CLI_ENGINES["hermes"]!
+    const p = "the distill prompt text"
+    expect(e.buildArgs({ prompt: p })).toEqual(["--oneshot", p])
+    expect(e.buildArgs({ prompt: p, model: "claude-haiku-4-5" })).toEqual([
+      "--oneshot", p, "-m", "claude-haiku-4-5",
+    ])
+    // Empty prompt when none provided (avoids crashing CliAgentDistiller test harness)
+    expect(e.buildArgs({})).toEqual(["--oneshot", ""])
+  })
 })
 
 describe("parseOutput", () => {
@@ -72,7 +84,7 @@ describe("parseOutput", () => {
   it("plain-text engines strip ANSI and keep the JSON array text", () => {
     const esc = String.fromCharCode(27)
     const colored = `${esc}[32m[{"kind":"principle"}]${esc}[0m`
-    for (const id of ["gemini", "opencode"]) {
+    for (const id of ["gemini", "opencode", "hermes"]) {
       const cleaned = CLI_ENGINES[id]!.parseOutput(colored)
       expect(cleaned).toBe('[{"kind":"principle"}]')
     }
