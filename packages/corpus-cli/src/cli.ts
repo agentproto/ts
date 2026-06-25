@@ -20,6 +20,7 @@ import { runValidate } from "./commands/validate.js"
 import { runLint } from "./commands/lint.js"
 import { runEventsEmit, runEventsTail } from "./commands/events.js"
 import { runImportWeb } from "./commands/import-web.js"
+import { runDiscover } from "./commands/discover.js"
 import { runDistill } from "./commands/distill.js"
 import { runKnowledge } from "./commands/knowledge.js"
 import { runReport } from "./commands/report.js"
@@ -39,6 +40,12 @@ Commands:
   events:emit <kind> --payload <json> [path]
                                          Append an event to _log.md
   events:tail [path]                     Print _log.md
+  discover <topic> [path] [--max N --channels web,youtube,social --lang l --tags t --import]
+                                         Fan out across channels (web search + YouTube +
+                                         social), dedup, write urls.discovered.txt.
+                                         Web: auto-picks first available key (SERPER /
+                                         EXA / TAVILY / GOOGLE_SEARCH). YouTube: yt-dlp
+                                         flat-playlist. --import chains import-web.
   import-web [path] --urls-file <f> [--max n --max-duration s --throttle ms --tags t --lang l --force --diarize]
                                          Import URLs as sources (video→Whisper, article→
                                          readability). Resumable: skips already-ingested
@@ -105,6 +112,8 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runEventsTail(rest)
     case "import-web":
       return await runImportWeb(rest)
+    case "discover":
+      return await runDiscover(rest)
     case "distill":
       return await runDistill(rest)
     case "knowledge":
