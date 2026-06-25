@@ -32,6 +32,8 @@ export interface CliAgentDistillerOptions {
   readonly timeoutMs?: number
   /** Working dir. Default os.tmpdir() — neutral, no project CLAUDE.md / repo. */
   readonly cwd?: string
+  /** Output language code (e.g. "fr"). Absent → English (default). */
+  readonly lang?: string
 }
 
 export class CliAgentDistiller implements DistillPort {
@@ -40,6 +42,7 @@ export class CliAgentDistiller implements DistillPort {
   private readonly maxItems: number
   private readonly timeoutMs: number
   private readonly cwd: string
+  private readonly lang: string | undefined
 
   constructor(opts: CliAgentDistillerOptions) {
     this.engine = opts.engine
@@ -47,15 +50,16 @@ export class CliAgentDistiller implements DistillPort {
     this.maxItems = opts.maxItems ?? 8
     this.timeoutMs = opts.timeoutMs ?? 120_000
     this.cwd = opts.cwd ?? tmpdir()
+    this.lang = opts.lang
   }
 
   async distill(input: DistillInput): Promise<readonly DistilledItem[]> {
-    const prompt = buildDistillPrompt(input, this.maxItems)
+    const prompt = buildDistillPrompt(input, this.maxItems, { lang: this.lang })
     // A non-zero exit (often a rate cap) rejects here; the runner skips + retries
     // the source on the next pass.
     const stdout = await spawnWithStdin({
       command: this.engine.command,
-      args: this.engine.buildArgs({ ...(this.model ? { model: this.model } : {}) }),
+      args: this.engine.buildArgs({ ...(this.model ? { model: this.model } : {}), prompt }),
       stdin: prompt,
       cwd: this.cwd,
       timeoutMs: this.timeoutMs,
