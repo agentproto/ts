@@ -39,8 +39,12 @@ export interface CliEngine {
   readonly subscriptionBilled: boolean
   /** Executable to invoke — must be on PATH and logged in. */
   readonly command: string
-  /** Build the argv for one completion. The prompt is fed over stdin, not argv. */
-  buildArgs(opts: { readonly model?: string }): string[]
+  /**
+   * Build the argv for one completion.
+   * Most engines receive the prompt over stdin and ignore `opts.prompt`.
+   * Arg-based engines (hermes `-z`) embed the prompt in argv instead.
+   */
+  buildArgs(opts: { readonly model?: string; readonly prompt?: string }): string[]
   /** Extract the model's text from captured stdout; null → fall back to raw stdout. */
   parseOutput(stdout: string): string | null
 }
@@ -175,10 +179,37 @@ const OPENCODE: CliEngine = {
   parseOutput: plainTextOutput,
 }
 
+/**
+ * Hermes one-shot mode (`hermes -z/--oneshot "<prompt>"`). Unlike the stdin-piped
+ * engines above, hermes takes the prompt as a positional argument via `-z`; stdin
+ * is ignored. The `prompt` field in `buildArgs` is therefore REQUIRED for useful
+ * output — `CliAgentDistiller` always passes it.
+ *
+ * Auth: logged-in Hermes session or HERMES_INFERENCE_PROVIDER env.
+ *   -z <prompt>        one-shot prompt (prints ONLY the final response to stdout)
+ *   -m <model>         optional model id (e.g. "claude-haiku-4-5")
+ *   --provider <p>     optional provider override (e.g. "anthropic", "openrouter")
+ *
+ * Constraint: the full distill prompt (~10–30 KB) is passed as an argv value.
+ * macOS ARG_MAX is 1 MB; this is well within limits. For very large sources the
+ * 24 000-char body cap in `buildDistillPrompt` bounds the size.
+ */
+const HERMES: CliEngine = {
+  id: "hermes",
+  subscriptionBilled: true,
+  command: "hermes",
+  buildArgs: ({ model, prompt }) => [
+    "--oneshot", prompt ?? "",
+    ...(model ? ["-m", model] : []),
+  ],
+  parseOutput: plainTextOutput,
+}
+
 /** Registry of CLI engines, keyed by id. */
 export const CLI_ENGINES: Readonly<Record<string, CliEngine>> = {
   [CLAUDE_CODE.id]: CLAUDE_CODE,
   [GEMINI.id]: GEMINI,
   [CODEX.id]: CODEX,
   [OPENCODE.id]: OPENCODE,
+  [HERMES.id]: HERMES,
 }

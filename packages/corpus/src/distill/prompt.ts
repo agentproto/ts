@@ -26,10 +26,24 @@ const DISTILLED_ITEM = z
   })
   .loose()
 
+/** Well-known language codes → display names for the prompt instruction. */
+const LANG_NAMES: Readonly<Record<string, string>> = {
+  en: "ENGLISH", fr: "FRENCH", de: "GERMAN", es: "SPANISH",
+  pt: "PORTUGUESE", it: "ITALIAN", nl: "DUTCH", ja: "JAPANESE",
+  zh: "CHINESE", ko: "KOREAN", ru: "RUSSIAN", ar: "ARABIC",
+  pl: "POLISH", sv: "SWEDISH", tr: "TURKISH",
+}
+
+function langName(code: string | undefined): string {
+  if (!code) return "ENGLISH"
+  return LANG_NAMES[code.toLowerCase()] ?? code.toUpperCase()
+}
+
 /** Build the distillation prompt for one source, capped at `maxItems`. */
 export function buildDistillPrompt(
   input: DistillInput,
-  maxItems: number
+  maxItems: number,
+  opts?: { readonly lang?: string }
 ): string {
   // A lens narrows the extraction to one aspect; without one, the generic
   // durable-insight pass runs (back-compat — existing callers pass no lens).
@@ -55,7 +69,7 @@ Guidance:
   "critique": a common mistake / anti-pattern. "summary": a compact overview.
   "example": a concrete worked instance worth remembering.
 - Drop filler, calls-to-action, tangents. Keep only what an operator could ACT on later.
-- Write every title and body in ENGLISH, even when the source is in another language. Translate the insight; do not copy the source language.
+- Write every title and body in ${langName(opts?.lang)}, even when the source is in another language. Translate the insight; do not copy the source language.
 
 SOURCE TITLE: ${input.title}
 ${input.tags?.length ? `TAGS: ${input.tags.join(", ")}\n` : ""}SOURCE BODY:

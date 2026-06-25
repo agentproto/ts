@@ -96,6 +96,7 @@ interface DistillerEngine {
     apiKey?: string
     model?: string
     onUsage?: (usage: DistillUsage) => void
+    lang?: string
   }): DistillPort
 }
 
@@ -108,11 +109,12 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
   [DEFAULT_ENGINE]: {
     id: DEFAULT_ENGINE,
     needsApiKey: true,
-    create: ({ apiKey, model, onUsage }) =>
+    create: ({ apiKey, model, onUsage, lang }) =>
       new AnthropicDistiller({
         apiKey: apiKey!,
         ...(model ? { model } : {}),
         ...(onUsage ? { onUsage } : {}),
+        ...(lang ? { lang } : {}),
       }),
   },
   ...Object.fromEntries(
@@ -121,8 +123,12 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
       {
         id: engine.id,
         needsApiKey: false,
-        create: ({ model }) =>
-          new CliAgentDistiller({ engine, ...(model ? { model } : {}) }),
+        create: ({ model, lang }) =>
+          new CliAgentDistiller({
+            engine,
+            ...(model ? { model } : {}),
+            ...(lang ? { lang } : {}),
+          }),
       } satisfies DistillerEngine,
     ])
   ),
@@ -135,6 +141,7 @@ interface ParsedArgs {
   throttleMs: number
   model: string | undefined
   engine: string
+  lang: string | undefined
 }
 
 function parse(args: readonly string[]): ParsedArgs {
@@ -145,6 +152,7 @@ function parse(args: readonly string[]): ParsedArgs {
     throttleMs: 1000,
     model: undefined,
     engine: DEFAULT_ENGINE,
+    lang: undefined,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -155,6 +163,7 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--throttle": { const v = next(); if (v) out.throttleMs = Number(v); break }
       case "--model": out.model = next(); break
       case "--engine": { const v = next(); if (v) out.engine = v; break }
+      case "--lang": out.lang = next(); break
       default:
         if (!a.startsWith("-") && out.workspace === undefined) out.workspace = a
     }
@@ -271,6 +280,7 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
       ...(apiKey ? { apiKey } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
       onUsage: usage.record,
+      ...(parsed.lang ? { lang: parsed.lang } : {}),
     }),
   })
 

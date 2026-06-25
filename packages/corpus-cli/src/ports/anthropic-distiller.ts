@@ -37,6 +37,8 @@ export interface AnthropicDistillerOptions {
   readonly maxItems?: number
   /** Optional sink for per-call token usage (cost + Langfuse export). */
   readonly onUsage?: (usage: DistillUsage) => void
+  /** Output language code (e.g. "fr"). Absent → English (default). */
+  readonly lang?: string
 }
 
 export class AnthropicDistiller implements DistillPort {
@@ -45,6 +47,7 @@ export class AnthropicDistiller implements DistillPort {
   private readonly baseUrl: string
   private readonly maxItems: number
   private readonly onUsage: ((usage: DistillUsage) => void) | undefined
+  private readonly lang: string | undefined
 
   constructor(opts: AnthropicDistillerOptions) {
     this.apiKey = opts.apiKey
@@ -52,10 +55,11 @@ export class AnthropicDistiller implements DistillPort {
     this.baseUrl = (opts.baseUrl ?? "https://api.anthropic.com/v1").replace(/\/+$/, "")
     this.maxItems = opts.maxItems ?? 8
     this.onUsage = opts.onUsage
+    this.lang = opts.lang
   }
 
   async distill(input: DistillInput): Promise<readonly DistilledItem[]> {
-    const prompt = buildDistillPrompt(input, this.maxItems)
+    const prompt = buildDistillPrompt(input, this.maxItems, { lang: this.lang })
     const startedAt = new Date().toISOString()
     const res = await fetch(`${this.baseUrl}/messages`, {
       method: "POST",
