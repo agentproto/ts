@@ -1,0 +1,134 @@
+/**
+ * @agentproto/harness — transport client (WP1).
+ *
+ * The single place that touches the MCP SDK + JSON-payload parsing. Connects to
+ * the daemon's `/mcp` endpoint over `StreamableHTTPClientTransport` and exposes
+ * typed wrappers over the session tools. Mirrors the proven pattern in
+ * `packages/cli/src/commands/mcp-bridge.ts:30-58`.
+ *
+ * Tool results come back as `content: [{ type: "text", text: <JSON> }]`; the
+ * `#call` helper unwraps + parses that text payload.
+ */
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import type {
+  ConnectHarnessOptions,
+  SessionDescriptor,
+  StartAgentArgs,
+  TurnEvent,
+  TurnResult,
+} from "./types.js"
+
+/** Default daemon MCP endpoint (port 18790; `serve.ts:186,865`). */
+export const DEFAULT_MCP_URL = "http://127.0.0.1:18790/mcp"
+
+/**
+ * Resolve the daemon URL: explicit option → `AGENTPROTO_MCP_URL` → default.
+ */
+export function resolveMcpUrl(opts?: ConnectHarnessOptions): string {
+  return (
+    opts?.url ?? process.env.AGENTPROTO_MCP_URL ?? DEFAULT_MCP_URL
+  )
+}
+
+/**
+ * Thin typed facade over the daemon's session MCP tools. One instance is shared
+ * by all harnesses created against the same daemon.
+ */
+export class HarnessClient {
+  readonly url: string
+  #client: Client
+
+  private constructor(url: string, client: Client) {
+    this.url = url
+    this.#client = client
+  }
+
+  /**
+   * Connect an MCP client over HTTP to the daemon's `/mcp` endpoint.
+   */
+  static async connect(opts?: ConnectHarnessOptions): Promise<HarnessClient> {
+    const url = resolveMcpUrl(opts)
+    const client = new Client(
+      { name: "harness", version: "0.1.0" },
+      { capabilities: {} },
+    )
+    const transport = new StreamableHTTPClientTransport(new URL(url))
+    await client.connect(transport)
+    return new HarnessClient(url, client)
+  }
+
+  /** Spawn a session via `start_agent_session`. */
+  async start(args: StartAgentArgs): Promise<SessionDescriptor> {
+    return this.#call("start_agent_session", args as unknown as Record<string, unknown>)
+  }
+
+  /** Send a follow-up turn via `prompt_agent_session` (fire-and-forget). */
+  async prompt(sessionId: string, prompt: string): Promise<void> {
+    await this.#call("prompt_agent_session", { sessionId, prompt })
+  }
+
+  /** Tail the ring buffer via `get_agent_session_output`. */
+  async output(sessionId: string, lastN?: number): Promise<string> {
+    const res = await this.#call<{ lines?: string[] }>(
+      "get_agent_session_output",
+      { sessionId, lastN },
+    )
+    return (res.lines ?? []).join("\n")
+  }
+
+  /** SIGTERM via `kill_agent_session`. */
+  async kill(sessionId: string): Promise<void> {
+    await this.#call("kill_agent_session", { sessionId })
+  }
+
+  /**
+   * Multiplexed long-poll via `wait_for_any`. `timeoutMs` is clamped to the
+   * tool's 1 000–49 000 window; a clean timeout surfaces as
+   * `{ event: "timeout" }`.
+   */
+  async waitForAny(
+    sessionIds: string[],
+    opts?: { timeoutMs?: number; event?: TurnEvent },
+  ): Promise<TurnResult> {
+    return this.#call("wait_for_any", {
+      sessionIds,
+      ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts?.event !== undefined ? { event: opts.event } : {}),
+    })
+  }
+
+  /**
+   * Snapshot the session hierarchy via `session_tree`. When called from a
+   * scoped orchestrator token only the caller's subtree is returned.
+   */
+  async sessionTree(sessionId: string, onlyAlive?: boolean): Promise<unknown> {
+    return this.#call("session_tree", {
+      sessionId,
+      ...(onlyAlive !== undefined ? { onlyAlive } : {}),
+    })
+  }
+
+  /** Disconnect the underlying transport. */
+  async close(): Promise<void> {
+    await this.#client.close()
+  }
+
+  // ── private helpers ────────────────────────────────────────────────
+
+  /** Call a daemon MCP tool and unwrap its JSON response. */
+  async #call<T = unknown>(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const res = await this.#client.callTool({ name, arguments: args })
+    const text = (
+      res.content as Array<{ type: string; text?: string }>
+    )[0]?.text
+    if (!text) {
+      throw new Error(`No content from tool \`${name}\``)
+    }
+    return JSON.parse(text) as T
+  }
+}
