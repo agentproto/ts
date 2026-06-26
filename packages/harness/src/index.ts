@@ -58,5 +58,5 @@ export type {
   SessionDescriptor,
   ConnectHarnessOptions,
   CoderContext,
-  WorkPackage,
 } from "./types.js"
+export type { WorkPackage } from "./wp.js"

@@ -20,8 +20,9 @@ export interface MakeHandleMeta {
  * Build an `AgentHandle` over a started session.
  *
  * WP2: implement `send` (→ client.prompt), `waitForTurn` (→ client.waitForAny
- * with `event: "turn-end"`, timeout → `{ event: "timeout" }`), `ask` (send +
- * waitForTurn + output), `output` (→ client.output), `kill` (→ client.kill).
+ * with `event: "any"` to catch `turn-end`, `awaiting-input`, and `exited`),
+ * timeout → `{ event: "timeout" }`), `ask` (send + waitForTurn + output),
+ * `output` (→ client.output), `kill` (→ client.kill).
  */
 export function makeHandle(
   client: HarnessClient,
@@ -38,7 +39,7 @@ export function makeHandle(
 
     async waitForTurn(opts?: { timeoutMs?: number }): Promise<TurnResult> {
       return client.waitForAny([meta.sessionId], {
-        event: "turn-end",
+        event: "any",
         ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
       })
     },
@@ -46,7 +47,7 @@ export function makeHandle(
     async ask(prompt: string, opts?: { timeoutMs?: number }): Promise<string> {
       await client.prompt(meta.sessionId, prompt)
       await client.waitForAny([meta.sessionId], {
-        event: "turn-end",
+        event: "any",
         ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
       })
       return client.output(meta.sessionId)

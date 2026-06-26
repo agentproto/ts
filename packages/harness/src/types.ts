@@ -115,14 +115,5 @@ export interface CoderContext {
   extra?: string
 }
 
-/** A unit of work the supervisor harness assigns to a sub-agent. */
-export interface WorkPackage {
-  id: string
-  title: string
-  scope?: string
-  files?: string[]
-  gate?: string
-}
-
 /** Alias for the spec-facing name. */
 export type StartArgs = StartAgentArgs
