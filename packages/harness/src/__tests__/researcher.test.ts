@@ -14,11 +14,10 @@ describe("buildResearcherArgs", () => {
     expect(args.model).toBeUndefined()
   })
 
-  it("always includes a prompt with schema hint", () => {
+  it("omits prompt from spawn args (injected as explicit turn in createResearcherHarness)", () => {
     const args = buildResearcherArgs({})
-    expect(args.prompt).toBeDefined()
-    expect(args.prompt).toContain("findings")
-    expect(args.prompt).toContain("sources")
+    // prompt is delivered as a controlled turn post-spawn to avoid turn-end races
+    expect(args.prompt).toBeUndefined()
   })
 
   it("merges searchMcp into mcpServers", () => {
@@ -99,7 +98,7 @@ describe("renderResearcherPrompt", () => {
 })
 
 describe("createResearcherHarness", () => {
-  it("returns handle with correct sessionId, sends /model turn and waits", async () => {
+  it("sends /model turn, drains it, injects system prompt, drains it, returns handle", async () => {
     const fakeWait = { sessionId: "sess_r", event: "turn-end" }
     const fakeSession = { id: "sess_r", status: "running", startedAt: new Date().toISOString() }
     const client = {
@@ -110,10 +109,13 @@ describe("createResearcherHarness", () => {
     const handle = await createResearcherHarness(client, {})
     expect(handle.sessionId).toBe("sess_r")
     expect(handle.adapter).toBe("hermes")
-    // default model sent as /model turn
-    expect(client.prompt).toHaveBeenCalledWith("sess_r", "/model z-ai/glm-5.2")
-    // and we wait for that turn to settle
-    expect(client.waitForAny).toHaveBeenCalledWith(["sess_r"], { event: "turn-end", timeoutMs: 15_000 })
+    // call order: /model turn, then system prompt turn
+    expect(client.prompt).toHaveBeenNthCalledWith(1, "sess_r", "/model z-ai/glm-5.2")
+    expect(client.prompt).toHaveBeenNthCalledWith(2, "sess_r", expect.stringContaining("researcher agent"))
+    // two waitForAny calls: model-switch drain + system-prompt drain
+    expect(client.waitForAny).toHaveBeenCalledTimes(2)
+    expect(client.waitForAny).toHaveBeenNthCalledWith(1, ["sess_r"], { event: "turn-end", timeoutMs: 15_000 })
+    expect(client.waitForAny).toHaveBeenNthCalledWith(2, ["sess_r"], { event: "turn-end", timeoutMs: 30_000 })
     expect(handle.model).toBe("z-ai/glm-5.2")
   })
 
@@ -126,7 +128,7 @@ describe("createResearcherHarness", () => {
       waitForAny: vi.fn().mockResolvedValue(fakeWait),
     } as any
     const handle = await createResearcherHarness(client, { model: "openai/gpt-4o" })
-    expect(client.prompt).toHaveBeenCalledWith("sess_r2", "/model openai/gpt-4o")
+    expect(client.prompt).toHaveBeenNthCalledWith(1, "sess_r2", "/model openai/gpt-4o")
     expect(handle.model).toBe("openai/gpt-4o")
   })
 })

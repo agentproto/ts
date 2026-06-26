@@ -78,6 +78,29 @@ export const hermes: AgentCliHandle = defineAgentCli({
     resumable: false,
     bidirectional: true,
   },
+  options: [
+    {
+      id: "model",
+      // string (not enum) so any valid OpenRouter/Anthropic/OpenAI model ID is
+      // accepted without requiring a code change to expand the list. Applied via
+      // ACP newSession(model:...) — hermes reads the model from the ACP session
+      // config, not from its own CLI args.
+      type: "string" as const,
+      description:
+        "Model ID routed through OpenRouter/Anthropic/OpenAI " +
+        "(e.g. 'anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2'). " +
+        "Applied via ACP newSession after the session is created. " +
+        "Omit to use the hermes default.",
+    },
+    {
+      id: "effort",
+      type: "enum" as const,
+      enum: ["low", "medium", "high", "xhigh", "max"],
+      description:
+        "Reasoning effort level passed to hermes via ACP newSession. " +
+        "Omit to use the hermes default.",
+    },
+  ],
   tags: ["hermes", "nous", "acp", "agent-runtime"],
 })
 

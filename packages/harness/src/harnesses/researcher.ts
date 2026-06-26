@@ -72,9 +72,13 @@ export function renderResearcherPrompt(
  * Build the `start_agent_session` args for the researcher preset.
  * Exported so WP4's unit test can assert `mcpServers` + schema are present.
  *
- * `model` and `effort` are NOT included — hermes does not declare them as
- * manifest options so the daemon rejects them at compose time. Instead,
- * `createResearcherHarness` sends `/model <slug>` as a first prompt turn.
+ * `model`, `effort`, and the system `prompt` are NOT included here —
+ * `createResearcherHarness` delivers them as controlled turns after spawn
+ * so each step has exactly one turn-end to drain:
+ *   1. `/model <slug>` → model switch turn-end (fast)
+ *   2. system prompt turn → LLM response turn-end (may be slow)
+ * This avoids the race where a spawn-time prompt fires a turn-end that
+ * interferes with the caller's first `ask()`.
  */
 export function buildResearcherArgs(
   opts: ResearcherHarnessOptions,
@@ -86,7 +90,6 @@ export function buildResearcherArgs(
   ]
   return {
     adapter: "hermes",
-    prompt: renderResearcherPrompt(opts),
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     ...(opts.workspaceSlug ? { workspaceSlug: opts.workspaceSlug } : {}),
     ...(mcpServers.length ? { mcpServers } : {}),
@@ -103,13 +106,13 @@ export async function createResearcherHarness(
   const args = buildResearcherArgs(opts)
   const desc = await client.start(args)
   if (modelSlug) {
-    // TODO: declare model/effort in hermes manifest (adapters/hermes/src/index.ts)
-    // so spawn-time model selection works without the /model workaround
+    // Step 1: switch model, drain its fast turn-end
     await client.prompt(desc.id, `/model ${modelSlug}`)
-    // wait for the model-switch turn to complete before caller uses the handle,
-    // otherwise waitForTurn() on the first ask() triggers on this event instead
     await client.waitForAny([desc.id], { event: "turn-end", timeoutMs: 15_000 })
   }
+  // Step 2: inject system prompt as an explicit turn, drain LLM response
+  await client.prompt(desc.id, renderResearcherPrompt(opts))
+  await client.waitForAny([desc.id], { event: "turn-end", timeoutMs: 30_000 })
   return makeHandle(client, {
     sessionId: desc.id,
     adapter: args.adapter,
