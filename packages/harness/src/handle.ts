@@ -45,11 +45,16 @@ export function makeHandle(
     },
 
     async ask(prompt: string, opts?: { timeoutMs?: number }): Promise<string> {
-      await client.prompt(meta.sessionId, prompt)
-      await client.waitForAny([meta.sessionId], {
+      // Start the wait BEFORE sending to avoid a race window: if the agent
+      // turns around extremely fast the prompt could produce a turn-end before
+      // waitForAny subscribes.
+      const waitPromise = client.waitForAny([meta.sessionId], {
         event: "any",
-        ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+        timeoutMs: opts?.timeoutMs !== undefined ? opts.timeoutMs : 45000,
       })
+      await client.prompt(meta.sessionId, prompt)
+      const result = await waitPromise
+      if (result.event === "timeout") return "[timeout]"
       return client.output(meta.sessionId)
     },
 

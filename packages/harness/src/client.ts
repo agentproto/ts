@@ -129,6 +129,9 @@ export class HarnessClient {
     if (!text) {
       throw new Error(`No content from tool \`${name}\``)
     }
+    if ((res as { isError?: boolean }).isError) {
+      throw new Error(`Tool \`${name}\` returned error: ${text}`)
+    }
     return JSON.parse(text) as T
   }
 }

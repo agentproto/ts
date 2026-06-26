@@ -94,7 +94,16 @@ export async function createSupervisorHarness(
           event: "timeout",
         }
       }
-      return client.waitForAny(childIds, opts)
+      // wait_for_any accepts max 20 session IDs — chunk & race
+      const CHUNK = 20
+      if (childIds.length <= CHUNK) {
+        return client.waitForAny(childIds, opts)
+      }
+      const chunks: string[][] = []
+      for (let i = 0; i < childIds.length; i += CHUNK) {
+        chunks.push(childIds.slice(i, i + CHUNK))
+      }
+      return Promise.race(chunks.map((chunk) => client.waitForAny(chunk, opts)))
     },
   }
 }
