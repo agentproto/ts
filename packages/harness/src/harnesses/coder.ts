@@ -78,8 +78,6 @@ export async function createCoderHarness(
   const args = buildCoderArgs(opts)
   const desc = await client.start(args)
   if (isHermes && modelSlug) {
-    // TODO: declare model/effort in hermes manifest (adapters/hermes/src/index.ts)
-    // so spawn-time model selection works without the /model workaround
     await client.prompt(desc.id, `/model ${modelSlug}`)
     // wait for the model-switch turn to complete before caller uses the handle,
     // otherwise waitForTurn() on the first ask() triggers on this event instead
