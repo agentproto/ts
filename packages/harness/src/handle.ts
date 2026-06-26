@@ -40,7 +40,7 @@ export function makeHandle(
     async waitForTurn(opts?: { timeoutMs?: number }): Promise<TurnResult> {
       return client.waitForAny([meta.sessionId], {
         event: "any",
-        ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       })
     },
 

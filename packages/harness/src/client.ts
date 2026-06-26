@@ -129,6 +129,8 @@ export class HarnessClient {
     if (!text) {
       throw new Error(`No content from tool \`${name}\``)
     }
+    // TODO: remove cast once SDK types are stable — CallToolResult already
+    // carries isError?: boolean in newer SDK versions.
     if ((res as { isError?: boolean }).isError) {
       throw new Error(`Tool \`${name}\` returned error: ${text}`)
     }
