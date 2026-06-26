@@ -1,0 +1,73 @@
+{
+  "name": "@agentproto/harness",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/harness — typed, one-call agent-session presets (coder, researcher, supervisor) over the agentproto daemon's start/prompt/output session tools. A client-side recipe layer; adds no new daemon surface.",
+  "keywords": [
+    "agentproto",
+    "harness",
+    "agent",
+    "session",
+    "orchestration",
+    "mcp",
+    "preset"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/harness"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.mjs",
+      "default": "./dist/types.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": ">=1.0.0",
+    "zod": ">=3.0.0"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
