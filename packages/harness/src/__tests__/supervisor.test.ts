@@ -76,3 +76,22 @@ describe("createSupervisorHarness", () => {
     expect(client.start.mock.calls[0][0].orchestrator).toBe(true)
   })
 })
+
+describe("SupervisorHandle.waitForAnyChild — chunking", () => {
+  it("handles >20 children by chunking into groups of 20", async () => {
+    const fakeSession = { id: "sess_sup", status: "running", startedAt: new Date().toISOString() }
+    const turnResult = { sessionId: "sess_child_0", event: "turn-end" as const }
+    // 25 children — exceeds the 20-child cap
+    const tree = Array.from({ length: 25 }, (_, i) => ({ id: `sess_child_${i}` }))
+    const client = {
+      start: vi.fn().mockResolvedValue(fakeSession),
+      sessionTree: vi.fn().mockResolvedValue({ sessionId: "sess_sup", tree }),
+      waitForAny: vi.fn().mockResolvedValue(turnResult),
+    } as any
+    const handle = await createSupervisorHarness(client, { workspace: "/repo" })
+    const result = await handle.waitForAnyChild()
+    // waitForAny should have been called twice (chunks of 20 + 5)
+    expect(client.waitForAny).toHaveBeenCalledTimes(2)
+    expect(result).toEqual(turnResult)
+  })
+})

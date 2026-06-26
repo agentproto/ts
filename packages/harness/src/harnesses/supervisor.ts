@@ -94,7 +94,19 @@ export async function createSupervisorHarness(
           event: "timeout",
         }
       }
-      return client.waitForAny(childIds, opts)
+      // wait_for_any accepts max 20 session IDs — chunk & race
+      const CHUNK = 20
+      if (childIds.length <= CHUNK) {
+        return client.waitForAny(childIds, opts)
+      }
+      const chunks: string[][] = []
+      for (let i = 0; i < childIds.length; i += CHUNK) {
+        chunks.push(childIds.slice(i, i + CHUNK))
+      }
+      // NOTE: losing chunks are not cancellable — they poll until their own timeoutMs
+      // expires. This is a known limitation of the wait_for_any tool (no cancel API).
+      // Impact: at most (Math.ceil(n/20) - 1) extra open long-polls until timeout.
+      return Promise.race(chunks.map((chunk) => client.waitForAny(chunk, opts)))
     },
   }
 }
