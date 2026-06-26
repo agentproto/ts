@@ -7,10 +7,11 @@ import {
 } from "../harnesses/researcher.js"
 
 describe("buildResearcherArgs", () => {
-  it("defaults to GLM model on hermes", () => {
+  it("defaults to hermes adapter; omits model from args (sent via /model turn)", () => {
     const args = buildResearcherArgs({})
     expect(args.adapter).toBe("hermes")
-    expect(args.model).toBe("z-ai/glm-5.2")
+    // hermes does not declare model as a manifest option — omitted from spawn args
+    expect(args.model).toBeUndefined()
   })
 
   it("always includes a prompt with schema hint", () => {
@@ -36,9 +37,10 @@ describe("buildResearcherArgs", () => {
     expect(args.mcpServers).toContainEqual(expect.objectContaining({ name: "search" }))
   })
 
-  it("respects model override", () => {
+  it("respects model override (stored for /model turn, not in spawn args)", () => {
     const args = buildResearcherArgs({ model: "openai/gpt-4o" })
-    expect(args.model).toBe("openai/gpt-4o")
+    // model override is NOT in spawn args — createResearcherHarness sends it as /model turn
+    expect(args.model).toBeUndefined()
   })
 
   it("passes cwd through", () => {
@@ -70,11 +72,12 @@ describe("DEFAULT_RESEARCH_SCHEMA", () => {
 })
 
 describe("renderResearcherPrompt", () => {
-  it("includes researcher agent instruction", () => {
+  it("includes researcher agent instruction and English directive", () => {
     const prompt = renderResearcherPrompt({})
     expect(prompt).toContain("researcher agent")
     expect(prompt).toContain("gather")
     expect(prompt).toContain("evidence")
+    expect(prompt).toContain("Always reply in English")
   })
 
   it("renders default schema as JSON", () => {
@@ -96,18 +99,34 @@ describe("renderResearcherPrompt", () => {
 })
 
 describe("createResearcherHarness", () => {
-  it("returns handle with correct sessionId", async () => {
+  it("returns handle with correct sessionId, sends /model turn and waits", async () => {
+    const fakeWait = { sessionId: "sess_r", event: "turn-end" }
     const fakeSession = { id: "sess_r", status: "running", startedAt: new Date().toISOString() }
-    const client = { start: vi.fn().mockResolvedValue(fakeSession) } as any
+    const client = {
+      start: vi.fn().mockResolvedValue(fakeSession),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      waitForAny: vi.fn().mockResolvedValue(fakeWait),
+    } as any
     const handle = await createResearcherHarness(client, {})
     expect(handle.sessionId).toBe("sess_r")
     expect(handle.adapter).toBe("hermes")
+    // default model sent as /model turn
+    expect(client.prompt).toHaveBeenCalledWith("sess_r", "/model z-ai/glm-5.2")
+    // and we wait for that turn to settle
+    expect(client.waitForAny).toHaveBeenCalledWith(["sess_r"], { event: "turn-end", timeoutMs: 15_000 })
+    expect(handle.model).toBe("z-ai/glm-5.2")
   })
 
-  it("passes model through to handle", async () => {
+  it("passes model override through handle and /model turn", async () => {
+    const fakeWait = { sessionId: "sess_r2", event: "turn-end" }
     const fakeSession = { id: "sess_r2", status: "running", startedAt: new Date().toISOString() }
-    const client = { start: vi.fn().mockResolvedValue(fakeSession) } as any
+    const client = {
+      start: vi.fn().mockResolvedValue(fakeSession),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      waitForAny: vi.fn().mockResolvedValue(fakeWait),
+    } as any
     const handle = await createResearcherHarness(client, { model: "openai/gpt-4o" })
+    expect(client.prompt).toHaveBeenCalledWith("sess_r2", "/model openai/gpt-4o")
     expect(handle.model).toBe("openai/gpt-4o")
   })
 })

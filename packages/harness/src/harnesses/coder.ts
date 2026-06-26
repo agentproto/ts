@@ -43,16 +43,20 @@ const DEFAULTS = {
 /**
  * Build the `start_agent_session` args for the coder preset. Exported so WP3's
  * unit test can snapshot the args for both engines without a live daemon.
+ *
+ * For hermes: `model` and `effort` are NOT included — hermes does not declare
+ * them as manifest options so the daemon rejects them at compose time. Instead,
+ * `createCoderHarness` sends `/model <slug>` as a first prompt turn after spawn.
  */
 export function buildCoderArgs(opts: CoderHarnessOptions): StartAgentArgs {
   const engine = opts.engine ?? "claude-code"
+  const isHermes = engine === "hermes"
   const model =
     opts.model ??
-    (engine === "hermes" ? DEFAULTS.hermesModel : DEFAULTS.claudeCodeModel)
+    (isHermes ? DEFAULTS.hermesModel : DEFAULTS.claudeCodeModel)
   return {
     adapter: engine,
-    model,
-    effort: opts.effort ?? DEFAULTS.effort,
+    ...(isHermes ? {} : { model, effort: opts.effort ?? DEFAULTS.effort }),
     ...(opts.workspace ? { cwd: opts.workspace } : {}),
     ...(opts.workspaceSlug ? { workspaceSlug: opts.workspaceSlug } : {}),
     ...(opts.context ? { prompt: renderCoderPrompt(opts.context) } : {}),
@@ -66,11 +70,24 @@ export async function createCoderHarness(
   client: HarnessClient,
   opts: CoderHarnessOptions = {},
 ): Promise<AgentHandle> {
+  const engine = opts.engine ?? "claude-code"
+  const isHermes = engine === "hermes"
+  const modelSlug = isHermes
+    ? (opts.model ?? DEFAULTS.hermesModel)
+    : (opts.model ?? DEFAULTS.claudeCodeModel)
   const args = buildCoderArgs(opts)
   const desc = await client.start(args)
+  if (isHermes && modelSlug) {
+    // TODO: declare model/effort in hermes manifest (adapters/hermes/src/index.ts)
+    // so spawn-time model selection works without the /model workaround
+    await client.prompt(desc.id, `/model ${modelSlug}`)
+    // wait for the model-switch turn to complete before caller uses the handle,
+    // otherwise waitForTurn() on the first ask() triggers on this event instead
+    await client.waitForAny([desc.id], { event: "turn-end", timeoutMs: 15_000 })
+  }
   return makeHandle(client, {
     sessionId: desc.id,
     adapter: args.adapter,
-    ...(args.model ? { model: args.model } : {}),
+    model: modelSlug,
   })
 }

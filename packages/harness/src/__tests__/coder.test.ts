@@ -10,10 +10,12 @@ describe("buildCoderArgs", () => {
     expect(args.effort).toBe("high")
   })
 
-  it("hermes engine uses deepseek model", () => {
+  it("hermes engine omits model/effort from args (sent via /model turn instead)", () => {
     const args = buildCoderArgs({ workspace: "/repo", engine: "hermes" })
     expect(args.adapter).toBe("hermes")
-    expect(args.model).toBe("deepseek/deepseek-v4-pro")
+    // hermes does not declare model/effort options — omitted from spawn args
+    expect(args.model).toBeUndefined()
+    expect(args.effort).toBeUndefined()
   })
 
   it("injects context as spawn prompt", () => {
@@ -49,20 +51,33 @@ describe("buildCoderArgs", () => {
 describe("createCoderHarness", () => {
   it("calls client.start with correct args and returns handle", async () => {
     const fakeSession = { id: "sess_test", status: "running", startedAt: new Date().toISOString() }
-    const client = { start: vi.fn().mockResolvedValue(fakeSession) } as any
+    const client = { start: vi.fn().mockResolvedValue(fakeSession), prompt: vi.fn().mockResolvedValue(undefined) } as any
     const handle = await createCoderHarness(client, { workspace: "/repo" })
     expect(client.start).toHaveBeenCalledOnce()
     expect(client.start.mock.calls[0][0].adapter).toBe("claude-code")
     expect(handle.sessionId).toBe("sess_test")
     expect(handle.adapter).toBe("claude-code")
+    // claude-code: model goes in start args, not via /model turn
+    expect(client.prompt).not.toHaveBeenCalled()
   })
 
-  it("passes engine=hermes through to start args", async () => {
+  it("hermes: omits model from start args, sends /model turn and waits", async () => {
+    const fakeWait = { sessionId: "sess_h", event: "turn-end" }
     const fakeSession = { id: "sess_h", status: "running", startedAt: new Date().toISOString() }
-    const client = { start: vi.fn().mockResolvedValue(fakeSession) } as any
+    const client = {
+      start: vi.fn().mockResolvedValue(fakeSession),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      waitForAny: vi.fn().mockResolvedValue(fakeWait),
+    } as any
     const handle = await createCoderHarness(client, { engine: "hermes", workspaceSlug: "ws1" })
     expect(client.start.mock.calls[0][0].adapter).toBe("hermes")
-    expect(client.start.mock.calls[0][0].model).toBe("deepseek/deepseek-v4-pro")
+    // model must NOT be in spawn args for hermes
+    expect(client.start.mock.calls[0][0].model).toBeUndefined()
+    // model is sent as a /model slash-command turn instead
+    expect(client.prompt).toHaveBeenCalledWith("sess_h", "/model deepseek/deepseek-v4-pro")
+    // and we wait for that turn to settle before returning
+    expect(client.waitForAny).toHaveBeenCalledWith(["sess_h"], { event: "turn-end", timeoutMs: 15_000 })
     expect(handle.adapter).toBe("hermes")
+    expect(handle.model).toBe("deepseek/deepseek-v4-pro")
   })
 })
