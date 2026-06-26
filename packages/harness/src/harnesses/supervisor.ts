@@ -99,15 +99,13 @@ export async function createSupervisorHarness(
       if (childIds.length <= CHUNK) {
         return client.waitForAny(childIds, opts)
       }
-      // Build chunks using a single slice-based expression.
-      const chunks = Array.from(
-        { length: Math.ceil(childIds.length / CHUNK) },
-        (_, i) => childIds.slice(i * CHUNK, (i + 1) * CHUNK),
-      )
-      // NOTE: losing waitForAny calls have no cancellation API on the MCP
-      // transport layer. They will keep their daemon connections open until
-      // their own timeoutMs expires. This is a known limitation — once the
-      // SDK or daemon exposes an abort/cancel mechanism this can be addressed.
+      const chunks: string[][] = []
+      for (let i = 0; i < childIds.length; i += CHUNK) {
+        chunks.push(childIds.slice(i, i + CHUNK))
+      }
+      // NOTE: losing chunks are not cancellable — they poll until their own timeoutMs
+      // expires. This is a known limitation of the wait_for_any tool (no cancel API).
+      // Impact: at most (Math.ceil(n/20) - 1) extra open long-polls until timeout.
       return Promise.race(chunks.map((chunk) => client.waitForAny(chunk, opts)))
     },
   }

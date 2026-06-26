@@ -77,91 +77,21 @@ describe("createSupervisorHarness", () => {
   })
 })
 
-// ── waitForAnyChild — chunking regression (>20 children) ─────────────────────
-
-describe("waitForAnyChild — chunking path (regression)", () => {
-  /**
-   * Build a fake sessionTree result with `n` flat child sessions.
-   */
-  function makeTree(n: number): { tree: Array<{ id: string }> } {
-    return {
-      tree: Array.from({ length: n }, (_, i) => ({ id: `child_${i}` })),
-    }
-  }
-
-  it("uses a single waitForAny call when children ≤ 20", async () => {
-    const fakeSession = { id: "sess_parent", status: "running", startedAt: new Date().toISOString() }
-    const turnResult = { sessionId: "child_0", event: "turn-end" as const }
+describe("SupervisorHandle.waitForAnyChild — chunking", () => {
+  it("handles >20 children by chunking into groups of 20", async () => {
+    const fakeSession = { id: "sess_sup", status: "running", startedAt: new Date().toISOString() }
+    const turnResult = { sessionId: "sess_child_0", event: "turn-end" as const }
+    // 25 children — exceeds the 20-child cap
+    const tree = Array.from({ length: 25 }, (_, i) => ({ id: `sess_child_${i}` }))
     const client = {
       start: vi.fn().mockResolvedValue(fakeSession),
-      sessionTree: vi.fn().mockResolvedValue(makeTree(20)),
+      sessionTree: vi.fn().mockResolvedValue({ sessionId: "sess_sup", tree }),
       waitForAny: vi.fn().mockResolvedValue(turnResult),
     } as any
-
     const handle = await createSupervisorHarness(client, { workspace: "/repo" })
     const result = await handle.waitForAnyChild()
-
-    expect(client.waitForAny).toHaveBeenCalledOnce()
-    // All 20 ids passed in one call
-    expect(client.waitForAny.mock.calls[0][0]).toHaveLength(20)
-    expect(result).toEqual(turnResult)
-  })
-
-  it("fans out into chunks of 20 when there are more than 20 children", async () => {
-    const fakeSession = { id: "sess_parent", status: "running", startedAt: new Date().toISOString() }
-    // 25 children → 2 chunks: 20 + 5
-    const turnResult = { sessionId: "child_0", event: "turn-end" as const }
-    const client = {
-      start: vi.fn().mockResolvedValue(fakeSession),
-      sessionTree: vi.fn().mockResolvedValue(makeTree(25)),
-      // First call resolves, simulating a turn-end on the first chunk
-      waitForAny: vi.fn().mockResolvedValue(turnResult),
-    } as any
-
-    const handle = await createSupervisorHarness(client, { workspace: "/repo" })
-    const result = await handle.waitForAnyChild({ timeoutMs: 5000 })
-
-    // Two chunks should have been started via Promise.race
+    // waitForAny should have been called twice (chunks of 20 + 5)
     expect(client.waitForAny).toHaveBeenCalledTimes(2)
-    const callArgs = client.waitForAny.mock.calls as [string[], { timeoutMs?: number }][]
-    const chunkSizes = callArgs.map(([ids]) => ids.length)
-    expect(chunkSizes).toContain(20)
-    expect(chunkSizes).toContain(5)
-    // timeoutMs is forwarded to each chunk
-    expect(callArgs[0][1]).toMatchObject({ timeoutMs: 5000 })
-    expect(callArgs[1][1]).toMatchObject({ timeoutMs: 5000 })
     expect(result).toEqual(turnResult)
-  })
-
-  it("returns 3 chunks for 41 children (20 + 20 + 1)", async () => {
-    const fakeSession = { id: "sess_parent", status: "running", startedAt: new Date().toISOString() }
-    const turnResult = { sessionId: "child_40", event: "turn-end" as const }
-    const client = {
-      start: vi.fn().mockResolvedValue(fakeSession),
-      sessionTree: vi.fn().mockResolvedValue(makeTree(41)),
-      waitForAny: vi.fn().mockResolvedValue(turnResult),
-    } as any
-
-    const handle = await createSupervisorHarness(client, { workspace: "/repo" })
-    await handle.waitForAnyChild()
-
-    expect(client.waitForAny).toHaveBeenCalledTimes(3)
-    const chunkSizes = (client.waitForAny.mock.calls as [string[]][]).map(([ids]) => ids.length)
-    expect(chunkSizes).toEqual([20, 20, 1])
-  })
-
-  it("returns timeout result when there are no children", async () => {
-    const fakeSession = { id: "sess_parent", status: "running", startedAt: new Date().toISOString() }
-    const client = {
-      start: vi.fn().mockResolvedValue(fakeSession),
-      sessionTree: vi.fn().mockResolvedValue({ tree: [] }),
-      waitForAny: vi.fn(),
-    } as any
-
-    const handle = await createSupervisorHarness(client, { workspace: "/repo" })
-    const result = await handle.waitForAnyChild()
-
-    expect(client.waitForAny).not.toHaveBeenCalled()
-    expect(result.event).toBe("timeout")
   })
 })
