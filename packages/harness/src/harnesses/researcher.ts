@@ -54,6 +54,7 @@ export function renderResearcherPrompt(
   return [
     "You are a researcher agent. Use the available web-search tools to gather",
     "evidence and synthesize findings.",
+    "Always reply in English regardless of the query language.",
     "",
     "You MUST structure your final answer as JSON matching this schema:",
     JSON.stringify(schema, null, 2),
@@ -70,19 +71,22 @@ export function renderResearcherPrompt(
 /**
  * Build the `start_agent_session` args for the researcher preset.
  * Exported so WP4's unit test can assert `mcpServers` + schema are present.
+ *
+ * `model` and `effort` are NOT included — hermes does not declare them as
+ * manifest options so the daemon rejects them at compose time. Instead,
+ * `createResearcherHarness` sends `/model <slug>` as a first prompt turn.
  */
 export function buildResearcherArgs(
   opts: ResearcherHarnessOptions,
 ): StartAgentArgs {
+  // effort is not supported for hermes engine (not declared as a manifest option)
   const mcpServers: McpServerMount[] = [
     ...(opts.mcpServers ?? []),
     ...(opts.searchMcp ? [opts.searchMcp] : []),
   ]
   return {
     adapter: "hermes",
-    model: opts.model ?? DEFAULTS.model,
     prompt: renderResearcherPrompt(opts),
-    ...(opts.effort ? { effort: opts.effort } : {}),
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     ...(opts.workspaceSlug ? { workspaceSlug: opts.workspaceSlug } : {}),
     ...(mcpServers.length ? { mcpServers } : {}),
@@ -95,11 +99,20 @@ export async function createResearcherHarness(
   client: HarnessClient,
   opts: ResearcherHarnessOptions = {},
 ): Promise<AgentHandle> {
+  const modelSlug = opts.model ?? DEFAULTS.model
   const args = buildResearcherArgs(opts)
   const desc = await client.start(args)
+  if (modelSlug) {
+    // TODO: declare model/effort in hermes manifest (adapters/hermes/src/index.ts)
+    // so spawn-time model selection works without the /model workaround
+    await client.prompt(desc.id, `/model ${modelSlug}`)
+    // wait for the model-switch turn to complete before caller uses the handle,
+    // otherwise waitForTurn() on the first ask() triggers on this event instead
+    await client.waitForAny([desc.id], { event: "turn-end", timeoutMs: 15_000 })
+  }
   return makeHandle(client, {
     sessionId: desc.id,
     adapter: args.adapter,
-    ...(args.model ? { model: args.model } : {}),
+    model: modelSlug,
   })
 }
