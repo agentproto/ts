@@ -54,6 +54,7 @@ import {
 } from "../ports/browser-fetcher.adapter.js"
 import { ScrapeMcpFetcher } from "../ports/scrape-mcp-fetcher.adapter.js"
 import { YtDlpWhisperFetcher } from "../ports/ytdlp-whisper-fetcher.adapter.js"
+import { YtDlpCaptionsFetcher } from "../ports/ytdlp-captions-fetcher.adapter.js"
 import { OpenAiWhisperStt, type SttPort } from "../ports/stt.port.js"
 import { AssemblyAiStt } from "../ports/assemblyai-stt.adapter.js"
 import { ChunkedStt } from "../ports/chunked-stt.adapter.js"
@@ -79,6 +80,7 @@ interface ParsedArgs {
   throttleMs: number
   force: boolean
   diarize: boolean
+  noCaptions: boolean
   browserMcp: string | undefined
   scrapeMcp: string | undefined
   importerId: string
@@ -100,6 +102,7 @@ function parse(args: readonly string[]): ParsedArgs {
     throttleMs: 2000,
     force: false,
     diarize: false,
+    noCaptions: false,
     browserMcp: process.env.BROWSER_MCP_URL,
     scrapeMcp: process.env.SCRAPE_MCP_URL,
     importerId: "web",
@@ -121,6 +124,7 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--throttle": { const v = next(); if (v) out.throttleMs = Number(v); break }
       case "--force": out.force = true; break
       case "--diarize": out.diarize = true; break
+      case "--no-captions": out.noCaptions = true; break
       case "--browser-mcp": out.browserMcp = next(); break
       case "--scrape-mcp": out.scrapeMcp = next(); break
       case "--importer-id": out.importerId = next() ?? "web"; break
@@ -198,11 +202,14 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
   const batch = parsed.max !== undefined ? todo.slice(0, parsed.max) : todo
   const remaining = todo.length - batch.length
 
+  const videoLabel = parsed.noCaptions
+    ? (parsed.diarize ? "AssemblyAI" : "Whisper")
+    : `captions-first → ${parsed.diarize ? "AssemblyAI" : "Whisper"} fallback`
   const plan =
     `  workspace: ${target}\n` +
     `  urls:      ${urls.length} total · ${done.size && !parsed.force ? `${urls.length - todo.length} already ingested · ` : ""}${todo.length} to do\n` +
     `  this run:  ${batch.length}${parsed.max !== undefined ? ` (--max ${parsed.max})` : ""} · ${remaining} remaining after\n` +
-    `  video stt: ${parsed.diarize ? "AssemblyAI (speaker-labelled)" : "Whisper"}\n` +
+    `  video:     ${videoLabel}\n` +
     `  throttle:  ${parsed.throttleMs} ms between fetches\n`
 
   if (batch.length === 0) {
@@ -219,10 +226,28 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
   process.stdout.write(`import-web\n${plan}`)
 
   // Build the fetcher chain (first non-null wins):
-  //   1. videos  → yt-dlp audio → Whisper  (captions-independent; needs OPENAI_API_KEY)
-  //   2. articles→ authed browser readability (only if --browser-mcp given)
-  //   3. articles→ plain HTTP readability  (browser-free fallback)
+  //   1. videos  → yt-dlp captions/auto-subs  (free, no key; default)
+  //   2. videos  → yt-dlp audio → Whisper     (caption-less fallback; needs OPENAI_API_KEY)
+  //   3. articles→ authed browser readability (only if --browser-mcp given)
+  //   4. articles→ plain HTTP readability     (browser-free fallback)
   const chain: FetcherPort[] = []
+
+  // Tier-1 (free, no key): pull the video's captions/auto-subs. Resolves
+  // captioned videos for zero cost; returns null for caption-less ones so
+  // the Whisper tier below takes over. Modern yt-dlp retrieves auto-subs
+  // reliably, so this is the default video path (disable with --no-captions).
+  if (!parsed.noCaptions) {
+    chain.push(
+      new YtDlpCaptionsFetcher({
+        ...(parsed.lang ? { preferLang: parsed.lang } : {}),
+        ...(parsed.maxDurationSec ? { maxDurationSec: parsed.maxDurationSec } : {}),
+        ...(parsed.cookiesFromBrowser
+          ? { cookiesFromBrowser: parsed.cookiesFromBrowser }
+          : {}),
+        ...(parsed.cookiesFile ? { cookiesFile: parsed.cookiesFile } : {}),
+      })
+    )
+  }
 
   // Pick the video STT: --diarize → AssemblyAI (speaker-labelled, for
   // multi-speaker interviews/panels), else OpenAI Whisper (flat, cheaper,
@@ -244,7 +269,9 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
       stt = new ChunkedStt({ base: new OpenAiWhisperStt({ apiKey: openaiKey }) })
     else
       process.stderr.write(
-        "corpus: OPENAI_API_KEY not set — video URLs will be skipped (no transcription).\n"
+        parsed.noCaptions
+          ? "corpus: OPENAI_API_KEY not set — video URLs will be skipped (no transcription).\n"
+          : "corpus: OPENAI_API_KEY not set — caption-less videos will be skipped (captioned videos still import).\n"
       )
   }
   if (stt)
