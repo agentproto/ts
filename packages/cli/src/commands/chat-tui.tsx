@@ -96,7 +96,48 @@ type Msg = UserMsg | AgentMsg | HeaderMsg
  *  bracketed (`[tool:…]`, `[thought]`, etc.) from the runtime projector. */
 function isToolLine(line: string): boolean {
   const t = line.trimStart()
-  return t.startsWith("[tool:") || t.startsWith("[")
+  return (
+    t.startsWith("[tool:") ||
+    t.startsWith("[tool]") ||
+    t.startsWith("[thought]") ||
+    t.startsWith("[awaiting input]") ||
+    t.startsWith("[error]") ||
+    t.startsWith("[session")
+  )
+}
+
+/** A completed turn, split into interleaved tool lines and prose runs so the
+ *  original ordering (text → tool → text) is preserved. Markdown is rendered
+ *  per contiguous prose run; tool lines stay plain between them. */
+type Part =
+  | { kind: "tool"; line: string }
+  | { kind: "prose"; rendered: string }
+
+function buildParts(lines: string[]): Part[] {
+  const parts: Part[] = []
+  let proseBuffer: string[] = []
+  const flushProse = (): void => {
+    if (proseBuffer.length === 0) return
+    const raw = proseBuffer.join("\n")
+    // Strip ** wrappers around inline code spans — marked-terminal doesn't
+    // handle **`code`** cleanly.
+    const cleaned = raw.replace(/\*\*(`[^`\n]+`)\*\*/g, "$1")
+    const rendered = (marked(cleaned) as string)
+      // If marked-terminal leaves literal **, strip them as a safety net.
+      .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    if (rendered.trim()) parts.push({ kind: "prose", rendered: rendered.trimEnd() })
+    proseBuffer = []
+  }
+  for (const line of lines) {
+    if (isToolLine(line)) {
+      flushProse()
+      parts.push({ kind: "tool", line })
+    } else {
+      proseBuffer.push(line)
+    }
+  }
+  flushProse()
+  return parts
 }
 
 function LineText({ line }: { line: string }): React.ReactElement {
@@ -124,25 +165,22 @@ function MessageView({ msg }: { msg: Msg }): React.ReactElement {
       </Box>
     )
   }
-  // Completed turn: render the markdown body as ANSI-styled text. Tool lines
-  // stay plain (markdown can't meaningfully style bracketed daemon frames),
-  // so split them out and only run `marked` over the content lines.
+  // Completed turn: render markdown prose as ANSI-styled text, keeping tool
+  // lines plain and inline so the original text↔tool ordering is preserved.
   if (!msg.streaming) {
-    const raw = msg.lines.filter(line => !isToolLine(line)).join("\n")
-    // Strip ** wrappers around inline code spans — marked-terminal doesn't handle **`code`** cleanly
-    const cleaned = raw.replace(/\*\*(`[^`\n]+`)\*\*/g, "$1")
-    const rendered = (marked(cleaned) as string)
-      // If marked-terminal leaves literal **, strip them as a safety net
-      .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    const parts = buildParts(msg.lines)
     return (
       <Box flexDirection="column">
         <Text color="gray" dimColor>
           agent ›
         </Text>
-        {msg.lines.filter(isToolLine).map((line, i) => (
-          <LineText key={i} line={line} />
-        ))}
-        {raw.trim() ? <Text>{rendered.trimEnd()}</Text> : null}
+        {parts.map((part, i) =>
+          part.kind === "tool" ? (
+            <LineText key={i} line={part.line} />
+          ) : (
+            <Text key={i}>{part.rendered}</Text>
+          ),
+        )}
       </Box>
     )
   }
@@ -187,6 +225,20 @@ function ChatApp({
   const [setupPhase, setSetupPhase] = useState(Boolean(systemPrompt))
   const setupRef = useRef(Boolean(systemPrompt))
   setupRef.current = setupPhase
+  // Hard-stop for the silent setup turn: if its boundary never arrives (agent
+  // crash, dropped stream), this fires so the input doesn't wedge forever.
+  const setupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const endSetup = (): void => {
+    if (setupTimeoutRef.current) {
+      clearTimeout(setupTimeoutRef.current)
+      setupTimeoutRef.current = null
+    }
+    setupRef.current = false
+    setSetupPhase(false)
+    setTurnInFlight(false)
+  }
+  const endSetupRef = useRef(endSetup)
+  endSetupRef.current = endSetup
   // Keep the live flag readable inside the (stable) line handler.
   const turnRef = useRef(false)
   turnRef.current = turnInFlight
@@ -233,11 +285,7 @@ function ChatApp({
       // During the silent setup turn, swallow every line; the only thing we
       // care about is its boundary, which ends the suppression.
       if (setupRef.current) {
-        if (turnBoundary) {
-          setupRef.current = false
-          setSetupPhase(false)
-          setTurnInFlight(false)
-        }
+        if (turnBoundary) endSetupRef.current()
         return
       }
       if (!suppress) appendLine(raw)
@@ -290,16 +338,24 @@ function ChatApp({
   useEffect(() => {
     if (!systemPrompt) return
     setTurnInFlight(true)
+    // Hard timeout: if no turn boundary arrives within 10s, unblock the input.
+    setupTimeoutRef.current = setTimeout(() => {
+      endSetupRef.current()
+    }, 10_000)
     httpPostJson(
       `${endpoint.url}/sessions/${desc.id}/prompt`,
       { prompt: systemPrompt },
       endpoint.token,
     ).catch(() => {
       // If the setup turn never lands, don't wedge the input forever.
-      setupRef.current = false
-      setSetupPhase(false)
-      setTurnInFlight(false)
+      endSetupRef.current()
     })
+    return () => {
+      if (setupTimeoutRef.current) {
+        clearTimeout(setupTimeoutRef.current)
+        setupTimeoutRef.current = null
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
