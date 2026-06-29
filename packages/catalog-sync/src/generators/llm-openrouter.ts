@@ -15,17 +15,20 @@ const OUTPUT_PATH = "packages/model-catalog/src/llm/openrouter-routes.generated.
 
 // ── Source schema ────────────────────────────────────────────────────────
 // OpenRouter prices are STRINGS of USD-per-token (e.g. "0.000003" = $3/1M).
-// `cache_read` / `cache_write` are optional and only present for models that
-// support prompt caching (Anthropic). passthrough() keeps unknown fields so
-// the schema is forward-compatible without a regenerate when OpenRouter adds
-// keys — we only read what we model.
+// `input_cache_read` / `input_cache_write` are optional and only present for
+// models that support prompt caching (Anthropic, etc.). These are the REAL
+// OpenRouter field names (verified against the live /v1/models payload) — an
+// earlier draft used `cache_read`/`cache_write`, which never matched, so cache
+// multipliers were silently always absent. passthrough() keeps the other live
+// keys (web_search, image, audio, internal_reasoning, input_cache_write_1h)
+// forward-compatible without a regenerate — we only read what we model.
 
 const PricingSchema = z
   .object({
     prompt: z.string().optional(),
     completion: z.string().optional(),
-    cache_read: z.string().optional(),
-    cache_write: z.string().optional(),
+    input_cache_read: z.string().optional(),
+    input_cache_write: z.string().optional(),
   })
   .passthrough()
 
@@ -113,7 +116,7 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
     `// Source: ${OPENROUTER_MODELS_URL}`,
     "// Pricing carries provider USD (inputPer1M / outputPer1M) plus cache",
     "// multipliers (cacheReadMultiplier / cacheWriteMultiplier) derived from the",
-    "// source's cache_read / cache_write per-token fields when present.",
+    "// source's input_cache_read / input_cache_write per-token fields when present.",
     "",
     'import type { LLMPricing } from "./catalog.js"',
     "",
@@ -158,8 +161,8 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
       provider: "openrouter",
     }
 
-    const cacheReadPer1M = per1m(pricing.cache_read)
-    const cacheWritePer1M = per1m(pricing.cache_write)
+    const cacheReadPer1M = per1m(pricing.input_cache_read)
+    const cacheWritePer1M = per1m(pricing.input_cache_write)
     if (cacheReadPer1M !== undefined && cacheReadPer1M > 0 && inputPer1M > 0) {
       entry.cacheReadMultiplier = round6(cacheReadPer1M / inputPer1M)
     }

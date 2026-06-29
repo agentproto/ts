@@ -43,6 +43,10 @@ import {
   providersPath,
   PROVIDER_ENV_VARS,
 } from "@agentproto/runtime/providers-store"
+import {
+  hasProviderCatalog,
+  refreshProviderCatalog,
+} from "../provider-catalog.js"
 
 export async function runAuth(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -155,6 +159,32 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
       `  saved to ${providersPath()} (mode 0600)\n` +
       `  the daemon injects it at \`serve\` boot; restart a running daemon to pick it up.\n`,
   )
+
+  // Eager live-on-setup catalog fetch: if this provider exposes an
+  // account-specific catalog (voices), pull it now so the overlay is ready at
+  // the next `serve` boot. Non-fatal — a bad key / offline only skips the
+  // overlay; the committed baseline still serves.
+  if (hasProviderCatalog(provider)) {
+    try {
+      const result = await refreshProviderCatalog(
+        provider,
+        apiKey,
+        values["base-url"],
+      )
+      if (result) {
+        process.stdout.write(
+          result.skipped
+            ? `  ✓ ${provider} catalog unchanged — ${result.count} voices cached\n`
+            : `  ✓ fetched ${provider} catalog — ${result.count} voices → ${result.path}\n`,
+        )
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      process.stdout.write(
+        `  ⚠ could not fetch ${provider} catalog (${msg}); the committed baseline still serves.\n`,
+      )
+    }
+  }
   return 0
 }
 

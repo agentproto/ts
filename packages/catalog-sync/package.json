@@ -66,6 +66,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/model-catalog": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

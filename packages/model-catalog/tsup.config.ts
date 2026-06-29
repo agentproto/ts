@@ -9,11 +9,13 @@ export default createTsupConfig({
   entry: {
     index: "src/index.ts",
     "schema/index": "src/schema/index.ts",
+    "schema/voice": "src/schema/voice.ts",
     "llm/index": "src/llm/index.ts",
     "image/index": "src/image/index.ts",
     "video/index": "src/video/index.ts",
     "audio/index": "src/audio/index.ts",
     "voice/index": "src/voice/index.ts",
+    "providers/index": "src/providers/index.ts",
     "curation/index": "src/curation/index.ts",
     "cost/index": "src/cost/index.ts",
     "pricing/index": "src/pricing/index.ts",
