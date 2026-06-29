@@ -655,7 +655,7 @@ export async function startHttpServer(
     // NUL bytes; collapse leading dots so the file is visible. The
     // resolvePath check below catches anything this misses.
     const safeName = rawName
-      .replace(/[ /\\]/g, "_")
+      .replace(/[\x00/\\]/g, "_")
       .replace(/\.\.+/g, ".")
       .replace(/^\.+/, "")
       .slice(0, 200)
