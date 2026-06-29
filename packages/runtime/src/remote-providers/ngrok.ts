@@ -78,7 +78,7 @@ export const NGROK_SETUP_FIELDS = [
     name: "authToken",
     description:
       "Ngrok authtoken (from dashboard.ngrok.com/get-started/your-authtoken)",
-    required: false,
+    required: true,
     sensitive: true,
   },
   {

@@ -80,14 +80,14 @@ export const NAMED_SETUP_FIELDS = [
   {
     name: "hostname",
     description: "Cloudflare tunnel hostname (e.g. agent.example.com)",
-    required: false,
+    required: true,
     sensitive: true,
   },
   {
     name: "tunnelId",
     description:
       "Cloudflare tunnel UUID (e.g. 11111111-2222-3333-4444-555555555555)",
-    required: false,
+    required: true,
     sensitive: true,
   },
   {

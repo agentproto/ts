@@ -576,7 +576,7 @@ export async function createGateway(
     // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
-    registerTunnelAdapterTools(server, {})
+    await registerTunnelAdapterTools(server, {})
     return server
   }
 
