@@ -35,6 +35,14 @@ import {
   writeHost,
   type HostCredential,
 } from "../util/credentials.js"
+import {
+  loadProviders,
+  setProviderKey,
+  removeProviderKey,
+  providerEnvVar,
+  providersPath,
+  PROVIDER_ENV_VARS,
+} from "@agentproto/runtime/providers-store"
 
 export async function runAuth(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -46,6 +54,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthStatus(rest)
     case "logout":
       return runAuthLogout(rest)
+    case "provider":
+      return runAuthProvider(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -65,6 +75,7 @@ Usage:
   agentproto auth login   [--host <url>] [--label <name>] [--no-browser]
   agentproto auth status  [--host <url>] [--json]
   agentproto auth logout  [--host <url>]
+  agentproto auth provider <set|list|rm> …   — LLM provider API keys
 
 The default host is the one most recently logged into; on first use,
 \`--host\` is required. Examples:
@@ -72,7 +83,148 @@ The default host is the one most recently logged into; on first use,
   agentproto auth login --host wss://guilde.work
   agentproto auth status
   agentproto auth logout --host wss://guilde.work
+
+  agentproto auth provider set anthropic sk-ant-…
+  agentproto auth provider set openrouter sk-or-… --base-url https://…
+  agentproto auth provider list [--json]
+  agentproto auth provider rm openai
 `
+
+const PROVIDER_USAGE = `agentproto auth provider — LLM provider API keys
+
+Stored 0600 in ~/.agentproto/providers.json and injected into the daemon's
+env at \`serve\` boot, so every spawned agent (mastra-agent, hermes, …) can
+reach the provider. Explicit env (FOO_API_KEY=… serve) always wins.
+
+Usage:
+  agentproto auth provider set <provider> <api-key> [--base-url <url>]
+  agentproto auth provider list [--json]
+  agentproto auth provider rm  <provider>
+
+Known providers (env var): ${Object.entries(PROVIDER_ENV_VARS)
+  .map(([p, e]) => `${p} (${e})`)
+  .join(", ")}.
+Any other name works too — it maps to <NAME>_API_KEY.
+`
+
+// ── provider keys ────────────────────────────────────────────────────
+
+async function runAuthProvider(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case "set":
+      return runProviderSet(rest)
+    case "list":
+    case "ls":
+      return runProviderList(rest)
+    case "rm":
+    case "remove":
+    case "delete":
+      return runProviderRm(rest)
+    case undefined:
+    case "--help":
+    case "-h":
+      process.stdout.write(PROVIDER_USAGE)
+      return 0
+    default:
+      process.stderr.write(
+        `agentproto auth provider: unknown subcommand '${sub}'.\n\n${PROVIDER_USAGE}`,
+      )
+      return 2
+  }
+}
+
+async function runProviderSet(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: { "base-url": { type: "string" } },
+  })
+  const [provider, apiKey] = positionals
+  if (!provider || !apiKey) {
+    process.stderr.write(
+      `agentproto auth provider set: usage: set <provider> <api-key> [--base-url <url>]\n`,
+    )
+    return 2
+  }
+  const envVar = await setProviderKey(provider, apiKey, values["base-url"])
+  process.stdout.write(
+    `agentproto auth: ✓ stored ${provider} key → ${envVar}\n` +
+      `  saved to ${providersPath()} (mode 0600)\n` +
+      `  the daemon injects it at \`serve\` boot; restart a running daemon to pick it up.\n`,
+  )
+  return 0
+}
+
+async function runProviderList(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+  const file = await loadProviders()
+  const entries = Object.entries(file.providers)
+  if (values.json) {
+    // Never emit key material — only metadata.
+    process.stdout.write(
+      JSON.stringify(
+        {
+          providers: entries.map(([provider, e]) => ({
+            provider,
+            envVar: providerEnvVar(provider),
+            baseUrl: e.baseUrl ?? null,
+            updatedAt: e.updatedAt,
+            inEnv: Boolean(process.env[providerEnvVar(provider)]),
+          })),
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    return 0
+  }
+  if (entries.length === 0) {
+    process.stdout.write(
+      `agentproto auth provider: no keys stored. Add one:\n` +
+        `  agentproto auth provider set anthropic sk-ant-…\n`,
+    )
+    return 0
+  }
+  for (const [provider, e] of entries) {
+    const envVar = providerEnvVar(provider)
+    const live = process.env[envVar] ? " · live in this env" : ""
+    const masked = maskKey(e.apiKey)
+    process.stdout.write(
+      `✓ ${provider}  → ${envVar}  ${masked}${live}\n` +
+        (e.baseUrl ? `     base-url: ${e.baseUrl}\n` : "") +
+        `     set ${e.updatedAt}\n`,
+    )
+  }
+  return 0
+}
+
+async function runProviderRm(args: readonly string[]): Promise<number> {
+  const provider = args[0]
+  if (!provider) {
+    process.stderr.write(`agentproto auth provider rm: usage: rm <provider>\n`)
+    return 2
+  }
+  const existed = await removeProviderKey(provider)
+  process.stdout.write(
+    existed
+      ? `agentproto auth: ✓ removed ${provider} key\n`
+      : `agentproto auth: no stored key for ${provider}\n`,
+  )
+  return 0
+}
+
+/** Show only enough of a key to recognise it; never the full secret. */
+function maskKey(key: string): string {
+  if (key.length <= 10) return "••••"
+  return `${key.slice(0, 6)}…${key.slice(-4)}`
+}
 
 // ── login ────────────────────────────────────────────────────────────
 
