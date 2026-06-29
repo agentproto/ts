@@ -72,6 +72,23 @@ export const NGROK_CAPABILITIES = {
   hasApi: true,
 } as const
 
+/** Creds fields the ngrok provider accepts via `setup_tunnel_provider`. */
+export const NGROK_SETUP_FIELDS = [
+  {
+    name: "authToken",
+    description:
+      "Ngrok authtoken (from dashboard.ngrok.com/get-started/your-authtoken)",
+    required: true,
+    sensitive: true,
+  },
+  {
+    name: "domain",
+    description: "Optional reserved ngrok static domain (requires paid plan)",
+    required: false,
+    sensitive: true,
+  },
+] as const
+
 /** Structured credentials for the ngrok provider. */
 export interface TunnelNgrokCreds {
   /** Ngrok authtoken from dashboard.ngrok.com/get-started/your-authtoken. */
@@ -120,6 +137,7 @@ export function ngrokTunnelProvider(
     description:
       "Ngrok tunnel with optional static domain support. Requires a free authtoken.",
     requiresSetup: true,
+    setupFields: NGROK_SETUP_FIELDS,
     capabilities: {
       ...NGROK_CAPABILITIES,
       stableUrl: hasDomain,

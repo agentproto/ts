@@ -42,6 +42,13 @@ export type {
 export { makeListTool, makeSetupTool } from "./mcp-tools.js"
 export type { SetupField, MakeListToolOpts, MakeSetupToolOpts } from "./mcp-tools.js"
 
+// discovery (shared node_modules walker)
+export {
+  collectAgentprotoNamespaceRoots,
+  discoverAdapterPackages,
+} from "./discover.js"
+export type { DiscoveredAdapter } from "./discover.js"
+
 // wizard
 export { makeAdapterWizard } from "./wizard.js"
 export type {

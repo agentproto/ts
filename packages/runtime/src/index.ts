@@ -96,7 +96,10 @@ import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
-import { registerTunnelAdapterTools } from "./tunnel-adapters.js"
+import {
+  registerTunnelAdapterTools,
+  makeTunnelCredsStore,
+} from "./tunnel-adapters.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -276,6 +279,10 @@ export async function createGateway(
   // the general "create a public URL for any local port" surface
   // (create_tunnel / list_tunnels / stop_tunnel MCP tools + /tunnels HTTP
   // routes). Logs flow through the same events stream.
+  // Shared tunnel creds store (~/.agentproto/tunnel-creds/, 0600) — lets the
+  // registry rebuild a provider that keeps its secrets off the descriptor
+  // (ngrok authtoken, third-party creds) when restoring on boot / creating.
+  const tunnelCredsStore = makeTunnelCredsStore()
   const tunnels = new TunnelRegistry({
     workspace,
     onLog: line =>
@@ -284,6 +291,7 @@ export async function createGateway(
         at: new Date().toISOString(),
         line,
       }),
+    readCreds: slug => tunnelCredsStore.read(slug),
   })
   // Relaunch any `autostart` (named) tunnels that were live before this
   // daemon restarted. Non-blocking — boot must not wait on cloudflared,
@@ -576,7 +584,7 @@ export async function createGateway(
     // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
-    registerTunnelAdapterTools(server, {})
+    await registerTunnelAdapterTools(server, {})
     return server
   }
 

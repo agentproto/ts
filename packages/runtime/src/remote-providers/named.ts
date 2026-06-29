@@ -75,6 +75,29 @@ export const NAMED_CAPABILITIES = {
   hasApi: false,
 } as const
 
+/** Creds fields the named provider accepts via `setup_tunnel_provider`. */
+export const NAMED_SETUP_FIELDS = [
+  {
+    name: "hostname",
+    description: "Cloudflare tunnel hostname (e.g. agent.example.com)",
+    required: true,
+    sensitive: true,
+  },
+  {
+    name: "tunnelId",
+    description:
+      "Cloudflare tunnel UUID (e.g. 11111111-2222-3333-4444-555555555555)",
+    required: true,
+    sensitive: true,
+  },
+  {
+    name: "credentialsFile",
+    description: "Optional path to cloudflared credentials JSON file",
+    required: false,
+    sensitive: true,
+  },
+] as const
+
 export interface NamedTunnelConfig {
   /** Stable public hostname routed to this tunnel (e.g. app.example.com). */
   hostname: string
@@ -108,6 +131,7 @@ export function namedTunnelProvider(
       "Persistent Cloudflare tunnel bound to a stable hostname you control (BYO credentials).",
     requiresSetup: true,
     capabilities: { ...NAMED_CAPABILITIES },
+    setupFields: NAMED_SETUP_FIELDS,
     async check(): Promise<boolean> {
       // Reachable = cloudflared on PATH AND the tunnel credentials file
       // exists. NOT called during listing (kit derives status from creds

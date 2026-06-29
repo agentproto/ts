@@ -57,16 +57,19 @@ export function registerTunnelTools(
   // ── create_tunnel ──────────────────────────────────────────────
   server.tool(
     "create_tunnel",
-    "Spawn a public HTTPS URL for a local port. Two backends: `quick` " +
-      "(default) = Cloudflare Quick Tunnel, no API key, ephemeral " +
-      "*.trycloudflare.com URL; `named` = a cloudflared tunnel you " +
-      "provisioned once (`cloudflared tunnel create` + `route dns`), bound " +
-      "to a STABLE hostname that survives restarts — pass `hostname` + " +
-      "`tunnelId`, and set `autostart:true` to have the daemon relaunch it " +
-      "on boot. Returns the TunnelDescriptor once cloudflared is ready " +
-      "(typically <10s). Use `list_tunnels` before opening a duplicate. " +
-      "Unlike `remote_enable`, this does NOT gate auth — pure passthrough; " +
-      "the proxied service handles its own authn.",
+    "Spawn a public HTTPS URL for a local port. Built-in backends: " +
+      "`cloudflare-quick` (default, alias `quick`) = Cloudflare Quick Tunnel, " +
+      "no API key, ephemeral *.trycloudflare.com URL; `cloudflare-named` " +
+      "(alias `named`) = a cloudflared tunnel you provisioned once " +
+      "(`cloudflared tunnel create` + `route dns`), bound to a STABLE " +
+      "hostname — pass `hostname` + `tunnelId`, set `autostart:true` to " +
+      "relaunch on boot; `ngrok` = ngrok tunnel (configure its authtoken via " +
+      "`setup_tunnel_provider` first). Any installed third-party provider " +
+      "(`@scope/agentproto-adapter-<slug>`) also works — see " +
+      "`list_tunnel_adapters` for the full set. Returns the TunnelDescriptor " +
+      "once ready (typically <10s). Use `list_tunnels` before opening a " +
+      "duplicate. Unlike `remote_enable`, this does NOT gate auth — pure " +
+      "passthrough; the proxied service handles its own authn.",
     {
       targetPort: z
         .number()
@@ -75,12 +78,14 @@ export function registerTunnelTools(
         .max(65535)
         .describe("Local port to expose publicly (e.g. 3000 for a dev server)."),
       provider: z
-        .enum(["quick", "named"])
+        .string()
         .optional()
         .describe(
-          "Tunnel backend. `quick` = Cloudflare Quick Tunnel (default, " +
-            "ephemeral URL). `named` = persistent hostname (requires " +
-            "`hostname` + `tunnelId`).",
+          "Tunnel provider slug. Built-ins: `cloudflare-quick` (default), " +
+            "`cloudflare-named`, `ngrok` (legacy aliases `quick`/`named` " +
+            "accepted). Or any installed third-party provider slug — list via " +
+            "`list_tunnel_adapters`. `cloudflare-named` requires `hostname` + " +
+            "`tunnelId`.",
         ),
       name: z
         .string()
