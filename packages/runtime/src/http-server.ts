@@ -655,7 +655,7 @@ export async function startHttpServer(
     // NUL bytes; collapse leading dots so the file is visible. The
     // resolvePath check below catches anything this misses.
     const safeName = rawName
-      .replace(/[ /\\]/g, "_")
+      .replace(/[\x00/\\]/g, "_")
       .replace(/\.\.+/g, ".")
       .replace(/^\.+/, "")
       .slice(0, 200)
@@ -1966,9 +1966,10 @@ async function handleTunnels(
     try {
       const desc = await registry.create({
         targetPort,
-        ...(b.provider === "quick" || b.provider === "named"
-          ? { provider: b.provider }
-          : {}),
+        // Any provider slug (built-in, legacy alias, or third-party) — the
+        // registry resolves/validates it and surfaces an unknown slug as a
+        // create_failed error below.
+        ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),

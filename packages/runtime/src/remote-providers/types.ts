@@ -11,7 +11,7 @@
  * tunnel-specific `capabilities` + the existing `start`/`stop` lifecycle.
  */
 
-import type { AdapterHandle } from "@agentproto/adapter-kit"
+import type { AdapterHandle, SetupField } from "@agentproto/adapter-kit"
 
 export interface ProviderStartOptions {
   /** Local target the tunnel forwards to. */
@@ -67,6 +67,14 @@ export interface TunnelProviderCapabilities {
  */
 export interface TunnelProviderHandle extends AdapterHandle {
   readonly capabilities: TunnelProviderCapabilities
+  /**
+   * Credential fields this provider accepts via `setup_tunnel_provider`.
+   * Each handle self-declares its own creds schema so the setup tool can
+   * union them across built-in AND third-party providers with no central
+   * field table. Omit (or empty) when the provider needs no credentials
+   * (e.g. cloudflare-quick).
+   */
+  readonly setupFields?: readonly SetupField[]
   start(opts: ProviderStartOptions): Promise<ProviderStartResult>
   stop(): Promise<void>
 }

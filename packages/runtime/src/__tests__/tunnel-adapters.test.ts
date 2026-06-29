@@ -51,7 +51,9 @@ function fakeServer(): { server: McpServer; tools: Registered[] } {
   return { server, tools }
 }
 
-const SECRET_CREDS: TunnelNamedCreds = {
+// Stored as a plain string map (the generic creds-store shape). Still a valid
+// named-tunnel cred set — TunnelNamedCreds is a typed view over the same keys.
+const SECRET_CREDS: Record<string, string> = {
   hostname: "agent.example.com",
   tunnelId: "11111111-2222-3333-4444-555555555555",
   credentialsFile: "/super/secret/path.json",
@@ -155,7 +157,7 @@ describe("tunnel catalog + lister", () => {
 describe("list_tunnel_adapters tool", () => {
   it("registers a parameterless tool returning the status-classified catalog", async () => {
     const { server, tools } = fakeServer()
-    registerTunnelAdapterTools(server, { home })
+    await registerTunnelAdapterTools(server, { home })
 
     const listTool = tools.find(t => t.name === "list_tunnel_adapters")!
     expect(listTool).toBeTruthy()
@@ -182,14 +184,14 @@ describe("list_tunnel_adapters tool", () => {
 // ── setup_tunnel_provider tool (multi-field form) ────────────────────────────────
 
 describe("setup_tunnel_provider tool", () => {
-  function setupTool() {
+  async function setupTool() {
     const { server, tools } = fakeServer()
-    registerTunnelAdapterTools(server, { home })
+    await registerTunnelAdapterTools(server, { home })
     return tools.find(t => t.name === "setup_tunnel_provider")!
   }
 
-  it("schema exposes hostname, tunnelId, credentialsFile, authToken, domain fields — no single 'value'", () => {
-    const tool = setupTool()
+  it("schema exposes hostname, tunnelId, credentialsFile, authToken, domain fields — no single 'value'", async () => {
+    const tool = await setupTool()
     const shapeKeys = Object.keys(tool.shape).sort()
     expect(shapeKeys).toEqual(
       [
@@ -204,8 +206,8 @@ describe("setup_tunnel_provider tool", () => {
     expect(tool.shape).not.toHaveProperty("value")
   })
 
-  it("marks every cred field as sensitive in its schema annotation", () => {
-    const tool = setupTool()
+  it("marks every cred field as sensitive in its schema annotation", async () => {
+    const tool = await setupTool()
     const hostnameField = tool.shape["hostname"] as { description?: string }
     expect(hostnameField.description?.toLowerCase()).toContain("sensitive")
 
@@ -217,7 +219,7 @@ describe("setup_tunnel_provider tool", () => {
   })
 
   it("stores creds via the kit creds store and NEVER echoes field values", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "cloudflare-named",
       hostname: SECRET_CREDS.hostname,
@@ -250,7 +252,7 @@ describe("setup_tunnel_provider tool", () => {
   })
 
   it("flips the adapter to ready after a successful setup", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     await tool.handler({
       slug: "cloudflare-named",
       hostname: SECRET_CREDS.hostname,
@@ -266,7 +268,7 @@ describe("setup_tunnel_provider tool", () => {
   })
 
   it("rejects setup when hostname is missing", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "cloudflare-named",
       hostname: "",
@@ -278,7 +280,7 @@ describe("setup_tunnel_provider tool", () => {
   })
 
   it("rejects an unknown slug (only setup-requiring slugs are valid)", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "cloudflare-quick",
       hostname: "x",
@@ -362,14 +364,14 @@ describe("ngrok provider", () => {
 // ── ngrok setup_tunnel_provider (multi-field) ───────────────────────────
 
 describe("setup_tunnel_provider — ngrok", () => {
-  function setupTool() {
+  async function setupTool() {
     const { server, tools } = fakeServer()
-    registerTunnelAdapterTools(server, { home })
+    await registerTunnelAdapterTools(server, { home })
     return tools.find(t => t.name === "setup_tunnel_provider")!
   }
 
-  it("schema exposes slug + named fields + ngrok fields (authToken, domain)", () => {
-    const tool = setupTool()
+  it("schema exposes slug + named fields + ngrok fields (authToken, domain)", async () => {
+    const tool = await setupTool()
     const shapeKeys = Object.keys(tool.shape).sort()
     expect(shapeKeys).toEqual(
       [
@@ -384,8 +386,8 @@ describe("setup_tunnel_provider — ngrok", () => {
     expect(tool.shape).not.toHaveProperty("value")
   })
 
-  it("marks ngrok fields as sensitive", () => {
-    const tool = setupTool()
+  it("marks ngrok fields as sensitive", async () => {
+    const tool = await setupTool()
     const authTokenField = tool.shape["authToken"] as { description?: string }
     expect(authTokenField.description?.toLowerCase()).toContain("sensitive")
 
@@ -399,7 +401,7 @@ describe("setup_tunnel_provider — ngrok", () => {
   }
 
   it("stores ngrok creds and NEVER echoes values", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "ngrok",
       authToken: NGOK_CREDS.authToken,
@@ -430,7 +432,7 @@ describe("setup_tunnel_provider — ngrok", () => {
   })
 
   it("stores ngrok creds without optional domain", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "ngrok",
       authToken: "tok_minimal",
@@ -447,7 +449,7 @@ describe("setup_tunnel_provider — ngrok", () => {
   })
 
   it("flips ngrok to ready after a successful setup", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     await tool.handler({
       slug: "ngrok",
       authToken: NGOK_CREDS.authToken,
@@ -462,7 +464,7 @@ describe("setup_tunnel_provider — ngrok", () => {
   })
 
   it("rejects ngrok setup when authToken is missing", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "ngrok",
       authToken: "",
@@ -477,7 +479,7 @@ describe("setup_tunnel_provider — ngrok", () => {
 
   it("promotes named promos work independently of ngrok (cross-slug isolation)", async () => {
     // Setup both and verify each is ready independently.
-    const tool = setupTool()
+    const tool = await setupTool()
     await tool.handler({
       slug: "cloudflare-named",
       hostname: "agent.example.com",
@@ -499,7 +501,7 @@ describe("setup_tunnel_provider — ngrok", () => {
   })
 
   it("rejects an unknown slug (not quick, not named, not ngrok)", async () => {
-    const tool = setupTool()
+    const tool = await setupTool()
     const res = await tool.handler({
       slug: "unknown-provider",
       authToken: "x",

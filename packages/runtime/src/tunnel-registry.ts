@@ -25,13 +25,25 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
-import { quickTunnelProvider } from "./remote-providers/quick.js"
-import { namedTunnelProvider } from "./remote-providers/named.js"
+import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
+import {
+  resolveTunnelProvider,
+  normalizeProviderSlug,
+  builtinProviderCapabilities,
+  type TunnelCreds,
+} from "./remote-providers/registry.js"
 import type { RemoteProvider } from "./remote-providers/types.js"
 
 export type TunnelStatus = "starting" | "active" | "stopped" | "error"
 
-export type TunnelProvider = "quick" | "named"
+/**
+ * Provider identifier — an open set of slugs (built-in `cloudflare-quick` /
+ * `cloudflare-named` / `ngrok`, legacy short names `quick` / `named`, or any
+ * third-party `@scope/agentproto-adapter-<slug>`). Normalized to a canonical
+ * slug only at resolve time, so persisted descriptors keep their original
+ * value and need no migration.
+ */
+export type TunnelProvider = string
 
 export interface TunnelDescriptor {
   id: string
@@ -93,6 +105,14 @@ export interface TunnelRegistryOptions {
   workspace?: string
   /** Hook for surfacing provider log lines. */
   onLog?: (line: string) => void
+  /**
+   * Read stored credentials for a provider slug. Lets the lifecycle build a
+   * provider that keeps its secrets in the creds store (e.g. ngrok's authtoken,
+   * or any third-party provider) rather than on the descriptor. Injected by the
+   * daemon (index.ts); descriptor-carried config (named's hostname/tunnelId)
+   * still takes precedence.
+   */
+  readCreds?: (slug: string) => Promise<TunnelCreds | null>
 }
 
 const TUNNELS_FILE_PATH = (): string =>
@@ -110,12 +130,16 @@ export class TunnelRegistry {
   private readonly persistPath: string
   private readonly workspace: string
   private readonly onLog: ((line: string) => void) | undefined
+  private readonly readCreds:
+    | ((slug: string) => Promise<TunnelCreds | null>)
+    | undefined
   private persistTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(opts: TunnelRegistryOptions = {}) {
     this.persistPath = opts.persistPath ?? TUNNELS_FILE_PATH()
     this.workspace = opts.workspace ?? homedir()
     this.onLog = opts.onLog
+    this.readCreds = opts.readCreds
 
     this.loadFromDisk()
   }
@@ -127,7 +151,7 @@ export class TunnelRegistry {
 
     // Named tunnels need a stable hostname + a tunnel id to `run`. Fail
     // fast here rather than letting cloudflared error out cryptically.
-    if (provider === "named") {
+    if (normalizeProviderSlug(provider) === CLOUDFLARE_NAMED_SLUG) {
       if (!input.hostname || !input.tunnelId) {
         throw new Error(
           'named tunnel requires both "hostname" and "tunnelId" ' +
@@ -162,7 +186,7 @@ export class TunnelRegistry {
       ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
     }
 
-    const prov = this.pickProviderForTest(provider, desc)
+    const prov = await this.pickProviderForTest(provider, desc)
     const entry: TunnelEntry = { desc, provider: prov }
     this.tunnels.set(id, entry)
     this.schedulePersist()
@@ -224,10 +248,16 @@ export class TunnelRegistry {
       e => e.desc.autostart === true && e.desc.status === "stopped",
     )
     for (const entry of toStart) {
-      if (entry.desc.provider === "quick") {
+      // Autostart eligibility is data-driven: a provider whose public URL is
+      // NOT stable across restarts (e.g. cloudflare-quick) gets a fresh URL on
+      // relaunch, defeating the point — skip it. Read by slug so it holds even
+      // for a test-injected mock that carries no capabilities. Third-party
+      // providers (caps unknown here) are attempted.
+      const caps = builtinProviderCapabilities(entry.desc.provider)
+      if (caps && caps.stableUrl === false) {
         this.onLog?.(
-          `[tunnel] skipping autostart for quick tunnel ${entry.desc.name ?? entry.desc.id} ` +
-            `(URL would change on relaunch — use a named tunnel for a stable URL)`,
+          `[tunnel] skipping autostart for ephemeral-URL tunnel ${entry.desc.name ?? entry.desc.id} ` +
+            `(URL would change on relaunch — use a stable-URL provider)`,
         )
         continue
       }
@@ -235,6 +265,9 @@ export class TunnelRegistry {
         `[tunnel] autostart: relaunching ${entry.desc.name ?? entry.desc.id} → ${entry.desc.hostname ?? "?"}`,
       )
       try {
+        // loadFromDisk left a stub here; build the real provider now (async —
+        // may dynamic-import a third-party package or read creds).
+        entry.provider = await this.pickProviderForTest(entry.desc.provider, entry.desc)
         await this.startEntry(entry)
       } catch (err) {
         this.onLog?.(
@@ -305,14 +338,38 @@ export class TunnelRegistry {
 
   // ── test seam ─────────────────────────────────────────────────────
   // Subclasses (tests) override this to inject a mock provider. The
-  // descriptor is passed so a real `named` provider can be constructed
-  // with its hostname / tunnelId / credentials.
+  // descriptor is passed so a real provider can be built with its
+  // hostname / tunnelId / credentials. Async because the default path may
+  // dynamic-import a third-party provider package.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  protected pickProviderForTest(
+  protected async pickProviderForTest(
     _provider: TunnelProvider,
     desc: TunnelDescriptor,
-  ): RemoteProvider {
-    return pickProvider(desc)
+  ): Promise<RemoteProvider> {
+    const slug = normalizeProviderSlug(desc.provider)
+    const creds = await this.credsForDescriptor(desc)
+    const provider = await resolveTunnelProvider(slug, { creds })
+    if (!provider) {
+      throw new Error(`unknown tunnel provider: ${desc.provider}`)
+    }
+    return provider
+  }
+
+  /**
+   * Build the creds passed to a provider: stored creds (ngrok authtoken,
+   * third-party secrets) merged with descriptor-carried config (named's
+   * hostname/tunnelId/credentialsFile), descriptor taking precedence.
+   */
+  private async credsForDescriptor(
+    desc: TunnelDescriptor,
+  ): Promise<TunnelCreds> {
+    const slug = normalizeProviderSlug(desc.provider)
+    const stored = this.readCreds ? (await this.readCreds(slug)) ?? {} : {}
+    const creds: TunnelCreds = { ...stored }
+    if (desc.hostname) creds.hostname = desc.hostname
+    if (desc.tunnelId) creds.tunnelId = desc.tunnelId
+    if (desc.credentialsFile) creds.credentialsFile = desc.credentialsFile
+    return creds
   }
 
   // ── private ──────────────────────────────────────────────────────
@@ -383,41 +440,20 @@ export class TunnelRegistry {
           ? { stoppedAt: new Date().toISOString() }
           : {}),
       }
-      // Autostart entries need a REAL provider so `restoreOnBoot` can
-      // relaunch them (via the test seam so suites can inject mocks).
-      // Everything else gets a stub (start/stop never called — the entry
-      // is already stopped, kept only for history).
-      const provider = ghosted.autostart
-        ? this.pickProviderForTest(ghosted.provider, ghosted)
-        : makeStubProvider()
-      this.tunnels.set(desc.id, { desc: ghosted, provider })
+      // Every loaded entry starts stubbed — its child process is gone. The
+      // real provider is built lazily (async) by `restoreOnBoot` for autostart
+      // entries; non-autostart entries are kept only for history and never
+      // start, so the stub (which throws on start) is correct for them.
+      this.tunnels.set(desc.id, { desc: ghosted, provider: makeStubProvider() })
     }
   }
 }
 
 // ── module-level helpers ───────────────────────────────────────────
 
-function pickProvider(desc: TunnelDescriptor): RemoteProvider {
-  if (desc.provider === "quick") return quickTunnelProvider()
-  if (desc.provider === "named") {
-    if (!desc.hostname || !desc.tunnelId) {
-      throw new Error(
-        `named tunnel ${desc.id} is missing hostname/tunnelId — cannot build provider`,
-      )
-    }
-    return namedTunnelProvider({
-      hostname: desc.hostname,
-      tunnelId: desc.tunnelId,
-      ...(desc.credentialsFile ? { credentialsFile: desc.credentialsFile } : {}),
-    })
-  }
-  const _exhaustive: never = desc.provider
-  throw new Error(`unknown tunnel provider: ${String(_exhaustive)}`)
-}
-
 function makeStubProvider(): RemoteProvider {
   return {
-    id: "quick",
+    id: "stub",
     async start() {
       throw new Error("stub provider: cannot start a ghost tunnel entry")
     },

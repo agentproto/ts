@@ -9,6 +9,7 @@ const entry = {
   "list-resolve": "src/list-resolve.ts",
   "mcp-tools": "src/mcp-tools.ts",
   wizard: "src/wizard.ts",
+  discover: "src/discover.ts",
 }
 
 export default createTsupConfig({

@@ -37,19 +37,16 @@ import {
   type SetupLedger,
 } from "@agentproto/adapter-kit"
 
+import { CLOUDFLARE_QUICK_SLUG } from "./remote-providers/quick.js"
+import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"
+import { NGROK_SLUG, type TunnelNgrokCreds } from "./remote-providers/ngrok.js"
 import {
-  quickTunnelProvider,
-  CLOUDFLARE_QUICK_SLUG,
-} from "./remote-providers/quick.js"
-import {
-  namedTunnelProvider,
-  CLOUDFLARE_NAMED_SLUG,
-} from "./remote-providers/named.js"
-import {
-  ngrokTunnelProvider,
-  NGROK_SLUG,
-  type TunnelNgrokCreds,
-} from "./remote-providers/ngrok.js"
+  resolveTunnelProvider,
+  discoverTunnelHandles,
+  BUILTIN_TUNNEL_PROVIDERS,
+  BUILTIN_TUNNEL_SLUGS,
+  type TunnelCreds,
+} from "./remote-providers/registry.js"
 import type {
   TunnelProviderHandle,
   TunnelProviderCapabilities,
@@ -114,45 +111,44 @@ export function toTunnelInfo(handle: TunnelProviderHandle): TunnelAdapterInfo {
   return { capabilities: handle.capabilities }
 }
 
-/** Build the tunnel-family creds store (per-slug, 0600). */
-export function makeTunnelCredsStore(
-  home?: string,
-): CredsStore<TunnelProviderCreds> {
-  return makeCredsStore<TunnelProviderCreds>({
+/**
+ * Build the tunnel-family creds store (per-slug, 0600). Stored as a plain
+ * string map — the structured {@link TunnelNamedCreds}/{@link TunnelNgrokCreds}
+ * shapes are typed *views* used by callers that read specific providers; the
+ * generic store accepts any provider's declared fields (incl. third-party),
+ * which is what makes setup pluggable.
+ */
+export function makeTunnelCredsStore(home?: string): CredsStore<TunnelCreds> {
+  return makeCredsStore<TunnelCreds>({
     family: TUNNEL_FAMILY,
     ...(home ? { home } : {}),
   })
 }
 
 /**
- * Resolve a catalog slug to a concrete handle. All three providers live
- * in-process, so resolution never fails for a known slug — `quick` needs no
- * config; `named` and `ngrok` are built from stored creds when present, else a
- * descriptor-only handle (its `start()` asserts before use, but listing
- * never calls `start()` — per OQ-5 it never calls `check()` either).
+ * Resolve a catalog slug to a concrete handle via the provider registry —
+ * built-ins in-process, third-party packages dynamic-imported. Reads stored
+ * creds first so `named`/`ngrok` (and any third-party provider) are built
+ * configured when possible; unconfigured slugs resolve to a descriptor-only
+ * handle (listing never calls `start()`/`check()` — per OQ-5). Throws on an
+ * unknown slug so the kit's resolver wraps it to `null` ("supported but not
+ * installed").
  */
-export function makeTunnelResolver(credsStore: CredsStore<TunnelProviderCreds>) {
+export function makeTunnelResolver(credsStore: CredsStore<TunnelCreds>) {
   return makeAdapterResolver<TunnelProviderHandle>({
     load: async (slug: string): Promise<TunnelProviderHandle> => {
-      if (slug === CLOUDFLARE_QUICK_SLUG) return quickTunnelProvider()
-      if (slug === CLOUDFLARE_NAMED_SLUG) {
-        const creds = await credsStore.read(CLOUDFLARE_NAMED_SLUG) as TunnelNamedCreds | null
-        // Descriptor-only fallback when unconfigured — only `start()`/`stop()`
-        // depend on the config, and listing never invokes them.
-        return namedTunnelProvider(creds ?? { hostname: "", tunnelId: "" })
-      }
-      if (slug === NGROK_SLUG) {
-        const creds = await credsStore.read(NGROK_SLUG) as TunnelNgrokCreds | null
-        return ngrokTunnelProvider(creds ?? undefined)
-      }
-      throw new Error(`unknown tunnel adapter slug: ${slug}`)
+      const creds = await credsStore.read(slug)
+      const handle = await resolveTunnelProvider(slug, { creds })
+      if (!handle) throw new Error(`unknown tunnel adapter slug: ${slug}`)
+      return handle
     },
   })
 }
 
-/** Build the family lister: catalog → status-classified entries. */
+/** Build the family lister: catalog → status-classified entries, plus any
+ *  third-party providers discovered on disk (both naming conventions). */
 export function makeTunnelLister(opts: {
-  credsStore: CredsStore<TunnelProviderCreds>
+  credsStore: CredsStore<TunnelCreds>
   ledger: SetupLedger
 }): AdapterLister<TunnelAdapterInfo> {
   return makeAdapterLister<TunnelProviderHandle, TunnelAdapterInfo>({
@@ -161,47 +157,42 @@ export function makeTunnelLister(opts: {
     ledger: opts.ledger,
     credsStore: opts.credsStore,
     toInfo: toTunnelInfo,
+    discoverExtras: () =>
+      discoverTunnelHandles(new Set(TUNNEL_CATALOG.map((c) => c.slug))),
   })
 }
 
-/** Slugs that accept a `setup_tunnel_provider` pass (those with creds). */
-const SETUP_SLUGS = [CLOUDFLARE_NAMED_SLUG, NGROK_SLUG] as const
+/**
+ * Resolve every provider that declares creds (built-in + third-party) and
+ * union their `setupFields` for the `setup_tunnel_provider` tool. Because one
+ * tool spans many providers with disjoint fields, the unioned shape is relaxed
+ * to all-optional at the zod layer (`required: false`); the genuine per-provider
+ * required-ness is enforced in `onSetup` against the chosen provider's handle.
+ */
+async function collectSetupSchema(): Promise<{
+  validSlugs: string[]
+  fields: SetupField[]
+}> {
+  const builtinHandles = Object.values(BUILTIN_TUNNEL_PROVIDERS).map((f) =>
+    f(null),
+  )
+  const extraHandles = await discoverTunnelHandles(new Set(BUILTIN_TUNNEL_SLUGS))
+  const setupHandles = [...builtinHandles, ...extraHandles].filter(
+    (h) => h.setupFields && h.setupFields.length > 0,
+  )
 
-/** Multi-field schema for tunnel provider setup (named + ngrok fields). */
-const TUNNEL_SETUP_FIELDS: readonly SetupField[] = [
-  // ── cloudflare-named fields ────────────────────────────────────
-  {
-    name: "hostname",
-    description: "Cloudflare tunnel hostname (e.g. agent.example.com)",
-    required: false,
-    sensitive: true,
-  },
-  {
-    name: "tunnelId",
-    description: "Cloudflare tunnel UUID (e.g. 11111111-2222-3333-4444-555555555555)",
-    required: false,
-    sensitive: true,
-  },
-  {
-    name: "credentialsFile",
-    description: "Optional path to cloudflared credentials JSON file",
-    required: false,
-    sensitive: true,
-  },
-  // ── ngrok fields ──────────────────────────────────────────────
-  {
-    name: "authToken",
-    description: "Ngrok authtoken (from dashboard.ngrok.com/get-started/your-authtoken)",
-    required: false,
-    sensitive: true,
-  },
-  {
-    name: "domain",
-    description: "Optional reserved ngrok static domain (requires paid plan)",
-    required: false,
-    sensitive: true,
-  },
-]
+  const validSlugs = setupHandles.map((h) => h.slug)
+  const fieldByName = new Map<string, SetupField>()
+  for (const h of setupHandles) {
+    for (const f of h.setupFields ?? []) {
+      // First declaration wins; relax to optional for the cross-provider tool.
+      if (!fieldByName.has(f.name)) {
+        fieldByName.set(f.name, { ...f, required: false })
+      }
+    }
+  }
+  return { validSlugs, fields: [...fieldByName.values()] }
+}
 
 export interface RegisterTunnelAdapterToolsOptions {
   /** Home dir override (tests). Defaults to `AGENTPROTO_HOME ?? ~/.agentproto`. */
@@ -211,13 +202,15 @@ export interface RegisterTunnelAdapterToolsOptions {
 /**
  * Register the tunnel family's adapter-kit MCP tools on the server:
  *   - `list_tunnel_adapters`  (parameterless; status + capabilities, no creds)
- *   - `setup_tunnel_provider` (multi-field: slug + hostname + tunnelId + credentialsFile?;
- *     all field values marked SENSITIVE and never echoed)
+ *   - `setup_tunnel_provider` (multi-field; fields are union of every
+ *     configurable provider's declared `setupFields`, all SENSITIVE and never
+ *     echoed). Async because the field schema is derived from resolved handles
+ *     (incl. third-party providers discovered on disk).
  */
-export function registerTunnelAdapterTools(
+export async function registerTunnelAdapterTools(
   server: McpServer,
   opts: RegisterTunnelAdapterToolsOptions = {},
-): void {
+): Promise<void> {
   const credsStore = makeTunnelCredsStore(opts.home)
   const ledger = makeSetupLedger(opts.home ? { home: opts.home } : {})
 
@@ -232,42 +225,49 @@ export function registerTunnelAdapterTools(
     lister: makeTunnelLister({ credsStore, ledger }),
   })
 
+  const { validSlugs, fields } = await collectSetupSchema()
+
   makeSetupTool({
     server,
     toolName: "setup_tunnel_provider",
     description:
       "Configure a tunnel provider that requires credentials (e.g. " +
       "cloudflare-named or ngrok). Each field is SENSITIVE — stored 0600 and " +
-      "never echoed back in tool results.",
-    validSlugs: SETUP_SLUGS,
-    fields: TUNNEL_SETUP_FIELDS,
+      "never echoed back in tool results. Only the fields a given provider " +
+      "declares are stored.",
+    validSlugs,
+    fields,
     onSetup: async (slug: string, fields: Record<string, string>) => {
-      if (slug === CLOUDFLARE_NAMED_SLUG) {
-        if (!fields.hostname || !fields.tunnelId) {
-          return { ok: false, hint: "hostname and tunnelId are required" }
-        }
-        const creds: TunnelNamedCreds = {
-          hostname: fields.hostname,
-          tunnelId: fields.tunnelId,
-          ...(fields.credentialsFile
-            ? { credentialsFile: fields.credentialsFile }
-            : {}),
-        }
-        await credsStore.write(slug, creds)
-      } else if (slug === NGROK_SLUG) {
-        if (!fields.authToken) {
-          return { ok: false, hint: "authToken is required" }
-        }
-        const creds: TunnelNgrokCreds = {
-          authToken: fields.authToken,
-          ...(fields.domain && fields.domain.length > 0
-            ? { domain: fields.domain }
-            : {}),
-        }
-        await credsStore.write(slug, creds)
-      } else {
-        return { ok: false, hint: `unknown slug: ${slug}` }
+      // Resolve the chosen provider so its OWN setupFields drive validation —
+      // works for built-ins and third-party providers alike.
+      const handle = await resolveTunnelProvider(slug)
+      const declared = handle?.setupFields
+      if (!handle || !declared || declared.length === 0) {
+        return { ok: false, hint: `provider '${slug}' is not configurable` }
       }
+
+      const missing = declared
+        .filter((f) => f.required === true)
+        .map((f) => f.name)
+        .filter((name) => {
+          const v = fields[name]
+          return v === undefined || v.length === 0
+        })
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          hint: `missing required field(s): ${missing.join(", ")}`,
+        }
+      }
+
+      // Persist only the provider's declared, non-empty fields.
+      const creds: TunnelCreds = {}
+      for (const f of declared) {
+        const v = fields[f.name]
+        if (v !== undefined && v.length > 0) creds[f.name] = v
+      }
+      await credsStore.write(slug, creds)
+
       const now = new Date().toISOString()
       await ledger.write(slug, {
         slug,
