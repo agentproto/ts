@@ -150,6 +150,18 @@ export interface AgentCliModels {
   default?: string
   allowed?: string[]
   env?: Record<string, string>
+  /**
+   * How the host selects a model at session start:
+   *   - "config"  (default) — apply via ACP `session/set_config_option`
+   *     with `configId:"model"` right after `newSession`. Works for ACP
+   *     wrappers that expose model as a session config (e.g. claude-code).
+   *   - "command" — `set_config_option` is a no-op / silently rejected on
+   *     this agent (e.g. hermes), so instead send a `/model <id>` control
+   *     turn after `newSession` and drain it. The agent's reply is checked
+   *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   * Omit → "config".
+   */
+  apply?: "config" | "command"
 }
 
 export interface AgentCliCapabilities {

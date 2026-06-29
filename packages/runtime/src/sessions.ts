@@ -155,6 +155,18 @@ export interface SessionDescriptor {
    *  "awaiting-input" turn-end. Cleared on the next turn start.
    *  Used by `wait_for_any` to fast-return without subscribing. */
   awaitingInput?: boolean
+  /** Count of turns that have fully completed (turn-end emitted) on this
+   *  session. Lets `wait_for_any` fast-return for a session that already
+   *  finished its turn before the wait subscribed — a fast turn that ends
+   *  in "completed" (not "awaiting-input") leaves no other persisted
+   *  signal (status stays "running", busy clears). 0 = never ran a turn,
+   *  so a freshly-spawned idle session is NOT mistaken for done. */
+  turnsCompleted?: number
+  /** True while a turn is actively running (mirror of the internal
+   *  runtime `busy` flag). Lets `wait_for_any` distinguish "idle after a
+   *  finished turn" from "mid-turn" so it doesn't fast-return a stale
+   *  turn-end while the NEXT turn is still generating. */
+  busy?: boolean
   /** Session id of the orchestrator that spawned this session, set when
    *  the spawn arrived via the scoped orchestrator sub-gateway (the
    *  token carried the spawner's identity). Absent for direct `/mcp`
@@ -869,6 +881,7 @@ export function createSessionsRegistry(opts?: {
       throw new Error("runAgentTurn: session has no agentSession")
     }
     rt.busy = true
+    rt.desc.busy = true             // mirror onto the public descriptor for wait_for_any
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     let turnCompleted = false
     try {
@@ -899,7 +912,11 @@ export function createSessionsRegistry(opts?: {
       emitExited(rt)
     } finally {
       rt.busy = false
+      rt.desc.busy = false           // mirror onto the public descriptor for wait_for_any
       if (turnCompleted && sessionEvents) {
+        // Record that a turn finished so a late `wait_for_any` (subscribed
+        // after a fast turn already ended) can still fast-return.
+        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
         const ts = new Date().toISOString()
         sessionEvents.emit({
           type: "session:turn-end",
