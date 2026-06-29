@@ -52,7 +52,11 @@ const terminalRenderer = new TerminalRenderer()
 ).code = (code: string, lang?: string): string => {
   let body: string
   try {
-    body = highlight(code, { language: lang ?? "auto", ignoreIllegals: true })
+    // cli-highlight has no "auto" language; omit `language` to let it detect.
+    const opts = lang
+      ? { language: lang, ignoreIllegals: true }
+      : { ignoreIllegals: true }
+    body = highlight(code, opts)
   } catch {
     body = code
   }
@@ -119,10 +123,14 @@ function buildParts(lines: string[]): Part[] {
   const flushProse = (): void => {
     if (proseBuffer.length === 0) return
     const raw = proseBuffer.join("\n")
-    // Strip ** wrappers around inline code spans — marked-terminal doesn't
-    // handle **`code`** cleanly.
-    const cleaned = raw.replace(/\*\*(`[^`\n]+`)\*\*/g, "$1")
-    const rendered = (marked(cleaned) as string)
+    const cleaned = raw
+      // Strip ** wrappers around inline code spans — marked-terminal doesn't
+      // handle **`code`** cleanly.
+      .replace(/\*\*(`[^`\n]+`)\*\*/g, "$1")
+      // Force a blank line before headings the agent ran into prose (e.g.
+      // "…done!## Header") so marked recognizes them as headings.
+      .replace(/([^\n])(#{1,6} )/g, "$1\n\n$2")
+    const rendered = String(marked.parse(cleaned, { async: false }))
       // If marked-terminal leaves literal **, strip them as a safety net.
       .replace(/\*\*([^*\n]+)\*\*/g, "$1")
     if (rendered.trim()) parts.push({ kind: "prose", rendered: rendered.trimEnd() })
@@ -278,9 +286,12 @@ function ChatApp({
     // eslint-disable-next-line no-control-regex
     const ANSI = /\x1b\[[0-9;]*m/g
     const handleLine = (raw: string): void => {
+      const plain = raw.replace(ANSI, "")
       // Drop the daemon's per-session banner (`── … agent session … ──`); it
       // re-emits on every render and isn't agent content.
-      if (/^── .+ agent session .+──/.test(raw.replace(ANSI, ""))) return
+      if (/^── .+ agent session .+──/.test(plain)) return
+      // Drop the daemon's prompt-echo frame (`──── ► <prompt> ────`).
+      if (/^─+ ► .+ ─+$/.test(plain)) return
       const { turnBoundary, suppress } = classifyChatLine(raw)
       // During the silent setup turn, swallow every line; the only thing we
       // care about is its boundary, which ends the suppression.
