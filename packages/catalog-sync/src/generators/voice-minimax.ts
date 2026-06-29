@@ -128,6 +128,14 @@ function mapVoice(raw: MinimaxSystemVoice) {
 export const MINIMAX_SOURCE: CatalogSource = {
   id: "voice-minimax",
   url: "https://api.minimax.io/v1/get_voice",
+  // get_voice is a POST; live refresh needs the account key (Bearer). Without
+  // MINIMAX_API_KEY set, the framework reuses the committed snapshot.
+  method: "POST",
+  headers: {
+    Authorization: "Bearer env:MINIMAX_API_KEY",
+    "Content-Type": "application/json",
+  },
+  body: { voice_type: "system" },
 }
 
 export const voiceMinimax: CatalogGenerator = defineGenerator({

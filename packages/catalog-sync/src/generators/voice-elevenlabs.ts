@@ -128,6 +128,8 @@ function mapVoice(raw: ElevenLabsRawVoice) {
 export const ELEVENLABS_SOURCE: CatalogSource = {
   id: "voice-elevenlabs",
   url: "https://api.elevenlabs.io/v1/voices",
+  // Live refresh needs the account key; offline reads ignore this.
+  headers: { "xi-api-key": "env:ELEVENLABS_API_KEY" },
 }
 
 export const voiceElevenlabs: CatalogGenerator = defineGenerator({

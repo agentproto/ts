@@ -58,11 +58,13 @@ jobs:
       # are rewritten; git surfaces any drift.
       - name: Regenerate catalog
         env:
-          # Provider keys for sources that need auth (optional — public
-          # sources like openrouter/models.dev need none). Absent secrets
-          # simply skip that generator's refresh; the snapshot is reused.
+          # Provider keys for authed sources (optional — public sources like
+          # openrouter/models.dev need none). Absent secrets simply skip that
+          # source's refresh; the committed snapshot is reused (no failure).
+          # The env-var names match the `env:…` tokens in each generator's
+          # CatalogSource.headers.
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
         run: |
           pnpm --filter @agentproto/catalog-sync exec catalog-sync generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}

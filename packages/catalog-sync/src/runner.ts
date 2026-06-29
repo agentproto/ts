@@ -49,6 +49,32 @@ function readIfExists(absPath: string): string | undefined {
   return readFileSync(absPath, "utf8")
 }
 
+/**
+ * Resolve `env:VAR_NAME` tokens inside header values from `process.env`.
+ * Returns the materialized headers plus the names of any referenced env vars
+ * that are unset — the caller uses `missing` to decide whether the source can
+ * be refreshed (we never fetch an authed endpoint without its key).
+ */
+function resolveHeaders(headers?: Record<string, string>): {
+  headers: Record<string, string>
+  missing: string[]
+} {
+  const out: Record<string, string> = {}
+  const missing: string[] = []
+  if (!headers) return { headers: out, missing }
+  for (const [key, value] of Object.entries(headers)) {
+    out[key] = value.replace(/env:([A-Z0-9_]+)/g, (_match, name: string) => {
+      const v = process.env[name]
+      if (v === undefined || v === "") {
+        missing.push(name)
+        return ""
+      }
+      return v
+    })
+  }
+  return { headers: out, missing }
+}
+
 export interface RunGeneratorsOptions {
   /** When true, missing snapshots are fetched from their pinned `url`. */
   refresh: boolean
@@ -80,17 +106,42 @@ export async function runGenerators(
       async fetchSource(src: CatalogSource): Promise<unknown> {
         const path = snapshotPath(src.id)
         const existing = readIfExists(path)
-        if (existing !== undefined) {
-          return JSON.parse(existing)
-        }
+
+        // Offline path (default): reuse the committed snapshot; error if none.
         if (!opts.refresh) {
+          if (existing !== undefined) return JSON.parse(existing)
           throw new Error(
             `catalog-sync: no committed snapshot for source "${src.id}" ` +
               `(${path}), and --refresh is not set. Run ` +
               `\`catalog-sync generate --refresh\` to fetch ${src.url}.`
           )
         }
-        const res = await fetch(src.url)
+
+        // --refresh: force a live re-fetch (do NOT short-circuit on an existing
+        // snapshot — refreshing is the whole point). Auth headers may embed
+        // `env:VAR` tokens; if a referenced var is unset we can't authenticate,
+        // so reuse the committed snapshot rather than fetch unauthenticated.
+        const { headers, missing } = resolveHeaders(src.headers)
+        if (missing.length > 0) {
+          if (existing !== undefined) {
+            process.stderr.write(
+              `catalog-sync: skipping refresh of "${src.id}" — missing env ` +
+                `${missing.join(", ")}; reusing committed snapshot.\n`
+            )
+            return JSON.parse(existing)
+          }
+          throw new Error(
+            `catalog-sync: cannot refresh "${src.id}" — missing env ` +
+              `${missing.join(", ")} and no committed snapshot.`
+          )
+        }
+        const res = await fetch(src.url, {
+          method: src.method ?? "GET",
+          headers,
+          ...(src.body !== undefined
+            ? { body: JSON.stringify(src.body) }
+            : {}),
+        })
         if (!res.ok) {
           throw new Error(
             `catalog-sync: fetch ${src.url} failed: ${res.status} ${res.statusText}`

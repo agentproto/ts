@@ -10,6 +10,20 @@
 export interface CatalogSource {
   id: string
   url: string
+  /** HTTP method for the live (`--refresh`) fetch. Default `"GET"`. */
+  method?: "GET" | "POST"
+  /**
+   * Request headers for the live fetch. A value may embed `env:VAR_NAME`
+   * tokens, resolved from `process.env` at fetch time (e.g.
+   * `{ "xi-api-key": "env:ELEVENLABS_API_KEY" }` or
+   * `{ Authorization: "Bearer env:MINIMAX_API_KEY" }`). If any referenced env
+   * var is unset, the source is treated as un-refreshable — the committed
+   * snapshot is reused rather than fetched without auth. Offline reads
+   * (default, no `--refresh`) ignore headers entirely.
+   */
+  headers?: Record<string, string>
+  /** JSON request body for POST sources (e.g. MiniMax `get_voice`). */
+  body?: unknown
 }
 
 export interface GeneratorContext {
