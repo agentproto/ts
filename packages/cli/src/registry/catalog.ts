@@ -66,6 +66,15 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastra-agent",
+    name: "Mastra Agent",
+    description:
+      "First-party agentproto agent — an AIP-42 AGENT.md run as a live Mastra agent behind an ACP server. No external CLI: our own loop, our own models.",
+    packageName: "@agentproto/adapter-mastra-agent",
+    hint: "first-party · ACP · mastra",
+  },
+  {
+    type: "agent-cli",
     slug: "openclaw",
     name: "OpenClaw",
     description:
