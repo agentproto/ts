@@ -1,0 +1,199 @@
+{
+  "_meta": {
+    "source": "POST https://api.minimax.io/v1/get_voice (body: { voice_type: \"system\" })",
+    "fetched": "snapshot-authorship-date: 2026-06-29",
+    "note": "HAND-AUTHORED FIXTURE — to be refreshed against the live API when a MiniMax API key is available. Voice entries mirror the real /v1/get_voice response shape (system_voice[] with voice_id, description[], voice_name, created_time)."
+  },
+  "system_voice": [
+    {
+      "voice_id": "French_FemaleAnchor",
+      "description": ["A poised, professional female anchor voice in French, with a broadcast-style tone and excellent diction."],
+      "voice_name": "Camille",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "French_MovieLeadFemale",
+      "description": ["A warm, natural female voice in French, conveying genuine emotion with a cinema-quality delivery."],
+      "voice_name": "Sophie",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "French_Female_News Anchor",
+      "description": ["A fast-paced, dynamic female journalist voice in French, with energetic delivery and excellent articulation."],
+      "voice_name": "Marion",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "French_MaleNarrator",
+      "description": ["A composed male narrator voice in French, with a deep, measured tone ideal for storytelling."],
+      "voice_name": "Pierre",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "French_Male_Speech_New",
+      "description": ["A calm, measured male voice in French, with a reassuring and professional tone."],
+      "voice_name": "Antoine",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "French_CasualMan",
+      "description": ["A relaxed, informal male voice in French, with a natural conversational style."],
+      "voice_name": "Lucas",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_Trustworth_Man",
+      "description": ["A trustworthy, composed adult male voice in English, with a confident professional delivery."],
+      "voice_name": "Aaron",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_CalmWoman",
+      "description": ["A calm, soothing adult female voice in English, with a gentle and reassuring presence."],
+      "voice_name": "Olivia",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_Gentle-voiced_man",
+      "description": ["A gentle, soft-spoken adult male voice in English, with a kind and approachable tone."],
+      "voice_name": "Mark",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_Graceful_Lady",
+      "description": ["A graceful, elegant adult female voice in English, with refined diction and poise."],
+      "voice_name": "Charlotte",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_Upbeat_Woman",
+      "description": ["An upbeat, energetic young female voice in English, with a bright and cheerful delivery."],
+      "voice_name": "Emma",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_ManWithDeepVoice",
+      "description": ["A deep, resonant adult male voice in English, with a commanding bass presence."],
+      "voice_name": "Henry",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_SereneWoman",
+      "description": ["A serene, tranquil adult female voice in English, with a peaceful and calming delivery."],
+      "voice_name": "Hannah",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_ConfidentWoman",
+      "description": ["A confident, assertive adult female voice in English, with strong projection and clarity."],
+      "voice_name": "Grace",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_PatientMan",
+      "description": ["A patient, unhurried adult male voice in English, with a steady and reassuring presence."],
+      "voice_name": "Patrick",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_expressive_narrator",
+      "description": ["An expressive, dynamic adult male narrator voice in English, with rich tonal variation and emotional range."],
+      "voice_name": "Daniel",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "English_radiant_girl",
+      "description": ["A radiant, bright young female voice in English, with a youthful and energetic delivery."],
+      "voice_name": "Ruby",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Spanish_SereneWoman",
+      "description": ["A serene, calm adult female voice in Spanish, with gentle and melodic delivery."],
+      "voice_name": "Isabel",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Spanish_Narrator",
+      "description": ["A professional adult male narrator voice in Spanish, with clear diction and authoritative tone."],
+      "voice_name": "Diego",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "German_FriendlyMan",
+      "description": ["A friendly, approachable adult male voice in German, with a warm and welcoming tone."],
+      "voice_name": "Klaus",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "German_SweetLady",
+      "description": ["A sweet, gentle young female voice in German, with a soft and charming delivery."],
+      "voice_name": "Greta",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Japanese_GentleButler",
+      "description": ["A gentle, refined adult male voice in Japanese, with a polite and dignified delivery."],
+      "voice_name": "Haruto",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Japanese_KindLady",
+      "description": ["A kind, warm adult female voice in Japanese, with a caring and gentle tone."],
+      "voice_name": "Yuki",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Korean_CalmGentleman",
+      "description": ["A calm, composed adult male voice in Korean, with a refined and measured delivery."],
+      "voice_name": "Minjun",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Korean_SweetGirl",
+      "description": ["A sweet, bright young female voice in Korean, with a cheerful and lively tone."],
+      "voice_name": "Yuna",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Chinese (Mandarin)_Gentleman",
+      "description": ["A refined, courteous adult male voice in standard Mandarin, with a well-educated and professional delivery."],
+      "voice_name": "Wei",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Chinese (Mandarin)_Sweet_Lady",
+      "description": ["A sweet, gentle young female voice in standard Mandarin, with a warm and endearing tone."],
+      "voice_name": "Mei",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Portuguese_ReliableMan",
+      "description": ["A reliable, steady adult male voice in Portuguese, with a trustworthy and professional delivery."],
+      "voice_name": "Rafael",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Portuguese_SweetGirl",
+      "description": ["A sweet, charming young female voice in Portuguese, with a bright and lively tone."],
+      "voice_name": "Beatriz",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Italian_Narrator",
+      "description": ["An expressive adult male narrator voice in Italian, with passionate and engaging delivery."],
+      "voice_name": "Marco",
+      "created_time": "1970-01-01"
+    },
+    {
+      "voice_id": "Italian_BraveHeroine",
+      "description": ["A brave, spirited adult female voice in Italian, with strong character and emotional depth."],
+      "voice_name": "Giulia",
+      "created_time": "1970-01-01"
+    }
+  ],
+  "base_resp": {
+    "status_code": 0,
+    "status_msg": "success"
+  }
+}

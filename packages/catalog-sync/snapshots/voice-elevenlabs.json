@@ -1,0 +1,139 @@
+{
+  "_meta": {
+    "source": "GET https://api.elevenlabs.io/v1/voices",
+    "fetched": "snapshot-authorship-date: 2026-06-29",
+    "note": "HAND-AUTHORED FIXTURE — to be refreshed against the live API when an ElevenLabs API key is available. Voice entries mirror the real /v1/voices response shape (voice_id, name, category, description, labels, preview_url)."
+  },
+  "voices": [
+    {
+      "voice_id": "O31r762Gb3WFygrEOGh0",
+      "name": "Victoire",
+      "category": "premade",
+      "description": "Haute fidélité, voix naturelle premium",
+      "labels": {
+        "accent": "french",
+        "age": "young",
+        "gender": "female",
+        "use_case": "conversational"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/O31r762Gb3WFygrEOGh0/sample.mp3"
+    },
+    {
+      "voice_id": "WeAAwKYcS06VmXw086yZ",
+      "name": "Victoria",
+      "category": "premade",
+      "description": "Chaleureuse et posée, style narration",
+      "labels": {
+        "accent": "french",
+        "age": "middle_aged",
+        "gender": "female",
+        "use_case": "narration"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/WeAAwKYcS06VmXw086yZ/sample.mp3"
+    },
+    {
+      "voice_id": "aQROLel5sQbj1vuIVi6B",
+      "name": "Nicolas",
+      "category": "premade",
+      "description": "Voix masculine parisienne, style narrateur",
+      "labels": {
+        "accent": "french",
+        "age": "middle_aged",
+        "gender": "male",
+        "use_case": "narration"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/aQROLel5sQbj1vuIVi6B/sample.mp3"
+    },
+    {
+      "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+      "name": "George",
+      "category": "premade",
+      "description": "Warm, captivating British storyteller",
+      "labels": {
+        "accent": "british",
+        "age": "middle_aged",
+        "gender": "male",
+        "use_case": "storytelling"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/JBFqnCBsd6RMkjVDRZzb/sample.mp3"
+    },
+    {
+      "voice_id": "EXAVITQu4vr4xnSDxMaL",
+      "name": "Sarah",
+      "category": "premade",
+      "description": "Mature, reassuring, confident",
+      "labels": {
+        "accent": "american",
+        "age": "young",
+        "gender": "female",
+        "use_case": "narrative_news"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/EXAVITQu4vr4xnSDxMaL/sample.mp3"
+    },
+    {
+      "voice_id": "onwK4e9ZLuTAKqWW03F9",
+      "name": "Daniel",
+      "category": "premade",
+      "description": "Steady British broadcaster",
+      "labels": {
+        "accent": "british",
+        "age": "middle_aged",
+        "gender": "male",
+        "use_case": "news"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/onwK4e9ZLuTAKqWW03F9/sample.mp3"
+    },
+    {
+      "voice_id": "Xb7hH8MSUJpSbSDYk0k2",
+      "name": "Alice",
+      "category": "premade",
+      "description": "Clear, engaging British educator",
+      "labels": {
+        "accent": "british",
+        "age": "middle_aged",
+        "gender": "female",
+        "use_case": "educational"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/Xb7hH8MSUJpSbSDYk0k2/sample.mp3"
+    },
+    {
+      "voice_id": "nPczCjzI2devNBz1zQrb",
+      "name": "Brian",
+      "category": "premade",
+      "description": "Deep, resonant American narrator",
+      "labels": {
+        "accent": "american",
+        "age": "middle_aged",
+        "gender": "male",
+        "use_case": "narration"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/nPczCjzI2devNBz1zQrb/sample.mp3"
+    },
+    {
+      "voice_id": "21m00Tcm4TlvDq8ikWAM",
+      "name": "Rachel",
+      "category": "premade",
+      "description": "Warm, calm, and collected American voice",
+      "labels": {
+        "accent": "american",
+        "age": "young",
+        "gender": "female",
+        "use_case": "conversational"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/21m00Tcm4TlvDq8ikWAM/sample.mp3"
+    },
+    {
+      "voice_id": "AZnzlk1XvdvUeBnXmlld",
+      "name": "Domi",
+      "category": "premade",
+      "description": "Strong, commanding American voice",
+      "labels": {
+        "accent": "american",
+        "age": "young",
+        "gender": "female",
+        "use_case": "conversational"
+      },
+      "preview_url": "https://storage.googleapis.com/eleven-public-prod/premade/voices/AZnzlk1XvdvUeBnXmlld/sample.mp3"
+    }
+  ]
+}
