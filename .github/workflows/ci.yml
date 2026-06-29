@@ -61,8 +61,14 @@ jobs:
           fetch-depth: 0
 
       - name: Check for changeset
+        # Pass the PR title via env, NOT inline `${{ … }}` interpolation into the
+        # script body — a title containing backticks / $( ) would otherwise be
+        # executed by the shell (command injection; e.g. a title with
+        # `agentproto models` failed this step with "command not found", 127).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          TITLE="${{ github.event.pull_request.title }}"
+          TITLE="$PR_TITLE"
           if [[ "$TITLE" == chore\(release\):* ]]; then
             echo "Version Packages PR — no changeset required."
             exit 0
