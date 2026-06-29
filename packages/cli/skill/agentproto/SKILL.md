@@ -95,6 +95,7 @@ After editing `claude_desktop_config.json`, restart Claude Desktop.
 | `claude-code` | acp | Long-lived ACP process via `@agentclientprotocol/claude-agent-acp`. Bidirectional, multimodal. Best for extended interactive sessions. |
 | `claude-code-print` | print | `claude -p --output-format stream-json` — one subprocess per turn, no ACP wrapper, no stale-proxy race. Session continuity via `--resume`. ~200–400 ms cold-start per turn. Simpler and more reliable. |
 | `hermes` | acp | Hermes via ACP. |
+| `mastra-agent` | acp | First-party agent — an AIP-42 `AGENT.md` run as a live Mastra agent (our loop, our models, routed from the spawn env). SQLite memory + workspace tools. Standalone via `agentproto-mastra acp`. |
 | `opencode` / `codex` / `openclaw` | acp / proprietary | Various. |
 
 ```bash

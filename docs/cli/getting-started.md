@@ -16,8 +16,8 @@ the verb list.
 ## 2. Install your first adapter
 
 Pick an adapter — the canonical set is `claude-code`, `hermes`,
-`opencode`, `gemini-cli`, `goose`. Each is published as
-`@agentproto/adapter-<slug>`.
+`opencode`, `codex`, `mastra-agent` (the first-party agent), `openclaw`.
+Each is published as `@agentproto/adapter-<slug>`.
 
 ```bash
 agentproto install claude-code
