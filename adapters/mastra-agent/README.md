@@ -59,6 +59,9 @@ across spawns), overridable with `AGENTPROTO_MASTRA_MEMORY_DB`. A custom
 
 ## Status
 
-Streaming conversation + workspace tools (edit/run) + SQLite memory. Tool calls
-execute inside Mastra but aren't yet relayed as ACP `tool_call` updates (the
-final answer streams back) — that surfacing is the next increment.
+Streaming conversation + workspace tools (edit/run) + SQLite memory, with tool
+activity surfaced live: each tool the agent runs is relayed to the host as an
+ACP `tool_call` (status `in_progress`) and then a `tool_call_update` (status
+`completed`/`failed` with the raw output) — read off Mastra's `fullStream` and
+mapped in `src/tool-call-map.ts`. So a host (codex/claude-code/an IDE) shows the
+"🔧 run_command: …" feed, not just the final prose.
