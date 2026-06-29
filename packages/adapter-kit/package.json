@@ -60,6 +60,11 @@
       "import": "./dist/wizard.mjs",
       "default": "./dist/wizard.mjs"
     },
+    "./discover": {
+      "types": "./dist/discover.d.ts",
+      "import": "./dist/discover.mjs",
+      "default": "./dist/discover.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

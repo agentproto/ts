@@ -14,14 +14,14 @@
  */
 
 import { promises as fs } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { dirname, join, resolve as resolvePath } from "node:path"
+import { join } from "node:path"
 import { homedir } from "node:os"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
   makeAdapterLister,
   makeSetupLedger,
+  collectAgentprotoNamespaceRoots,
   type AdapterHandle,
   type AdapterCatalogEntry,
 } from "@agentproto/adapter-kit"
@@ -231,51 +231,6 @@ export async function listInstalledAdapters(opts?: {
   void notImportable
 
   return out.sort((a, b) => a.slug.localeCompare(b.slug))
-}
-
-/**
- * Walk up from the cli package looking for `node_modules/@agentproto`
- * directories. Returns every match (pnpm + global + nvm hoisting can
- * produce more than one) so adapters installed in any reachable
- * scope are discoverable.
- */
-async function collectAgentprotoNamespaceRoots(
-  start?: string
-): Promise<string[]> {
-  const seen = new Set<string>()
-  const roots: string[] = []
-  const candidatesAt = (dir: string): string[] => [
-    resolvePath(dir, "node_modules", "@agentproto"),
-    resolvePath(dir, "node_modules", ".pnpm", "node_modules", "@agentproto"),
-  ]
-
-  async function walkUp(from: string): Promise<void> {
-    let cur = from
-    for (let depth = 0; depth < 20; depth++) {
-      if (seen.has(cur)) break
-      seen.add(cur)
-      for (const candidate of candidatesAt(cur)) {
-        try {
-          const s = await fs.stat(candidate)
-          if (s.isDirectory() && !roots.includes(candidate)) roots.push(candidate)
-        } catch { /* not present */ }
-      }
-      const parent = resolvePath(cur, "..")
-      if (parent === cur) break
-      cur = parent
-    }
-  }
-
-  // Walk from the caller-supplied root (or cwd) — covers the workspace root.
-  await walkUp(start ?? process.cwd())
-  // Also walk from this file's location so pnpm-linked adapters in
-  // packages/cli/node_modules/@agentproto/ are found regardless of cwd.
-  // Resolves correctly whether running from dist (node file.mjs) or ts-node.
-  try {
-    await walkUp(dirname(fileURLToPath(import.meta.url)))
-  } catch { /* ESM not available in this context */ }
-
-  return roots
 }
 
 // ── catalog-aware lister ─────────────────────────────────────────────────────
