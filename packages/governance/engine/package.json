@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/governance-engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "agentgovernance/v1 reference engine — record audit events, sign artifacts, maintain pending-signatures index. Vendor-neutral via the IGovernanceFilesystem interface (Node fs default, plug Supabase / S3 / in-memory adapters via the same interface). Pairs with @agentproto/governance for doctype types and validators.",
   "keywords": [
     "agentgovernance",

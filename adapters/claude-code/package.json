@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-claude-code",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/adapter-claude-code — AIP-45 AGENT-CLI adapter for Anthropic's Claude Code via @agentclientprotocol/claude-agent-acp. Spawns the ACP wrapper and drives Claude Code as an agentproto agent CLI.",
   "keywords": [
     "agentproto",

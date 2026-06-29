@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/driver-http",
-  "version": "0.1.1",
-  "description": "agentproto/http-runtime \u2014 AIP-31 HTTP provider specialisation. Sugar over @agentproto/driver's defineDriver({ kind: 'http' }) plus body templating, JSONPath-lite response extraction, and SSE streaming.",
+  "version": "0.1.2",
+  "description": "agentproto/http-runtime — AIP-31 HTTP provider specialisation. Sugar over @agentproto/driver's defineDriver({ kind: 'http' }) plus body templating, JSONPath-lite response extraction, and SSE streaming.",
   "keywords": [
     "agentproto",
     "aip-31",
