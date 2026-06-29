@@ -28,6 +28,7 @@ import { ngrokTunnelProvider, NGROK_SLUG } from "./ngrok.js"
 import type {
   RemoteProvider,
   TunnelProviderHandle,
+  TunnelProviderCapabilities,
 } from "./types.js"
 
 /** A resolved provider — the lifecycle + adapter-kit handle surface combined. */
@@ -90,6 +91,20 @@ export const LEGACY_PROVIDER_ALIAS: Record<string, string> = {
 /** Map a raw provider string (slug OR legacy short name) to a canonical slug. */
 export function normalizeProviderSlug(raw: string): string {
   return LEGACY_PROVIDER_ALIAS[raw] ?? raw
+}
+
+/**
+ * Capabilities for a BUILT-IN provider slug (or legacy short name), read
+ * synchronously from a descriptor-only handle. Returns null for third-party
+ * slugs (their capabilities need an async import — `resolveTunnelProvider`).
+ * Used by the lifecycle engine to decide autostart eligibility by data
+ * (`stableUrl`) rather than a hardcoded slug literal.
+ */
+export function builtinProviderCapabilities(
+  raw: string,
+): TunnelProviderCapabilities | null {
+  const factory = BUILTIN_TUNNEL_PROVIDERS[normalizeProviderSlug(raw)]
+  return factory ? factory(null).capabilities : null
 }
 
 const slugToCamel = (slug: string): string =>

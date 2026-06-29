@@ -49,7 +49,7 @@ function makeRegistry(tmp: string, providerOverride?: RemoteProvider) {
   // factory type and accept it as an option in a test-only constructor
   // parameter. We use a local wrapper here to keep production code clean.
   const reg = new (class extends TunnelRegistry {
-    protected override pickProviderForTest(): RemoteProvider {
+    protected override async pickProviderForTest(): Promise<RemoteProvider> {
       return providerOverride ?? makeMockProvider()
     }
   })({ persistPath, workspace: tmp })
