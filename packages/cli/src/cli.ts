@@ -24,6 +24,7 @@ import { runSetupCommand } from "./commands/setup.js"
 import { runPlugins } from "./commands/plugins.js"
 import { runRun } from "./commands/run.js"
 import { runChat } from "./commands/chat.js"
+import { runChatTui } from "./commands/chat-tui.js"
 import { runModels } from "./commands/models.js"
 import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
@@ -45,6 +46,7 @@ Usage:
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
+  agentproto chat-tui  <adapter> [--model <id>] [--cwd <dir>] [--keep]
   agentproto models    [adapter] [--json]                  runnable models + provider-key status
   agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>] [--verbose]
   agentproto serve     [--profile <name>]
@@ -102,6 +104,7 @@ const VERBS = new Set([
   "setup",
   "run",
   "chat",
+  "chat-tui",
   "models",
   "run-swarm",
   "serve",
@@ -158,6 +161,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runRun(rest)
     case "chat":
       return runChat(rest)
+    case "chat-tui":
+      return runChatTui(rest)
     case "models":
       return runModels(rest)
     case "run-swarm":

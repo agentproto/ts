@@ -3,6 +3,8 @@
   "compilerOptions": {
     "declaration": false,
     "declarationMap": false,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]
