@@ -23,6 +23,7 @@ import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
 import { runPlugins } from "./commands/plugins.js"
 import { runRun } from "./commands/run.js"
+import { runChat } from "./commands/chat.js"
 import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
@@ -42,6 +43,7 @@ Usage:
   agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
+  agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
   agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>] [--verbose]
   agentproto serve     [--profile <name>]
                        [--workspace <dir>] [--port <n>] [--bind <ip>]
@@ -97,6 +99,7 @@ const VERBS = new Set([
   "plugins",
   "setup",
   "run",
+  "chat",
   "run-swarm",
   "serve",
   "workspace",
@@ -150,6 +153,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSetupCommand(rest)
     case "run":
       return runRun(rest)
+    case "chat":
+      return runChat(rest)
     case "run-swarm":
       return runRunSwarm(rest)
     case "serve":

@@ -49,8 +49,9 @@ Usage:
   agentproto sessions [--watch] [--json]
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
-                                      [--prompt <text>] [--label <text>]
-                                      [--attach] [--json] [--no-color]
+                                      [--model <id>] [--prompt <text>]
+                                      [--label <text>] [--attach] [--json]
+                                      [--no-color]
   agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                             [--name <slug>] [--label <text>]
                                             [--cols <n>] [--rows <n>]
@@ -143,6 +144,7 @@ async function runStart(args: readonly string[]): Promise<number> {
     options: {
       cwd: { type: "string" },
       workspace: { type: "string" },
+      model: { type: "string" },
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
       attach: { type: "boolean" },
@@ -177,6 +179,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   const body: Record<string, string> = { adapter: slug }
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
+  if (values.model) body.model = values.model
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
 
