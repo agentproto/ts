@@ -87,6 +87,9 @@ function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
           // NOTE: avoid plain `.includes(target.value)` — it would
           // false-positive on any id that merely *contains* the substring
           // (e.g. "not-google/…" matching provider "google").
+          // A `<router>/<vendor>/…` id (e.g. `openrouter/anthropic/…`) can
+          // match BOTH a `router` and a `vendor` provider rule — that is
+          // intentional; band resolution (most-specific wins) reconciles it.
           return (
             model.canonicalId.startsWith(`${target.value}/`) ||
             model.canonicalId.includes(`/${target.value}/`)

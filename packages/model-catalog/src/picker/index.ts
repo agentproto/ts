@@ -31,6 +31,11 @@ export interface AvailableModel {
   id: string
   /** Canonical model id (LLM aliases collapse here). */
   canonicalId: string
+  /**
+   * Priced model kind. Typed `ModelKind` (not `CatalogKind`) on purpose: the
+   * picker never surfaces `voice` rows as `AvailableModel` — voices reach the
+   * UI through a separate path — so `voice` is intentionally out of range here.
+   */
   kind: ModelKind
   displayName: string
   description: string
