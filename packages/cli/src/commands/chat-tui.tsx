@@ -45,11 +45,16 @@ const USAGE = `agentproto chat-tui — Ink TUI over a daemon agent session
 
 Usage:
   agentproto chat-tui <adapter> [--model <id>] [--cwd <dir>] [--workspace <slug>]
-                                [--label <text>] [--keep]
+                                [--label <text>] [--system <text>] [--keep]
 
 Examples:
   agentproto chat-tui mastra-agent --model anthropic/claude-sonnet-4-6
   agentproto chat-tui claude-code --cwd .
+  agentproto chat-tui claude-code --system "Answer in French."
+
+Options:
+  --system <text>  Override the default CLI formatting prompt (injected as a
+                   silent first turn). Pass --system "" to disable it.
 
 In-session commands:
   /exit, /quit   end the chat (and stop the session unless --keep)
@@ -140,9 +145,15 @@ interface AppProps {
   desc: SessionDescriptor
   slug: string
   keep: boolean
+  systemPrompt?: string
 }
 
-function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
+function ChatApp({
+  endpoint,
+  desc,
+  slug,
+  systemPrompt,
+}: AppProps): React.ReactElement {
   const { exit } = useApp()
   const [messages, setMessages] = useState<Msg[]>(() => [
     {
@@ -152,6 +163,11 @@ function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
   ])
   const [turnInFlight, setTurnInFlight] = useState(false)
   const [input, setInput] = useState("")
+  // Setup phase: while a system prompt is being injected as a silent first
+  // turn, swallow the agent's response so it never reaches the UI.
+  const [setupPhase, setSetupPhase] = useState(Boolean(systemPrompt))
+  const setupRef = useRef(Boolean(systemPrompt))
+  setupRef.current = setupPhase
   // Keep the live flag readable inside the (stable) line handler.
   const turnRef = useRef(false)
   turnRef.current = turnInFlight
@@ -195,6 +211,16 @@ function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
       // re-emits on every render and isn't agent content.
       if (/^── .+ agent session .+──/.test(raw.replace(ANSI, ""))) return
       const { turnBoundary, suppress } = classifyChatLine(raw)
+      // During the silent setup turn, swallow every line; the only thing we
+      // care about is its boundary, which ends the suppression.
+      if (setupRef.current) {
+        if (turnBoundary) {
+          setupRef.current = false
+          setSetupPhase(false)
+          setTurnInFlight(false)
+        }
+        return
+      }
       if (!suppress) appendLine(raw)
       if (turnBoundary) endTurn()
     }
@@ -238,6 +264,25 @@ function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
       req.destroy()
     }
   }, [endpoint, desc.id])
+
+  // Inject the system/formatting prompt as a silent first turn. The daemon's
+  // spawn body doesn't accept a system prompt, so we send it as a normal turn
+  // and suppress the agent's reply (see setupRef in handleLine above).
+  useEffect(() => {
+    if (!systemPrompt) return
+    setTurnInFlight(true)
+    httpPostJson(
+      `${endpoint.url}/sessions/${desc.id}/prompt`,
+      { prompt: systemPrompt },
+      endpoint.token,
+    ).catch(() => {
+      // If the setup turn never lands, don't wedge the input forever.
+      setupRef.current = false
+      setSetupPhase(false)
+      setTurnInFlight(false)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Ctrl-C → graceful exit (the daemon kill happens in runChatTui).
   useInput((_inputChar, key) => {
@@ -296,7 +341,7 @@ function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
           <Text color="yellow">
             <Spinner type="dots" />
           </Text>
-          <Text dimColor> thinking…</Text>
+          <Text dimColor>{setupPhase ? " configuring session…" : " thinking…"}</Text>
         </Box>
       ) : null}
 
@@ -310,7 +355,9 @@ function ChatApp({ endpoint, desc, slug }: AppProps): React.ReactElement {
           you ›{" "}
         </Text>
         {turnInFlight ? (
-          <Text dimColor>(waiting for the agent…)</Text>
+          <Text dimColor>
+            {setupPhase ? "(configuring session…)" : "(waiting for the agent…)"}
+          </Text>
         ) : (
           <TextInput
             value={input}
@@ -330,6 +377,7 @@ export async function runChatTui(args: readonly string[]): Promise<number> {
     cwd?: string
     workspace?: string
     label?: string
+    system?: string
     keep?: boolean
     "no-color"?: boolean
     help?: boolean
@@ -345,6 +393,7 @@ export async function runChatTui(args: readonly string[]): Promise<number> {
         cwd: { type: "string" },
         workspace: { type: "string" },
         label: { type: "string" },
+        system: { type: "string" },
         keep: { type: "boolean" },
         "no-color": { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -416,9 +465,24 @@ export async function runChatTui(args: readonly string[]): Promise<number> {
     return 1
   }
 
+  // Default formatting hint so replies render cleanly in the terminal; the
+  // daemon spawn body doesn't take a system prompt, so ChatApp injects this
+  // as a silent first turn. `--system` overrides it; `--system ""` disables.
+  const CLI_FORMAT_PROMPT =
+    "You are responding inside a terminal (CLI). Format all replies using clean markdown: " +
+    "## for headers, - for bullets, backtick code spans, fenced code blocks. " +
+    "Never mix bold with inline code (avoid **`...`**). Be concise."
+  const systemPrompt = values.system ?? CLI_FORMAT_PROMPT
+
   const keep = values.keep === true
   const instance = render(
-    <ChatApp endpoint={endpoint} desc={desc} slug={slug} keep={keep} />,
+    <ChatApp
+      endpoint={endpoint}
+      desc={desc}
+      slug={slug}
+      keep={keep}
+      systemPrompt={systemPrompt}
+    />,
   )
   await instance.waitUntilExit()
 
