@@ -1,0 +1,105 @@
+name: Catalog Sync
+
+# Regenerates the model-catalog data (prices, model lists, voices) from the
+# pinned provider sources via @agentproto/catalog-sync, then opens a PR with
+# the diff for human review. Mirrors the changesets release flow: the machine
+# proposes, a human merges. Data is never hand-committed — it is generated.
+#
+# Triggers:
+#   - schedule: weekly, so provider price/model drift surfaces as a reviewable PR
+#   - workflow_dispatch: on demand (e.g. after adding a generator)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "Re-fetch provider sources (updates pinned snapshots). Off = regenerate from committed snapshots only."
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # push the sync branch
+  pull-requests: write # open the sync PR
+
+jobs:
+  sync:
+    name: Regenerate catalog data
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build catalog-sync
+        run: pnpm --filter @agentproto/catalog-sync build
+
+      # `--refresh` re-fetches the pinned provider sources and rewrites the
+      # committed snapshots; without it, generation is deterministic from the
+      # snapshots already in the repo. Either way the *.generated.ts outputs
+      # are rewritten; git surfaces any drift.
+      - name: Regenerate catalog
+        env:
+          # Provider keys for sources that need auth (optional — public
+          # sources like openrouter/models.dev need none). Absent secrets
+          # simply skip that generator's refresh; the snapshot is reused.
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          pnpm --filter @agentproto/catalog-sync exec catalog-sync generate \
+            ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}
+
+      - name: Detect drift
+        id: drift
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No catalog drift — nothing to sync."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "### Catalog drift detected" >> "$GITHUB_STEP_SUMMARY"
+            git diff --stat >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # `--check` must stay green on every normal PR/CI run (committed
+      # snapshots ⇒ committed generated files). This job is the *producer* of
+      # that truth: it opens a PR whenever the upstream sources have drifted.
+      - name: Open sync PR
+        if: steps.drift.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: catalog-sync/auto
+          base: main
+          commit-message: "chore(catalog): sync generated data from pinned sources"
+          title: "chore(catalog): sync generated catalog data"
+          body: |
+            Automated catalog regeneration from the pinned provider sources via
+            `@agentproto/catalog-sync`.
+
+            - Generated `*.generated.ts` (and refreshed snapshots, if `--refresh`)
+              now differ from `main`.
+            - Review the diff as you would any pricing/model change, then merge.
+            - This data is **generated, not hand-edited** — to change it, change
+              the generator or the pinned source, never the output file.
+          labels: |
+            catalog-sync
+            automated
+          delete-branch: true
