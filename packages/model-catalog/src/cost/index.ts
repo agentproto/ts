@@ -14,7 +14,7 @@ import {
   calculateLLMCreditCost,
   type LLMCreditCostResult,
 } from "../llm/index.js"
-import { getModel, getStaticModelProvider } from "../registry/index.js"
+import { getModel } from "../registry/index.js"
 import { computeCenticredits, pricingRegistry } from "../pricing/index.js"
 
 /**
@@ -179,7 +179,12 @@ export function calculateCost(
   }
 
   if (resolved.kind === "image") {
-    const numOutputs = Math.max(1, usage.numOutputs ?? 1)
+    // `usage.kind` is "image" here (guarded above) but TS won't cross-narrow
+    // it from `resolved.kind`, so check explicitly before reading numOutputs.
+    const numOutputs = Math.max(
+      1,
+      usage.kind === "image" ? (usage.numOutputs ?? 1) : 1
+    )
     const baseCostUsd = resolved.def.pricing.baseCost * numOutputs
     const perOutputCredits = computeCenticredits({
       baseCostUsd: resolved.def.pricing.baseCost,
@@ -226,7 +231,7 @@ export function calculateCost(
         : 1.0
     const durMult =
       usage.duration && mult?.duration
-        ? (mult.duration[String(usage.duration)] ?? usage.duration)
+        ? (mult.duration[usage.duration] ?? 1.0)
         : 1.0
     const modMult =
       usage.mode && mult?.mode ? (mult.mode[usage.mode] ?? 1.0) : 1.0
@@ -273,9 +278,7 @@ export function calculateCost(
   if (resolved.kind === "voice") {
     // Voice rows are metadata; delegate to the provider's default audio model.
     const provider = resolved.voice.provider
-    const delegateModelId =
-      VOICE_PROVIDER_DEFAULT_MODEL[provider] ??
-      getStaticModelProvider("audio", provider)
+    const delegateModelId = VOICE_PROVIDER_DEFAULT_MODEL[provider]
     if (!delegateModelId) throw new UnknownModelError(modelId)
     const delegateResult = calculateCost(delegateModelId, usage, opts)
     return {
@@ -285,13 +288,34 @@ export function calculateCost(
     }
   }
 
-  // resolved.kind === "audio"
+  // Only `audio` remains (llm returned at top; image/video/voice handled
+  // above). Narrow explicitly so `.def` is type-safe.
+  if (resolved.kind !== "audio") throw new UnknownModelError(modelId)
   const audioPricing = resolved.def.pricing
-  const billingUnit = audioPricing.billingUnit
-  const quantity =
-    billingUnit === "per_character"
-      ? (usage.characters ?? 0) / 1000
-      : (usage.seconds ?? 0)
+  // Map the provider's billing unit to a quantity of billable units.
+  // The catalog DATA uses `per_1k_chars` (chars ÷ 1000) and `per_minute`
+  // (whole minutes, rounded UP to match provider invoicing). `per_character`
+  // / `per_second` are handled too so a future data migration to those units
+  // keeps working. NOTE: do not switch on the zod enum value alone — the
+  // audio schema enum is stale (`per_character|per_second`) while the data
+  // still ships `per_1k_chars|per_minute`; trusting the enum bills 0.
+  const billingUnit = audioPricing.billingUnit as string
+  let quantity: number
+  switch (billingUnit) {
+    case "per_1k_chars":
+      quantity = Math.max(0, usage.characters ?? 0) / 1000
+      break
+    case "per_character":
+      quantity = Math.max(0, usage.characters ?? 0)
+      break
+    case "per_minute":
+      quantity = Math.ceil(Math.max(0, usage.seconds ?? 0) / 60)
+      break
+    case "per_second":
+    default:
+      quantity = Math.max(0, usage.seconds ?? 0)
+      break
+  }
   const baseCostUsd = audioPricing.baseCost * quantity
   const perUnitCredits = computeCenticredits({
     baseCostUsd: audioPricing.baseCost,
@@ -299,13 +323,17 @@ export function calculateCost(
     overrideCreditCost: audioPricing.overrideCreditCost,
     appId: opts.appId,
   })
-  const credits = Math.ceil(perUnitCredits * quantity)
+  // Per-call floor (1 cc) so a non-empty call never rounds to 0; a genuinely
+  // empty call (quantity 0, e.g. empty-string TTS) bills nothing.
+  const credits =
+    quantity > 0 ? Math.max(1, Math.ceil(perUnitCredits * quantity)) : 0
   const formulaPerUnit = computeCenticredits({
     baseCostUsd: audioPricing.baseCost,
     category: "audio",
     appId: opts.appId,
   })
-  const calculatedCredits = Math.ceil(formulaPerUnit * quantity)
+  const calculatedCredits =
+    quantity > 0 ? Math.max(1, Math.ceil(formulaPerUnit * quantity)) : 0
   const markup = pricingRegistry.getMarkup("audio", opts.appId)
   return {
     kind: "audio",
@@ -317,7 +345,6 @@ export function calculateCost(
     breakdown: {
       perUnitCredits,
       quantity,
-      billingUnit: billingUnit === "per_character" ? 1000 : 1,
     },
     isFallback: false,
     markup,
