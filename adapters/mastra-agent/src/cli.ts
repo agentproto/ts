@@ -45,6 +45,10 @@ function main(): void {
     makeAgentFactory({
       model: model ?? process.env.AGENTPROTO_MASTRA_MODEL,
       agentFile: agentFile ?? process.env.AGENTPROTO_MASTRA_AGENT_FILE,
+      // Tools are confined to the dir the daemon spawned us in.
+      cwd: process.cwd(),
+      // run_command is on unless explicitly disabled.
+      allowExec: !process.env.AGENTPROTO_MASTRA_NO_EXEC,
     }),
   )
 }

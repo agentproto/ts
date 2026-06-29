@@ -112,8 +112,15 @@ export function mastraAgentRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(mastraAgent)
 }
 
-export { makeAgentFactory, defaultAgentManifest, DEFAULT_MODEL } from "./default-agent.js"
+export {
+  makeAgentFactory,
+  defaultAgentManifest,
+  DEFAULT_MODEL,
+  DEFAULT_TOOL_IDS,
+} from "./default-agent.js"
 export { MastraAcpAgent, promptText, type MastraLike } from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
+export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
+export { buildSqliteMemory, resolveMemoryDbPath } from "./memory.js"
 export { runAcpOverStdio } from "./run.js"
 export type { AgentCliHandle, AgentCliRuntime }

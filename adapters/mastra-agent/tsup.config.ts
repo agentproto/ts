@@ -21,6 +21,9 @@ export default createTsupConfig({
     "@agentproto/mastra",
     "@agentclientprotocol/sdk",
     "@mastra/core",
+    "@mastra/memory",
+    "@mastra/libsql",
+    "zod",
   ],
   noExternal: [],
 })
