@@ -110,6 +110,11 @@ export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,
   readRuntimeMeta,
+  daemonRegistryDir,
+  readDaemonRegistry,
+  sweepStaleDaemonRegistry,
+  writeDaemonRegistryEntry,
+  unlinkDaemonRegistryEntry,
   type RuntimeMeta,
 } from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"

@@ -59,6 +59,7 @@ import {
 import {
   createGateway,
   sweepStaleRuntimeMetas,
+  sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
   type AgentAdapterResolver,
   type GatewayHandle,
@@ -390,6 +391,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
   } catch {
     // workspaces.json may not exist yet — no cleanup needed.
   }
+  // Same sweep for the central daemon registry — a SIGKILLed daemon
+  // leaves a dead-PID `<port>.json` there too, which discovery would
+  // otherwise trust. Independent of workspaces.json, so it runs even
+  // when no workspaces are registered.
+  try {
+    const cleaned = await sweepStaleDaemonRegistry(opts.port)
+    if (cleaned.length > 0) {
+      process.stderr.write(
+        `${color.dim}cleaned ${cleaned.length} stale daemon registry entr${cleaned.length === 1 ? "y" : "ies"} (dead PID)${color.reset}\n`,
+      )
+    }
+  } catch {
+    // best-effort
+  }
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
   const aborter = new AbortController()
@@ -405,7 +420,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // Delete our own runtime.json so the next CLI invocation doesn't
     // discover it as a "live daemon". Best-effort — the next boot
     // would clean it up anyway via the sweep above.
-    await unlinkRuntimeMeta(opts.workspace).catch(() => undefined)
+    await unlinkRuntimeMeta(opts.workspace, opts.port).catch(() => undefined)
     process.exit(0)
   }
   process.once("SIGINT", () => void shutdown("SIGINT"))
@@ -468,7 +483,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     if (!shuttingDown) {
       aborter.abort()
       await gateway.stop().catch(() => undefined)
-      await unlinkRuntimeMeta(opts.workspace).catch(() => undefined)
+      await unlinkRuntimeMeta(opts.workspace, opts.port).catch(() => undefined)
     }
     return 0
   }
