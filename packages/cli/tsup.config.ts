@@ -71,6 +71,8 @@ export default createTsupConfig({
     "@agentproto/agent-runtime/adapters/participant-agent-cli",
     "@agentproto/agent-runtime/adapters/telemetry",
     "@agentproto/runtime",
+    "@agentproto/model-catalog",
+    "@agentproto/model-catalog/llm",
     "@agentproto/agent",
     "@agentproto/manifest",
     "@agentproto/mcp-server",

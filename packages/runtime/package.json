@@ -56,6 +56,11 @@
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
     },
+    "./providers-store": {
+      "types": "./dist/providers-store.d.ts",
+      "import": "./dist/providers-store.mjs",
+      "default": "./dist/providers-store.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",

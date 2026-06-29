@@ -119,6 +119,17 @@ export {
 } from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"
 export {
+  loadProviders,
+  setProviderKey,
+  removeProviderKey,
+  injectProviderKeysIntoEnv,
+  providerEnvVar,
+  providersPath,
+  PROVIDER_ENV_VARS,
+  type ProviderEntry,
+  type ProvidersFile,
+} from "./providers-store.js"
+export {
   DEFAULT_ORCHESTRATOR_TOOLS,
   narrowOrchestratorTools,
   createScopeTokenRegistry,
