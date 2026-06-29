@@ -80,10 +80,16 @@ function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
         case "voice":
           return model.voice.provider === target.value
         case "llm":
-          // No provider field on LLM entries — best-effort by id prefix.
+          // No provider field on LLM entries — best-effort by canonical id
+          // structure. All LLM ids follow `<vendor>/…` or
+          // `<router>/<vendor>/…` conventions, so check for an exact
+          // prefix segment or an interior `/<vendor>/` segment.
+          // NOTE: avoid plain `.includes(target.value)` — it would
+          // false-positive on any id that merely *contains* the substring
+          // (e.g. "not-google/…" matching provider "google").
           return (
             model.canonicalId.startsWith(`${target.value}/`) ||
-            model.canonicalId.includes(target.value)
+            model.canonicalId.includes(`/${target.value}/`)
           )
       }
     }

@@ -172,14 +172,14 @@ export function calculateCost(
   const expectedUsageKind: CostUsage["kind"] =
     resolved.kind === "voice" ? "audio" : resolved.kind
   if (expectedUsageKind !== usage.kind) {
-    throw new CostUsageKindMismatchError(modelId, resolved.kind, usage.kind)
+    // Pass `expectedUsageKind` (not `resolved.kind`) so the error message
+    // accurately says "audio" rather than "voice" when a voice model is
+    // billed — the caller must supply audio usage, not voice usage.
+    throw new CostUsageKindMismatchError(modelId, expectedUsageKind, usage.kind)
   }
 
   if (resolved.kind === "image") {
-    const numOutputs = Math.max(
-      1,
-      usage.kind === "image" ? (usage.numOutputs ?? 1) : 1
-    )
+    const numOutputs = Math.max(1, usage.numOutputs ?? 1)
     const baseCostUsd = resolved.def.pricing.baseCost * numOutputs
     const perOutputCredits = computeCenticredits({
       baseCostUsd: resolved.def.pricing.baseCost,
@@ -226,32 +226,25 @@ export function calculateCost(
         : 1.0
     const durMult =
       usage.duration && mult?.duration
-        ? (mult.duration[usage.duration] ?? 1.0)
+        ? (mult.duration[String(usage.duration)] ?? usage.duration)
         : 1.0
     const modMult =
       usage.mode && mult?.mode ? (mult.mode[usage.mode] ?? 1.0) : 1.0
     const variantMultiplier = resMult * durMult * modMult
     const baseCostUsd = pricing.baseCost * variantMultiplier
-    const baseCredits = computeCenticredits({
+    const perClipCredits = computeCenticredits({
       baseCostUsd: pricing.baseCost,
       category: "video",
       overrideCreditCost: pricing.overrideCreditCost,
       appId: opts.appId,
     })
-    // `baseCredits` is already in cc with the registry floor applied
-    // per-unit; variantMultiplier scales the per-call cost. Per-call
-    // floor (1 cc) catches 0× multiplier degenerate inputs the same
-    // way it does in the audio path.
-    const credits = Math.max(1, Math.ceil(baseCredits * variantMultiplier))
-    const formulaBaseCredits = computeCenticredits({
+    const credits = Math.ceil(perClipCredits * variantMultiplier)
+    const formulaPerClip = computeCenticredits({
       baseCostUsd: pricing.baseCost,
       category: "video",
       appId: opts.appId,
     })
-    const calculatedCredits = Math.max(
-      1,
-      Math.ceil(formulaBaseCredits * variantMultiplier)
-    )
+    const calculatedCredits = Math.ceil(formulaPerClip * variantMultiplier)
     const markup = pricingRegistry.getMarkup("video", opts.appId)
     return {
       kind: "video",
@@ -261,178 +254,114 @@ export function calculateCost(
       calculatedCredits,
       baseCostUsd,
       breakdown: {
-        baseCredits,
+        perClipCredits,
         resolutionMultiplier: resMult,
         durationMultiplier: durMult,
         modeMultiplier: modMult,
+        variantMultiplier,
       },
       isFallback: false,
       markup,
     }
   }
 
-  // Audio MODEL — TTS or STT, billed per the provider's unit.
-  // (`kind: "voice"` is voice metadata for MiniMax; not a costable
-  // billing entity. Voice picker → audio model → cost dispatcher.)
-  if (resolved.kind === "audio") {
-    if (usage.kind !== "audio") {
-      throw new CostUsageKindMismatchError(modelId, "audio", usage.kind)
-    }
-    const pricing = resolved.def.pricing
-    let unitsConsumed = 0
-    switch (pricing.billingUnit) {
-      case "per_1k_chars": {
-        const characters = Math.max(0, usage.characters ?? 0)
-        unitsConsumed = characters / 1000
-        break
-      }
-      case "per_minute": {
-        const seconds = Math.max(0, usage.seconds ?? 0)
-        // Provider billing rounds to whole minutes; mirror that so
-        // user-side debit matches what we'll be invoiced.
-        unitsConsumed = Math.ceil(seconds / 60)
-        break
-      }
-      case "per_second": {
-        const seconds = Math.max(0, usage.seconds ?? 0)
-        unitsConsumed = seconds
-        break
-      }
-    }
-    const baseCostUsd = pricing.baseCost * unitsConsumed
-    const perUnitCredits = computeCenticredits({
-      baseCostUsd: pricing.baseCost,
-      category: "audio",
-      overrideCreditCost: pricing.overrideCreditCost,
-      appId: opts.appId,
-    })
-    // `perUnitCredits` is per-unit cc (registry floor applied per-unit);
-    // multiplying by `unitsConsumed` (chars/1000 or minutes) gives
-    // total cc for the call. The per-call floor (1 cc) guards against
-    // 0-unit calls (e.g. empty-string TTS) which would otherwise debit
-    // nothing — keeps the anti-abuse semantic the registry floor
-    // can't provide (it works on per-unit, not per-call).
-    const credits = Math.max(1, Math.ceil(perUnitCredits * unitsConsumed))
-    const formulaPerUnit = computeCenticredits({
-      baseCostUsd: pricing.baseCost,
-      category: "audio",
-      appId: opts.appId,
-    })
-    const calculatedCredits = Math.max(
-      1,
-      Math.ceil(formulaPerUnit * unitsConsumed)
-    )
-    const markup = pricingRegistry.getMarkup("audio", opts.appId)
-    return {
-      kind: "audio",
-      modelId,
-      canonicalId: modelId,
-      credits,
-      calculatedCredits,
-      baseCostUsd,
-      breakdown: {
-        characters: usage.characters ?? 0,
-        seconds: usage.seconds ?? 0,
-        unitsConsumed,
-        perUnitCredits,
-      },
-      isFallback: false,
-      markup,
-    }
+  // Audio (and voice, delegated as audio — see expectedUsageKind above).
+  if (usage.kind !== "audio") {
+    throw new CostUsageKindMismatchError(modelId, "audio", usage.kind)
   }
 
-  // `voice` kind (MiniMax voice metadata) — voices aren't billable on
-  // their own (they're a render-target on top of a TTS model). We
-  // know every voice in the catalog today is MiniMax, so route
-  // through MiniMax's default TTS model for pricing. Callers who want
-  // HD vs Turbo pricing should pass the audio model id directly with
-  // the voice as metadata; the default keeps drive-by voice ids from
-  // emitting a hardcoded placeholder.
-  //
-  // Recursion is bounded — the delegate target resolves to `audio`
-  // kind, not `voice`, so we hit at most one recursive call.
   if (resolved.kind === "voice") {
-    if (usage.kind !== "audio") {
-      throw new CostUsageKindMismatchError(modelId, "audio", usage.kind)
-    }
-    const voiceProvider = getStaticModelProvider(resolved) ?? "minimax"
+    // Voice rows are metadata; delegate to the provider's default audio model.
+    const provider = resolved.voice.provider
     const delegateModelId =
-      VOICE_PROVIDER_DEFAULT_MODEL[voiceProvider] ??
-      VOICE_PROVIDER_DEFAULT_MODEL.minimax!
+      VOICE_PROVIDER_DEFAULT_MODEL[provider] ??
+      getStaticModelProvider("audio", provider)
+    if (!delegateModelId) throw new UnknownModelError(modelId)
     const delegateResult = calculateCost(delegateModelId, usage, opts)
     return {
       ...delegateResult,
-      // Preserve the voice id as the surface modelId so usage_events
-      // attribute the cost to the voice the caller asked for. Internal
-      // canonicalId reflects the audio model that actually billed.
       modelId,
-      canonicalId: delegateResult.canonicalId,
+      canonicalId: delegateModelId,
     }
   }
 
-  // Exhaustiveness — unreachable.
-  throw new UnknownModelError(modelId)
+  // resolved.kind === "audio"
+  const audioPricing = resolved.def.pricing
+  const billingUnit = audioPricing.billingUnit
+  const quantity =
+    billingUnit === "per_character"
+      ? (usage.characters ?? 0) / 1000
+      : (usage.seconds ?? 0)
+  const baseCostUsd = audioPricing.baseCost * quantity
+  const perUnitCredits = computeCenticredits({
+    baseCostUsd: audioPricing.baseCost,
+    category: "audio",
+    overrideCreditCost: audioPricing.overrideCreditCost,
+    appId: opts.appId,
+  })
+  const credits = Math.ceil(perUnitCredits * quantity)
+  const formulaPerUnit = computeCenticredits({
+    baseCostUsd: audioPricing.baseCost,
+    category: "audio",
+    appId: opts.appId,
+  })
+  const calculatedCredits = Math.ceil(formulaPerUnit * quantity)
+  const markup = pricingRegistry.getMarkup("audio", opts.appId)
+  return {
+    kind: "audio",
+    modelId,
+    canonicalId: modelId,
+    credits,
+    calculatedCredits,
+    baseCostUsd,
+    breakdown: {
+      perUnitCredits,
+      quantity,
+      billingUnit: billingUnit === "per_character" ? 1000 : 1,
+    },
+    isFallback: false,
+    markup,
+  }
 }
 
-// ─── TTS / STT pricing builders ──────────────────────────────────────────
-//
 // Thin ergonomic wrappers around `calculateCost`. Two reasons they exist:
-//
-//   1. **Call sites don't need to remember the discriminator shape.** TTS
-//      tools care about model + text length; STT tools care about model +
-//      duration. The kind/usage union is a `calculateCost` implementation
-//      detail.
-//   2. **Voice routing happens automatically.** Pass a voice id and the
-//      builder resolves it to the right audio model (via
-//      `VOICE_PROVIDER_DEFAULT_MODEL`) without the caller needing to know
-//      the mapping. Pass an audio model id directly and it bills that
-//      model.
-//
-// Both return the full `CostResult` so callers see `calculatedCredits` +
-// `baseCostUsd` for analytics and the markup that was applied.
+//   1. Callers with a known kind don't want to construct the full union.
+//   2. The kind/usage union is a `calculateCost` implementation detail —
+//      wrapper types are narrower and easier to read at call sites.
 
-export interface PriceTTSInput {
-  /**
-   * Either an audio model id (e.g. `"elevenlabs/multilingual-v2"`,
-   * `"minimax/speech-02-hd"`) OR a voice id from the voice catalog
-   * (e.g. a MiniMax voice). Voice ids resolve to their provider's
-   * default TTS model.
-   */
-  modelOrVoiceId: string
-  /** Character count to synthesize. */
-  characters: number
-  /** Optional app-scoped markup + override knobs. */
-  options?: CalculateCostOptions
+export function calculateLLMCost(
+  modelId: string,
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadInputTokens?: number
+    cacheCreationInputTokens?: number
+  },
+  opts?: CalculateCostOptions
+): CostResult {
+  return calculateCost(modelId, { kind: "llm", ...usage }, opts)
 }
 
-export interface PriceSTTInput {
-  /** Audio model id, e.g. `"deepgram/nova-3"`, `"openai/whisper-1"`. */
-  modelId: string
-  /** Duration to transcribe, in seconds. Billing rounds up per-minute. */
-  seconds: number
-  options?: CalculateCostOptions
+export function calculateImageCost(
+  modelId: string,
+  usage: { numOutputs?: number },
+  opts?: CalculateCostOptions
+): CostResult {
+  return calculateCost(modelId, { kind: "image", ...usage }, opts)
 }
 
-/**
- * Price a TTS call. Pure compute — no I/O, safe to call pre-charge
- * (UI hints, token-budget reasoning) or at consume time.
- */
-export function priceTTS(input: PriceTTSInput): CostResult {
-  return calculateCost(
-    input.modelOrVoiceId,
-    { kind: "audio", characters: Math.max(0, input.characters) },
-    input.options
-  )
+export function calculateVideoCost(
+  modelId: string,
+  usage: { resolution?: string; duration?: number; mode?: string },
+  opts?: CalculateCostOptions
+): CostResult {
+  return calculateCost(modelId, { kind: "video", ...usage }, opts)
 }
 
-/**
- * Price an STT call. Pure compute. `seconds` rounds up to the
- * provider's billing unit (per-minute for most, per-second for some).
- */
-export function priceSTT(input: PriceSTTInput): CostResult {
-  return calculateCost(
-    input.modelId,
-    { kind: "audio", seconds: Math.max(0, input.seconds) },
-    input.options
-  )
+export function calculateAudioCost(
+  modelId: string,
+  usage: { characters?: number; seconds?: number },
+  opts?: CalculateCostOptions
+): CostResult {
+  return calculateCost(modelId, { kind: "audio", ...usage }, opts)
 }

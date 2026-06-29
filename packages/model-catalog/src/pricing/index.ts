@@ -96,6 +96,15 @@ class PricingRegistry {
     this.apps.delete(appId)
   }
 
+  /**
+   * Remove all registered app overrides, restoring core defaults.
+   * Call in `afterEach` hooks to prevent cross-test contamination
+   * (the singleton persists across tests in the same Vitest worker).
+   */
+  reset(): void {
+    this.apps.clear()
+  }
+
   getMarkup(category: PricingCategory, appId?: string): number {
     if (appId) {
       const app = this.apps.get(appId)

@@ -77,9 +77,20 @@ export function providerEnvVar(provider: string): string {
 export async function loadProviders(): Promise<ProvidersFile> {
   try {
     const raw = await readFile(providersPath(), "utf8")
-    const parsed = JSON.parse(raw) as Partial<ProvidersFile>
-    if (!parsed || typeof parsed !== "object" || !parsed.providers) return emptyFile()
-    return { version: 1, providers: parsed.providers }
+    const parsed = JSON.parse(raw) as unknown
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !("providers" in parsed) ||
+      typeof (parsed as Record<string, unknown>).providers !== "object" ||
+      (parsed as Record<string, unknown>).providers === null
+    ) {
+      return emptyFile()
+    }
+    return {
+      version: 1,
+      providers: (parsed as ProvidersFile).providers,
+    }
   } catch {
     return emptyFile() // ENOENT / malformed → empty
   }
