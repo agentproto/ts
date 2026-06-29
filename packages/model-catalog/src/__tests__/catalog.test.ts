@@ -109,9 +109,11 @@ describe("evaluateAccess", () => {
           catalogId: "minimax-french-female-anchor",
           providerVoiceId: "French_FemaleAnchor",
           provider: "minimax",
-          name: "French Female Anchor",
-          language: "fr",
+          label: "French Female Anchor",
+          description: "French female anchor voice",
           gender: "female",
+          primaryLanguage: "fr",
+          supportedLanguages: ["fr"],
         },
       }
       const input: AccessEvalInput = {
@@ -266,9 +268,11 @@ describe("evaluateAccess", () => {
           catalogId: "test-voice",
           providerVoiceId: "TestVoice",
           provider: "minimax",
-          name: "Test Voice",
-          language: "en",
+          label: "Test Voice",
+          description: "Test voice",
           gender: "female",
+          primaryLanguage: "en",
+          supportedLanguages: ["en"],
         },
       }
       const decision = evaluateAccess({ model: voiceModel })
