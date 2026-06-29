@@ -61,6 +61,7 @@ import {
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
+  injectProviderKeysIntoEnv,
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
@@ -252,6 +253,23 @@ export async function runServe(args: readonly string[]): Promise<number> {
     label,
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
+  }
+
+  // ── provider keys ──
+  // Inject any keys stored via `agentproto auth provider set` into this
+  // process's env BEFORE the gateway boots, so every spawned adapter
+  // (mastra-agent's Mastra gateway, hermes/opencode routers) inherits
+  // them. Explicit env always wins (a `FOO_API_KEY=… serve` or CI secret
+  // is never overwritten). Best-effort; a missing/locked store is non-fatal.
+  try {
+    const injected = await injectProviderKeysIntoEnv(process.env)
+    if (injected.length > 0) {
+      process.stderr.write(
+        `${color.dim}loaded ${injected.length} provider key(s) from store: ${injected.join(", ")}${color.reset}\n`,
+      )
+    }
+  } catch {
+    // providers.json missing / unreadable — env-only operation is fine.
   }
 
   // ── adapter resolver (powers MCP start_agent_session) ──

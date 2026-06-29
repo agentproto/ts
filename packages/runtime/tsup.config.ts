@@ -14,6 +14,7 @@ export default createTsupConfig({
     config: "src/config.ts",
     "mcp-imports": "src/mcp-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
+    "providers-store": "src/providers-store.ts",
   },
   format: ["esm"],
   splitting: false,
