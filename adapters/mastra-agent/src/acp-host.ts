@@ -26,9 +26,15 @@ import type {
   SetSessionModeRequest,
 } from "@agentclientprotocol/sdk"
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
+import { type MastraStreamChunk, chunkToSessionUpdate } from "./tool-call-map.js"
 
 /** A built Mastra agent — only the surface we need (its `stream`). Typed
- *  structurally so we don't couple to a specific @mastra/core version. */
+ *  structurally so we don't couple to a specific @mastra/core version.
+ *
+ *  We read `fullStream` (the typed chunk union: text deltas AND tool-call /
+ *  tool-result events) so tool activity surfaces as ACP `tool_call` updates,
+ *  not only the final prose. `textStream` is kept as an optional fallback for
+ *  a stripped agent that exposes only text. */
 export interface MastraLike {
   stream(
     input: string,
@@ -37,7 +43,11 @@ export interface MastraLike {
       /** Memory threading — `thread` scopes recall to one ACP session. */
       memory?: { thread?: string; resource?: string }
     },
-  ): Promise<{ textStream: ReadableStream<string>; text?: Promise<string> }>
+  ): Promise<{
+    fullStream?: ReadableStream<MastraStreamChunk>
+    textStream?: ReadableStream<string>
+    text?: Promise<string>
+  }>
 }
 
 /** Lazily builds the Mastra agent (so model/key errors surface on the first
@@ -120,24 +130,13 @@ export class MastraAcpAgent implements AcpAgent {
         abortSignal: ac.signal,
         memory: { thread: params.sessionId, resource: this.#resource },
       })
-      const reader = result.textStream.getReader()
-      try {
-        for (;;) {
-          const { value, done } = await reader.read()
-          if (done) break
-          if (ac.signal.aborted) break
-          if (value) {
-            await this.#conn.sessionUpdate({
-              sessionId: params.sessionId,
-              update: {
-                sessionUpdate: "agent_message_chunk",
-                content: { type: "text", text: value },
-              },
-            })
-          }
-        }
-      } finally {
-        reader.releaseLock()
+      if (result.fullStream) {
+        // Preferred path: the typed chunk stream carries text deltas AND
+        // tool-call / tool-result events, so tool activity surfaces live.
+        await this.#pumpFullStream(params.sessionId, result.fullStream, ac)
+      } else if (result.textStream) {
+        // Fallback: a text-only agent — relay prose deltas, no tool surface.
+        await this.#pumpTextStream(params.sessionId, result.textStream, ac)
       }
     } catch (err) {
       if (ac.signal.aborted) return { stopReason: "cancelled" }
@@ -186,6 +185,53 @@ export class MastraAcpAgent implements AcpAgent {
     _params: SetSessionModeRequest,
   ): Promise<Record<string, never>> {
     return {}
+  }
+
+  /** Drain Mastra's typed `fullStream`, mapping each chunk to an ACP
+   *  `session/update` (text deltas + tool_call / tool_call_update). */
+  async #pumpFullStream(
+    sessionId: string,
+    stream: ReadableStream<MastraStreamChunk>,
+    ac: AbortController,
+  ): Promise<void> {
+    const reader = stream.getReader()
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done || ac.signal.aborted) break
+        if (!value) continue
+        const update = chunkToSessionUpdate(value)
+        if (update) await this.#conn.sessionUpdate({ sessionId, update })
+      }
+    } finally {
+      reader.releaseLock()
+    }
+  }
+
+  /** Fallback drain for an agent exposing only a plain text stream. */
+  async #pumpTextStream(
+    sessionId: string,
+    stream: ReadableStream<string>,
+    ac: AbortController,
+  ): Promise<void> {
+    const reader = stream.getReader()
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done || ac.signal.aborted) break
+        if (value) {
+          await this.#conn.sessionUpdate({
+            sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: value },
+            },
+          })
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
   }
 
   async #ensureAgent(): Promise<MastraLike> {

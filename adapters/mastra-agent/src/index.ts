@@ -82,10 +82,11 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
   },
   capabilities: {
     streaming: true,
-    // No tool-call surfacing yet — the default agent is conversational. Tools
-    // declared in a custom AGENT.md run inside Mastra but aren't relayed as
-    // ACP tool_call updates in this first cut.
-    tool_calls: false,
+    // Tool calls run inside Mastra and are relayed to the host as ACP
+    // tool_call / tool_call_update session updates (see acp-host.ts +
+    // tool-call-map.ts). The built-in default agent ships the workspace
+    // toolset (read/edit/run), so this is on.
+    tool_calls: true,
     sub_agents: false,
     file_io: false,
     multimodal: false,
@@ -122,5 +123,11 @@ export { MastraAcpAgent, promptText, type MastraLike } from "./acp-host.js"
 export { resolveMastraModel, modelRefToString, providerOf } from "./model-resolver.js"
 export { makeWorkspaceTools, resolveInCwd } from "./workspace-tools.js"
 export { buildSqliteMemory, resolveMemoryDbPath } from "./memory.js"
+export {
+  chunkToSessionUpdate,
+  toolKindFor,
+  toolCallTitle,
+  type MastraStreamChunk,
+} from "./tool-call-map.js"
 export { runAcpOverStdio } from "./run.js"
 export type { AgentCliHandle, AgentCliRuntime }
