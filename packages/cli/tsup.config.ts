@@ -52,6 +52,7 @@ export default createTsupConfig({
     "ink-spinner",
     "marked",
     "marked-terminal",
+    "cli-highlight",
     "zod",
     "ws",
     "node:child_process",

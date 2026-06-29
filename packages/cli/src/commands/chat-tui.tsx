@@ -25,6 +25,7 @@ import TextInput from "ink-text-input"
 import Spinner from "ink-spinner"
 import { marked, type Renderer } from "marked"
 import TerminalRenderer from "marked-terminal"
+import { highlight } from "cli-highlight"
 import type { SessionDescriptor } from "@agentproto/runtime"
 import {
   discoverDaemon,
@@ -39,7 +40,25 @@ import { classifyChatLine } from "./chat.js"
 // single styled string.
 // `@types/marked-terminal`'s renderer predates marked 14's `Renderer`
 // shape, so cast across the version gap — the runtime contract is intact.
-marked.setOptions({ renderer: new TerminalRenderer() as unknown as Renderer })
+// marked-terminal renders fenced code blocks via its renderer's `code` method.
+// The constructor options only expose a chalk *style* for code (not a renderer
+// fn), so override the method on the instance to run cli-highlight for ANSI
+// syntax colors. Cast across the @types/marked-terminal version gap.
+const terminalRenderer = new TerminalRenderer()
+;(
+  terminalRenderer as unknown as {
+    code: (code: string, lang?: string) => string
+  }
+).code = (code: string, lang?: string): string => {
+  let body: string
+  try {
+    body = highlight(code, { language: lang ?? "auto", ignoreIllegals: true })
+  } catch {
+    body = code
+  }
+  return `\n${body}\n\n`
+}
+marked.setOptions({ renderer: terminalRenderer as unknown as Renderer })
 
 const USAGE = `agentproto chat-tui — Ink TUI over a daemon agent session
 
