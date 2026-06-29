@@ -1,5 +1,14 @@
 # @agentproto/driver
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [78ac79e]
+- Updated dependencies [dc870cf]
+- Updated dependencies [2186e9e]
+  - @agentproto/tool@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes

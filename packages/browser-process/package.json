@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/browser-process",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/browser-process — shared primitive for launching and health-waiting browser service processes (Camofox, Bureau, Chromium). Idempotent: skips spawn if already healthy. Usable by both agentproto browser adapters and app-layer launchers.",
   "keywords": [
     "agentproto",
