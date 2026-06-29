@@ -2,91 +2,100 @@
   "name": "@agentproto/model-catalog",
   "version": "0.1.0",
   "description": "Unified, dependency-light model catalog: LLM, image, video, audio entries + cost dispatcher + picker. Zod-only; the OSS core that @agstudio/model-catalog layers billing/access/BYOK on top of.",
+  "keywords": [
+    "agentproto",
+    "model-catalog",
+    "llm",
+    "pricing",
+    "model-picker"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/model-catalog"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "type": "module",
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
-  "types": "src/index.ts",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
     "./schema": {
-      "types": "./src/schema/index.ts",
+      "types": "./dist/schema/index.d.ts",
       "import": "./dist/schema/index.mjs",
       "default": "./dist/schema/index.mjs"
     },
     "./llm": {
-      "types": "./src/llm/index.ts",
+      "types": "./dist/llm/index.d.ts",
       "import": "./dist/llm/index.mjs",
       "default": "./dist/llm/index.mjs"
     },
     "./image": {
-      "types": "./src/image/index.ts",
+      "types": "./dist/image/index.d.ts",
       "import": "./dist/image/index.mjs",
       "default": "./dist/image/index.mjs"
     },
     "./video": {
-      "types": "./src/video/index.ts",
+      "types": "./dist/video/index.d.ts",
       "import": "./dist/video/index.mjs",
       "default": "./dist/video/index.mjs"
     },
     "./audio": {
-      "types": "./src/audio/index.ts",
+      "types": "./dist/audio/index.d.ts",
       "import": "./dist/audio/index.mjs",
       "default": "./dist/audio/index.mjs"
     },
     "./voice": {
-      "types": "./src/voice/index.ts",
+      "types": "./dist/voice/index.d.ts",
       "import": "./dist/voice/index.mjs",
       "default": "./dist/voice/index.mjs"
     },
     "./curation": {
-      "types": "./src/curation/index.ts",
+      "types": "./dist/curation/index.d.ts",
       "import": "./dist/curation/index.mjs",
       "default": "./dist/curation/index.mjs"
     },
     "./cost": {
-      "types": "./src/cost/index.ts",
+      "types": "./dist/cost/index.d.ts",
       "import": "./dist/cost/index.mjs",
       "default": "./dist/cost/index.mjs"
     },
     "./pricing": {
-      "types": "./src/pricing/index.ts",
+      "types": "./dist/pricing/index.d.ts",
       "import": "./dist/pricing/index.mjs",
       "default": "./dist/pricing/index.mjs"
     },
     "./byok": {
-      "types": "./src/byok/index.ts",
+      "types": "./dist/byok/index.d.ts",
       "import": "./dist/byok/index.mjs",
       "default": "./dist/byok/index.mjs"
     },
     "./access": {
-      "types": "./src/access/index.ts",
+      "types": "./dist/access/index.d.ts",
       "import": "./dist/access/index.mjs",
       "default": "./dist/access/index.mjs"
     },
     "./picker": {
-      "types": "./src/picker/index.ts",
+      "types": "./dist/picker/index.d.ts",
       "import": "./dist/picker/index.mjs",
       "default": "./dist/picker/index.mjs"
-    }
-  },
-  "typesVersions": {
-    "*": {
-      "schema": ["./src/schema/index.ts"],
-      "llm": ["./src/llm/index.ts"],
-      "image": ["./src/image/index.ts"],
-      "video": ["./src/video/index.ts"],
-      "audio": ["./src/audio/index.ts"],
-      "voice": ["./src/voice/index.ts"],
-      "curation": ["./src/curation/index.ts"],
-      "cost": ["./src/cost/index.ts"],
-      "pricing": ["./src/pricing/index.ts"],
-      "byok": ["./src/byok/index.ts"],
-      "access": ["./src/access/index.ts"],
-      "picker": ["./src/picker/index.ts"]
     }
   },
   "scripts": {
