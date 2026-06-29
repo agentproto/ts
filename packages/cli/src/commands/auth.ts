@@ -206,13 +206,7 @@ async function runProviderList(args: readonly string[]): Promise<number> {
 }
 
 async function runProviderRm(args: readonly string[]): Promise<number> {
-  const { positionals } = parseArgs({
-    args: [...args],
-    strict: true,
-    allowPositionals: true,
-    options: {},
-  })
-  const provider = positionals[0]
+  const provider = args[0]
   if (!provider) {
     process.stderr.write(`agentproto auth provider rm: usage: rm <provider>\n`)
     return 2

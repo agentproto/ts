@@ -1,16 +1,18 @@
 /**
- * @agstudio/model-catalog — unified model catalog.
+ * @agentproto/model-catalog — unified model catalog.
  *
- * Single source of truth for LLM, image, video, and audio model entries.
- * Owns cost dispatch, BYOK policy, and access control evaluation.
+ * Single source of truth for LLM, image, video, audio, and voice model
+ * entries. Owns cost dispatch, BYOK policy, and access control evaluation.
+ * Zod-only OSS core; @agstudio/model-catalog layers billing/access/BYOK
+ * policy on top.
  *
  * Subpath imports for tree-shaking:
- *   import { LLM_PRICING_CATALOG } from "@agstudio/model-catalog/llm"
- *   import { calculateCost } from "@agstudio/model-catalog/cost"
- *   import { shouldDebit } from "@agstudio/model-catalog/byok"
- *   import { evaluateAccess } from "@agstudio/model-catalog/access"
- *   import { VOICE_CATALOG } from "@agstudio/model-catalog/voice"
- *   import { listSurfaced } from "@agstudio/model-catalog/curation"
+ *   import { LLM_PRICING_CATALOG } from "@agentproto/model-catalog/llm"
+ *   import { calculateCost } from "@agentproto/model-catalog/cost"
+ *   import { shouldDebit } from "@agentproto/model-catalog/byok"
+ *   import { evaluateAccess } from "@agentproto/model-catalog/access"
+ *   import { VOICE_CATALOG } from "@agentproto/model-catalog/voice"
+ *   import { listSurfaced } from "@agentproto/model-catalog/curation"
  */
 
 export * from "./schema/index.js"

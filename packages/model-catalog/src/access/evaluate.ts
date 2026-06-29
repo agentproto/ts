@@ -78,7 +78,7 @@ function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
         case "audio":
           return model.def.provider === target.value
         case "voice":
-          return target.value === "minimax"
+          return model.voice.provider === target.value
         case "llm":
           // No provider field on LLM entries — best-effort by id prefix.
           return (
