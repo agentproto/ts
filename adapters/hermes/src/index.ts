@@ -56,18 +56,27 @@ export const hermes: AgentCliHandle = defineAgentCli({
     context_carryover: true,
   },
   models: {
-    default: "anthropic/claude-sonnet-4-6",
+    // Cheap OpenRouter models by default — hermes is the budget delegation
+    // arm (a Sonnet default would defeat the purpose). glm-5.2 + deepseek
+    // are the go-to cheap coders; the bigger models stay available.
+    default: "z-ai/glm-5.2",
     allowed: [
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+      "meta-llama/llama-3.3-70b",
       "anthropic/claude-sonnet-4-6",
       "anthropic/claude-opus-4-7",
       "openai/gpt-4",
-      "meta-llama/llama-3.3-70b",
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
       openai: "OPENAI_API_KEY",
     },
+    // hermes keeps its own configured default when given a model via the
+    // ACP session config — selection must go through a `/model <id>`
+    // control turn instead. See AgentCliModels.apply.
+    apply: "command",
   },
   capabilities: {
     streaming: true,
@@ -89,7 +98,8 @@ export const hermes: AgentCliHandle = defineAgentCli({
       description:
         "Model ID routed through OpenRouter/Anthropic/OpenAI " +
         "(e.g. 'anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2'). " +
-        "Applied via ACP newSession after the session is created. " +
+        "Applied via a `/model <id>` control turn after the session is created " +
+        "(hermes ignores the ACP session model config). " +
         "Omit to use the hermes default.",
     },
     {

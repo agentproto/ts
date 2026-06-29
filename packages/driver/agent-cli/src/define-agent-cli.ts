@@ -140,6 +140,16 @@ export function createAgentCliRuntime(
       // best-effort fallback for non-ACP arms.
       const optModel = opts?.config?.options?.model
       const optEffort = opts?.config?.options?.effort
+      // Model-selection strategy (AgentCliModels.apply, default "config"):
+      //   "config"  → apply via ACP session config (set_config_option) at
+      //               connect — works for claude-code.
+      //   "command" → the ACP session config is a no-op on this agent
+      //               (e.g. hermes silently keeps its own default), so we
+      //               DON'T pass model to connect; instead we send a
+      //               `/model <id>` control turn after newSession (below).
+      const modelApply = definition.models?.apply ?? "config"
+      const configModel =
+        optModel && modelApply === "config" ? String(optModel) : undefined
       await arm.connect({
         cwd,
         env,
@@ -148,9 +158,16 @@ export function createAgentCliRuntime(
           ? { resumeSessionId: opts.resumeSessionId }
           : {}),
         ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-        ...(optModel ? { model: String(optModel) } : {}),
+        ...(configModel ? { model: configModel } : {}),
         ...(optEffort ? { effort: String(optEffort) } : {}),
       })
+
+      // "command" model strategy: switch the model via a drained `/model
+      // <id>` control turn. Best-effort — a failure is warned, never fatal,
+      // so the session still starts (on the agent's default model).
+      if (optModel && modelApply === "command") {
+        await applyModelCommand(arm, String(optModel))
+      }
 
       // Prefer the protocol-layer session id (ACP, etc.) so the host
       // can persist it for a future native-resume. Fall back to a
@@ -173,6 +190,44 @@ export function createAgentCliRuntime(
         },
       }
     },
+  }
+}
+
+/**
+ * Switch the active model via a `/model <id>` control turn, for adapters
+ * whose ACP session config doesn't select the model (`models.apply:
+ * "command"`, e.g. hermes). The turn is fully drained so the switch
+ * completes before the caller's first real turn. Best-effort: a transport
+ * failure or a missing acknowledgement is warned, never thrown — the
+ * session simply continues on the agent's default model.
+ */
+async function applyModelCommand(
+  arm: AgentCliClient,
+  modelId: string,
+): Promise<void> {
+  const turnId = randomUUID()
+  let acked = false
+  try {
+    for await (const evt of promptTurn(arm, turnId, {
+      type: "text",
+      text: `/model ${modelId}`,
+    })) {
+      // Loose check across the serialised event — hermes replies
+      // "Model switched to: <id> · Provider: …". We don't couple to a
+      // specific StreamEvent shape; any "switch" mention = acknowledged.
+      if (/switch|model\s+set|now using/i.test(JSON.stringify(evt))) acked = true
+    }
+  } catch (err) {
+    console.warn(
+      `[agent-cli] /model ${modelId} control turn failed (continuing on default):`,
+      err instanceof Error ? err.message : err,
+    )
+    return
+  }
+  if (!acked) {
+    console.warn(
+      `[agent-cli] /model ${modelId}: no switch acknowledgement — agent may be on its default model`,
+    )
   }
 }
 

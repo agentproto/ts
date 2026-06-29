@@ -209,6 +209,10 @@ const modelsSchema = z.object({
   default: z.string().optional(),
   allowed: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  // How a model is selected at session start: "config" (ACP
+  // set_config_option, default) | "command" (a `/model <id>` control turn,
+  // for agents like hermes that ignore the ACP session model config).
+  apply: z.enum(["config", "command"]).optional(),
 }).strict()
 
 const capabilitiesSchema = z.object({

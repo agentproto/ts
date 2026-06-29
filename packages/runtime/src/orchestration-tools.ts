@@ -668,6 +668,34 @@ export function registerOrchestrationTools(
             ],
           }
         }
+        // Already-finished turn: a fast session can complete its turn
+        // ("completed", not "awaiting-input") BEFORE this wait subscribes —
+        // turn-end is a transient event with no persisted flag, so without
+        // this check the wait would block until the NEXT turn and time out.
+        // `turnsCompleted > 0 && !busy && running` = idle after ≥1 finished
+        // turn (a freshly-spawned never-run session has turnsCompleted 0, so
+        // it is NOT mistaken for done).
+        if (
+          (desc.turnsCompleted ?? 0) > 0 &&
+          !desc.busy &&
+          desc.status === "running" &&
+          (targetEvent === "any" || targetEvent === "turn-end")
+        ) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  sessionId: sid,
+                  event: "turn-end",
+                  awaitingInput: false,
+                  status: desc.status,
+                  turnsCompleted: desc.turnsCompleted,
+                }),
+              },
+            ],
+          }
+        }
         const terminal = desc.status === "exited" || desc.status === "killed" || desc.status === "error"
         if (terminal && (targetEvent === "any" || targetEvent === "exited")) {
           return {
