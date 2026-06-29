@@ -12,6 +12,7 @@ import {
   loadWorkspacesConfig,
   getActiveWorkspace,
 } from "@agentproto/runtime/workspaces-config"
+import { readDaemonRegistry } from "@agentproto/runtime"
 
 export interface DaemonEndpoint {
   url: string
@@ -65,8 +66,30 @@ export async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
       stale: [],
     }
   }
+  // Central daemon registry first (~/.agentproto/daemons/<port>.json).
+  // This is workspace-independent, so it finds a daemon launched from
+  // ANY cwd — including tunnel mode and repo checkouts whose workspace
+  // isn't registered in workspaces.json. Entries are newest-first; take
+  // the first live one, collecting dead-PID entries as stale.
+  const registryStale: DaemonDiscoveryReport["stale"] = []
+  for (const entry of await readDaemonRegistry().catch(() => [])) {
+    const { meta, path } = entry
+    if (typeof meta.port !== "number") continue
+    if (typeof meta.pid === "number" && !isPidAlive(meta.pid)) {
+      registryStale.push({ path, pid: meta.pid, mtime: entry.mtime })
+      continue
+    }
+    return {
+      found: {
+        url: `http://${typeof meta.bind === "string" ? meta.bind : "127.0.0.1"}:${meta.port}`,
+        sourcePath: path,
+        ...(typeof meta.token === "string" ? { token: meta.token } : {}),
+      },
+      stale: registryStale,
+    }
+  }
   const config = await loadWorkspacesConfig().catch(() => null)
-  if (!config) return { found: null, stale: [] }
+  if (!config) return { found: null, stale: registryStale }
   const candidates = [
     getActiveWorkspace(config),
     ...config.workspaces,
@@ -74,7 +97,7 @@ export async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
     (w, i, arr): w is NonNullable<typeof w> =>
       !!w && arr.findIndex(x => x?.slug === w.slug) === i,
   )
-  const stale: DaemonDiscoveryReport["stale"] = []
+  const stale: DaemonDiscoveryReport["stale"] = [...registryStale]
   for (const w of candidates) {
     const result = await readRuntimeJsonWithStatus(w.path)
     if (result.endpoint) {
