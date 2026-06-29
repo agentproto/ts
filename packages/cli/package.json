@@ -96,6 +96,9 @@
   "devDependencies": {
     "@agentproto/adapter-claude-code": "workspace:*",
     "@agentproto/adapter-hermes": "workspace:*",
+    "@agentproto/adapter-opencode": "workspace:*",
+    "@agentproto/adapter-codex": "workspace:*",
+    "@agentproto/adapter-openclaw": "workspace:*",
     "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
