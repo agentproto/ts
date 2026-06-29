@@ -118,4 +118,53 @@ export function hermesRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(hermes)
 }
 
+import { homedir } from "node:os"
+import { join } from "node:path"
+
+/** Best-effort read of a hermes session's cost/token usage from its state.db.
+ *
+ *  hermes writes the per-turn cost to state.db slightly AFTER the ACP turn
+ *  ends, so a single read right at turn-end usually finds the cost column
+ *  still null. We poll a few times with a short backoff until the cost lands
+ *  (or give up — best-effort, never throws). Bounded so a missing write can't
+ *  hang the caller (the turn-end path awaits this). */
+export async function readHermesUsage(
+  sessionId: string,
+): Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null> {
+  try {
+    // node:sqlite is a Node 22+ builtin. Build the specifier at runtime so the
+    // bundler (esbuild/tsup) can't statically rewrite it — it strips the
+    // `node:` prefix off this not-yet-recognised builtin, turning the import
+    // into a missing `sqlite` package that throws and silently yields null.
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => {
+        prepare(sql: string): { get(...a: unknown[]): unknown }
+        close(): void
+      }
+    }
+    const dbPath = join(homedir(), ".hermes", "state.db")
+    const ATTEMPTS = 6
+    const DELAY_MS = 130
+    let last: { costUsd?: number; tokensIn?: number; tokensOut?: number } | null = null
+    for (let i = 0; i < ATTEMPTS; i++) {
+      const db = new DatabaseSync(dbPath, { readOnly: true })
+      const row = db.prepare(
+        "select estimated_cost_usd as cost, input_tokens as ti, output_tokens as to_ from sessions where id = ?",
+      ).get(sessionId) as { cost?: number; ti?: number; to_?: number } | undefined
+      db.close()
+      if (row) {
+        last = { costUsd: row.cost, tokensIn: row.ti, tokensOut: row.to_ }
+        // Cost has landed (non-null) → done. Otherwise keep polling: the row
+        // exists but hermes hasn't written the cost for this turn yet.
+        if (row.cost !== null && row.cost !== undefined) return last
+      }
+      if (i < ATTEMPTS - 1) await new Promise(r => setTimeout(r, DELAY_MS))
+    }
+    return last
+  } catch {
+    return null
+  }
+}
+
 export type { AgentCliHandle, AgentCliRuntime }

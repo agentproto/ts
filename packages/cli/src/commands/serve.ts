@@ -65,6 +65,7 @@ import {
 } from "@agentproto/runtime"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
@@ -279,6 +280,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         },
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
+        ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
       }
     } catch (err) {
       console.warn(
