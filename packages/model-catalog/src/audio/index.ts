@@ -5,7 +5,7 @@
  * `calculateCost(modelId, { kind: "audio", … })`.
  *
  * Voices are NOT here — they're a first-class catalog kind under
- * `@agstudio/model-catalog/voice` (`VOICE_CATALOG`), provider-neutral and
+ * `@agentproto/model-catalog/voice` (`VOICE_CATALOG`), provider-neutral and
  * queryable via the registry (`listModels({ kind: "voice" })`).
  */
 export {

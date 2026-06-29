@@ -28,6 +28,31 @@ import {
 } from "../audio/index.js"
 import { VOICE_CATALOG, type CatalogVoice } from "../voice/index.js"
 import { modelHasTag } from "../enrichment/index.js"
+import { getMergedOverlay, type MergedOverlay } from "../overlay/index.js"
+
+/** Follow consumer-overlay alias hops to a concrete id (cycle-guarded).
+ *  Ids with no overlay alias pass through unchanged. */
+function followAlias(id: string, ov: MergedOverlay): string {
+  let cur = id
+  const seen = new Set<string>()
+  for (;;) {
+    const next = ov.aliases[cur]
+    if (next === undefined || seen.has(cur)) break
+    seen.add(cur)
+    cur = next
+  }
+  return cur
+}
+
+/** Find an overlay voice by catalogId / providerVoiceId / alias. */
+function overlayVoice(ov: MergedOverlay, key: string): CatalogVoice | undefined {
+  return ov.voice.find(
+    v =>
+      v.catalogId === key ||
+      v.providerVoiceId === key ||
+      (v.aliases ?? []).includes(key),
+  )
+}
 
 /**
  * `audio` resolves to either an audio MODEL (priced TTS/STT) or a
@@ -51,7 +76,7 @@ export type ResolvedModel =
 export type CatalogKind = ResolvedModel["kind"]
 
 // Voices resolve by canonical id ("minimax-french-female-anchor"), native
-// provider id ("French_FemaleAnchor"), or legacy alias ("simone-2") — index
+// provider id ("French_FemaleAnchor"), or a consumer-overlay alias — index
 // all three so new slugs, native ids, and persisted operator rows all hit.
 const VOICE_INDEX: Map<string, CatalogVoice> = new Map([
   ...VOICE_CATALOG.map(v => [v.providerVoiceId, v] as const),
@@ -72,23 +97,37 @@ const VOICE_INDEX: Map<string, CatalogVoice> = new Map([
  * (preserves existing behavior at the orchestrator).
  */
 export function getModel(id: string): ResolvedModel | undefined {
-  const imageDef = IMAGE_MODEL_CATALOG[id]
+  // Consumer overlays first: resolve any overlay alias to a concrete id,
+  // then let overlay entries override/extend the generated catalogs. The
+  // returned `id` echoes what the caller asked for (alias-preserving), as
+  // the legacy voice-alias path already did.
+  const ov = getMergedOverlay()
+  const key = followAlias(id, ov)
+
+  if (ov.image[key]) return { kind: "image", id, def: ov.image[key]! }
+  if (ov.video[key]) return { kind: "video", id, def: ov.video[key]! }
+  if (ov.audio[key]) return { kind: "audio", id, def: ov.audio[key]! }
+  const ovVoice = overlayVoice(ov, key)
+  if (ovVoice) return { kind: "voice", id, voice: ovVoice }
+  if (ov.llm[key]) return { kind: "llm", id, canonicalId: key, pricing: ov.llm[key]! }
+
+  const imageDef = IMAGE_MODEL_CATALOG[key]
   if (imageDef) return { kind: "image", id, def: imageDef }
 
-  const videoDef = VIDEO_MODEL_CATALOG[id]
+  const videoDef = VIDEO_MODEL_CATALOG[key]
   if (videoDef) return { kind: "video", id, def: videoDef }
 
   // Audio MODEL (priced TTS/STT) — checked before voice lookup so an
   // id that exists in both maps lands on the priced entry.
-  const audioDef = AUDIO_MODEL_CATALOG[id]
+  const audioDef = AUDIO_MODEL_CATALOG[key]
   if (audioDef) return { kind: "audio", id, def: audioDef }
 
-  const voice = VOICE_INDEX.get(id)
+  const voice = VOICE_INDEX.get(key)
   if (voice) return { kind: "voice", id, voice }
 
-  const llmPricing = resolvePricing(id)
+  const llmPricing = resolvePricing(key)
   if (llmPricing) {
-    const canonicalId = resolveLlmAlias(id)
+    const canonicalId = resolveLlmAlias(key)
     return { kind: "llm", id, canonicalId, pricing: llmPricing }
   }
 
@@ -161,38 +200,70 @@ export function listModels(filter: ListModelsFilter = {}): ResolvedModel[] {
   const providerMatches = (provider: string | undefined): boolean =>
     !providerSet || (provider !== undefined && providerSet.has(provider))
 
+  const ov = getMergedOverlay()
   const out: ResolvedModel[] = []
+  // Overlay entries override core ones with the same id, so collect ids the
+  // overlay has already supplied per kind and skip the core duplicate.
+  const seen = { image: new Set<string>(), video: new Set<string>(), audio: new Set<string>(), voice: new Set<string>(), llm: new Set<string>() }
 
   if (!filter.kind || filter.kind === "image") {
-    for (const [id, def] of Object.entries(IMAGE_MODEL_CATALOG)) {
+    for (const [id, def] of Object.entries(ov.image)) {
       if (!providerMatches(def.provider)) continue
+      if (filter.agentVisibleOnly && !def.agentVisible) continue
+      seen.image.add(id)
+      out.push({ kind: "image", id, def })
+    }
+    for (const [id, def] of Object.entries(IMAGE_MODEL_CATALOG)) {
+      if (seen.image.has(id) || !providerMatches(def.provider)) continue
       if (filter.agentVisibleOnly && !def.agentVisible) continue
       out.push({ kind: "image", id, def })
     }
   }
   if (!filter.kind || filter.kind === "video") {
-    for (const [id, def] of Object.entries(VIDEO_MODEL_CATALOG)) {
+    for (const [id, def] of Object.entries(ov.video)) {
       if (!providerMatches(def.provider)) continue
+      if (filter.agentVisibleOnly && !def.agentVisible) continue
+      seen.video.add(id)
+      out.push({ kind: "video", id, def })
+    }
+    for (const [id, def] of Object.entries(VIDEO_MODEL_CATALOG)) {
+      if (seen.video.has(id) || !providerMatches(def.provider)) continue
       if (filter.agentVisibleOnly && !def.agentVisible) continue
       out.push({ kind: "video", id, def })
     }
   }
   if (!filter.kind || filter.kind === "audio") {
-    for (const [id, def] of Object.entries(AUDIO_MODEL_CATALOG)) {
+    for (const [id, def] of Object.entries(ov.audio)) {
       if (!providerMatches(def.provider)) continue
+      if (filter.agentVisibleOnly && !def.agentVisible) continue
+      seen.audio.add(id)
+      out.push({ kind: "audio", id, def })
+    }
+    for (const [id, def] of Object.entries(AUDIO_MODEL_CATALOG)) {
+      if (seen.audio.has(id) || !providerMatches(def.provider)) continue
       if (filter.agentVisibleOnly && !def.agentVisible) continue
       out.push({ kind: "audio", id, def })
     }
   }
   if (!filter.kind || filter.kind === "voice") {
-    for (const v of VOICE_CATALOG) {
+    for (const v of ov.voice) {
       if (!providerMatches(v.provider)) continue
+      seen.voice.add(v.catalogId)
+      out.push({ kind: "voice", id: v.catalogId, voice: v })
+    }
+    for (const v of VOICE_CATALOG) {
+      if (seen.voice.has(v.catalogId) || !providerMatches(v.provider)) continue
       out.push({ kind: "voice", id: v.catalogId, voice: v })
     }
   }
   if (!filter.kind || filter.kind === "llm") {
-    for (const [id, pricing] of Object.entries(LLM_PRICING_CATALOG)) {
+    for (const [id, pricing] of Object.entries(ov.llm)) {
       if (!providerMatches(pricing.provider)) continue
+      seen.llm.add(id)
+      out.push({ kind: "llm", id, canonicalId: id, pricing })
+    }
+    for (const [id, pricing] of Object.entries(LLM_PRICING_CATALOG)) {
+      if (seen.llm.has(id) || !providerMatches(pricing.provider)) continue
       out.push({ kind: "llm", id, canonicalId: id, pricing })
     }
   }
@@ -254,9 +325,14 @@ export function getStaticModelProvider(
  * normalize before persisting (e.g., `byok_usage` rows).
  */
 export function resolveAlias(id: string): string {
-  if (IMAGE_MODEL_CATALOG[id]) return id
-  if (VIDEO_MODEL_CATALOG[id]) return id
-  if (AUDIO_MODEL_CATALOG[id]) return id
-  if (VOICE_INDEX.has(id)) return id
-  return resolveLlmAlias(id)
+  const ov = getMergedOverlay()
+  const key = followAlias(id, ov)
+  if (ov.image[key] || ov.video[key] || ov.audio[key]) return key
+  if (overlayVoice(ov, key)) return key
+  if (ov.llm[key]) return key
+  if (IMAGE_MODEL_CATALOG[key]) return key
+  if (VIDEO_MODEL_CATALOG[key]) return key
+  if (AUDIO_MODEL_CATALOG[key]) return key
+  if (VOICE_INDEX.has(key)) return key
+  return resolveLlmAlias(key)
 }

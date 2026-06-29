@@ -5,7 +5,7 @@
  *
  * `catalogId`s are derived (`<provider>-<slug(providerVoiceId)>`) and
  * materialized as literals so the `CatalogVoiceId` union stays
- * autocomplete-able. Legacy `simone-N` slugs are preserved in `aliases`.
+ * autocomplete-able. App-specific alias slugs live in a consumer overlay, not here.
  * Authored per-provider; `VOICE_CATALOG` concatenates every provider.
  */
 
@@ -36,7 +36,6 @@ export const GEMINI_LIVE_VOICES = [
     gender: "female",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-46"],
   },
   {
     catalogId: "gemini-live-charon",
@@ -47,7 +46,6 @@ export const GEMINI_LIVE_VOICES = [
     gender: "male",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-47"],
   },
   {
     catalogId: "gemini-live-fenrir",
@@ -58,7 +56,6 @@ export const GEMINI_LIVE_VOICES = [
     gender: "male",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-48"],
   },
   {
     catalogId: "gemini-live-kore",
@@ -69,7 +66,6 @@ export const GEMINI_LIVE_VOICES = [
     gender: "female",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-49"],
   },
   {
     catalogId: "gemini-live-puck",
@@ -80,6 +76,5 @@ export const GEMINI_LIVE_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-50"],
   },
 ] as const satisfies readonly CatalogVoice[]

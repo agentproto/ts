@@ -96,6 +96,11 @@
       "types": "./dist/picker/index.d.ts",
       "import": "./dist/picker/index.mjs",
       "default": "./dist/picker/index.mjs"
+    },
+    "./overlay": {
+      "types": "./dist/overlay/index.d.ts",
+      "import": "./dist/overlay/index.mjs",
+      "default": "./dist/overlay/index.mjs"
     }
   },
   "scripts": {

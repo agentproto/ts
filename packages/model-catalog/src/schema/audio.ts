@@ -31,7 +31,7 @@ export const AudioPricingSchema = z.object({
 export type AudioPricing = z.infer<typeof AudioPricingSchema>
 
 // Voices are NOT per-model metadata — they live in the shared, provider-
-// neutral voice catalog (`@agstudio/core/config/voice-catalog.ts`,
+// neutral voice catalog (an app voice-catalog module,
 // `CatalogVoice`), referenced by id. The old per-entry `voice` placeholder
 // (+ its `VoiceMetadataSchema`) was never populated — removed.
 export const AudioEntrySchema = z.object({

@@ -1,7 +1,7 @@
 /**
  * LLM subpath. Exposes the historical `LLM_PRICING_CATALOG` and
  * `calculateLLMCreditCost` API verbatim (for back-compat with
- * `@agstudio/core/config/llm-pricing` consumers) plus the new alias
+ * the app legacy pricing module consumers) plus the new alias
  * resolver and curated SDK-ready model ids.
  */
 export {

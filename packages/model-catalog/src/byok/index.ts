@@ -4,7 +4,7 @@
  * Single pure function — `shouldDebit` — that decides whether a model
  * run should debit user credits or be recorded as a non-debiting shadow
  * usage row. Truth table mirrors the open-coded behavior at
- * `apps/guilde/api/src/mastra/operator-orchestrator/utils.ts:1539-1672`
+ * the app orchestrator
  * (commit `eeb1acdc`):
  *
  *   byokActive | hasConnector | result

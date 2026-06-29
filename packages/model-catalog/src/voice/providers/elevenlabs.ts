@@ -7,7 +7,7 @@
  * so we curate only a featured showcase here; the runtime merge appends
  * the rest of the account's voices on top (deduped on `providerVoiceId`).
  * Hash-style `providerVoiceId`s would slugify to noise, so these carry
- * explicit readable ids. `simone-1` keeps its legacy id (FR default).
+ * explicit readable ids. ids are provider-native (e.g. elevenlabs-victoire, the FR default).
  */
 
 import type { CatalogVoice } from "../../schema/voice.js"
@@ -34,7 +34,7 @@ const LANGS = [
 export const ELEVENLABS_VOICES = [
   // ── French (featured) ──
   {
-    catalogId: "simone-1",
+    catalogId: "elevenlabs-victoire",
     providerVoiceId: "O31r762Gb3WFygrEOGh0",
     provider: "elevenlabs",
     label: "Victoire",
@@ -42,7 +42,6 @@ export const ELEVENLABS_VOICES = [
     gender: "female",
     primaryLanguage: "fr",
     supportedLanguages: LANGS,
-    aliases: ["elevenlabs-victoire", "simone"],
     age: "young",
     quality: "premium",
     featured: true,

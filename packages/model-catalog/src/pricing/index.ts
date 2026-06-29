@@ -14,8 +14,8 @@
  *   - The DEFAULTS work across apps. Most consumers (image gen, STT,
  *     etc.) need exactly the same markup ratios regardless of which
  *     app called them.
- *   - But apps want overrides — Simone might want a lower video markup
- *     during a promo, Guilde might want a higher one because their
+ *   - But apps want overrides — one app might want a lower video markup
+ *     during a promo, another a higher one because their
  *     users skew heavier. `registerApp(appId, { video: 1.8 })` slots
  *     in without changing the catalog or the cost dispatcher.
  *   - Per-model `overrideCreditCost` is the third lever — a specific
@@ -62,7 +62,7 @@ export interface PricingMarkup {
  * overrides. Tuned for ~50%+ gross margin at pack-rate revenue.
  *
  * Adjusting these affects EVERY app — don't tweak without coordinating
- * across Simone / Guilde / Katchy. Per-app drift goes through
+ * across apps. Per-app drift goes through
  * `registerApp()`.
  */
 export const DEFAULT_PRICING_MARKUP: Required<PricingMarkup["markup"]> = {

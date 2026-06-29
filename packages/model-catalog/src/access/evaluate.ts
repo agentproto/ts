@@ -59,7 +59,7 @@ const NSFW_TAG_BLOCK_REASONS = new Set(["nsfw", "compliance"])
  * Returns true iff the rule matches the resolved model.
  *
  * Tag and priceTier matching go through the enrichment layer
- * (`@agstudio/model-catalog/enrichment`) — explicit per-model
+ * (`@agentproto/model-catalog/enrichment`) — explicit per-model
  * enrichment wins, heuristic fallback fills the rest.
  */
 function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {

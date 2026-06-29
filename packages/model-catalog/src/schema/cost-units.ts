@@ -1,8 +1,8 @@
 /**
  * Billing-unit + cost-multiplier types — inlined here so this package stays
  * dependency-light (zod-only). Previously imported from
- * `@agstudio/integration-core`; that coupling is severed for the OSS core.
- * `@agstudio/model-catalog` re-exports these for back-compat.
+ * `the app integration-core`; that coupling is severed for the OSS core.
+ * `@agentproto/model-catalog` re-exports these for back-compat.
  */
 
 export type BillingUnit =

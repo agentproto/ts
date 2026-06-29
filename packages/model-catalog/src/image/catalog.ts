@@ -3,7 +3,7 @@
  *
  * Migrated from `packages/integration/image/src/models/catalog.ts`. The
  * original location now re-exports from here so every existing consumer
- * (replicate-serializers, prompt blocks, Katchy UI) keeps working.
+ * (replicate-serializers, prompt blocks, an app UI) keeps working.
  *
  * Adding a model = 1 entry here + 1 serializer in
  * `packages/integration/image/src/providers/replicate/replicate-serializers.ts`.
@@ -389,46 +389,6 @@ export const IMAGE_MODEL_CATALOG: Record<string, ImageModelDefinition> = {
     description: "Fine-tuned avatar model (trigger word: TOK)",
     agentVisible: true,
     triggerWord: "TOK",
-  },
-
-  "simone-infographic": {
-    id: "simone-infographic",
-    name: "Simone Infographic",
-    providerId: "agentik/custom-simone_infographic_1",
-    provider: "replicate",
-    capabilities: { generate: true, edit: true },
-    referenceImages: {
-      supported: true,
-      fieldName: "image_input",
-      maxCount: 1,
-      singular: true,
-    },
-    aspectRatio: {
-      supported: [
-        "1:1",
-        "16:9",
-        "21:9",
-        "3:2",
-        "2:3",
-        "4:5",
-        "5:4",
-        "3:4",
-        "4:3",
-        "9:16",
-        "9:21",
-      ],
-      default: "1:1",
-    },
-    output: "array",
-    pricing: {
-      costPerImage: 0.03,
-      costTier: "low",
-      billingUnit: "per_image",
-      baseCost: 0.03,
-      creditCost: 3,
-    },
-    description: "Fine-tuned Flux model for Simone infographic style",
-    agentVisible: true,
   },
 
   "flux-1.1-pro-ultra": {

@@ -5,7 +5,7 @@
  *
  * `catalogId`s are derived (`<provider>-<slug(providerVoiceId)>`) and
  * materialized as literals so the `CatalogVoiceId` union stays
- * autocomplete-able. Legacy `simone-N` slugs are preserved in `aliases`.
+ * autocomplete-able. App-specific alias slugs live in a consumer overlay, not here.
  * Authored per-provider; `VOICE_CATALOG` concatenates every provider.
  */
 
@@ -40,7 +40,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-33"],
     featured: true,
   },
   {
@@ -52,7 +51,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-34"],
     featured: true,
   },
   {
@@ -64,7 +62,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-35"],
   },
   {
     catalogId: "openai-realtime-echo",
@@ -75,7 +72,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "male",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-36"],
   },
   {
     catalogId: "openai-realtime-shimmer",
@@ -86,7 +82,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "female",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-40"],
   },
   {
     catalogId: "openai-realtime-ash",
@@ -97,7 +92,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-41"],
   },
   {
     catalogId: "openai-realtime-ballad",
@@ -108,7 +102,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-42"],
   },
   {
     catalogId: "openai-realtime-coral",
@@ -119,7 +112,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "female",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-43"],
   },
   {
     catalogId: "openai-realtime-sage",
@@ -130,7 +122,6 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-44"],
   },
   {
     catalogId: "openai-realtime-verse",
@@ -141,6 +132,5 @@ export const OPENAI_REALTIME_VOICES = [
     gender: "neutral",
     primaryLanguage: "en",
     supportedLanguages: LANGS,
-    aliases: ["simone-45"],
   },
 ] as const satisfies readonly CatalogVoice[]

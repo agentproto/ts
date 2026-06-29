@@ -20,6 +20,7 @@ export default createTsupConfig({
     "byok/index": "src/byok/index.ts",
     "access/index": "src/access/index.ts",
     "picker/index": "src/picker/index.ts",
+    "overlay/index": "src/overlay/index.ts",
   },
   format: ["esm"],
   splitting: true,

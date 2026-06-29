@@ -29,12 +29,12 @@ export type CatalogVoiceProvider = z.infer<typeof CatalogVoiceProviderSchema>
  * provider-native descriptors an adapter may surface (age, quality) — one
  * entry serves both the UI and the execution adapter.
  *
- * `catalogId` (e.g. "simone-1") is the stable slug saved on
+ * `catalogId` is the stable provider-native slug saved on
  * `operator.voiceId` rows; renaming the `label` is pure UX and never
  * orphans a saved reference.
  */
 export const CatalogVoiceSchema = z.object({
-  /** Branded slug: "simone-1", "simone-2", … (stable across renames). */
+  /** Stable provider-native slug (kept across renames). */
   catalogId: z.string(),
   /** Native provider id: "French_FemaleAnchor", "alloy", "Aoede", … */
   providerVoiceId: z.string(),
@@ -51,7 +51,7 @@ export const CatalogVoiceSchema = z.object({
   samplePath: z.string().optional(),
   /**
    * Legacy / alternate ids that also resolve to this voice (e.g. the old
-   * `simone-N` slug a renamed voice used to carry). Keeps persisted
+   * an app-side alias a renamed voice used to carry). Keeps persisted
    * `operator.voiceId` rows + saved references working across renames.
    */
   aliases: z.array(z.string()).readonly().optional(),

@@ -1,9 +1,9 @@
 /**
  * Picker subpath — wire shapes returned by the per-app
  * `GET /models/available` route. Single source of truth shared by:
- *   - the server-side helper (`@agstudio/core/domain/model-access`)
- *   - the per-app SDK clients (e.g. `@guilde/sdk`)
- *   - the cross-app picker hook (`@agstudio/ui/hooks/use-available-models`)
+ *   - the server-side helper (an app-side model-access helper)
+ *   - the per-app SDK clients (e.g. an app SDK client)
+ *   - the cross-app picker hook (an app picker hook)
  *
  * Without this single source the hook + SDK previously drifted from
  * the API contract and a fetcher in the app silently kept calling

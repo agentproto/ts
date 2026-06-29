@@ -19,7 +19,7 @@ export type Lifecycle = z.infer<typeof LifecycleSchema>
 /**
  * `catalogPriceTier` — the model's intrinsic cost bucket. Distinct from
  * `subscriptionPlanTier` (the user's billing level) and `modelPreset`
- * (Simone's per-conversation UX picker). Always qualify when discussing
+ * (an app's per-conversation UX picker). Always qualify when discussing
  * tiers — bare `priceTier` / `tier` is ambiguous in this codebase.
  */
 export const CatalogPriceTierSchema = z.enum(["low", "mid", "high", "premium"])

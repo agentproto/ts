@@ -3,7 +3,7 @@
  *
  * Single source of truth for LLM, image, video, audio, and voice model
  * entries. Owns cost dispatch, BYOK policy, and access control evaluation.
- * Zod-only OSS core; @agstudio/model-catalog layers billing/access/BYOK
+ * Zod-only OSS core; @agentproto/model-catalog layers billing/access/BYOK
  * policy on top.
  *
  * Subpath imports for tree-shaking:
@@ -16,7 +16,7 @@
  */
 
 export * from "./schema/index.js"
-// LLM has its own `resolveAlias` (legacy back-compat for `@agstudio/core/config/llm-pricing`).
+// LLM has its own `resolveAlias` (legacy back-compat for the app legacy pricing module).
 // At the top level we prefer the cross-kind `resolveAlias` from the registry.
 export {
   LLM_PRICING_CATALOG,
@@ -39,6 +39,7 @@ export * from "./pricing/index.js"
 export * from "./cost/index.js"
 export * from "./byok/index.js"
 export * from "./access/index.js"
+export * from "./overlay/index.js"
 export * from "./registry/index.js"
 export {
   getActions,

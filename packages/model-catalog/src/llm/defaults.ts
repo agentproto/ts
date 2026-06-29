@@ -21,7 +21,7 @@ export const WORKFLOW_PREMIUM_MODEL = "claude-opus-4-6" as const
 export const WORKFLOW_TINY_MODEL = "claude-haiku-4-5-20251001" as const
 
 /**
- * Models eligible for operator agents (Guilde). Keep in sync with the
+ * Models eligible for operator agents (an app). Keep in sync with the
  * agent-framework's model-provider config. The literal tuple drives the
  * `OperatorAgentModel` union type below.
  */

@@ -33,7 +33,7 @@ export const VOICE_CATALOG = [
 /**
  * The union of every curated voice's `catalogId` — autocompleted +
  * typo-checked at every call site that names a voice. Auto-derived from
- * the catalog data; never hand-maintained. Aliases (legacy `simone-N`)
+ * the catalog data; never hand-maintained. Aliases (app-side legacy slugs)
  * are NOT in the union — they resolve at runtime but aren't canonical.
  */
 export type CatalogVoiceId = (typeof VOICE_CATALOG)[number]["catalogId"]
@@ -67,7 +67,7 @@ export function getVoiceCatalog(language?: string): readonly CatalogVoice[] {
   return VOICE_CATALOG
 }
 
-/** Look up a voice by its canonical catalogId ("simone-1"). */
+/** Look up a voice by its canonical catalogId ("elevenlabs-victoire"). */
 export function getVoiceByCatalogId(
   catalogId: VoiceRef
 ): CatalogVoice | undefined {
@@ -84,7 +84,7 @@ export function getVoiceByProviderVoiceId(
 /**
  * Resolve a voice by canonical catalogId, then native providerVoiceId,
  * then legacy alias — works with new slugs, native ids, and the old
- * `simone-N` references persisted on operator rows.
+ * app-specific alias slugs (e.g. a consumer overlay).
  */
 export function resolveVoice(ref: VoiceRef): CatalogVoice | undefined {
   return (

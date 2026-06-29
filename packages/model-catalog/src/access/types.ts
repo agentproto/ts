@@ -32,7 +32,7 @@ export interface AccessRule {
 
 /**
  * Per-product opt-in: the app declares which kinds it surfaces. Lets
- * Katchy hide LLMs, Simone hide video, etc. Empty `kinds` means the app
+ * one app hide LLMs, another hide video, etc. Empty `kinds` means the app
  * does not constrain by kind (admin / catalog-browser scope).
  */
 export interface AppScope {

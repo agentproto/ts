@@ -20,7 +20,7 @@ export const VideoResolutionSchema = z.enum([
 export type VideoResolution = z.infer<typeof VideoResolutionSchema>
 
 /**
- * Mirrors `CostMultipliers` from `@agstudio/integration-core`. Keys are
+ * Mirrors `CostMultipliers` from `the app integration-core`. Keys are
  * stringified so JSON round-trips cleanly.
  */
 export const VideoCostMultipliersSchema = z.object({

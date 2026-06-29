@@ -1,7 +1,7 @@
 /**
  * Audio Model Catalog — TTS + STT provider models.
  *
- * Pairs with the voice catalog (`@agstudio/model-catalog/voice`) but a
+ * Pairs with the voice catalog (`@agentproto/model-catalog/voice`) but a
  * separate concern: voices describe *what the output sounds like*, models
  * here describe *how the provider bills*. A single TTS model (e.g.
  * ElevenLabs `multilingual-v2`) can render hundreds of voices at the
@@ -64,7 +64,7 @@ export interface AudioPricing {
 
 // `AudioCapabilities` is owned by the zod schema (`../schema/audio.ts`) —
 // single source of truth (imported at the top). Re-exported so existing
-// `@agstudio/model-catalog/audio` consumers keep importing it from here.
+// `@agentproto/model-catalog/audio` consumers keep importing it from here.
 export type { AudioCapabilities }
 
 export interface AudioModelDefinition {
@@ -406,7 +406,7 @@ export const AUDIO_MODEL_CATALOG: Record<string, AudioModelDefinition> = {
   },
 
   // ─── MiniMax TTS ────────────────────────────────────────────────────────
-  // Voices live in `@agstudio/model-catalog/voice`; pricing keyed on model.
+  // Voices live in `@agentproto/model-catalog/voice`; pricing keyed on model.
   "minimax/speech-02-hd": {
     id: "minimax/speech-02-hd",
     name: "MiniMax Speech 02 HD",
