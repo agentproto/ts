@@ -635,6 +635,14 @@ export function registerOrchestrationTools(
           "Event type to wait for. Default 'any'. 'turn-end' also matches " +
             "'awaiting-input' (both signal end-of-turn).",
         ),
+      since: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Event-ring cursor (from a prior poll_events nextCursor). When set, an already-emitted matching event for a watched session is returned immediately — race-free — before long-polling."
+        ),
     },
     async input => {
       const timeout = input.timeoutMs ?? 25_000
@@ -645,6 +653,38 @@ export function registerOrchestrationTools(
         const desc = registry.findByIdOrName(q)
         return desc?.id ?? q
       })
+
+      // Race-free replay: if a cursor is provided, check the event ring
+      // for already-emitted matching events before descriptor checks.
+      if (input.since !== undefined) {
+        const ringResult = eventRing.since(input.since, {
+          sessionIds: resolvedIds,
+        })
+        const matchTypes: Set<string> =
+          targetEvent === "any"
+            ? new Set(["session:turn-end", "session:awaiting-input", "session:exited"])
+            : targetEvent === "turn-end"
+              ? new Set(["session:turn-end", "session:awaiting-input"])
+              : targetEvent === "awaiting-input"
+                ? new Set(["session:awaiting-input"])
+                : new Set(["session:exited"])
+        for (const ev of ringResult.events) {
+          if (!matchTypes.has(ev.type)) continue
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  sessionId: ev.sessionId,
+                  event: ev.type.replace("session:", ""),
+                  source: "ring",
+                  since: input.since,
+                }),
+              },
+            ],
+          }
+        }
+      }
 
       // Synchronous check: return immediately if a session is already done
       for (const sid of resolvedIds) {

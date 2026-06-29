@@ -217,6 +217,32 @@ interface RegisterSessionToolsOptions {
   webhookNotifier?: WebhookNotifier
 }
 
+/** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
+ *  These coercers let a flag work whether the client sends a real JSON
+ *  boolean/number or its string form — avoids opaque "expected boolean,
+ *  received string" validation errors over the wire. */
+const mcpBool = z.preprocess(
+  v => (v === "true" ? true : v === "false" ? false : v),
+  z.boolean(),
+)
+const mcpPositiveNumber = z.preprocess(
+  v => (typeof v === "string" && v.trim() !== "" ? Number(v) : v),
+  z.number().positive(),
+)
+
+/** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
+ *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
+ *  human-friendly text. Used by `get_agent_session_output({clean})` and the
+ *  `start_agent_session({wait})` one-shot output. */
+function cleanAgentLines(lines: string[]): string[] {
+  return lines
+    .map(l => l.replace(/\x1b\[[0-9;]*m/g, ""))
+    .filter(l => {
+      const t = l.trim()
+      return !t.startsWith("──") && !/^\[(thought|tool)\b/.test(t)
+    })
+}
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -370,6 +396,16 @@ export function registerSessionTools(
           "Optional per-session webhook URL. POSTed (fire-and-forget) on this " +
             "session's turn-end / awaiting-input / exited events, in addition to " +
             "any global notify URL."
+        ),
+      wait: mcpBool
+        .optional()
+        .describe(
+          "Block until the spawned session's first turn completes and include the cleaned output in the response. Default false = return the descriptor immediately."
+        ),
+      maxCostUsd: mcpPositiveNumber
+        .optional()
+        .describe(
+          "Hard ceiling on cumulative session cost (USD). The session is stopped at a turn-end once exceeded."
         ),
     },
     async input => {
@@ -558,7 +594,8 @@ export function registerSessionTools(
           cwd,
           agentSession,
           adapterSlug: input.adapter,
-          ...(input.prompt ? { initialPrompt: input.prompt } : {}),
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.wait && input.prompt ? {} : input.prompt ? { initialPrompt: input.prompt } : {}),
           ...(input.label ? { label: input.label } : {}),
           ...(mcpServers ? { mcpServers } : {}),
           // Parent attribution + depth (WP4) — only set for spawns that
@@ -569,6 +606,8 @@ export function registerSessionTools(
           ...(resolved.commandPreview
             ? { commandPreview: resolved.commandPreview }
             : {}),
+          ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+          ...(resolved.readUsage ? { readUsage: () => resolved.readUsage!(agentSession.sessionId) } : {}),
         })
         // Bind the scope-token's lifetime to the child session — once
         // it exits, the token is revoked so it can't outlive its child.
@@ -578,6 +617,23 @@ export function registerSessionTools(
         // gateway's session-event bus handler.
         if (input.notifyUrl && webhookNotifier) {
           webhookNotifier.register(desc.id, input.notifyUrl)
+        }
+        // wait mode: block until the first turn completes, then return
+        // the descriptor with cleaned output appended.
+        if (input.wait && input.prompt) {
+          await registry.sendPrompt(desc.id, input.prompt)
+          const waitLines: string[] = []
+          const waitUnsub = registry.attach(desc.id, (line: string) => {
+            waitLines.push(line)
+          })
+          if (waitUnsub) waitUnsub()
+          const waitTail = waitLines.slice(-80)
+          const output = cleanAgentLines(waitTail)
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ...desc, output }, null, 2) },
+            ],
+          }
         }
         return {
           content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
@@ -747,6 +803,11 @@ export function registerSessionTools(
         .max(500)
         .optional()
         .describe("Max lines to return. Default 80, max 500."),
+      clean: mcpBool
+        .optional()
+        .describe(
+          "Strip ANSI codes and drop framing/decoration lines, returning human-readable text."
+        ),
     },
     async input => {
       const desc = registry.get(input.sessionId)
@@ -767,6 +828,7 @@ export function registerSessionTools(
       })
       if (unsub) unsub()
       const tail = lines.slice(-limit)
+      const output = input.clean ? cleanAgentLines(tail) : tail
       return {
         content: [
           {
@@ -776,7 +838,7 @@ export function registerSessionTools(
                 sessionId: input.sessionId,
                 status: desc.status,
                 lastOutputAt: desc.lastOutputAt,
-                lines: tail,
+                lines: output,
               },
               null,
               2

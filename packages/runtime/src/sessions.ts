@@ -126,6 +126,15 @@ export interface SessionDescriptor {
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
   adapterSlug?: string
+  /** The model the session was requested to run (echoed back at spawn). */
+  model?: string
+  /** Cumulative estimated USD cost of the session — best-effort, refreshed
+   *  on each turn-end from the adapter's usage reader (e.g. hermes reads its
+   *  state.db). Absent for adapters with no usage source. */
+  costUsd?: number
+  /** Cumulative input / output token counts (same source + cadence as costUsd). */
+  tokensIn?: number
+  tokensOut?: number
   /** ACP-level session id (the adapter's own handle — claude-code's
    *  conversation id, hermes' chat id, …). Set at spawnAgent time
    *  from `agentSession.sessionId`. Survives across daemon restarts
@@ -243,6 +252,13 @@ interface SessionRuntime {
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
+  /** Per-session cost cap. When set, the turn-end finally block checks
+   *  the accumulated costUsd against this ceiling and kills the session
+   *  if exceeded. */
+  maxCostUsd?: number
+  /** Best-effort usage reader called after each turn. The adapter returns
+   *  accumulated cost/token counts which are mirrored onto the descriptor. */
+  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
 }
 
 const RECENT_LINES_CAP = 500
@@ -414,6 +430,18 @@ export interface SpawnAgentInput {
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
    *  0 when omitted (direct/root spawn). */
   depth?: number
+  /** Requested model id — recorded on the descriptor for display + echo. */
+  model?: string
+  /** Hard ceiling on cumulative session cost (USD). When set and the
+   *  adapter's usage reader reports a higher cost at a turn-end, the session
+   *  is stopped (best-effort, turn-granular — caps continuation, can't abort
+   *  a turn mid-flight). */
+  maxCostUsd?: number
+  /** Best-effort usage reader, called on each turn-end to refresh the
+   *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
+   *  reads its state.db keyed by the adapter session id). Omit for adapters
+   *  with no usage source. */
+  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
 }
 
 export interface SpawnSessionInput {
@@ -917,6 +945,35 @@ export function createSessionsRegistry(opts?: {
         // Record that a turn finished so a late `wait_for_any` (subscribed
         // after a fast turn already ended) can still fast-return.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+
+        // ── Cost refresh + cap (best-effort) ─────────────────────────
+        if (rt.readUsage) {
+          try {
+            const usage = await rt.readUsage()
+            if (usage) {
+              if (usage.costUsd !== undefined) rt.desc.costUsd = usage.costUsd
+              if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
+              if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
+            }
+          } catch {
+            // best-effort — swallow
+          }
+        }
+        const overBudget =
+          rt.maxCostUsd !== undefined &&
+          rt.desc.costUsd !== undefined &&
+          rt.desc.costUsd > rt.maxCostUsd
+        if (overBudget) {
+          appendLine(
+            rt,
+            `[cost-cap] cost $${rt.desc.costUsd} exceeds max $${rt.maxCostUsd} — killing session`,
+            "stderr",
+          )
+          rt.desc.status = "killed"
+          rt.desc.endedAt = new Date().toISOString()
+          void rt.agentSession?.close().catch(() => undefined)
+        }
+
         const ts = new Date().toISOString()
         sessionEvents.emit({
           type: "session:turn-end",
@@ -933,6 +990,7 @@ export function createSessionsRegistry(opts?: {
             ts,
           })
         }
+        if (overBudget) emitExited(rt)
       }
     }
   }
@@ -1113,6 +1171,7 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         depth: input.depth ?? 0,
+        ...(input.model ? { model: input.model } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -1125,6 +1184,8 @@ export function createSessionsRegistry(opts?: {
         busy: false,
         textBuf: "",
         thoughtBuf: "",
+        maxCostUsd: input.maxCostUsd,
+        readUsage: input.readUsage,
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)

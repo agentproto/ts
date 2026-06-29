@@ -108,6 +108,8 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
+  /** Best-effort per-session usage reader (adapter-specific, e.g. hermes state.db). */
+  readUsage?: (adapterSessionId: string) => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
 } | null>
 
 /**
