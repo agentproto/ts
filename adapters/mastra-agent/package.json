@@ -60,7 +60,7 @@
     "@agentproto/mastra": "workspace:*",
     "@agentclientprotocol/sdk": "^0.21.0",
     "@mastra/core": "^1.31.0",
-    "@mastra/memory": "^1.15.0",
+    "@mastra/memory": ">=1.15.0 <1.20.0",
     "@mastra/libsql": "~1.10.0",
     "zod": "^4.4.3"
   },
