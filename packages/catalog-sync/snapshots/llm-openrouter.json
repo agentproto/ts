@@ -8,8 +8,8 @@
         "completion": "0.000005",
         "request": "0",
         "image": "0",
-        "cache_read": "0.0000001",
-        "cache_write": "0.00000125"
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.00000125"
       }
     },
     {
@@ -20,8 +20,8 @@
         "completion": "0.000015",
         "request": "0",
         "image": "0",
-        "cache_read": "0.0000003",
-        "cache_write": "0.00000375"
+        "input_cache_read": "0.0000003",
+        "input_cache_write": "0.00000375"
       }
     },
     {
