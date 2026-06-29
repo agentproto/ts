@@ -65,6 +65,8 @@ import {
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
+import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
+import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
@@ -270,6 +272,22 @@ export async function runServe(args: readonly string[]): Promise<number> {
     }
   } catch {
     // providers.json missing / unreadable — env-only operation is fine.
+  }
+
+  // Live-on-setup catalog overlay: fold any cached provider catalogs
+  // (~/.agentproto/catalog/*.json, written by `auth provider set`) over the
+  // committed model-catalog baseline. AVAILABILITY only (account-specific
+  // voices); pricing stays pinned in the package. Best-effort and additive.
+  try {
+    const voices = await loadCachedCatalogVoices()
+    if (voices.length > 0) {
+      registerCatalogOverlay({ voice: voices })
+      process.stderr.write(
+        `${color.dim}loaded ${voices.length} catalog voice(s) from live-on-setup cache${color.reset}\n`,
+      )
+    }
+  } catch {
+    // No cache / unreadable — the committed baseline serves on its own.
   }
 
   // ── adapter resolver (powers MCP start_agent_session) ──

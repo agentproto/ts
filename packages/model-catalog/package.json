@@ -42,6 +42,11 @@
       "import": "./dist/schema/index.mjs",
       "default": "./dist/schema/index.mjs"
     },
+    "./schema/voice": {
+      "types": "./dist/schema/voice.d.ts",
+      "import": "./dist/schema/voice.mjs",
+      "default": "./dist/schema/voice.mjs"
+    },
     "./llm": {
       "types": "./dist/llm/index.d.ts",
       "import": "./dist/llm/index.mjs",
@@ -66,6 +71,11 @@
       "types": "./dist/voice/index.d.ts",
       "import": "./dist/voice/index.mjs",
       "default": "./dist/voice/index.mjs"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers/index.mjs",
+      "default": "./dist/providers/index.mjs"
     },
     "./curation": {
       "types": "./dist/curation/index.d.ts",
