@@ -654,9 +654,18 @@ importers:
       '@agentproto/adapter-claude-code':
         specifier: workspace:*
         version: link:../../adapters/claude-code
+      '@agentproto/adapter-codex':
+        specifier: workspace:*
+        version: link:../../adapters/codex
       '@agentproto/adapter-hermes':
         specifier: workspace:*
         version: link:../../adapters/hermes
+      '@agentproto/adapter-openclaw':
+        specifier: workspace:*
+        version: link:../../adapters/openclaw
+      '@agentproto/adapter-opencode':
+        specifier: workspace:*
+        version: link:../../adapters/opencode
       '@agentproto/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
