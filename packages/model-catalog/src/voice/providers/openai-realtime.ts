@@ -1,0 +1,146 @@
+/**
+ * OpenAI Realtime voices — provider-authored source for the unified voice
+ * catalog. Each entry is a `CatalogVoice`: identity (`providerVoiceId`)
+ * + selection metadata (label, description, gender, languages, featured).
+ *
+ * `catalogId`s are derived (`<provider>-<slug(providerVoiceId)>`) and
+ * materialized as literals so the `CatalogVoiceId` union stays
+ * autocomplete-able. Legacy `simone-N` slugs are preserved in `aliases`.
+ * Authored per-provider; `VOICE_CATALOG` concatenates every provider.
+ */
+
+import type { CatalogVoice } from "../../schema/voice.js"
+
+const LANGS = [
+  "en",
+  "fr",
+  "es",
+  "de",
+  "it",
+  "pt",
+  "ja",
+  "ko",
+  "zh",
+  "ar",
+  "ru",
+  "tr",
+  "nl",
+  "pl",
+  "sv",
+  "hi",
+]
+
+export const OPENAI_REALTIME_VOICES = [
+  {
+    catalogId: "openai-realtime-marin",
+    providerVoiceId: "marin",
+    provider: "openai-realtime",
+    label: "Marin",
+    description: "OpenAI Realtime — newest premium voice, warm and expressive",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-33"],
+    featured: true,
+  },
+  {
+    catalogId: "openai-realtime-cedar",
+    providerVoiceId: "cedar",
+    provider: "openai-realtime",
+    label: "Cedar",
+    description: "OpenAI Realtime — grounded, confident",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-34"],
+    featured: true,
+  },
+  {
+    catalogId: "openai-realtime-alloy",
+    providerVoiceId: "alloy",
+    provider: "openai-realtime",
+    label: "Alloy",
+    description: "OpenAI Realtime — neutral, balanced",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-35"],
+  },
+  {
+    catalogId: "openai-realtime-echo",
+    providerVoiceId: "echo",
+    provider: "openai-realtime",
+    label: "Echo",
+    description: "OpenAI Realtime — calm male",
+    gender: "male",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-36"],
+  },
+  {
+    catalogId: "openai-realtime-shimmer",
+    providerVoiceId: "shimmer",
+    provider: "openai-realtime",
+    label: "Shimmer",
+    description: "OpenAI Realtime — soft female",
+    gender: "female",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-40"],
+  },
+  {
+    catalogId: "openai-realtime-ash",
+    providerVoiceId: "ash",
+    provider: "openai-realtime",
+    label: "Ash",
+    description: "OpenAI Realtime — relaxed neutral",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-41"],
+  },
+  {
+    catalogId: "openai-realtime-ballad",
+    providerVoiceId: "ballad",
+    provider: "openai-realtime",
+    label: "Ballad",
+    description: "OpenAI Realtime — melodic, smooth",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-42"],
+  },
+  {
+    catalogId: "openai-realtime-coral",
+    providerVoiceId: "coral",
+    provider: "openai-realtime",
+    label: "Coral",
+    description: "OpenAI Realtime — friendly female",
+    gender: "female",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-43"],
+  },
+  {
+    catalogId: "openai-realtime-sage",
+    providerVoiceId: "sage",
+    provider: "openai-realtime",
+    label: "Sage",
+    description: "OpenAI Realtime — wise, measured",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-44"],
+  },
+  {
+    catalogId: "openai-realtime-verse",
+    providerVoiceId: "verse",
+    provider: "openai-realtime",
+    label: "Verse",
+    description: "OpenAI Realtime — lyrical, animated",
+    gender: "neutral",
+    primaryLanguage: "en",
+    supportedLanguages: LANGS,
+    aliases: ["simone-45"],
+  },
+] as const satisfies readonly CatalogVoice[]

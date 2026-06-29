@@ -1,0 +1,113 @@
+{
+  "name": "@agentproto/model-catalog",
+  "version": "0.1.0",
+  "description": "Unified, dependency-light model catalog: LLM, image, video, audio entries + cost dispatcher + picker. Zod-only; the OSS core that @agstudio/model-catalog layers billing/access/BYOK on top of.",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./schema": {
+      "types": "./src/schema/index.ts",
+      "import": "./dist/schema/index.mjs",
+      "default": "./dist/schema/index.mjs"
+    },
+    "./llm": {
+      "types": "./src/llm/index.ts",
+      "import": "./dist/llm/index.mjs",
+      "default": "./dist/llm/index.mjs"
+    },
+    "./image": {
+      "types": "./src/image/index.ts",
+      "import": "./dist/image/index.mjs",
+      "default": "./dist/image/index.mjs"
+    },
+    "./video": {
+      "types": "./src/video/index.ts",
+      "import": "./dist/video/index.mjs",
+      "default": "./dist/video/index.mjs"
+    },
+    "./audio": {
+      "types": "./src/audio/index.ts",
+      "import": "./dist/audio/index.mjs",
+      "default": "./dist/audio/index.mjs"
+    },
+    "./voice": {
+      "types": "./src/voice/index.ts",
+      "import": "./dist/voice/index.mjs",
+      "default": "./dist/voice/index.mjs"
+    },
+    "./curation": {
+      "types": "./src/curation/index.ts",
+      "import": "./dist/curation/index.mjs",
+      "default": "./dist/curation/index.mjs"
+    },
+    "./cost": {
+      "types": "./src/cost/index.ts",
+      "import": "./dist/cost/index.mjs",
+      "default": "./dist/cost/index.mjs"
+    },
+    "./pricing": {
+      "types": "./src/pricing/index.ts",
+      "import": "./dist/pricing/index.mjs",
+      "default": "./dist/pricing/index.mjs"
+    },
+    "./byok": {
+      "types": "./src/byok/index.ts",
+      "import": "./dist/byok/index.mjs",
+      "default": "./dist/byok/index.mjs"
+    },
+    "./access": {
+      "types": "./src/access/index.ts",
+      "import": "./dist/access/index.mjs",
+      "default": "./dist/access/index.mjs"
+    },
+    "./picker": {
+      "types": "./src/picker/index.ts",
+      "import": "./dist/picker/index.mjs",
+      "default": "./dist/picker/index.mjs"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "schema": ["./src/schema/index.ts"],
+      "llm": ["./src/llm/index.ts"],
+      "image": ["./src/image/index.ts"],
+      "video": ["./src/video/index.ts"],
+      "audio": ["./src/audio/index.ts"],
+      "voice": ["./src/voice/index.ts"],
+      "curation": ["./src/curation/index.ts"],
+      "cost": ["./src/cost/index.ts"],
+      "pricing": ["./src/pricing/index.ts"],
+      "byok": ["./src/byok/index.ts"],
+      "access": ["./src/access/index.ts"],
+      "picker": ["./src/picker/index.ts"]
+    }
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
