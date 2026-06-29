@@ -1,0 +1,71 @@
+{
+  "name": "@agentproto/adapter-mastra-agent",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/adapter-mastra-agent — first-party agentproto agent. An AIP-42 AGENT.md run as a live Mastra agent behind an AIP-44 ACP server, spawnable by the daemon like any other AGENT-CLI arm AND launchable standalone via `agentproto-mastra acp`. Our own loop, our own models — no external CLI.",
+  "keywords": [
+    "agentproto",
+    "aip-42",
+    "aip-44",
+    "aip-45",
+    "mastra",
+    "acp",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/mastra-agent"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agentproto-mastra": "dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./MASTRA-AGENT.md": "./MASTRA-AGENT.md",
+    "./mastra-agent.ACP.md": "./mastra-agent.ACP.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "MASTRA-AGENT.md",
+    "mastra-agent.ACP.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/agent": "workspace:*",
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/mastra": "workspace:*",
+    "@agentclientprotocol/sdk": "^0.21.0",
+    "@mastra/core": "^1.31.0"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

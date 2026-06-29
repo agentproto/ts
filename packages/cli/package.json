@@ -99,6 +99,7 @@
     "@agentproto/adapter-opencode": "workspace:*",
     "@agentproto/adapter-codex": "workspace:*",
     "@agentproto/adapter-openclaw": "workspace:*",
+    "@agentproto/adapter-mastra-agent": "workspace:*",
     "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
