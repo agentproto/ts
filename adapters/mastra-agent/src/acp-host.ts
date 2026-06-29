@@ -32,7 +32,11 @@ import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
 export interface MastraLike {
   stream(
     input: string,
-    options?: { abortSignal?: AbortSignal },
+    options?: {
+      abortSignal?: AbortSignal
+      /** Memory threading — `thread` scopes recall to one ACP session. */
+      memory?: { thread?: string; resource?: string }
+    },
   ): Promise<{ textStream: ReadableStream<string>; text?: Promise<string> }>
 }
 
@@ -60,12 +64,19 @@ export function promptText(params: PromptRequest): string {
 export class MastraAcpAgent implements AcpAgent {
   readonly #conn: AgentSideConnection
   readonly #buildAgent: AgentFactory
+  readonly #resource: string
   readonly #sessions = new Map<string, SessionState>()
   #agent: MastraLike | null = null
 
-  constructor(conn: AgentSideConnection, buildAgent: AgentFactory) {
+  constructor(
+    conn: AgentSideConnection,
+    buildAgent: AgentFactory,
+    resource = "mastra-agent",
+  ) {
     this.#conn = conn
     this.#buildAgent = buildAgent
+    // `resource` groups a user's threads in Mastra memory; one per agent here.
+    this.#resource = resource
   }
 
   async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
@@ -104,7 +115,11 @@ export class MastraAcpAgent implements AcpAgent {
     const text = promptText(params)
     try {
       const agent = await this.#ensureAgent()
-      const result = await agent.stream(text, { abortSignal: ac.signal })
+      // Thread = ACP session id → recall is scoped to this session's history.
+      const result = await agent.stream(text, {
+        abortSignal: ac.signal,
+        memory: { thread: params.sessionId, resource: this.#resource },
+      })
       const reader = result.textStream.getReader()
       try {
         for (;;) {
