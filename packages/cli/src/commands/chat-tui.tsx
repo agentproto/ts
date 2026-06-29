@@ -209,7 +209,6 @@ interface AppProps {
   endpoint: DaemonEndpoint
   desc: SessionDescriptor
   slug: string
-  keep: boolean
   systemPrompt?: string
 }
 
@@ -566,7 +565,6 @@ export async function runChatTui(args: readonly string[]): Promise<number> {
       endpoint={endpoint}
       desc={desc}
       slug={slug}
-      keep={keep}
       systemPrompt={systemPrompt}
     />,
   )
