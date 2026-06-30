@@ -3,6 +3,7 @@ import {
   chunkToSessionUpdate,
   toolCallTitle,
   toolKindFor,
+  type MastraStreamChunk,
 } from "../tool-call-map.js"
 
 describe("toolKindFor", () => {
@@ -104,8 +105,8 @@ describe("chunkToSessionUpdate", () => {
   })
 
   it("ignores chunk types with no ACP surface", () => {
-    expect(chunkToSessionUpdate({ type: "step-finish" })).toBeNull()
-    expect(chunkToSessionUpdate({ type: "finish" })).toBeNull()
-    expect(chunkToSessionUpdate({ type: "reasoning-delta" })).toBeNull()
+    expect(chunkToSessionUpdate({ type: "step-finish" } as unknown as MastraStreamChunk)).toBeNull()
+    expect(chunkToSessionUpdate({ type: "finish" } as unknown as MastraStreamChunk)).toBeNull()
+    expect(chunkToSessionUpdate({ type: "reasoning-delta" } as unknown as MastraStreamChunk)).toBeNull()
   })
 })
