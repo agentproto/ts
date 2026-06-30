@@ -44,12 +44,11 @@ import { classifyChatLine } from "./chat.js"
 // The constructor options only expose a chalk *style* for code (not a renderer
 // fn), so override the method on the instance to run cli-highlight for ANSI
 // syntax colors. Cast across the @types/marked-terminal version gap.
-const terminalRenderer = new TerminalRenderer()
-;(
-  terminalRenderer as unknown as {
-    code: (code: string, lang?: string) => string
-  }
-).code = (code: string, lang?: string): string => {
+const terminalRenderer = new TerminalRenderer() as unknown as {
+  code: (code: string, lang?: string) => string
+  codespan: (text: string) => string
+}
+terminalRenderer.code = (code: string, lang?: string): string => {
   let body: string
   try {
     // cli-highlight has no "auto" language; omit `language` to let it detect.
@@ -62,6 +61,9 @@ const terminalRenderer = new TerminalRenderer()
   }
   return `\n${body}\n\n`
 }
+// marked-terminal's default codespan keeps literal backticks; render inline
+// code as plain ANSI yellow instead (no backticks), matching most renderers.
+terminalRenderer.codespan = (text: string): string => `\x1b[33m${text}\x1b[0m`
 marked.setOptions({ renderer: terminalRenderer as unknown as Renderer })
 
 const USAGE = `agentproto chat-tui — Ink TUI over a daemon agent session
@@ -289,8 +291,9 @@ function ChatApp({
       // Drop the daemon's per-session banner (`── … agent session … ──`); it
       // re-emits on every render and isn't agent content.
       if (/^── .+ agent session .+──/.test(plain)) return
-      // Drop the daemon's prompt-echo frame (`──── ► <prompt> ────`).
-      if (/^─+ ► .+ ─+$/.test(plain)) return
+      // Drop the daemon's prompt-echo frame (`—— ► <prompt> ——`). The daemon
+      // uses em-dashes (U+2014), not box-drawing dashes, so match any dash run.
+      if (/^[─—–\s]* ► .+/.test(plain)) return
       const { turnBoundary, suppress } = classifyChatLine(raw)
       // During the silent setup turn, swallow every line; the only thing we
       // care about is its boundary, which ends the suppression.
