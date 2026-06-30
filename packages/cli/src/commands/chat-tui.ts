@@ -435,9 +435,9 @@ class ChatController {
     ).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err)
       this.appendLine(`[prompt failed] ${msg}`)
-      this.turnInFlight = false
-      this.stopLoader()
-      this.swapToInput()
+      // endTurn() atomically finalises the error into the history and resets
+      // all in-flight state (liveSlot, liveLines, loader, input swap).
+      this.endTurn()
     })
   }
 
@@ -495,6 +495,16 @@ class ChatController {
         }
       })
       res.on("end", () => {
+        // Flush any partial last frame that arrived without a trailing \n\n
+        if (buf.trim()) {
+          for (const evLine of buf.split("\n")) {
+            if (!evLine.startsWith("data:")) continue
+            try {
+              const json = JSON.parse(evLine.slice(5).trim()) as { line?: string }
+              if (typeof json.line === "string") this.appendLine(json.line)
+            } catch { /* ignore */ }
+          }
+        }
         this.appendLine("[session ended]")
         // Flush any buffered live content if [session ended] wasn't a turn boundary
         if (this.liveSlot) this.endTurn()

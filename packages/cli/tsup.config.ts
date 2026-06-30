@@ -11,9 +11,9 @@ export default createTsupConfig({
  * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.
  */
-// Provide a real \`require\` in the ESM bundle. Bundling the Ink stack pulls in
-// CJS deps (e.g. signal-exit@3) that call \`require("assert")\`; without this
-// esbuild's interop shim throws "Dynamic require is not supported".
+// Provide a real \`require\` in the ESM bundle. Some bundled deps (e.g.
+// gray-matter, node-pty) are CJS and call \`require("assert")\` or similar;
+// without this esbuild's interop shim throws "Dynamic require is not supported".
 import { createRequire as __agentprotoCreateRequire } from "node:module";
 const require = __agentprotoCreateRequire(import.meta.url);`,
   entry: {
