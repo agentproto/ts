@@ -65,6 +65,10 @@ In-session commands:
 Needs a running daemon (\`agentproto serve\`). Each typed line is one turn;
 the agent's reply streams back live into the history pane.`
 
+// Matches basic SGR ANSI escape sequences — used only for banner detection, not display.
+// eslint-disable-next-line no-control-regex
+const ANSI_SGR = /\x1b\[[0-9;]*m/g
+
 /** Tool / structured daemon lines render with a `⚙` gutter. They arrive already
  *  bracketed (`[tool:…]`, `[thought]`, etc.) from the runtime projector. */
 function isToolLine(line: string): boolean {
@@ -298,10 +302,8 @@ class ChatController {
   private appendLine(raw: string): void {
     if (this.exited) return
 
-    // Strip ANSI banner lines
-    // eslint-disable-next-line no-control-regex
-    const ANSI = /\x1b\[[0-9;]*m/g
-    const plain = raw.replace(ANSI, "")
+    // Strip ANSI for banner-line detection only
+    const plain = raw.replace(ANSI_SGR, "")
     // Drop the daemon's per-session banner
     if (/^── .+ agent session .+──/.test(plain)) return
     // Drop the daemon's prompt-echo frame
@@ -433,6 +435,10 @@ class ChatController {
 
   private doExit(): void {
     this.exited = true
+    if (this.setupTimeout) {
+      clearTimeout(this.setupTimeout)
+      this.setupTimeout = null
+    }
     this.req?.destroy()
     this.tui.stop()
     this.resolveExit()
@@ -482,6 +488,8 @@ class ChatController {
       })
       res.on("end", () => {
         this.appendLine("[session ended]")
+        // Flush any buffered live content if [session ended] wasn't a turn boundary
+        if (this.liveSlot) this.endTurn()
       })
     })
     this.req.on("error", (err) => {
