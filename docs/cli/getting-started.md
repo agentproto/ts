@@ -86,11 +86,11 @@ until you Ctrl-C. See [`verbs/run-swarm.md`](./verbs/run-swarm.md) and
 ## 5. Add a plugin
 
 Built-ins (`file`, `mention`, `fs`, `agent-cli`) cover local file-mode
-swarms. To use a transport-backed substrate (e.g. Guilde), install
-its plugin:
+swarms. To use a transport-backed substrate (e.g. a hosted gateway),
+install its plugin:
 
 ```bash
-agentproto plugins install @guilde/agentproto-bridge
+agentproto plugins install <plugin-package>
 agentproto plugins list
 ```
 
