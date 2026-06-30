@@ -311,6 +311,14 @@ class ChatController {
 
     const { suppress, turnBoundary } = classifyChatLine(raw)
 
+    // During the silent setup turn, swallow all output — only the turn boundary
+    // matters (it ends the setup phase). The agent's reply to the system prompt
+    // should never appear in the chat history.
+    if (this.setupPhase) {
+      if (turnBoundary) this.endTurn()
+      return
+    }
+
     // Display non-suppressed lines first (including boundary lines like [awaiting input])
     if (!suppress) {
       if (!this.liveSlot) {
