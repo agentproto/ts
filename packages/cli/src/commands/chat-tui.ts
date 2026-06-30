@@ -65,15 +65,6 @@ In-session commands:
 Needs a running daemon (\`agentproto serve\`). Each typed line is one turn;
 the agent's reply streams back live into the history pane.`
 
-/** A `you ›` turn — a single typed prompt. */
-type UserMsg = { kind: "user"; lines: string[] }
-/** An `agent ›` turn. Accumulates `lines` as the SSE stream arrives;
- *  `streaming` flips false at the turn boundary. */
-type AgentMsg = { kind: "agent"; lines: string[]; streaming: boolean }
-/** The one-shot session header, rendered once at the top. */
-type HeaderMsg = { kind: "header"; text: string }
-type Msg = UserMsg | AgentMsg | HeaderMsg
-
 /** Tool / structured daemon lines render with a `⚙` gutter. They arrive already
  *  bracketed (`[tool:…]`, `[thought]`, etc.) from the runtime projector. */
 function isToolLine(line: string): boolean {
@@ -185,6 +176,7 @@ class ChatController {
   private req?: http.ClientRequest
   private liveLines: string[] = []
   private turnInFlight = false
+  private exited = false
   private setupPhase: boolean
   private setupTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -304,6 +296,8 @@ class ChatController {
   // ── Live Slot (streaming agent output) ────────────────────────────────────
 
   private appendLine(raw: string): void {
+    if (this.exited) return
+
     // Strip ANSI banner lines
     // eslint-disable-next-line no-control-regex
     const ANSI = /\x1b\[[0-9;]*m/g
@@ -314,29 +308,28 @@ class ChatController {
     if (/^[─—–]+ ► .+ [─—–]+$/.test(plain)) return
 
     const { suppress, turnBoundary } = classifyChatLine(raw)
+
+    // Display non-suppressed lines first (including boundary lines like [awaiting input])
+    if (!suppress) {
+      if (!this.liveSlot) {
+        const prefixText = new Text(chalk.gray.dim("agent ›"), 0, 0)
+        this.liveSlot = new Text("", 0, 0)
+        const sepIdx = this.getSeparatorIndex()
+        if (sepIdx !== -1) {
+          this.tui.children.splice(sepIdx, 0, prefixText, this.liveSlot)
+        }
+      }
+      this.liveLines.push(raw)
+      const displayLines = this.liveLines.map((l) =>
+        isToolLine(l) ? chalk.cyan("⚙ " + l) : l,
+      )
+      this.liveSlot.setText(displayLines.join("\n"))
+      this.tui.requestRender()
+    }
+
     if (turnBoundary) {
       this.endTurn()
-      return
     }
-    if (suppress) return
-
-    // Create live slot if needed
-    if (!this.liveSlot) {
-      const prefixText = new Text(chalk.gray.dim("agent ›"), 0, 0)
-      this.liveSlot = new Text("", 0, 0)
-      const sepIdx = this.getSeparatorIndex()
-      if (sepIdx !== -1) {
-        this.tui.children.splice(sepIdx, 0, prefixText, this.liveSlot)
-      }
-    }
-
-    // Append to live buffer
-    this.liveLines.push(raw)
-    const displayLines = this.liveLines.map((l) =>
-      isToolLine(l) ? chalk.cyan("⚙ " + l) : l,
-    )
-    this.liveSlot.setText(displayLines.join("\n"))
-    this.tui.requestRender()
   }
 
   private endTurn(): void {
@@ -439,6 +432,7 @@ class ChatController {
   }
 
   private doExit(): void {
+    this.exited = true
     this.req?.destroy()
     this.tui.stop()
     this.resolveExit()
