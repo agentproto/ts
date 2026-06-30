@@ -1,5 +1,20 @@
 # @agentproto/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- 4068f04: add chat-tui command — Ink TUI with markdown rendering
+- 7a310ff: Add model-catalog package, provider-key store, and `agentproto models` command
+- 4068f04: add chat-tui command — Ink TUI with markdown and syntax highlighting
+- fd03e5c: Add live-on-setup voice overlay and fix OpenRouter cache field names
+
+### Patch Changes
+
+- Updated dependencies [7a310ff]
+- Updated dependencies [fd03e5c]
+  - @agentproto/model-catalog@0.2.0
+
 ## 0.2.0
 
 ### Minor Changes
