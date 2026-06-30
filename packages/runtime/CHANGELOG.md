@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 0.3.0
+
+### Minor Changes
+
+- 7a310ff: Add model-catalog package, provider-key store, and `agentproto models` command
+
 ## 0.2.0
 
 ### Minor Changes
