@@ -103,6 +103,7 @@ export type {
   AgentCliOptionType,
   AgentCliContinuation,
   AgentCliPinnedSessionTuning,
+  AgentCliPrintConfig,
   ContinuationStrategyId,
   ContinuationKeyScope,
   RuntimeConfig,

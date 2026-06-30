@@ -42,9 +42,11 @@ export interface MastraLike {
       abortSignal?: AbortSignal
       /** Memory threading — `thread` scopes recall to one ACP session. */
       memory?: { thread?: string; resource?: string }
+      /** Max agentic loop steps (tool-call → execute → continue). Default 1 = no loop. */
+      maxSteps?: number
     },
   ): Promise<{
-    fullStream?: ReadableStream<MastraStreamChunk>
+    fullStream?: ReadableStream<unknown>
     textStream?: ReadableStream<string>
     text?: Promise<string>
   }>
@@ -129,6 +131,7 @@ export class MastraAcpAgent implements AcpAgent {
       const result = await agent.stream(text, {
         abortSignal: ac.signal,
         memory: { thread: params.sessionId, resource: this.#resource },
+        maxSteps: 200,
       })
       if (result.fullStream) {
         // Preferred path: the typed chunk stream carries text deltas AND
@@ -191,7 +194,7 @@ export class MastraAcpAgent implements AcpAgent {
    *  `session/update` (text deltas + tool_call / tool_call_update). */
   async #pumpFullStream(
     sessionId: string,
-    stream: ReadableStream<MastraStreamChunk>,
+    stream: ReadableStream<unknown>,
     ac: AbortController,
   ): Promise<void> {
     const reader = stream.getReader()
@@ -200,7 +203,10 @@ export class MastraAcpAgent implements AcpAgent {
         const { value, done } = await reader.read()
         if (done || ac.signal.aborted) break
         if (!value) continue
-        const update = chunkToSessionUpdate(value)
+        // Single boundary cast: raw Mastra chunks include many event types
+        // beyond what MastraStreamChunk models; chunkToSessionUpdate returns
+        // null for anything it doesn't recognise.
+        const update = chunkToSessionUpdate(value as MastraStreamChunk)
         if (update) await this.#conn.sessionUpdate({ sessionId, update })
       }
     } finally {

@@ -48,3 +48,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# direnv local secrets — never commit
+.envrc
+.direnv/
+
+# Design docs / planning — kept locally, never versioned
+.docs/

@@ -297,6 +297,59 @@ export interface AgentCliExample {
   note?: string
 }
 
+/**
+ * AIP-45 § Print protocol configuration.
+ *
+ * When `protocol: "print"`, this block declares the CLI's one-shot
+ * headless surface so the print arm can construct the correct argv and
+ * map the CLI's wire events to {@link StreamEvent}. Omit to use
+ * Claude Code defaults (backward-compatible).
+ */
+export interface AgentCliPrintConfig {
+  /**
+   * How the prompt text is passed to the binary.
+   * - absent / `"positional"` — appended as the last positional arg
+   *   (Claude: `claude --print ... <prompt>`).
+   * - a string — passed as `--<prompt_flag> <text>` before any trailing
+   *   positional args (Mastra Code: `--prompt`).
+   */
+  prompt_flag?: string
+  /**
+   * Output format flags appended before the prompt. Defaults to
+   * `["--output-format", "stream-json"]` (Claude Code).
+   *
+   * Mastra Code uses `["--output", "jsonl"]`.
+   */
+  output_format?: string[]
+  /**
+   * Extra flags inserted between `output_format` and the prompt.
+   * Claude Code uses `["--no-interactive"]`; Mastra Code omits this.
+   */
+  pre_prompt?: string[]
+  /**
+   * Resume / continue flag for reattaching to a prior session.
+   *
+   * Claude:  `{ flag: "--resume", kind: "value" }`
+   * Mastra:  `{ flag: "--continue", kind: "boolean" }` — OR
+   *          `{ flag: "--thread", kind: "value" }` for explicit thread id
+   */
+  resume?: {
+    flag: string
+    /** "value" = `--flag <sessionId>`, "boolean" = `--flag` (bare). */
+    kind: "value" | "boolean"
+  }
+  /**
+   * Which event taxonomy the CLI emits on stdout (JSONL / stream-json).
+   * The print arm picks the matching event mapper.
+   *
+   * - `"claude-stream-json"` (default) — Claude Code's
+   *   `--output-format stream-json` taxonomy.
+   * - `"mastra-jsonl"` — Mastra Code's `--output jsonl` taxonomy
+   *   (`AgentControllerEvent` shapes).
+   */
+  event_schema?: "claude-stream-json" | "mastra-jsonl"
+}
+
 export interface AgentCliDefinition {
   name: string
   id: string
@@ -318,6 +371,8 @@ export interface AgentCliDefinition {
   mcp?: AgentCliMcpBlock
   /** REQUIRED when protocol=proprietary. NPM package implementing AgentCliClient. */
   adapter?: string
+  /** OPTIONAL when protocol=print. Declares the one-shot CLI surface. */
+  print?: AgentCliPrintConfig
   session?: AgentCliSession
   models?: AgentCliModels
   capabilities?: AgentCliCapabilities

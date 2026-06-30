@@ -48,6 +48,15 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastracode",
+    name: "Mastra Code",
+    description:
+      "Mastra Code terminal coding agent via its documented headless CLI. Current CLI does not expose ACP.",
+    packageName: "@agentproto/adapter-mastracode",
+    hint: "mastra · headless · multi-provider",
+  },
+  {
+    type: "agent-cli",
     slug: "codex",
     name: "Codex",
     description:

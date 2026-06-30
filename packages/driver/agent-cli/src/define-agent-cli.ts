@@ -95,6 +95,7 @@ export function createAgentCliRuntime(
           ...(opts?.resumeSessionId
             ? { resumeSessionId: opts.resumeSessionId }
             : {}),
+          printConfig: definition.print,
         })
       }
 
