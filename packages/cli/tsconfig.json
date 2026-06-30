@@ -2,9 +2,7 @@
   "extends": "@agentproto/tooling/typescript/node-library.json",
   "compilerOptions": {
     "declaration": false,
-    "declarationMap": false,
-    "jsx": "react-jsx",
-    "jsxImportSource": "react",
+    "declarationMap": false
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]
