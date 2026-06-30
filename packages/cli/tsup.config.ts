@@ -1,37 +1,19 @@
 import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
 const { version } = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8")
 )
 
-// Stub for ink's dev-only react-devtools-core static import (see the stub file
-// for the full rationale). Bundling the Ink stack means this import lands in
-// the binary; aliasing it to a no-op keeps it resolvable without shipping the
-// dev dependency.
-const reactDevtoolsStub = fileURLToPath(
-  new URL("./src/stubs/react-devtools-core.ts", import.meta.url)
-)
-
 export default createTsupConfig({
   define: { __CLI_VERSION__: JSON.stringify(version) },
-  // The base config sets esbuildOptions too; this override replaces it, so
-  // re-apply `sourcesContent` here alongside the devtools alias.
-  esbuildOptions(options) {
-    options.sourcesContent = true
-    options.alias = {
-      ...options.alias,
-      "react-devtools-core": reactDevtoolsStub,
-    }
-  },
   banner: `/**
  * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.
  */
-// Provide a real \`require\` in the ESM bundle. Bundling the Ink stack pulls in
-// CJS deps (e.g. signal-exit@3) that call \`require("assert")\`; without this
-// esbuild's interop shim throws "Dynamic require is not supported".
+// Provide a real \`require\` in the ESM bundle. Some bundled deps (e.g.
+// gray-matter, node-pty) are CJS and call \`require("assert")\` or similar;
+// without this esbuild's interop shim throws "Dynamic require is not supported".
 import { createRequire as __agentprotoCreateRequire } from "node:module";
 const require = __agentprotoCreateRequire(import.meta.url);`,
   entry: {
@@ -69,14 +51,10 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/*",
     "gray-matter",
-    // NOTE: the Ink stack (react, ink, ink-text-input, ink-spinner) is
-    // deliberately NOT external — it must be bundled so the binary carries
-    // its own react@18. When run from inside a host monorepo that has
-    // react@19, an external `react` import resolves to the host's react@19
-    // and crashes the Ink reconciler (ReactCurrentOwner). Bundling keeps a
-    // single, self-contained react copy.
-    "marked",
-    "marked-terminal",
+    // pi-tui is externalised — it's pure ESM with no monorepo react conflict.
+    // Chalk is also externalised (it's widely available and ESM-safe).
+    "@earendil-works/pi-tui",
+    "chalk",
     "cli-highlight",
     "zod",
     "ws",
@@ -96,16 +74,6 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
   // into cli.mjs. Once each lands on npm independently, move it to
   // `external` and declare it under `dependencies` in package.json.
   noExternal: [
-    // The Ink stack must be FORCE-bundled. tsup auto-externalizes anything in
-    // package.json `dependencies`, so dropping these from `external` isn't
-    // enough — they'd still resolve `react` from the host monorepo (react@19)
-    // and crash the reconciler. noExternal inlines a single self-contained
-    // react@18 copy shared by ink + the TUI.
-    "react",
-    "react/jsx-runtime",
-    "ink",
-    "ink-text-input",
-    "ink-spinner",
     "@agentproto/agent-runtime",
     "@agentproto/agent-runtime/adapters/substrate-file",
     "@agentproto/agent-runtime/adapters/dispatcher-mention",
