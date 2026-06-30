@@ -194,10 +194,11 @@ jobs:
             echo "committed=false" >> "$GITHUB_OUTPUT"
             echo "No changeset changes to commit."
           else
-            # [skip ci] prevents a redundant build cycle — explicit statuses
-            # below cover both "Agentic review" and "Changeset present?" on
-            # the new HEAD, so the merge gate stays green without a second run.
-            git commit -m "chore: agentic reviewer — changeset [skip ci]"
+            # Explicit statuses below already cover "Agentic review" and
+            # "Changeset present?" on the new HEAD. No [skip ci] here — that
+            # token ends up in squash-merge commit bodies and silently skips
+            # the Release workflow after merge (GitHub checks the full message).
+            git commit -m "chore: agentic reviewer — changeset"
             git push
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi

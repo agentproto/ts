@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:  # manual recovery trigger if push event is ever skipped
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
