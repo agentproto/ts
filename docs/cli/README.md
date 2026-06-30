@@ -2,10 +2,10 @@
 
 The `agentproto` binary is the reference host for AgentProto agent-CLI
 adapters. It installs adapter packages (`claude-code`, `hermes`,
-`opencode`, `gemini-cli`, `goose`, …), runs them locally for a single
-turn or a long-lived session, exposes them as a daemon over an outbound
-WebSocket tunnel, and orchestrates multi-agent swarms through the
-runtime kernel.
+`opencode`, `codex`, `mastra-agent`, `openclaw`, …), runs them locally
+for a single turn or a long-lived session, exposes them as a daemon over
+an outbound WebSocket tunnel, and orchestrates multi-agent swarms
+through the runtime kernel.
 
 This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
@@ -23,7 +23,7 @@ Pick whichever matches what you're trying to do:
   [`getting-started.md`](./getting-started.md) walks through `install`
   + `run` for a single turn. For a persistent session attached to your
   terminal, see [`verbs/sessions.md`](./verbs/sessions.md).
-- **Share your machine with a hosted agent** (Guilde, a self-hosted
+- **Share your machine with a hosted agent** (a self-hosted
   gateway, …) — see [`verbs/auth.md`](./verbs/auth.md) for the device
   flow, then [`verbs/serve.md`](./verbs/serve.md) for the daemon with
   `--connect`.
@@ -36,15 +36,20 @@ Pick whichever matches what you're trying to do:
 ### Verbs
 
 - [`agentproto auth`](./verbs/auth.md) — log in to a host (RFC 8628 device flow)
+- [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
+- [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
 - [`agentproto daemon`](./verbs/daemon.md) — install/start/stop the background service
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
+- [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
+- [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
+- [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
 
 ### Concepts
