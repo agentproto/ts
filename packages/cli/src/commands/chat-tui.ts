@@ -128,7 +128,7 @@ const MARKDOWN_THEME: MarkdownTheme = {
   codeBlock: (s) => s,
   codeBlockBorder: (s) => chalk.dim(s),
   quote: (s) => chalk.italic(s),
-  quoteBorder: (s) => chalk.dim("|"),
+  quoteBorder: (s) => chalk.dim(s),
   hr: (s) => chalk.dim(s),
   listBullet: (s) => chalk.dim(s),
   bold: (s) => chalk.bold(s),
@@ -354,9 +354,6 @@ class ChatController {
       this.insertBeforeSeparator(components)
     }
 
-    // Always remove the live slot prefix if it's still there
-    // (in case the prefix was added but liveSlot removed by some edge case)
-
     // Clear state
     this.liveLines = []
     this.liveSlot = undefined
@@ -430,6 +427,9 @@ class ChatController {
     ).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err)
       this.appendLine(`[prompt failed] ${msg}`)
+      this.turnInFlight = false
+      this.stopLoader()
+      this.swapToInput()
     })
   }
 
