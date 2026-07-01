@@ -147,6 +147,27 @@ export {
   type OrchestratorInjectorDeps,
 } from "./orchestrator-gateway.js"
 
+// Blocking-wait service functions + supervisor types — shared between the
+// MCP tool surface (session_monitor / policy_status) and the REST HTTP
+// surface (GET /sessions/:id/wait, GET /policies/:id/wait).
+export {
+  monitorSessionWait,
+  monitorPolicyWait,
+  type SessionWaitEvent,
+  type SessionWaitResult,
+} from "./orchestration-tools.js"
+export type {
+  AttachPolicyInput,
+  CommitSpec,
+  CompletionPolicySupervisor,
+  GateSpec,
+  JudgeGateSpec,
+  OnFailSpec,
+  PolicyRunState,
+  PolicyRunStatus,
+  ShellGateSpec,
+} from "./supervisor.js"
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>
 
@@ -643,6 +664,9 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    sessionEvents,
+    eventRing,
+    supervisor,
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
