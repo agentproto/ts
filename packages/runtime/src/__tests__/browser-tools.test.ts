@@ -63,7 +63,7 @@ async function makeSetup(opts: {
 
 // ── (a) list_adapter_browsers surfaces manifest fields ────────────────────────
 
-describe("list_adapter_browsers — manifest fields", () => {
+describe("browser_adapter_list — manifest fields", () => {
   const mockLister: BrowserAdapterLister = () => [
     {
       id: "camofox",
@@ -86,7 +86,7 @@ describe("list_adapter_browsers — manifest fields", () => {
   it("surfaces location on each adapter", async () => {
     const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
 
-    const result = await client.callTool({ name: "list_adapter_browsers", arguments: {} })
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
     expect(result.isError).toBeFalsy()
     const adapters = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
@@ -101,7 +101,7 @@ describe("list_adapter_browsers — manifest fields", () => {
   it("surfaces install and config arrays on camofox", async () => {
     const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
 
-    const result = await client.callTool({ name: "list_adapter_browsers", arguments: {} })
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
     const adapters = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
     ) as Array<{ id: string; install?: unknown[]; config?: unknown[] }>
@@ -116,7 +116,7 @@ describe("list_adapter_browsers — manifest fields", () => {
   it("omits install/config when not declared (bureau)", async () => {
     const { client, cleanup } = await makeSetup({ listBrowserAdapters: mockLister })
 
-    const result = await client.callTool({ name: "list_adapter_browsers", arguments: {} })
+    const result = await client.callTool({ name: "browser_adapter_list", arguments: {} })
     const adapters = JSON.parse(
       (result.content as Array<{ type: string; text: string }>)[0]!.text
     ) as Array<{ id: string; install?: unknown[]; config?: unknown[] }>

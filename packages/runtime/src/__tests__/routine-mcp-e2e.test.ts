@@ -101,10 +101,10 @@ describe("routine orchestration — MCP transport e2e", () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name)
-    expect(names).toContain("start_routine")
-    expect(names).toContain("get_routine_status")
-    expect(names).toContain("list_routines")
-    expect(names).toContain("cancel_routine")
+    expect(names).toContain("routine_start")
+    expect(names).toContain("routine_status")
+    expect(names).toContain("routine_list")
+    expect(names).toContain("routine_cancel")
   })
 
   it("start_routine → get_routine_status reaches done over MCP", async () => {
@@ -112,7 +112,7 @@ describe("routine orchestration — MCP transport e2e", () => {
 
     const started = parseToolJson(
       await client.callTool({
-        name: "start_routine",
+        name: "routine_start",
         arguments: {
           routineId: "e2e-daily-brief",
           steps: [
@@ -125,11 +125,11 @@ describe("routine orchestration — MCP transport e2e", () => {
     expect(started.runId).toMatch(/^run_/)
     expect(started.status).toBe("running")
 
-    // Poll get_routine_status over the wire until terminal.
+    // Poll routine_status over the wire until terminal.
     let final: any
     for (let i = 0; i < 100; i++) {
       final = parseToolJson(
-        await client.callTool({ name: "get_routine_status", arguments: { runId: started.runId } }),
+        await client.callTool({ name: "routine_status", arguments: { runId: started.runId } }),
       )
       if (["done", "failed", "cancelled"].includes(final.status)) break
       await new Promise(res => setTimeout(res, 10))
@@ -145,11 +145,11 @@ describe("routine orchestration — MCP transport e2e", () => {
     const { client } = await setup()
     const started = parseToolJson(
       await client.callTool({
-        name: "start_routine",
+        name: "routine_start",
         arguments: { routineId: "e2e-listed", steps: [{ label: "only", adapter: "mock", prompt: "go" }] },
       }),
     )
-    const runs = parseToolJson(await client.callTool({ name: "list_routines", arguments: {} }))
+    const runs = parseToolJson(await client.callTool({ name: "routine_list", arguments: {} }))
     expect(Array.isArray(runs)).toBe(true)
     expect(runs.some((r: { runId: string }) => r.runId === started.runId)).toBe(true)
   })
@@ -157,7 +157,7 @@ describe("routine orchestration — MCP transport e2e", () => {
   it("get_routine_status on an unknown runId returns a clean error over MCP", async () => {
     const { client } = await setup()
     const res = parseToolJson(
-      await client.callTool({ name: "get_routine_status", arguments: { runId: "run_does_not_exist" } }),
+      await client.callTool({ name: "routine_status", arguments: { runId: "run_does_not_exist" } }),
     )
     expect(res.error).toBe("run not found")
   })

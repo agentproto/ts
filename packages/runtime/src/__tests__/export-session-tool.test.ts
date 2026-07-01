@@ -43,7 +43,7 @@ function makeServer(
 
 // ── tool registration ─────────────────────────────────────────────────────────
 
-describe("export_agent_session tool — registration", () => {
+describe("agent_export tool — registration", () => {
   it("is listed in tools/list with a description mentioning transcript", async () => {
     const server = makeServer(async () => ({
       sessionId: "sess_test",
@@ -55,7 +55,7 @@ describe("export_agent_session tool — registration", () => {
     const client = await makeClient(server)
 
     const result = await client.listTools()
-    const tool = result.tools.find(t => t.name === "export_agent_session")
+    const tool = result.tools.find(t => t.name === "agent_export")
 
     expect(tool).toBeDefined()
     expect(tool?.description?.toLowerCase()).toContain("transcript")
@@ -66,7 +66,7 @@ describe("export_agent_session tool — registration", () => {
 
 // ── rendered content ──────────────────────────────────────────────────────────
 
-describe("export_agent_session tool — rendered content", () => {
+describe("agent_export tool — rendered content", () => {
   const MARKDOWN_FIXTURE = `# My Session
 
 > Session · source \`claude-code\`
@@ -97,7 +97,7 @@ Hi there!
     const client = await makeClient(server)
 
     const result = await client.callTool({
-      name: "export_agent_session",
+      name: "agent_export",
       arguments: { sessionId: "sess_001" },
     })
 
@@ -121,7 +121,7 @@ Hi there!
     const client = await makeClient(server)
 
     const result = await client.callTool({
-      name: "export_agent_session",
+      name: "agent_export",
       arguments: { sessionId: "sess_002", format: "json" },
     })
 
@@ -147,7 +147,7 @@ Hi there!
     const client = await makeClient(server)
 
     await client.callTool({
-      name: "export_agent_session",
+      name: "agent_export",
       arguments: {
         sessionId: "native-id-abc",
         adapter: "claude-code",
@@ -164,7 +164,7 @@ Hi there!
 
 // ── unknown session graceful error ────────────────────────────────────────────
 
-describe("export_agent_session tool — graceful error on unknown session", () => {
+describe("agent_export tool — graceful error on unknown session", () => {
   it("returns isError=true with an Error: prefix for an unknown session", async () => {
     const server = makeServer(async () => ({
       sessionId: "sess_ghost",
@@ -177,7 +177,7 @@ describe("export_agent_session tool — graceful error on unknown session", () =
     const client = await makeClient(server)
 
     const result = await client.callTool({
-      name: "export_agent_session",
+      name: "agent_export",
       arguments: { sessionId: "sess_ghost" },
     })
 
@@ -199,7 +199,7 @@ describe("export_agent_session tool — graceful error on unknown session", () =
     const client = await makeClient(server)
 
     await expect(
-      client.callTool({ name: "export_agent_session", arguments: { sessionId: "sess_bad" } }),
+      client.callTool({ name: "agent_export", arguments: { sessionId: "sess_bad" } }),
     ).resolves.toMatchObject({ isError: true })
 
     await client.close()

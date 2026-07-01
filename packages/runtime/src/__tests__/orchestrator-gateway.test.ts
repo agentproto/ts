@@ -102,15 +102,15 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
       "execute_command", // danger — must be dropped
       "remote_enable", // danger — must be dropped
       "totally_made_up", // unknown — must be dropped
-      "start_agent_session", // legit — survives
-      "poll_events", // legit — survives
+      "agent_start", // legit — survives
+      "session_events_poll", // legit — survives
     ]
     const narrowed = narrowOrchestratorTools(requested)
     // Pure-logic invariant: result ⊆ default, danger excluded.
     expect(narrowed.has("execute_command")).toBe(false)
     expect(narrowed.has("remote_enable")).toBe(false)
     expect(narrowed.has("totally_made_up")).toBe(false)
-    expect([...narrowed].sort()).toEqual(["poll_events", "start_agent_session"])
+    expect([...narrowed].sort()).toEqual(["agent_start", "session_events_poll"])
     for (const t of narrowed) {
       expect(DEFAULT_ORCHESTRATOR_TOOLS).toContain(t)
     }
@@ -123,7 +123,7 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     })
     const scope = createScopeTokenRegistry().mint({ tools: requested })
     const names = await listToolNames(factory, scope)
-    expect(names).toEqual(["poll_events", "start_agent_session"])
+    expect(names).toEqual(["agent_start", "session_events_poll"])
     expect(names).not.toContain("execute_command")
   })
 
@@ -370,7 +370,7 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
   it("attach_policy on a session in the caller's subtree → ok (policyId returned)", async () => {
     await withScopedClient(async (client, _owner, child) => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: { sessionId: child, then: "emit" },
       })
       const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
@@ -383,7 +383,7 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
   it("attach_policy on a session outside the caller's subtree → denied", async () => {
     await withScopedClient(async client => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: { sessionId: "outside-session", then: "emit" },
       })
       const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
@@ -396,7 +396,7 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
   it('attach_policy with then:"commit" via a scoped (child) token → refused', async () => {
     await withScopedClient(async (client, _owner, child) => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: {
           sessionId: child,
           then: "commit",
