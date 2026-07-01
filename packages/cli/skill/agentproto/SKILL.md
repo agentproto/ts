@@ -213,7 +213,7 @@ The daemon's session tools are **deferred** in Claude Code. Keyword search
 finds nothing — use exact-name `select:`:
 
 ```
-ToolSearch("select:mcp__agentproto__start_agent_session,mcp__agentproto__list_sessions,mcp__agentproto__get_agent_session_output,mcp__agentproto__prompt_agent_session")
+ToolSearch("select:mcp__agentproto__agent_start,mcp__agentproto__session_list,mcp__agentproto__agent_output,mcp__agentproto__agent_prompt")
 ```
 
 ## Recovery playbook

@@ -353,7 +353,7 @@ function render(sessions, summaries){
 }
 
 function loadAndRender(){
-  return callTool('list_sessions', {kind:'all'}).then(function(data){
+  return callTool('session_list', {kind:'all'}).then(function(data){
     var all = data.sessions || [];
     var agents = all.filter(function(s){ return s.kind === 'agent-cli'; });
     // Render shells immediately, then fill summaries as they arrive.

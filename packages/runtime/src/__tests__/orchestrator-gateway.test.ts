@@ -50,7 +50,6 @@ const FORBIDDEN_TOOLS = [
   "import_mcp",
   "mcp_imported_call",
   "mcp_imported_list_tools",
-  "start_terminal_session",
   "write_terminal_input",
   "self_inspect",
 ]

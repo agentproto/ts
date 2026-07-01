@@ -273,7 +273,7 @@ function renderSidebar() {
 }
 
 function loadSessions() {
-  return callTool('list_sessions', {kind: 'all'}).then(function(data) {
+  return callTool('session_list', {kind: 'all'}).then(function(data) {
     sessions = data.sessions || [];
     renderSidebar();
     setStatus(sessions.length + ' session' + (sessions.length === 1 ? '' : 's') + ' · ' + new Date().toLocaleTimeString());
@@ -337,7 +337,7 @@ function selectSession(id) {
   document.getElementById('output').innerHTML = '<div style="padding:12px;color:var(--text2)">Loading&#8230;</div>';
 
   // Initial load
-  callTool('get_agent_session_output', {sessionId: id, lastN: 200}).then(function(data) {
+  callTool('agent_output', {sessionId: id, lastN: 200}).then(function(data) {
     outputLines = data.lines || [];
     nextCursor = data.nextCursor || 0;
     renderOutputFull();
@@ -356,7 +356,7 @@ function doKill() {
   for (var i = 0; i < sessions.length; i++) {
     if (sessions[i].id === activeId) { s = sessions[i]; break; }
   }
-  var toolName = (s && s.pty) ? 'kill_terminal_session' : 'kill_agent_session';
+  var toolName = (s && s.pty) ? 'terminal_kill' : 'agent_kill';
   callTool(toolName, {sessionId: activeId}).then(function() {
     return doRefresh();
   }).catch(function(e) {
@@ -376,7 +376,7 @@ function doPoll() {
     var capturedId = activeId;
     var capturedCursor = nextCursor;
     p = p.then(function() {
-      return callTool('get_agent_session_output', {sessionId: capturedId, since: capturedCursor});
+      return callTool('agent_output', {sessionId: capturedId, since: capturedCursor});
     }).then(function(data) {
       if (capturedId !== activeId) return; // user switched sessions
       var newLines = data.lines || [];
@@ -400,7 +400,7 @@ function doPoll() {
 function doRefresh() {
   return loadSessions().then(function() {
     if (activeId) {
-      return callTool('get_agent_session_output', {sessionId: activeId, lastN: 200}).then(function(data) {
+      return callTool('agent_output', {sessionId: activeId, lastN: 200}).then(function(data) {
         outputLines = data.lines || [];
         nextCursor = data.nextCursor || 0;
         renderOutputFull();

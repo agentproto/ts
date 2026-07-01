@@ -208,7 +208,7 @@ function render(rows){
 }
 
 function loadAndRender(){
-  return callTool('list_sessions', {kind:'all'}).then(function(data){
+  return callTool('session_list', {kind:'all'}).then(function(data){
     var all = data.sessions || [];
     var browsers = all.filter(function(s){ return s.kind === 'browser'; });
     render(browsers);
