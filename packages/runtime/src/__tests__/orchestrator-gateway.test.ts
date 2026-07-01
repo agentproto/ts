@@ -11,7 +11,7 @@
  *       missing tokens are rejected, a valid token gets the subset.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -28,7 +28,7 @@ import {
   createOrchestratorMcpServerFactory,
   type OrchestratorScope,
 } from "../orchestrator-gateway.js"
-import { startHttpServer } from "../http-server.js"
+import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
@@ -136,6 +136,87 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     expect(reg.verify(undefined)).toBeNull()
     reg.revoke(scope.token)
     expect(reg.verify(scope.token)).toBeNull()
+  })
+
+  it("threads daemonMcpUrl to a hermes child spawned with no mcpServers through the scoped gateway", async () => {
+    const deps = makeFactoryDeps()
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const startSession = vi.fn(async () => ({
+      sessionId: "hermes_scoped_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }))
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "hermes",
+    })
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+      resolveAgentAdapter,
+      daemonMcpUrl,
+    })
+    const scope = createScopeTokenRegistry().mint()
+    const server = await factory(scope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "hermes-default-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    const result = await client.callTool({
+      name: "agent_start",
+      arguments: { adapter: "hermes", cwd: process.cwd() },
+    })
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+    const desc = JSON.parse(text) as {
+      mcpServers?: Array<{ name: string; transport: string; ref: string }>
+    }
+
+    const expectedEntry = [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }]
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpServers: expectedEntry }),
+    )
+    expect(desc.mcpServers).toEqual(expectedEntry)
+
+    await client.close()
+  })
+
+  it("does not default mcpServers for a hermes child when daemonMcpUrl is unset (today's behaviour)", async () => {
+    const deps = makeFactoryDeps()
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => ({
+      sessionId: "hermes_scoped_no_default_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }))
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "hermes",
+    })
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+      resolveAgentAdapter,
+      // no daemonMcpUrl
+    })
+    const scope = createScopeTokenRegistry().mint()
+    const server = await factory(scope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "hermes-no-default-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    await client.callTool({
+      name: "agent_start",
+      arguments: { adapter: "hermes", cwd: process.cwd() },
+    })
+    const calledWith = startSession.mock.calls[0]![0] as Record<string, unknown>
+    expect("mcpServers" in calledWith).toBe(false)
+
+    await client.close()
   })
 })
 
