@@ -119,7 +119,9 @@ jobs:
           fi
 
           FAIL=0
-          ATTRIBUTION_PATTERN='Co-authored-by:.*claude|Co-authored-by:.*anthropic|Generated with'
+          # Match on the email domain, not the display name — a human
+          # contributor named "Claude" (or similar) must not false-positive.
+          ATTRIBUTION_PATTERN='Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with'
 
           # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
           # are per-worktree planning scratch and must never land in the repo —
