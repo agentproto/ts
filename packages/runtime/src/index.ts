@@ -582,6 +582,7 @@ export async function createGateway(
     supervisor,
     orchestratorInjector,
     webhookNotifier,
+    daemonMcpUrl,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),

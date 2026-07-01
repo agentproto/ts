@@ -1,177 +1,87 @@
-# agentproto — durable cron scheduler (daemon-native, survives restarts)
+# agentproto — thread daemonMcpUrl into the scoped orchestrator sub-gateway
 
 ## Context
 
-Orchestrating agentproto sessions from a coding assistant surfaced two gaps:
-(1) no scriptable wait primitive (being fixed separately, in the sibling
-worktree `_agentproto-worktrees/session-wait-cli`, branch
-`feat/session-wait-cli` — DO NOT touch those files, no overlap expected but
-be aware it exists), and (2) **no recurring scheduler** — nothing equivalent
-to a crontab or to Claude Code's own `CronCreate`/`CronList`/`CronDelete`
-(schedule a command or an agent prompt to fire on an interval, recurring or
-one-shot, surviving a daemon restart). `run-swarm --interval` is
-swarm-specific (bespoke `setInterval`, not persisted, not general-purpose).
-The existing `RoutineRunner` (merged, live, persisted to
-`~/.agentproto/routine-runs.json`) is a **finite** multi-step sequence with
-fan-in — verified it has no schedule/recurrence field, so it cannot express
-"run this every 30 minutes forever."
+`feat/hermes-default-mcp` (PR #138, merged) fixed the root `/mcp` route:
+`agent_start` now defaults `mcpServers` to the daemon's own gateway when
+`adapter === "hermes"` and the caller passed none, so hermes no longer
+silently spawns as a zero-tool chat-only session. That PR explicitly flagged
+a follow-up gap, confirmed by the reviewer too: the SCOPED orchestrator
+sub-gateway (`/mcp/orchestrator?scope=...`, used when a child session is
+itself made an orchestrator via `agent_start({orchestrator: true})`) doesn't
+get the same default. A hermes session spawned recursively through that
+route, with no explicit `mcpServers`, still gets zero tools.
 
-Goal: a `CronScheduler` daemon singleton — persisted, survives restarts,
-fires shell-command or agent-spawn jobs on a real cron schedule — exposed via
-REST (for the CLI) and MCP (for agent/orchestrator clients), following the
-exact conventions already established in this codebase for `RoutineRunner`.
+## Grounded findings (verified against `main` post-#139 merge)
 
-## Grounded findings (verified against `main` @ 8d1191e)
+- `packages/runtime/src/orchestrator-gateway.ts:201-224`
+  (`OrchestratorGatewayDeps` interface) — has `registry`, `sessionEvents`,
+  `eventRing`, `supervisor?`, `resolveAgentAdapter?`, `listAgentAdapters?`,
+  `orchestratorInjector?`, `webhookNotifier?`. **No `daemonMcpUrl` field.**
+- `orchestrator-gateway.ts:238-273` (`createOrchestratorMcpServerFactory`) —
+  calls `registerSessionTools(server, {...})` at line 247 with a subset of
+  `deps` fields. `daemonMcpUrl` is never in that object, so
+  `registerSessionTools`'s hermes-default logic (added in #138 — `if
+  (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {...}`,
+  inside `registerAgentTools` which `registerSessionTools` wraps) never
+  fires on this path — `daemonMcpUrl` is `undefined` here, so the condition
+  is always false.
+- `packages/runtime/src/index.ts:305` — `daemonMcpUrl` IS computed once at
+  boot (`` `http://127.0.0.1:${port}/mcp` ``).
+- `index.ts:538-553` — `createOrchestratorMcpServerFactory({...})` is called
+  with `workspace, name, version, registry, sessionEvents, eventRing,
+  supervisor, orchestratorInjector, webhookNotifier, resolveAgentAdapter?,
+  listAgentAdapters?` — **`daemonMcpUrl` is NOT included**, even though the
+  variable is already in scope at this point in the same function (it's
+  used a few lines later, at `index.ts:596`, for the ROOT `/mcp` server's
+  own `registerSessionTools` call).
 
-- **Daemon boot** (`packages/runtime/src/index.ts:261-425`): event
-  infrastructure → `createSessionsRegistry()` (:348) → orchestration
-  singletons — `createCompletionPolicySupervisor()` (:392),
-  `createRoutineRunner()` (:417-425, `persist:true`) — → HTTP server starts
-  later (~:540+). A new `createCronScheduler()` singleton belongs right after
-  `createRoutineRunner()`, gets the same `sessions` registry + `sessionEvents`
-  bus + adapter-resolution callback RoutineRunner already receives.
-- **Persistence convention** (uniform across `routine-runs.json`,
-  `policies.json`, tunnel registry): atomic write — `writeFileSync` to
-  `${path}.tmp.${pid}` then `renameSync()` — malformed JSON on load is
-  silently skipped (resume empty), in-flight entries get marked `failed`/
-  stale on boot recovery. `cron-jobs.json` follows the identical pattern.
-  Reference: `packages/runtime/src/routine-runner.ts:132-189` (load/save).
-- **MCP naming convention** ("family-first taxonomy", commit `8d1191e`):
-  `packages/runtime/src/orchestrator-gateway.ts:59-72` — `agent_*`,
-  `session_*`, `policy_*`, `routine_*`. New tools: `cron_create`,
-  `cron_list`, `cron_delete`, `cron_run` (manual fire, for testing/debugging).
-- **CLI verb dispatch**: `packages/cli/src/cli.ts` — VERBS set (:101-120) +
-  switch (:146-193), e.g. `case "sessions": return runSessions(rest)`
-  (:179). Add `"cron"` to VERBS, `case "cron": return runCron(rest)`, new
-  file `packages/cli/src/commands/cron.ts` following the multi-verb shape of
-  `sessions.ts`/`workspace.ts`.
-- **CLI↔daemon transport**: plain HTTP REST via `discoverDaemon()` +
-  `httpGetJson()`/`httpPostJson()` (`_daemon-helpers.ts`) — NOT MCP JSON-RPC
-  from the CLI process. Cron CRUD needs REST endpoints in the http-server,
-  mirroring the `/sessions/*` route shape, calling into the same
-  `CronScheduler` service the MCP tools call (one implementation, two thin
-  surfaces).
-- **No cron-expression parser exists** in the monorepo (checked root +
-  package.json's, no `croner`/`node-cron`/`node-schedule`). `parseInterval()`
-  (`run-swarm.ts:248-255`) only does simple `Ns`/`Nms` durations, not
-  schedule expressions, and is swarm-specific/unshared (heartbeat.ts
-  duplicates its own `parseDuration()` rather than importing it).
-
-## Decision: adopt `croner` for schedule parsing
-
-Standard 5-field cron in local time, same mental model as Claude Code's own
-`CronCreate`. Hand-rolling cron math (DST, month boundaries, day-of-week) is
-a well-known bug source. `croner` is small, zero-dependency, TypeScript-
-native, no native bindings (safe for a daemon package). Add it as a
-dependency of `packages/runtime`.
+This is a pure omission — the variable already exists in scope at the call
+site, it just wasn't threaded through.
 
 ## What to build
 
-### 1. `packages/runtime/src/cron-scheduler.ts` — the singleton
+1. **`packages/runtime/src/orchestrator-gateway.ts`**:
+   - Add `daemonMcpUrl?: string` to `OrchestratorGatewayDeps` (~line 224,
+     alongside the other optional deps, with a doc comment mirroring the one
+     on `RegisterAgentToolsOptions.daemonMcpUrl` from #138).
+   - Add `daemonMcpUrl: deps.daemonMcpUrl` to the `registerSessionTools(...)`
+     call at line 247.
 
-- Job schema: `{ id, label, schedule: string /* 5-field cron */, recurring:
-  boolean, action: { kind: "command", command, args?, cwd?, timeoutMs? } |
-  { kind: "agent", adapter, prompt, cwd?, model? }, createdAt, active,
-  nextRunAt, lastRunAt?, lastResult?: { ok: boolean, summary: string } }`.
-- **One internal tick loop** (not one `setInterval` per job — avoids timer
-  leaks/drift as jobs accumulate): a single interval (~15-30s) that scans all
-  active jobs, fires any whose `nextRunAt` has passed, recomputes
-  `nextRunAt` via `croner`, and deactivates one-shot jobs after firing
-  (mirrors Claude Code's own one-shot semantics).
-- `command` jobs MUST go through the SAME allowlist enforcement
-  `execute_command`/the policy gate already use (`<workspace>/.agentproto/
-  allowed-commands.json`, default-deny) — do not add a second, looser
-  execution path. Find and reuse that check point rather than
-  reimplementing it.
-- `agent` jobs reuse the sessions registry's existing spawn capability (same
-  one `agent_start`/RoutineRunner use) — spawn (or resume, if the job
-  references a persistent label) + prompt, fire-and-forget from the
-  scheduler's perspective (result recorded async on turn-end).
-- On each fire, emit an event on the existing `SessionEventBus`/`EventRing`
-  (new types `cron:fired`, `cron:succeeded`, `cron:failed`) so job outcomes
-  are observable through the SAME `session_monitor`/`session_events_poll`
-  machinery already in place — no parallel/siloed notification path.
-- Persistence: `~/.agentproto/cron-jobs.json`, atomic write-tmp+rename,
-  loaded at boot; jobs stay defined across restarts (unlike RoutineRunner
-  runs, cron job DEFINITIONS aren't "in-flight state" to fail on boot — only
-  `nextRunAt` needs recomputing if the daemon was down past a fire time:
-  recurring jobs just resume from "now"; skipped fires during downtime are
-  NOT backfilled, document this explicitly).
+2. **`packages/runtime/src/index.ts`**:
+   - Add `daemonMcpUrl` to the `createOrchestratorMcpServerFactory({...})`
+     call at ~line 538 (the variable is already in scope — this is a
+     one-line addition).
 
-### 2. MCP tools — `packages/runtime/src/orchestration-tools.ts`
+## Explicitly out of scope
 
-`cron_create` (schedule, recurring, action → returns job id), `cron_list`,
-`cron_delete(id)`, `cron_run(id)` (manual fire, bypasses schedule, for
-testing). Registered in `registerOrchestrationTools()` gated on
-`if (cronScheduler)`, matching the `routineRunner` conditional pattern.
-**Deliberately NOT added to `DEFAULT_ORCHESTRATOR_TOOLS`** (child
-orchestrators don't get cron-install privilege by default — this installs
-persistent host-level recurring jobs, a materially bigger privilege than
-session/policy tools already in that default set; make it opt-in via
-explicit `orchestrator.tools` allowlist only).
+- No other behavior changes. This is strictly completing the #138 fix's
+  coverage to the second MCP mount point — same semantics (opt-out via
+  explicit `mcpServers: []` still respected, only fires for `adapter ===
+  "hermes"` with no `mcpServers` supplied at all).
 
-### 3. REST endpoints — http-server
+## Verification
 
-`POST /cron` (create), `GET /cron` (list), `DELETE /cron/:id`,
-`POST /cron/:id/run` (manual fire) — same route shape as the existing
-`/sessions/*` family, calling the same `CronScheduler` methods the MCP tools
-call.
-
-### 4. CLI — `packages/cli/src/commands/cron.ts`
-
-`agentproto cron add --schedule "<5-field cron>" [--command <cmd> --args
-<...> | --adapter <slug> --prompt <text>] [--label <text>] [--once]`,
-`agentproto cron list [--json]`, `agentproto cron remove <id>`,
-`agentproto cron run <id>` (manual fire). Wire into `cli.ts`'s VERBS set +
-switch, add usage examples to the USAGE string.
-
-## Explicitly out of scope for v1
-
-- Timezone handling beyond the daemon host's system-local time (no per-job
-  timezone override).
-- Retry-on-failure policy for cron job actions (record `lastResult`, no
-  auto-retry loop — that's a different concept from `policy_attach`'s
-  turn-end gate retries).
-- Backfilling missed fires across a daemon-down window (documented behavior:
-  skipped, not queued).
-- Chaining a cron job into a `RoutineRunner` multi-step run (future
-  composition, not required for v1).
-- A dashboard/TUI for cron jobs beyond CLI `--json`/MCP tool output.
-
-## Verification (required, not optional)
-
-1. Add `croner` to `packages/runtime/package.json`, `pnpm install`.
-2. Build `packages/runtime` + `packages/cli`, `pnpm check-types`, fix
-   anything broken.
-3. Live-test against a running local daemon if one is reachable in this
-   environment: `agentproto cron add --schedule "* * * * *" --command echo
-   --args hello --once` (fires within 60s), poll `agentproto cron list
-   --json` to see `lastResult`, confirm the one-shot job deactivates after
-   firing. Test a recurring job fires more than once. Restart the daemon
-   mid-test, confirm the job definition survives (`cron-jobs.json`
-   round-trips) and resumes scheduling. If no live daemon is reachable, say
-   so explicitly rather than skipping verification silently.
-4. Confirm a `command` job targeting a non-allowlisted binary is rejected
-   the same way `execute_command` rejects it (shared enforcement, not a
-   bypass).
+1. `pnpm --filter @agentproto/runtime check-types` — clean.
+2. Full `@agentproto/runtime` test suite — no regressions. Consider adding
+   a small test alongside the existing orchestrator tests
+   (`orchestrator-role.test.ts` / `orchestrator-guardrails.test.ts`) that
+   spawns a hermes child through the scoped `/mcp/orchestrator` route with
+   no `mcpServers` and confirms the daemon gateway entry is present in the
+   resulting session descriptor — mirroring how #138 verified the root
+   route.
+3. Live-test if a daemon is reachable: `agent_start({orchestrator: true})`
+   → prompt the parent to spawn a hermes child with no `mcpServers` through
+   its scoped sub-gateway → confirm the child gets tools (not a chat-only
+   session).
 
 ## Critical files
 
-- `packages/runtime/src/cron-scheduler.ts` (new) — the singleton, modeled on
-  `packages/runtime/src/routine-runner.ts`'s persistence shape.
-- `packages/runtime/src/index.ts` (~:425) — singleton construction at boot.
-- `packages/runtime/src/orchestration-tools.ts` — `cron_*` MCP tools.
-- `packages/runtime/src/orchestrator-gateway.ts` — confirm `cron_*` is
-  excluded from `DEFAULT_ORCHESTRATOR_TOOLS`.
-- `packages/runtime/src/http-server.ts` — `/cron*` REST routes.
-- `packages/cli/src/commands/cron.ts` (new), `packages/cli/src/cli.ts` —
-  VERBS + dispatch.
-- `~/.agentproto/cron-jobs.json` — new persisted state file, same family as
-  `routine-runs.json`/`policies.json`.
+- `packages/runtime/src/orchestrator-gateway.ts` — `OrchestratorGatewayDeps`,
+  `createOrchestratorMcpServerFactory`
+- `packages/runtime/src/index.ts` (~line 538) — the factory call site
 
 ## Report back
 
-Every file created/modified (one line each), check-types/build output, and
-an honest account of what was and wasn't verified live. If the actual event
-bus / policy engine internals don't match this plan's assumptions, stop and
-report the discrepancy rather than improvising around it.
+Exact diff, check-types/test results, and honest account of live
+verification (or why it wasn't possible).

@@ -220,6 +220,11 @@ export interface OrchestratorGatewayDeps {
    *  are registered on spawn and unregistered on exit, so child
    *  orchestrators spawning through this scoped gateway also fire webhooks. */
   webhookNotifier?: WebhookNotifier
+  /** Forwarded to `registerSessionTools` — the daemon's own plain `/mcp`
+   *  gateway URL, defaulted onto `hermes` `agent_start` spawns issued
+   *  through this scoped sub-gateway that pass no `mcpServers`. See
+   *  `RegisterAgentToolsOptions.daemonMcpUrl`. */
+  daemonMcpUrl?: string
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -264,6 +269,7 @@ export function createOrchestratorMcpServerFactory(
       ...(deps.webhookNotifier
         ? { webhookNotifier: deps.webhookNotifier }
         : {}),
+      daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {
       registry: deps.registry,
