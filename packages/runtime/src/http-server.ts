@@ -100,6 +100,19 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
+    /**
+     * Manifest-declared mode id forwarded from `agent_start` (AIP-45
+     * `AgentCliHandle.modes` — e.g. claude-code's `plan` /
+     * `accept-edits` / `bypass-permissions`, codex's `read-only`,
+     * mastracode/opencode's `plan`). Applied at spawn time via
+     * `composeSpawn`'s mode patch (`bin_args_append` / `env`) — BEFORE
+     * the child process is exec'd, unlike `model`/`effort` below.
+     * Adapters with no declared `modes` (e.g. hermes) ignore it; an
+     * unknown id for an adapter that DOES declare modes throws
+     * `RuntimeConfigError` (composeSpawn validates against the
+     * manifest, so a typo fails the spawn rather than silently no-op).
+     */
+    mode?: string
     /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
@@ -1085,6 +1098,7 @@ export async function startHttpServer(
             res,
             path,
             opts.supervisor,
+            opts.sessions,
           )
           if (handled) return
         }
@@ -1480,6 +1494,9 @@ async function handleSessions(
         typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
           ? b.resumeSessionId
           : undefined
+      const bodyMode = typeof b.mode === "string" && b.mode.length > 0
+        ? b.mode
+        : undefined
       const bodyModel = typeof b.model === "string" && b.model.length > 0
         ? b.model
         : undefined
@@ -1489,6 +1506,7 @@ async function handleSessions(
       const agentSession = await resolved.startSession({
         cwd,
         ...(resumeSessionId ? { resumeSessionId } : {}),
+        ...(bodyMode ? { mode: bodyMode } : {}),
         ...(bodyModel ? { model: bodyModel } : {}),
         ...(bodyEffort ? { effort: bodyEffort } : {}),
       })
@@ -2141,6 +2159,7 @@ async function handlePoliciesWait(
   res: ServerResponse,
   path: string,
   supervisor: CompletionPolicySupervisor,
+  registry?: SessionsRegistry,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -2175,15 +2194,27 @@ async function handlePoliciesWait(
     timeoutMs,
   })
   // monitorPolicyWait returns `{timedOut:false, state}` on resolution, or
-  // `{timedOut:true}` on timeout. The state is always present on a
-  // non-timeout because we 404'd above and the fast-path/long-poll both
-  // re-read getStatus. Forward the full PolicyRunState for parity with
-  // policy_status.
+  // `{timedOut:true}` on timeout. Forward the full PolicyRunState for parity
+  // with policy_status — including the `awaitingQuestions` enrichment the
+  // MCP policy_status tool applies (harness-parity): cross-reference the
+  // watched sessions' live awaitingQuestion so a REST caller can tell
+  // "stuck on a question" from "still legitimately running".
   if ("timedOut" in result && result.timedOut) {
     json(200, { timedOut: true, policyId })
-  } else {
-    json(200, result.state)
+    return true
   }
+  const state = result.state
+  if (registry) {
+    const awaitingQuestions = state.sessionIds
+      .map(id => ({ sessionId: id, desc: registry.get(id) }))
+      .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+      .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+    if (awaitingQuestions.length > 0) {
+      json(200, { ...state, awaitingQuestions })
+      return true
+    }
+  }
+  json(200, state)
   return true
 }
 

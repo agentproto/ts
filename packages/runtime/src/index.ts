@@ -58,6 +58,8 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
+import { createWorkflowRunner } from "./workflow-runner.js"
+import { withDeferredTools } from "./deferred-tools.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 export type {
@@ -236,7 +238,36 @@ export interface CreateGatewayOptions {
   /** When true, drop the localhost-wildcard defaults — only the
    *  explicit `allowedOrigins` list is honoured. */
   strictOrigins?: boolean
+  /**
+   * Opt-in deferred/lazy MCP tool loading (harness-parity item 3, see
+   * `deferred-tools.ts`). When set, every root-gateway tool outside
+   * `alwaysOn` registers but starts disabled — excluded from the first
+   * `tools/list` — until the always-on `tool_search` meta-tool pulls it
+   * in by keyword. Omitted (default) → every tool is eagerly enabled,
+   * identical to pre-existing behaviour. Does not affect the scoped
+   * `/mcp/orchestrator` sub-gateway, which already exposes a small
+   * curated allowlist (`DEFAULT_ORCHESTRATOR_TOOLS`).
+   */
+  deferredTools?: { alwaysOn?: readonly string[] }
 }
+
+/**
+ * Default always-on set when `deferredTools` is enabled without an
+ * explicit `alwaysOn` override: the core spawn/drive/observe loop most
+ * sessions need immediately. Everything else (fs_*, directory_*,
+ * command_*, remote_*, browser_*, terminal_*, mcp_*, routine_*,
+ * workflow_*, policy_*, inbound_watcher_*, session_tree, agent_export,
+ * adapter_list, ...) starts deferred.
+ */
+const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
+  "agent_start",
+  "agent_prompt",
+  "agent_output",
+  "agent_kill",
+  "session_list",
+  "session_monitor",
+  "session_events_poll",
+]
 
 export interface GatewayHandle {
   url: string
@@ -287,6 +318,12 @@ export async function createGateway(
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
   }
   const port = opts.port ?? 18790
+  // Loopback URL for the daemon's own plain `/mcp` gateway — always
+  // 127.0.0.1 regardless of `opts.bind`, mirroring the orchestrator
+  // injector's loopback default (orchestrator-gateway.ts), since a
+  // spawned child is co-located on the same host and reaches the
+  // daemon over loopback, never the LAN-bind address.
+  const daemonMcpUrl = `http://127.0.0.1:${port}/mcp`
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -445,6 +482,20 @@ export async function createGateway(
       })
     : undefined
 
+  // Workflow runner — sibling primitive to routineRunner (stage-barrier
+  // parallel orchestration rather than a flat sequential list). Same
+  // singleton-per-daemon, same persistence pattern, own persist file
+  // (~/.agentproto/workflow-runs.json) so the two run stores never collide.
+  const workflowRunner = opts.resolveAgentAdapter
+    ? createWorkflowRunner({
+        registry: sessions,
+        sessionEvents,
+        resolveAgentAdapter: opts.resolveAgentAdapter,
+        webhookNotifier,
+        persist: true,
+      })
+    : undefined
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -524,12 +575,20 @@ export async function createGateway(
   })
 
   const mcpServerFactory = async () => {
-    const { server } = await createMcpServer({
+    const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
       name: opts.name ?? "agentproto-runtime",
       version: opts.version ?? "0.1.0-alpha",
     })
+    // Deferred/lazy tool loading (opt-in — see deferred-tools.ts). Wraps
+    // every subsequent `registerXTools(server, ...)` pass below so tools
+    // outside `alwaysOn` register but start disabled (hidden from the
+    // first `tools/list`) until `tool_search` pulls them in. Omitted →
+    // `server` is the raw, fully-eager gateway, today's behaviour.
+    const server = opts.deferredTools
+      ? withDeferredTools(rawServer, { alwaysOn: new Set(opts.deferredTools.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS) })
+      : rawServer
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
@@ -555,6 +614,7 @@ export async function createGateway(
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
       webhookNotifier,
+      daemonMcpUrl,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -577,6 +637,7 @@ export async function createGateway(
       eventRing,
       supervisor,
       ...(routineRunner ? { routineRunner } : {}),
+      ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.

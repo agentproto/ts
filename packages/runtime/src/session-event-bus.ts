@@ -20,12 +20,28 @@ export type SessionEventType =
   | "policy:commit-ready"
   | "policy:committed"
 
+/**
+ * Structured detail on why a session is awaiting input, when derivable.
+ * `source: "structured"` — a driver-reported ACP-style prompt (e.g. a tool
+ * permission request with real options). `source: "heuristic"` — a
+ * best-effort guess from the tail of the transcript (trailing "?" plus
+ * an optional enumerated option list) for drivers that don't report
+ * structured prompts. Absent entirely when neither could be determined —
+ * callers still have the plain `awaitingInput` boolean in that case.
+ */
+export interface SessionAwaitingQuestion {
+  text: string
+  options?: string[]
+  source: "structured" | "heuristic"
+}
+
 export interface SessionTurnEndEvent {
   type: "session:turn-end"
   sessionId: string
   awaitingInput: boolean
   label?: string
   ts: string
+  question?: SessionAwaitingQuestion
 }
 
 export interface SessionAwaitingInputEvent {
@@ -33,6 +49,7 @@ export interface SessionAwaitingInputEvent {
   sessionId: string
   label?: string
   ts: string
+  question?: SessionAwaitingQuestion
 }
 
 export interface SessionExitedEvent {
