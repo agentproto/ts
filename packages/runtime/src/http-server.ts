@@ -55,6 +55,17 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
+import {
+  monitorSessionWait,
+  monitorPolicyWait,
+  type SessionWaitEvent,
+} from "./orchestration-tools.js"
+import type {
+  SessionEventBus,
+  SessionEventType,
+} from "./session-event-bus.js"
+import type { EventRing } from "./event-ring.js"
+import type { CompletionPolicySupervisor } from "./supervisor.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -260,6 +271,20 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — the session lifecycle event bus. When wired alongside
+   *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
+   *  long-poll that resolves when the session fires a lifecycle event).
+   *  Same machinery the MCP `session_monitor` tool uses. */
+  sessionEvents?: SessionEventBus
+  /** Optional — the cursor ring buffer over `sessionEvents`. Paired with
+   *  `sessionEvents` to enable `GET /sessions/:id/wait` (cursor-based
+   *  race-free replay via the `since` query param). */
+  eventRing?: EventRing
+  /** Optional — the completion-policy supervisor. When wired, enables
+   *  `GET /policies/:id/wait` (a blocking long-poll that resolves when the
+   *  policy leaves watching/gating → done/blocked/awaiting-ack/cancelled).
+   *  Same state the MCP `policy_status` tool reports. */
+  supervisor?: CompletionPolicySupervisor
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -850,6 +875,8 @@ export async function startHttpServer(
             opts.ptyEnabled === true,
             opts.resolveBrowserAdapter,
             opts.listBrowserAdapters,
+            opts.sessionEvents,
+            opts.eventRing,
           )
           if (handled) return
         }
@@ -1060,6 +1087,22 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // Policy blocking-wait — `GET /policies/:id/wait`. Blocks until
+        // the named policy resolves (done/blocked/awaiting-ack/cancelled)
+        // or timeoutMs elapses. Same state the MCP `policy_status` tool
+        // reports. Read-only GET, no auth gate. Only mounted when a
+        // supervisor is wired.
+        if (opts.supervisor && path.startsWith("/policies/")) {
+          const handled = await handlePoliciesWait(
+            req,
+            res,
+            path,
+            opts.supervisor,
+            opts.sessions,
+          )
           if (handled) return
         }
 
@@ -1358,6 +1401,10 @@ function clampInt(
  *   GET    /sessions/:id          → one SessionDescriptor
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
+ *   GET    /sessions/:id/wait     → block until a lifecycle event fires (long-poll;
+ *                                    requires sessionEvents + eventRing wired). Query:
+ *                                    event=turn-end|awaiting-input|exited|any (default any),
+ *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
@@ -1376,6 +1423,8 @@ async function handleSessions(
   ptyEnabled = false,
   resolveBrowserAdapter?: BrowserAdapterResolver,
   listBrowserAdapters?: BrowserAdapterLister,
+  sessionEvents?: SessionEventBus,
+  eventRing?: EventRing,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -1789,7 +1838,7 @@ async function handleSessions(
   // when one was set at spawn time — `findByIdOrName` resolves both
   // and the rest of the handler operates on the canonical id.
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export)?$/,
+    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -1866,6 +1915,61 @@ async function handleSessions(
       lines: lines.slice(-lineCap),
       bytes: bufBytes ? bufBytes.toString("base64") : null,
     })
+    return true
+  }
+
+  if (suffix === "/wait" && req.method === "GET") {
+    // Blocking long-poll — same machinery as the MCP `session_monitor`
+    // tool (monitorSessionWait). Resolves when the session fires a
+    // matching lifecycle event, or when timeoutMs elapses. Read-only GET,
+    // no auth gate (same policy as /preview / /stream).
+    if (!sessionEvents || !eventRing) {
+      json(501, {
+        error: "wait_not_configured",
+        message:
+          "GET /sessions/:id/wait needs the host to wire `sessionEvents` + `eventRing` " +
+          "into the HTTP server (the daemon does this in createGateway).",
+      })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    // 404 when the session is unknown AND no `since` cursor was passed —
+    // a cursor implies "replay events I might have missed", so we still
+    // honour it for a now-dead session. Without a cursor, waiting on a
+    // missing session would block until timeout for nothing.
+    if (!resolvedDesc && qs.get("since") === null) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const rawEvent = qs.get("event")
+    const event: SessionWaitEvent =
+      rawEvent === "turn-end" ||
+      rawEvent === "awaiting-input" ||
+      rawEvent === "exited" ||
+      rawEvent === "any"
+        ? (rawEvent as SessionWaitEvent)
+        : "any"
+    const rawSince = qs.get("since")
+    const since =
+      rawSince !== null && /^\d+$/.test(rawSince)
+        ? Number.parseInt(rawSince, 10)
+        : undefined
+    // Cap at 55s to stay under typical HTTP client/proxy timeouts; the
+    // CLI chains multiple calls when its total --timeout exceeds this.
+    const timeoutMs = clampInt(qs.get("timeoutMs"), 25_000, 1_000, 55_000)
+    const result = await monitorSessionWait({
+      registry,
+      sessionEvents,
+      eventRing,
+      sessionIds: [id],
+      event,
+      timeoutMs,
+      ...(since !== undefined ? { since } : {}),
+    })
+    json(200, result)
     return true
   }
 
@@ -2042,6 +2146,86 @@ async function handleTunnels(
   }
 
   return false
+}
+
+/**
+ * `GET /policies/:id/wait` — block until the named completion policy
+ * transitions out of `watching` / `queued` / `gating` / `nudging` (i.e.
+ * reaches done / blocked / awaiting-ack / cancelled), then return the
+ * full PolicyRunState. Same shape the MCP `policy_status` tool returns.
+ * Returns `{timedOut:true}` when `timeoutMs` elapses with no resolution.
+ *
+ * Query params:
+ *   timeoutMs=<n>  max wait in ms (default 25000, cap 55000 to stay
+ *                  under typical HTTP client/proxy timeouts; the CLI
+ *                  chains multiple calls for longer budgets).
+ *
+ * Only mounted when a supervisor is wired (the dispatcher guards on
+ * `opts.supervisor`). Read-only GET — no auth gate, same policy as the
+ * other /sessions read routes.
+ */
+async function handlePoliciesWait(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  supervisor: CompletionPolicySupervisor,
+  registry?: SessionsRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  const match = path.match(/^\/policies\/([^/]+)\/wait$/)
+  if (!match) return false
+  const policyId = decodeURIComponent(match[1] ?? "")
+  if (!policyId) return false
+  if (req.method !== "GET") {
+    json(405, { error: "method_not_allowed", message: "GET only" })
+    return true
+  }
+
+  // Fast 404 when the policy doesn't exist at all — no point blocking.
+  const current = supervisor.getStatus(policyId)
+  if (!current) {
+    json(404, { error: "policy_not_found", policyId })
+    return true
+  }
+
+  const reqUrl = req.url ?? ""
+  const qs = new URLSearchParams(
+    reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+  )
+  const timeoutMs = clampInt(qs.get("timeoutMs"), 25_000, 1_000, 55_000)
+
+  const result = await monitorPolicyWait({
+    supervisor,
+    policyId,
+    timeoutMs,
+  })
+  // monitorPolicyWait returns `{timedOut:false, state}` on resolution, or
+  // `{timedOut:true}` on timeout. Forward the full PolicyRunState for parity
+  // with policy_status — including the `awaitingQuestions` enrichment the
+  // MCP policy_status tool applies (harness-parity): cross-reference the
+  // watched sessions' live awaitingQuestion so a REST caller can tell
+  // "stuck on a question" from "still legitimately running".
+  if ("timedOut" in result && result.timedOut) {
+    json(200, { timedOut: true, policyId })
+    return true
+  }
+  const state = result.state
+  if (registry) {
+    const awaitingQuestions = state.sessionIds
+      .map(id => ({ sessionId: id, desc: registry.get(id) }))
+      .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+      .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+    if (awaitingQuestions.length > 0) {
+      json(200, { ...state, awaitingQuestions })
+      return true
+    }
+  }
+  json(200, state)
+  return true
 }
 
 /**

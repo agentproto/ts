@@ -11,7 +11,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
-import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
+import type {
+  SessionEventBus,
+  SessionEventType,
+  SessionAwaitingQuestion,
+} from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -47,6 +51,271 @@ export const gateInputSchema = z.union([
     }),
   }),
 ])
+
+// ── Shared long-poll service functions ─────────────────────────────
+//
+// `monitorSessionWait` and `monitorPolicyWait` are the single source of
+// truth for the blocking-wait semantics exposed by BOTH the MCP tool
+// surface (`session_monitor`, `policy_status` fast-path) AND the REST
+// HTTP surface (`GET /sessions/:id/wait`, `GET /policies/:id/wait`).
+// Each MCP/REST handler is a thin adapter over these — no duplicated
+// long-poll logic between the two transports.
+
+/**
+ * Event kind a session wait can target. Mirrors the `session_monitor`
+ * `event` parameter. `turn-end` also matches `awaiting-input` (both
+ * signal end-of-turn), matching the MCP tool's semantics.
+ */
+export type SessionWaitEvent = "turn-end" | "awaiting-input" | "exited" | "any"
+
+/**
+ * Result of a single-session wait. On a hit, carries the session id, the
+ * matched event (ring-bus form, without the `session:` prefix), the
+ * session's current status, and whether it's awaiting input. On a
+ * timeout, `timedOut: true` and the watched id list.
+ */
+export interface SessionWaitResult {
+  timedOut?: boolean
+  sessionId?: string
+  event?: string
+  source?: "ring" | "state" | "bus"
+  awaitingInput?: boolean
+  status?: string
+  turnsCompleted?: number
+  sessionIds?: string[]
+  since?: number
+  /** Structured awaiting-input question (harness-parity). Surface on
+   *  turn-end / awaiting-input matches so callers (MCP session_monitor +
+   *  REST /sessions/:id/wait) can read the question without a separate
+   *  transcript fetch. Mirrors desc.awaitingQuestion / ev.question. */
+  question?: SessionAwaitingQuestion
+}
+
+/**
+ * Block until one of the listed sessions fires a matching lifecycle event
+ * (turn-end / awaiting-input / exited / any), or until `timeoutMs` elapses.
+ *
+ * This is the single-session-capable core that the MCP `session_monitor`
+ * tool and the REST `GET /sessions/:id/wait` route both call. The MCP tool
+ * passes N ids (multiplexed fan-in); the REST route passes exactly one.
+ * The semantics are identical: race-free cursor replay → synchronous
+ * already-in-target-state check → bus long-poll → timeout.
+ *
+ * `since` is an EventRing cursor: when provided, already-emitted matching
+ * events for the watched sessions that occurred after that cursor are
+ * returned immediately (race-free replay) before subscribing to the bus.
+ */
+export async function monitorSessionWait(opts: {
+  registry: SessionsRegistry
+  sessionEvents: SessionEventBus
+  eventRing: EventRing
+  sessionIds: string[]
+  event?: SessionWaitEvent
+  timeoutMs?: number
+  since?: number
+}): Promise<SessionWaitResult> {
+  const {
+    registry,
+    sessionEvents,
+    eventRing,
+    sessionIds,
+    timeoutMs = 25_000,
+  } = opts
+  const targetEvent: SessionWaitEvent = opts.event ?? "any"
+
+  // Resolve id-or-name → canonical id (mirrors the MCP tool exactly).
+  const resolvedIds = sessionIds.map(q => {
+    const desc = registry.findByIdOrName(q)
+    return desc?.id ?? q
+  })
+
+  // Race-free replay: if a cursor is provided, check the event ring for
+  // already-emitted matching events before descriptor checks.
+  if (opts.since !== undefined) {
+    const ringResult = eventRing.since(opts.since, {
+      sessionIds: resolvedIds,
+    })
+    const matchTypes: Set<string> =
+      targetEvent === "any"
+        ? new Set(["session:turn-end", "session:awaiting-input", "session:exited"])
+        : targetEvent === "turn-end"
+          ? new Set(["session:turn-end", "session:awaiting-input"])
+          : targetEvent === "awaiting-input"
+            ? new Set(["session:awaiting-input"])
+            : new Set(["session:exited"])
+    for (const ev of ringResult.events) {
+      if (!matchTypes.has(ev.type)) continue
+      // `ev.type` is one of the session:* literals filtered by `matchTypes`
+      // above, but `Set.has` isn't a type guard — TS still sees the full
+      // `SessionEvent` union (which now also includes sessionId-less
+      // `cron:*` members, see session-event-bus.ts), so `sessionId` needs
+      // a defensive cast here.
+      const evWithSid = ev as { sessionId?: string; type: string }
+      const question =
+        ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
+          ? ev.question
+          : undefined
+      return {
+        sessionId: evWithSid.sessionId,
+        event: ev.type.replace("session:", ""),
+        source: "ring",
+        since: opts.since,
+        ...(question ? { question } : {}),
+      }
+    }
+  }
+
+  // Synchronous check: return immediately if a session is already in the
+  // target state (same rules as the MCP tool — a fast session can finish
+  // its turn before this wait subscribes).
+  for (const sid of resolvedIds) {
+    const desc = registry.get(sid)
+    if (!desc) continue
+    if (
+      desc.awaitingInput &&
+      (targetEvent === "any" || targetEvent === "turn-end" || targetEvent === "awaiting-input")
+    ) {
+      return {
+        sessionId: sid,
+        event: "awaiting-input",
+        source: "state",
+        awaitingInput: true,
+        status: desc.status,
+        ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+      }
+    }
+    // Already-finished turn: turnsCompleted > 0 && !busy && running.
+    if (
+      (desc.turnsCompleted ?? 0) > 0 &&
+      !desc.busy &&
+      desc.status === "running" &&
+      (targetEvent === "any" || targetEvent === "turn-end")
+    ) {
+      return {
+        sessionId: sid,
+        event: "turn-end",
+        source: "state",
+        awaitingInput: false,
+        status: desc.status,
+        turnsCompleted: desc.turnsCompleted,
+      }
+    }
+    const terminal =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    if (terminal && (targetEvent === "any" || targetEvent === "exited")) {
+      return {
+        sessionId: sid,
+        event: "exited",
+        source: "state",
+        awaitingInput: false,
+        status: desc.status,
+      }
+    }
+  }
+
+  // Long-poll: subscribe to the bus, resolve on the first matching event.
+  return new Promise<SessionWaitResult>(resolve => {
+    const unsubs: Array<() => void> = []
+    let settled = false
+
+    const finish = (result: SessionWaitResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      for (const u of unsubs) u()
+      resolve(result)
+    }
+
+    const relevantTypes: SessionEventType[] =
+      targetEvent === "any"
+        ? ["session:turn-end", "session:awaiting-input", "session:exited"]
+        : targetEvent === "turn-end"
+          ? ["session:turn-end", "session:awaiting-input"]
+          : targetEvent === "awaiting-input"
+            ? ["session:awaiting-input"]
+            : ["session:exited"]
+
+    const idSet = new Set(resolvedIds)
+
+    for (const evType of relevantTypes) {
+      unsubs.push(
+        sessionEvents.on(evType, ev => {
+          // Same defensive cast as the ring-replay branch above — `evType`
+          // is only known to be one of the session:* literals at the
+          // call-site, not narrowed by `on`'s signature, so `ev` is still
+          // typed as the full (now cron:*-inclusive) SessionEvent union.
+          const sessionId = (ev as { sessionId?: string }).sessionId
+          if (!sessionId || !idSet.has(sessionId)) return
+          const desc = registry.get(sessionId)
+          finish({
+            sessionId,
+            event: ev.type.replace("session:", ""),
+            source: "bus",
+            awaitingInput: desc?.awaitingInput ?? false,
+            status: desc?.status ?? "unknown",
+            ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+          })
+        }),
+      )
+    }
+
+    const timer = setTimeout(() => {
+      finish({ timedOut: true, sessionIds: resolvedIds })
+    }, timeoutMs)
+  })
+}
+
+/**
+ * Block until the named policy's status transitions out of the active
+ * `watching` / `queued` / `gating` / `nudging` states — i.e. reaches
+ * `done`, `blocked`, `awaiting-ack`, or `cancelled` — then return the
+ * full PolicyRunState. Returns `{ timedOut: true }` on timeout.
+ *
+ * Hooks into the supervisor's `onSettle` callback (the single reliable
+ * signal — some terminal transitions like `cancel()` / `ack(false)` /
+ * single-session-exit emit no SessionEventBus event). The MCP
+ * `policy_status` tool and the REST `GET /policies/:id/wait` route both
+ * delegate here, so the wait semantics are shared across transports.
+ */
+export async function monitorPolicyWait(opts: {
+  supervisor: CompletionPolicySupervisor
+  policyId: string
+  timeoutMs?: number
+}): Promise<{ timedOut: true } | { timedOut: false; state: PolicyRunState }> {
+  const { supervisor, policyId, timeoutMs = 25_000 } = opts
+
+  // Fast path: already settled (done / blocked / cancelled / awaiting-ack).
+  const initial = supervisor.getStatus(policyId)
+  if (!initial) {
+    return { timedOut: false, state: undefined as unknown as PolicyRunState }
+  }
+  const isSettledStatus = (s: string): boolean =>
+    s === "done" || s === "blocked" || s === "cancelled" || s === "awaiting-ack"
+  if (isSettledStatus(initial.status)) {
+    return { timedOut: false, state: initial }
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      unsub()
+      resolve({ timedOut: true })
+    }, timeoutMs)
+
+    const unsub = supervisor.onSettle(id => {
+      if (id !== policyId) return
+      const state = supervisor.getStatus(policyId)
+      if (!state || !isSettledStatus(state.status)) return
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      unsub()
+      resolve({ timedOut: false, state })
+    })
+  })
+}
 
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
@@ -805,167 +1074,27 @@ export function registerOrchestrationTools(
       const timeout = input.timeoutMs ?? 25_000
       const targetEvent = input.event ?? "any"
 
-      // Resolve id-or-name → canonical id
-      const resolvedIds = input.sessionIds.map(q => {
-        const desc = registry.findByIdOrName(q)
-        return desc?.id ?? q
+      const result = await monitorSessionWait({
+        registry,
+        sessionEvents,
+        eventRing,
+        sessionIds: input.sessionIds,
+        event: targetEvent,
+        timeoutMs: timeout,
+        ...(input.since !== undefined ? { since: input.since } : {}),
       })
 
-      // Race-free replay: if a cursor is provided, check the event ring
-      // for already-emitted matching events before descriptor checks.
-      if (input.since !== undefined) {
-        const ringResult = eventRing.since(input.since, {
-          sessionIds: resolvedIds,
-        })
-        const matchTypes: Set<string> =
-          targetEvent === "any"
-            ? new Set(["session:turn-end", "session:awaiting-input", "session:exited"])
-            : targetEvent === "turn-end"
-              ? new Set(["session:turn-end", "session:awaiting-input"])
-              : targetEvent === "awaiting-input"
-                ? new Set(["session:awaiting-input"])
-                : new Set(["session:exited"])
-        for (const ev of ringResult.events) {
-          if (!matchTypes.has(ev.type)) continue
-          const evWithSid = ev as { sessionId?: string; type: string }
-          const question =
-            (ev.type === "session:turn-end" || ev.type === "session:awaiting-input")
-              ? ev.question
-              : undefined
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: evWithSid.sessionId,
-                  event: ev.type.replace("session:", ""),
-                  source: "ring",
-                  since: input.since,
-                  ...(question ? { question } : {}),
-                }),
-              },
-            ],
-          }
-        }
+      // The MCP tool's contract: a ring-replay hit echoes back the cursor
+      // (so callers can chain); the state/bus hit returns the event shape.
+      // monitorSessionWait returns the same fields — forward verbatim,
+      // including the `question` field (harness-parity) when present.
+      const payload: Record<string, unknown> = { ...result }
+      if (result.source === "ring" && input.since !== undefined) {
+        payload.since = input.since
       }
-
-      // Synchronous check: return immediately if a session is already done
-      for (const sid of resolvedIds) {
-        const desc = registry.get(sid)
-        if (!desc) continue
-        if (
-          desc.awaitingInput &&
-          (targetEvent === "any" || targetEvent === "turn-end" || targetEvent === "awaiting-input")
-        ) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "awaiting-input",
-                  awaitingInput: true,
-                  status: desc.status,
-                  ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
-                }),
-              },
-            ],
-          }
-        }
-        // Already-finished turn: a fast session can complete its turn
-        // ("completed", not "awaiting-input") BEFORE this wait subscribes —
-        // turn-end is a transient event with no persisted flag, so without
-        // this check the wait would block until the NEXT turn and time out.
-        // `turnsCompleted > 0 && !busy && running` = idle after ≥1 finished
-        // turn (a freshly-spawned never-run session has turnsCompleted 0, so
-        // it is NOT mistaken for done).
-        if (
-          (desc.turnsCompleted ?? 0) > 0 &&
-          !desc.busy &&
-          desc.status === "running" &&
-          (targetEvent === "any" || targetEvent === "turn-end")
-        ) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "turn-end",
-                  awaitingInput: false,
-                  status: desc.status,
-                  turnsCompleted: desc.turnsCompleted,
-                }),
-              },
-            ],
-          }
-        }
-        const terminal = desc.status === "exited" || desc.status === "killed" || desc.status === "error"
-        if (terminal && (targetEvent === "any" || targetEvent === "exited")) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "exited",
-                  awaitingInput: false,
-                  status: desc.status,
-                }),
-              },
-            ],
-          }
-        }
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
       }
-
-      // Long-poll: subscribe to bus, resolve on first matching event
-      return new Promise(resolve => {
-        const unsubs: Array<() => void> = []
-        let settled = false
-
-        const finish = (result: unknown): void => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          for (const u of unsubs) u()
-          resolve({
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          })
-        }
-
-        // Which event types to watch
-        const relevantTypes: SessionEventType[] =
-          targetEvent === "any"
-            ? ["session:turn-end", "session:awaiting-input", "session:exited"]
-            : targetEvent === "turn-end"
-              ? ["session:turn-end", "session:awaiting-input"]
-              : targetEvent === "awaiting-input"
-                ? ["session:awaiting-input"]
-                : ["session:exited"]
-
-        const idSet = new Set(resolvedIds)
-
-        for (const evType of relevantTypes) {
-          unsubs.push(
-            sessionEvents.on(evType, ev => {
-              const sessionId = (ev as { sessionId?: string }).sessionId
-              if (!sessionId || !idSet.has(sessionId)) return
-              const desc = registry.get(sessionId)
-              finish({
-                sessionId,
-                event: ev.type.replace("session:", ""),
-                awaitingInput: desc?.awaitingInput ?? false,
-                status: desc?.status ?? "unknown",
-                ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
-              })
-            }),
-          )
-        }
-
-        const timer = setTimeout(() => {
-          finish({ timedOut: true, sessionIds: resolvedIds })
-        }, timeout)
-      })
     },
   )
 
