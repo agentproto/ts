@@ -797,7 +797,7 @@ function printTable(rows: SessionDescriptor[]): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => r.status.length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
     age: 8,
   }
   const header =
@@ -815,7 +815,7 @@ function printTable(rows: SessionDescriptor[]): void {
   const now = Date.now()
   for (const r of rows) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r.status)
+    const tone = statusColour(r)
     process.stdout.write(
       pad(r.id, widths.id) +
         "  " +
@@ -823,7 +823,7 @@ function printTable(rows: SessionDescriptor[]): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(r.status, widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -833,12 +833,47 @@ function printTable(rows: SessionDescriptor[]): void {
   }
 }
 
-function statusColour(status: string): string {
-  switch (status) {
+/** True when the descriptor claims `status: "running"` but the underlying
+ *  OS process is confirmed gone (`processAlive` computed fresh from the pid
+ *  at read time — see `stampProcessAlive` in runtime/sessions.ts). Happens
+ *  when a daemon restart reaps the child without the registry catching up;
+ *  surfaced distinctly everywhere status is rendered so it never reads as a
+ *  healthy session. */
+export function isStaleRunning(
+  s: Pick<SessionDescriptor, "status" | "processAlive">,
+): boolean {
+  return s.status === "running" && s.processAlive === false
+}
+
+/** Single-character badge for the session's live activity — busy
+ *  processing a turn, awaiting input, or (the important case) claiming to
+ *  run with no process behind it. Empty string for the common idle case. */
+export function statusBadge(
+  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+): string {
+  if (isStaleRunning(s)) return "⚠" // ⚠
+  if (s.status !== "running") return ""
+  if (s.busy) return "●" // ●
+  if (s.awaitingInput) return "?"
+  return ""
+}
+
+/** STATUS column/field text — status plus its badge, when any. */
+export function statusLabel(
+  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+): string {
+  const badge = statusBadge(s)
+  return badge ? `${s.status} ${badge}` : s.status
+}
+
+export function statusColour(
+  s: Pick<SessionDescriptor, "status" | "processAlive">,
+): string {
+  if (isStaleRunning(s)) return "\x1b[33m" // amber — "running" contradicted by a dead pid
+  switch (s.status) {
     case "running":
       return "\x1b[32m" // green
     case "starting":
-    case "mounting":
       return "\x1b[33m" // yellow
     case "exited":
       return "\x1b[2m" // dim
@@ -1050,7 +1085,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => r.status.length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
     age: 8,
   }
   const header =
@@ -1069,7 +1104,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
   const now = Date.now()
   rows.forEach((r, i) => {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r.status)
+    const tone = statusColour(r)
     const marker = i === cursor ? "\x1b[7m▸" : " "
     const reset = i === cursor ? "\x1b[0m" : ""
     process.stdout.write(
@@ -1080,7 +1115,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(r.status, widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -1417,14 +1452,18 @@ async function runWatch(
         cyan: "",
         red: "",
       }
-  const statusTone = (s: string): string =>
-    s === "running"
-      ? c.green
-      : s === "starting"
-        ? c.amber
-        : s === "killed" || s === "error"
-          ? c.red
-          : c.dim
+  const statusTone = (
+    s: Pick<SessionDescriptor, "status" | "processAlive">,
+  ): string =>
+    isStaleRunning(s)
+      ? c.amber
+      : s.status === "running"
+        ? c.green
+        : s.status === "starting"
+          ? c.amber
+          : s.status === "killed" || s.status === "error"
+            ? c.red
+            : c.dim
 
   const render = (): void => {
     const cols = process.stdout.columns || 100
@@ -1750,7 +1789,7 @@ function renderSidebar(
   width: number,
   height: number,
   c: Record<string, string>,
-  statusTone: (s: string) => string,
+  statusTone: (s: Pick<SessionDescriptor, "status" | "processAlive">) => string,
 ): string[] {
   const out: string[] = []
   out.push(`${c.bold}SESSIONS${c.reset} ${c.dim}(${rows.length})${c.reset}`)
@@ -1767,11 +1806,11 @@ function renderSidebar(
         ? `${c.green}PTY${c.reset}`
         : `${c.dim}   ${c.reset}`
       const label = r.name ?? r.id
-      const tone = statusTone(r.status)
+      const tone = statusTone(r)
       const age = humaniseDelta(now - new Date(r.startedAt).getTime())
       const labelTrunc = truncate(label, 18)
       const line =
-        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${r.status.padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
+        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
       out.push(selected ? line : line)
     }
   }
@@ -1800,7 +1839,21 @@ function renderDetail(
     out.push(`  ${kw("id")} ${s.id}`)
     if (s.name) out.push(`  ${kw("name")} ${c.bold}${s.name}${c.reset}`)
     out.push(`  ${kw("kind")} ${s.kind}${s.pty ? ` ${c.green}(pty)${c.reset}` : ""}`)
-    out.push(`  ${kw("status")} ${s.status}`)
+    const stale = isStaleRunning(s)
+    out.push(
+      `  ${kw("status")} ${stale ? c.amber : ""}${s.status}${
+        stale ? ` ⚠ dead pid${c.reset}` : ""
+      }`,
+    )
+    out.push(
+      `  ${kw("activity")} ${
+        s.busy
+          ? `${c.green}● busy${c.reset}`
+          : s.awaitingInput
+            ? `${c.amber}? awaiting input${c.reset}`
+            : `${c.dim}idle${c.reset}`
+      }`,
+    )
     out.push(`  ${kw("workspace")} ${s.workspaceSlug}`)
     out.push(`  ${kw("command")} ${c.dim}${truncate(s.command, width - 14)}${c.reset}`)
     out.push(`  ${kw("pid")} ${s.pid ?? "—"}`)
