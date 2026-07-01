@@ -611,7 +611,10 @@ export function registerOrchestrationTools(
 
     server.tool(
       "policy_status",
-      "Get the current status of a completion policy attached with `policy_attach`.",
+      "Get the current status of a completion policy attached with `policy_attach`. " +
+        "Includes `awaitingQuestions` for any watched session currently blocked on " +
+        "input, so a caller can distinguish \"still legitimately running\" from " +
+        "\"stuck, needs a human/orchestrator answer\" without a separate call.",
       {
         policyId: z.string().describe("Policy id returned by `policy_attach`."),
       },
@@ -635,7 +638,25 @@ export function registerOrchestrationTools(
             }
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] }
+        // Read-only enrichment: cross-reference the watched sessions' live
+        // awaitingQuestion (set by sessions.ts, structured or heuristic) —
+        // does not touch the policy state machine itself.
+        const awaitingQuestions = state.sessionIds
+          .map(id => ({ sessionId: id, desc: registry.get(id) }))
+          .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+          .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                awaitingQuestions.length > 0 ? { ...state, awaitingQuestions } : state,
+                null,
+                2,
+              ),
+            },
+          ],
+        }
       },
     )
 
@@ -798,6 +819,10 @@ export function registerOrchestrationTools(
                 : new Set(["session:exited"])
         for (const ev of ringResult.events) {
           if (!matchTypes.has(ev.type)) continue
+          const question =
+            (ev.type === "session:turn-end" || ev.type === "session:awaiting-input")
+              ? ev.question
+              : undefined
           return {
             content: [
               {
@@ -807,6 +832,7 @@ export function registerOrchestrationTools(
                   event: ev.type.replace("session:", ""),
                   source: "ring",
                   since: input.since,
+                  ...(question ? { question } : {}),
                 }),
               },
             ],
@@ -831,6 +857,7 @@ export function registerOrchestrationTools(
                   event: "awaiting-input",
                   awaitingInput: true,
                   status: desc.status,
+                  ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
                 }),
               },
             ],
@@ -919,6 +946,7 @@ export function registerOrchestrationTools(
                 event: ev.type.replace("session:", ""),
                 awaitingInput: desc?.awaitingInput ?? false,
                 status: desc?.status ?? "unknown",
+                ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
               })
             }),
           )
