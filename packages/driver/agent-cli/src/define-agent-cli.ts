@@ -153,7 +153,7 @@ export function createAgentCliRuntime(
         }
       })
 
-      const arm = buildProtocolArm(definition, child, cwd)
+      const arm = buildProtocolArm(definition, child, cwd, opts?.config?.mode)
       arm._stderrTail = () => stderrBuf.join("\n")
 
       const abortController = new AbortController()
@@ -298,6 +298,7 @@ function buildProtocolArm(
   def: AgentCliHandle,
   child: ChildProcess,
   cwd: string,
+  requestedMode?: string,
 ): AgentCliClient {
   switch (def.protocol) {
     case "acp":
@@ -305,6 +306,7 @@ function buildProtocolArm(
         child,
         cwd,
         clientInfo: { name: def.id, version: def.version },
+        requestedMode,
       })
     case "mcp":
       throw new Error("createAgentCliRuntime: mcp protocol arm not yet implemented")

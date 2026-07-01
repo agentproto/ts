@@ -42,6 +42,7 @@ export type {
 export {
   createAcpProtocolArm,
   autoAllowPermissionHandler,
+  planModePermissionHandler,
   type AcpPermissionHandler,
   type AcpPermissionOutcome,
   type AcpPermissionRequestParams,

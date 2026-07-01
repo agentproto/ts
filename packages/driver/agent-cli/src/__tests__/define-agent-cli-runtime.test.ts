@@ -33,9 +33,15 @@ vi.mock("node:child_process", () => ({
 // captures the options `connect()` receives so the test can assert
 // `onActivity` was forwarded from `start()`'s options.
 let capturedConnectOpts: AgentCliConnectOptions | undefined
+// Captures the options `createAcpProtocolArm(...)` itself was constructed
+// with, so a test can assert `requestedMode` was threaded from
+// `start()`'s `config.mode` down to the arm (see the plan-mode auto-allow
+// fix: the arm picks its default permission handler off this field).
+let capturedArmOptions: { requestedMode?: string } | undefined
 
 vi.mock("../protocol/acp-client.js", () => ({
-  createAcpProtocolArm: vi.fn(() => {
+  createAcpProtocolArm: vi.fn((armOpts: { requestedMode?: string }) => {
+    capturedArmOptions = armOpts
     const arm: AgentCliClient = {
       sessionId: "acp-sess-1",
       async connect(opts) {
@@ -131,5 +137,31 @@ describe("createAgentCliRuntime(...).start() — turnIdleTimeoutMs threading", (
     const runtime = createAgentCliRuntime(defWithManifestDefault)
     await runtime.start({ cwd: "/tmp", turnIdleTimeoutMs: 10_000 })
     expect(capturedConnectOpts?.turnIdleTimeoutMs).toBe(10_000)
+  })
+})
+
+describe("createAgentCliRuntime(...).start() — requestedMode threading", () => {
+  const defWithModes: AgentCliDefinition = {
+    ...minimalDef,
+    modes: [
+      { id: "default", description: "Standard." },
+      { id: "plan", description: "Plan-only.", bin_args_append: ["--permission-mode", "plan"] },
+    ],
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    capturedArmOptions = undefined
+  })
+
+  it("forwards config.mode as requestedMode so the ACP arm can pick the plan-mode-aware permission handler", async () => {
+    const runtime = createAgentCliRuntime(defWithModes)
+    await runtime.start({ cwd: "/tmp", config: { mode: "plan" } })
+    expect(capturedArmOptions?.requestedMode).toBe("plan")
+  })
+
+  it("omits requestedMode when start() doesn't set config.mode — default-mode sessions are unaffected", async () => {
+    const runtime = createAgentCliRuntime(defWithModes)
+    await runtime.start({ cwd: "/tmp" })
+    expect(capturedArmOptions?.requestedMode).toBeUndefined()
   })
 })
