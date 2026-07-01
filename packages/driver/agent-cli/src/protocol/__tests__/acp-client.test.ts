@@ -138,3 +138,23 @@ describe("AcpProtocolArm.connect — onActivity threading", () => {
     )
   })
 })
+
+describe("AcpProtocolArm.connect — turnIdleTimeoutMs threading", () => {
+  it("forwards turnIdleTimeoutMs from connect options to createAcpClient", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work", turnIdleTimeoutMs: 300_000 })
+
+    expect(vi.mocked(createAcpClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ turnIdleTimeoutMs: 300_000 }),
+    )
+  })
+
+  it("passes turnIdleTimeoutMs: undefined through when the host doesn't supply one", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    expect(vi.mocked(createAcpClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ turnIdleTimeoutMs: undefined }),
+    )
+  })
+})

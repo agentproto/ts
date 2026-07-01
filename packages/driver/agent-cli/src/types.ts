@@ -142,6 +142,18 @@ export type AgentCliSetupStep =
 export interface AgentCliSession {
   mode?: AgentCliSessionMode
   idle_timeout_ms?: number
+  /**
+   * Per-turn silence watchdog (ms) — distinct from `idle_timeout_ms`,
+   * which bounds time BETWEEN turns. This bounds true silence DURING a
+   * single turn: if the adapter goes this long with no activity signal
+   * and its `prompt` call still hasn't resolved, the ACP client
+   * synthesizes a `turn-end` with `reason: "watchdog-timeout"` instead
+   * of hanging forever (see `@agentproto/acp/client`'s
+   * `AcpClientOptions.turnIdleTimeoutMs`). Undefined (the default)
+   * disables the watchdog — set this only for adapters known to
+   * sometimes drop the final `prompt` response (e.g. hermes).
+   */
+  turn_idle_timeout_ms?: number
   max_turns?: number
   context_carryover?: boolean
 }
@@ -450,6 +462,17 @@ export interface AgentCliConnectOptions {
    * one-shots) MAY ignore this field.
    */
   onActivity?: () => void
+  /**
+   * Turn-idle watchdog, forwarded verbatim to the ACP arm's
+   * `createAcpClient({ turnIdleTimeoutMs })` (see
+   * `@agentproto/acp/client`'s `AcpClientOptions.turnIdleTimeoutMs` for
+   * the full contract). If a turn goes this many ms with no activity
+   * signal and the underlying adapter call still hasn't resolved, the
+   * arm synthesizes a `turn-end` event with `reason: "watchdog-timeout"`
+   * instead of hanging forever. Undefined disables the watchdog. Arms
+   * that don't model a stdio JSON-RPC channel MAY ignore this field.
+   */
+  turnIdleTimeoutMs?: number
 }
 
 /**
@@ -534,6 +557,16 @@ export interface AgentCliStartOptions {
    * output, e.g. during a long internal tool-call chain.
    */
   onActivity?: () => void
+  /**
+   * Turn-idle watchdog timeout in ms, forwarded to
+   * `protocolArm.connect({ turnIdleTimeoutMs })` — see
+   * {@link AgentCliConnectOptions.turnIdleTimeoutMs}. When omitted here,
+   * `createAgentCliRuntime(...).start()` falls back to the manifest's
+   * `session.turn_idle_timeout_ms` (if the adapter declares one), so a
+   * host doesn't have to opt in per-call for an adapter that always
+   * wants this protection.
+   */
+  turnIdleTimeoutMs?: number
 }
 
 /**

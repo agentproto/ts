@@ -54,6 +54,14 @@ export const hermes: AgentCliHandle = defineAgentCli({
     mode: "persistent",
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
+    // hermes's own ACP server has been observed to hit its internal
+    // max-tool-iterations cap, produce a final answer, and then never
+    // send the `prompt` JSON-RPC response — hanging the daemon's turn
+    // drain loop forever with no other adapter-side signal available.
+    // 5 minutes of true silence (reset on any ACP traffic, so a long
+    // legitimate tool-call chain doesn't false-positive) is generous
+    // enough to not trip during normal use.
+    turn_idle_timeout_ms: 300_000,
   },
   models: {
     // Cheap OpenRouter models by default — hermes is the budget delegation

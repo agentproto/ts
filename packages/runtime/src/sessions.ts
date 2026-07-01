@@ -1073,6 +1073,11 @@ export function createSessionsRegistry(opts?: {
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     let turnCompleted = false
+    // Captures the driver's reported `turn-end` reason (e.g.
+    // "completed", "watchdog-timeout") so it can ride along on the
+    // `session:turn-end` bus event below — otherwise it's dropped after
+    // `projectEvent` renders it into the ring buffer.
+    let turnEndReason: string | undefined
     try {
       appendLine(
         rt,
@@ -1087,6 +1092,7 @@ export function createSessionsRegistry(opts?: {
         typeof message === "string" ? { type: "text", text: message } : message
       for await (const evt of rt.agentSession.send(wrapped)) {
         projectEvent(rt, evt)
+        if (evt.kind === "turn-end") turnEndReason = evt.reason
       }
       turnCompleted = true
     } catch (err) {
@@ -1152,6 +1158,7 @@ export function createSessionsRegistry(opts?: {
           label: rt.desc.label,
           ts,
           ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+          ...(turnEndReason ? { reason: turnEndReason } : {}),
         })
         if (rt.desc.awaitingInput) {
           sessionEvents.emit({

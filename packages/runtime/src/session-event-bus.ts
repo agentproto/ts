@@ -45,6 +45,15 @@ export interface SessionTurnEndEvent {
   label?: string
   ts: string
   question?: SessionAwaitingQuestion
+  /**
+   * The adapter's stream `turn-end` reason, when the driver reports one
+   * (e.g. `"completed"`, `"cancelled"`, `"max_turns"`, or
+   * `"watchdog-timeout"` when the ACP client's turn-idle watchdog fired
+   * because the adapter went silent — see
+   * `@agentproto/acp/client`'s `AcpClientOptions.turnIdleTimeoutMs`).
+   * Absent for drivers that don't report a reason.
+   */
+  reason?: string
 }
 
 export interface SessionAwaitingInputEvent {

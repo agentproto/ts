@@ -100,6 +100,25 @@ export interface AcpClientOptions {
    * liveness independent of what the agent actually says.
    */
   onActivity?: () => void
+  /**
+   * Turn-idle watchdog: if a `prompt()` call goes this many ms with NO
+   * activity signal (see `onActivity` above — incoming `session/update`
+   * notifications, outbound RPCs) and the underlying `connection.prompt()`
+   * promise still hasn't resolved, synthesize a `turn-end` event with
+   * `reason: "watchdog-timeout"` so the caller's async iterator completes
+   * instead of hanging forever. The timer resets on every activity signal
+   * observed DURING that turn, so a legitimately long tool-call chain
+   * (still producing activity, just no user-visible output) never
+   * false-positives — this is "N ms of true silence," not "N ms since the
+   * turn started."
+   *
+   * Undefined (the default) disables the watchdog entirely — existing
+   * callers see no behavior change. If the real `connection.prompt()`
+   * eventually settles after the synthetic turn-end was already emitted,
+   * the late result is logged and discarded (no crash, no duplicate
+   * turn-end for the same logical turn).
+   */
+  turnIdleTimeoutMs?: number
 }
 
 export interface AcpClient {
@@ -158,6 +177,14 @@ interface SessionState {
   resolveNext: ((evt: StreamEvent | undefined) => void) | null
   done: boolean
   active: boolean
+  /**
+   * Set by `buildSession.prompt()` for the duration of an in-flight turn
+   * when a watchdog timer is armed; cleared once that turn settles. Lets
+   * the `sessionUpdate` handler (which only has a `sessionId`, not a
+   * closure over the turn's timer) bump the SAME timer an incoming
+   * notification is liveness evidence for.
+   */
+  resetWatchdogTimer?: () => void
 }
 
 export async function createAcpClient(
@@ -235,7 +262,14 @@ export async function createAcpClient(
           )
         }
       }
-      return buildSession(connection, sessionId, state, sessions, options.onActivity)
+      return buildSession(
+        connection,
+        sessionId,
+        state,
+        sessions,
+        options.onActivity,
+        options.turnIdleTimeoutMs,
+      )
     },
     async loadSession(params) {
       // SDK returns `LoadSessionResponse` (no body fields we need); the
@@ -256,7 +290,14 @@ export async function createAcpClient(
         active: false,
       }
       sessions.set(params.sessionId, state)
-      return buildSession(connection, params.sessionId, state, sessions, options.onActivity)
+      return buildSession(
+        connection,
+        params.sessionId,
+        state,
+        sessions,
+        options.onActivity,
+        options.turnIdleTimeoutMs,
+      )
     },
     async close() {
       sessions.clear()
@@ -283,6 +324,7 @@ function buildSession(
   state: SessionState,
   sessions: Map<string, SessionState>,
   onActivity?: () => void,
+  turnIdleTimeoutMs?: number,
 ): AcpClientSession {
   return {
     sessionId,
@@ -298,8 +340,33 @@ function buildSession(
 
       const iter = makeIterator(state)
 
+      // Turn-idle watchdog — undefined turnIdleTimeoutMs disables it
+      // entirely (existing callers see no behavior change). Armed below
+      // and re-armed on every activity signal observed during this turn
+      // (outbound send, resolve, and incoming session/update via
+      // `state.resetWatchdogTimer`); cleared once the turn settles.
+      let watchdogTimer: ReturnType<typeof setTimeout> | undefined
+      let watchdogFired = false
+      const clearWatchdogTimer = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer)
+        watchdogTimer = undefined
+      }
+      const armWatchdogTimer = () => {
+        if (turnIdleTimeoutMs === undefined) return
+        clearWatchdogTimer()
+        watchdogTimer = setTimeout(() => {
+          watchdogFired = true
+          state.done = true
+          enqueue(state, { kind: "turn-end", sessionId, reason: "watchdog-timeout" })
+        }, turnIdleTimeoutMs)
+      }
+      state.resetWatchdogTimer = armWatchdogTimer
+
       // Outbound send — proves the daemon is still driving this turn,
-      // independent of whatever StreamEvents come back.
+      // independent of whatever StreamEvents come back. Also the initial
+      // arm of the watchdog timer, so the timeout is measured from "we
+      // just sent this" rather than some earlier idle point.
+      armWatchdogTimer()
       onActivity?.()
       const promise = connection
         .prompt({
@@ -307,7 +374,15 @@ function buildSession(
           prompt: input.messages as never,
         } as never)
         .then((response) => {
+          clearWatchdogTimer()
           onActivity?.()
+          if (watchdogFired) {
+            console.warn(
+              `[acp] session ${sessionId}: connection.prompt() resolved after the ` +
+                `turn-idle watchdog already synthesized a turn-end — ignoring late response.`,
+            )
+            return
+          }
           enqueue(state, {
             kind: "turn-end",
             sessionId,
@@ -320,6 +395,15 @@ function buildSession(
           })
         })
         .catch((err: unknown) => {
+          clearWatchdogTimer()
+          if (watchdogFired) {
+            console.warn(
+              `[acp] session ${sessionId}: connection.prompt() rejected after the ` +
+                `turn-idle watchdog already synthesized a turn-end — ignoring late error:`,
+              err instanceof Error ? err.message : err,
+            )
+            return
+          }
           const message =
             err instanceof Error ? err.message : String(err)
           enqueue(state, {
@@ -331,6 +415,8 @@ function buildSession(
         .finally(() => {
           state.active = false
           state.done = true
+          state.resetWatchdogTimer = undefined
+          clearWatchdogTimer()
           flush(state)
         })
 
@@ -416,6 +502,11 @@ function buildClientHandlers(
       if (!sid) return
       const state = sessions.get(sid)
       if (!state) return
+
+      // Reset this session's in-flight turn watchdog (if any) — an
+      // incoming notification is exactly the "not silent" signal the
+      // watchdog exists to detect the absence of.
+      state.resetWatchdogTimer?.()
 
       const update = (params as { update?: Record<string, unknown> }).update
       if (!update) return

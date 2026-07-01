@@ -201,6 +201,11 @@ const authSchema = z.object({
 const sessionSchema = z.object({
   mode: z.enum(["ephemeral", "persistent", "resumable"]).default("ephemeral"),
   idle_timeout_ms: z.number().int().min(1000).default(600_000),
+  // No default: undefined disables the per-turn watchdog entirely. Only
+  // adapters known to sometimes drop the final `prompt` response (e.g.
+  // hermes) should declare this — applying it broadly would risk
+  // false-positiving on another adapter's legitimately long turns.
+  turn_idle_timeout_ms: z.number().int().min(1000).optional(),
   max_turns: z.number().int().positive().optional(),
   context_carryover: z.boolean().default(true),
 }).strict()

@@ -95,3 +95,41 @@ describe("createAgentCliRuntime(...).start() — pid + onActivity threading", ()
     expect(capturedConnectOpts?.onActivity).toBeUndefined()
   })
 })
+
+describe("createAgentCliRuntime(...).start() — turnIdleTimeoutMs threading", () => {
+  beforeEach(() => {
+    capturedConnectOpts = undefined
+  })
+
+  it("forwards start()'s turnIdleTimeoutMs through to protocolArm.connect()", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    await runtime.start({ cwd: "/tmp", turnIdleTimeoutMs: 45_000 })
+    expect(capturedConnectOpts?.turnIdleTimeoutMs).toBe(45_000)
+  })
+
+  it("omits turnIdleTimeoutMs from connect() when neither start() nor the manifest declare one", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    await runtime.start({ cwd: "/tmp" })
+    expect(capturedConnectOpts?.turnIdleTimeoutMs).toBeUndefined()
+  })
+
+  it("falls back to the manifest's session.turn_idle_timeout_ms when start() doesn't override it", async () => {
+    const defWithManifestDefault: AgentCliDefinition = {
+      ...minimalDef,
+      session: { turn_idle_timeout_ms: 300_000 },
+    } as AgentCliDefinition
+    const runtime = createAgentCliRuntime(defWithManifestDefault)
+    await runtime.start({ cwd: "/tmp" })
+    expect(capturedConnectOpts?.turnIdleTimeoutMs).toBe(300_000)
+  })
+
+  it("lets a caller-supplied turnIdleTimeoutMs override the manifest default", async () => {
+    const defWithManifestDefault: AgentCliDefinition = {
+      ...minimalDef,
+      session: { turn_idle_timeout_ms: 300_000 },
+    } as AgentCliDefinition
+    const runtime = createAgentCliRuntime(defWithManifestDefault)
+    await runtime.start({ cwd: "/tmp", turnIdleTimeoutMs: 10_000 })
+    expect(capturedConnectOpts?.turnIdleTimeoutMs).toBe(10_000)
+  })
+})

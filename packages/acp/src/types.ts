@@ -113,5 +113,16 @@ export type StreamEvent =
   | { kind: "tool-result"; sessionId: string; toolCallId: string; result: unknown; isError?: boolean }
   | { kind: "thought"; sessionId: string; text: string }
   | { kind: "agent-prompt"; sessionId: string; toolCallId: string; options: unknown }
-  | { kind: "turn-end"; sessionId: string; reason: "completed" | "cancelled" | "max_turns" | "error" }
+  | {
+      kind: "turn-end"
+      sessionId: string
+      /**
+       * `"watchdog-timeout"` is synthesized client-side (never sent by the
+       * agent) when `AcpClientOptions.turnIdleTimeoutMs` elapses with no
+       * activity signal during a turn and the underlying `prompt()` call
+       * still hasn't resolved — distinguishes an inferred completion from
+       * a real one so callers that care can tell the difference.
+       */
+      reason: "completed" | "cancelled" | "max_turns" | "error" | "watchdog-timeout"
+    }
   | { kind: "error"; sessionId?: string; error: { code?: number; message: string; data?: unknown } }
