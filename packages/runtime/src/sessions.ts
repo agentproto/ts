@@ -25,7 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
-import type { SessionEventBus } from "./session-event-bus.js"
+import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import { dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -76,6 +76,39 @@ export interface AgentStreamEvent {
   isError?: boolean
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
+  /** Structured options offered by an "agent-prompt" event (e.g. an ACP
+   *  `requestPermission` callback surfaced as a clarifying question rather
+   *  than auto-answered). Typed `unknown` — like `@agentproto/acp`'s own
+   *  `StreamEvent["options"]` — so this structural type stays assignable
+   *  from any driver's runtime session without a hard dependency on its
+   *  exact option shape (`{optionId,name,kind}` for ACP, or whatever a
+   *  future driver reports); `normalizeAgentPromptOptions` narrows it
+   *  defensively at the one place it's consumed. */
+  options?: unknown
+}
+
+/**
+ * Defensively narrow an "agent-prompt" event's `options` (typed `unknown`
+ * — see `AgentStreamEvent.options`) into a flat label list. Accepts plain
+ * strings, or objects exposing `label`/`name`/`id`/`optionId` (covers both
+ * a hypothetical `{id,label}` shape and ACP's actual `{optionId,name,kind}`
+ * `requestPermission` options) without assuming either driver-specific
+ * shape at the type level.
+ */
+function normalizeAgentPromptOptions(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const labels = raw
+    .map(o => {
+      if (typeof o === "string") return o
+      if (o && typeof o === "object") {
+        const r = o as Record<string, unknown>
+        const label = r.label ?? r.name ?? r.id ?? r.optionId
+        if (typeof label === "string") return label
+      }
+      return undefined
+    })
+    .filter((s): s is string => typeof s === "string")
+  return labels.length > 0 ? labels : undefined
 }
 
 export const SESSIONS_FILE_PATH = (): string =>
@@ -164,6 +197,17 @@ export interface SessionDescriptor {
    *  "awaiting-input" turn-end. Cleared on the next turn start.
    *  Used by `session_monitor` to fast-return without subscribing. */
   awaitingInput?: boolean
+  /**
+   * Structured detail on WHY the session is awaiting input, when it can be
+   * determined — lets an orchestrator distinguish "blocked on a real
+   * question" from "just finished a turn" without re-reading raw output.
+   * `source: "structured"` comes from a driver-reported ACP-style prompt
+   * (`AgentStreamEvent.options`, e.g. a tool permission request);
+   * `source: "heuristic"` is a best-effort guess from the tail of the
+   * transcript (trailing "?" + an optional enumerated option list) for
+   * drivers that don't report structured prompts. Cleared alongside
+   * `awaitingInput` on the next turn start. */
+  awaitingQuestion?: SessionAwaitingQuestion
   /** Count of turns that have fully completed (turn-end emitted) on this
    *  session. Lets `session_monitor` fast-return for a session that already
    *  finished its turn before the wait subscribed — a fast turn that ends
@@ -276,6 +320,46 @@ const HISTORY_CAP = 200
  *  don't need byte-perfect parsing here. */
 function stripAnsiCodes(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
+/** Lines the ring buffer itself injects (turn separators, [tool] /
+ *  [thought] / [awaiting input] markers) — never real transcript content,
+ *  so the heuristic below skips them when looking for a trailing question. */
+const SYNTHETIC_LINE = /^(?:──|\[)/
+
+const OPTION_LINE_PATTERN = /^(?:[-*•]|\d+[.)]|[a-zA-Z][.)])\s+(.+)$/
+
+/** Best-effort fallback for drivers that never report a structured
+ *  "agent-prompt" (i.e. every currently-supported adapter — none emits
+ *  ACP's `requestPermission` as a surfaced clarifying question today, they
+ *  auto-answer it). A clarifying question's shape in a transcript is the
+ *  question line followed by its enumerated options ("1. yes", "- retry",
+ *  "a) skip", ...), so this scans backwards from the end of the transcript
+ *  collecting a trailing run of option-shaped lines, then checks whether
+ *  the line just before that run ends in "?". Always tagged
+ *  `source: "heuristic"` so callers know this is a guess, not an
+ *  authoritative signal. */
+function deriveHeuristicQuestion(
+  recentLines: string[],
+): SessionAwaitingQuestion | undefined {
+  const visible = recentLines
+    .map(stripAnsiCodes)
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !SYNTHETIC_LINE.test(l))
+  if (visible.length === 0) return undefined
+
+  const options: string[] = []
+  let i = visible.length - 1
+  while (i >= 0 && options.length < 6) {
+    const m = OPTION_LINE_PATTERN.exec(visible[i]!)
+    if (!m) break
+    options.unshift(m[1]!.trim())
+    i--
+  }
+  if (i < 0) return undefined
+  const candidate = visible[i]!
+  if (!candidate.endsWith("?")) return undefined
+  return { text: candidate, ...(options.length > 0 ? { options } : {}), source: "heuristic" }
 }
 
 export interface SessionsRegistry {
@@ -749,10 +833,19 @@ export function createSessionsRegistry(opts?: {
         if (evt.isError)
           appendLine(rt, `\x1b[31m[tool-error]\x1b[0m`, "stderr")
         break
-      case "agent-prompt":
+      case "agent-prompt": {
         rt.desc.awaitingInput = true
+        const options = normalizeAgentPromptOptions(evt.options)
+        if (options) {
+          rt.desc.awaitingQuestion = {
+            text: evt.text ?? (evt.toolName ? `Allow "${evt.toolName}"?` : "Agent is requesting input."),
+            options,
+            source: "structured",
+          }
+        }
         appendLine(rt, `\x1b[33m[awaiting input]\x1b[0m`, "stdout")
         break
+      }
       case "turn-end": {
         if (evt.reason === "awaiting-input") rt.desc.awaitingInput = true
         // Flush any buffered text/thought fragments as final lines.
@@ -911,6 +1004,7 @@ export function createSessionsRegistry(opts?: {
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
+    rt.desc.awaitingQuestion = undefined
     let turnCompleted = false
     try {
       appendLine(
@@ -974,6 +1068,15 @@ export function createSessionsRegistry(opts?: {
           void rt.agentSession?.close().catch(() => undefined)
         }
 
+        // No driver reports a structured "agent-prompt" today (every
+        // currently-supported adapter auto-answers ACP permission
+        // requests rather than surfacing them) — fall back to a
+        // best-effort scan of the transcript tail so awaiting-input still
+        // carries SOME signal beyond a bare boolean.
+        if (rt.desc.awaitingInput && !rt.desc.awaitingQuestion) {
+          rt.desc.awaitingQuestion = deriveHeuristicQuestion(rt.recentLines)
+        }
+
         const ts = new Date().toISOString()
         sessionEvents.emit({
           type: "session:turn-end",
@@ -981,6 +1084,7 @@ export function createSessionsRegistry(opts?: {
           awaitingInput: rt.desc.awaitingInput ?? false,
           label: rt.desc.label,
           ts,
+          ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
         })
         if (rt.desc.awaitingInput) {
           sessionEvents.emit({
@@ -988,6 +1092,7 @@ export function createSessionsRegistry(opts?: {
             sessionId: rt.desc.id,
             label: rt.desc.label,
             ts,
+            ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
           })
         }
         if (overBudget) emitExited(rt)

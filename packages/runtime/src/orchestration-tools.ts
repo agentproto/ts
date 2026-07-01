@@ -14,6 +14,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
+import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
@@ -51,6 +52,7 @@ export interface RegisterOrchestrationToolsOptions {
   sessionEvents: SessionEventBus
   eventRing: EventRing
   routineRunner?: RoutineRunner
+  workflowRunner?: WorkflowRunner
   supervisor?: CompletionPolicySupervisor
   /** When wired, exposes start/stop/list_inbound_watcher tools. */
   inboundWatcher?: InboundWatcher
@@ -253,6 +255,132 @@ export function registerOrchestrationTools(
       {},
       async () => {
         const runs = routineRunner.list()
+        return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
+      },
+    )
+  }
+
+  // ── Workflow tools (optional — only registered when workflowRunner is provided) ─
+  // Sibling primitive to routine_*: a workflow is an ordered list of STAGES,
+  // each stage a group of steps that run in parallel with an explicit
+  // barrier before the next stage starts (routine_* stays a flat sequential
+  // list with per-step waitFor fan-in — see PLAN.md "Design decision").
+  const { workflowRunner } = opts
+  if (workflowRunner) {
+    const workflowStepSchema = z.object({
+      label: z.string(),
+      adapter: z.string().optional().describe("Agent adapter slug to spawn a NEW session for this step."),
+      prompt: z.string().optional().describe("Prompt to send after spawning/reusing a session."),
+      sessionRef: z
+        .string()
+        .optional()
+        .describe(
+          "Reuse the session spawned by an earlier step (any prior stage), by that step's `label`. " +
+            "Ignored if `adapter` is set. Lets a later-stage step act on an earlier stage's output " +
+            "(e.g. a 'verify' step reusing a 'produce' step's session).",
+        ),
+      policy: z
+        .discriminatedUnion("awaiting", [
+          z.object({ awaiting: z.literal("auto-allow"), prompt: z.string() }),
+          z.object({
+            awaiting: z.literal("escalate"),
+            webhookUrl: z.string().url().optional(),
+            timeoutMs: z.number().int().positive().optional(),
+          }),
+          z.object({ awaiting: z.literal("fail") }),
+        ])
+        .optional()
+        .describe("What to do when this step's session asks for input mid-stage."),
+    })
+
+    server.tool(
+      "workflow_start",
+      "Start a workflow — an ordered list of STAGES, each stage a group of steps " +
+        "that spawn/reuse agent sessions and run CONCURRENTLY. An explicit barrier " +
+        "gates entry into the next stage: stage N+1 does not start until every step " +
+        "of stage N has finished (or failed). This is the `parallel()` half of a " +
+        "harness-style workflow primitive — for a flat sequential list with fan-in, " +
+        "use `routine_start` instead. Returns a runId immediately; the workflow " +
+        "executes in the background. Poll with `workflow_status`.",
+      {
+        workflowId: z.string().describe("Arbitrary label for this workflow type (e.g. 'review-then-fix')."),
+        stages: z
+          .array(
+            z.object({
+              label: z.string().optional().describe("Optional label for this stage."),
+              steps: z.array(workflowStepSchema).min(1).describe("Steps in this stage — all run in parallel."),
+            }),
+          )
+          .min(1)
+          .max(20)
+          .describe("Ordered list of stages. Each stage's steps run concurrently; stages run sequentially."),
+        workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
+        cwd: z.string().optional().describe("Working directory for spawned sessions."),
+        notifyUrl: z.string().url().optional().describe("Webhook URL to call on run completion or escalation."),
+      },
+      async input => {
+        const run = await workflowRunner.start(input)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+        }
+      },
+    )
+
+    server.tool(
+      "workflow_status",
+      "Poll the status of a background workflow run started with `workflow_start`. " +
+        "Each stage reports its steps' status/sessionId so later work can inspect " +
+        "what an earlier stage produced (e.g. via `agent_output` on that sessionId).",
+      {
+        runId: z.string().describe("Run id returned by `workflow_start`."),
+      },
+      async input => {
+        const run = workflowRunner.status(input.runId)
+        if (!run) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
+          }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_cancel",
+      "Cancel a running workflow. Steps already in flight will finish, but no " +
+        "new stages will be started.",
+      {
+        runId: z.string().describe("Run id to cancel."),
+      },
+      async input => {
+        workflowRunner.cancel(input.runId)
+        const run = workflowRunner.status(input.runId)
+        return { content: [{ type: "text", text: JSON.stringify({ runId: input.runId, status: run?.status ?? "not_found" }) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_escalation_resolve",
+      "Provide an external answer to a workflow step that escalated because a " +
+        "session asked for human input (policy=escalate).",
+      {
+        runId: z.string().describe("Run id."),
+        stageIndex: z.number().int().min(0).describe("Stage index containing the escalated step (0-based)."),
+        stepIndex: z.number().int().min(0).describe("Step index within the stage to resolve (0-based)."),
+        response: z.string().describe("The answer to inject into the awaiting session."),
+      },
+      async input => {
+        workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_list",
+      "List all workflow runs (running, done, failed, cancelled).",
+      {},
+      async () => {
+        const runs = workflowRunner.list()
         return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
       },
     )
@@ -483,7 +611,10 @@ export function registerOrchestrationTools(
 
     server.tool(
       "policy_status",
-      "Get the current status of a completion policy attached with `policy_attach`.",
+      "Get the current status of a completion policy attached with `policy_attach`. " +
+        "Includes `awaitingQuestions` for any watched session currently blocked on " +
+        "input, so a caller can distinguish \"still legitimately running\" from " +
+        "\"stuck, needs a human/orchestrator answer\" without a separate call.",
       {
         policyId: z.string().describe("Policy id returned by `policy_attach`."),
       },
@@ -507,7 +638,25 @@ export function registerOrchestrationTools(
             }
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] }
+        // Read-only enrichment: cross-reference the watched sessions' live
+        // awaitingQuestion (set by sessions.ts, structured or heuristic) —
+        // does not touch the policy state machine itself.
+        const awaitingQuestions = state.sessionIds
+          .map(id => ({ sessionId: id, desc: registry.get(id) }))
+          .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+          .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                awaitingQuestions.length > 0 ? { ...state, awaitingQuestions } : state,
+                null,
+                2,
+              ),
+            },
+          ],
+        }
       },
     )
 
@@ -670,6 +819,10 @@ export function registerOrchestrationTools(
                 : new Set(["session:exited"])
         for (const ev of ringResult.events) {
           if (!matchTypes.has(ev.type)) continue
+          const question =
+            (ev.type === "session:turn-end" || ev.type === "session:awaiting-input")
+              ? ev.question
+              : undefined
           return {
             content: [
               {
@@ -679,6 +832,7 @@ export function registerOrchestrationTools(
                   event: ev.type.replace("session:", ""),
                   source: "ring",
                   since: input.since,
+                  ...(question ? { question } : {}),
                 }),
               },
             ],
@@ -703,6 +857,7 @@ export function registerOrchestrationTools(
                   event: "awaiting-input",
                   awaitingInput: true,
                   status: desc.status,
+                  ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
                 }),
               },
             ],
@@ -791,6 +946,7 @@ export function registerOrchestrationTools(
                 event: ev.type.replace("session:", ""),
                 awaitingInput: desc?.awaitingInput ?? false,
                 status: desc?.status ?? "unknown",
+                ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
               })
             }),
           )
