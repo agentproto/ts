@@ -421,6 +421,7 @@ export async function createGateway(
             cwd,
             resumeSessionId,
             mcpServers,
+            onActivity,
           }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
             if (!adapter) return null
@@ -432,6 +433,7 @@ export async function createGateway(
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
                 ...(mcpServers ? { mcpServers } : {}),
+                ...(onActivity ? { onActivity } : {}),
               })
             } catch (err) {
               console.warn(

@@ -161,6 +161,7 @@ export function createAgentCliRuntime(
         ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
         ...(configModel ? { model: configModel } : {}),
         ...(optEffort ? { effort: String(optEffort) } : {}),
+        ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
       })
 
       // "command" model strategy: switch the model via a drained `/model
@@ -178,6 +179,7 @@ export function createAgentCliRuntime(
 
       return {
         sessionId,
+        pid: child.pid,
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           return promptTurn(arm, turnId, message)

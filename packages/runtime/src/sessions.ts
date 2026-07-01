@@ -38,6 +38,12 @@ import { randomUUID } from "node:crypto"
  */
 export interface AgentSessionLike {
   sessionId: string
+  /** OS-level process id of the spawned child, when the driver owns a
+   *  real subprocess. Mirrored onto `SessionDescriptor.pid` at
+   *  `spawnAgent` time so `processAlive` can be computed without
+   *  adapter-specific forensics. Undefined for drivers that don't
+   *  expose a process (e.g. a future non-subprocess transport). */
+  pid?: number
   send(message: unknown): AsyncIterable<AgentStreamEvent>
   cancel(): Promise<void>
   close(): Promise<void>
@@ -137,6 +143,19 @@ export interface SessionDescriptor {
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
+  /** Last time ANY adapter-process activity was observed — ACP
+   *  JSON-RPC traffic, protocol-level events, not just ring-buffer
+   *  output lines. Stays current during long tool-call chains where
+   *  `lastOutputAt` goes stale. Updated on incoming session/update
+   *  notifications AND on outbound RPC calls. ISO 8601. */
+  lastActivityAt?: string
+  /** Whether the underlying OS process is still alive. Computed via
+   *  `process.kill(pid, 0)` at read time (list()/get()) — cheap,
+   *  zero-overhead, standard POSIX check. Absent when `pid` is null
+   *  (no process to check). Never persisted — recomputed fresh on
+   *  every read since it's a live OS query, stale the instant it's
+   *  written to disk. */
+  processAlive?: boolean
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -315,6 +334,26 @@ const PERSIST_DEBOUNCE_MS = 1_500
  *  to render. */
 const HISTORY_CAP = 200
 
+/** Compute `desc.processAlive` from `desc.pid` via the standard POSIX
+ *  "signal 0" check — `process.kill(pid, 0)` throws `ESRCH` (or
+ *  `EPERM`, treated as "exists but not ours") when the process is
+ *  dead, and is a no-op (no actual signal delivered) when it succeeds.
+ *  Mutates `desc` in place; called at read time (list()/get()) rather
+ *  than persisted, since it's a live OS query that goes stale the
+ *  instant it's written to disk. */
+function stampProcessAlive(desc: SessionDescriptor): void {
+  if (desc.pid === null || desc.pid === undefined) {
+    delete desc.processAlive
+    return
+  }
+  try {
+    process.kill(desc.pid, 0)
+    desc.processAlive = true
+  } catch {
+    desc.processAlive = false
+  }
+}
+
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
  *  on dim/coloured output. Liberal regex covering most cases — we
  *  don't need byte-perfect parsing here. */
@@ -402,6 +441,13 @@ export interface SessionsRegistry {
    *  subscribers see them. Used by the web UI's chat input where a
    *  long turn would otherwise freeze the textbox. */
   enqueuePrompt(id: string, message: unknown): void
+  /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
+   *  and schedule a debounced persist. Called from the `onActivity`
+   *  callback threaded down through the driver → ACP client, which
+   *  fires on ANY adapter-process traffic (not just ring-buffer
+   *  output) — see `SessionDescriptor.lastActivityAt`. No-op when the
+   *  id is unknown (session already forgotten). */
+  pulseActivity(id: string): void
   list(): SessionDescriptor[]
   get(id: string): SessionDescriptor | undefined
   /** Subscribe to a session's output. Returns an unsubscribe fn.
@@ -595,6 +641,10 @@ export type AgentSessionResumer = (input: {
    *  same host-chosen toolset it had on the initial spawn (orchestrator
    *  WP1). Omitted for legacy rows spawned before this was persisted. */
   mcpServers?: AcpMcpServer[]
+  /** Forwarded to the re-spawned adapter's `startSession({ onActivity })`
+   *  so the resumed session keeps pulsing `lastActivityAt` the same way
+   *  the original spawn did. */
+  onActivity?: () => void
 }) => Promise<AgentSessionLike | null>
 
 export function createSessionsRegistry(opts?: {
@@ -691,7 +741,14 @@ export function createSessionsRegistry(opts?: {
     try {
       const snapshot = {
         savedAt: new Date().toISOString(),
-        sessions: Array.from(sessions.values()).map(s => s.desc),
+        // `processAlive` is a live OS query (see stampProcessAlive) —
+        // strip it before writing so a restored descriptor is never
+        // seen with a stale value before the next list()/get() call
+        // recomputes it fresh.
+        sessions: Array.from(sessions.values()).map(s => {
+          const { processAlive: _processAlive, ...rest } = s.desc
+          return rest
+        }),
       }
       await fs.mkdir(dirname(persistPath), { recursive: true })
       await fs.writeFile(persistPath, JSON.stringify(snapshot, null, 2) + "\n")
@@ -963,6 +1020,12 @@ export function createSessionsRegistry(opts?: {
           resumeSessionId: adapterSessionId,
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
+          // Keep pulsing lastActivityAt across a resume the same way the
+          // original spawn did.
+          onActivity: () => {
+            rt.desc.lastActivityAt = new Date().toISOString()
+            schedulePersist()
+          },
         })
         if (!fresh) {
           appendLine(
@@ -975,6 +1038,10 @@ export function createSessionsRegistry(opts?: {
         rt.agentSession = fresh
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
+        // The resumed session is a fresh child process — refresh pid so
+        // `processAlive` reflects the new process, not the dead one that
+        // triggered this resume.
+        rt.desc.pid = fresh.pid ?? null
         if (rt.desc.status !== "running") {
           rt.desc.status = "running"
           delete rt.desc.endedAt
@@ -1255,7 +1322,7 @@ export function createSessionsRegistry(opts?: {
         kind: "agent-cli",
         workspaceSlug: input.workspaceSlug,
         command: input.commandPreview ?? `${input.adapterSlug} (agent)`,
-        pid: null,
+        pid: input.agentSession.pid ?? null,
         status: "running", // driver already started the session
         startedAt: new Date().toISOString(),
         cwd: input.cwd,
@@ -1501,13 +1568,25 @@ export function createSessionsRegistry(opts?: {
         }
       })()
     },
+    pulseActivity(id) {
+      const rt = sessions.get(id)
+      if (!rt) return
+      rt.desc.lastActivityAt = new Date().toISOString()
+      schedulePersist()
+    },
     list() {
       return Array.from(sessions.values())
         .map(s => s.desc)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .map(desc => {
+          stampProcessAlive(desc)
+          return desc
+        })
     },
     get(id) {
-      return sessions.get(id)?.desc
+      const desc = sessions.get(id)?.desc
+      if (desc) stampProcessAlive(desc)
+      return desc
     },
     attach(id, onLine) {
       const rt = sessions.get(id)
@@ -1698,7 +1777,12 @@ export function createSessionsRegistry(opts?: {
       try {
         const snapshot = {
           savedAt: nowIso,
-          sessions: Array.from(sessions.values()).map(s => s.desc),
+          // Strip processAlive — see the matching comment in
+          // persistSnapshot(), same live-OS-query rationale applies here.
+          sessions: Array.from(sessions.values()).map(s => {
+            const { processAlive: _processAlive, ...rest } = s.desc
+            return rest
+          }),
         }
         mkdirSync(dirname(persistPath), { recursive: true })
         writeFileSync(persistPath, JSON.stringify(snapshot, null, 2) + "\n")

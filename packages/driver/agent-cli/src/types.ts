@@ -438,6 +438,18 @@ export interface AgentCliConnectOptions {
    * `session/set_config_option` with `configId:"effort"` on ACP arms.
    */
   effort?: string
+  /**
+   * Called on ANY adapter-process activity observed by the protocol
+   * arm — incoming ACP `session/update` notifications (even ones that
+   * don't translate into a `StreamEvent`) and outbound RPC calls
+   * (`newSession`/`loadSession`/`prompt`/`cancel`/`setSessionConfigOption`).
+   * Distinct from ring-buffer output: fires during long internal
+   * tool-call chains where no `StreamEvent` reaches the host, so a
+   * supervisor can tell "still working" apart from "gone quiet."
+   * Arms that don't model a stdio JSON-RPC channel (proprietary
+   * one-shots) MAY ignore this field.
+   */
+  onActivity?: () => void
 }
 
 /**
@@ -513,6 +525,15 @@ export interface AgentCliStartOptions {
    * (e.g. the daemon's orchestration gateway) at spawn time.
    */
   mcpServers?: AcpMcpServer[]
+  /**
+   * Called on any adapter-process activity (ACP JSON-RPC traffic in
+   * either direction). Forwarded verbatim to
+   * `protocolArm.connect({ onActivity })` — see
+   * {@link AgentCliConnectOptions.onActivity} for the full contract.
+   * Lets a host track session liveness independent of ring-buffer
+   * output, e.g. during a long internal tool-call chain.
+   */
+  onActivity?: () => void
 }
 
 /**
@@ -546,6 +567,15 @@ export interface TurnContext {
 
 export interface AgentCliRuntimeSession {
   readonly sessionId: string
+  /**
+   * OS-level process id of the spawned child, when the runtime owns a
+   * real subprocess (every current arm — ACP, print — does). Lets a
+   * host compute a cheap `processAlive` liveness check
+   * (`process.kill(pid, 0)`) without adapter-specific forensics.
+   * Undefined for a future arm with no owned process (e.g. a
+   * WebSocket transport).
+   */
+  readonly pid?: number
   send(message: unknown): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
   close(): Promise<void>
