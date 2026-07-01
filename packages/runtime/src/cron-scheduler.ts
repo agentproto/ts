@@ -220,8 +220,10 @@ export function createCronScheduler(opts: {
     try {
       const inst = parseCron(state.job.schedule)
       state.cronInstance = inst
-      // If the stored nextRunAt is in the past (daemon was down), don't backfill.
-      // Recurring: resume from now. One-shot: fire on the next tick.
+      // If the stored nextRunAt is in the past (daemon was down), recompute
+      // from the cron schedule — this gives the next scheduled occurrence
+      // *after now*, not an immediate fire. Skipped executions during
+      // downtime are intentionally not backfilled (documented behaviour).
       const storedNext = state.job.nextRunAt ? new Date(state.job.nextRunAt) : null
       if (!storedNext || storedNext <= new Date()) {
         const next = nextFireDate(inst)

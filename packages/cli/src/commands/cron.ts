@@ -14,13 +14,12 @@
  */
 
 import { parseArgs } from "node:util"
-import http from "node:http"
-import https from "node:https"
 import {
   discoverDaemon,
   printNoDaemonError,
   httpPostJson,
   httpGetJson,
+  httpDelete,
 } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto cron — manage durable cron jobs on the daemon
@@ -335,34 +334,4 @@ async function runCronRun(args: readonly string[]): Promise<number> {
     `${ok ? "\u2713" : "\u2717"} Job ${String(result["jobId"])} fired. Result: ${String(summary)}\n`,
   )
   return 0
-}
-
-// ── DELETE helper (mirrors tunnel.ts) ──────────────────────────────
-
-function httpDelete<T>(url: string, token?: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {}
-    if (token) headers["authorization"] = `Bearer ${token}`
-    const req = lib.request(u, { method: "DELETE", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", (c: string) => { raw += c })
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(raw ? (JSON.parse(raw) as T) : ({} as T))
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.end()
-  })
 }

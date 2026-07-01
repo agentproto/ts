@@ -263,3 +263,31 @@ export function humaniseDelta(ms: number): string {
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
   return `${Math.floor(ms / 86_400_000)}d`
 }
+
+export function httpDelete<T>(url: string, token?: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const lib = u.protocol === "https:" ? https : http
+    const headers: Record<string, string> = {}
+    if (token) headers.authorization = `Bearer ${token}`
+    const req = lib.request(u, { method: "DELETE", headers }, res => {
+      let raw = ""
+      res.setEncoding("utf8")
+      res.on("data", (c: string) => { raw += c })
+      res.on("end", () => {
+        const status = res.statusCode ?? 0
+        if (status < 200 || status >= 300) {
+          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
+          return
+        }
+        try {
+          resolve(raw ? (JSON.parse(raw) as T) : ({} as T))
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+    })
+    req.on("error", reject)
+    req.end()
+  })
+}
