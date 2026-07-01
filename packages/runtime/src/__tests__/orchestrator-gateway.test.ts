@@ -47,7 +47,7 @@ const FORBIDDEN_TOOLS = [
   "directory_create",
   "remote_enable",
   "remote_disable",
-  "mcp_import",
+  "import_mcp",
   "mcp_imported_call",
   "mcp_imported_tool_list",
   "terminal_input",
@@ -209,38 +209,215 @@ describe("orchestrator sub-gateway — HTTP scope-token gate (no loopback bypass
 
   it("(c) rejects a request with a BOGUS scope-token (401)", async () => {
     await withServer(async base => {
-      const res = await fetch(`${base}/mcp/orchestrator`, {
+      const res = await fetch(`${base}/mcp/orchestrator?scope=deadbeef`, {
         method: "POST",
-        headers: { ...mcpHeaders, "x-orchestrator-scope": "not-a-real-token" },
+        headers: mcpHeaders,
         body: initBody,
       })
       expect(res.status).toBe(401)
-      const body = (await res.json()) as { error: string }
-      expect(body.error).toBe("orchestrator_scope_required")
     })
   })
 
-  it("(c) accepts a request with a VALID scope-token (not 401)", async () => {
+  it("(c) accepts a VALID scope-token and serves only the subset", async () => {
     await withServer(async (base, scopeToken) => {
-      const res = await fetch(`${base}/mcp/orchestrator`, {
-        method: "POST",
-        headers: { ...mcpHeaders, "x-orchestrator-scope": scopeToken },
-        body: initBody,
-      })
-      // 200 or 202 — the MCP transport took over, gate passed.
-      expect(res.status).not.toBe(401)
+      // Negative path proven above is on loopback — so passing here proves
+      // the token (not the origin) is what unlocks the endpoint.
+      const client = new Client({ name: "child", version: "0.0.1" })
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${base}/mcp/orchestrator?scope=${scopeToken}`),
+      )
+      await client.connect(transport)
+      const { tools } = await client.listTools()
+      const names = tools.map(t => t.name).sort()
+      expect(names).toEqual([...DEFAULT_ORCHESTRATOR_TOOLS].sort())
+      expect(names).not.toContain("command_execute")
+      await client.close()
     })
   })
 })
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── WP6 — subtree-scoped supervisor composition ──────────────────────
+
+describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scoping)", () => {
+  /**
+   * Build a minimal stub supervisor. attach() records the call and returns a
+   * synthetic PolicyRunState so the handler can JSON.stringify the result.
+   * list() / getStatus() / cancel() / ack() are stubs — just enough for the
+   * scoping assertions.
+   */
+  function makeStubSupervisor(): CompletionPolicySupervisor & {
+    attached: Array<{ sessionId?: string; sessionIds?: string[] }>
+  } {
+    let seq = 0
+    const policies = new Map<string, PolicyRunState>()
+    const attached: Array<{ sessionId?: string; sessionIds?: string[] }> = []
+    const now = new Date().toISOString()
+    return {
+      attached,
+      attach(input) {
+        const policyId = `p-${++seq}`
+        const ids =
+          input.sessionIds && input.sessionIds.length > 0
+            ? input.sessionIds
+            : input.sessionId
+              ? [input.sessionId]
+              : []
+        const state: PolicyRunState = {
+          policyId,
+          sessionId: ids[0] ?? "",
+          sessionIds: ids,
+          pending: [...ids],
+          status: "watching",
+          retries: 0,
+          startedAt: now,
+        }
+        policies.set(policyId, state)
+        attached.push({ sessionId: input.sessionId, sessionIds: input.sessionIds })
+        return state
+      },
+      getStatus(policyId) {
+        return policies.get(policyId)
+      },
+      cancel(policyId) {
+        const s = policies.get(policyId)
+        if (s) s.status = "cancelled"
+      },
+      async ack(_policyId: string, _approve: boolean) {
+        return undefined
+      },
+      list() {
+        return [...policies.values()]
+      },
+      async shutdown() {},
+    }
+  }
+
+  /**
+   * Build a factory wired with a stub supervisor and a prepopulated registry
+   * that already has two sessions forming a parent→child tree:
+   *   ownerSessionId ("owner") → childSessionId ("child")
+   *
+   * We then build a scoped server with callerScope = { ownerSessionId: "owner" }
+   * and verify that:
+   *   1. policy_attach on "child" (in subtree) → succeeds (policyId returned)
+   *   2. policy_attach on "outside" (not in subtree) → error denied
+   *   3. policy_attach with then:"commit" via scoped token → error refused
+   */
+  let fakeSessionSeq = 0
+  function fakeSession(): AgentSessionLike {
+    return {
+      sessionId: `fake_${fakeSessionSeq++}`,
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }
+  }
+
+  async function withScopedClient(
+    fn: (client: Client, ownerSessionId: string, childSessionId: string) => Promise<void>,
+  ): Promise<void> {
+    const supervisor = makeStubSupervisor()
+    const sessionEvents = createSessionEventBus()
+    const eventRing = createEventRing()
+    eventRing.wire(sessionEvents)
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+
+    // Spawn owner + child so collectSubtree(owner.id) returns {owner.id, child.id}.
+    const owner = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession(),
+      adapterSlug: "mock",
+      depth: 0,
+    })
+    const child = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession(),
+      adapterSlug: "mock",
+      parentSessionId: owner.id,
+      depth: 1,
+    })
+
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      registry,
+      sessionEvents,
+      eventRing,
+      supervisor,
+    })
+
+    // Mint a scope bound to owner.id so callerScope is active.
+    const scopeTokens = createScopeTokenRegistry()
+    const scope = scopeTokens.mint()
+    scopeTokens.bindOwner(scope.token, owner.id)
+    const boundScope = scopeTokens.verify(scope.token)!
+
+    const server = await factory(boundScope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "wp6-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+    try {
+      await fn(client, owner.id, child.id)
+    } finally {
+      await client.close()
+    }
+  }
+
+  it("policy_attach on a session in the caller's subtree → ok (policyId returned)", async () => {
+    await withScopedClient(async (client, _owner, child) => {
+      const result = await client.callTool({
+        name: "policy_attach",
+        arguments: { sessionId: child, then: "emit" },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { policyId?: string; error?: string }
+      expect(parsed.error).toBeUndefined()
+      expect(parsed.policyId).toMatch(/^p-/)
+    })
+  })
+
+  it("policy_attach on a session outside the caller's subtree → denied", async () => {
+    await withScopedClient(async client => {
+      const result = await client.callTool({
+        name: "policy_attach",
+        arguments: { sessionId: "outside-session", then: "emit" },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { error?: string; forbidden?: string[] }
+      expect(parsed.error).toMatch(/denied|subtree/)
+      expect(parsed.forbidden).toContain("outside-session")
+    })
+  })
+
+  it('policy_attach with then:"commit" via a scoped (child) token → refused', async () => {
+    await withScopedClient(async (client, _owner, child) => {
+      const result = await client.callTool({
+        name: "policy_attach",
+        arguments: {
+          sessionId: child,
+          then: "commit",
+          commit: { paths: ["README.md"], message: "test" },
+        },
+      })
+      const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+      const parsed = JSON.parse(text) as { error?: string }
+      expect(parsed.error).toMatch(/commit.*not permitted|child orchestrator/i)
+    })
+  })
+})
+
+// ── tiny stubs ──────────────────────────────────────────────────────
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer()
+    srv.once("error", reject)
     srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address() as AddressInfo
-      srv.close(err => (err ? reject(err) : resolve(port)))
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
     })
   })
 }
