@@ -129,6 +129,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  a host-chosen scoped toolset (e.g. the daemon's own orchestration
      *  gateway). Adapters that don't model MCP mounting ignore it. */
     mcpServers?: AcpMcpServer[]
+    /** Called on any adapter-process activity (ACP JSON-RPC traffic in
+     *  either direction) — forwarded to the driver's
+     *  `runtime.start({ onActivity })`. The caller (agent_start's MCP
+     *  handler, POST /sessions/agent) wires this to pulse
+     *  `SessionDescriptor.lastActivityAt` via `registry.pulseActivity(id)`. */
+    onActivity?: () => void
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -1513,12 +1519,18 @@ async function handleSessions(
       const bodyEffort = typeof b.effort === "string" && b.effort.length > 0
         ? b.effort
         : undefined
+      // See agent-tools.ts's agent_start handler for why this box is
+      // needed — onActivity can fire before spawnAgent assigns an id.
+      let liveSessionId: string | undefined
       const agentSession = await resolved.startSession({
         cwd,
         ...(resumeSessionId ? { resumeSessionId } : {}),
         ...(bodyMode ? { mode: bodyMode } : {}),
         ...(bodyModel ? { model: bodyModel } : {}),
         ...(bodyEffort ? { effort: bodyEffort } : {}),
+        onActivity: () => {
+          if (liveSessionId) registry.pulseActivity(liveSessionId)
+        },
       })
       const desc = registry.spawnAgent({
         workspaceSlug,
@@ -1531,6 +1543,7 @@ async function handleSessions(
           ? { commandPreview: resolved.commandPreview }
           : {}),
       })
+      liveSessionId = desc.id
       json(201, desc)
     } catch (err) {
       json(500, {

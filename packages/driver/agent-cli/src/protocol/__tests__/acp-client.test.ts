@@ -26,6 +26,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
+import { createAcpClient } from "@agentproto/acp/client"
 import { createAcpProtocolArm } from "../acp-client.js"
 
 /** A minimal ChildProcess stand-in with piped stdio the arm can wrap. */
@@ -114,5 +115,26 @@ describe("AcpProtocolArm.connect — model + effort threading", () => {
 
     expect(newSessionCalls[0]).not.toHaveProperty("model")
     expect(newSessionCalls[0]).not.toHaveProperty("effort")
+  })
+})
+
+describe("AcpProtocolArm.connect — onActivity threading", () => {
+  it("forwards onActivity from connect options to createAcpClient", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    const onActivity = vi.fn()
+    await arm.connect({ ...baseConnect, cwd: "/work", onActivity })
+
+    expect(vi.mocked(createAcpClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ onActivity }),
+    )
+  })
+
+  it("passes onActivity: undefined through when the host doesn't supply one", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    expect(vi.mocked(createAcpClient)).toHaveBeenCalledWith(
+      expect.objectContaining({ onActivity: undefined }),
+    )
   })
 })

@@ -497,4 +497,151 @@ describe("createSessionsRegistry", () => {
     expect(existsSync(persistPath)).toBe(false) // first write hasn't happened yet
     reg.shutdown()
   })
+
+  describe("liveness: pid / lastActivityAt / processAlive", () => {
+    const fakeAgent = (pid?: number): AgentSessionLike => ({
+      sessionId: "acp-liveness-test",
+      ...(pid !== undefined ? { pid } : {}),
+      async *send() {
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    })
+
+    it("spawnAgent mirrors agentSession.pid onto the descriptor", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(4242),
+        adapterSlug: "fake",
+      })
+      expect(desc.pid).toBe(4242)
+      reg.shutdown()
+    })
+
+    it("spawnAgent falls back to pid: null when the driver doesn't expose one", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(undefined),
+        adapterSlug: "fake",
+      })
+      expect(desc.pid).toBeNull()
+      reg.shutdown()
+    })
+
+    it("list()/get() compute processAlive: true for a live pid", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      // Our own process is guaranteed alive.
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(process.pid),
+        adapterSlug: "fake",
+      })
+      expect(reg.get(desc.id)?.processAlive).toBe(true)
+      expect(reg.list().find(d => d.id === desc.id)?.processAlive).toBe(true)
+      reg.shutdown()
+    })
+
+    it("list()/get() compute processAlive: false when the OS reports the pid is gone", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(4242),
+        adapterSlug: "fake",
+      })
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" })
+      })
+      expect(reg.get(desc.id)?.processAlive).toBe(false)
+      killSpy.mockRestore()
+      reg.shutdown()
+    })
+
+    it("list()/get() omit processAlive when pid is null", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(undefined),
+        adapterSlug: "fake",
+      })
+      expect(reg.get(desc.id)?.processAlive).toBeUndefined()
+      expect("processAlive" in (reg.get(desc.id) ?? {})).toBe(false)
+      reg.shutdown()
+    })
+
+    it("pulseActivity stamps lastActivityAt and is a no-op for an unknown id", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(process.pid),
+        adapterSlug: "fake",
+      })
+      expect(reg.get(desc.id)?.lastActivityAt).toBeUndefined()
+      reg.pulseActivity(desc.id)
+      const after = reg.get(desc.id)
+      expect(after?.lastActivityAt).toBeDefined()
+      expect(new Date(after!.lastActivityAt!).toISOString()).toBe(after!.lastActivityAt)
+      // Unknown id — must not throw.
+      expect(() => reg.pulseActivity("sess_doesnotexist")).not.toThrow()
+      reg.shutdown()
+    })
+
+    it("lastActivityAt is distinct from lastOutputAt — pulsing activity doesn't touch output", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(process.pid),
+        adapterSlug: "fake",
+        initialPrompt: "go",
+      })
+      await new Promise(res => setTimeout(res, 20))
+      const beforeOutput = reg.get(desc.id)?.lastOutputAt
+      expect(beforeOutput).toBeDefined()
+      reg.pulseActivity(desc.id)
+      const after = reg.get(desc.id)
+      expect(after?.lastActivityAt).toBeDefined()
+      expect(after?.lastOutputAt).toBe(beforeOutput)
+      reg.shutdown()
+    })
+
+    it("sessions.json round-trip: pid + lastActivityAt persist, processAlive is never written and is recomputed fresh", async () => {
+      const reg = createSessionsRegistry({ persistPath })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(process.pid),
+        adapterSlug: "fake",
+      })
+      reg.pulseActivity(desc.id)
+      // Force processAlive to be computed (and, pre-fix, would have
+      // leaked onto the same object persistSnapshot serializes).
+      expect(reg.get(desc.id)?.processAlive).toBe(true)
+      reg.shutdown()
+
+      const raw = JSON.parse(readFileSync(persistPath, "utf8"))
+      expect(raw.sessions[0].pid).toBe(process.pid)
+      expect(raw.sessions[0].lastActivityAt).toBeDefined()
+      expect("processAlive" in raw.sessions[0]).toBe(false)
+
+      // Fresh daemon restart: pid/lastActivityAt survive, processAlive
+      // is recomputed live rather than trusted from disk (the reloaded
+      // row is a "running" ghost pointed at a real, still-alive pid —
+      // our own process — so the live check flips it back to true).
+      const reg2 = createSessionsRegistry({ persistPath })
+      const restored = reg2.get(desc.id)
+      expect(restored?.pid).toBe(process.pid)
+      expect(restored?.lastActivityAt).toBe(raw.sessions[0].lastActivityAt)
+      expect(restored?.processAlive).toBe(true)
+      reg2.shutdown()
+    })
+  })
 })

@@ -89,6 +89,17 @@ export interface AcpClientOptions {
   handlers?: Partial<AcpClientHandlers>
   /** Protocol version to negotiate. Defaults to the SDK's current. */
   protocolVersion?: number
+  /**
+   * Called on ANY JSON-RPC traffic with the child agent process — every
+   * incoming `session/update` notification (even ones that
+   * `translateSessionUpdate` maps to `null`, e.g. a `tool_call_update`
+   * still in progress) and every outbound RPC call this client makes
+   * (`newSession`, `loadSession`, `setSessionConfigOption`, `prompt`,
+   * `cancel`). Distinct from the `StreamEvent` stream: fires even
+   * during gaps where no event is produced, so a host can track
+   * liveness independent of what the agent actually says.
+   */
+  onActivity?: () => void
 }
 
 export interface AcpClient {
@@ -157,7 +168,7 @@ export async function createAcpClient(
   const stream: Stream = ndJsonStream(options.output, options.input)
 
   const connection: ClientSideConnection = new ClientSideConnection(
-    () => buildClientHandlers(options.handlers ?? {}, sessions),
+    () => buildClientHandlers(options.handlers ?? {}, sessions, options.onActivity),
     stream,
   )
 
@@ -182,6 +193,7 @@ export async function createAcpClient(
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
+      options.onActivity?.()
       const sessionId = (response as { sessionId: string }).sessionId
       const state: SessionState = {
         events: [],
@@ -202,6 +214,7 @@ export async function createAcpClient(
           value: params.model,
           sessionId,
         } as never)
+        options.onActivity?.()
       }
       if (params.effort) {
         try {
@@ -210,6 +223,7 @@ export async function createAcpClient(
             value: params.effort,
             sessionId,
           } as never)
+          options.onActivity?.()
         } catch (err) {
           // Best-effort: this ACP server does not support the "effort" config
           // option (e.g. claude-agent-acp ignores unknown config keys and
@@ -221,7 +235,7 @@ export async function createAcpClient(
           )
         }
       }
-      return buildSession(connection, sessionId, state, sessions)
+      return buildSession(connection, sessionId, state, sessions, options.onActivity)
     },
     async loadSession(params) {
       // SDK returns `LoadSessionResponse` (no body fields we need); the
@@ -234,6 +248,7 @@ export async function createAcpClient(
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
+      options.onActivity?.()
       const state: SessionState = {
         events: [],
         resolveNext: null,
@@ -241,7 +256,7 @@ export async function createAcpClient(
         active: false,
       }
       sessions.set(params.sessionId, state)
-      return buildSession(connection, params.sessionId, state, sessions)
+      return buildSession(connection, params.sessionId, state, sessions, options.onActivity)
     },
     async close() {
       sessions.clear()
@@ -267,6 +282,7 @@ function buildSession(
   sessionId: string,
   state: SessionState,
   sessions: Map<string, SessionState>,
+  onActivity?: () => void,
 ): AcpClientSession {
   return {
     sessionId,
@@ -282,12 +298,16 @@ function buildSession(
 
       const iter = makeIterator(state)
 
+      // Outbound send — proves the daemon is still driving this turn,
+      // independent of whatever StreamEvents come back.
+      onActivity?.()
       const promise = connection
         .prompt({
           sessionId,
           prompt: input.messages as never,
         } as never)
         .then((response) => {
+          onActivity?.()
           enqueue(state, {
             kind: "turn-end",
             sessionId,
@@ -330,6 +350,7 @@ function buildSession(
     async cancel() {
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
+      onActivity?.()
     },
     async close() {
       sessions.delete(sessionId)
@@ -381,9 +402,16 @@ function flush(state: SessionState) {
 function buildClientHandlers(
   partial: Partial<AcpClientHandlers>,
   sessions: Map<string, SessionState>,
+  onActivity?: () => void,
 ): AcpClientHandlers {
   return {
     async sessionUpdate(params) {
+      // Every notification is a liveness signal, even ones that don't
+      // translate into a StreamEvent below (e.g. an in-progress
+      // tool_call_update) — this is the gap that leaves lastOutputAt
+      // stale during a long internal tool-call chain.
+      onActivity?.()
+
       const sid = (params as { sessionId?: string }).sessionId
       if (!sid) return
       const state = sessions.get(sid)
