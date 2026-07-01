@@ -80,6 +80,12 @@ Do not use `[skip ci]` — the push must re-trigger CI to re-review.
 The branch ruleset (`id: 16835849`, "No Delete Main") requires the **"Agentic review"** check
 to pass before any PR can be merged into `main`.
 
+**Note:** `changeset-check` ("Changeset present?") and `hygiene-check` ("Hygiene checks") are
+*not* in that ruleset's `required_status_checks` today — a failing run shows as a red check on
+the PR, but the ruleset only hard-blocks on "Agentic review". To make either (or both) of
+these actually block merge, an admin has to add their context names to the ruleset (see the
+`gh api` example below).
+
 ### Root cause: GITHUB_TOKEN does not re-trigger workflows
 
 GitHub's anti-recursion policy means **a workflow that pushes via `GITHUB_TOKEN` will NOT
@@ -189,6 +195,36 @@ EOF
 
 **Impact:** every PR targeting `main` must have a passing "Agentic review" check before
 it can be merged — including human-authored PRs.
+
+**Optional — also hard-block on `changeset-check` / `hygiene-check`:** add their context
+names to the same `required_status_checks` array, e.g.:
+
+```bash
+gh api repos/agentproto/ts/rulesets/16835849 \
+  --method PATCH \
+  --input - <<'EOF'
+{
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [
+          { "context": "Agentic review", "integration_id": null },
+          { "context": "Changeset present?", "integration_id": null },
+          { "context": "Hygiene checks", "integration_id": null }
+        ],
+        "strict_required_status_checks_policy": false
+      }
+    }
+  ]
+}
+EOF
+```
+
+Not applied by default (this is a live change to shared branch-protection settings) —
+apply it deliberately if you want these to hard-block rather than just show a red check.
 
 ### Blocking mode configuration
 

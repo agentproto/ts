@@ -90,6 +90,78 @@ jobs:
           fi
           echo "✓ Changeset present: $ADDED"
 
+  # On PRs: enforce two conventions that used to rely on remembering to say
+  # them in every prompt — no per-worktree scratch docs land in the repo, and
+  # no AI-attribution trailers ride into commits or PR bodies. Fast,
+  # pure-git/shell, runs in parallel with build-and-test.
+  hygiene-check:
+    name: Hygiene checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check for scratch docs and AI-attribution trailers
+        # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
+        # changeset-check step above for why (shell injection via backticks).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="$PR_TITLE"
+          if [[ "$TITLE" == chore\(release\):* ]]; then
+            echo "Version Packages PR — hygiene checks skipped."
+            exit 0
+          fi
+
+          FAIL=0
+          ATTRIBUTION_PATTERN='Co-authored-by:.*claude|Co-authored-by:.*anthropic|Generated with'
+
+          # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
+          # are per-worktree planning scratch and must never land in the repo —
+          # they've collided across sibling branches repeatedly. Check the
+          # checked-out HEAD tree directly (not the diff), so one that slipped
+          # in via a bad merge is still caught, not just ones added in this PR.
+          SCRATCH_FILES=()
+          for f in PLAN.md BRIEF.md MERGE-CONFLICT-BRIEF*.md; do
+            if [ -f "$f" ]; then
+              SCRATCH_FILES+=("$f")
+            fi
+          done
+          if [ "${#SCRATCH_FILES[@]}" -gt 0 ]; then
+            echo "::error::Root-level scratch doc(s) present in this PR's tree: ${SCRATCH_FILES[*]}"
+            echo "These are per-worktree planning scratch files (PLAN.md / BRIEF.md / MERGE-CONFLICT-BRIEF*.md) and must never be committed to the repo."
+            echo "Fix: git rm ${SCRATCH_FILES[*]}"
+            FAIL=1
+          fi
+
+          # 2. No AI-attribution trailer in any commit in this PR's range, or in
+          # the PR body. Forward-looking only — commits already on main before
+          # this convention existed are never scanned.
+          BAD_COMMITS=$(git log --format=%B origin/main..HEAD | grep -iE "$ATTRIBUTION_PATTERN" || true)
+          if [ -n "$BAD_COMMITS" ]; then
+            echo "::error::A commit in this PR carries an AI-attribution trailer."
+            echo "Commit messages must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Amend/rebase to remove them."
+            echo "Matched line(s): $BAD_COMMITS"
+            FAIL=1
+          fi
+
+          PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body || true)
+          if printf '%s' "$PR_BODY" | grep -iE "$ATTRIBUTION_PATTERN" > /dev/null; then
+            echo "::error::The PR body carries an AI-attribution trailer."
+            echo "PR bodies must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Edit the PR description to remove them."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            exit 1
+          fi
+          echo "✓ No scratch docs, no AI-attribution trailers."
+
   # On PR open: fill an empty description from the diff (never clobbers a
   # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
   describe:

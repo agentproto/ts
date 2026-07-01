@@ -68,6 +68,8 @@ do it FIRST so it can never be lost if you run low on turns:
 
 You MUST call \`gh_pr_review\` exactly once before finishing. Never end without it.
 
+Never add AI/Claude/Anthropic attribution (e.g. "Co-Authored-By: Claude", "Generated with …") to the review body, changeset, or any comment you produce.
+
 ## Review format
 
 \`\`\`markdown
