@@ -817,7 +817,7 @@ export function registerOrchestrationTools(
           .min(1)
           .describe(
             "Imported MCP alias for the agentpush server (e.g. 'agentpush'). " +
-              "Import it first with import_mcp.",
+              "Import it first with mcp_import.",
           ),
         source: z
           .string()

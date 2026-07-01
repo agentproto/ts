@@ -366,7 +366,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // BOOT.md is silly for a tunnel daemon — skip it.
       boot: false,
       resolveAgentAdapter,
-      // Discovery for UIs / operators — `GET /adapters` + `list_adapters`
+      // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed.
       listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),

@@ -34,10 +34,10 @@ describe("makeListTool", () => {
       { slug: "alpha", name: "Alpha", description: "a", packageName: "@x/a", status: "ready", version: "1.0.0", info: { slug: "alpha" } },
     ]
     const lister = vi.fn(async () => entries)
-    makeListTool({ server, toolName: "list_adapters", description: "d", lister })
+    makeListTool({ server, toolName: "adapter_list", description: "d", lister })
 
     expect(tools).toHaveLength(1)
-    expect(tools[0]!.name).toBe("list_adapters")
+    expect(tools[0]!.name).toBe("adapter_list")
     expect(tools[0]!.shape).toEqual({}) // no params
 
     const res = await tools[0]!.handler({})

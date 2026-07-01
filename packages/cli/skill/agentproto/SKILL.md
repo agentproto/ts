@@ -166,7 +166,7 @@ cursor = out.nextCursor
 |------|---------|
 | `mcp_imported_status` | Health of every imported alias |
 | `mcp_imported_list` / `mcp_discovered_list` | Available MCPs |
-| `import_mcp { sourceMcpId, alias? }` / `remove_imported_mcp { id }` | Curate |
+| `mcp_import { sourceMcpId, alias? }` / `mcp_imported_remove { id }` | Curate |
 | `mcp_imported_tool_list { alias }` | Tool list from an alias |
 | `mcp_imported_call { alias, toolName, args? }` | Invoke a proxied tool |
 
