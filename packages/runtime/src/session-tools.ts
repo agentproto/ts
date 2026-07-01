@@ -15,10 +15,16 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
+import {
+  decideRestartStrategy,
+  augmentWithFsResume,
+  describeResumePath,
+  tokenizeCommand,
+} from "./resume-strategies.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -178,6 +184,7 @@ export function registerSessionTools(
     registry,
     mcpProxy,
     callerScope,
+    resolveAgentAdapter,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -725,6 +732,262 @@ export function registerSessionTools(
     ],
     isError: true,
   })
+
+  // ── session_restart ──────────────────────────────────────────────
+  // In-process equivalent of `agentproto sessions restart <id>` — the
+  // CLI has to shape an HTTP body and POST it back to this same daemon
+  // because it's a separate process; here we can go straight to the
+  // registry + adapter resolver. Both sides share `decideRestartStrategy`
+  // (resume-strategies.ts) so the two surfaces never diverge on which
+  // resume path wins.
+  server.tool(
+    "session_restart",
+    "Respawn a session that has exited or been killed, preferring conversation " +
+      "continuity over a blank restart. Looks up the (possibly historical) " +
+      "descriptor by id or name — same lookup as `session_list` — and picks " +
+      "the same resume strategy `agentproto sessions restart` uses on the CLI: " +
+      "provider-native resume (spawns a PTY running the provider's own resume " +
+      "command, e.g. `claude --resume <id>`) when the adapter persisted one; " +
+      "else ACP-level resume via the adapter's own session id (retried as a " +
+      "fresh spawn if the adapter rejects the id with \"not found\" — typical " +
+      "when the prior session died before its first turn); else a plain PTY " +
+      "re-run for raw terminal sessions with no adapter match. Generic " +
+      "`command` sessions have no resume path and return an error. Returns " +
+      "the NEW session's descriptor plus `resumedFrom` (the prior id) and " +
+      "`resumeVia` (which path was used, empty string for a fresh respawn).",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe(
+          "Session id or name to restart — from `session_list`, alive or " +
+            "historical (killed/exited/error)."
+        ),
+      cols: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          "PTY cols — only used when the restart resolves to a provider-native " +
+            "or plain PTY resume. Default 80."
+        ),
+      rows: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("PTY rows — same case as `cols`. Default 24."),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors agent_kill — a child orchestrator
+      // may only restart sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_restart: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only restart sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      const augmented = await augmentWithFsResume(prev)
+      const strategy = decideRestartStrategy(augmented)
+
+      if (strategy.kind === "unsupported") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: strategy.reason, sessionId: prev.id }),
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      // cwd resolution mirrors /sessions/agent + /sessions/terminal:
+      // the prior descriptor's cwd is authoritative (it's how the
+      // session was actually running); fall back to the daemon's own
+      // cwd only for a legacy row that predates the field.
+      let cwd = prev.cwd
+      if (!cwd) {
+        cwd = process.cwd()
+        console.warn(
+          `[session_restart] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${cwd}`
+        )
+      }
+
+      try {
+        if (strategy.kind === "pty-native" || strategy.kind === "pty-plain") {
+          if (!ptyEnabled) return ptyNotConfigured("session_restart")
+          const argv =
+            strategy.kind === "pty-native"
+              ? strategy.argv
+              : Array.isArray(prev.argv) && prev.argv.length > 0
+                ? [...prev.argv]
+                : tokenizeCommand(prev.command)
+          const desc = registry.spawnPty({
+            argv,
+            cwd,
+            workspaceSlug: prev.workspaceSlug,
+            cols: input.cols ?? 80,
+            rows: input.rows ?? 24,
+            ...(prev.name ? { name: prev.name } : {}),
+            ...(prev.label ? { label: prev.label } : {}),
+          })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  { ...desc, resumedFrom: prev.id, resumeVia: describeResumePath(augmented) },
+                  null,
+                  2
+                ),
+              },
+            ],
+          }
+        }
+
+        // strategy.kind === "agent" — decideRestartStrategy only returns
+        // this when `adapterSlug` is set, but TS can't see across the
+        // two objects, so re-check at runtime rather than casting.
+        const adapterSlug = prev.adapterSlug
+        if (!adapterSlug) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "session_restart: internal error — agent resume strategy without adapterSlug",
+              },
+            ],
+            isError: true,
+          }
+        }
+        if (!resolveAgentAdapter) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "session_restart: agent_start is not enabled — the daemon was started " +
+                  "without an adapter resolver.",
+              },
+            ],
+            isError: true,
+          }
+        }
+        const resolved = await resolveAgentAdapter(adapterSlug)
+        if (!resolved) {
+          return {
+            content: [
+              { type: "text", text: `session_restart: adapter "${adapterSlug}" not found.` },
+            ],
+            isError: true,
+          }
+        }
+        const spawnWithResume = async (
+          resumeSessionId?: string
+        ): Promise<SessionDescriptor> => {
+          let liveSessionId: string | undefined
+          const agentSession = await resolved.startSession({
+            cwd,
+            ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(prev.model ? { model: prev.model } : {}),
+            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+            onActivity: () => {
+              if (liveSessionId) registry.pulseActivity(liveSessionId)
+            },
+          })
+          const desc = registry.spawnAgent({
+            workspaceSlug: prev.workspaceSlug,
+            cwd,
+            agentSession,
+            adapterSlug,
+            ...(prev.label ? { label: prev.label } : {}),
+            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+            ...(prev.model ? { model: prev.model } : {}),
+            ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+          })
+          liveSessionId = desc.id
+          return desc
+        }
+
+        let desc: SessionDescriptor
+        let resumeFallback = false
+        try {
+          desc = await spawnWithResume(strategy.resumeSessionId)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          // Adapter doesn't recognize the resume id — typically means the
+          // prior session never got past the spawn (no turn happened).
+          // Retry as a fresh spawn so the caller at least gets the agent
+          // back, same fallback the CLI's `sessions restart` applies.
+          if (strategy.resumeSessionId && /not found|Resource not found/i.test(msg)) {
+            desc = await spawnWithResume(undefined)
+            resumeFallback = true
+          } else {
+            throw err
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ...desc,
+                  resumedFrom: prev.id,
+                  resumeVia: resumeFallback ? "" : describeResumePath(augmented),
+                  ...(resumeFallback ? { resumeFallback: true } : {}),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
 
   server.tool(
     "terminal_start",
