@@ -13,7 +13,7 @@
  *   1. Tool `agentproto_bureau_sessions` is called by the host.
  *   2. execute() returns the browser-session snapshot.
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `list_sessions {kind:'all'}` every ~5 s, filtering to kind==="browser".
+ *      `session_list {kind:'all'}` every ~5 s, filtering to kind==="browser".
  *
  * Data only — no server LLM. The whole bundle is inline (zero CDN).
  */
@@ -208,7 +208,7 @@ function render(rows){
 }
 
 function loadAndRender(){
-  return callTool('list_sessions', {kind:'all'}).then(function(data){
+  return callTool('session_list', {kind:'all'}).then(function(data){
     var all = data.sessions || [];
     var browsers = all.filter(function(s){ return s.kind === 'browser'; });
     render(browsers);

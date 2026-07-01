@@ -59,32 +59,32 @@ export class HarnessClient {
     return new HarnessClient(url, client)
   }
 
-  /** Spawn a session via `start_agent_session`. */
+  /** Spawn a session via `agent_start`. */
   async start(args: StartAgentArgs): Promise<SessionDescriptor> {
-    return this.#call("start_agent_session", args as unknown as Record<string, unknown>)
+    return this.#call("agent_start", args as unknown as Record<string, unknown>)
   }
 
-  /** Send a follow-up turn via `prompt_agent_session` (fire-and-forget). */
+  /** Send a follow-up turn via `agent_prompt` (fire-and-forget). */
   async prompt(sessionId: string, prompt: string): Promise<void> {
-    await this.#call("prompt_agent_session", { sessionId, prompt })
+    await this.#call("agent_prompt", { sessionId, prompt })
   }
 
-  /** Tail the ring buffer via `get_agent_session_output`. */
+  /** Tail the ring buffer via `agent_output`. */
   async output(sessionId: string, lastN?: number): Promise<string> {
     const res = await this.#call<{ lines?: string[] }>(
-      "get_agent_session_output",
+      "agent_output",
       { sessionId, lastN },
     )
     return (res.lines ?? []).join("\n")
   }
 
-  /** SIGTERM via `kill_agent_session`. */
+  /** SIGTERM via `agent_kill`. */
   async kill(sessionId: string): Promise<void> {
-    await this.#call("kill_agent_session", { sessionId })
+    await this.#call("agent_kill", { sessionId })
   }
 
   /**
-   * Multiplexed long-poll via `wait_for_any`. `timeoutMs` is clamped to the
+   * Multiplexed long-poll via `session_monitor`. `timeoutMs` is clamped to the
    * tool's 1 000–49 000 window; a clean timeout surfaces as
    * `{ event: "timeout" }`.
    */
@@ -92,7 +92,7 @@ export class HarnessClient {
     sessionIds: string[],
     opts?: { timeoutMs?: number; event?: TurnEvent },
   ): Promise<TurnResult> {
-    return this.#call("wait_for_any", {
+    return this.#call("session_monitor", {
       sessionIds,
       ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts?.event !== undefined ? { event: opts.event } : {}),

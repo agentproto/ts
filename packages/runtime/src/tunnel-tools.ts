@@ -4,9 +4,9 @@
  * public tunnels for any local port without touching the terminal.
  *
  * Four tools:
- *   create_tunnel    spawn a public URL for a local port (cloudflared quick tunnel)
- *   list_tunnels     browse active + historical tunnels
- *   stop_tunnel      SIGTERM the tunnel provider + mark stopped
+ *   tunnel_create    spawn a public URL for a local port (cloudflared quick tunnel)
+ *   tunnel_list     browse active + historical tunnels
+ *   tunnel_stop      SIGTERM the tunnel provider + mark stopped
  *   tunnel_status    read-only descriptor for one tunnel
  *
  * Designed parallel to session-tools.ts — same error-shape, same style.
@@ -54,9 +54,9 @@ export function registerTunnelTools(
 ): void {
   const { registry } = opts
 
-  // ── create_tunnel ──────────────────────────────────────────────
+  // ── tunnel_create ──────────────────────────────────────────────
   server.tool(
-    "create_tunnel",
+    "tunnel_create",
     "Spawn a public HTTPS URL for a local port. Built-in backends: " +
       "`cloudflare-quick` (default, alias `quick`) = Cloudflare Quick Tunnel, " +
       "no API key, ephemeral *.trycloudflare.com URL; `cloudflare-named` " +
@@ -67,7 +67,7 @@ export function registerTunnelTools(
       "`setup_tunnel_provider` first). Any installed third-party provider " +
       "(`@scope/agentproto-adapter-<slug>`) also works — see " +
       "`list_tunnel_adapters` for the full set. Returns the TunnelDescriptor " +
-      "once ready (typically <10s). Use `list_tunnels` before opening a " +
+      "once ready (typically <10s). Use `tunnel_list` before opening a " +
       "duplicate. Unlike `remote_enable`, this does NOT gate auth — pure " +
       "passthrough; the proxied service handles its own authn.",
     {
@@ -92,12 +92,12 @@ export function registerTunnelTools(
         .optional()
         .describe(
           "Optional friendly slug (e.g. 'vite-preview'). Accepted as an " +
-            "alias for the tunnel id in `stop_tunnel` and `tunnel_status`.",
+            "alias for the tunnel id in `tunnel_stop` and `tunnel_status`.",
         ),
       label: z
         .string()
         .optional()
-        .describe("Free-text label shown in `list_tunnels` output."),
+        .describe("Free-text label shown in `tunnel_list` output."),
       targetHost: z
         .string()
         .optional()
@@ -149,17 +149,17 @@ export function registerTunnelTools(
         })
         return text(desc)
       } catch (err) {
-        return errText("create_tunnel", err)
+        return errText("tunnel_create", err)
       }
     },
   )
 
-  // ── list_tunnels ───────────────────────────────────────────────
+  // ── tunnel_list ───────────────────────────────────────────────
   server.tool(
-    "list_tunnels",
+    "tunnel_list",
     "List all tunnels tracked by the daemon — active, stopped, and errored. " +
       "Each entry includes provider, target port, public URL, status, pid, " +
-      "and age. Use before `create_tunnel` to avoid spawning duplicates " +
+      "and age. Use before `tunnel_create` to avoid spawning duplicates " +
       "for the same port.",
     {
       onlyActive: z
@@ -181,9 +181,9 @@ export function registerTunnelTools(
     },
   )
 
-  // ── stop_tunnel ────────────────────────────────────────────────
+  // ── tunnel_stop ────────────────────────────────────────────────
   server.tool(
-    "stop_tunnel",
+    "tunnel_stop",
     "Stop an active tunnel — SIGTERM cloudflared and mark the tunnel stopped. " +
       "Accepts either the tunnel id or the friendly name set at create time. " +
       "Idempotent on an already-stopped tunnel.",
@@ -192,7 +192,7 @@ export function registerTunnelTools(
         .string()
         .min(1)
         .describe(
-          "Tunnel id (UUID from `create_tunnel`) or the name slug " +
+          "Tunnel id (UUID from `tunnel_create`) or the name slug " +
             "(e.g. 'vite-preview').",
         ),
     },
@@ -204,7 +204,7 @@ export function registerTunnelTools(
             content: [
               {
                 type: "text",
-                text: `stop_tunnel: no tunnel "${input.tunnelId}" — use list_tunnels to see current ids`,
+                text: `tunnel_stop: no tunnel "${input.tunnelId}" — use tunnel_list to see current ids`,
               },
             ],
             isError: true,
@@ -212,7 +212,7 @@ export function registerTunnelTools(
         }
         return text({ ok, tunnelId: input.tunnelId })
       } catch (err) {
-        return errText("stop_tunnel", err)
+        return errText("tunnel_stop", err)
       }
     },
   )
@@ -227,7 +227,7 @@ export function registerTunnelTools(
         .string()
         .min(1)
         .describe(
-          "Tunnel id (UUID from `create_tunnel`) or the name slug.",
+          "Tunnel id (UUID from `tunnel_create`) or the name slug.",
         ),
     },
     async input => {
@@ -237,7 +237,7 @@ export function registerTunnelTools(
           content: [
             {
               type: "text",
-              text: `tunnel_status: no tunnel "${input.tunnelId}" — use list_tunnels to see current ids`,
+              text: `tunnel_status: no tunnel "${input.tunnelId}" — use tunnel_list to see current ids`,
             },
           ],
           isError: true,

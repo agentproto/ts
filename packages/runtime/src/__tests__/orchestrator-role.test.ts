@@ -1,9 +1,9 @@
 /**
  * Orchestrator role auto-injection (WP3) — the `orchestrator` field on
- * `start_agent_session`.
+ * `agent_start`.
  *
  * Proves the mint → inject → revoke flow end-to-end through the real
- * `start_agent_session` MCP tool, driven by the production
+ * `agent_start` MCP tool, driven by the production
  * `createOrchestratorInjector` (no re-implementation of the closure):
  *   (a) `orchestrator: true` → the `mcpServers` handed to the adapter's
  *       `startSession` contains the scoped `agentproto` entry whose URL
@@ -143,12 +143,12 @@ function scopedEntry(mcpServers?: AcpMcpServer[]): {
   return { entry: entry!, token: token! }
 }
 
-describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
+describe("agent_start — orchestrator auto-injection (WP3)", () => {
   it("(a) orchestrator:true injects a scoped agentproto entry with a verifiable token", async () => {
     const h = await harness()
     try {
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: { adapter: "claude-code", cwd: "/tmp", orchestrator: true },
       })
       const { token } = scopedEntry(h.capture.mcpServers)
@@ -169,20 +169,20 @@ describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
       // One legit tool + one danger tool + one phantom — only the legit
       // one may survive in the minted scope.
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: {
           adapter: "claude-code",
           cwd: "/tmp",
           orchestrator: {
-            tools: ["start_agent_session", "execute_command", "made_up"],
+            tools: ["agent_start", "command_execute", "made_up"],
           },
         },
       })
       const { token } = scopedEntry(h.capture.mcpServers)
       const scope = h.scopeTokens.verify(token)
       expect(scope).not.toBeNull()
-      expect([...scope!.tools]).toEqual(["start_agent_session"])
-      expect(scope!.tools.has("execute_command")).toBe(false)
+      expect([...scope!.tools]).toEqual(["agent_start"])
+      expect(scope!.tools.has("command_execute")).toBe(false)
       expect(scope!.tools.has("made_up")).toBe(false)
     } finally {
       await h.close()
@@ -193,7 +193,7 @@ describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
     const h = await harness()
     try {
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: {
           adapter: "claude-code",
           cwd: "/tmp",
@@ -222,7 +222,7 @@ describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
     const h = await harness()
     try {
       const result = await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: { adapter: "claude-code", cwd: "/tmp", orchestrator: true },
       })
       const { id } = descFromResult(result)
@@ -247,7 +247,7 @@ describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
     const h = await harness()
     try {
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: { adapter: "claude-code", cwd: "/tmp", orchestrator: true },
       })
       const { token } = scopedEntry(h.capture.mcpServers)
@@ -267,7 +267,7 @@ describe("start_agent_session — orchestrator auto-injection (WP3)", () => {
     const h = await harness()
     try {
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: { adapter: "claude-code", cwd: "/tmp" },
       })
       const servers = h.capture.mcpServers ?? []

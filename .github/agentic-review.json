@@ -24,30 +24,47 @@
       "**/*.env*"
     ]
   },
-  "skills": ["aip-conventions"],
+  "skills": [
+    "aip-conventions"
+  ],
   "externalSkills": {
-    "allow": ["DietrichGebert/ponytail@ponytail-review"]
+    "allow": [
+      "DietrichGebert/ponytail@ponytail-review"
+    ]
   },
   "commands": {
     "review": {
-      "skills": ["aip-conventions", "ponytail-review"]
+      "skills": [
+        "aip-conventions",
+        "ponytail-review"
+      ]
     },
     "fix": {
-      "skills": ["aip-conventions"],
-      "fixDelivery": "commit"
+      "skills": [
+        "aip-conventions"
+      ],
+      "fixDelivery": "pr"
     },
     "pr": {
-      "skills": ["aip-conventions"],
+      "skills": [
+        "aip-conventions"
+      ],
       "fixDelivery": "pr"
     },
     "triage": {
-      "skills": ["aip-conventions"]
+      "skills": [
+        "aip-conventions"
+      ]
     },
     "discussion": {
-      "skills": ["aip-conventions"]
+      "skills": [
+        "aip-conventions"
+      ]
     },
     "wiki": {
-      "skills": ["aip-conventions"]
+      "skills": [
+        "aip-conventions"
+      ]
     },
     "explain": {
       "skills": []

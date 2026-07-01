@@ -50,7 +50,7 @@ MCP-proxy client they're invoked via the daemon's meta-tools:
 
 ```jsonc
 // list everything available
-mcp_imported_list_tools({ alias: "local-browser" })
+mcp_imported_tool_list({ alias: "local-browser" })
 
 // drive the browser
 mcp_imported_call({

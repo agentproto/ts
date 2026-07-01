@@ -11,7 +11,7 @@ models, no third-party CLI.
 agentproto-mastra acp --model anthropic/claude-opus-4-8
 
 # Or let the agentproto daemon spawn it like any other arm:
-#   start_agent_session({ adapter: "mastra-agent", model: "openrouter/z-ai/glm-5.2" })
+#   agent_start({ adapter: "mastra-agent", model: "openrouter/z-ai/glm-5.2" })
 ```
 
 ## How it works
@@ -46,6 +46,11 @@ cwd** (path-traversal guarded):
 | `write_file` | Create/overwrite a file (mkdir -p). |
 | `edit_file` | Replace a unique substring. |
 | `run_command` | Run a shell command (cwd-scoped, timeout). |
+
+> **Note:** `read_file` and `write_file` here are Mastra-native workspace tools
+> scoped to this adapter's session cwd. They are distinct from the runtime MCP
+> filesystem tools (`file_read`, `file_write`) registered on the daemon's `/mcp`
+> endpoint.
 
 `run_command` is on by default; set `AGENTPROTO_MASTRA_NO_EXEC=1` to withhold it.
 

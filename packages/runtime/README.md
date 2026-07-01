@@ -22,7 +22,7 @@ const gateway = await createGateway({
   port: 18790,
   // Optional: enable POST /sessions/terminal + WS /sessions/:id/pty
   spawnPty: await loadNodePtyFactory() ?? undefined,
-  // Optional: enable POST /sessions/agent + start_agent_session MCP tool
+  // Optional: enable POST /sessions/agent + agent_start MCP tool
   resolveAgentAdapter: async slug => { /* return AgentAdapter or null */ },
   listAgentAdapters: async () => [ /* AdapterInfo[] */ ],
 })

@@ -10,7 +10,7 @@
  *   2. execute() returns a sessions snapshot → injected into the HTML as
  *      window.__APP_INIT__ (static initial render, no bridge needed).
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `list_sessions` + `get_agent_session_output` every 3 s for live data.
+ *      `session_list` + `agent_output` every 3 s for live data.
  */
 
 import { z } from "zod"

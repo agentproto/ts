@@ -14,7 +14,7 @@
  *   2. execute() returns the agent-session snapshot → injected into the
  *      HTML as the initial render via the tool result JSON.
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `list_sessions` every ~12 s, then calls `summarize_session` for
+ *      `session_list` every ~12 s, then calls `summarize_session` for
  *      each visible session to fetch the plain sentence + state.
  *
  * The per-session summary is generated SERVER-SIDE by the
@@ -115,7 +115,7 @@ export function summarizeSession(
 export interface SummarizeOps {
   getSession(id: string): SessionDescriptor | undefined
   /** Tail the recent ring buffer for a session (same source as
-   *  get_agent_session_output). Returns [] for unknown sessions. */
+   *  agent_output). Returns [] for unknown sessions. */
   tailLines(id: string, lastN: number): string[]
   /** Current epoch-ms, injectable for tests. Defaults to Date.now. */
   now?: () => number
@@ -353,7 +353,7 @@ function render(sessions, summaries){
 }
 
 function loadAndRender(){
-  return callTool('list_sessions', {kind:'all'}).then(function(data){
+  return callTool('session_list', {kind:'all'}).then(function(data){
     var all = data.sessions || [];
     var agents = all.filter(function(s){ return s.kind === 'agent-cli'; });
     // Render shells immediately, then fill summaries as they arrive.

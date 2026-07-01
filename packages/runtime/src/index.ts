@@ -187,18 +187,18 @@ export interface CreateGatewayOptions {
    *  Without this, /sessions still works for raw `argv` spawns. */
   resolveAgentAdapter?: AgentAdapterResolver
   /** Optional adapter lister — when provided, enables
-   *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
+   *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
   /** Optional browser adapter resolver — when provided, enables the
    *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
   resolveBrowserAdapter?: BrowserAdapterResolver
   /** Optional browser adapter lister — when provided, enables the
-   *  `list_adapter_browsers` MCP tool. */
+   *  `browser_adapter_list` MCP tool. */
   listBrowserAdapters?: BrowserAdapterLister
   /** Optional PTY factory (node-pty wrapper, typically from the cli
    *  layer's `loadNodePtyFactory()`). When provided, enables
-   *  `POST /sessions/terminal`, the `start_terminal_session` MCP
+   *  `POST /sessions/terminal`, the `terminal_start` MCP
    *  tool family, and the `/sessions/:id/pty` WebSocket. Without it,
    *  those routes return 501 / the MCP tools aren't registered. */
   spawnPty?: PtyFactory
@@ -288,7 +288,7 @@ export async function createGateway(
 
   // Multi-tunnel registry — independent from RemoteController. Manages
   // the general "create a public URL for any local port" surface
-  // (create_tunnel / list_tunnels / stop_tunnel MCP tools + /tunnels HTTP
+  // (tunnel_create / tunnel_list / tunnel_stop MCP tools + /tunnels HTTP
   // routes). Logs flow through the same events stream.
   // Shared tunnel creds store (~/.agentproto/tunnel-creds/, 0600) — lets the
   // registry rebuild a provider that keeps its secrets off the descriptor
@@ -324,11 +324,11 @@ export async function createGateway(
     version: opts.version ?? "0.1.0-alpha",
   })
 
-  // Event bus + ring for orchestration tools (poll_events / wait_for_any).
+  // Event bus + ring for orchestration tools (session_events_poll / session_monitor).
   // Declared before the sessions registry so we can pass the bus into it.
   const sessionEvents = createSessionEventBus()
   const eventRing = createEventRing()
-  // Wire the ring so every session:* event is buffered for poll_events.
+  // Wire the ring so every session:* event is buffered for session_events_poll.
   eventRing.wire(sessionEvents)
   // Wire the webhook notifier so per-session and global URLs are
   // notified on turn-end / awaiting-input / exited events.
@@ -402,7 +402,7 @@ export async function createGateway(
       return Number.isFinite(n) && n > 0 ? n : undefined
     })(),
     // WP7: judge-agent gate spawns a short-lived agent via the same resolver
-    // start_agent_session uses. Absent → judge gates fail-safe (FAIL).
+    // agent_start uses. Absent → judge gates fail-safe (FAIL).
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -457,7 +457,7 @@ export async function createGateway(
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when
-  // `start_agent_session` is called with `orchestrator`, this mints a
+  // `agent_start` is called with `orchestrator`, this mints a
   // scoped token, builds the `mcpServers` entry pointing the child at
   // `/mcp/orchestrator?scope=<token>` on the daemon's own loopback
   // port, and revokes the token on the child's `session:exited`. The
@@ -468,7 +468,7 @@ export async function createGateway(
   // child's orchestration tools surface under a stable namespace,
   // independent of the daemon's advertised server name.
   // Defined BEFORE the scoped factory so the factory can hand it to the
-  // scoped server's `start_agent_session` — that's what lets a child
+  // scoped server's `agent_start` — that's what lets a child
   // orchestrator recursively spawn its OWN sub-orchestrators (WP4),
   // bounded by depth/quota/tools inheritance.
   const orchestratorInjector = createOrchestratorInjector({
@@ -516,7 +516,7 @@ export async function createGateway(
     registerFsTools(server, { workspace })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
-    // pnpm, …) is reachable via `execute_command`. Allowlist lives at
+    // pnpm, …) is reachable via `command_execute`. Allowlist lives at
     // `.agentproto/allowed-commands.json`; default-deny.
     registerCommandTools(server, { workspace })
     // Remote-tunnel lifecycle. The controller is a singleton on the
@@ -577,7 +577,7 @@ export async function createGateway(
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
       tailLines: (id, lastN) => {
-        // Same source as get_agent_session_output: attach replays the ring
+        // Same source as agent_output: attach replays the ring
         // buffer synchronously, then we unsubscribe immediately.
         const lines: string[] = []
         const unsub = sessions.attach(id, (line) => { lines.push(line) })

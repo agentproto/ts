@@ -176,7 +176,7 @@ export class McpProxyRegistry {
   }
 
   /** Find a client handle by alias *or* import id (defensive — agents
-   *  sometimes pass the id from `list_imported_mcps`). */
+   *  sometimes pass the id from `mcp_imported_list`). */
   private findByAlias(aliasOrId: string): ProxyClient | undefined {
     for (const c of this.clients.values()) {
       if (c.entry.alias === aliasOrId) return c

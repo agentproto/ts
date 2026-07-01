@@ -68,7 +68,7 @@ function makeFakePtyFactory(captured: PtyCaptured, pid = 9999): PtyFactory {
   })
 }
 
-// ── Item 3: get_agent_session_output for PTY ─────────────────────────────────
+// ── Item 3: agent_output for PTY ─────────────────────────────────
 // We test the registry's `readTerminalOutput` returns bytes that the tool
 // layer can decode + strip. The tool layer itself is thin, so verifying
 // the registry path + stripAnsi is sufficient.
@@ -125,11 +125,11 @@ describe("readTerminalOutput (PTY byte ring)", () => {
 })
 
 
-// ── Item 5: list_sessions limit ───────────────────────────────────────────────
+// ── Item 5: session_list limit ───────────────────────────────────────────────
 // Validate that registry.list() returns newest-first (already guaranteed by
 // the registry) so the tool's `slice(0, limit)` gives the right sessions.
 
-describe("list_sessions order (for limit param validation)", () => {
+describe("session_list order (for limit param validation)", () => {
   it("returns sessions newest-first from registry.list()", async () => {
     const persistPath = join(tmp, "sessions-list.json")
     const reg = createSessionsRegistry({ persistPath })
@@ -238,7 +238,7 @@ describe("awaitFirstTurn mechanic (registry.sendPrompt + Promise.race)", () => {
 })
 
 // ── nextStep field ────────────────────────────────────────────────────────────
-// Verify the format of the nextStep hint that start_agent_session embeds in
+// Verify the format of the nextStep hint that agent_start embeds in
 // every success response (both DROP and AWAIT modes).
 
 describe("nextStep hint format", () => {
@@ -261,12 +261,12 @@ describe("nextStep hint format", () => {
 
     // Reproduce the buildNextStep logic from session-tools.ts.
     const nextStep =
-      `wait_for_any({ sessionIds: ['${desc.id}'], event: 'turn-end' })` +
-      `  |  get_agent_session_output({ sessionId: '${desc.id}' })`
+      `session_monitor({ sessionIds: ['${desc.id}'], event: 'turn-end' })` +
+      `  |  agent_output({ sessionId: '${desc.id}' })`
 
     expect(nextStep).toContain(desc.id)
-    expect(nextStep).toContain("wait_for_any")
-    expect(nextStep).toContain("get_agent_session_output")
+    expect(nextStep).toContain("session_monitor")
+    expect(nextStep).toContain("agent_output")
 
     reg.shutdown()
   })

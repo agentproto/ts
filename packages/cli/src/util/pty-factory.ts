@@ -12,7 +12,7 @@
  *    dispatched spawns over the tunnel use this factory when the
  *    spawn frame requests `pty: true`.
  *  - `createGateway` (packages/runtime/src/index.ts) — local
- *    `POST /sessions/terminal` route + MCP `start_terminal_session`
+ *    `POST /sessions/terminal` route + MCP `terminal_start`
  *    tool use this factory to register PTY-backed sessions in the
  *    daemon's registry.
  *

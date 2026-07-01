@@ -8,7 +8,7 @@
  * `--connect <url>` is set. With or without the tunnel:
  *
  *   - HTTP /sessions, /sessions/agent, /sessions/:id/* routes work
- *   - MCP tools (start_agent_session, prompt_agent_session, …) are
+ *   - MCP tools (agent_start, agent_prompt, …) are
  *     reachable via the daemon's /mcp transport
  *   - the LocalDaemonSessionsCard in guilde-web sees every spawn
  *
@@ -290,9 +290,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // No cache / unreadable — the committed baseline serves on its own.
   }
 
-  // ── adapter resolver (powers MCP start_agent_session) ──
+  // ── adapter resolver (powers MCP agent_start) ──
   // Wires the cli's adapter registry into the gateway's
-  // /sessions/agent route + the start_agent_session MCP tool.
+  // /sessions/agent route + the agent_start MCP tool.
   // When unwired, those routes return 501 with a clear message.
   const resolveAgentAdapter: AgentAdapterResolver = async slug => {
     try {
@@ -331,7 +331,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── pty factory ──
   // Resolved once at boot and shared between the local gateway (powers
-  // POST /sessions/terminal + the four start_terminal_session MCP
+  // POST /sessions/terminal + the four terminal_start MCP
   // tools + the WS /sessions/:id/pty bridge) AND the tunnel server
   // below (cloud-driven spawns with pty:true on the spawn frame).
   // When node-pty is missing, the factory is null and both paths
@@ -339,7 +339,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // pty:true spawns.
   const spawnPty = await loadNodePtyFactory()
 
-  // ── browser adapter resolver + lister (powers MCP start_browser / list_adapter_browsers) ──
+  // ── browser adapter resolver + lister (powers MCP start_browser / browser_adapter_list) ──
   const resolveBrowserAdapter = (id: string) => getBrowserAdapter(id)
   const listBrowserAdapters = () =>
     Object.values(browserAdapters).map(a => ({
@@ -366,7 +366,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // BOOT.md is silly for a tunnel daemon — skip it.
       boot: false,
       resolveAgentAdapter,
-      // Discovery for UIs / operators — `GET /adapters` + `list_adapters`
+      // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed.
       listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),

@@ -42,7 +42,7 @@ export interface ResolvedAdapter {
 /**
  * Compact metadata about an installed adapter — the shape returned
  * by `listInstalledAdapters()` and exposed via the daemon's
- * `GET /adapters` route + `list_adapters` MCP tool. Only fields
+ * `GET /adapters` route + `adapter_list` MCP tool. Only fields
  * safe to surface in a UI list (no install scripts, no env keys).
  * For full handle access call `resolveAdapter(slug)`.
  */
@@ -66,7 +66,7 @@ export interface AdapterInfo {
   /** Known-valid model identifiers for this adapter, drawn from the
    *  adapter manifest's `models.allowed` field. Empty when the adapter
    *  doesn't declare a model list (accepts whatever the underlying
-   *  binary accepts). Pass one of these as `model` in `start_agent_session`
+   *  binary accepts). Pass one of these as `model` in `agent_start`
    *  to avoid trial-and-error validation errors. */
   models: string[]
 }
@@ -134,7 +134,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
 /**
  * Enumerate every `@agentproto/adapter-*` package reachable from the
  * current node module-resolution path. Used by the daemon's
- * `GET /adapters` route and `list_adapters` MCP tool so UIs (web
+ * `GET /adapters` route and `adapter_list` MCP tool so UIs (web
  * spawn dialog) and operators can pick from the installed set
  * without trial-and-error against `resolveAdapter(slug)`.
  *

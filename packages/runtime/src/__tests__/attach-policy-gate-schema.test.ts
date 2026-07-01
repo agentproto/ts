@@ -1,5 +1,5 @@
 /**
- * Schema-level tests for the `gate` union in `attach_policy` (WP7).
+ * Schema-level tests for the `gate` union in `policy_attach` (WP7).
  *
  * (a) judge variant accepted without `command`
  * (b) shell variant still accepted
@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest"
 import { gateInputSchema } from "../orchestration-tools.js"
 
-describe("attach_policy gate input schema", () => {
+describe("policy_attach gate input schema", () => {
   it("(a) judge gate { judge: { adapter, prompt } } is accepted", () => {
     const result = gateInputSchema.safeParse({
       judge: { adapter: "claude-code", prompt: "Is the output correct?" },

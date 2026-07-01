@@ -36,7 +36,7 @@ export interface SupervisorHarnessOptions {
 export interface SupervisorHandle extends AgentHandle {
   /** Snapshot this session's child subtree (→ `session_tree`). */
   subtree(): Promise<unknown>
-  /** Block until ANY child session ends a turn (→ `wait_for_any`). */
+  /** Block until ANY child session ends a turn (→ `session_monitor`). */
   waitForAnyChild(opts?: { timeoutMs?: number }): Promise<TurnResult>
 }
 
@@ -46,7 +46,7 @@ const DEFAULTS = {
 } as const
 
 /**
- * Build the `start_agent_session` args for the supervisor preset. Exported so
+ * Build the `agent_start` args for the supervisor preset. Exported so
  * WP5's unit test can assert `orchestrator` + the rendered WP brief.
  */
 export function buildSupervisorArgs(
@@ -94,7 +94,7 @@ export async function createSupervisorHarness(
           event: "timeout",
         }
       }
-      // wait_for_any accepts max 20 session IDs — chunk & race
+      // session_monitor accepts max 20 session IDs — chunk & race
       const CHUNK = 20
       if (childIds.length <= CHUNK) {
         return client.waitForAny(childIds, opts)
@@ -104,7 +104,7 @@ export async function createSupervisorHarness(
         chunks.push(childIds.slice(i, i + CHUNK))
       }
       // NOTE: losing chunks are not cancellable — they poll until their own timeoutMs
-      // expires. This is a known limitation of the wait_for_any tool (no cancel API).
+      // expires. This is a known limitation of the session_monitor tool (no cancel API).
       // Impact: at most (Math.ceil(n/20) - 1) extra open long-polls until timeout.
       return Promise.race(chunks.map((chunk) => client.waitForAny(chunk, opts)))
     },

@@ -1,10 +1,10 @@
 /**
  * MCP tools for event-driven orchestration:
- *   - poll_events   — cheap cursor-based snapshot of session events
- *   - wait_for_any  — multiplexed long-poll (1 call for N sessions)
+ *   - session_events_poll — cheap cursor-based snapshot of session events
+ *   - session_monitor     — multiplexed long-poll (1 call for N sessions)
  *
  * These complement the existing per-session waitForTurnEnd inside
- * get_agent_session_output. The new tools handle multi-session fan-in
+ * agent_output. The new tools handle multi-session fan-in
  * and external-client retrigger without burning polling tokens.
  */
 
@@ -22,7 +22,7 @@ import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 
 /**
- * Zod schema for the `gate` field of `attach_policy`.
+ * Zod schema for the `gate` field of `policy_attach`.
  * Exported so tests can validate the schema directly.
  *
  * Union of two variants:
@@ -61,9 +61,9 @@ export interface RegisterOrchestrationToolsOptions {
   /**
    * When set, this is the calling orchestrator's scope (WP6 supervisor
    * composition). Enables subtree-scoped policy operations:
-   *   - attach_policy may only target sessions in the caller's subtree
+   *   - policy_attach may only target sessions in the caller's subtree
    *   - then:"commit" is refused (host commit is an operator gesture)
-   *   - get_policy_status / list_policies / cancel_policy only see
+   *   - policy_status / policy_list / policy_cancel only see
    *     policies whose watched sessions are all within the caller's subtree
    * Absent → operator/root context, no additional restrictions.
    */
@@ -94,12 +94,12 @@ export function registerOrchestrationTools(
     return ids.every(id => subtree.has(id))
   }
 
-  // ── poll_events ──────────────────────────────────────────────────
+  // ── session_events_poll ───────────────────────────────────────────
   server.tool(
-    "poll_events",
+    "session_events_poll",
     "Lightweight cursor-based snapshot of session lifecycle events " +
       "(turn-end, awaiting-input, exited). Returns only what changed since " +
-      "the last call — cheap, no transcript. Use `wait_for_any` to block " +
+      "the last call — cheap, no transcript. Use `session_monitor` to block " +
       "efficiently; use this for a quick status sweep between other work.",
     {
       since: z
@@ -146,10 +146,10 @@ export function registerOrchestrationTools(
   const { routineRunner } = opts
   if (routineRunner) {
     server.tool(
-      "start_routine",
+      "routine_start",
       "Start a routine — a named sequence of steps that spawn agent sessions " +
         "and fan-in on their turn-end events. Returns a runId immediately; " +
-        "the routine executes in the background. Poll with `get_routine_status`.",
+        "the routine executes in the background. Poll with `routine_status`.",
       {
         routineId: z.string().describe("Arbitrary label for this routine type (e.g. 'daily-brief')."),
         steps: z
@@ -202,10 +202,10 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "get_routine_status",
-      "Poll the status of a background routine run started with `start_routine`.",
+      "routine_status",
+      "Poll the status of a background routine run started with `routine_start`.",
       {
-        runId: z.string().describe("Run id returned by `start_routine`."),
+        runId: z.string().describe("Run id returned by `routine_start`."),
       },
       async input => {
         const run = routineRunner.status(input.runId)
@@ -219,7 +219,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "cancel_routine",
+      "routine_cancel",
       "Cancel a running routine. Steps already in flight will finish, but no " +
         "new steps will be started.",
       {
@@ -233,7 +233,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "resolve_routine_escalation",
+      "routine_escalation_resolve",
       "Provide an external answer to a routine step that escalated because a " +
         "session asked for human input (policy=escalate).",
       {
@@ -248,7 +248,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "list_routines",
+      "routine_list",
       "List all routine runs (running, done, failed, cancelled).",
       {},
       async () => {
@@ -259,7 +259,7 @@ export function registerOrchestrationTools(
   }
 
   // ── Supervisor tools ─────────────────────────────────────────────────────────
-  // attach_policy / get_policy_status / list_policies / cancel_policy are
+  // policy_attach / policy_status / policy_list / policy_cancel are
   // registered UNCONDITIONALLY because they appear in DEFAULT_ORCHESTRATOR_TOOLS
   // and therefore in every scoped subset. A tool declared in the subset but not
   // registered on the server causes the MCP handshake to hang indefinitely
@@ -267,7 +267,7 @@ export function registerOrchestrationTools(
   // structured error instead of a live result — clean fail, no hang.
   const { supervisor } = opts
 
-  // Base shape of a completion policy (shared by attach_policy and, via
+  // Base shape of a completion policy (shared by policy_attach and, via
   // z.lazy, the recursive `next` DAG chain — WP6).
   {
     const policyShapeBase = {
@@ -315,7 +315,7 @@ export function registerOrchestrationTools(
             .describe(
               "Default TRUE. When true, the green gate parks in awaiting-ack " +
                 "and emits policy:commit-ready; the commit runs only on " +
-                "ack_policy(approve:true). When false, commits directly. " +
+                "policy_ack(approve:true). When false, commits directly. " +
                 "Never pushes, never --force.",
             ),
         }),
@@ -372,12 +372,12 @@ export function registerOrchestrationTools(
     }
 
     server.tool(
-      "attach_policy",
+      "policy_attach",
       "Attach a completion policy to a running session (or a fan-in group). When " +
         "the watched session emits turn-end — or, for a group, once EVERY member " +
         "has finished its turn — an optional shell gate runs (exit 0 = pass). The " +
         "result is emitted as `policy:passed` or `policy:failed` on the event bus " +
-        "(readable via poll_events). A policy may declare `next` to chain another " +
+        "(readable via session_events_poll). A policy may declare `next` to chain another " +
         "policy when it completes (WP6 DAG). Returns the policyId immediately.",
       {
         ...policyShapeBase,
@@ -392,7 +392,7 @@ export function registerOrchestrationTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ error: "attach_policy requires sessionId or a non-empty sessionIds" }),
+                text: JSON.stringify({ error: "policy_attach requires sessionId or a non-empty sessionIds" }),
               },
             ],
           }
@@ -447,7 +447,7 @@ export function registerOrchestrationTools(
                 {
                   type: "text",
                   text: JSON.stringify({
-                    error: `attach_policy denied: sessions not in caller subtree: ${outside.join(", ")}`,
+                    error: `policy_attach denied: sessions not in caller subtree: ${outside.join(", ")}`,
                     forbidden: outside,
                   }),
                 },
@@ -482,10 +482,10 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "get_policy_status",
-      "Get the current status of a completion policy attached with `attach_policy`.",
+      "policy_status",
+      "Get the current status of a completion policy attached with `policy_attach`.",
       {
-        policyId: z.string().describe("Policy id returned by `attach_policy`."),
+        policyId: z.string().describe("Policy id returned by `policy_attach`."),
       },
       async input => {
         if (!supervisor) {
@@ -512,7 +512,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "cancel_policy",
+      "policy_cancel",
       "Cancel a watching or gating completion policy. No-op on done/blocked policies.",
       {
         policyId: z.string().describe("Policy id to cancel."),
@@ -526,7 +526,7 @@ export function registerOrchestrationTools(
           const state = supervisor.getStatus(input.policyId)
           if (!state || !callerScope.ownerSessionId || !isPolicyInSubtree(state, callerScope.ownerSessionId)) {
             return {
-              content: [{ type: "text", text: JSON.stringify({ error: "cancel denied: policy not found or outside caller subtree", policyId: input.policyId }) }],
+              content: [{ type: "text", text: JSON.stringify({ error: "policy_cancel denied: policy not found or outside caller subtree", policyId: input.policyId }) }],
             }
           }
         }
@@ -538,19 +538,19 @@ export function registerOrchestrationTools(
       },
     )
 
-    // ack_policy is intentionally absent from DEFAULT_ORCHESTRATOR_TOOLS (host
+    // policy_ack is intentionally absent from DEFAULT_ORCHESTRATOR_TOOLS (host
     // commits are an operator gesture, not a child-orchestrator one — WP6).
     // Register it only when a supervisor is present, consistent with the
     // declared ≡ registered invariant.
     if (supervisor) {
     server.tool(
-      "ack_policy",
+      "policy_ack",
       "Acknowledge a `then:\"commit\"` policy parked in `awaiting-ack` (WP5). " +
         "`approve:true` runs the prepared host commit (git add <paths> + git " +
         "commit; never -A/push/--force) → emits policy:committed (+sha) → done. " +
         "`approve:false` cancels it (no commit). No-op on any other state.",
       {
-        policyId: z.string().describe("Policy id returned by `attach_policy`."),
+        policyId: z.string().describe("Policy id returned by `policy_attach`."),
         approve: z
           .boolean()
           .describe("true → run the commit; false → cancel without committing."),
@@ -581,10 +581,10 @@ export function registerOrchestrationTools(
         }
       },
     )
-    } // end if (supervisor) for ack_policy
+    } // end if (supervisor) for policy_ack
 
     server.tool(
-      "list_policies",
+      "policy_list",
       "List all completion policies (watching, gating, done, blocked, cancelled).",
       {},
       async () => {
@@ -608,9 +608,9 @@ export function registerOrchestrationTools(
     )
   }
 
-  // ── wait_for_any ─────────────────────────────────────────────────
+  // ── session_monitor ──────────────────────────────────────────────
   server.tool(
-    "wait_for_any",
+    "session_monitor",
     "Multiplexed long-poll: block until ANY of the listed sessions fires a " +
       "lifecycle event. Returns immediately when a session is already in the " +
       "target state. Eliminates polling in multi-session fan-in orchestration — " +
@@ -641,7 +641,7 @@ export function registerOrchestrationTools(
         .min(0)
         .optional()
         .describe(
-          "Event-ring cursor (from a prior poll_events nextCursor). When set, an already-emitted matching event for a watched session is returned immediately — race-free — before long-polling."
+          "Event-ring cursor (from a prior session_events_poll nextCursor). When set, an already-emitted matching event for a watched session is returned immediately — race-free — before long-polling."
         ),
     },
     async input => {
@@ -803,21 +803,21 @@ export function registerOrchestrationTools(
     },
   )
 
-  // ── start_inbound_watcher ────────────────────────────────────────
+  // ── inbound_watcher_start ────────────────────────────────────────
   if (inboundWatcher) {
     server.tool(
-      "start_inbound_watcher",
+      "inbound_watcher_start",
       "Start a background poller that watches an agentpush source for new inbound " +
         "messages and spawns one agent per contact_ref. The agent receives the " +
         "inbound events inline via the prompt template. Returns a watcherId you " +
-        "can pass to stop_inbound_watcher or list_inbound_watchers.",
+        "can pass to inbound_watcher_stop or inbound_watcher_list.",
       {
         alias: z
           .string()
           .min(1)
           .describe(
             "Imported MCP alias for the agentpush server (e.g. 'agentpush'). " +
-              "Import it first with import_mcp.",
+              "Import it first with mcp_import.",
           ),
         source: z
           .string()
@@ -880,7 +880,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "stop_inbound_watcher",
+      "inbound_watcher_stop",
       "Stop a running inbound watcher. The watcher's cursor position is preserved " +
         "in memory (and flushed to disk on daemon shutdown) so a new watcher " +
         "started later can pick up where it left off.",
@@ -888,7 +888,7 @@ export function registerOrchestrationTools(
         watcherId: z
           .string()
           .min(1)
-          .describe("Watcher id returned by start_inbound_watcher."),
+          .describe("Watcher id returned by inbound_watcher_start."),
       },
       async input => {
         const ok = inboundWatcher.stop(input.watcherId)
@@ -914,7 +914,7 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
-      "list_inbound_watchers",
+      "inbound_watcher_list",
       "List all inbound watchers (running and stopped) with their cursor position, " +
         "last poll time, last fire time, and total spawned session count.",
       {},

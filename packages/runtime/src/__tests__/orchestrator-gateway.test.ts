@@ -3,7 +3,7 @@
  *
  * Proves the three load-bearing security properties:
  *   (a) the scoped server exposes ONLY the curated subset — danger tools
- *       like execute_command are absent;
+ *       like command_execute are absent;
  *   (b) a caller-requested subset wider than the default is narrowed
  *       (⊆ default) — it can never widen;
  *   (c) the `/mcp/orchestrator` HTTP endpoint requires a valid
@@ -40,18 +40,17 @@ import type { HeartbeatRunner } from "../heartbeat.js"
 // ADR §4.3). Used to assert absence rather than just checking the
 // allowlist, so a future leak via createMcpServer/register* is caught.
 const FORBIDDEN_TOOLS = [
-  "execute_command",
-  "read_file",
-  "write_file",
-  "delete_file",
-  "create_directory",
+  "command_execute",
+  "file_read",
+  "file_write",
+  "file_delete",
+  "directory_create",
   "remote_enable",
   "remote_disable",
   "import_mcp",
   "mcp_imported_call",
-  "mcp_imported_list_tools",
-  "start_terminal_session",
-  "write_terminal_input",
+  "mcp_imported_tool_list",
+  "terminal_input",
   "self_inspect",
 ]
 
@@ -93,24 +92,24 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
       expect(names).not.toContain(forbidden)
     }
     // Spot-check the headline danger tool explicitly.
-    expect(names).not.toContain("execute_command")
+    expect(names).not.toContain("command_execute")
   })
 
   it("(b) narrows a caller-requested subset to ⊆ default (cannot widen)", async () => {
     // Caller asks for a danger tool + a phantom tool + one legit tool.
     const requested = [
-      "execute_command", // danger — must be dropped
+      "command_execute", // danger — must be dropped
       "remote_enable", // danger — must be dropped
       "totally_made_up", // unknown — must be dropped
-      "start_agent_session", // legit — survives
-      "poll_events", // legit — survives
+      "agent_start", // legit — survives
+      "session_events_poll", // legit — survives
     ]
     const narrowed = narrowOrchestratorTools(requested)
     // Pure-logic invariant: result ⊆ default, danger excluded.
-    expect(narrowed.has("execute_command")).toBe(false)
+    expect(narrowed.has("command_execute")).toBe(false)
     expect(narrowed.has("remote_enable")).toBe(false)
     expect(narrowed.has("totally_made_up")).toBe(false)
-    expect([...narrowed].sort()).toEqual(["poll_events", "start_agent_session"])
+    expect([...narrowed].sort()).toEqual(["agent_start", "session_events_poll"])
     for (const t of narrowed) {
       expect(DEFAULT_ORCHESTRATOR_TOOLS).toContain(t)
     }
@@ -123,8 +122,8 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     })
     const scope = createScopeTokenRegistry().mint({ tools: requested })
     const names = await listToolNames(factory, scope)
-    expect(names).toEqual(["poll_events", "start_agent_session"])
-    expect(names).not.toContain("execute_command")
+    expect(names).toEqual(["agent_start", "session_events_poll"])
+    expect(names).not.toContain("command_execute")
   })
 
   it("scope-token registry: mint → verify roundtrip; bad/missing → null", () => {
@@ -231,7 +230,7 @@ describe("orchestrator sub-gateway — HTTP scope-token gate (no loopback bypass
       const { tools } = await client.listTools()
       const names = tools.map(t => t.name).sort()
       expect(names).toEqual([...DEFAULT_ORCHESTRATOR_TOOLS].sort())
-      expect(names).not.toContain("execute_command")
+      expect(names).not.toContain("command_execute")
       await client.close()
     })
   })
@@ -300,9 +299,9 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
    *
    * We then build a scoped server with callerScope = { ownerSessionId: "owner" }
    * and verify that:
-   *   1. attach_policy on "child" (in subtree) → succeeds (policyId returned)
-   *   2. attach_policy on "outside" (not in subtree) → error denied
-   *   3. attach_policy with then:"commit" via scoped token → error refused
+   *   1. policy_attach on "child" (in subtree) → succeeds (policyId returned)
+   *   2. policy_attach on "outside" (not in subtree) → error denied
+   *   3. policy_attach with then:"commit" via scoped token → error refused
    */
   let fakeSessionSeq = 0
   function fakeSession(): AgentSessionLike {
@@ -367,10 +366,10 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
     }
   }
 
-  it("attach_policy on a session in the caller's subtree → ok (policyId returned)", async () => {
+  it("policy_attach on a session in the caller's subtree → ok (policyId returned)", async () => {
     await withScopedClient(async (client, _owner, child) => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: { sessionId: child, then: "emit" },
       })
       const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
@@ -380,10 +379,10 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
     })
   })
 
-  it("attach_policy on a session outside the caller's subtree → denied", async () => {
+  it("policy_attach on a session outside the caller's subtree → denied", async () => {
     await withScopedClient(async client => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: { sessionId: "outside-session", then: "emit" },
       })
       const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
@@ -393,10 +392,10 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
     })
   })
 
-  it('attach_policy with then:"commit" via a scoped (child) token → refused', async () => {
+  it('policy_attach with then:"commit" via a scoped (child) token → refused', async () => {
     await withScopedClient(async (client, _owner, child) => {
       const result = await client.callTool({
-        name: "attach_policy",
+        name: "policy_attach",
         arguments: {
           sessionId: child,
           then: "commit",
