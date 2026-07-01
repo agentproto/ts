@@ -27,7 +27,11 @@ vi.mock("@agentproto/acp/client", () => ({
 }))
 
 import { createAcpClient } from "@agentproto/acp/client"
-import { createAcpProtocolArm } from "../acp-client.js"
+import {
+  createAcpProtocolArm,
+  planModePermissionHandler,
+  type AcpPermissionHandler,
+} from "../acp-client.js"
 
 /** A minimal ChildProcess stand-in with piped stdio the arm can wrap. */
 function fakeChild(): ChildProcess {
@@ -156,5 +160,133 @@ describe("AcpProtocolArm.connect — turnIdleTimeoutMs threading", () => {
     expect(vi.mocked(createAcpClient)).toHaveBeenCalledWith(
       expect.objectContaining({ turnIdleTimeoutMs: undefined }),
     )
+  })
+})
+
+// Regression coverage for the plan-mode auto-allow bug: a session spawned
+// with mode:"plan" wrote a file anyway because the default permission
+// handler auto-approved Claude Code's "ready to code?" (ExitPlanMode)
+// escalation, whose options carry the same allow_always/allow_once/
+// reject_once kinds as any ordinary tool approval — the only reliable
+// discriminator is `toolCall.kind === "switch_mode"` (confirmed by
+// reading the installed @agentclientprotocol/claude-agent-acp@0.54.1
+// wrapper's compiled source).
+const switchModeExit = {
+  sessionId: "sess-1",
+  toolCall: { toolCallId: "t1", kind: "switch_mode", title: "Ready to code?" },
+  options: [
+    { optionId: "auto", kind: "allow_always", name: 'Yes, and use "auto" mode' },
+    { optionId: "acceptEdits", kind: "allow_always", name: "Yes, and auto-accept edits" },
+    { optionId: "default", kind: "allow_once", name: "Yes, and manually approve edits" },
+    { optionId: "plan", kind: "reject_once", name: "No, keep planning" },
+  ],
+}
+
+const ordinaryWriteApproval = {
+  sessionId: "sess-1",
+  toolCall: { toolCallId: "t2", kind: "edit", title: "canary.txt" },
+  options: [
+    { optionId: "allow_always", kind: "allow_always", name: "Always allow Write" },
+    { optionId: "allow", kind: "allow_once", name: "Allow" },
+    { optionId: "reject", kind: "reject_once", name: "Reject" },
+  ],
+}
+
+describe("planModePermissionHandler", () => {
+  it("rejects the plan-mode-exit escalation by selecting the reject_once option", async () => {
+    const outcome = await planModePermissionHandler(switchModeExit)
+    expect(outcome).toEqual({ outcome: { outcome: "selected", optionId: "plan" } })
+  })
+
+  it("falls back to cancelled for a switch_mode request with no reject_once option offered", async () => {
+    const outcome = await planModePermissionHandler({
+      ...switchModeExit,
+      options: switchModeExit.options.filter(o => o.kind !== "reject_once"),
+    })
+    expect(outcome).toEqual({ outcome: { outcome: "cancelled" } })
+  })
+
+  it("still auto-approves an ordinary tool permission request", async () => {
+    const outcome = await planModePermissionHandler(ordinaryWriteApproval)
+    expect(outcome).toEqual({
+      outcome: { outcome: "selected", optionId: "allow_always" },
+    })
+  })
+
+  it("returns cancelled when no options are offered at all", async () => {
+    const outcome = await planModePermissionHandler({ sessionId: "sess-1" })
+    expect(outcome).toEqual({ outcome: { outcome: "cancelled" } })
+  })
+})
+
+describe("AcpProtocolArm.connect — permission handler selection by requestedMode", () => {
+  function capturedRequestPermission(): AcpPermissionHandler {
+    const call = vi.mocked(createAcpClient).mock.calls.at(-1)![0] as {
+      handlers: { requestPermission: AcpPermissionHandler }
+    }
+    return call.handlers.requestPermission
+  }
+
+  it("guards against the plan-mode-exit escalation when requestedMode is 'plan' and no onPermissionRequest override is given", async () => {
+    const arm = createAcpProtocolArm({
+      child: fakeChild(),
+      cwd: "/work",
+      requestedMode: "plan",
+    })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    const outcome = await capturedRequestPermission()(switchModeExit)
+    expect(outcome).toEqual({ outcome: { outcome: "selected", optionId: "plan" } })
+  })
+
+  it("still auto-approves ordinary tool permission requests when requestedMode is 'plan'", async () => {
+    const arm = createAcpProtocolArm({
+      child: fakeChild(),
+      cwd: "/work",
+      requestedMode: "plan",
+    })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    const outcome = await capturedRequestPermission()(ordinaryWriteApproval)
+    expect(outcome).toEqual({
+      outcome: { outcome: "selected", optionId: "allow_always" },
+    })
+  })
+
+  it("does not guard the escalation when no mode was requested — today's default-mode behavior is unchanged", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    const outcome = await capturedRequestPermission()(switchModeExit)
+    // Same as autoAllowPermissionHandler: first allow_* option wins.
+    expect(outcome).toEqual({ outcome: { outcome: "selected", optionId: "auto" } })
+  })
+
+  it("does not guard the escalation for a non-plan mode (e.g. 'accept-edits')", async () => {
+    const arm = createAcpProtocolArm({
+      child: fakeChild(),
+      cwd: "/work",
+      requestedMode: "accept-edits",
+    })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    const outcome = await capturedRequestPermission()(switchModeExit)
+    expect(outcome).toEqual({ outcome: { outcome: "selected", optionId: "auto" } })
+  })
+
+  it("prefers a caller-supplied onPermissionRequest over the mode-aware default even when requestedMode is 'plan'", async () => {
+    const custom = vi.fn(async () => ({
+      outcome: { outcome: "cancelled" as const },
+    }))
+    const arm = createAcpProtocolArm({
+      child: fakeChild(),
+      cwd: "/work",
+      requestedMode: "plan",
+      onPermissionRequest: custom,
+    })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    await capturedRequestPermission()(ordinaryWriteApproval)
+    expect(custom).toHaveBeenCalledWith(ordinaryWriteApproval)
   })
 })
