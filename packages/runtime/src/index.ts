@@ -58,6 +58,7 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
+import { createWorkflowRunner } from "./workflow-runner.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 export type {
@@ -424,6 +425,20 @@ export async function createGateway(
       })
     : undefined
 
+  // Workflow runner — sibling primitive to routineRunner (stage-barrier
+  // parallel orchestration rather than a flat sequential list). Same
+  // singleton-per-daemon, same persistence pattern, own persist file
+  // (~/.agentproto/workflow-runs.json) so the two run stores never collide.
+  const workflowRunner = opts.resolveAgentAdapter
+    ? createWorkflowRunner({
+        registry: sessions,
+        sessionEvents,
+        resolveAgentAdapter: opts.resolveAgentAdapter,
+        webhookNotifier,
+        persist: true,
+      })
+    : undefined
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -556,6 +571,7 @@ export async function createGateway(
       eventRing,
       supervisor,
       ...(routineRunner ? { routineRunner } : {}),
+      ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
