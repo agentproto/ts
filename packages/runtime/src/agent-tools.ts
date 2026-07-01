@@ -67,7 +67,7 @@ function cleanAgentLines(lines: string[]): string[] {
     })
 }
 
-interface RegisterAgentToolsOptions {
+export interface RegisterAgentToolsOptions {
   registry: SessionsRegistry
   /** Optional adapter resolver — required for `agent_start`
    *  (the others work with raw spawn sessions too). When unset the
