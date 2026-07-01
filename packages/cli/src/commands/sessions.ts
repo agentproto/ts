@@ -323,7 +323,7 @@ async function runWait(args: readonly string[]): Promise<number> {
   })
 
   const target = positionals[0]
-  if (!target) {
+  if (!target && !values.policy) {
     process.stderr.write(
       "agentproto sessions wait: missing session id or policy id.\n" +
         "  Try: agentproto sessions wait <id-or-name>\n" +
@@ -381,7 +381,7 @@ async function runWait(args: readonly string[]): Promise<number> {
   const endpoint = report.found
 
   // --policy wins: wait on the policy resolution endpoint instead of the
-  // session-event endpoint. The positional is the policyId in that mode.
+  // session-event endpoint. The positional (if any) is ignored in that mode.
   if (values.policy) {
     return runWaitPolicy({
       endpoint,
@@ -389,6 +389,13 @@ async function runWait(args: readonly string[]): Promise<number> {
       totalTimeout,
       json: values.json === true,
     })
+  }
+
+  // Reachable only with `target` set — the guard above already rejected
+  // `!target && !values.policy`, and `values.policy` is falsy on this path.
+  if (!target) {
+    process.stderr.write("agentproto sessions wait: missing session id.\n")
+    return 2
   }
 
   return runWaitSession({
