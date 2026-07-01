@@ -89,12 +89,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
-    /** Model identifier forwarded from `start_agent_session`. For ACP
+    /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
      *  Adapters that don't support model selection ignore it. */
     model?: string
-    /** Effort level forwarded from `start_agent_session`. Effort is
+    /** Effort level forwarded from `agent_start`. Effort is
      *  model-dependent — same label ≠ same budget across models; defaults
      *  differ by model. Omit to keep the model's own default. Applied
      *  via session/set_config_option on ACP adapters; others ignore it. */

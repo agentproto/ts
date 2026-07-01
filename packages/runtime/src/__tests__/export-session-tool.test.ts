@@ -1,5 +1,5 @@
 /**
- * MCP protocol tests for the export_agent_session tool.
+ * MCP protocol tests for the agent_export tool.
  *
  * Uses InMemoryTransport (same approach as sessions-panel-mcp.test.ts) to
  * avoid spawning a real daemon. The export function is injected via

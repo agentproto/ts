@@ -2,7 +2,7 @@
  * Unit tests for the per-session notifyUrl lifecycle in registerSessionTools.
  *
  * Proves:
- *   (a) start_agent_session with notifyUrl calls webhookNotifier.register(sessionId, url)
+ *   (a) agent_start with notifyUrl calls webhookNotifier.register(sessionId, url)
  *   (b) a session:exited event (wired the same way index.ts does) calls
  *       webhookNotifier.unregister(sessionId) — preventing map leaks.
  */

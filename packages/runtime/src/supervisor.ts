@@ -26,9 +26,9 @@
  *
  * Trigger: session:turn-end on the watched session(s).
  * Gate: optional shell command via the same allowlist + cwd-anchor as
- *       execute_command. exit 0 = pass.
+ *       command_execute. exit 0 = pass.
  * Action (then:"emit"): emits policy:passed / policy:failed on the bus
- *       (readable via poll_events).
+ *       (readable via session_events_poll).
  *
  * WP5 (then:"commit"): on a GREEN gate, prepare a host-side git commit in the
  * watched session's cwd — `git add -- <explicit paths>` then `git commit -m
@@ -40,7 +40,7 @@
  * "nothing to commit" is treated as SUCCESS (idempotent re-commit after a
  * restart). `requireHumanAck` defaults to TRUE: the gate-green transition goes
  * to `awaiting-ack` and emits `policy:commit-ready` (paths + message) instead of
- * committing; the commit runs only on `ack_policy(approve:true)` →
+ * committing; the commit runs only on `policy_ack(approve:true)` →
  * `policy:committed` (+ sha) → done; `approve:false` → cancelled. With
  * `requireHumanAck:false` the commit runs directly at the green gate.
  * onFail (WP2): when gate fails, re-prompts the session(s) (sendPrompt) up to
@@ -182,7 +182,7 @@ export interface CommitSpec {
   /**
    * Human-in-the-loop gate before the commit actually runs. Default TRUE:
    * the green gate transitions to `awaiting-ack` + emits `policy:commit-ready`
-   * and waits for `ack_policy`. Set false to commit directly at the green gate.
+   * and waits for `policy_ack`. Set false to commit directly at the green gate.
    */
   requireHumanAck?: boolean
 }
@@ -328,7 +328,7 @@ function resolveGroup(input: AttachPolicyInput): string[] {
         : []
   const group = Array.from(new Set(raw))
   if (group.length === 0) {
-    throw new Error("attach_policy requires sessionId or a non-empty sessionIds")
+    throw new Error("policy_attach requires sessionId or a non-empty sessionIds")
   }
   return group
 }
@@ -399,7 +399,7 @@ export function createCompletionPolicySupervisor(opts: {
   concurrencyCap?: number
   /**
    * Adapter resolver used to spawn a judge agent for a judge-gate (WP7).
-   * Same resolver the daemon passes to `start_agent_session`. When absent, a
+   * Same resolver the daemon passes to `agent_start`. When absent, a
    * judge-gate fails fail-safe (FAIL) with a clear reason — shell gates are
    * unaffected.
    */
@@ -692,7 +692,7 @@ export function createCompletionPolicySupervisor(opts: {
               message: commit.message,
               ts: new Date().toISOString(),
             })
-            // Stop watching the bus; ack_policy drives the rest. The entry
+            // Stop watching the bus; policy_ack drives the rest. The entry
             // stays in `runs` so ack() can find it.
             cleanup()
             pumpQueue() // WP6: parked awaiting ack — release the slot
@@ -763,7 +763,7 @@ export function createCompletionPolicySupervisor(opts: {
     /**
      * Read the recent ring-buffer tail of a session (best-effort) — used to
      * give the judge a minimal context of the watched session's output. Mirrors
-     * get_agent_session_output: attach captures the backfill synchronously, then
+     * agent_output: attach captures the backfill synchronously, then
      * unsubscribe. Returns "" when the session/attach is unavailable.
      */
     const readTail = (sessionId: string, lastN: number): string => {
@@ -1045,7 +1045,7 @@ export function createCompletionPolicySupervisor(opts: {
 
           // WP5: a commit parked awaiting human ack stays awaiting-ack across a
           // restart — re-armed neither to watching nor to a terminal state. No
-          // bus subscription (it's past gating); ack_policy drives it. The
+          // bus subscription (it's past gating); policy_ack drives it. The
           // commitPlan persisted with it carries the exact paths/message/cwd.
           if (state.status === "awaiting-ack") {
             runs.set(state.policyId, {

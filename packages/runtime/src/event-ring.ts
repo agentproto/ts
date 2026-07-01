@@ -1,6 +1,6 @@
 /**
  * Cursor-based ring buffer for session events. Bridges the in-process
- * SessionEventBus (push) to the poll_events MCP tool (pull).
+ * SessionEventBus (push) to the session_events_poll MCP tool (pull).
  *
  * Capacity default: 1 000 events. Oldest entry dropped on overflow —
  * callers that lag beyond the cap see a gap in their cursor but never

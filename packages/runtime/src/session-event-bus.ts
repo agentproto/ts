@@ -3,9 +3,9 @@
  * RuntimeEvents (global daemon bus) — session events are scoped to
  * individual sessions and fire at turn-level granularity.
  *
- * Consumers: EventRing (poll_events cursor), WebhookNotifier
+ * Consumers: EventRing (session_events_poll cursor), WebhookNotifier
  * (fire-and-forget HTTP), RoutineRunner (state machine fan-in),
- * and wait_for_any MCP tool (long-poll multiplexed).
+ * and session_monitor MCP tool (long-poll multiplexed).
  */
 
 import { EventEmitter } from "node:events"
@@ -44,8 +44,8 @@ export interface SessionExitedEvent {
   ts: string
 }
 
-/** Emitted when execute_command finishes. commandId matches the id
- *  returned by the execute_command MCP tool. */
+/** Emitted when command_execute finishes. commandId matches the id
+ *  returned by the command_execute MCP tool. */
 export interface SessionCommandDoneEvent {
   type: "session:command-done"
   sessionId: string
@@ -74,7 +74,7 @@ export interface PolicyFailedEvent {
 /**
  * Emitted by the supervisor (WP5) when a `then:"commit"` policy's gate passes
  * but `requireHumanAck` is set: the commit is staged-and-ready but NOT yet
- * executed. Carries the exact paths + message that `ack_policy(approve:true)`
+ * executed. Carries the exact paths + message that `policy_ack(approve:true)`
  * will commit. The policy sits in `awaiting-ack` until acked.
  */
 export interface PolicyCommitReadyEvent {
@@ -88,7 +88,7 @@ export interface PolicyCommitReadyEvent {
 
 /** Emitted by the supervisor (WP5) when a `then:"commit"` policy has actually
  *  committed — either directly (requireHumanAck:false) or after an approving
- *  `ack_policy`. Carries the resulting commit sha. */
+ *  `policy_ack`. Carries the resulting commit sha. */
 export interface PolicyCommittedEvent {
   type: "policy:committed"
   policyId: string

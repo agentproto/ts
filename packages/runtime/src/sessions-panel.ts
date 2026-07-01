@@ -8,8 +8,8 @@
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage
  *   – Handshake: ui/initialize → host result → ui/notifications/initialized
- *   – Data: tools/call → list_sessions + get_agent_session_output (3 s poll)
- *   – Kill action: tools/call → kill_agent_session | kill_terminal_session
+ *   – Data: tools/call → session_list + agent_output (3 s poll)
+ *   – Kill action: tools/call → agent_kill | terminal_kill
  *     (goes through Claude's normal tool approval flow)
  *
  * The HTML bundle is fully autonomous (zero CDN, zero external deps).

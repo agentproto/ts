@@ -4,7 +4,7 @@
  *   - session_monitor     — multiplexed long-poll (1 call for N sessions)
  *
  * These complement the existing per-session waitForTurnEnd inside
- * get_agent_session_output. The new tools handle multi-session fan-in
+ * agent_output. The new tools handle multi-session fan-in
  * and external-client retrigger without burning polling tokens.
  */
 

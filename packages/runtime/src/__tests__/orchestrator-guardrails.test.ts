@@ -358,7 +358,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
     return { C: C.id, D: D.id, E: E.id, G: G.id, X: X.id }
   }
 
-  it("(e) list_sessions via a scoped token returns only the subtree; kill is subtree-bound", async () => {
+  it("(e) session_list via a scoped token returns only the subtree; kill is subtree-bound", async () => {
     let ids!: ReturnType<typeof buildTree>
     const h = await harness({
       caller: (st, reg) => {

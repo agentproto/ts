@@ -23,7 +23,7 @@ import type { AdapterLister } from "./types.js"
 
 export interface MakeListToolOpts<TInfo> {
   server: McpServer
-  /** e.g. "list_adapters", "list_adapter_browsers". */
+  /** e.g. "list_adapters", "browser_adapter_list". */
   toolName: string
   description: string
   lister: AdapterLister<TInfo>

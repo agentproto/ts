@@ -3,7 +3,7 @@
  * that lets a spawned agent become a *scoped* orchestrator without
  * handing it the daemon's full toolset.
  *
- * The plain `/mcp` endpoint registers EVERY tool (execute_command,
+ * The plain `/mcp` endpoint registers EVERY tool (command_execute,
  * fs_*, remote_*, import_mcp, terminals, driver CRUD) and bypasses auth
  * on loopback — pointing a child at it would be a privilege handout.
  * This module builds a second, scoped MCP server that registers ONLY a

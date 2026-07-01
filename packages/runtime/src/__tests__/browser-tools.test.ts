@@ -2,7 +2,7 @@
  * Tests for registerBrowserTools (T11 — manifest fields exposed over MCP).
  *
  * Verifies:
- *   (a) list_adapter_browsers surfaces location/install/config from the lister
+ *   (a) browser_adapter_list surfaces location/install/config from the lister
  *   (b) start_browser accepts location/baseUrl/binPath in its zod schema
  *
  * Runs fully in-process — no daemon or real browser adapter needed.
@@ -61,7 +61,7 @@ async function makeSetup(opts: {
   return { client, cleanup }
 }
 
-// ── (a) list_adapter_browsers surfaces manifest fields ────────────────────────
+// ── (a) browser_adapter_list surfaces manifest fields ────────────────────────
 
 describe("browser_adapter_list — manifest fields", () => {
   const mockLister: BrowserAdapterLister = () => [

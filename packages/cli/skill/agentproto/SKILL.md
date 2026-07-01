@@ -13,8 +13,8 @@ metadata:
 ## When to use
 
 - Start / check / troubleshoot the agentproto daemon.
-- Spawn or continue a multi-turn agent session (`start_agent_session`,
-  `prompt_agent_session`).
+- Spawn or continue a multi-turn agent session (`agent_start`,
+  `agent_prompt`).
 - Drive imported MCP tools proxied through the daemon (`mcp_imported_call`).
 - Diagnose why `mcp__agentproto__*` tools are missing from a client session.
 - Author or extend a tool/driver in `@agentproto/driver-agent-cli`.
@@ -122,21 +122,21 @@ the daemon is connected.
 | Tool | Purpose |
 |------|---------|
 | `list_adapters` | Installed `@agentproto/adapter-*` slugs |
-| `start_agent_session { adapter, cwd?, prompt?, label?, model? }` | Spawn a long-lived agent session → `{ sessionId }` |
-| `prompt_agent_session { sessionId, prompt }` | Follow-up turn (queued if session is mid-turn) |
-| `get_agent_session_output { sessionId, since?, lastN?, waitForTurnEnd?, timeoutMs? }` | Incremental cursor read; long-poll until turn ends |
-| `kill_agent_session { sessionId }` | SIGTERM the session |
-| `list_sessions { kind?, onlyAlive?, status? }` | All sessions |
+| `agent_start { adapter, cwd?, prompt?, label?, model? }` | Spawn a long-lived agent session → `{ sessionId }` |
+| `agent_prompt { sessionId, prompt }` | Follow-up turn (queued if session is mid-turn) |
+| `agent_output { sessionId, since?, lastN?, waitForTurnEnd?, timeoutMs? }` | Incremental cursor read; long-poll until turn ends |
+| `agent_kill { sessionId }` | SIGTERM the session |
+| `session_list { kind?, onlyAlive?, status? }` | All sessions |
 
-**`get_agent_session_output` cursor pattern (eliminates polling):**
+**`agent_output` cursor pattern (eliminates polling):**
 ```
 # First call — get initial context + seed cursor
-out = get_agent_session_output { sessionId, lastN: 20 }
+out = agent_output { sessionId, lastN: 20 }
 cursor = out.nextCursor
 
 # Send prompt, then long-poll for turn end
-prompt_agent_session { sessionId, prompt: "..." }
-out = get_agent_session_output { sessionId, since: cursor, waitForTurnEnd: true }
+agent_prompt { sessionId, prompt: "..." }
+out = agent_output { sessionId, since: cursor, waitForTurnEnd: true }
 # out.lines contains only the new lines from that turn
 cursor = out.nextCursor
 
@@ -147,10 +147,10 @@ cursor = out.nextCursor
 
 | Tool | Purpose |
 |------|---------|
-| `start_terminal_session { argv, cwd?, cols?, rows?, name? }` | PTY-backed process |
-| `write_terminal_input { sessionId, text }` | Send keystrokes |
-| `read_terminal_output { sessionId, lastBytes? }` | Snapshot (base64) |
-| `kill_terminal_session { sessionId }` | SIGTERM |
+| `terminal_start { argv, cwd?, cols?, rows?, name? }` | PTY-backed process |
+| `terminal_input { sessionId, text }` | Send keystrokes |
+| `terminal_output { sessionId, lastBytes? }` | Snapshot (base64) |
+| `terminal_kill { sessionId }` | SIGTERM |
 
 **Tunnel:**
 
@@ -172,20 +172,20 @@ cursor = out.nextCursor
 
 **Filesystem (workspace-scoped):**
 
-`read_file`, `write_file`, `list_directory`, `create_directory`, `delete_file`, `get_file_info`
+`file_read`, `file_write`, `directory_list`, `directory_create`, `file_delete`, `file_info`
 
 **Shell (allowlist-gated):**
 
 | Tool | Purpose |
 |------|---------|
-| `execute_command { command, args?, cwd?, stdin?, timeoutMs?, async? }` | Sync by default; `async: true` → returns `{ commandId }` immediately |
+| `command_execute { command, args?, cwd?, stdin?, timeoutMs?, async? }` | Sync by default; `async: true` → returns `{ commandId }` immediately |
 | `get_command_output { commandId }` | Poll stdout/stderr/status of an async command |
 | `cancel_command { commandId }` | SIGTERM a running async command |
 
 **Async pattern for long commands (builds, `claude -p`, tests):**
 ```
 # Start without blocking MCP transport
-r = execute_command { command: "pnpm", args: ["test"], async: true }
+r = command_execute { command: "pnpm", args: ["test"], async: true }
 commandId = r.commandId
 
 # Poll until done
@@ -201,7 +201,7 @@ out.exitCode, out.stdout, out.stderr
 cancel_command { commandId }
 ```
 
-**Allowlist setup (if execute_command is blocked):**
+**Allowlist setup (if command_execute is blocked):**
 ```bash
 # Dev preset — one-liner:
 echo '{"version":1,"commands":["claude","gh","pnpm","node","git","npx"]}' > .agentproto/allowed-commands.json

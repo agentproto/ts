@@ -66,7 +66,7 @@ export interface AdapterInfo {
   /** Known-valid model identifiers for this adapter, drawn from the
    *  adapter manifest's `models.allowed` field. Empty when the adapter
    *  doesn't declare a model list (accepts whatever the underlying
-   *  binary accepts). Pass one of these as `model` in `start_agent_session`
+   *  binary accepts). Pass one of these as `model` in `agent_start`
    *  to avoid trial-and-error validation errors. */
   models: string[]
 }

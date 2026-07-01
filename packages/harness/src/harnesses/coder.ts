@@ -41,7 +41,7 @@ const DEFAULTS = {
 } as const
 
 /**
- * Build the `start_agent_session` args for the coder preset. Exported so WP3's
+ * Build the `agent_start` args for the coder preset. Exported so WP3's
  * unit test can snapshot the args for both engines without a live daemon.
  *
  * For hermes: `model` and `effort` are NOT included — hermes does not declare

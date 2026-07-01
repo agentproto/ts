@@ -1,7 +1,7 @@
 /**
  * Fire-and-forget webhook notifier for session lifecycle events.
  *
- * Each session can register its own `notifyUrl` (via `start_agent_session`).
+ * Each session can register its own `notifyUrl` (via `agent_start`).
  * A global URL can be set via `AGENTPROTO_NOTIFY_URL` env var or
  * `~/.agentproto/notify.json` (env wins). Both are POSTed when an event
  * fires — the union of per-session + global URLs, deduplicated.
@@ -17,7 +17,7 @@ import { join } from "node:path"
 import type { SessionEvent } from "./session-event-bus.js"
 
 export interface WebhookNotifier {
-  /** Register a per-session URL (called from start_agent_session). */
+  /** Register a per-session URL (called from agent_start). */
   register(sessionId: string, url: string): void
   unregister(sessionId: string): void
   /** Handler to wire into SessionEventBus.onAny. Fire-and-forget. */

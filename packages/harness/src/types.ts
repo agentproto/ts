@@ -16,7 +16,7 @@ export type TurnEvent =
   | "any"
   | "timeout"
 
-/** Result of `AgentHandle.waitForTurn` / `wait_for_any`. */
+/** Result of `AgentHandle.waitForTurn` / `session_monitor`. */
 export interface TurnResult {
   sessionId: string
   event: TurnEvent

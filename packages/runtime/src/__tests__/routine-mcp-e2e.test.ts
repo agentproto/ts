@@ -6,7 +6,7 @@
  *
  *   Client ──InMemoryTransport──▶ McpServer
  *     │                              │
- *     │  start_routine / status      │ registerOrchestrationTools
+ *     │  routine_start / status      │ registerOrchestrationTools
  *     ▼                              ▼
  *   tool call ───────────────▶ real RoutineRunner ──▶ real SessionEventBus
  *
@@ -97,7 +97,7 @@ describe("routine orchestration — MCP transport e2e", () => {
     return { client, server }
   }
 
-  it("registers start_routine + get_routine_status + list_routines on the server", async () => {
+  it("registers routine_start + routine_status + routine_list on the server", async () => {
     const { client } = await setup()
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name)
@@ -107,7 +107,7 @@ describe("routine orchestration — MCP transport e2e", () => {
     expect(names).toContain("routine_cancel")
   })
 
-  it("start_routine → get_routine_status reaches done over MCP", async () => {
+  it("routine_start → routine_status reaches done over MCP", async () => {
     const { client } = await setup()
 
     const started = parseToolJson(
@@ -141,7 +141,7 @@ describe("routine orchestration — MCP transport e2e", () => {
     expect(final.result.sessionIds.length).toBeGreaterThan(0)
   })
 
-  it("list_routines reflects the started run over MCP", async () => {
+  it("routine_list reflects the started run over MCP", async () => {
     const { client } = await setup()
     const started = parseToolJson(
       await client.callTool({
@@ -154,7 +154,7 @@ describe("routine orchestration — MCP transport e2e", () => {
     expect(runs.some((r: { runId: string }) => r.runId === started.runId)).toBe(true)
   })
 
-  it("get_routine_status on an unknown runId returns a clean error over MCP", async () => {
+  it("routine_status on an unknown runId returns a clean error over MCP", async () => {
     const { client } = await setup()
     const res = parseToolJson(
       await client.callTool({ name: "routine_status", arguments: { runId: "run_does_not_exist" } }),

@@ -314,7 +314,7 @@ export type SandboxHandle = Readonly<SandboxDefinition>
 // stripped before zod validation and re-attached in the build path.
 //
 // `factory` is fully host-typed (Mastra `WorkspaceSandbox`,
-// `@guilde/...` adapter, MCP execute_command surface, etc).
+// `@guilde/...` adapter, MCP command_execute surface, etc).
 // `capabilities` is opaque metadata the registry queries on (per
 // AIP-43 § Capability metadata namespace).
 
