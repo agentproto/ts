@@ -33,6 +33,7 @@ import { runSessions } from "./commands/sessions.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
+import { runInstallMcp } from "./commands/install-mcp.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -73,6 +74,8 @@ Usage:
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
+  agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
+                                           register the daemon's MCP server with coding CLIs
   agentproto --help
   agentproto --version
 
@@ -113,6 +116,7 @@ const VERBS = new Set([
   "tunnel",
   "browser",
   "mcp-bridge",
+  "install-mcp",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -179,6 +183,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrowser(rest)
     case "mcp-bridge":
       return runMcpBridge(rest)
+    case "install-mcp":
+      return runInstallMcp(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
