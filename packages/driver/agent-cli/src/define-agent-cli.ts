@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
@@ -81,6 +84,32 @@ export function createAgentCliRuntime(
         ...filterStringEnv(process.env),
         ...composed.env,
         ...(opts?.env ?? {}),
+      }
+
+      // claude-code's ACP wrapper never reads `--permission-mode` from argv
+      // (the `bin_args_append` above is a no-op against it) — it resolves
+      // `permissions.defaultMode` exclusively via `CLAUDE_CONFIG_DIR`/
+      // `<cwd>/.claude/settings(.local).json`, merged through the SDK's
+      // `resolveSettings`. Point a per-session `CLAUDE_CONFIG_DIR` at a
+      // throwaway temp dir carrying just that one field, so a non-default
+      // requested mode (e.g. "plan") actually takes effect without ever
+      // touching the target repo's own `.claude` directory. A repo that
+      // commits its own escalated `permissions.defaultMode` can still
+      // defeat this (see resolveClaudeCodePermissionMode's doc) — that's a
+      // documented limitation, not a bug in this override.
+      const permissionMode = resolveClaudeCodePermissionMode(
+        definition,
+        opts?.config?.mode,
+      )
+      if (permissionMode) {
+        const configDir = mkdtempSync(
+          join(tmpdir(), "agentproto-claude-config-"),
+        )
+        writeFileSync(
+          join(configDir, "settings.json"),
+          JSON.stringify({ permissions: { defaultMode: permissionMode } }),
+        )
+        env.CLAUDE_CONFIG_DIR = configDir
       }
 
       // The print arm spawns a fresh subprocess per turn — no
@@ -278,6 +307,31 @@ function buildProtocolArm(
       // Unreachable: print is handled by the early-return in start() above.
       throw new Error("createAgentCliRuntime: print arm bypasses buildProtocolArm")
   }
+}
+
+/**
+ * Derives the `permissions.defaultMode` value claude-code's settings.json
+ * expects for a requested AIP-45 mode, by reading the same
+ * `["--permission-mode", "<value>"]` pair already declared in the
+ * adapter's `modes[].bin_args_append` (one vocabulary, one source of
+ * truth — see `adapters/claude-code/src/index.ts`). Scoped to
+ * `definition.id === "claude-code"` since this settings-file mechanism
+ * is specific to that adapter's ACP wrapper; every other adapter's
+ * `bin_args_append` is applied to argv as normal and this returns
+ * `undefined` for them. Also `undefined` for an unrequested mode, or a
+ * mode (like "default") that has no `--permission-mode` patch —
+ * callers use that to skip the `CLAUDE_CONFIG_DIR` override entirely.
+ */
+function resolveClaudeCodePermissionMode(
+  definition: AgentCliHandle,
+  configMode: string | undefined,
+): string | undefined {
+  if (definition.id !== "claude-code" || !configMode) return undefined
+  const mode = (definition.modes ?? []).find((m) => m.id === configMode)
+  const args = mode?.bin_args_append ?? []
+  const flagIndex = args.indexOf("--permission-mode")
+  if (flagIndex === -1 || flagIndex + 1 >= args.length) return undefined
+  return args[flagIndex + 1]
 }
 
 function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
