@@ -46,6 +46,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   models: {
     default: "claude-sonnet-4-6",
     allowed: [
+      "claude-sonnet-5",
       "claude-sonnet-4-6",
       "claude-opus-4-8",
       "claude-opus-4-7",
@@ -81,12 +82,27 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multimodal round-trip needed; pure file-path injection.
     file_attach: true,
   },
+  // KNOWN BROKEN as of the currently-resolved @agentclientprotocol/claude-agent-acp
+  // (npx -y always pulls latest, resolved 2026-07 while wiring agent_start's
+  // mode field through — see `composeSpawn`/`RuntimeConfig.mode`): the wrapper
+  // never reads `--permission-mode` from argv. `resolvePermissionMode()` in
+  // its own dist/settings.js sources `permissions.defaultMode` EXCLUSIVELY
+  // from `~/.claude/settings.json` / `<cwd>/.claude/settings(.local).json` —
+  // there is no CLI flag or env var override. Confirmed live: a session
+  // spawned with mode:"plan" still ran `Write` and created a file with zero
+  // errors/prompts (the `--permission-mode plan` argv pair is silently
+  // ignored — no argv parsing for it exists anywhere in the wrapper's
+  // compiled output). A real fix means writing (and safely restoring) the
+  // spawn cwd's `.claude/settings.local.json`, which is a bigger, riskier
+  // adapter-level change (mutating the user's actual project dir) than this
+  // manifest declaration implies — tracked as a follow-up, not fixed here.
   modes: [
     { id: "default", description: "Standard interactive mode." },
     {
       id: "plan",
       description:
-        "Plan-only mode — Claude Code reasons and proposes but does not edit or run commands.",
+        "Plan-only mode — Claude Code reasons and proposes but does not edit or run commands. " +
+        "NOTE: currently non-functional against the ACP wrapper — see comment above `modes`.",
       bin_args_append: ["--permission-mode", "plan"],
     },
     {

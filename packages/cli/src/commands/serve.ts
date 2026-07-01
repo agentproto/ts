@@ -299,19 +299,25 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, model, effort, mcpServers }) {
+        async startSession({ cwd, resumeSessionId, mode, model, effort, mcpServers }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn.
           const optionOverrides: Record<string, string> = {}
           if (model) optionOverrides.model = model
           if (effort) optionOverrides.effort = effort
+          // composeSpawn validates `mode` against the manifest's declared
+          // `modes` and throws RuntimeConfigError on an unknown id — for an
+          // adapter with no `modes` at all (hermes) that means ANY `mode`
+          // value fails the spawn rather than being silently ignored, so
+          // callers should only pass `mode` for adapters known to declare it.
+          const config: { mode?: string; options?: Record<string, string> } = {}
+          if (mode) config.mode = mode
+          if (Object.keys(optionOverrides).length > 0) config.options = optionOverrides
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
-            ...(Object.keys(optionOverrides).length > 0
-              ? { config: { options: optionOverrides } }
-              : {}),
+            ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
           })
         },

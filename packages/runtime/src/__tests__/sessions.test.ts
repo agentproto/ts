@@ -289,6 +289,128 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("structured awaiting-input: agent-prompt with options produces a structured question", async () => {
+    const bus = createSessionEventBus()
+    const awaitingHandler = vi.fn()
+    bus.on("session:awaiting-input", awaitingHandler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-structured-question",
+      async *send() {
+        yield {
+          kind: "agent-prompt",
+          toolName: "Bash",
+          options: [
+            { id: "allow_once", label: "Allow once" },
+            { id: "reject_once", label: "Reject" },
+          ],
+        }
+        yield { kind: "turn-end", reason: "awaiting-input" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+      text: 'Allow "Bash"?',
+      options: ["Allow once", "Reject"],
+      source: "structured",
+    })
+    expect(awaitingHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: { text: 'Allow "Bash"?', options: ["Allow once", "Reject"], source: "structured" },
+      }),
+    )
+    reg.shutdown()
+  })
+
+  it("heuristic awaiting-input: a trailing '?' with enumerated options is derived from the transcript tail", async () => {
+    const bus = createSessionEventBus()
+    const turnEndHandler = vi.fn()
+    bus.on("session:turn-end", turnEndHandler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    // No structured agent-prompt — just a driver reporting an
+    // "awaiting-input" turn-end reason after streaming text that reads
+    // like a clarifying question with options (matches every
+    // currently-supported adapter's actual behaviour: no driver reports
+    // agent-prompt today).
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-heuristic-question",
+      async *send() {
+        yield { kind: "text-delta", text: "Which environment should I target?\n1. staging\n2. production\n" }
+        yield { kind: "turn-end", reason: "awaiting-input" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+      text: "Which environment should I target?",
+      options: ["staging", "production"],
+      source: "heuristic",
+    })
+    expect(turnEndHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: {
+          text: "Which environment should I target?",
+          options: ["staging", "production"],
+          source: "heuristic",
+        },
+      }),
+    )
+    reg.shutdown()
+  })
+
+  it("heuristic awaiting-input: no trailing '?' means no question is derived", async () => {
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-no-question",
+      async *send() {
+        yield { kind: "text-delta", text: "Done, nothing more to do here.\n" }
+        yield { kind: "turn-end", reason: "awaiting-input" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(reg.get(desc.id)?.awaitingInput).toBe(true)
+    expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
+    reg.shutdown()
+  })
+
   it("WP0: emits session:exited when kill() is called on an agent-cli session", async () => {
     const bus = createSessionEventBus()
     const exitedHandler = vi.fn()
