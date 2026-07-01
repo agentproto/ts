@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type PtyProcess,
+} from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 
 /**
@@ -610,6 +614,60 @@ describe("createSessionsRegistry", () => {
       })
       expect(reg.get(desc.id)?.processAlive).toBeUndefined()
       expect("processAlive" in (reg.get(desc.id) ?? {})).toBe(false)
+      reg.shutdown()
+    })
+
+    it("findByIdOrName (direct-id match) computes processAlive the same as get() (regression: used to skip the stamp)", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(process.pid),
+        adapterSlug: "fake",
+      })
+      expect(reg.findByIdOrName(desc.id)?.processAlive).toBe(true)
+      reg.shutdown()
+    })
+
+    it("findByIdOrName (direct-id match) computes processAlive: false when the OS reports the pid is gone", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent(4242),
+        adapterSlug: "fake",
+      })
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" })
+      })
+      expect(reg.findByIdOrName(desc.id)?.processAlive).toBe(false)
+      killSpy.mockRestore()
+      reg.shutdown()
+    })
+
+    it("findByIdOrName (name-match fallback) also computes processAlive (regression: the fallback loop skipped the stamp too)", () => {
+      const fakePty = (): PtyProcess => ({
+        pid: process.pid,
+        write() {},
+        resize() {},
+        kill() {},
+        onData() {},
+        onExit() {},
+      })
+      const reg = createSessionsRegistry({
+        persistPath,
+        persist: false,
+        spawnPty: fakePty,
+      })
+      reg.spawnPty({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        argv: ["fake"],
+        cols: 80,
+        rows: 24,
+        name: "liveness-test-terminal",
+      })
+      expect(reg.findByIdOrName("liveness-test-terminal")?.processAlive).toBe(true)
       reg.shutdown()
     })
 

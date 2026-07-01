@@ -1651,9 +1651,15 @@ export function createSessionsRegistry(opts?: {
     },
     findByIdOrName(query) {
       const direct = sessions.get(query)
-      if (direct) return direct.desc
+      if (direct) {
+        stampProcessAlive(direct.desc)
+        return direct.desc
+      }
       for (const rt of sessions.values()) {
-        if (rt.desc.name === query) return rt.desc
+        if (rt.desc.name === query) {
+          stampProcessAlive(rt.desc)
+          return rt.desc
+        }
       }
       return undefined
     },
