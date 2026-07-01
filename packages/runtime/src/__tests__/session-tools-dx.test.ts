@@ -261,12 +261,12 @@ describe("nextStep hint format", () => {
 
     // Reproduce the buildNextStep logic from session-tools.ts.
     const nextStep =
-      `wait_for_any({ sessionIds: ['${desc.id}'], event: 'turn-end' })` +
-      `  |  get_agent_session_output({ sessionId: '${desc.id}' })`
+      `session_monitor({ sessionIds: ['${desc.id}'], event: 'turn-end' })` +
+      `  |  agent_output({ sessionId: '${desc.id}' })`
 
     expect(nextStep).toContain(desc.id)
-    expect(nextStep).toContain("wait_for_any")
-    expect(nextStep).toContain("get_agent_session_output")
+    expect(nextStep).toContain("session_monitor")
+    expect(nextStep).toContain("agent_output")
 
     reg.shutdown()
   })
