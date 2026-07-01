@@ -135,7 +135,7 @@ export interface ExecuteResult {
  * Register `command_execute` on the given MCP server. The tool returns
  * a JSON-encoded `ExecuteResult` as a single text content item — that
  * matches the response shape `@modelcontextprotocol/server-filesystem`
- * uses for `read_file` and friends, so the existing
+ * uses for `file_read` and friends, so the existing
  * `parseReadFileResponse`-style parsers in workspace-providers can
  * decode it without bespoke logic.
  */
