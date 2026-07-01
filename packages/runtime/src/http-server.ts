@@ -193,7 +193,7 @@ export interface RuntimeHttpServerOptions {
    *  pass the cli's `resolveAdapter` via a thin shim. */
   resolveAgentAdapter?: AgentAdapterResolver
   /** Optional — when wired, enables `GET /adapters` route + the
-   *  MCP `list_adapters` tool so UIs can discover what's installed
+   *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister

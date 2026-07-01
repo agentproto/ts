@@ -121,7 +121,7 @@ the daemon is connected.
 
 | Tool | Purpose |
 |------|---------|
-| `list_adapters` | Installed `@agentproto/adapter-*` slugs |
+| `adapter_list` | Installed `@agentproto/adapter-*` slugs |
 | `agent_start { adapter, cwd?, prompt?, label?, model? }` | Spawn a long-lived agent session → `{ sessionId }` |
 | `agent_prompt { sessionId, prompt }` | Follow-up turn (queued if session is mid-turn) |
 | `agent_output { sessionId, since?, lastN?, waitForTurnEnd?, timeoutMs? }` | Incremental cursor read; long-poll until turn ends |
@@ -165,9 +165,9 @@ cursor = out.nextCursor
 | Tool | Purpose |
 |------|---------|
 | `mcp_imported_status` | Health of every imported alias |
-| `list_imported_mcps` / `list_discovered_mcps` | Available MCPs |
+| `mcp_imported_list` / `mcp_discovered_list` | Available MCPs |
 | `import_mcp { sourceMcpId, alias? }` / `remove_imported_mcp { id }` | Curate |
-| `mcp_imported_list_tools { alias }` | Tool list from an alias |
+| `mcp_imported_tool_list { alias }` | Tool list from an alias |
 | `mcp_imported_call { alias, toolName, args? }` | Invoke a proxied tool |
 
 **Filesystem (workspace-scoped):**
@@ -218,7 +218,7 @@ ToolSearch("select:mcp__agentproto__agent_start,mcp__agentproto__session_list,mc
 
 ## Recovery playbook
 
-**"list_adapters returns empty"** — daemon was restarted but adapters weren't
+**"adapter_list returns empty"** — daemon was restarted but adapters weren't
 re-installed on the global `NODE_PATH`:
 ```bash
 agentproto install claude-code

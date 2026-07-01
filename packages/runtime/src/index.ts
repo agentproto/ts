@@ -187,7 +187,7 @@ export interface CreateGatewayOptions {
    *  Without this, /sessions still works for raw `argv` spawns. */
   resolveAgentAdapter?: AgentAdapterResolver
   /** Optional adapter lister — when provided, enables
-   *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
+   *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
   /** Optional browser adapter resolver — when provided, enables the

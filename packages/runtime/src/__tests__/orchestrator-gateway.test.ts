@@ -49,7 +49,7 @@ const FORBIDDEN_TOOLS = [
   "remote_disable",
   "import_mcp",
   "mcp_imported_call",
-  "mcp_imported_list_tools",
+  "mcp_imported_tool_list",
   "terminal_input",
   "self_inspect",
 ]
