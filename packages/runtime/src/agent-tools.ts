@@ -483,12 +483,20 @@ export function registerAgentTools(
         bindOrchestratorLifecycle = injection.bindLifecycle
       }
       try {
+        // The registry doesn't assign a session id until `spawnAgent`
+        // returns below, but `onActivity` can start firing as soon as
+        // `startSession` connects — this box lets the closure defer
+        // pulsing until the id is known, dropping any pre-spawn activity.
+        let liveSessionId: string | undefined
         const agentSession = await resolved.startSession({
           cwd,
           ...(input.mode ? { mode: input.mode } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.effort ? { effort: input.effort } : {}),
           ...(mcpServers ? { mcpServers } : {}),
+          onActivity: () => {
+            if (liveSessionId) registry.pulseActivity(liveSessionId)
+          },
         })
         const desc = registry.spawnAgent({
           workspaceSlug: resolvedSlug,
@@ -510,6 +518,7 @@ export function registerAgentTools(
           ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
           ...(resolved.readUsage ? { readUsage: () => resolved.readUsage!(agentSession.sessionId) } : {}),
         })
+        liveSessionId = desc.id
         // Bind the scope-token's lifetime to the child session — once
         // it exits, the token is revoked so it can't outlive its child.
         bindOrchestratorLifecycle?.(desc.id)
