@@ -266,6 +266,12 @@ export async function createGateway(
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
   }
   const port = opts.port ?? 18790
+  // Loopback URL for the daemon's own plain `/mcp` gateway — always
+  // 127.0.0.1 regardless of `opts.bind`, mirroring the orchestrator
+  // injector's loopback default (orchestrator-gateway.ts), since a
+  // spawned child is co-located on the same host and reaches the
+  // daemon over loopback, never the LAN-bind address.
+  const daemonMcpUrl = `http://127.0.0.1:${port}/mcp`
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -534,6 +540,7 @@ export async function createGateway(
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
       webhookNotifier,
+      daemonMcpUrl,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),

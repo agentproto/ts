@@ -77,6 +77,15 @@ export interface RegisterAgentToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** The daemon's own plain `/mcp` gateway URL (e.g.
+   *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` for a
+   *  `hermes` adapter with no caller-supplied `mcpServers` defaults to
+   *  mounting this gateway — unlike claude-code, hermes has zero
+   *  built-in tools, so omitting `mcpServers` silently produces a
+   *  chat-only session with no error. An explicit `mcpServers: []` is
+   *  still respected as a deliberate opt-out. Omitted → no default
+   *  (today's behaviour). */
+  daemonMcpUrl?: string
   /** Optional orchestrator-injection builder (WP3). When wired, the
    *  `orchestrator` field on `agent_start` mints a scoped
    *  sub-gateway token, builds the `mcpServers` entry pointing the
@@ -130,6 +139,7 @@ export function registerAgentTools(
     buildOrchestratorMcp,
     callerScope,
     webhookNotifier,
+    daemonMcpUrl,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -414,6 +424,15 @@ export function registerAgentTools(
       // child's token inherits depth+1 and is bounded by the caller's
       // tools (non-re-grant — a child can't widen past its parent).
       let mcpServers = input.mcpServers
+      // hermes (unlike claude-code) has zero built-in tools — without an
+      // explicit `mcpServers`, it silently spawns as a chat-only session
+      // with no error. Default it to the daemon's own gateway so it's no
+      // longer possible to get this wrong by omission. An explicit `[]`
+      // is a deliberate opt-out and must be respected as such, so this
+      // only fires when the caller passed no `mcpServers` at all.
+      if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
+        mcpServers = [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }]
+      }
       let bindOrchestratorLifecycle:
         | ((sessionId: string) => () => void)
         | undefined
@@ -448,7 +467,7 @@ export function registerAgentTools(
             ? { maxChildren: orchestratorOpts.maxChildren }
             : {}),
         })
-        mcpServers = [...(input.mcpServers ?? []), injection.entry]
+        mcpServers = [...(mcpServers ?? []), injection.entry]
         bindOrchestratorLifecycle = injection.bindLifecycle
       }
       try {
