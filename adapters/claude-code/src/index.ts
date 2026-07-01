@@ -46,6 +46,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   models: {
     default: "claude-sonnet-4-6",
     allowed: [
+      "claude-sonnet-5",
       "claude-sonnet-4-6",
       "claude-opus-4-8",
       "claude-opus-4-7",
