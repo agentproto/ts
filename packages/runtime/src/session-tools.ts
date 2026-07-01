@@ -16,10 +16,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
-import { registerAgentTools, registerExportSessionTool } from "./agent-tools.js"
-import {
-  discoverMcps,
-} from "./mcp-discovery.js"
+import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
+import type { RegisterAgentToolsOptions } from "./agent-tools.js"
+import { discoverMcps } from "./mcp-discovery.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -31,6 +30,11 @@ import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { AgentAdapterResolver, AgentAdapterLister } from "./http-server.js"
+import {
+  loadWorkspacesConfig,
+  findWorkspace,
+  getActiveWorkspace,
+} from "./workspaces-config.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"

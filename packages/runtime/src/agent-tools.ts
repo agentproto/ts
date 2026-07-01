@@ -673,7 +673,6 @@ export function registerAgentTools(
           }
         }
       }
-      // capture collection of helper required by agent-tools.ts
       const ok = registry.kill(input.sessionId)
       return {
         content: [
