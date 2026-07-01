@@ -95,7 +95,8 @@ ${deliveryInstruction}
 
 ## Constraints
 - Only modify files mentioned in the review, or files that must change to satisfy a comment.
-- Written files must be syntactically valid TypeScript / JavaScript / YAML / Markdown.${renderSkillsBlock(skills)}`
+- Written files must be syntactically valid TypeScript / JavaScript / YAML / Markdown.
+- Never add AI/Claude/Anthropic attribution (e.g. "Co-Authored-By: Claude", "Generated with …") to any commit message, PR title, PR body, or comment you produce.${renderSkillsBlock(skills)}`
 
 // ── tool surface (pr mode adds gh_open_pr + gh_get_pr) ───────────────────────
 

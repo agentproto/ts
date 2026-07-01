@@ -9,9 +9,11 @@ surfaces share one core.
 ### Automatic (on every PR push) — `.github/workflows/ci.yml`
 1. `build-and-test` — build, type-check, test.
 2. `changeset-check` — fast check that a changeset exists.
-3. `pr-review` — agent reads the diff, writes an accurate changeset, posts a
+3. `hygiene-check` — fast check that no root-level scratch docs (`PLAN.md`,
+   `BRIEF.md`, `MERGE-CONFLICT-BRIEF*.md`) or AI-attribution trailers rode in.
+4. `pr-review` — agent reads the diff, writes an accurate changeset, posts a
    structured review (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`).
-4. `pr-fix` — if the review requested changes, the agent applies them and pushes
+5. `pr-fix` — if the review requested changes, the agent applies them and pushes
    to the PR branch. Bounded by `maxFixIterations`, then escalates to a human.
 
 ### Automatic (on issue open) — `.github/workflows/issue-triage.yml`
