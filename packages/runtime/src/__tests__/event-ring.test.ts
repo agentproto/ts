@@ -7,6 +7,11 @@ function makeEvent(sessionId: string): SessionEvent {
   return { type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" }
 }
 
+/** Narrow a SessionEvent to its sessionId (all events in this test are session:turn-end). */
+function sid(ev: SessionEvent): string {
+  return ((ev as unknown) as Record<string, unknown>)["sessionId"] as string
+}
+
 describe("EventRing", () => {
   it("returns empty when no events", () => {
     const ring = createEventRing()
@@ -39,7 +44,7 @@ describe("EventRing", () => {
     bus.emit(makeEvent("s2"))
     const { events } = ring.since(c1)
     expect(events).toHaveLength(1)
-    expect(events[0]!.sessionId).toBe("s2")
+    expect(sid(events[0]!)).toBe("s2")
   })
 
   it("respects limit", () => {
@@ -64,7 +69,7 @@ describe("EventRing", () => {
 
     const { events } = ring.since(0, { sessionIds: ["alpha"] })
     expect(events).toHaveLength(2)
-    expect(events.every(e => e.sessionId === "alpha")).toBe(true)
+    expect(events.every(e => sid(e) === "alpha")).toBe(true)
   })
 
   it("drops oldest on cap overflow", () => {
@@ -80,7 +85,7 @@ describe("EventRing", () => {
     const { events, nextCursor } = ring.since(0)
     expect(nextCursor).toBe(4)
     // only "b", "c", "d" retained (cap=3, "a" dropped)
-    expect(events.map(e => e.sessionId)).toEqual(["b", "c", "d"])
+    expect(events.map(e => sid(e))).toEqual(["b", "c", "d"])
   })
 
   it("unsubscribes cleanly from bus", () => {
@@ -94,6 +99,6 @@ describe("EventRing", () => {
 
     const { events } = ring.since(0)
     expect(events).toHaveLength(1)
-    expect(events[0]!.sessionId).toBe("before")
+    expect(sid(events[0]!)).toBe("before")
   })
 })
