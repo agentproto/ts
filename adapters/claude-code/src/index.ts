@@ -82,27 +82,41 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multimodal round-trip needed; pure file-path injection.
     file_attach: true,
   },
-  // KNOWN BROKEN as of the currently-resolved @agentclientprotocol/claude-agent-acp
-  // (npx -y always pulls latest, resolved 2026-07 while wiring agent_start's
-  // mode field through — see `composeSpawn`/`RuntimeConfig.mode`): the wrapper
-  // never reads `--permission-mode` from argv. `resolvePermissionMode()` in
-  // its own dist/settings.js sources `permissions.defaultMode` EXCLUSIVELY
-  // from `~/.claude/settings.json` / `<cwd>/.claude/settings(.local).json` —
-  // there is no CLI flag or env var override. Confirmed live: a session
-  // spawned with mode:"plan" still ran `Write` and created a file with zero
-  // errors/prompts (the `--permission-mode plan` argv pair is silently
-  // ignored — no argv parsing for it exists anywhere in the wrapper's
-  // compiled output). A real fix means writing (and safely restoring) the
-  // spawn cwd's `.claude/settings.local.json`, which is a bigger, riskier
-  // adapter-level change (mutating the user's actual project dir) than this
-  // manifest declaration implies — tracked as a follow-up, not fixed here.
+  // `bin_args_append: ["--permission-mode", ...]` below is a no-op against
+  // the @agentclientprotocol/claude-agent-acp wrapper — it never reads
+  // `--permission-mode` from argv. The wrapper instead resolves
+  // `permissions.defaultMode` exclusively via the SDK's `resolveSettings`,
+  // which merges `${CLAUDE_CONFIG_DIR}/settings.json` (user tier),
+  // `<cwd>/.claude/settings(.local).json` (project tier), and a managed
+  // tier. The driver (`packages/driver/agent-cli/src/define-agent-cli.ts`,
+  // `resolveClaudeCodePermissionMode`) makes the mode actually take effect
+  // by pointing a per-session `CLAUDE_CONFIG_DIR` at a throwaway temp dir
+  // containing `{"permissions":{"defaultMode":"<value>"}}` — reading the
+  // same `--permission-mode <value>` pair declared here as its one source
+  // of truth for the value vocabulary. `bin_args_append` is kept for a
+  // future wrapper version that might start reading argv.
+  //
+  // Known limitation (empirically confirmed, not just theorized): a target
+  // repo that commits its own escalated `.claude/settings.json`
+  // `permissions.defaultMode` (e.g. "bypassPermissions") does NOT let the
+  // repo's escalation win — the wrapper's `filterEscalatingDefaultMode`
+  // strips an escalating project-tier value entirely — but it also means
+  // OUR requested mode is defeated in the same merge pass (project tier
+  // out-prioritizes the user tier for the raw merge, before the filter
+  // ever runs). The net effect for that adversarial case is the session
+  // falls back to "default" (normal per-action prompting) rather than the
+  // requested mode. This does not reintroduce the original bug (silent,
+  // zero-prompt writes) — it just doesn't guarantee plan-only reasoning
+  // against a repo actively trying to escalate its own trust level.
   modes: [
     { id: "default", description: "Standard interactive mode." },
     {
       id: "plan",
       description:
-        "Plan-only mode — Claude Code reasons and proposes but does not edit or run commands. " +
-        "NOTE: currently non-functional against the ACP wrapper — see comment above `modes`.",
+        "Plan-only mode — Claude Code reasons and proposes a plan, requesting explicit " +
+        "approval before writing files or running commands. Applied via a per-session " +
+        "CLAUDE_CONFIG_DIR override (see comment above `modes`); can be defeated by a " +
+        "target repo's own committed, escalated .claude/settings.json.",
       bin_args_append: ["--permission-mode", "plan"],
     },
     {
