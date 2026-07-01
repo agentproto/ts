@@ -122,6 +122,7 @@ export function createAcpProtocolArm(
           fs: { readTextFile: true, writeTextFile: true },
         },
         onActivity: opts.onActivity,
+        turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
         // Wire the permission handler so the agent's `session/request_permission`
         // callbacks get a real answer instead of bubbling up as
         // "AcpClient.requestPermission: no handler configured" → which

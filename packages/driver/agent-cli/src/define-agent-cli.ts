@@ -180,6 +180,12 @@ export function createAgentCliRuntime(
       const modelApply = definition.models?.apply ?? "config"
       const configModel =
         optModel && modelApply === "config" ? String(optModel) : undefined
+      // Caller-supplied override wins; otherwise fall back to the
+      // manifest's declared default (if any) so an adapter known to drop
+      // responses (e.g. hermes) gets watchdog protection without every
+      // host having to opt in per spawn.
+      const turnIdleTimeoutMs =
+        opts?.turnIdleTimeoutMs ?? definition.session?.turn_idle_timeout_ms
       await arm.connect({
         cwd,
         env,
@@ -191,6 +197,7 @@ export function createAgentCliRuntime(
         ...(configModel ? { model: configModel } : {}),
         ...(optEffort ? { effort: String(optEffort) } : {}),
         ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
+        ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
       })
 
       // "command" model strategy: switch the model via a drained `/model

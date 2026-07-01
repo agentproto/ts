@@ -248,6 +248,43 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("propagates the driver's turn-end reason (e.g. watchdog-timeout) onto the session:turn-end bus event", async () => {
+    const bus = createSessionEventBus()
+    const handler = vi.fn()
+    bus.on("session:turn-end", handler)
+
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-watchdog-test",
+      async *send() {
+        yield { kind: "text-delta", text: "partial answer before hermes went silent" }
+        yield { kind: "turn-end", reason: "watchdog-timeout" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+
+    await new Promise(res => setTimeout(res, 20))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session:turn-end",
+        sessionId: desc.id,
+        reason: "watchdog-timeout",
+      }),
+    )
+    reg.shutdown()
+  })
+
   it("WP0: emits session:turn-end with awaitingInput=true when agent-prompt fires", async () => {
     const bus = createSessionEventBus()
     const turnEndHandler = vi.fn()
