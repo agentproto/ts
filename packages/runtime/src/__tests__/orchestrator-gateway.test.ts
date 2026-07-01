@@ -247,16 +247,22 @@ function freePort(): Promise<number> {
 
 function noopConversations(): ConversationStore {
   return {
-    get: async () => undefined,
-    set: async () => {},
-    delete: async () => {},
-    list: async () => [],
+    async open() {},
+    async appendTurn() {},
+    async read() {
+      return { meta: {} as never, turns: [] }
+    },
+    async list() {
+      return []
+    },
+    pathFor: (id: string) => id,
   }
 }
 
 function noopHeartbeat(): HeartbeatRunner {
   return {
-    start: () => {},
-    stop: () => {},
+    start() {},
+    stop() {},
+    async fireNow() {},
   }
 }
