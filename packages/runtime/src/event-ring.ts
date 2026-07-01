@@ -56,7 +56,10 @@ export function createEventRing(cap = DEFAULT_CAP): EventRing {
 
       if (opts.sessionIds && opts.sessionIds.length > 0) {
         const ids = new Set(opts.sessionIds)
-        slice = slice.filter(e => ids.has(e.sessionId))
+        slice = slice.filter(e => {
+          const sid = "sessionId" in e ? ((e as unknown) as Record<string, unknown>)["sessionId"] : undefined
+          return typeof sid === "string" && ids.has(sid)
+        })
       }
       if (opts.types && opts.types.length > 0) {
         const types = new Set<string>(opts.types)

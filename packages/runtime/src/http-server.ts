@@ -247,6 +247,9 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired, exposes /cron routes for creating and
+   *  managing durable cron jobs. Without it the routes 404. */
+  cronScheduler?: import("./cron-scheduler.js").CronScheduler
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -1044,6 +1047,13 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // Cron routes — only registered when the gateway was built with
+        // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
+        if (opts.cronScheduler && path.startsWith("/cron")) {
+          const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
 
@@ -2011,6 +2021,107 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /cron routes:
+ *   POST   /cron          → create a new cron job
+ *   GET    /cron          → list all cron jobs
+ *   DELETE /cron/:id      → delete a cron job
+ *   POST   /cron/:id/run  → manually fire a cron job
+ */
+async function handleCron(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  scheduler: import("./cron-scheduler.js").CronScheduler,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/cron" && req.method === "GET") {
+    json(200, { jobs: scheduler.list() })
+    return true
+  }
+
+  if (path === "/cron" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const schedule = typeof b.schedule === "string" ? b.schedule : ""
+    if (!schedule) {
+      json(400, { error: "missing_schedule" })
+      return true
+    }
+    const action = b.action
+    if (!action || typeof action !== "object") {
+      json(400, { error: "missing_action" })
+      return true
+    }
+    try {
+      const job = scheduler.create({
+        label: typeof b.label === "string" ? b.label : undefined,
+        schedule,
+        recurring: typeof b.recurring === "boolean" ? b.recurring : true,
+        action: action as import("./cron-scheduler.js").CronAction,
+      })
+      json(201, job)
+    } catch (err) {
+      json(400, {
+        error: "create_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /cron/:id/run — manual fire
+  const runMatch = path.match(/^\/cron\/([^/]+)\/run$/)
+  if (runMatch && req.method === "POST") {
+    const jobId = decodeURIComponent(runMatch[1] ?? "")
+    try {
+      const result = await scheduler.run(jobId)
+      json(200, { jobId, result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("not found") ? 404 : 500
+      json(status, { error: "run_failed", message: msg })
+    }
+    return true
+  }
+
+  // /cron/:id
+  const idMatch = path.match(/^\/cron\/([^/]+)$/)
+  if (!idMatch) return false
+  const jobId = decodeURIComponent(idMatch[1] ?? "")
+
+  if (req.method === "GET") {
+    const job = scheduler.get(jobId)
+    if (!job) {
+      json(404, { error: "job_not_found", jobId })
+      return true
+    }
+    json(200, job)
+    return true
+  }
+
+  if (req.method === "DELETE") {
+    try {
+      scheduler.delete(jobId)
+      json(200, { ok: true, jobId })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(404, { error: "job_not_found", message: msg })
+    }
     return true
   }
 

@@ -60,6 +60,7 @@ import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
+import { createCronScheduler } from "./cron-scheduler.js"
 export type {
   WatcherStartInput,
   WatcherDescriptor,
@@ -424,6 +425,21 @@ export async function createGateway(
       })
     : undefined
 
+  // Cron scheduler — singleton per daemon, persisted to
+  // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
+  // skipped fires during downtime are NOT backfilled (documented behaviour).
+  // Declared after `sessions` so it can spawn agent sessions via the registry.
+  // Agent jobs need `resolveAgentAdapter`; command jobs work without it.
+  const cronScheduler = createCronScheduler({
+    sessionEvents,
+    registry: sessions,
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
+    workspace,
+    persist: true,
+  })
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -557,6 +573,7 @@ export async function createGateway(
       supervisor,
       ...(routineRunner ? { routineRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
+      cronScheduler,
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -658,6 +675,7 @@ export async function createGateway(
       ? { listBrowserAdapters: opts.listBrowserAdapters }
       : {}),
     meta: { workspace, registered },
+    cronScheduler,
   })
 
   heartbeat.start()
@@ -696,6 +714,8 @@ export async function createGateway(
       heartbeat.stop()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Stop the cron scheduler tick loop before sessions shut down.
+      cronScheduler.shutdown()
       // Flush completion-policy state before sessions shut down so
       // policies referencing live sessions are persisted with their
       // current status (not "killed" sessions).
