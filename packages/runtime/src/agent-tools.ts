@@ -176,6 +176,18 @@ export function registerAgentTools(
           "Free-text label that surfaces in `agent_sessions_list` and the UI — useful " +
             "for tagging sessions with a conversation id or operator name."
         ),
+      mode: z
+        .string()
+        .optional()
+        .describe(
+          "Manifest-declared mode id (AIP-45 `modes`) applied at spawn time, BEFORE " +
+            "the child process starts — e.g. claude-code's 'plan' (read-only: " +
+            "reasons and proposes but does not edit or run commands), 'accept-edits', " +
+            "'bypass-permissions'; codex's 'read-only' / 'full-access'; mastracode/" +
+            "opencode's 'plan' / 'build'. Adapters that don't declare `modes` (e.g. " +
+            "hermes) reject ANY value here — only pass this for adapters known to " +
+            "support it. Omit for the adapter's normal interactive mode."
+        ),
       model: z
         .string()
         .optional()
@@ -454,6 +466,7 @@ export function registerAgentTools(
       try {
         const agentSession = await resolved.startSession({
           cwd,
+          ...(input.mode ? { mode: input.mode } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.effort ? { effort: input.effort } : {}),
           ...(mcpServers ? { mcpServers } : {}),

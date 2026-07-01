@@ -89,6 +89,19 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
+    /**
+     * Manifest-declared mode id forwarded from `agent_start` (AIP-45
+     * `AgentCliHandle.modes` — e.g. claude-code's `plan` /
+     * `accept-edits` / `bypass-permissions`, codex's `read-only`,
+     * mastracode/opencode's `plan`). Applied at spawn time via
+     * `composeSpawn`'s mode patch (`bin_args_append` / `env`) — BEFORE
+     * the child process is exec'd, unlike `model`/`effort` below.
+     * Adapters with no declared `modes` (e.g. hermes) ignore it; an
+     * unknown id for an adapter that DOES declare modes throws
+     * `RuntimeConfigError` (composeSpawn validates against the
+     * manifest, so a typo fails the spawn rather than silently no-op).
+     */
+    mode?: string
     /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
@@ -1432,6 +1445,9 @@ async function handleSessions(
         typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
           ? b.resumeSessionId
           : undefined
+      const bodyMode = typeof b.mode === "string" && b.mode.length > 0
+        ? b.mode
+        : undefined
       const bodyModel = typeof b.model === "string" && b.model.length > 0
         ? b.model
         : undefined
@@ -1441,6 +1457,7 @@ async function handleSessions(
       const agentSession = await resolved.startSession({
         cwd,
         ...(resumeSessionId ? { resumeSessionId } : {}),
+        ...(bodyMode ? { mode: bodyMode } : {}),
         ...(bodyModel ? { model: bodyModel } : {}),
         ...(bodyEffort ? { effort: bodyEffort } : {}),
       })
