@@ -55,7 +55,7 @@ interface AgentDetection {
 
 const DEFAULT_PORT = 18790
 const SERVER_NAME = "agentproto"
-const STATE_FILE = (): string => join(homedir(), ".agentproto", "install-state.json")
+const STATE_FILE = join(homedir(), ".agentproto", "install-state.json")
 
 const USAGE = `agentproto install-mcp — register the daemon's MCP server with coding CLIs
 
@@ -67,6 +67,7 @@ Options:
   --agent <name>   Target a specific agent (repeatable). Known: claude, cursor, codex, claude-desktop, aider
   --all            Target all detected agents (default when no --agent given)
   --yes            Skip prompts (non-interactive; auto-confirm)
+  --skip-daemon    Skip daemon discovery/start (use default port from config)
   --update         Re-run registration for previously-registered agents (e.g. after a port change)
   --uninstall      Remove only the agentproto entries we added (uses install-state.json)
 
@@ -110,7 +111,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
 
   // --uninstall path
   if (values.uninstall) {
-    return runUninstall(values.yes === true)
+    return runUninstall()
   }
 
   // --update path
@@ -231,7 +232,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
 
 // ── --uninstall ──────────────────────────────────────────────────────────────
 
-async function runUninstall(yes: boolean): Promise<number> {
+async function runUninstall(): Promise<number> {
   const state = await loadInstallState()
   if (state.entries.length === 0) {
     process.stdout.write("No agentproto MCP registrations to remove.\n")
@@ -258,7 +259,6 @@ async function runUninstall(yes: boolean): Promise<number> {
   process.stdout.write(
     "\nRestart your CLI agent(s) to drop the MCP server.\n",
   )
-  void yes
   return 0
 }
 
@@ -696,7 +696,7 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
 
 async function loadInstallState(): Promise<InstallState> {
   try {
-    const raw = await fs.readFile(STATE_FILE(), "utf8")
+    const raw = await fs.readFile(STATE_FILE, "utf8")
     const parsed = JSON.parse(raw) as InstallState
     if (Array.isArray(parsed.entries)) return parsed
   } catch {
@@ -706,8 +706,8 @@ async function loadInstallState(): Promise<InstallState> {
 }
 
 async function saveInstallState(state: InstallState): Promise<void> {
-  await fs.mkdir(dirname(STATE_FILE()), { recursive: true })
-  await fs.writeFile(STATE_FILE(), JSON.stringify(state, null, 2) + "\n", "utf8")
+  await fs.mkdir(dirname(STATE_FILE), { recursive: true })
+  await fs.writeFile(STATE_FILE, JSON.stringify(state, null, 2) + "\n", "utf8")
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -731,7 +731,10 @@ async function dirExists(path: string): Promise<boolean> {
 }
 
 async function isBinaryOnPath(name: string): Promise<boolean> {
-  const result = await runCommand("which", [name])
+  const result = await runCommand(
+    process.platform === "win32" ? "where" : "which",
+    [name],
+  )
   return result.code === 0 && result.stdout.trim().length > 0
 }
 
@@ -823,20 +826,4 @@ function removeYamlKey(content: string, key: string): string {
   return result.join("\n")
 }
 
-// ── exported for testing ──────────────────────────────────────────────────────
 
-export {
-  detectAgents,
-  detectAgent,
-  loadInstallState,
-  saveInstallState,
-  removeTomlTable,
-  removeYamlKey,
-  registerStdioJson,
-  unregisterAgent,
-  removeFromJsonConfig,
-  type AgentDetection,
-  type InstallStateEntry,
-  type InstallState,
-  type AgentName,
-}

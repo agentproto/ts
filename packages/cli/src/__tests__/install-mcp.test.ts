@@ -1,6 +1,6 @@
 /**
- * Unit tests for `agentproto install-mcp` — agent detection, JSON merge
- * non-destructive behavior, and install-state diffing for --uninstall.
+ * Tests for `agentproto install-mcp` — driven through the public
+ * `runInstallMcp` entrypoint so we exercise the full code path.
  *
  * Mocks filesystem (node:fs/promises) and child_process spawn so we never
  * touch the real ~/.claude.json etc.
@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // ── mock node:os so homedir() returns a temp dir ─────────────────────────────
 
 const { FAKE_HOME, mockFs, spawnMock } = vi.hoisted(() => ({
-  FAKE_HOME: { value: "" },
+  FAKE_HOME: { value: "/tmp/fake-home" },
   mockFs: {
     readFile: vi.fn(),
     writeFile: vi.fn(),
@@ -77,18 +77,7 @@ vi.mock("@agentproto/runtime/config", async importOriginal => {
   }
 })
 
-import {
-  detectAgent,
-  registerStdioJson,
-  removeTomlTable,
-  removeYamlKey,
-  loadInstallState,
-  saveInstallState,
-  unregisterAgent,
-  runInstallMcp,
-  type AgentDetection,
-  type InstallState,
-} from "../commands/install-mcp.js"
+import { runInstallMcp } from "../commands/install-mcp.js"
 
 const helpers = await import("../commands/_daemon-helpers.js")
 const discoverDaemon = vi.mocked(helpers.discoverDaemon)
@@ -98,14 +87,14 @@ const mockLoadConfig = vi.mocked(loadConfig)
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
-/** Configure a file-mock: fs.access resolves, fs.readFile returns content. */
+/** Configure a file-mock: fs.access resolves, fs.stat is a file, fs.readFile returns content. */
 function mockFileExists(path: string, content?: string): void {
   mockFs.access.mockImplementation(async (p: string) => {
     if (p === path) return
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
   })
   mockFs.stat.mockImplementation(async (p: string) => {
-    if (p === path) return { isDirectory: () => true } as any
+    if (p === path) return { isDirectory: () => false } as any
     throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
   })
   mockFs.readFile.mockImplementation(async (p: string) => {
@@ -133,12 +122,12 @@ function mockBinaryOnPath(names: string[]): void {
     const found = cmd === "which" && names.includes(name)
     const stdoutData = found ? `/usr/local/bin/${name}\n` : ""
     return {
-      on: (event: string, cb: Function) => {
+      on: (event: string, cb: (code: number) => void) => {
         if (event === "exit") cb(found ? 0 : 1)
       },
       stdout: {
         setEncoding: () => ({
-          on: (event: string, cb: Function) => {
+          on: (event: string, cb: (data: string) => void) => {
             if (event === "data" && stdoutData) cb(stdoutData)
           },
         }),
@@ -146,18 +135,50 @@ function mockBinaryOnPath(names: string[]): void {
       stderr: {
         setEncoding: () => ({ on: () => {} }),
       },
+      unref: () => {},
     }
   })
 }
 
-function makeDetection(name: string, configPath: string, hasBinary = false, hasConfig = true): AgentDetection {
-  return {
-    name: name as AgentDetection["name"],
-    label: name,
-    configPath,
-    hasBinary,
-    hasConfig,
-  }
+/** Multi-path mock: different paths return file content, directory stat, or ENOENT. */
+function mockMultiPath(opts: {
+  files?: Record<string, string>
+  dirs?: string[]
+}): void {
+  const { files = {}, dirs = [] } = opts
+  mockFs.access.mockImplementation(async (p: string) => {
+    if (p in files || dirs.includes(p)) return
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+  })
+  mockFs.stat.mockImplementation(async (p: string) => {
+    if (dirs.includes(p)) return { isDirectory: () => true } as any
+    if (p in files) return { isDirectory: () => false } as any
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+  })
+  mockFs.readFile.mockImplementation(async (p: string) => {
+    if (p in files) return files[p]!
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+  })
+}
+
+/** Capture stdout writes into an array. */
+function captureStdout(): { chunks: string[]; restore: () => void } {
+  const chunks: string[] = []
+  const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+    chunks.push(String(chunk))
+    return true
+  })
+  return { chunks, restore: () => spy.mockRestore() }
+}
+
+/** Capture stderr writes into an array. */
+function captureStderr(): { chunks: string[]; restore: () => void } {
+  const chunks: string[] = []
+  const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    chunks.push(String(chunk))
+    return true
+  })
+  return { chunks, restore: () => spy.mockRestore() }
 }
 
 beforeEach(() => {
@@ -175,7 +196,7 @@ beforeEach(() => {
   })
   httpGetJson.mockResolvedValue({ status: "ok" })
   spawnMock.mockImplementation(() => ({
-    on: (_event: string, cb: Function) => cb(1),
+    on: (_event: string, cb: (code: number) => void) => cb(1),
     stdout: {
       setEncoding: () => ({
         on: () => {},
@@ -184,6 +205,7 @@ beforeEach(() => {
     stderr: {
       setEncoding: () => ({ on: () => {} }),
     },
+    unref: () => {},
   }))
 })
 
@@ -191,264 +213,294 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-// ── tests: agent detection ────────────────────────────────────────────────────
+// ── tests: --help ────────────────────────────────────────────────────────────
 
-describe("agent detection", () => {
-  it("detects claude when binary is on PATH", async () => {
-    mockBinaryOnPath(["claude"])
-    const result = await detectAgent("claude")
-    expect(result).not.toBeNull()
-    expect(result!.name).toBe("claude")
-    expect(result!.hasBinary).toBe(true)
-  })
+describe("runInstallMcp --help", () => {
+  it("prints usage and exits 0", async () => {
+    const { chunks, restore } = captureStdout()
 
-  it("detects claude when only config exists (no binary)", async () => {
-    mockFileExists("/tmp/fake-home/.claude.json", "{}")
-    const result = await detectAgent("claude")
-    expect(result).not.toBeNull()
-    expect(result!.hasBinary).toBe(false)
-    expect(result!.hasConfig).toBe(true)
-  })
+    const code = await runInstallMcp(["--help"])
+    restore()
 
-  it("returns null for claude when neither binary nor config exist", async () => {
-    const result = await detectAgent("claude")
-    expect(result).toBeNull()
-  })
-
-  it("detects cursor when .cursor dir exists", async () => {
-    mockDirExists("/tmp/fake-home/.cursor")
-    const result = await detectAgent("cursor")
-    expect(result).not.toBeNull()
-    expect(result!.name).toBe("cursor")
-  })
-
-  it("detects codex when config.toml exists", async () => {
-    mockFileExists("/tmp/fake-home/.codex/config.toml", "")
-    const result = await detectAgent("codex")
-    expect(result).not.toBeNull()
-    expect(result!.name).toBe("codex")
-  })
-
-  it("detects claude-desktop on macOS when config exists", async () => {
-    const configPath = "/tmp/fake-home/Library/Application Support/Claude/claude_desktop_config.json"
-    mockFileExists(configPath, "{}")
-    const result = await detectAgent("claude-desktop")
-    expect(result).not.toBeNull()
-    expect(result!.name).toBe("claude-desktop")
-  })
-
-  it("returns null for claude-desktop on non-macOS", async () => {
-    // platform is mocked to darwin in setup; we test the path here
-    const result = await detectAgent("claude-desktop")
-    // On macOS, it would detect if the file exists; since it doesn't, null
-    expect(result).toBeNull()
-  })
-
-  it("detects aider when binary is on PATH", async () => {
-    mockBinaryOnPath(["aider"])
-    const result = await detectAgent("aider")
-    expect(result).not.toBeNull()
-    expect(result!.name).toBe("aider")
-    expect(result!.hasBinary).toBe(true)
-  })
-
-  it("detects aider when only config exists", async () => {
-    mockFileExists("/tmp/fake-home/.aider.conf.yml", "")
-    const result = await detectAgent("aider")
-    expect(result).not.toBeNull()
-    expect(result!.hasConfig).toBe(true)
-  })
-
-  it("returns null for aider when neither binary nor config exist", async () => {
-    const result = await detectAgent("aider")
-    expect(result).toBeNull()
+    expect(code).toBe(0)
+    const output = chunks.join("")
+    expect(output).toContain("install-mcp")
+    expect(output).toContain("--agent")
+    expect(output).toContain("--skip-daemon")
   })
 })
 
-// ── tests: JSON merge non-destructive ──────────────────────────────────────────
+// ── tests: no agents detected ───────────────────────────────────────────────
 
-describe("JSON merge — non-destructive", () => {
-  it("preserves existing mcpServers entries when adding agentproto", async () => {
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
+describe("runInstallMcp with no agents detected", () => {
+  it("exits 0 with --yes and says nothing to do", async () => {
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--yes", "--skip-daemon"])
+    restore()
+
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("Nothing to do")
+  })
+
+  it("exits 0 without --yes and says no agents detected", async () => {
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--skip-daemon"])
+    restore()
+
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("No coding-CLI agents detected")
+  })
+})
+
+// ── tests: --skip-daemon path ───────────────────────────────────────────────
+
+describe("runInstallMcp --skip-daemon", () => {
+  it("skips daemon discovery and uses config port for registration", async () => {
+    // Provide a cursor config so an agent is detected
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockFileExists(cursorConfigPath, JSON.stringify({ mcpServers: {} }))
+    mockDirExists("/tmp/fake-home/.cursor")
+
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--skip-daemon", "--yes"])
+    restore()
+
+    expect(code).toBe(0)
+    // discoverDaemon should NOT have been called
+    expect(discoverDaemon).not.toHaveBeenCalled()
+    // Should have written to cursor config
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorConfigPath,
+    )
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toBeDefined()
+    expect(written.mcpServers.agentproto.command).toBe("agentproto")
+  })
+
+  it("falls back to DEFAULT_PORT when config has no daemon.port", async () => {
+    mockLoadConfig.mockResolvedValue({}) // no daemon.port
+    mockFileExists(
+      "/tmp/fake-home/.cursor/mcp.json",
+      JSON.stringify({ mcpServers: {} }),
+    )
+    mockDirExists("/tmp/fake-home/.cursor")
+
+    const code = await runInstallMcp(["--skip-daemon", "--yes"])
+    expect(code).toBe(0)
+  })
+})
+
+// ── tests: daemon discovery returns null ────────────────────────────────────
+
+describe("runInstallMcp when daemon discovery fails", () => {
+  it("exits 1 when daemon is not found and cannot be started", async () => {
+    // Daemon not found
+    discoverDaemon.mockResolvedValue({ found: null, stale: [] })
+    // Health checks fail
+    httpGetJson.mockRejectedValue(new Error("ECONNREFUSED"))
+    // spawn for `agentproto daemon start` → non-zero
+    spawnMock.mockImplementation(() => ({
+      on: (_event: string, cb: (code: number) => void) => cb(1),
+      stdout: { setEncoding: () => ({ on: () => {} }) },
+      stderr: { setEncoding: () => ({ on: () => {} }) },
+      unref: () => {},
+    }))
+
+    // Make an agent detectable so we reach the daemon step
+    mockFileExists(
+      "/tmp/fake-home/.cursor/mcp.json",
+      JSON.stringify({ mcpServers: {} }),
+    )
+    mockDirExists("/tmp/fake-home/.cursor")
+
+    const { chunks, restore } = captureStderr()
+
+    const code = await runInstallMcp([]) // no --yes → ensureDaemon skips the 10s background-spawn health loop
+    restore()
+
+    expect(code).toBe(1)
+    expect(chunks.join("")).toContain("Could not find or start the daemon")
+  })
+})
+
+// ── tests: normal install flow (through public entrypoint) ─────────────────
+
+describe("runInstallMcp normal install", () => {
+  it("registers cursor via stdio JSON and writes install-state", async () => {
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
     const existingConfig = {
       mcpServers: {
-        "other-server": {
-          command: "other-cmd",
-          args: ["--foo"],
-        },
+        "other-server": { command: "other-cmd", args: ["--foo"] },
       },
     }
-    mockFileExists(configPath, JSON.stringify(existingConfig))
 
-    const detection = makeDetection("cursor", configPath)
-    await registerStdioJson(detection, "cursor", {})
+    mockMultiPath({
+      files: {
+        [cursorConfigPath]: JSON.stringify(existingConfig),
+      },
+      dirs: ["/tmp/fake-home/.cursor"],
+    })
 
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
+    const code = await runInstallMcp(["--yes"])
+    expect(code).toBe(0)
 
+    // Config written with both old and new server
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorConfigPath,
+    )
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
     expect(written.mcpServers["other-server"]).toBeDefined()
-    expect(written.mcpServers["other-server"].command).toBe("other-cmd")
     expect(written.mcpServers.agentproto).toBeDefined()
     expect(written.mcpServers.agentproto.command).toBe("agentproto")
     expect(written.mcpServers.agentproto.args).toEqual(["mcp-bridge"])
-  })
 
-  it("creates mcpServers key if it doesn't exist", async () => {
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
-    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-
-    const detection = makeDetection("cursor", configPath)
-    await registerStdioJson(detection, "cursor", {})
-
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
-    expect(written.mcpServers).toBeDefined()
-    expect(written.mcpServers.agentproto).toBeDefined()
-  })
-
-  it("writes AGENTPROTO_MCP_URL env when port is non-default", async () => {
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
-    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-
-    const detection = makeDetection("cursor", configPath)
-    await registerStdioJson(detection, "cursor", {
-      AGENTPROTO_MCP_URL: "http://127.0.0.1:18791/mcp",
-    })
-
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
-    expect(written.mcpServers.agentproto.env.AGENTPROTO_MCP_URL).toBe(
-      "http://127.0.0.1:18791/mcp",
+    // State file written
+    const stateWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === statePath,
     )
-  })
-
-  it("does not write env when port is default", async () => {
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
-    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-
-    const detection = makeDetection("cursor", configPath)
-    await registerStdioJson(detection, "cursor", {})
-
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
-    expect(written.mcpServers.agentproto.env).toEqual({})
+    expect(stateWrite).toBeDefined()
+    const state = JSON.parse(stateWrite![1] as string)
+    expect(state.entries).toHaveLength(1)
+    expect(state.entries[0].agent).toBe("cursor")
+    expect(state.entries[0].transport).toBe("stdio")
   })
 
   it("overwrites a previous agentproto entry but preserves other servers", async () => {
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
     const existingConfig = {
       mcpServers: {
         agentproto: { command: "old-agentproto", args: ["old-bridge"] },
         "other-server": { command: "other-cmd" },
       },
     }
-    mockFileExists(configPath, JSON.stringify(existingConfig))
 
-    const detection = makeDetection("cursor", configPath)
-    await registerStdioJson(detection, "cursor", {})
+    mockMultiPath({
+      files: { [cursorConfigPath]: JSON.stringify(existingConfig) },
+      dirs: ["/tmp/fake-home/.cursor"],
+    })
 
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
+    const code = await runInstallMcp(["--yes"])
+    expect(code).toBe(0)
 
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorConfigPath,
+    )
+    const written = JSON.parse(configWrite![1] as string)
     expect(written.mcpServers["other-server"].command).toBe("other-cmd")
     expect(written.mcpServers.agentproto.command).toBe("agentproto")
     expect(written.mcpServers.agentproto.args).toEqual(["mcp-bridge"])
   })
-})
 
-// ── tests: install-state diffing for --uninstall ──────────────────────────────
+  it("writes AGENTPROTO_MCP_URL env when port is non-default", async () => {
+    // Daemon running on non-default port
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18791" },
+      stale: [],
+    })
 
-describe("install-state and --uninstall", () => {
-  it("loadInstallState returns empty when file doesn't exist", async () => {
-    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-    const state = await loadInstallState()
-    expect(state.entries).toEqual([])
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({
+      files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) },
+      dirs: ["/tmp/fake-home/.cursor"],
+    })
+
+    const code = await runInstallMcp(["--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorConfigPath,
+    )
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto.env.AGENTPROTO_MCP_URL).toBe(
+      "http://127.0.0.1:18791/mcp",
+    )
   })
 
-  it("saveInstallState writes JSON with entries", async () => {
-    const state: InstallState = {
+  it("does not write env when port is default", async () => {
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({
+      files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) },
+      dirs: ["/tmp/fake-home/.cursor"],
+    })
+
+    const code = await runInstallMcp(["--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorConfigPath,
+    )
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto.env).toEqual({})
+  })
+
+  it("rejects unknown agent names with exit 2", async () => {
+    // Must have a detected agent to reach the --agent validation path
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+
+    const { chunks, restore } = captureStderr()
+
+    const code = await runInstallMcp(["--agent", "unknown-agent", "--yes", "--skip-daemon"])
+    restore()
+
+    expect(code).toBe(2)
+    expect(chunks.join("")).toContain("Unknown agent")
+  })
+
+  it("exits 1 when requested agent is not detected", async () => {
+    // Cursor is detected but we request claude which is not
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+
+    const { chunks, restore } = captureStderr()
+
+    const code = await runInstallMcp(["--agent", "claude", "--yes", "--skip-daemon"])
+    restore()
+
+    expect(code).toBe(1)
+    expect(chunks.join("")).toContain("None of the requested agents")
+  })
+})
+
+// ── tests: --uninstall (integration through runInstallMcp) ──────────────────
+
+describe("runInstallMcp --uninstall", () => {
+  it("removes entries and clears state", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const configPath = "/tmp/fake-home/.cursor/mcp.json"
+    const state = {
       entries: [
         {
           agent: "cursor",
-          configPath: "/tmp/.cursor/mcp.json",
-          transport: "stdio",
+          configPath,
+          transport: "stdio" as const,
           registeredAt: "2025-01-01T00:00:00Z",
         },
       ],
     }
-    await saveInstallState(state)
-    expect(mockFs.writeFile).toHaveBeenCalled()
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
-    expect(written.entries).toHaveLength(1)
-    expect(written.entries[0].agent).toBe("cursor")
-  })
-
-  it("unregisterAgent removes only agentproto from JSON config", async () => {
-    const configPath = "/tmp/.cursor/mcp.json"
     const existingConfig = {
       mcpServers: {
         agentproto: { command: "agentproto", args: ["mcp-bridge"] },
         "other-server": { command: "other-cmd" },
       },
     }
-    mockFileExists(configPath, JSON.stringify(existingConfig))
 
-    await unregisterAgent({
-      agent: "cursor",
-      configPath,
-      transport: "stdio",
-      registeredAt: "2025-01-01T00:00:00Z",
-    })
-
-    const writtenContent = mockFs.writeFile.mock.calls[0]![1] as string
-    const written = JSON.parse(writtenContent)
-
-    expect(written.mcpServers.agentproto).toBeUndefined()
-    expect(written.mcpServers["other-server"]).toBeDefined()
-    expect(written.mcpServers["other-server"].command).toBe("other-cmd")
-  })
-
-  it("unregisterAgent is a no-op when config file is gone", async () => {
-    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-    await unregisterAgent({
-      agent: "cursor",
-      configPath: "/tmp/.cursor/mcp.json",
-      transport: "stdio",
-      registeredAt: "2025-01-01T00:00:00Z",
-    })
-    expect(mockFs.writeFile).not.toHaveBeenCalled()
-  })
-
-  it("runInstallMcp --uninstall removes entries and clears state", async () => {
-    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
-    const configPath = "/tmp/fake-home/.cursor/mcp.json"
-    const state: InstallState = {
-      entries: [
-        {
-          agent: "cursor",
-          configPath,
-          transport: "stdio",
-          registeredAt: "2025-01-01T00:00:00Z",
-        },
-      ],
-    }
-    const existingConfig = {
-      mcpServers: {
-        agentproto: { command: "agentproto", args: ["mcp-bridge"] },
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [configPath]: JSON.stringify(existingConfig),
       },
-    }
-
-    // Mock: state file read returns state, config read returns existing
-    mockFs.readFile.mockImplementation(async (p: string) => {
-      if (p === statePath) return JSON.stringify(state)
-      if (p === configPath) return JSON.stringify(existingConfig)
-      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
     })
 
     const code = await runInstallMcp(["--uninstall", "--yes"])
-
     expect(code).toBe(0)
+
     // Should have written the cleaned config file
     const configWrite = mockFs.writeFile.mock.calls.find(
       c => c[0] === configPath,
@@ -456,6 +508,7 @@ describe("install-state and --uninstall", () => {
     expect(configWrite).toBeDefined()
     const writtenConfig = JSON.parse(configWrite![1] as string)
     expect(writtenConfig.mcpServers.agentproto).toBeUndefined()
+    expect(writtenConfig.mcpServers["other-server"]).toBeDefined()
 
     // Should have written empty state
     const stateWrite = mockFs.writeFile.mock.calls.find(
@@ -466,120 +519,370 @@ describe("install-state and --uninstall", () => {
     expect(writtenState.entries).toEqual([])
   })
 
-  it("runInstallMcp --uninstall says nothing to remove when state is empty", async () => {
+  it("says nothing to remove when state is empty", async () => {
     mockFs.readFile.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
 
-    let stdoutChunks: string[] = []
-    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-      stdoutChunks.push(String(chunk))
-      return true
-    })
+    const { chunks, restore } = captureStdout()
 
     const code = await runInstallMcp(["--uninstall"])
-    spy.mockRestore()
+    restore()
 
     expect(code).toBe(0)
-    expect(stdoutChunks.join("")).toContain("No agentproto MCP registrations to remove")
-  })
-})
-
-// ── tests: TOML and YAML key removal ──────────────────────────────────────────
-
-describe("removeTomlTable", () => {
-  it("removes a [mcp_servers.agentproto] block, preserves others", () => {
-    const content = `[some.other]\nkey = "val"\n\n[mcp_servers.agentproto]\ncommand = "agentproto"\nargs = ["mcp-bridge"]\n\n[another.table]\nfoo = "bar"\n`
-    const result = removeTomlTable(content, "mcp_servers.agentproto")
-    expect(result).not.toContain("[mcp_servers.agentproto]")
-    expect(result).not.toContain("agentproto")
-    expect(result).toContain("[some.other]")
-    expect(result).toContain("[another.table]")
-    expect(result).toContain("foo = \"bar\"")
+    expect(chunks.join("")).toContain("No agentproto MCP registrations to remove")
   })
 
-  it("handles block at end of file", () => {
-    const content = `[other]\nkey = "val"\n\n[mcp_servers.agentproto]\ncommand = "agentproto"\n`
-    const result = removeTomlTable(content, "mcp_servers.agentproto")
-    expect(result).not.toContain("[mcp_servers.agentproto]")
-    expect(result).toContain("[other]")
-  })
+  it("uninstall removes codex TOML block via runInstallMcp", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const codexPath = "/tmp/fake-home/.codex/config.toml"
+    const state = {
+      entries: [
+        {
+          agent: "codex",
+          configPath: codexPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const tomlContent = `[some.other]\nkey = "val"\n\n[mcp_servers.agentproto]\ncommand = "agentproto"\nargs = ["mcp-bridge"]\n\n[another.table]\nfoo = "bar"\n`
 
-  it("is a no-op when the table doesn't exist", () => {
-    const content = `[other]\nkey = "val"\n`
-    const result = removeTomlTable(content, "mcp_servers.agentproto")
-    expect(result).toBe(content)
-  })
-})
-
-describe("removeYamlKey", () => {
-  it("removes a top-level key and its nested block", () => {
-    const content = `other_key: val\n\nmcp_servers:\n  agentproto:\n    command: agentproto\n    args:\n      - mcp-bridge\n\nother_key2: val2\n`
-    const result = removeYamlKey(content, "mcp_servers")
-    expect(result).not.toContain("mcp_servers:")
-    expect(result).not.toContain("agentproto")
-    expect(result).toContain("other_key: val")
-    expect(result).toContain("other_key2: val2")
-  })
-
-  it("handles key at end of file", () => {
-    const content = `other: val\n\nmcp_servers:\n  agentproto:\n    command: agentproto\n`
-    const result = removeYamlKey(content, "mcp_servers")
-    expect(result).not.toContain("mcp_servers:")
-    expect(result).toContain("other: val")
-  })
-
-  it("is a no-op when key doesn't exist", () => {
-    const content = `other: val\n`
-    const result = removeYamlKey(content, "mcp_servers")
-    expect(result).toBe(content)
-  })
-})
-
-// ── tests: runInstallMcp basic flow ────────────────────────────────────────────
-
-describe("runInstallMcp --help", () => {
-  it("prints usage and exits 0", async () => {
-    let stdoutChunks: string[] = []
-    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-      stdoutChunks.push(String(chunk))
-      return true
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [codexPath]: tomlContent,
+      },
     })
 
-    const code = await runInstallMcp(["--help"])
-    spy.mockRestore()
-
+    const code = await runInstallMcp(["--uninstall", "--yes"])
     expect(code).toBe(0)
-    expect(stdoutChunks.join("")).toContain("install-mcp")
-    expect(stdoutChunks.join("")).toContain("--agent")
+
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === codexPath,
+    )
+    expect(configWrite).toBeDefined()
+    const written = configWrite![1] as string
+    expect(written).not.toContain("[mcp_servers.agentproto]")
+    expect(written).toContain("[some.other]")
+    expect(written).toContain("[another.table]")
+  })
+
+  it("uninstall removes aider YAML key via runInstallMcp", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const aiderPath = "/tmp/fake-home/.aider.conf.yml"
+    const state = {
+      entries: [
+        {
+          agent: "aider",
+          configPath: aiderPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const yamlContent = `other_key: val\n\nmcp_servers:\n  agentproto:\n    command: agentproto\n    args:\n      - mcp-bridge\n\nother_key2: val2\n`
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [aiderPath]: yamlContent,
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === aiderPath,
+    )
+    expect(configWrite).toBeDefined()
+    const written = configWrite![1] as string
+    expect(written).not.toContain("mcp_servers:")
+    expect(written).toContain("other_key: val")
+    expect(written).toContain("other_key2: val2")
+  })
+
+  it("uninstall is a no-op when config file is gone", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const configPath = "/tmp/fake-home/.cursor/mcp.json"
+    const state = {
+      entries: [
+        {
+          agent: "cursor",
+          configPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+
+    // State file exists but config file is gone
+    mockMultiPath({
+      files: { [statePath]: JSON.stringify(state) },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    // State should still be cleared
+    const stateWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === statePath,
+    )
+    expect(stateWrite).toBeDefined()
+    const writtenState = JSON.parse(stateWrite![1] as string)
+    expect(writtenState.entries).toEqual([])
   })
 })
 
-describe("runInstallMcp with no agents detected", () => {
-  it("exits 0 with --yes and says nothing to do", async () => {
-    // No binaries on PATH, no config files
-    let stdoutChunks: string[] = []
-    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-      stdoutChunks.push(String(chunk))
-      return true
+// ── tests: --update (integration through runInstallMcp) ─────────────────────
+
+describe("runInstallMcp --update", () => {
+  it("updates registrations with current daemon port", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const cursorPath = "/tmp/fake-home/.cursor/mcp.json"
+    const state = {
+      entries: [
+        {
+          agent: "cursor",
+          configPath: cursorPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [cursorPath]: JSON.stringify({ mcpServers: {} }),
+      },
+      dirs: ["/tmp/fake-home/.cursor"],
     })
 
-    const code = await runInstallMcp(["--yes", "--skip-daemon"])
-    spy.mockRestore()
-
+    const code = await runInstallMcp(["--update", "--yes"])
     expect(code).toBe(0)
-    expect(stdoutChunks.join("")).toContain("Nothing to do")
+
+    // Config should have the updated agentproto entry
+    const configWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === cursorPath,
+    )
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toBeDefined()
+    expect(written.mcpServers.agentproto.command).toBe("agentproto")
+
+    // State should be updated
+    const stateWrite = mockFs.writeFile.mock.calls.find(
+      c => c[0] === statePath,
+    )
+    expect(stateWrite).toBeDefined()
+    const writtenState = JSON.parse(stateWrite![1] as string)
+    expect(writtenState.entries).toHaveLength(1)
+    expect(writtenState.entries[0].agent).toBe("cursor")
   })
 
-  it("exits 0 without --yes and says no agents detected", async () => {
-    let stdoutChunks: string[] = []
-    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
-      stdoutChunks.push(String(chunk))
-      return true
-    })
+  it("says no previous registrations when state is empty", async () => {
+    mockFs.readFile.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
 
-    const code = await runInstallMcp(["--skip-daemon"])
-    spy.mockRestore()
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--update"])
+    restore()
 
     expect(code).toBe(0)
-    expect(stdoutChunks.join("")).toContain("No coding-CLI agents detected")
+    expect(chunks.join("")).toContain("No previous registrations found")
+  })
+
+  it("exits 1 when daemon cannot be found during update", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const state = {
+      entries: [
+        {
+          agent: "cursor",
+          configPath: "/tmp/fake-home/.cursor/mcp.json",
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    mockMultiPath({ files: { [statePath]: JSON.stringify(state) } })
+
+    // Daemon not found and cannot be started
+    discoverDaemon.mockResolvedValue({ found: null, stale: [] })
+    httpGetJson.mockRejectedValue(new Error("ECONNREFUSED"))
+    spawnMock.mockImplementation(() => ({
+      on: (_event: string, cb: (code: number) => void) => cb(1),
+      stdout: { setEncoding: () => ({ on: () => {} }) },
+      stderr: { setEncoding: () => ({ on: () => {} }) },
+      unref: () => {},
+    }))
+
+    const { chunks, restore } = captureStderr()
+
+    const code = await runInstallMcp(["--update"]) // no --yes → ensureDaemon skips 10s background spawn
+    restore()
+
+    expect(code).toBe(1)
+    expect(chunks.join("")).toContain("Could not find or start the daemon")
+  })
+
+  it("skips entries whose agent is no longer detected", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const state = {
+      entries: [
+        {
+          agent: "cursor",
+          configPath: "/tmp/fake-home/.cursor/mcp.json",
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    // No config files or dirs → cursor not detected
+    mockMultiPath({ files: { [statePath]: JSON.stringify(state) } })
+
+    const { chunks, restore } = captureStdout()
+
+    const code = await runInstallMcp(["--update", "--yes"])
+    restore()
+
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("no longer detected")
+  })
+})
+
+// ── tests: TOML and YAML removal (through --uninstall) ──────────────────────
+
+describe("TOML block removal via --uninstall", () => {
+  it("removes a [mcp_servers.agentproto] block, preserves others", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const codexPath = "/tmp/fake-home/.codex/config.toml"
+    const state = {
+      entries: [
+        {
+          agent: "codex",
+          configPath: codexPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const tomlContent = `[some.other]\nkey = "val"\n\n[mcp_servers.agentproto]\ncommand = "agentproto"\nargs = ["mcp-bridge"]\n\n[another.table]\nfoo = "bar"\n`
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [codexPath]: tomlContent,
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const written = mockFs.writeFile.mock.calls.find(
+      c => c[0] === codexPath,
+    )![1] as string
+    expect(written).not.toContain("[mcp_servers.agentproto]")
+    expect(written).toContain("[some.other]")
+    expect(written).toContain("[another.table]")
+    expect(written).toContain('foo = "bar"')
+  })
+
+  it("handles TOML block at end of file", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const codexPath = "/tmp/fake-home/.codex/config.toml"
+    const state = {
+      entries: [
+        {
+          agent: "codex",
+          configPath: codexPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const tomlContent = `[other]\nkey = "val"\n\n[mcp_servers.agentproto]\ncommand = "agentproto"\n`
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [codexPath]: tomlContent,
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const written = mockFs.writeFile.mock.calls.find(
+      c => c[0] === codexPath,
+    )![1] as string
+    expect(written).not.toContain("[mcp_servers.agentproto]")
+    expect(written).toContain("[other]")
+  })
+})
+
+describe("YAML key removal via --uninstall", () => {
+  it("removes a top-level key and its nested block", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const aiderPath = "/tmp/fake-home/.aider.conf.yml"
+    const state = {
+      entries: [
+        {
+          agent: "aider",
+          configPath: aiderPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const yamlContent = `other_key: val\n\nmcp_servers:\n  agentproto:\n    command: agentproto\n    args:\n      - mcp-bridge\n\nother_key2: val2\n`
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [aiderPath]: yamlContent,
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const written = mockFs.writeFile.mock.calls.find(
+      c => c[0] === aiderPath,
+    )![1] as string
+    expect(written).not.toContain("mcp_servers:")
+    expect(written).toContain("other_key: val")
+    expect(written).toContain("other_key2: val2")
+  })
+
+  it("handles YAML key at end of file", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const aiderPath = "/tmp/fake-home/.aider.conf.yml"
+    const state = {
+      entries: [
+        {
+          agent: "aider",
+          configPath: aiderPath,
+          transport: "stdio" as const,
+          registeredAt: "2025-01-01T00:00:00Z",
+        },
+      ],
+    }
+    const yamlContent = `other: val\n\nmcp_servers:\n  agentproto:\n    command: agentproto\n`
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [aiderPath]: yamlContent,
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall", "--yes"])
+    expect(code).toBe(0)
+
+    const written = mockFs.writeFile.mock.calls.find(
+      c => c[0] === aiderPath,
+    )![1] as string
+    expect(written).not.toContain("mcp_servers:")
+    expect(written).toContain("other: val")
   })
 })
