@@ -287,6 +287,17 @@ const mcpBlockSchema = z.object({
   url: z.string().url().optional(),
 }).strict()
 
+const printConfigSchema = z.object({
+  prompt_flag: z.string().optional(),
+  output_format: z.array(z.string()).optional(),
+  pre_prompt: z.array(z.string()).optional(),
+  resume: z.object({
+    flag: z.string(),
+    kind: z.enum(["value", "boolean"]),
+  }).strict().optional(),
+  event_schema: z.enum(["claude-stream-json", "mastra-jsonl"]).optional(),
+}).strict().optional()
+
 export const agentCliFrontmatterSchema = z
   .object({
     name: z.string().min(1).max(80),
@@ -305,6 +316,7 @@ export const agentCliFrontmatterSchema = z
     acp: z.string().optional(),
     mcp: mcpBlockSchema.optional(),
     adapter: z.string().regex(ADAPTER_PATTERN).optional(),
+    print: printConfigSchema,
     session: sessionSchema.optional(),
     models: modelsSchema.optional(),
     capabilities: capabilitiesSchema.optional(),

@@ -1,0 +1,61 @@
+{
+  "name": "@agentproto/adapter-mastracode",
+  "version": "0.1.0",
+  "description": "@agentproto/adapter-mastracode — AIP-45 AGENT-CLI adapter for Mastra Code. Spawns the documented headless CLI via `npx -y mastracode`; current Mastra Code does not expose a discoverable ACP subcommand.",
+  "keywords": [
+    "agentproto",
+    "aip-45",
+    "mastracode",
+    "mastra",
+    "print",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/mastracode"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./MASTRACODE.md": "./MASTRACODE.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "MASTRACODE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver-agent-cli": "workspace:*"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

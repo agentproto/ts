@@ -15,23 +15,12 @@
 import type { SessionUpdate, ToolKind } from "@agentclientprotocol/sdk"
 
 /** The narrow slice of a Mastra fullStream chunk we read. Typed structurally
- *  so we don't couple to a specific @mastra/core version. */
+ *  so we don't couple to a specific @mastra/core version.
+ *  Mastra 1.45 wraps all chunk data in a `payload` field. */
 export type MastraStreamChunk =
   | { type: "text-delta"; payload?: { text?: string } }
-  | {
-      type: "tool-call"
-      payload?: { toolCallId?: string; toolName?: string; args?: unknown }
-    }
-  | {
-      type: "tool-result"
-      payload?: {
-        toolCallId?: string
-        toolName?: string
-        result?: unknown
-        isError?: boolean
-      }
-    }
-  | { type: string; payload?: unknown }
+  | { type: "tool-call"; payload?: { toolCallId?: string; toolName?: string; args?: unknown } }
+  | { type: "tool-result"; payload?: { toolCallId?: string; result?: unknown; isError?: boolean } }
 
 /** Map a workspace tool id to the ACP {@link ToolKind} that drives client
  *  icon/UI treatment. Unknown ids fall back to "other". */
@@ -54,11 +43,11 @@ export function toolKindFor(toolName: string): ToolKind {
  *  or `read_file: src/index.ts`. Falls back to the bare tool name. */
 export function toolCallTitle(toolName: string, args: unknown): string {
   if (args && typeof args === "object") {
-    const a = args as Record<string, unknown>
+    const { command, path, file } = args as Record<string, unknown>
     const hint =
-      (typeof a.command === "string" && a.command) ||
-      (typeof a.path === "string" && a.path) ||
-      (typeof a.file === "string" && a.file) ||
+      (typeof command === "string" && command) ||
+      (typeof path === "string" && path) ||
+      (typeof file === "string" && file) ||
       ""
     if (hint) return `${toolName}: ${hint}`
   }
@@ -75,7 +64,7 @@ export function chunkToSessionUpdate(
 ): SessionUpdate | null {
   switch (chunk.type) {
     case "text-delta": {
-      const text = (chunk.payload as { text?: string } | undefined)?.text
+      const text = chunk.payload?.text
       if (!text) return null
       return {
         sessionUpdate: "agent_message_chunk",
@@ -83,30 +72,27 @@ export function chunkToSessionUpdate(
       }
     }
     case "tool-call": {
-      const p = chunk.payload as
-        | { toolCallId?: string; toolName?: string; args?: unknown }
-        | undefined
-      if (!p?.toolCallId) return null
-      const toolName = p.toolName ?? "tool"
+      const toolCallId = chunk.payload?.toolCallId
+      if (!toolCallId) return null
+      const toolName = chunk.payload?.toolName ?? "tool"
+      const args = chunk.payload?.args
       return {
         sessionUpdate: "tool_call",
-        toolCallId: p.toolCallId,
-        title: toolCallTitle(toolName, p.args),
+        toolCallId,
+        title: toolCallTitle(toolName, args),
         kind: toolKindFor(toolName),
         status: "in_progress",
-        rawInput: p.args,
+        rawInput: args,
       }
     }
     case "tool-result": {
-      const p = chunk.payload as
-        | { toolCallId?: string; result?: unknown; isError?: boolean }
-        | undefined
-      if (!p?.toolCallId) return null
+      const toolCallId = chunk.payload?.toolCallId
+      if (!toolCallId) return null
       return {
         sessionUpdate: "tool_call_update",
-        toolCallId: p.toolCallId,
-        status: p.isError ? "failed" : "completed",
-        rawOutput: p.result,
+        toolCallId,
+        status: chunk.payload?.isError ? "failed" : "completed",
+        rawOutput: chunk.payload?.result,
       }
     }
     default:

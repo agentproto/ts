@@ -1,21 +1,34 @@
 /**
  * AIP-45 protocol arm: `protocol: "print"`.
  *
- * Drives `claude -p --output-format stream-json [--resume <id>]` — one
- * fresh subprocess per turn, no long-lived ACP connection. Simpler than
- * the ACP arm and immune to the stale-proxy race condition: the session
- * object itself never dies between turns; only the per-turn child does.
+ * Drives a headless CLI as one fresh subprocess per turn — no
+ * long-lived ACP connection. Simpler than the ACP arm and immune to
+ * the stale-proxy race condition: the session object itself never dies
+ * between turns; only the per-turn child does.
  *
- * The `sessionId` property starts empty (or pre-seeded with a
- * `resumeSessionId`) and is updated after the first successful turn from
- * the `result` event's `session_id` field.  Subsequent turns pass
- * `--resume <sessionId>` so Claude Code rehydrates the conversation from
- * its JSONL store.
+ * ## Configuration
+ *
+ * The adapter's `print` manifest block declares the CLI's one-shot
+ * surface (flags, output format, event taxonomy). When the block is
+ * absent, Claude Code defaults are applied for backward compatibility.
+ *
+ * ## Session tracking
+ *
+ * The `sessionId` property starts empty (or pre-seeded from
+ * `resumeSessionId`) and is updated after the first successful turn
+ * from the wire event that carries the session / thread identifier
+ * (Claude: `result.session_id`; Mastra: `agent_end.threadId`).
+ * Subsequent turns pass the appropriate resume flag so the CLI
+ * rehydrates the conversation.
  */
 
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
-import type { AgentCliRuntimeSession, StreamEvent } from "../types.js"
+import type {
+  AgentCliPrintConfig,
+  AgentCliRuntimeSession,
+  StreamEvent,
+} from "../types.js"
 
 export interface PrintArmOptions {
   bin: string
@@ -26,9 +39,26 @@ export interface PrintArmOptions {
   env: Record<string, string>
   /** Pre-seed from `resumeSessionId` so the first turn reattaches. */
   resumeSessionId?: string
+  /** Adapter-declared print surface config. Omit for Claude defaults. */
+  printConfig?: AgentCliPrintConfig
 }
 
-export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSession {
+// ── Defaults (Claude Code backward-compatible) ──────────────────────
+
+const DEFAULT_OUTPUT: string[] = ["--output-format", "stream-json"]
+const DEFAULT_PRE_PROMPT: string[] = ["--no-interactive"]
+const DEFAULT_RESUME = { flag: "--resume", kind: "value" as const }
+
+export function createPrintSession(
+  opts: PrintArmOptions,
+): AgentCliRuntimeSession {
+  const config = opts.printConfig
+  const outputFormat = config?.output_format ?? DEFAULT_OUTPUT
+  const prePrompt = config?.pre_prompt ?? DEFAULT_PRE_PROMPT
+  const promptFlag = config?.prompt_flag
+  const resumeCfg = config?.resume ?? DEFAULT_RESUME
+  const eventSchema = config?.event_schema ?? "claude-stream-json"
+
   let sessionId = opts.resumeSessionId ?? ""
   let activeChild: ReturnType<typeof spawn> | null = null
 
@@ -40,15 +70,26 @@ export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSessio
     async *send(message: unknown): AsyncIterable<StreamEvent> {
       const prompt = extractPromptText(message)
 
+      // Build argv: baseArgs + output_format + pre_prompt +
+      //             resume_flag(+value) + prompt_flag(+text) | positional
       const args: string[] = [
         ...opts.baseArgs,
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--no-interactive",
-        ...(sessionId ? ["--resume", sessionId] : []),
-        prompt,
+        ...outputFormat,
+        ...prePrompt,
       ]
+
+      // Resume flag
+      if (sessionId) {
+        args.push(resumeCfg.flag)
+        if (resumeCfg.kind === "value") args.push(sessionId)
+      }
+
+      // Prompt: flag or positional
+      if (promptFlag) {
+        args.push(promptFlag, prompt)
+      } else {
+        args.push(prompt)
+      }
 
       const child = spawn(opts.bin, args, {
         cwd: opts.cwd,
@@ -69,10 +110,15 @@ export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSessio
       })
 
       try {
-        if (!child.stdout) throw new Error("print-arm: child has no stdout pipe")
+        if (!child.stdout)
+          throw new Error("print-arm: child has no stdout pipe")
         const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
 
         let capturedSessionId = ""
+        const mastraState =
+          eventSchema === "mastra-jsonl"
+            ? createMastraMapperState()
+            : undefined
         for await (const line of rl) {
           if (!line.trim()) continue
           let evt: Record<string, unknown>
@@ -82,16 +128,12 @@ export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSessio
             continue
           }
 
-          if (
-            evt.type === "result" &&
-            typeof evt.session_id === "string" &&
-            evt.session_id
-          ) {
-            capturedSessionId = evt.session_id
-          }
+          // Capture the session/thread id from the wire event
+          const csid = captureSessionId(evt, eventSchema)
+          if (csid) capturedSessionId = csid
 
           const sid = capturedSessionId || sessionId || ""
-          const mapped = mapEvent(evt, sid, stderrLines)
+          const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState)
           if (!mapped) continue
 
           yield mapped
@@ -101,10 +143,12 @@ export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSessio
         if (capturedSessionId) sessionId = capturedSessionId
 
         if (exitCode !== 0 && exitCode !== null) {
+          const binLabel =
+            eventSchema === "mastra-jsonl" ? "mastracode" : "claude"
           const errEvt: StreamEvent = {
             kind: "error",
             error: {
-              message: `claude exited with code ${exitCode}`,
+              message: `${binLabel} exited with code ${exitCode}`,
               ...(stderrLines.length
                 ? { data: { stderr: stderrLines.join("\n") } }
                 : {}),
@@ -127,6 +171,8 @@ export function createPrintSession(opts: PrintArmOptions): AgentCliRuntimeSessio
   }
 }
 
+// ── Prompt extraction ───────────────────────────────────────────────
+
 function extractPromptText(message: unknown): string {
   if (typeof message === "string") return message
   if (message !== null && typeof message === "object") {
@@ -142,7 +188,61 @@ function extractPromptText(message: unknown): string {
   return JSON.stringify(message)
 }
 
+// ── Session id capture per event schema ─────────────────────────────
+
+function captureSessionId(
+  evt: Record<string, unknown>,
+  schema: "claude-stream-json" | "mastra-jsonl",
+): string | null {
+  switch (schema) {
+    case "claude-stream-json":
+      if (
+        evt.type === "result" &&
+        typeof evt.session_id === "string" &&
+        evt.session_id
+      )
+        return evt.session_id
+      return null
+    case "mastra-jsonl":
+      // Mastra Code surfaces the thread id on om_status events:
+      // { type: "om_status", threadId: "..." }
+      if (
+        evt.type === "om_status" &&
+        typeof evt.threadId === "string" &&
+        evt.threadId
+      )
+        return evt.threadId
+      return null
+  }
+}
+
+// ── Event mapping ───────────────────────────────────────────────────
+
 function mapEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  stderrLines: string[],
+  schema: "claude-stream-json" | "mastra-jsonl",
+  mastraState?: MastraMapperState,
+): StreamEvent | null {
+  switch (schema) {
+    case "claude-stream-json":
+      return mapClaudeEvent(evt, sessionId, stderrLines)
+    case "mastra-jsonl": {
+      if (!mastraState) {
+        // Should never happen — mastra-jsonl schema always creates state
+        return mapClaudeEvent(evt, sessionId, stderrLines)
+      }
+      return mapMastraEvent(evt, sessionId, stderrLines, mastraState)
+    }
+    default:
+      return mapClaudeEvent(evt, sessionId, stderrLines)
+  }
+}
+
+// ── Claude Code stream-json mapper ──────────────────────────────────
+
+function mapClaudeEvent(
   evt: Record<string, unknown>,
   sessionId: string,
   stderrLines: string[],
@@ -187,7 +287,9 @@ function mapEvent(
           sessionId,
           error: {
             message:
-              typeof evt.error === "string" ? evt.error : "Unknown error",
+              typeof evt.error === "string"
+                ? evt.error
+                : "Unknown error",
             ...(stderrLines.length
               ? { data: { stderr: stderrLines.join("\n") } }
               : {}),
@@ -201,7 +303,6 @@ function mapEvent(
 
     case "system":
     case "assistant":
-      // skip: init metadata and full message recap (streaming text-delta covers it)
       return null
 
     default:
@@ -209,7 +310,168 @@ function mapEvent(
   }
 }
 
-function waitForExit(child: ReturnType<typeof spawn>): Promise<number | null> {
+// ── Mastra Code JSONL mapper ────────────────────────────────────────
+
+/**
+ * Mutable per-stream state for the Mastra Code event mapper.
+ * Mastra Code sends the FULL accumulated text on each `message_update`,
+ * so we track the previous length to emit only the new portion.
+ */
+interface MastraMapperState {
+  lastTextLength: number
+}
+
+function createMastraMapperState(): MastraMapperState {
+  return { lastTextLength: 0 }
+}
+
+/**
+ * Extract text from Mastra Code content blocks.
+ * Blocks are `{ type: "text", text: "..." }` arrays on `message.content`.
+ */
+function extractTextFromBlocks(
+  content: unknown,
+): string {
+  if (!Array.isArray(content)) return ""
+  return (content as Array<Record<string, unknown>>)
+    .filter(c => c.type === "text" && typeof c.text === "string")
+    .map(c => c.text as string)
+    .join("")
+}
+
+function mapMastraEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  stderrLines: string[],
+  state: MastraMapperState,
+): StreamEvent | null {
+  switch (evt.type) {
+    // ── Text streaming ──────────────────────────────────────────
+    case "message_update": {
+      const content = (evt.message as Record<string, unknown>)?.content
+      const fullText = extractTextFromBlocks(content)
+      if (fullText.length > state.lastTextLength) {
+        const delta = fullText.slice(state.lastTextLength)
+        state.lastTextLength = fullText.length
+        return delta ? { kind: "text-delta", sessionId, text: delta } : null
+      }
+      return null
+    }
+
+    case "message_end": {
+      const msg = evt.message as Record<string, unknown> | undefined
+      if (msg?.role !== "assistant") return null
+      const fullText = extractTextFromBlocks(msg?.content)
+      // Emit any remaining text not covered by message_update deltas
+      if (fullText.length > state.lastTextLength) {
+        const delta = fullText.slice(state.lastTextLength)
+        state.lastTextLength = fullText.length
+        return delta ? { kind: "text-delta", sessionId, text: delta } : null
+      }
+      return null
+    }
+
+    // ── Tool calls ──────────────────────────────────────────────
+    case "tool_start":
+      return {
+        kind: "tool-call",
+        sessionId,
+        toolCallId:
+          typeof evt.toolCallId === "string" ? evt.toolCallId : "",
+        toolName:
+          typeof evt.toolName === "string" ? evt.toolName : "?",
+        arguments: evt.input ?? {},
+      }
+
+    case "tool_end":
+      return {
+        kind: "tool-result",
+        sessionId,
+        toolCallId:
+          typeof evt.toolCallId === "string" ? evt.toolCallId : "",
+        result: evt.result ?? null,
+        isError: evt.isError === true,
+      }
+
+    // ── Turn end ────────────────────────────────────────────────
+    case "agent_end": {
+      const rawReason =
+        typeof evt.reason === "string"
+          ? evt.reason
+          : "complete"
+      const reason = mapMastraFinishReason(rawReason)
+      return { kind: "turn-end", sessionId, reason }
+    }
+
+    // ── Errors ─────────────────────────────────────────────────
+    case "error": {
+      const err = evt.error as Record<string, unknown> | undefined
+      return {
+        kind: "error",
+        sessionId,
+        error: {
+          message:
+            typeof err?.message === "string"
+              ? err.message
+              : "Unknown error",
+          ...(stderrLines.length
+            ? { data: { stderr: stderrLines.join("\n") } }
+            : {}),
+        },
+      }
+    }
+
+    // ── Shell output (tool-like) ────────────────────────────────
+    case "shell_output":
+      return typeof evt.output === "string"
+        ? {
+            kind: "tool-result",
+            sessionId,
+            toolCallId: "",
+            result: evt.output,
+            isError: false,
+          }
+        : null
+
+    // ── Skipped events ─────────────────────────────────────────
+    case "agent_start":
+    case "subagent_start":
+    case "subagent_end":
+    case "tool_approval_required":
+    case "tool_suspended":
+      return null
+
+    default:
+      return null
+  }
+}
+
+// ── Process helpers ─────────────────────────────────────────────────
+
+/**
+ * Normalize Mastra Code `agent_end.finishReason` to StreamEvent turn-end reason.
+ * Mastra uses: "complete", "aborted", "error", "suspended"
+ * StreamEvent expects: "completed", "cancelled", "error", "max_turns"
+ */
+function mapMastraFinishReason(
+  raw: string,
+): "completed" | "cancelled" | "max_turns" | "error" {
+  switch (raw) {
+    case "complete":
+      return "completed"
+    case "aborted":
+    case "suspended":
+      return "cancelled"
+    case "error":
+      return "error"
+    default:
+      return "completed"
+  }
+}
+
+function waitForExit(
+  child: ReturnType<typeof spawn>,
+): Promise<number | null> {
   return new Promise(resolve => {
     child.once("exit", code => resolve(code))
     child.once("error", () => resolve(null))
