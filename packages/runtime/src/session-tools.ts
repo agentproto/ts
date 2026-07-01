@@ -113,6 +113,10 @@ export interface RegisterSessionToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
+   *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
+   *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */
+  daemonMcpUrl?: string
   /** Optional MCP proxy registry — when wired, exposes 3 tools that
    *  let the operator drive imported MCPs (chrome-devtools, goose-bridge,
    *  …) through the daemon as a single MCP entry point. */

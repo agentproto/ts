@@ -292,6 +292,15 @@ export interface CompletionPolicySupervisor {
   ack(policyId: string, approve: boolean): Promise<PolicyRunState | undefined>
   list(): PolicyRunState[]
   /**
+   * Subscribe to policy settlements — fired whenever a policy transitions
+   * into a terminal state (done / blocked / cancelled) OR into awaiting-ack.
+   * Used by the `/policies/:id/wait` long-poll to block until a policy
+   * resolves without reimplementing the state machine's event surface.
+   * Returns an unsubscribe fn. The callback receives the policyId; read
+   * the full state via `getStatus(policyId)`.
+   */
+  onSettle(cb: (policyId: string) => void): () => void
+  /**
    * Sync flush of the policy snapshot to disk. Call from the daemon
    * stop() path — mirrors sessions.shutdown().
    */
@@ -419,6 +428,30 @@ export function createCompletionPolicySupervisor(opts: {
   const runs = new Map<string, RunEntry>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   let shutdownDone = false
+
+  // ── settlement listeners (for /policies/:id/wait long-poll) ──────
+
+  /**
+   * Listeners fired whenever a policy reaches a terminal state (done /
+   * blocked / cancelled) or parks in awaiting-ack. The HTTP long-poll
+   * `GET /policies/:id/wait` subscribes here to block until a policy
+   * resolves, mirroring the MCP `policy_status` semantics but as a
+   * blocking call. Some transitions (cancel(), ack(false), single-session
+   * exit) emit no SessionEventBus event, so this hook is the single
+   * reliable signal — see `notifySettled`.
+   */
+  const settleListeners = new Set<(policyId: string) => void>()
+  const notifySettled = (policyId: string): void => {
+    for (const cb of settleListeners) {
+      try {
+        cb(policyId)
+      } catch (err) {
+        console.warn(
+          `[supervisor] onSettle listener threw: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+  }
 
   // ── persistence helpers ──────────────────────────────────────────
 
@@ -585,6 +618,7 @@ export function createCompletionPolicySupervisor(opts: {
         ts: new Date().toISOString(),
       })
       schedulePersist()
+      notifySettled(state.policyId)
       return
     }
 
@@ -600,6 +634,7 @@ export function createCompletionPolicySupervisor(opts: {
         ts: new Date().toISOString(),
       })
       schedulePersist()
+      notifySettled(state.policyId)
       pumpQueue() // WP6: release the slot this commit held
       return
     }
@@ -619,6 +654,7 @@ export function createCompletionPolicySupervisor(opts: {
     schedulePersist()
     maybeChain(entry) // WP6: attach `next` now that this policy is done
     pumpQueue() // WP6: release the slot this commit held
+    notifySettled(state.policyId)
   }
 
   // ── arm logic (shared by attach() and reload) ────────────────────
@@ -662,6 +698,7 @@ export function createCompletionPolicySupervisor(opts: {
       schedulePersist()
       cleanup()
       pumpQueue() // WP6: release the slot (if any) this run held
+      notifySettled(state.policyId)
     }
 
     const act = async (passed: boolean, exitCode: number) => {
@@ -696,6 +733,7 @@ export function createCompletionPolicySupervisor(opts: {
             // stays in `runs` so ack() can find it.
             cleanup()
             pumpQueue() // WP6: parked awaiting ack — release the slot
+            notifySettled(state.policyId)
             return
           }
           // Unattended commit — run it directly at the green gate.
@@ -718,6 +756,7 @@ export function createCompletionPolicySupervisor(opts: {
         cleanup()
         maybeChain(entry) // WP6: attach `next` now that this policy is done
         pumpQueue() // WP6: release the slot this run held
+        notifySettled(state.policyId)
         return
       }
 
@@ -995,6 +1034,7 @@ export function createCompletionPolicySupervisor(opts: {
             state.endedAt = new Date().toISOString()
             schedulePersist()
             cleanup()
+            notifySettled(state.policyId)
           }
           return
         }
@@ -1218,6 +1258,7 @@ export function createCompletionPolicySupervisor(opts: {
         if (qi >= 0) gateQueue.splice(qi, 1)
         schedulePersist()
         if (wasActive) pumpQueue()
+        notifySettled(policyId)
       }
     },
 
@@ -1232,15 +1273,24 @@ export function createCompletionPolicySupervisor(opts: {
         entry.state.status = "cancelled"
         entry.state.endedAt = new Date().toISOString()
         schedulePersist()
+        notifySettled(policyId)
         return entry.state
       }
 
       await finishCommit(entry)
+      notifySettled(policyId)
       return entry.state
     },
 
     list() {
       return Array.from(runs.values()).map(e => e.state)
+    },
+
+    onSettle(cb) {
+      settleListeners.add(cb)
+      return () => {
+        settleListeners.delete(cb)
+      }
     },
 
     shutdown() {

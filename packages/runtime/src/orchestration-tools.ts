@@ -11,15 +11,21 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
-import type { SessionEventBus, SessionEventType } from "./session-event-bus.js"
+import type {
+  SessionEventBus,
+  SessionEventType,
+  SessionAwaitingQuestion,
+} from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { RoutineRunner } from "./routine-runner.js"
+import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { collectSubtree } from "./session-tools.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
+import type { CronScheduler } from "./cron-scheduler.js"
 
 /**
  * Zod schema for the `gate` field of `policy_attach`.
@@ -46,14 +52,287 @@ export const gateInputSchema = z.union([
   }),
 ])
 
+// ── Shared long-poll service functions ─────────────────────────────
+//
+// `monitorSessionWait` and `monitorPolicyWait` are the single source of
+// truth for the blocking-wait semantics exposed by BOTH the MCP tool
+// surface (`session_monitor`, `policy_status` fast-path) AND the REST
+// HTTP surface (`GET /sessions/:id/wait`, `GET /policies/:id/wait`).
+// Each MCP/REST handler is a thin adapter over these — no duplicated
+// long-poll logic between the two transports.
+
+/**
+ * Event kind a session wait can target. Mirrors the `session_monitor`
+ * `event` parameter. `turn-end` also matches `awaiting-input` (both
+ * signal end-of-turn), matching the MCP tool's semantics.
+ */
+export type SessionWaitEvent = "turn-end" | "awaiting-input" | "exited" | "any"
+
+/**
+ * Result of a single-session wait. On a hit, carries the session id, the
+ * matched event (ring-bus form, without the `session:` prefix), the
+ * session's current status, and whether it's awaiting input. On a
+ * timeout, `timedOut: true` and the watched id list.
+ */
+export interface SessionWaitResult {
+  timedOut?: boolean
+  sessionId?: string
+  event?: string
+  source?: "ring" | "state" | "bus"
+  awaitingInput?: boolean
+  status?: string
+  turnsCompleted?: number
+  sessionIds?: string[]
+  since?: number
+  /** Structured awaiting-input question (harness-parity). Surface on
+   *  turn-end / awaiting-input matches so callers (MCP session_monitor +
+   *  REST /sessions/:id/wait) can read the question without a separate
+   *  transcript fetch. Mirrors desc.awaitingQuestion / ev.question. */
+  question?: SessionAwaitingQuestion
+}
+
+/**
+ * Block until one of the listed sessions fires a matching lifecycle event
+ * (turn-end / awaiting-input / exited / any), or until `timeoutMs` elapses.
+ *
+ * This is the single-session-capable core that the MCP `session_monitor`
+ * tool and the REST `GET /sessions/:id/wait` route both call. The MCP tool
+ * passes N ids (multiplexed fan-in); the REST route passes exactly one.
+ * The semantics are identical: race-free cursor replay → synchronous
+ * already-in-target-state check → bus long-poll → timeout.
+ *
+ * `since` is an EventRing cursor: when provided, already-emitted matching
+ * events for the watched sessions that occurred after that cursor are
+ * returned immediately (race-free replay) before subscribing to the bus.
+ */
+export async function monitorSessionWait(opts: {
+  registry: SessionsRegistry
+  sessionEvents: SessionEventBus
+  eventRing: EventRing
+  sessionIds: string[]
+  event?: SessionWaitEvent
+  timeoutMs?: number
+  since?: number
+}): Promise<SessionWaitResult> {
+  const {
+    registry,
+    sessionEvents,
+    eventRing,
+    sessionIds,
+    timeoutMs = 25_000,
+  } = opts
+  const targetEvent: SessionWaitEvent = opts.event ?? "any"
+
+  // Resolve id-or-name → canonical id (mirrors the MCP tool exactly).
+  const resolvedIds = sessionIds.map(q => {
+    const desc = registry.findByIdOrName(q)
+    return desc?.id ?? q
+  })
+
+  // Race-free replay: if a cursor is provided, check the event ring for
+  // already-emitted matching events before descriptor checks.
+  if (opts.since !== undefined) {
+    const ringResult = eventRing.since(opts.since, {
+      sessionIds: resolvedIds,
+    })
+    const matchTypes: Set<string> =
+      targetEvent === "any"
+        ? new Set(["session:turn-end", "session:awaiting-input", "session:exited"])
+        : targetEvent === "turn-end"
+          ? new Set(["session:turn-end", "session:awaiting-input"])
+          : targetEvent === "awaiting-input"
+            ? new Set(["session:awaiting-input"])
+            : new Set(["session:exited"])
+    for (const ev of ringResult.events) {
+      if (!matchTypes.has(ev.type)) continue
+      // `ev.type` is one of the session:* literals filtered by `matchTypes`
+      // above, but `Set.has` isn't a type guard — TS still sees the full
+      // `SessionEvent` union (which now also includes sessionId-less
+      // `cron:*` members, see session-event-bus.ts), so `sessionId` needs
+      // a defensive cast here.
+      const evWithSid = ev as { sessionId?: string; type: string }
+      const question =
+        ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
+          ? ev.question
+          : undefined
+      return {
+        sessionId: evWithSid.sessionId,
+        event: ev.type.replace("session:", ""),
+        source: "ring",
+        since: opts.since,
+        ...(question ? { question } : {}),
+      }
+    }
+  }
+
+  // Synchronous check: return immediately if a session is already in the
+  // target state (same rules as the MCP tool — a fast session can finish
+  // its turn before this wait subscribes).
+  for (const sid of resolvedIds) {
+    const desc = registry.get(sid)
+    if (!desc) continue
+    if (
+      desc.awaitingInput &&
+      (targetEvent === "any" || targetEvent === "turn-end" || targetEvent === "awaiting-input")
+    ) {
+      return {
+        sessionId: sid,
+        event: "awaiting-input",
+        source: "state",
+        awaitingInput: true,
+        status: desc.status,
+        ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+      }
+    }
+    // Already-finished turn: turnsCompleted > 0 && !busy && running.
+    if (
+      (desc.turnsCompleted ?? 0) > 0 &&
+      !desc.busy &&
+      desc.status === "running" &&
+      (targetEvent === "any" || targetEvent === "turn-end")
+    ) {
+      return {
+        sessionId: sid,
+        event: "turn-end",
+        source: "state",
+        awaitingInput: false,
+        status: desc.status,
+        turnsCompleted: desc.turnsCompleted,
+      }
+    }
+    const terminal =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    if (terminal && (targetEvent === "any" || targetEvent === "exited")) {
+      return {
+        sessionId: sid,
+        event: "exited",
+        source: "state",
+        awaitingInput: false,
+        status: desc.status,
+      }
+    }
+  }
+
+  // Long-poll: subscribe to the bus, resolve on the first matching event.
+  return new Promise<SessionWaitResult>(resolve => {
+    const unsubs: Array<() => void> = []
+    let settled = false
+
+    const finish = (result: SessionWaitResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      for (const u of unsubs) u()
+      resolve(result)
+    }
+
+    const relevantTypes: SessionEventType[] =
+      targetEvent === "any"
+        ? ["session:turn-end", "session:awaiting-input", "session:exited"]
+        : targetEvent === "turn-end"
+          ? ["session:turn-end", "session:awaiting-input"]
+          : targetEvent === "awaiting-input"
+            ? ["session:awaiting-input"]
+            : ["session:exited"]
+
+    const idSet = new Set(resolvedIds)
+
+    for (const evType of relevantTypes) {
+      unsubs.push(
+        sessionEvents.on(evType, ev => {
+          // Same defensive cast as the ring-replay branch above — `evType`
+          // is only known to be one of the session:* literals at the
+          // call-site, not narrowed by `on`'s signature, so `ev` is still
+          // typed as the full (now cron:*-inclusive) SessionEvent union.
+          const sessionId = (ev as { sessionId?: string }).sessionId
+          if (!sessionId || !idSet.has(sessionId)) return
+          const desc = registry.get(sessionId)
+          finish({
+            sessionId,
+            event: ev.type.replace("session:", ""),
+            source: "bus",
+            awaitingInput: desc?.awaitingInput ?? false,
+            status: desc?.status ?? "unknown",
+            ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+          })
+        }),
+      )
+    }
+
+    const timer = setTimeout(() => {
+      finish({ timedOut: true, sessionIds: resolvedIds })
+    }, timeoutMs)
+  })
+}
+
+/**
+ * Block until the named policy's status transitions out of the active
+ * `watching` / `queued` / `gating` / `nudging` states — i.e. reaches
+ * `done`, `blocked`, `awaiting-ack`, or `cancelled` — then return the
+ * full PolicyRunState. Returns `{ timedOut: true }` on timeout.
+ *
+ * Hooks into the supervisor's `onSettle` callback (the single reliable
+ * signal — some terminal transitions like `cancel()` / `ack(false)` /
+ * single-session-exit emit no SessionEventBus event). The MCP
+ * `policy_status` tool and the REST `GET /policies/:id/wait` route both
+ * delegate here, so the wait semantics are shared across transports.
+ */
+export async function monitorPolicyWait(opts: {
+  supervisor: CompletionPolicySupervisor
+  policyId: string
+  timeoutMs?: number
+}): Promise<{ timedOut: true } | { timedOut: false; state: PolicyRunState }> {
+  const { supervisor, policyId, timeoutMs = 25_000 } = opts
+
+  // Fast path: already settled (done / blocked / cancelled / awaiting-ack).
+  const initial = supervisor.getStatus(policyId)
+  if (!initial) {
+    return { timedOut: false, state: undefined as unknown as PolicyRunState }
+  }
+  const isSettledStatus = (s: string): boolean =>
+    s === "done" || s === "blocked" || s === "cancelled" || s === "awaiting-ack"
+  if (isSettledStatus(initial.status)) {
+    return { timedOut: false, state: initial }
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      unsub()
+      resolve({ timedOut: true })
+    }, timeoutMs)
+
+    const unsub = supervisor.onSettle(id => {
+      if (id !== policyId) return
+      const state = supervisor.getStatus(policyId)
+      if (!state || !isSettledStatus(state.status)) return
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      unsub()
+      resolve({ timedOut: false, state })
+    })
+  })
+}
+
 export interface RegisterOrchestrationToolsOptions {
   registry: SessionsRegistry
   sessionEvents: SessionEventBus
   eventRing: EventRing
   routineRunner?: RoutineRunner
+  workflowRunner?: WorkflowRunner
   supervisor?: CompletionPolicySupervisor
   /** When wired, exposes start/stop/list_inbound_watcher tools. */
   inboundWatcher?: InboundWatcher
+  /**
+   * When wired, exposes cron_create / cron_list / cron_delete / cron_run
+   * tools. NOT added to DEFAULT_ORCHESTRATOR_TOOLS — this installs
+   * persistent host-level recurring jobs (bigger privilege than session/
+   * policy tools). Opt-in via explicit orchestrator.tools allowlist only.
+   */
+  cronScheduler?: CronScheduler
   /** Optional allowlist — when set, only tools whose name is in the
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
@@ -116,7 +395,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -253,6 +532,132 @@ export function registerOrchestrationTools(
       {},
       async () => {
         const runs = routineRunner.list()
+        return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
+      },
+    )
+  }
+
+  // ── Workflow tools (optional — only registered when workflowRunner is provided) ─
+  // Sibling primitive to routine_*: a workflow is an ordered list of STAGES,
+  // each stage a group of steps that run in parallel with an explicit
+  // barrier before the next stage starts (routine_* stays a flat sequential
+  // list with per-step waitFor fan-in — see PLAN.md "Design decision").
+  const { workflowRunner } = opts
+  if (workflowRunner) {
+    const workflowStepSchema = z.object({
+      label: z.string(),
+      adapter: z.string().optional().describe("Agent adapter slug to spawn a NEW session for this step."),
+      prompt: z.string().optional().describe("Prompt to send after spawning/reusing a session."),
+      sessionRef: z
+        .string()
+        .optional()
+        .describe(
+          "Reuse the session spawned by an earlier step (any prior stage), by that step's `label`. " +
+            "Ignored if `adapter` is set. Lets a later-stage step act on an earlier stage's output " +
+            "(e.g. a 'verify' step reusing a 'produce' step's session).",
+        ),
+      policy: z
+        .discriminatedUnion("awaiting", [
+          z.object({ awaiting: z.literal("auto-allow"), prompt: z.string() }),
+          z.object({
+            awaiting: z.literal("escalate"),
+            webhookUrl: z.string().url().optional(),
+            timeoutMs: z.number().int().positive().optional(),
+          }),
+          z.object({ awaiting: z.literal("fail") }),
+        ])
+        .optional()
+        .describe("What to do when this step's session asks for input mid-stage."),
+    })
+
+    server.tool(
+      "workflow_start",
+      "Start a workflow — an ordered list of STAGES, each stage a group of steps " +
+        "that spawn/reuse agent sessions and run CONCURRENTLY. An explicit barrier " +
+        "gates entry into the next stage: stage N+1 does not start until every step " +
+        "of stage N has finished (or failed). This is the `parallel()` half of a " +
+        "harness-style workflow primitive — for a flat sequential list with fan-in, " +
+        "use `routine_start` instead. Returns a runId immediately; the workflow " +
+        "executes in the background. Poll with `workflow_status`.",
+      {
+        workflowId: z.string().describe("Arbitrary label for this workflow type (e.g. 'review-then-fix')."),
+        stages: z
+          .array(
+            z.object({
+              label: z.string().optional().describe("Optional label for this stage."),
+              steps: z.array(workflowStepSchema).min(1).describe("Steps in this stage — all run in parallel."),
+            }),
+          )
+          .min(1)
+          .max(20)
+          .describe("Ordered list of stages. Each stage's steps run concurrently; stages run sequentially."),
+        workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
+        cwd: z.string().optional().describe("Working directory for spawned sessions."),
+        notifyUrl: z.string().url().optional().describe("Webhook URL to call on run completion or escalation."),
+      },
+      async input => {
+        const run = await workflowRunner.start(input)
+        return {
+          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+        }
+      },
+    )
+
+    server.tool(
+      "workflow_status",
+      "Poll the status of a background workflow run started with `workflow_start`. " +
+        "Each stage reports its steps' status/sessionId so later work can inspect " +
+        "what an earlier stage produced (e.g. via `agent_output` on that sessionId).",
+      {
+        runId: z.string().describe("Run id returned by `workflow_start`."),
+      },
+      async input => {
+        const run = workflowRunner.status(input.runId)
+        if (!run) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
+          }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_cancel",
+      "Cancel a running workflow. Steps already in flight will finish, but no " +
+        "new stages will be started.",
+      {
+        runId: z.string().describe("Run id to cancel."),
+      },
+      async input => {
+        workflowRunner.cancel(input.runId)
+        const run = workflowRunner.status(input.runId)
+        return { content: [{ type: "text", text: JSON.stringify({ runId: input.runId, status: run?.status ?? "not_found" }) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_escalation_resolve",
+      "Provide an external answer to a workflow step that escalated because a " +
+        "session asked for human input (policy=escalate).",
+      {
+        runId: z.string().describe("Run id."),
+        stageIndex: z.number().int().min(0).describe("Stage index containing the escalated step (0-based)."),
+        stepIndex: z.number().int().min(0).describe("Step index within the stage to resolve (0-based)."),
+        response: z.string().describe("The answer to inject into the awaiting session."),
+      },
+      async input => {
+        workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_list",
+      "List all workflow runs (running, done, failed, cancelled).",
+      {},
+      async () => {
+        const runs = workflowRunner.list()
         return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
       },
     )
@@ -483,7 +888,10 @@ export function registerOrchestrationTools(
 
     server.tool(
       "policy_status",
-      "Get the current status of a completion policy attached with `policy_attach`.",
+      "Get the current status of a completion policy attached with `policy_attach`. " +
+        "Includes `awaitingQuestions` for any watched session currently blocked on " +
+        "input, so a caller can distinguish \"still legitimately running\" from " +
+        "\"stuck, needs a human/orchestrator answer\" without a separate call.",
       {
         policyId: z.string().describe("Policy id returned by `policy_attach`."),
       },
@@ -507,7 +915,25 @@ export function registerOrchestrationTools(
             }
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(state, null, 2) }] }
+        // Read-only enrichment: cross-reference the watched sessions' live
+        // awaitingQuestion (set by sessions.ts, structured or heuristic) —
+        // does not touch the policy state machine itself.
+        const awaitingQuestions = state.sessionIds
+          .map(id => ({ sessionId: id, desc: registry.get(id) }))
+          .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+          .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                awaitingQuestions.length > 0 ? { ...state, awaitingQuestions } : state,
+                null,
+                2,
+              ),
+            },
+          ],
+        }
       },
     )
 
@@ -648,158 +1074,27 @@ export function registerOrchestrationTools(
       const timeout = input.timeoutMs ?? 25_000
       const targetEvent = input.event ?? "any"
 
-      // Resolve id-or-name → canonical id
-      const resolvedIds = input.sessionIds.map(q => {
-        const desc = registry.findByIdOrName(q)
-        return desc?.id ?? q
+      const result = await monitorSessionWait({
+        registry,
+        sessionEvents,
+        eventRing,
+        sessionIds: input.sessionIds,
+        event: targetEvent,
+        timeoutMs: timeout,
+        ...(input.since !== undefined ? { since: input.since } : {}),
       })
 
-      // Race-free replay: if a cursor is provided, check the event ring
-      // for already-emitted matching events before descriptor checks.
-      if (input.since !== undefined) {
-        const ringResult = eventRing.since(input.since, {
-          sessionIds: resolvedIds,
-        })
-        const matchTypes: Set<string> =
-          targetEvent === "any"
-            ? new Set(["session:turn-end", "session:awaiting-input", "session:exited"])
-            : targetEvent === "turn-end"
-              ? new Set(["session:turn-end", "session:awaiting-input"])
-              : targetEvent === "awaiting-input"
-                ? new Set(["session:awaiting-input"])
-                : new Set(["session:exited"])
-        for (const ev of ringResult.events) {
-          if (!matchTypes.has(ev.type)) continue
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: ev.sessionId,
-                  event: ev.type.replace("session:", ""),
-                  source: "ring",
-                  since: input.since,
-                }),
-              },
-            ],
-          }
-        }
+      // The MCP tool's contract: a ring-replay hit echoes back the cursor
+      // (so callers can chain); the state/bus hit returns the event shape.
+      // monitorSessionWait returns the same fields — forward verbatim,
+      // including the `question` field (harness-parity) when present.
+      const payload: Record<string, unknown> = { ...result }
+      if (result.source === "ring" && input.since !== undefined) {
+        payload.since = input.since
       }
-
-      // Synchronous check: return immediately if a session is already done
-      for (const sid of resolvedIds) {
-        const desc = registry.get(sid)
-        if (!desc) continue
-        if (
-          desc.awaitingInput &&
-          (targetEvent === "any" || targetEvent === "turn-end" || targetEvent === "awaiting-input")
-        ) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "awaiting-input",
-                  awaitingInput: true,
-                  status: desc.status,
-                }),
-              },
-            ],
-          }
-        }
-        // Already-finished turn: a fast session can complete its turn
-        // ("completed", not "awaiting-input") BEFORE this wait subscribes —
-        // turn-end is a transient event with no persisted flag, so without
-        // this check the wait would block until the NEXT turn and time out.
-        // `turnsCompleted > 0 && !busy && running` = idle after ≥1 finished
-        // turn (a freshly-spawned never-run session has turnsCompleted 0, so
-        // it is NOT mistaken for done).
-        if (
-          (desc.turnsCompleted ?? 0) > 0 &&
-          !desc.busy &&
-          desc.status === "running" &&
-          (targetEvent === "any" || targetEvent === "turn-end")
-        ) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "turn-end",
-                  awaitingInput: false,
-                  status: desc.status,
-                  turnsCompleted: desc.turnsCompleted,
-                }),
-              },
-            ],
-          }
-        }
-        const terminal = desc.status === "exited" || desc.status === "killed" || desc.status === "error"
-        if (terminal && (targetEvent === "any" || targetEvent === "exited")) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  sessionId: sid,
-                  event: "exited",
-                  awaitingInput: false,
-                  status: desc.status,
-                }),
-              },
-            ],
-          }
-        }
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
       }
-
-      // Long-poll: subscribe to bus, resolve on first matching event
-      return new Promise(resolve => {
-        const unsubs: Array<() => void> = []
-        let settled = false
-
-        const finish = (result: unknown): void => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          for (const u of unsubs) u()
-          resolve({
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          })
-        }
-
-        // Which event types to watch
-        const relevantTypes: SessionEventType[] =
-          targetEvent === "any"
-            ? ["session:turn-end", "session:awaiting-input", "session:exited"]
-            : targetEvent === "turn-end"
-              ? ["session:turn-end", "session:awaiting-input"]
-              : targetEvent === "awaiting-input"
-                ? ["session:awaiting-input"]
-                : ["session:exited"]
-
-        const idSet = new Set(resolvedIds)
-
-        for (const evType of relevantTypes) {
-          unsubs.push(
-            sessionEvents.on(evType, ev => {
-              if (!idSet.has(ev.sessionId)) return
-              const desc = registry.get(ev.sessionId)
-              finish({
-                sessionId: ev.sessionId,
-                event: ev.type.replace("session:", ""),
-                awaitingInput: desc?.awaitingInput ?? false,
-                status: desc?.status ?? "unknown",
-              })
-            }),
-          )
-        }
-
-        const timer = setTimeout(() => {
-          finish({ timedOut: true, sessionIds: resolvedIds })
-        }, timeout)
-      })
     },
   )
 
@@ -921,6 +1216,145 @@ export function registerOrchestrationTools(
       async () => {
         const watchers = inboundWatcher.list()
         return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
+      },
+    )
+  }
+
+  // ── Cron scheduler tools (optional — only registered when cronScheduler is provided) ──
+  // NOT in DEFAULT_ORCHESTRATOR_TOOLS: installing host-level recurring jobs is a
+  // materially bigger privilege than session/policy tools. Opt-in only via explicit
+  // orchestrator.tools allowlist.
+  const { cronScheduler } = opts
+  if (cronScheduler) {
+    const cronActionSchema = z.union([
+      z.object({
+        kind: z.literal("command"),
+        command: z.string().min(1).describe("Executable basename (must be allowlisted in .agentproto/allowed-commands.json)."),
+        args: z.array(z.string()).optional().describe("Argv array passed verbatim."),
+        cwd: z.string().optional().describe("Working directory. Defaults to workspace root."),
+        timeoutMs: z.number().int().positive().optional().describe("Hard kill timeout in ms. Default 60 000."),
+      }),
+      z.object({
+        kind: z.literal("agent"),
+        adapter: z.string().min(1).describe("Agent adapter slug (e.g. 'claude-code', 'hermes')."),
+        prompt: z.string().min(1).describe("Prompt to send to the spawned agent."),
+        cwd: z.string().optional().describe("Working directory for the spawned session."),
+        model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
+      }),
+    ])
+
+    server.tool(
+      "cron_create",
+      "Schedule a recurring or one-shot cron job on the daemon. " +
+        "Accepts a 5-field cron expression (minute hour day-of-month month day-of-week, local time) " +
+        "and either a shell command action (allowlisted) or an agent-spawn action. " +
+        "Returns the created job id and nextRunAt. " +
+        "WARNING: this installs a persistent host-level job that survives daemon restarts.",
+      {
+        schedule: z.string().min(1).describe(
+          "5-field cron expression in local time. e.g. '0 9 * * 1-5' (weekdays at 9am). " +
+          "Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-7,0=Sun).",
+        ),
+        recurring: z.boolean().optional().describe(
+          "When false, fires once then deactivates. Default true.",
+        ),
+        label: z.string().optional().describe("Human-readable label for the job."),
+        action: cronActionSchema.describe(
+          "What to do when the job fires. 'command' runs an allowlisted shell command; 'agent' spawns an agent session.",
+        ),
+      },
+      async input => {
+        try {
+          const job = cronScheduler.create({
+            label: input.label,
+            schedule: input.schedule,
+            recurring: input.recurring ?? true,
+            action: input.action,
+          })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  jobId: job.id,
+                  schedule: job.schedule,
+                  recurring: job.recurring,
+                  nextRunAt: job.nextRunAt,
+                  active: job.active,
+                }),
+              },
+            ],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    server.tool(
+      "cron_list",
+      "List all cron jobs (active and inactive) with their schedule, last result, and next fire time.",
+      {},
+      async () => {
+        const jobs = cronScheduler.list()
+        return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "cron_delete",
+      "Permanently remove a cron job. Throws if the job is not found.",
+      {
+        jobId: z.string().min(1).describe("Job id returned by cron_create or cron_list."),
+      },
+      async input => {
+        try {
+          cronScheduler.delete(input.jobId)
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, jobId: input.jobId }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    server.tool(
+      "cron_run",
+      "Manually fire a cron job immediately, bypassing its schedule. " +
+        "Useful for testing and debugging. Returns the job's lastResult.",
+      {
+        jobId: z.string().min(1).describe("Job id returned by cron_create or cron_list."),
+      },
+      async input => {
+        try {
+          const result = await cronScheduler.run(input.jobId)
+          return { content: [{ type: "text", text: JSON.stringify({ jobId: input.jobId, result }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
       },
     )
   }

@@ -288,6 +288,9 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
       list() {
         return [...policies.values()]
       },
+      onSettle() {
+        return () => {}
+      },
       async shutdown() {},
     }
   }
