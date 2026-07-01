@@ -25,6 +25,7 @@ import { jsonTolerant } from "./json-tolerant.js"
 import { collectSubtree } from "./session-tools.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
+import type { CronScheduler } from "./cron-scheduler.js"
 
 /**
  * Zod schema for the `gate` field of `policy_attach`.
@@ -144,12 +145,18 @@ export async function monitorSessionWait(opts: {
             : new Set(["session:exited"])
     for (const ev of ringResult.events) {
       if (!matchTypes.has(ev.type)) continue
+      // `ev.type` is one of the session:* literals filtered by `matchTypes`
+      // above, but `Set.has` isn't a type guard — TS still sees the full
+      // `SessionEvent` union (which now also includes sessionId-less
+      // `cron:*` members, see session-event-bus.ts), so `sessionId` needs
+      // a defensive cast here.
+      const evWithSid = ev as { sessionId?: string; type: string }
       const question =
         ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
           ? ev.question
           : undefined
       return {
-        sessionId: ev.sessionId,
+        sessionId: evWithSid.sessionId,
         event: ev.type.replace("session:", ""),
         source: "ring",
         since: opts.since,
@@ -233,10 +240,15 @@ export async function monitorSessionWait(opts: {
     for (const evType of relevantTypes) {
       unsubs.push(
         sessionEvents.on(evType, ev => {
-          if (!idSet.has(ev.sessionId)) return
-          const desc = registry.get(ev.sessionId)
+          // Same defensive cast as the ring-replay branch above — `evType`
+          // is only known to be one of the session:* literals at the
+          // call-site, not narrowed by `on`'s signature, so `ev` is still
+          // typed as the full (now cron:*-inclusive) SessionEvent union.
+          const sessionId = (ev as { sessionId?: string }).sessionId
+          if (!sessionId || !idSet.has(sessionId)) return
+          const desc = registry.get(sessionId)
           finish({
-            sessionId: ev.sessionId,
+            sessionId,
             event: ev.type.replace("session:", ""),
             source: "bus",
             awaitingInput: desc?.awaitingInput ?? false,
@@ -314,6 +326,13 @@ export interface RegisterOrchestrationToolsOptions {
   supervisor?: CompletionPolicySupervisor
   /** When wired, exposes start/stop/list_inbound_watcher tools. */
   inboundWatcher?: InboundWatcher
+  /**
+   * When wired, exposes cron_create / cron_list / cron_delete / cron_run
+   * tools. NOT added to DEFAULT_ORCHESTRATOR_TOOLS — this installs
+   * persistent host-level recurring jobs (bigger privilege than session/
+   * policy tools). Opt-in via explicit orchestrator.tools allowlist only.
+   */
+  cronScheduler?: CronScheduler
   /** Optional allowlist — when set, only tools whose name is in the
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
@@ -376,7 +395,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -1197,6 +1216,145 @@ export function registerOrchestrationTools(
       async () => {
         const watchers = inboundWatcher.list()
         return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
+      },
+    )
+  }
+
+  // ── Cron scheduler tools (optional — only registered when cronScheduler is provided) ──
+  // NOT in DEFAULT_ORCHESTRATOR_TOOLS: installing host-level recurring jobs is a
+  // materially bigger privilege than session/policy tools. Opt-in only via explicit
+  // orchestrator.tools allowlist.
+  const { cronScheduler } = opts
+  if (cronScheduler) {
+    const cronActionSchema = z.union([
+      z.object({
+        kind: z.literal("command"),
+        command: z.string().min(1).describe("Executable basename (must be allowlisted in .agentproto/allowed-commands.json)."),
+        args: z.array(z.string()).optional().describe("Argv array passed verbatim."),
+        cwd: z.string().optional().describe("Working directory. Defaults to workspace root."),
+        timeoutMs: z.number().int().positive().optional().describe("Hard kill timeout in ms. Default 60 000."),
+      }),
+      z.object({
+        kind: z.literal("agent"),
+        adapter: z.string().min(1).describe("Agent adapter slug (e.g. 'claude-code', 'hermes')."),
+        prompt: z.string().min(1).describe("Prompt to send to the spawned agent."),
+        cwd: z.string().optional().describe("Working directory for the spawned session."),
+        model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
+      }),
+    ])
+
+    server.tool(
+      "cron_create",
+      "Schedule a recurring or one-shot cron job on the daemon. " +
+        "Accepts a 5-field cron expression (minute hour day-of-month month day-of-week, local time) " +
+        "and either a shell command action (allowlisted) or an agent-spawn action. " +
+        "Returns the created job id and nextRunAt. " +
+        "WARNING: this installs a persistent host-level job that survives daemon restarts.",
+      {
+        schedule: z.string().min(1).describe(
+          "5-field cron expression in local time. e.g. '0 9 * * 1-5' (weekdays at 9am). " +
+          "Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-7,0=Sun).",
+        ),
+        recurring: z.boolean().optional().describe(
+          "When false, fires once then deactivates. Default true.",
+        ),
+        label: z.string().optional().describe("Human-readable label for the job."),
+        action: cronActionSchema.describe(
+          "What to do when the job fires. 'command' runs an allowlisted shell command; 'agent' spawns an agent session.",
+        ),
+      },
+      async input => {
+        try {
+          const job = cronScheduler.create({
+            label: input.label,
+            schedule: input.schedule,
+            recurring: input.recurring ?? true,
+            action: input.action,
+          })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  jobId: job.id,
+                  schedule: job.schedule,
+                  recurring: job.recurring,
+                  nextRunAt: job.nextRunAt,
+                  active: job.active,
+                }),
+              },
+            ],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    server.tool(
+      "cron_list",
+      "List all cron jobs (active and inactive) with their schedule, last result, and next fire time.",
+      {},
+      async () => {
+        const jobs = cronScheduler.list()
+        return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] }
+      },
+    )
+
+    server.tool(
+      "cron_delete",
+      "Permanently remove a cron job. Throws if the job is not found.",
+      {
+        jobId: z.string().min(1).describe("Job id returned by cron_create or cron_list."),
+      },
+      async input => {
+        try {
+          cronScheduler.delete(input.jobId)
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, jobId: input.jobId }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    server.tool(
+      "cron_run",
+      "Manually fire a cron job immediately, bypassing its schedule. " +
+        "Useful for testing and debugging. Returns the job's lastResult.",
+      {
+        jobId: z.string().min(1).describe("Job id returned by cron_create or cron_list."),
+      },
+      async input => {
+        try {
+          const result = await cronScheduler.run(input.jobId)
+          return { content: [{ type: "text", text: JSON.stringify({ jobId: input.jobId, result }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
       },
     )
   }

@@ -19,6 +19,9 @@ export type SessionEventType =
   | "policy:failed"
   | "policy:commit-ready"
   | "policy:committed"
+  | "cron:fired"
+  | "cron:succeeded"
+  | "cron:failed"
 
 /**
  * Structured detail on why a session is awaiting input, when derivable.
@@ -116,6 +119,32 @@ export interface PolicyCommittedEvent {
   ts: string
 }
 
+/** Emitted by CronScheduler when a job fires (before the action runs). */
+export interface CronFiredEvent {
+  type: "cron:fired"
+  jobId: string
+  label?: string
+  ts: string
+}
+
+/** Emitted by CronScheduler when a job action completes successfully. */
+export interface CronSucceededEvent {
+  type: "cron:succeeded"
+  jobId: string
+  label?: string
+  summary: string
+  ts: string
+}
+
+/** Emitted by CronScheduler when a job action fails. */
+export interface CronFailedEvent {
+  type: "cron:failed"
+  jobId: string
+  label?: string
+  error: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -125,6 +154,9 @@ export type SessionEvent =
   | PolicyFailedEvent
   | PolicyCommitReadyEvent
   | PolicyCommittedEvent
+  | CronFiredEvent
+  | CronSucceededEvent
+  | CronFailedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

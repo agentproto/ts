@@ -90,6 +90,7 @@
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
+    "croner": "^9.0.0",
     "@agentproto/adapter-kit": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/manifest": "workspace:*",

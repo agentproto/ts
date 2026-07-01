@@ -10,8 +10,6 @@
  * `agentproto sessions`).
  */
 import { parseArgs } from "node:util"
-import http from "node:http"
-import https from "node:https"
 import type { TunnelDescriptor } from "@agentproto/runtime"
 import {
   discoverDaemon,
@@ -19,6 +17,7 @@ import {
   httpPostJson,
   httpGetJson,
   humaniseDelta,
+  httpDelete,
 } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto tunnel — manage public cloudflared tunnels
@@ -349,30 +348,4 @@ async function runStatus(args: readonly string[]): Promise<number> {
   return 0
 }
 
-function httpDelete<T>(url: string, token?: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {}
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "DELETE", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(raw ? (JSON.parse(raw) as T) : ({} as T))
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.end()
-  })
-}
+
