@@ -38,8 +38,11 @@ import {
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
 import {
-  RESUME_STRATEGIES,
   hasResumeStrategy,
+  decideRestartStrategy,
+  augmentWithFsResume,
+  describeResumePath,
+  tokenizeCommand,
 } from "@agentproto/runtime/resume-strategies"
 import type { SessionDescriptor } from "@agentproto/runtime"
 
@@ -1625,119 +1628,48 @@ interface RestartBody {
 }
 
 /**
- * Generic filesystem-fallback: for each known adapter strategy that
- * defines an `fsProbe`, run it against this session's cwd. If a
- * resume id is found, attach it to the descriptor's resumeMetadata.
- *
- * Lets `restart` recover continuity even when our own output sniffer
- * missed the resume hint (session killed too quickly, output buffered
- * past the kill, …). Eligible only when the file is at-or-after the
- * session's `startedAt` (avoid resuming an unrelated prior session
- * in the same cwd — see ResumeStrategy.fsProbe comment).
+ * Translate the shared `decideRestartStrategy` decision into a
+ * `{url, body}` REST call — the CLI-specific half (cols/rows come from
+ * the attached terminal). The daemon's `session_restart` MCP tool runs
+ * the same decision in-process instead of shaping an HTTP body.
  */
-/**
- * Describe which resume path was used for a successful restart, so
- * the CLI/dashboard banner can tell the user what happened. Returns
- * a short phrase like "resumed via claude --resume" or "resumed via
- * ACP", or an empty string when no resume was attempted.
- */
-function describeResumePath(prev: SessionDescriptor): string {
-  if (prev.adapterSlug) {
-    const s = RESUME_STRATEGIES[prev.adapterSlug]
-    if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
-      const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug
-      return `resumed via ${sample} --resume`
-    }
-  }
-  if (prev.adapterSlug && prev.adapterSessionId) {
-    return "resumed via ACP"
-  }
-  return ""
-}
-
-async function augmentWithFsResume(
-  prev: SessionDescriptor,
-): Promise<SessionDescriptor> {
-  const slug = prev.adapterSlug
-  if (!slug) return prev
-  const strategy = RESUME_STRATEGIES[slug]
-  if (!strategy?.fsProbe) return prev
-  // If we already have a captured id for this strategy's storage key,
-  // skip the FS probe — the sniffer found it during the session.
-  if (prev.resumeMetadata?.[strategy.storeAs]) return prev
-  if (!prev.cwd) return prev
-  const id = await strategy.fsProbe(prev.cwd, prev.startedAt)
-  if (!id) return prev
-  return {
-    ...prev,
-    resumeMetadata: {
-      ...(prev.resumeMetadata ?? {}),
-      [strategy.storeAs]: id,
-    },
-  }
-}
-
 function buildRestartBody(prev: SessionDescriptor): RestartBody {
-  // Provider-native resume takes precedence over ACP-level resume.
-  // Look up the adapter's strategy in the central registry; when it
-  // defines `spawnArgs` AND we've captured a resume id for it, spawn
-  // a PTY running the provider's native resume command. That works
-  // whenever the provider persisted the session, regardless of
-  // whether the ACP wrapper did — strictly more reliable.
-  if (prev.adapterSlug) {
-    const strategy = RESUME_STRATEGIES[prev.adapterSlug]
-    const id = strategy?.storeAs
-      ? prev.resumeMetadata?.[strategy.storeAs]
-      : undefined
-    if (strategy?.spawnArgs && id) {
-      return {
-        url: "__pty__",
-        body: {
-          argv: strategy.spawnArgs(id),
-          cwd: prev.cwd ?? undefined,
-          workspaceSlug: prev.workspaceSlug,
-          cols: process.stdout.columns ?? 80,
-          rows: process.stdout.rows ?? 24,
-          ...(prev.name ? { name: prev.name } : {}),
-          ...(prev.label ? { label: prev.label } : {}),
-        },
-      }
-    }
+  const strategy = decideRestartStrategy(prev)
+  if (strategy.kind === "unsupported") {
+    throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
-  if (prev.pty === true) {
-    const argv = Array.isArray(prev.argv)
-      ? prev.argv
-      : tokenizeCommand(prev.command)
-    return {
-      url: "__pty__",
-      body: {
-        argv,
-        cwd: prev.cwd ?? undefined,
-        workspaceSlug: prev.workspaceSlug,
-        cols: process.stdout.columns ?? 80,
-        rows: process.stdout.rows ?? 24,
-        ...(prev.name ? { name: prev.name } : {}),
-        ...(prev.label ? { label: prev.label } : {}),
-      },
-    }
-  }
-  if (prev.adapterSlug) {
+  if (strategy.kind === "agent") {
     return {
       url: "__agent__",
       body: {
         adapter: prev.adapterSlug,
         cwd: prev.cwd ?? undefined,
         workspaceSlug: prev.workspaceSlug,
-        ...(prev.adapterSessionId
-          ? { resumeSessionId: prev.adapterSessionId }
+        ...(strategy.resumeSessionId
+          ? { resumeSessionId: strategy.resumeSessionId }
           : {}),
         ...(prev.label ? { label: prev.label } : {}),
       },
     }
   }
-  throw new Error(
-    `${prev.id} is a generic command session — restart only supports pty + agent-cli`,
-  )
+  const argv =
+    strategy.kind === "pty-native"
+      ? strategy.argv
+      : Array.isArray(prev.argv)
+        ? prev.argv
+        : tokenizeCommand(prev.command)
+  return {
+    url: "__pty__",
+    body: {
+      argv,
+      cwd: prev.cwd ?? undefined,
+      workspaceSlug: prev.workspaceSlug,
+      cols: process.stdout.columns ?? 80,
+      rows: process.stdout.rows ?? 24,
+      ...(prev.name ? { name: prev.name } : {}),
+      ...(prev.label ? { label: prev.label } : {}),
+    },
+  }
 }
 
 async function executeRestartWithFallback(
@@ -2174,39 +2106,6 @@ async function runRestart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
-}
-
-/**
- * Shell-style argv tokenizer for legacy descriptors that don't carry
- * `argv` separately. Same rules as the spawn-dialog tokenizer in the
- * web app: whitespace splits, single + double quotes group.
- */
-function tokenizeCommand(s: string): string[] {
-  const out: string[] = []
-  let buf = ""
-  let inSingle = false
-  let inDouble = false
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle
-      continue
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble
-      continue
-    }
-    if (!inSingle && !inDouble && /\s/.test(ch ?? "")) {
-      if (buf) {
-        out.push(buf)
-        buf = ""
-      }
-      continue
-    }
-    buf += ch
-  }
-  if (buf) out.push(buf)
-  return out
 }
 
 async function runMirror(args: readonly string[]): Promise<number> {
