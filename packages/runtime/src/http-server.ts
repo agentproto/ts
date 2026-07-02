@@ -1947,12 +1947,16 @@ async function handleSessions(
     const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
     const adapterOverride = qs.get("adapter") ?? undefined
     const cwdOverride = qs.get("cwd") ?? undefined
+    const sourceParam = qs.get("source")
+    const source =
+      sourceParam === "native" || sourceParam === "daemon" ? sourceParam : undefined
     const result = await exportAgentSession({
       sessionId: rawIdOrName,
       registry,
       format: fmt,
       ...(adapterOverride ? { adapter: adapterOverride } : {}),
       ...(cwdOverride ? { cwd: cwdOverride } : {}),
+      ...(source ? { source } : {}),
     })
     if (result.content.startsWith("Error:")) {
       const isNotFound =

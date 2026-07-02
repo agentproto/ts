@@ -611,11 +611,13 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
   server.tool(
     "agent_export",
     "Export a clean, human-readable transcript of an agent session. " +
-      "Reads the source the adapter already persists (claude-code: JSONL in " +
-      "~/.claude/projects/; hermes: state.db in ~/.hermes/). Returns markdown " +
-      "(default) or JSON. Works on stopped and running sessions alike. Use " +
-      "after a long agent run to review the full conversation without the " +
-      "ANSI noise of the ring buffer.",
+      "Prefers the source the adapter already persists (claude-code: JSONL in " +
+      "~/.claude/projects/; hermes: state.db in ~/.hermes/), falling back to " +
+      "agentproto's own daemon-captured events.jsonl for every other adapter " +
+      "(or once the native store is unreadable). Returns markdown (default) or " +
+      "JSON. Works on stopped and running sessions alike. Use after a long " +
+      "agent run to review the full conversation without the ANSI noise of the " +
+      "ring buffer.",
     {
       sessionId: z.string().describe(
         "agentproto session id (sess_xxx), adapter-native id, or session name."
@@ -633,6 +635,12 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
           "with a metadata table and role-labelled messages; `json` returns the raw " +
           "ExportedSession object for programmatic processing."
       ),
+      source: z.enum(["auto", "native", "daemon"]).optional().describe(
+        "Which backend to read from. `auto` (default) prefers the adapter's own " +
+          "native store (claude-code JSONL / hermes SQLite) and falls back to " +
+          "agentproto's own events.jsonl capture when there isn't one; `native` / " +
+          "`daemon` force one and surface its own error instead of falling back."
+      ),
     },
     async input => {
       const result = await doExport({
@@ -641,6 +649,7 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
         ...(input.adapter ? { adapter: input.adapter } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.format ? { format: input.format } : {}),
+        ...(input.source ? { source: input.source } : {}),
       })
       const isError = result.content.startsWith("Error:")
       return {

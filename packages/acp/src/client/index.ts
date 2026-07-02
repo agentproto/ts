@@ -595,6 +595,30 @@ function translateSessionUpdate(
       }
       return null
     }
+    case "plan": {
+      const entries = (update.entries as Array<Record<string, unknown>>) ?? []
+      return {
+        kind: "plan",
+        sessionId,
+        entries: entries.map((entry) => ({
+          content: (entry.content as string) ?? "",
+          priority: (entry.priority as "high" | "medium" | "low") ?? "medium",
+          status:
+            (entry.status as "pending" | "in_progress" | "completed") ??
+            "pending",
+        })),
+      }
+    }
+    case "usage_update": {
+      const cost = update.cost as { amount: number; currency: string } | null | undefined
+      return {
+        kind: "usage_update",
+        sessionId,
+        size: (update.size as number) ?? 0,
+        used: (update.used as number) ?? 0,
+        ...(cost ? { cost } : {}),
+      }
+    }
     case "user_message_chunk":
       return null
     default:
