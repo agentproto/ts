@@ -117,14 +117,18 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       )
       unsubs.push(
         this.sessionEvents.on("session:exited", (ev) => {
-          if (ev.sessionId === sessionId) done()
+          if (ev.sessionId !== sessionId) return
+          // Reject on terminal-error/killed so step failures propagate to
+          // the workflow run as `status: "failed"`. Plain "exited" (clean
+          // exit code 0 path) resolves normally.
+          if (ev.status === "killed" || ev.status === "error") {
+            fail(`session ${sessionId} ended with status '${ev.status}'`)
+          } else {
+            done()
+          }
         }),
       )
-      // NOTE: resolves (never rejects) on a terminal error/killed status —
-      // a lifted, pre-existing behavior: a failed agent turn currently
-      // surfaces as a resolved wait rather than a rejected one. Rejecting on
-      // terminal-error so step failures propagate to the run as `failed` is a
-      // deliberate follow-up, kept out of this behavior-preserving refactor.
+      // Eagerly settle if the session is already in a terminal state.
       const desc = this.registry.get(sessionId)
       if (desc?.status === "exited" || desc?.awaitingInput === true) {
         done()
