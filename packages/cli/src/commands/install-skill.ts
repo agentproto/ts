@@ -35,7 +35,6 @@ interface InstallOpts {
   force: boolean
   dryRun: boolean
   outDir: string
-  scope: "user" | "project"
 }
 
 interface InstallAction {
@@ -70,8 +69,6 @@ export async function runInstallSkill(
       "dry-run": { type: "boolean" },
       list: { type: "boolean" },
       out: { type: "string" },
-      user: { type: "boolean" },
-      project: { type: "boolean" },
     },
   })
 
@@ -107,7 +104,7 @@ export async function runInstallSkill(
   }
 
   // Determine targets: explicit --target flags or auto-detect
-  const explicitTargets = (values.target ?? []) as string[]
+  const explicitTargets: string[] = values.target ?? []
   const targets = resolveTargets(explicitTargets)
   if (targets.length === 0) {
     process.stderr.write(
@@ -135,6 +132,13 @@ export async function runInstallSkill(
     }
   } else {
     const skillDir = join(packDir, "skills", rawSlug)
+    if (!(await pathExists(join(skillDir, "SKILL.md")))) {
+      process.stderr.write(
+        `agentproto install skill: skill '${rawSlug}' not found in the pack. ` +
+          "Run `agentproto install skill/agentproto-pack --list` to see available skills.\n",
+      )
+      return 1
+    }
     const fm = await parseSkillFrontmatter(skillDir)
     skills = [fm]
   }
@@ -142,12 +146,6 @@ export async function runInstallSkill(
   const outDir = values.out
     ? normalize(values.out)
     : join(process.cwd(), "agentproto-skill-plugin")
-
-  const scope: "user" | "project" = values.user
-    ? "user"
-    : values.project !== false
-      ? "project"
-      : "project"
 
   const actions: InstallAction[] = []
 
@@ -158,7 +156,6 @@ export async function runInstallSkill(
       force: values.force === true,
       dryRun: values["dry-run"] === true,
       outDir,
-      scope,
     }
 
     for (const skill of skills) {
@@ -260,7 +257,7 @@ async function resolveSkillPackDir(): Promise<string | null> {
 }
 
 /** Simple semver comparator for major.minor.patch(-prerelease) strings. */
-function compareSemver(a: string, b: string): number {
+export function compareSemver(a: string, b: string): number {
   const parse = (v: string) => {
     const m = v.match(/^(\d+)\.(\d+)\.(\d+)/)
     if (!m) return null
@@ -310,7 +307,7 @@ async function listSkills(packDir: string): Promise<SkillInfo[]> {
  * Parse the YAML frontmatter from a skill's SKILL.md.
  * Returns the skill name and description.
  */
-async function parseSkillFrontmatter(skillDir: string): Promise<SkillInfo> {
+export async function parseSkillFrontmatter(skillDir: string): Promise<SkillInfo> {
   const mdPath = join(skillDir, "SKILL.md")
   const raw = await readFile(mdPath, "utf8")
   const parsed = matter(raw)
@@ -336,12 +333,16 @@ async function parseSkillFrontmatter(skillDir: string): Promise<SkillInfo> {
 
 const VALID_TARGETS: SkillTarget[] = ["hermes", "claude-code"]
 
+function isSkillTarget(t: string): t is SkillTarget {
+  return VALID_TARGETS.some((v) => v === t)
+}
+
 function resolveTargets(explicit: string[]): SkillTarget[] {
   if (explicit.length > 0) {
     const targets: SkillTarget[] = []
     for (const t of explicit) {
-      if (VALID_TARGETS.includes(t as SkillTarget)) {
-        targets.push(t as SkillTarget)
+      if (isSkillTarget(t)) {
+        targets.push(t)
       } else {
         process.stderr.write(
           `agentproto install skill: unknown target '${t}'. Known: ${VALID_TARGETS.join(", ")}\n`,
@@ -472,17 +473,22 @@ async function installToClaudeCode(
   await mkdir(opts.outDir, { recursive: true })
   await cp(packDir, opts.outDir, { recursive: true, force: true })
 
-  // Create a .zip of the plugin
+  // Create a .zip of the plugin (best-effort — the plugin dir is the
+  // canonical artifact; the archive is a convenience, and `zip` may be
+  // absent on minimal/Windows environments).
   const zipPath = `${opts.outDir}.zip`
-  const zipCode = await spawnInherit("zip", [
-    "-r",
-    "-q",
-    zipPath,
-    opts.outDir,
-  ])
-  if (zipCode !== 0) {
+  let zipped = false
+  try {
+    const zipCode = await spawnInherit("zip", ["-r", "-q", zipPath, opts.outDir])
+    zipped = zipCode === 0
+    if (!zipped) {
+      process.stderr.write(
+        `agentproto install skill: warning — 'zip' exited ${zipCode}; emitted the plugin dir without an archive.\n`,
+      )
+    }
+  } catch {
     process.stderr.write(
-      `agentproto install skill: warning — could not create zip, zip exited ${zipCode}\n`,
+      "agentproto install skill: warning — 'zip' not found on PATH; emitted the plugin dir without an archive.\n",
     )
   }
 
@@ -494,7 +500,7 @@ async function installToClaudeCode(
 
   process.stdout.write(
     `\nPlugin bundle written to: ${opts.outDir}${suffix}\n` +
-      `Archive: ${zipPath}\n` +
+      (zipped ? `Archive: ${zipPath}\n` : "") +
       `\n` +
       `To install in Claude Code:\n` +
       `  NOTE: Claude Code plugin installation is via the /plugin marketplace.\n` +
