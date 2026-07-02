@@ -13,14 +13,19 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 
-import { parseSkillFrontmatter, compareSemver } from "../commands/install-skill.js"
+import {
+  parseSkillFrontmatter,
+  compareSemver,
+  upsertSkillManifestEntry,
+  loadSkillsManifest,
+} from "../commands/install-skill.js"
 
 // ── repo root + pack resolution (test helpers) ─────────────────────────
 
@@ -267,5 +272,189 @@ describe("overwrite / dry-run", () => {
     expect(existsSync(tmpOut)).toBe(true)
     rm(tmpOut, { recursive: true, force: true }).catch(() => {})
     rm(`${tmpOut}.zip`, { force: true }).catch(() => {})
+  })
+})
+
+// ── unit: upsertSkillManifestEntry ──────────────────────────────────────
+
+describe("upsertSkillManifestEntry (unit)", () => {
+  const baseManifest = {
+    lastUpdated: 1000000,
+    skills: [
+      {
+        skillId: "skill_existing_01",
+        name: "existing-skill",
+        description: "old desc",
+        creatorType: "user",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        enabled: true,
+      },
+    ],
+  }
+
+  it("appends a new entry when name is absent", () => {
+    const original = structuredClone(baseManifest)
+    const nowMs = 2000000
+    const newSkillId = "skill_local_deadbeef"
+    const result = upsertSkillManifestEntry(
+      baseManifest,
+      { name: "new-skill", description: "a new skill" },
+      nowMs,
+      newSkillId,
+    )
+    expect(result.skills.length).toBe(2)
+    const entry = result.skills.find((e) => e.name === "new-skill")!
+    expect(entry.skillId).toBe(newSkillId)
+    expect(entry.description).toBe("a new skill")
+    expect(entry.creatorType).toBe("user")
+    expect(entry.enabled).toBe(true)
+    expect(entry.updatedAt).toBe(new Date(nowMs).toISOString())
+    expect(result.lastUpdated).toBe(nowMs)
+    // original must be unchanged
+    expect(original.skills.length).toBe(1)
+    expect(original.lastUpdated).toBe(1000000)
+  })
+
+  it("updates in place when name is present, preserving skillId", () => {
+    const original = structuredClone(baseManifest)
+    const nowMs = 3000000
+    const newSkillId = "skill_local_shouldnotbeused"
+    const result = upsertSkillManifestEntry(
+      baseManifest,
+      { name: "existing-skill", description: "updated desc" },
+      nowMs,
+      newSkillId,
+    )
+    expect(result.skills.length).toBe(1)
+    const first = result.skills[0]!
+    expect(first.skillId).toBe("skill_existing_01")
+    expect(first.description).toBe("updated desc")
+    expect(first.enabled).toBe(true)
+    expect(first.updatedAt).toBe(new Date(nowMs).toISOString())
+    expect(result.lastUpdated).toBe(nowMs)
+    // original unchanged
+    expect(original.skills[0]!.description).toBe("old desc")
+    expect(original.lastUpdated).toBe(1000000)
+  })
+
+  it("does not mutate the input object", () => {
+    const original = structuredClone(baseManifest)
+    upsertSkillManifestEntry(
+      baseManifest,
+      { name: "another-new", description: "desc" },
+      4000000,
+      "skill_local_abcdef",
+    )
+    expect(baseManifest.skills.length).toBe(1)
+    expect(baseManifest.lastUpdated).toBe(1000000)
+    // also verify the first test's original was not mutated
+    expect(original.skills.length).toBe(1)
+  })
+
+  it("preserves sibling entries verbatim, including `updatedAt: null`", () => {
+    // Real Claude Desktop manifests carry null updatedAt on some built-ins;
+    // upserting our skill must NOT rewrite or drop those siblings.
+    const manifest = {
+      lastUpdated: 1000000,
+      skills: [
+        {
+          skillId: "schedule",
+          name: "schedule",
+          description: "built-in",
+          creatorType: "anthropic",
+          updatedAt: null,
+          enabled: true,
+        },
+      ],
+    }
+    const result = upsertSkillManifestEntry(
+      manifest,
+      { name: "agent-session-orchestration-agentproto", description: "ours" },
+      5000000,
+      "skill_local_feedface",
+    )
+    expect(result.skills.length).toBe(2)
+    const sibling = result.skills.find((e) => e.name === "schedule")!
+    expect(sibling.skillId).toBe("schedule")
+    expect(sibling.creatorType).toBe("anthropic")
+    expect(sibling.updatedAt).toBeNull()
+  })
+})
+
+// ── unit: loadSkillsManifest (data-loss safety) ─────────────────────────
+
+describe("loadSkillsManifest (unit)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agentproto-manifest-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("parses a valid registry and preserves a null-updatedAt entry", async () => {
+    const p = join(dir, "manifest.json")
+    await writeFile(
+      p,
+      JSON.stringify({
+        lastUpdated: 42,
+        skills: [
+          {
+            skillId: "schedule",
+            name: "schedule",
+            description: "d",
+            creatorType: "anthropic",
+            updatedAt: null,
+            enabled: true,
+          },
+        ],
+      }),
+    )
+    const m = await loadSkillsManifest(p)
+    expect(m).not.toBeNull()
+    expect(m!.lastUpdated).toBe(42)
+    expect(m!.skills[0]!.updatedAt).toBeNull()
+  })
+
+  it("returns null (skip, do not clobber) when an entry is malformed", async () => {
+    const p = join(dir, "manifest.json")
+    await writeFile(
+      p,
+      JSON.stringify({ lastUpdated: 1, skills: [{ name: "no-skill-id" }] }),
+    )
+    expect(await loadSkillsManifest(p)).toBeNull()
+  })
+
+  it("returns null for non-JSON and for a missing file", async () => {
+    const bad = join(dir, "bad.json")
+    await writeFile(bad, "{ not json")
+    expect(await loadSkillsManifest(bad)).toBeNull()
+    expect(await loadSkillsManifest(join(dir, "nope.json"))).toBeNull()
+  })
+})
+
+// ── integration: claude-desktop target ──────────────────────────────────
+
+describe("install-skill claude-desktop target", () => {
+  it("--target claude-desktop --dry-run exits 0, mentions claude-desktop + dry-run", () => {
+    const { stdout, stderr, code } = runCli([
+      "skill/agent-session-orchestration-agentproto",
+      "--target",
+      "claude-desktop",
+      "--dry-run",
+    ])
+    expect(code).toBe(0)
+    expect(stdout + stderr).toContain("claude-desktop")
+    expect(stdout + stderr).toContain("dry-run")
+  })
+
+  it("--target claude-desktop without Claude installed reports skipped (not a crash)", () => {
+    const { stdout, stderr, code } = runCli([
+      "skill/agent-session-orchestration-agentproto",
+      "--target",
+      "claude-desktop",
+    ])
+    expect(code).toBe(0)
+    expect(stdout + stderr).toContain("skipped")
   })
 })
