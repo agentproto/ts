@@ -23,8 +23,12 @@
  */
 
 import { spawn } from "node:child_process"
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs"
 import { createInterface } from "node:readline"
+import { join } from "node:path"
+import { toFileBasedMcpServers } from "../mcp-servers.js"
 import type {
+  AcpMcpServer,
   AgentCliPrintConfig,
   AgentCliRuntimeSession,
   StreamEvent,
@@ -41,6 +45,16 @@ export interface PrintArmOptions {
   resumeSessionId?: string
   /** Adapter-declared print surface config. Omit for Claude defaults. */
   printConfig?: AgentCliPrintConfig
+  /**
+   * MCP servers to mount into the agent's session. For the `mastracode`
+   * print arm (`event_schema: "mastra-jsonl"`) these are written to
+   * `<cwd>/.mastracode/mcp.json` before the first turn's spawn (the
+   * mastracode CLI has no CLI flag / env var / config-dir override for
+   * MCP config — this was exhaustively verified against its source) and
+   * restored/removed on `close()`. Ignored for other print schemas
+   * (e.g. Claude Code), which don't load MCP config from this path.
+   */
+  mcpServers?: AcpMcpServer[]
 }
 
 // ── Defaults (Claude Code backward-compatible) ──────────────────────
@@ -61,6 +75,18 @@ export function createPrintSession(
 
   let sessionId = opts.resumeSessionId ?? ""
   let activeChild: ReturnType<typeof spawn> | null = null
+
+  // ── MCP server injection (mastracode print arm only) ─────────────
+  // The mastracode CLI has no CLI flag, env var, or config-dir override
+  // for MCP config (exhaustively verified against its source). The only
+  // way to mount host-chosen MCP servers into a print-arm subprocess is
+  // to write them into `<cwd>/.mastracode/mcp.json`, which mastracode
+  // loads at process startup as its highest-precedence project-scope
+  // config. This is done once here (before the first turn's spawn) and
+  // restored on close(). Only applies when the adapter is mastracode
+  // (`event_schema: "mastra-jsonl"`) — other print adapters (Claude
+  // Code) don't read this path.
+  const mcpRestore = setupMcpConfigFile(opts, eventSchema)
 
   return {
     get sessionId(): string {
@@ -167,7 +193,135 @@ export function createPrintSession(
 
     async close(): Promise<void> {
       activeChild?.kill("SIGTERM")
+      mcpRestore?.()
     },
+  }
+}
+
+// ── MCP config file injection (mastracode print arm) ────────────────
+
+/**
+ * Before the first turn's spawn, shallow-merges our injected MCP servers
+ * into `<cwd>/.mastracode/mcp.json` (the highest-precedence project-scope
+ * config mastracode loads). Returns a restore function that reverts the
+ * file to its pre-session state on `close()`, or `undefined` if no
+ * injection was performed.
+ *
+ * Only activates when `eventSchema === "mastra-jsonl"` (mastracode) AND
+ * `opts.mcpServers` is non-empty. Other print adapters (Claude Code)
+ * don't read this path and are left untouched.
+ *
+ * Our injected servers win on key collision — this matches mastracode's
+ * own "higher precedence overrides lower, by server name" merge
+ * semantics, and the SDK's documented "merged with, and overriding,
+ * file-based configs" behavior for the in-process arm, so both arms
+ * behave consistently.
+ *
+ * KNOWN LIMITATION: two concurrent mastracode print sessions sharing
+ * the SAME `cwd` will race on this read-merge-write (last writer wins
+ * on the shared file). This is an upstream mastracode CLI limitation —
+ * no config-dir isolation exists to route around it. This is a real but
+ * narrow edge case (only matters for concurrent orchestrator children
+ * spawned into the identical directory); no locking mechanism is built
+ * here, by design.
+ */
+function setupMcpConfigFile(
+  opts: PrintArmOptions,
+  eventSchema: "claude-stream-json" | "mastra-jsonl",
+): (() => void) | undefined {
+  if (eventSchema !== "mastra-jsonl") return undefined
+  if (!opts.mcpServers || opts.mcpServers.length === 0) return undefined
+
+  const dir = join(opts.cwd, ".mastracode")
+  const file = join(dir, "mcp.json")
+  const injected = toFileBasedMcpServers(opts.mcpServers)
+  if (!injected) return undefined
+
+  // Snapshot the pre-session state so close() can restore it.
+  const fileExisted = existsSync(file)
+  let originalContent: string | undefined
+  if (fileExisted) {
+    try {
+      originalContent = readFileSync(file, "utf8")
+    } catch {
+      originalContent = undefined
+    }
+  }
+  const dirExisted = existsSync(dir)
+
+  // Ensure `.mastracode/` exists, then read-merge-write.
+  if (!dirExisted) {
+    mkdirSync(dir, { recursive: true })
+  }
+
+  let existingServers: Record<string, unknown> = {}
+  if (originalContent !== undefined) {
+    try {
+      const parsed = JSON.parse(originalContent) as Record<string, unknown>
+      if (parsed && typeof parsed.mcpServers === "object" && parsed.mcpServers !== null) {
+        existingServers = parsed.mcpServers as Record<string, unknown>
+      }
+    } catch {
+      // Corrupt or unparseable file — start fresh with just our servers.
+      existingServers = {}
+    }
+  }
+
+  // Shallow-merge: our injected servers override on key collision.
+  const merged: Record<string, unknown> = { ...existingServers, ...injected }
+  const output = JSON.stringify({ mcpServers: merged }, null, 2)
+  writeFileSync(file, output, "utf8")
+
+  // Return the restore function.
+  return () => {
+    try {
+      if (!fileExisted) {
+        // We created the file — remove it. Also remove the `.mastracode/`
+        // dir only if we created that too AND it's now empty (don't
+        // rm -rf someone's existing directory).
+        rmSync(file, { force: true })
+        if (!dirExisted) {
+          try {
+            // `rmdirSync` (not `rmSync`) — only removes an EMPTY
+            // directory, throwing ENOTEMPTY otherwise. `rmSync` without
+            // `recursive: true` throws on any directory regardless of
+            // contents, which would always land in the catch below and
+            // silently leave the directory behind even when empty.
+            rmdirSync(dir)
+          } catch {
+            // Directory not empty (other files were added) — leave it.
+          }
+        }
+      } else if (originalContent !== undefined) {
+        // File existed before — restore its original content, but first
+        // remove only our injected keys from the merged object so any
+        // concurrent changes (if the file was modified externally) are
+        // preserved minus our entries. If that produces an empty
+        // mcpServers map, restore the original file verbatim.
+        let current: Record<string, unknown> = {}
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+          if (parsed && typeof parsed.mcpServers === "object" && parsed.mcpServers !== null) {
+            current = parsed.mcpServers as Record<string, unknown>
+          }
+        } catch {
+          // Can't read current state — restore original verbatim.
+          writeFileSync(file, originalContent, "utf8")
+          return
+        }
+        for (const key of Object.keys(injected)) {
+          delete current[key]
+        }
+        if (Object.keys(current).length === 0) {
+          // All servers were ours — restore original file content.
+          writeFileSync(file, originalContent, "utf8")
+        } else {
+          writeFileSync(file, JSON.stringify({ mcpServers: current }, null, 2), "utf8")
+        }
+      }
+    } catch {
+      // Best-effort — never throw from close().
+    }
   }
 }
 
