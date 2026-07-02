@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -253,6 +253,108 @@ describe("CronScheduler", () => {
       await scheduler.run(job.id)
       expect(fired).toContain(job.id)
       expect(succeeded).toContain(job.id)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  // ── prompt-session action ──────────────────────────────────────────
+
+  function makeMockRegistry(desc: { processAlive?: boolean } | undefined): {
+    registry: SessionsRegistry
+    sendPrompt: ReturnType<typeof vi.fn>
+  } {
+    const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const registry = {
+      get: vi.fn().mockReturnValue(desc),
+      sendPrompt,
+    } as unknown as SessionsRegistry
+    return { registry, sendPrompt }
+  }
+
+  it("create() — accepts a prompt-session action shape", () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "* * * * *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_abc", prompt: "status?" },
+      })
+      expect(job.action).toEqual({
+        kind: "prompt-session",
+        sessionId: "sess_abc",
+        prompt: "status?",
+      })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action re-prompts a live session via registry.sendPrompt", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_abc", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toContain("sess_abc")
+      expect(sendPrompt).toHaveBeenCalledWith("sess_abc", "status?")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action fails cleanly when the session is missing", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt } = makeMockRegistry(undefined)
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_missing", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(false)
+      expect(result!.summary).toMatch(/not found/)
+      expect(sendPrompt).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action fails cleanly when the session is dead", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt } = makeMockRegistry({ processAlive: false })
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(false)
+      expect(result!.summary).toMatch(/not alive/)
+      expect(sendPrompt).not.toHaveBeenCalled()
     } finally {
       scheduler.shutdown()
     }
