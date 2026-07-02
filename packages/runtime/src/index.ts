@@ -748,6 +748,8 @@ export async function createGateway(
     sessionEvents,
     eventRing,
     supervisor,
+    ...(routineRunner ? { routineRunner } : {}),
+    ...(workflowRunner ? { workflowRunner } : {}),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
