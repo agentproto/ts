@@ -26,6 +26,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
+import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -79,6 +80,10 @@ export interface AgentStreamEvent {
   kind: string
   text?: string
   toolName?: string
+  /** Tool-call input, e.g. an ACP `tool_call`'s `arguments` — see @agentproto/acp's `StreamEvent`. */
+  arguments?: unknown
+  /** Tool-call output, e.g. an ACP `tool_call_update`'s `result` — see @agentproto/acp's `StreamEvent`. */
+  result?: unknown
   isError?: boolean
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
@@ -882,14 +887,28 @@ export function createSessionsRegistry(opts?: {
       case "tool-call":
         appendLine(
           rt,
-          `\x1b[36m[tool] ${evt.toolName ?? "?"}\x1b[0m`,
+          `\x1b[36m[tool] ${formatToolCall(evt.toolName ?? "?", evt.arguments)}\x1b[0m`,
           "stdout"
         )
         break
-      case "tool-result":
-        if (evt.isError)
+      case "tool-result": {
+        // Keep this to ONE line per result — some drivers stream huge
+        // payloads (file dumps, search hits) and the ring buffer is a
+        // fixed-size window, not a log store.
+        const summary = formatToolResult(evt.toolName, evt.result, evt.isError ?? false)
+        if (summary) {
+          appendLine(
+            rt,
+            evt.isError
+              ? `\x1b[31m[tool-error] ${summary}\x1b[0m`
+              : `\x1b[2m[tool-result] ${summary}\x1b[0m`,
+            evt.isError ? "stderr" : "stdout"
+          )
+        } else if (evt.isError) {
           appendLine(rt, `\x1b[31m[tool-error]\x1b[0m`, "stderr")
+        }
         break
+      }
       case "agent-prompt": {
         rt.desc.awaitingInput = true
         const options = normalizeAgentPromptOptions(evt.options)

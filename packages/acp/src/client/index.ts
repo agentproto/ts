@@ -550,12 +550,36 @@ function translateSessionUpdate(
       }
     case "tool_call": {
       const toolCallId = (update.toolCallId as string) ?? ""
+      // `title` is the descriptive label an agent gives a tool call
+      // ("Reading src/foo.ts") — prefer it over the coarse `kind`
+      // bucket (read/edit/search/execute/…) so rendered lines are
+      // informative instead of generic.
+      const toolName =
+        (update.title as string) ?? (update.kind as string) ?? "tool"
+      const locations = update.locations as
+        | Array<{ path: string; line?: number | null }>
+        | undefined
+      let args: unknown = update.rawInput ?? update.content ?? {}
+      // Some tool calls (e.g. a bare "read" with no structured input)
+      // carry only `locations` — fold the file paths into `arguments`
+      // so they survive downstream instead of being dropped.
+      if (update.rawInput == null && locations && locations.length > 0) {
+        args =
+          locations.length === 1
+            ? {
+                path: locations[0]!.path,
+                ...(locations[0]!.line != null
+                  ? { line: locations[0]!.line }
+                  : {}),
+              }
+            : { paths: locations.map((location) => location.path) }
+      }
       return {
         kind: "tool-call",
         sessionId,
         toolCallId,
-        toolName: (update.kind as string) ?? (update.title as string) ?? "tool",
-        arguments: update.rawInput ?? update.content ?? {},
+        toolName,
+        arguments: args,
       }
     }
     case "tool_call_update": {
