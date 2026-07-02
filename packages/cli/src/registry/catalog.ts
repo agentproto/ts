@@ -57,6 +57,16 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastracode-inprocess",
+    name: "Mastra Code (in-process)",
+    description:
+      "Mastra Code driven in-process via its SDK (createMastraCode + runMC) — no " +
+      "subprocess spawn, no npx cold-start. Same underlying agent as `mastracode`.",
+    packageName: "@agentproto/adapter-mastracode-inprocess",
+    hint: "mastra · in-process · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "codex",
     name: "Codex",
     description:
