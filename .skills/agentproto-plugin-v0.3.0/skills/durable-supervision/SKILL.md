@@ -71,6 +71,29 @@ pièges prouvés en live** :
 
 Gate vert prouvé : `policy:passed`, status `done`, `lastGate.exitCode:0`.
 
+**⚠️ En pratique (vécu en vrai, répété 2× sur une même session
+d'orchestration, 2026-07-01) : pour le pattern dominant "worktree dédié par
+feature" (`_agentproto-worktrees/<feature>/`, cwd absolu HORS de
+`agentik-studio`), les gates shell sont quasiment INUTILISABLES.** Le
+workspace ancré est celui de TON PROPRE contexte appelant (l'orchestrateur),
+pas celui de la session cible — donc même un `cwd` absolu explicite au spawn
+échoue systématiquement, immédiatement (`status: blocked`, `retries: 0` —
+PAS un cas géré par `onFail`, c'est une erreur d'infra, pas un exit code).
+Pire : l'échec est **silencieux** — la policy passe à `blocked` sans que tu
+sois notifié ; tu ne le découvres qu'en rappelant `get_policy_status` toi-même,
+ce qui annule l'intérêt du primitive (superviser sans polling).
+
+**Ce qui marche à la place, pour tout worktree hors-workspace** :
+1. `policy_attach({ sessionId, then: "emit" })` **sans `gate`** — passe
+   toujours au turn-end, sert juste à savoir QUAND le tour a fini (aucune
+   vérification de contenu).
+2. Vérifie le résultat **toi-même**, hors agentproto, avec tes propres outils
+   shell (`git log`, `git merge-base --is-ancestor`, `gh pr view --json
+   mergeable`, `pnpm test` directement) — PAS avec un gate `policy_attach`.
+3. Ne fais PAS confiance à un self-report de session sans cette vérification
+   indépendante (voir aussi le skill `agent-session-orchestration-agentproto`,
+   section "Déléguer un vrai PR-worktree").
+
 ## 3. Gate judge-agent (source — WP7)
 
 À la place d'un shell, `gate: { judge: { adapter, model?, prompt, timeoutMs? } }`
@@ -172,6 +195,49 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
 - **Critère qualitatif** → gate `judge`.
 - **Prévenir un humain quand ça attend/bloque** → `notifyUrl` (per-session) ou
   global.
+- **Rester au travail À TRAVERS plusieurs tours de conversation, sans repromptage
+  utilisateur et sans dérive de replanification** → `agentproto sessions wait
+  --policy <id> --timeout <ms>` dans un `Bash run_in_background:true` (§9) —
+  PAS `session_monitor`/`poll_events` en boucle (ça ne survit pas à la fin de
+  ton tour) ni `/loop`+`ScheduleWakeup` seul (auto-replanifié, peut dériver).
+
+## 9. Attendre À TRAVERS les tours de conversation (pas juste dans un tour)
+
+Vécu en vrai 2026-07-01/02, question directe de l'utilisateur : « comment être
+SÛR que tu continues à bosser sans que je repasse te relancer ? ». Distinction
+cruciale entre deux notions d'« attendre » :
+
+- **`session_monitor`/`poll_events`/`agentproto sessions wait` appelés
+  directement** : bloquent au mieux ~45-49s par appel (le transport MCP coupe
+  à ~60s côté serveur) — et surtout, ce blocage vit **dans TON tour actif**.
+  Dès que ton tour se termine, plus aucune attente ne tourne ; rien ne te
+  redonne la main tant que l'utilisateur ne t'envoie pas un nouveau message.
+- **`ScheduleWakeup` (`/loop`)** : donne une vraie ré-invocation autonome,
+  mais **auto-planifiée par toi** — tu dois rappeler le tool à chaque tick, ce
+  qui peut dériver/s'arrêter silencieusement, et ça exige que l'utilisateur
+  ait lancé `/loop` en premier lieu.
+- **Le vrai hook fiable, découvert en le cherchant ce soir : `Bash` avec
+  `run_in_background: true`.** N'importe quelle commande backgroundée déclenche
+  une notification harnais AUTOMATIQUE à sa sortie — mécanisme natif, zéro
+  auto-replanification, zéro dérive. `agentproto sessions wait <id-or-name>
+  [--policy <policyId>] --timeout <ms> --json` fait exactement la même boucle
+  de tranches ~50s en interne (même endpoint REST `/policies/:id/wait` /
+  `/sessions/:id/wait` que `session_monitor`/`poll_events` — **pas de capacité
+  serveur différente**, juste le fait que c'est UN PROCESSUS OS autonome que tu
+  peux backgrounder), mais comme c'est un processus séparé, le harnais te
+  notifie quand il sort, MÊME entre deux tours.
+
+```bash
+agentproto sessions wait --policy policy_xxx --timeout 2400000 --json
+# lancé via Bash run_in_background:true → notification automatique au retour,
+# sans /loop, sans repromptage utilisateur, sans dérive de replanification.
+```
+
+Ce n'est PAS « CLI plutôt que MCP » comme règle générale — c'est spécifique au
+CAS « attendre longtemps, à travers les tours ». Pour tout le reste (spawn,
+prompt, list, attach) MCP reste le bon outil ; c'est seulement cette attente
+longue-durée qui bénéficie d'un process OS backgroundable plutôt qu'un simple
+appel d'outil synchrone dans ton tour.
 
 ## Gotchas (vécus + source)
 
@@ -181,7 +247,9 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
   sont. Adapte le gate à l'allowlist du workspace.
 - **`cwd escapes the workspace`** : la session surveillée (ou la `gate.cwd`) doit
   être **dans** le workspace. Les sessions lancées dans un scratch hors-workspace
-  ne sont pas gateables tel quel.
+  ne sont pas gateables tel quel. **En pratique pour agentproto/ts (worktree par
+  feature) : n'essaie même pas un gate shell, utilise `then:"emit"` sans `gate`
+  et vérifie toi-même via `git`/`gh`** (voir §2 ci-dessus, gotcha détaillé).
 - **Commit isolé pour tester** : ne teste JAMAIS `then:commit` dans le repo de
   travail — le workspace root EST souvent un repo réel. Fais `git init` un repo
   jetable **dans** le workspace (cwd ne s'échappe pas), teste, puis `rm -rf`.
