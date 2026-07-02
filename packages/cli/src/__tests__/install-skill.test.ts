@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { existsSync, readdirSync } from "node:fs"
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -25,6 +25,8 @@ import {
   compareSemver,
   upsertSkillManifestEntry,
   loadSkillsManifest,
+  isSymlink,
+  freshCopyDir,
 } from "../commands/install-skill.js"
 
 // ── repo root + pack resolution (test helpers) ─────────────────────────
@@ -456,5 +458,66 @@ describe("install-skill claude-desktop target", () => {
     ])
     expect(code).toBe(0)
     expect(stdout + stderr).toContain("skipped")
+  })
+})
+
+// ── overwrite mechanics: the ERR_FS_CP_DIR_TO_NON_DIR fix ───────────────────
+
+describe("freshCopyDir — clean overwrite regardless of the existing dest type", () => {
+  let tmp: string
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-freshcopy-"))
+  })
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it("replaces an existing FILE at dest with the source directory (no ERR_FS_CP_DIR_TO_NON_DIR)", async () => {
+    const src = join(tmp, "src")
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, "SKILL.md"), "# skill\n", "utf8")
+
+    // dest is already a plain file here — the exact shape that made `fs.cp` throw.
+    const dest = join(tmp, "dest")
+    await writeFile(dest, "stale non-directory\n", "utf8")
+
+    await freshCopyDir(src, dest) // must not throw
+    expect(existsSync(join(dest, "SKILL.md"))).toBe(true)
+    expect(readFileSync(join(dest, "SKILL.md"), "utf8")).toBe("# skill\n")
+  })
+
+  it("replaces a stale existing DIR fully (no leftover files from the old version)", async () => {
+    const src = join(tmp, "src")
+    await mkdir(src, { recursive: true })
+    await writeFile(join(src, "SKILL.md"), "# new\n", "utf8")
+
+    const dest = join(tmp, "dest")
+    await mkdir(dest, { recursive: true })
+    await writeFile(join(dest, "OLD.md"), "stale\n", "utf8")
+
+    await freshCopyDir(src, dest)
+    expect(existsSync(join(dest, "SKILL.md"))).toBe(true)
+    expect(existsSync(join(dest, "OLD.md"))).toBe(false) // stale file gone — clean replace, not merge
+  })
+})
+
+describe("isSymlink", () => {
+  let tmp: string
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-islink-"))
+  })
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it("is true for a symlink, false for a real dir, false for a missing path", async () => {
+    const realDir = join(tmp, "real")
+    await mkdir(realDir, { recursive: true })
+    const link = join(tmp, "link")
+    await symlink(realDir, link)
+
+    expect(await isSymlink(link)).toBe(true)
+    expect(await isSymlink(realDir)).toBe(false)
+    expect(await isSymlink(join(tmp, "nope"))).toBe(false)
   })
 })

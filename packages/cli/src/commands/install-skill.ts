@@ -17,6 +17,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises"
@@ -391,6 +392,18 @@ async function installToHermes(
 ): Promise<InstallAction> {
   const destDir = join(homedir(), ".hermes", "skills", skill.name)
 
+  // A symlinked skill is a deliberate dev link (edit-in-repo). Never clobber
+  // it — `fs.cp` can't overwrite a symlink with a directory anyway
+  // (ERR_FS_CP_DIR_TO_NON_DIR). Leave it and tell the user how to replace it.
+  if (await isSymlink(destDir)) {
+    return {
+      target: "hermes",
+      status: "skipped",
+      label: skill.name,
+      detail: `symlinked at ${destDir} — left untouched (remove the link and re-run to replace)`,
+    }
+  }
+
   const exists = await pathExists(destDir)
   if (exists) {
     if (opts.dryRun) {
@@ -410,7 +423,7 @@ async function installToHermes(
         detail: `already exists at ${destDir}`,
       }
     }
-    await cp(skill.dir, destDir, { recursive: true, force: true })
+    await freshCopyDir(skill.dir, destDir)
     return {
       target: "hermes",
       status: "overwritten",
@@ -436,6 +449,25 @@ async function installToHermes(
     label: skill.name,
     detail: destDir,
   }
+}
+
+/** True when `p` exists and is itself a symlink (valid or broken). */
+export async function isSymlink(p: string): Promise<boolean> {
+  const st = await lstat(p).catch(() => null)
+  return st?.isSymbolicLink() ?? false
+}
+
+/**
+ * Replace `dest` with a fresh copy of the directory `src`. Removes any existing
+ * file/dir at `dest` first, so a type mismatch (an old *file* where a directory
+ * now goes) can't trip `fs.cp`'s ERR_FS_CP_DIR_TO_NON_DIR, and a stale prior
+ * version is fully replaced rather than merged. Callers MUST handle a symlink
+ * `dest` (a deliberate dev link) before calling this — `rm` would drop the link.
+ */
+export async function freshCopyDir(src: string, dest: string): Promise<void> {
+  await rm(dest, { recursive: true, force: true })
+  await mkdir(dirname(dest), { recursive: true })
+  await cp(src, dest, { recursive: true })
 }
 
 // ── claude-code ────────────────────────────────────────────────────────
@@ -719,6 +751,17 @@ async function installToClaudeDesktop(
   )
   const exists = existingSkillDir || existingManifestEntry
 
+  // A symlinked skill dir is a deliberate dev link — never clobber it (and
+  // `fs.cp` can't overwrite a symlink with a directory anyway).
+  if (existingSkillDir && (await isSymlink(destSkillDir))) {
+    return {
+      target: "claude-desktop",
+      status: "skipped",
+      label: skill.name,
+      detail: `symlinked at ${destSkillDir} — left untouched (remove the link and re-run to replace)`,
+    }
+  }
+
   if (exists && !opts.force) {
     const overwrite = await promptOverwrite("claude-desktop", skill.name)
     if (!overwrite) {
@@ -731,9 +774,8 @@ async function installToClaudeDesktop(
     }
   }
 
-  // Copy skill folder
-  await mkdir(dirname(destSkillDir), { recursive: true })
-  await cp(skill.dir, destSkillDir, { recursive: true, force: true })
+  // Copy skill folder (fresh — replaces any stale prior version cleanly).
+  await freshCopyDir(skill.dir, destSkillDir)
 
   // Backup the manifest before modifying it.
   try {
