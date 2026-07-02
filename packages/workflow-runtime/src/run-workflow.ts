@@ -9,6 +9,7 @@
 
 import { runTool } from "@agentproto/driver"
 import type {
+  AgentStep,
   Bindings,
   RunStep,
   RunWorkflowArgs,
@@ -40,10 +41,18 @@ interface RunCtx {
   readonly approve?: RunWorkflowArgs["approve"]
   readonly resume?: RunWorkflowArgs["resume"]
   readonly signal?: AbortSignal
+  readonly agents?: RunWorkflowArgs["agents"]
+  readonly cwd?: string
+  readonly workspaceSlug?: string
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
   return { input: state.input, steps: state.steps, item, index }
+}
+
+/** Resolve a value that is either a static string or a binding selector. */
+function resolveSel(sel: string | ((bindings: Bindings) => string), b: Bindings): string {
+  return typeof sel === "function" ? sel(b) : sel
 }
 
 /** Run an ordered list of steps, binding each output under its id; return last. */
@@ -162,8 +171,24 @@ async function execStep(
         approve: ctx.approve,
         resume: ctx.resume,
         signal,
+        agents: ctx.agents,
+        cwd: ctx.cwd,
+        workspaceSlug: ctx.workspaceSlug,
       })
       return child.output
+    }
+
+    case "agent": {
+      if (!ctx.agents) throw new Error(`step '${step.id}': AgentStep requires a host agents implementation`)
+      const sessionId = step.adapter
+        ? await ctx.agents.spawn(resolveSel(step.adapter, b), { cwd: ctx.cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
+        : ctx.agents.resolveByLabel(step.sessionRef!)
+      if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+      await ctx.agents.sendPromptAndWait(sessionId, step.prompt(b))
+      if (step.policy && ctx.agents.onAwaitingInput) {
+        await ctx.agents.onAwaitingInput(sessionId, step.policy)
+      }
+      return { sessionId }
     }
   }
 }
@@ -171,7 +196,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug">,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {} }
   const ctx: RunCtx = { state, ...hooks }
@@ -197,5 +222,8 @@ export async function runWorkflow(
     approve: args.approve,
     resume: args.resume,
     signal: args.signal,
+    agents: args.agents,
+    cwd: args.cwd,
+    workspaceSlug: args.workspaceSlug,
   })
 }

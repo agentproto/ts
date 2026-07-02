@@ -137,6 +137,26 @@ export interface SubworkflowStep {
 }
 
 /**
+ * Spawn or reuse an agent session and send it a prompt, waiting for the
+ * turn to complete. The host injects an {@link AgentSessionHost} — this
+ * runtime has no knowledge of concrete session registries or event buses.
+ */
+export interface AgentStep {
+  kind: "agent"
+  id: string
+  /** Adapter slug to spawn a NEW session. Omit to reuse via sessionRef. */
+  adapter?: Selector<string> | string
+  /** Reuse an earlier AgentStep's spawned session, by that step's id. */
+  sessionRef?: string
+  /** Prompt to send. */
+  prompt: Selector<string>
+  policy?:
+    | { awaiting: "auto-allow"; prompt: string }
+    | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
+    | { awaiting: "fail" }
+}
+
+/**
  * The element generics on `ToolStep` are erased to `any` so heterogeneous
  * steps (different contracts, different input/output/context types) coexist in
  * one `steps[]` array — per-step type safety is enforced where each step is
@@ -157,6 +177,7 @@ export type RunStep =
   | SuspendStep
   | GroupStep
   | SubworkflowStep
+  | AgentStep
 
 export interface RuntimeWorkflow {
   id: string
@@ -177,6 +198,17 @@ export interface ResumeRequest {
   on: readonly string[]
 }
 
+export interface AgentSessionHost {
+  /** Spawn a new agent session and return its id. */
+  spawn(adapter: string, opts: { cwd?: string; workspaceSlug?: string; stepId?: string }): Promise<string>
+  /** Send a prompt to an existing session and wait for its turn to end. */
+  sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
+  /** Look up a session by the step id that spawned it (for sessionRef reuse). */
+  resolveByLabel(stepId: string): string | undefined
+  /** Handle an awaiting-input policy for a session. */
+  onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -185,6 +217,12 @@ export interface RunWorkflowArgs {
   approve?: (req: ApprovalRequest) => boolean | Promise<boolean>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
+  /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
+  agents?: AgentSessionHost
+  /** Working directory for spawned agent sessions. */
+  cwd?: string
+  /** Workspace slug for spawned agent sessions. */
+  workspaceSlug?: string
 }
 
 export interface WorkflowRunResult {

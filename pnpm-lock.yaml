@@ -2074,6 +2074,9 @@ importers:
       '@agentproto/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
+      '@agentproto/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)

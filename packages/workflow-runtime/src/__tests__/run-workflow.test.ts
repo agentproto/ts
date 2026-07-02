@@ -246,3 +246,116 @@ describe("runWorkflow — parallel / approval / suspend / subworkflow", () => {
     expect((await runWorkflow({ workflow: parent, input: { n: 4 } })).output).toBe(10)
   })
 })
+
+// ── AgentStep tests (with fake AgentSessionHost) ───────────────────────
+
+import { vi } from "vitest"
+import type { AgentSessionHost } from "../types.js"
+
+function fakeHost(
+  overrides: Partial<{
+    spawn: AgentSessionHost["spawn"]
+    sendPromptAndWait: AgentSessionHost["sendPromptAndWait"]
+    resolveByLabel: AgentSessionHost["resolveByLabel"]
+  }> = {},
+): AgentSessionHost {
+  return {
+    spawn: overrides.spawn ?? vi.fn(async () => "sess_fake"),
+    sendPromptAndWait: overrides.sendPromptAndWait ?? vi.fn(async () => {}),
+    resolveByLabel:
+      overrides.resolveByLabel ??
+      vi.fn((stepId: string) => `sess_${stepId}`),
+  }
+}
+
+describe("runWorkflow — agent step", () => {
+  it("spawns by adapter and returns { sessionId }", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-spawn",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hello",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake" })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", { cwd: undefined, workspaceSlug: undefined, stepId: "s1" })
+    expect(host.sendPromptAndWait).toHaveBeenCalledWith("sess_fake", "hello")
+  })
+
+  it("reuses a session by sessionRef via resolveByLabel", async () => {
+    const host = fakeHost({
+      resolveByLabel: vi.fn(() => "sess_prior"),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-reuse",
+      steps: [
+        {
+          kind: "agent",
+          id: "s2",
+          sessionRef: "s1",
+          prompt: () => "verify",
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_prior" })
+    expect(host.resolveByLabel).toHaveBeenCalledWith("s1")
+    expect(host.spawn).not.toHaveBeenCalled()
+    expect(host.sendPromptAndWait).toHaveBeenCalledWith("sess_prior", "verify")
+  })
+
+  it("resolves adapter from a selector function", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-sel",
+      steps: [
+        {
+          kind: "agent",
+          id: "s3",
+          adapter: (b) => (b.input as { ad: string }).ad,
+          prompt: () => "sel-prompt",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, input: { ad: "dynamic-adapter" } })
+    expect(host.spawn).toHaveBeenCalledWith("dynamic-adapter", expect.anything())
+  })
+
+  it("throws when no host is injected", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "agent-no-host",
+      steps: [
+        { kind: "agent", id: "s4", adapter: "mock", prompt: () => "p" },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow(
+      /AgentStep requires a host agents implementation/,
+    )
+  })
+
+  it("throws when both adapter and sessionRef are absent and resolveByLabel returns undefined", async () => {
+    const host = fakeHost({
+      resolveByLabel: vi.fn(() => undefined),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-no-session",
+      steps: [
+        {
+          kind: "agent",
+          id: "s5",
+          sessionRef: "missing",
+          prompt: () => "p",
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
+      /no session/,
+    )
+  })
+})

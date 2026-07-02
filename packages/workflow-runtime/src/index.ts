@@ -32,6 +32,8 @@ export type {
   SuspendStep,
   GroupStep,
   SubworkflowStep,
+  AgentStep,
+  AgentSessionHost,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,
