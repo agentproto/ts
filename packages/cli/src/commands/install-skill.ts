@@ -10,7 +10,17 @@
  * (emit the plugin bundle). Claude Desktop is a follow-up.
  */
 
-import { cp, lstat, mkdir, readdir, readFile, stat } from "node:fs/promises"
+import {
+  copyFile,
+  cp,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+} from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { dirname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -21,7 +31,7 @@ import matter from "gray-matter"
 
 // ── types ──────────────────────────────────────────────────────────────
 
-type SkillTarget = "hermes" | "claude-code"
+type SkillTarget = "hermes" | "claude-code" | "claude-desktop"
 
 interface SkillInfo {
   name: string
@@ -178,7 +188,7 @@ export async function runInstallSkill(
   }
 
   const failed = actions.filter(
-    (a) => a.status !== "created" && a.status !== "overwritten" && a.status !== "dry-run",
+    (a) => a.status !== "created" && a.status !== "overwritten" && a.status !== "dry-run" && a.status !== "skipped",
   )
   if (failed.length > 0) {
     process.stderr.write(
@@ -316,7 +326,7 @@ export async function parseSkillFrontmatter(skillDir: string): Promise<SkillInfo
     throw new Error(`parseSkillFrontmatter: missing frontmatter in ${mdPath}`)
   }
 
-  const front = parsed.data as Record<string, unknown>
+  const front: Record<string, unknown> = parsed.data
   const name = typeof front.name === "string" ? front.name : null
   const desc = typeof front.description === "string" ? front.description : ""
 
@@ -331,7 +341,7 @@ export async function parseSkillFrontmatter(skillDir: string): Promise<SkillInfo
 
 // ── target resolution ──────────────────────────────────────────────────
 
-const VALID_TARGETS: SkillTarget[] = ["hermes", "claude-code"]
+const VALID_TARGETS: SkillTarget[] = ["hermes", "claude-code", "claude-desktop"]
 
 function isSkillTarget(t: string): t is SkillTarget {
   return VALID_TARGETS.some((v) => v === t)
@@ -368,6 +378,8 @@ async function installOne(
       return installToHermes(skill, opts)
     case "claude-code":
       return installToClaudeCode(opts)
+    case "claude-desktop":
+      return installToClaudeDesktop(skill, opts)
   }
 }
 
@@ -519,6 +531,314 @@ async function installToClaudeCode(
     label: "agentproto plugin",
     detail: opts.outDir,
   }
+}
+
+// ── claude-desktop ──────────────────────────────────────────────────────
+
+export interface ManifestSkillEntry {
+  skillId: string
+  name: string
+  description: string
+  creatorType: string
+  // Real Claude Desktop manifests carry `updatedAt: null` for some built-in
+  // skills (schedule, setup-cowork…), so this must admit null, not just string.
+  updatedAt: string | null
+  enabled: boolean
+}
+
+export interface SkillsManifest {
+  lastUpdated: number
+  skills: ManifestSkillEntry[]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isManifestEntry(value: unknown): value is ManifestSkillEntry {
+  return (
+    isRecord(value) &&
+    typeof value.skillId === "string" &&
+    typeof value.name === "string" &&
+    typeof value.description === "string" &&
+    typeof value.creatorType === "string" &&
+    (typeof value.updatedAt === "string" || value.updatedAt === null) &&
+    typeof value.enabled === "boolean"
+  )
+}
+
+/**
+ * Parse a Claude Desktop skills manifest into a typed registry, or return null
+ * when the file is absent, unparseable, or not shaped like a registry.
+ *
+ * The caller MUST treat null as "leave the manifest untouched" — NEVER as
+ * "start fresh and overwrite". A manifest we cannot fully understand is one we
+ * must not rewrite, or we would drop the user's other skills. Any single entry
+ * failing the shape guard fails the whole load for the same reason.
+ *
+ * `.filter(isManifestEntry)` keeps the ORIGINAL entry objects (extra fields
+ * preserved verbatim on write-back), narrowed to `ManifestSkillEntry[]` with no
+ * cast.
+ */
+export async function loadSkillsManifest(
+  manifestPath: string,
+): Promise<SkillsManifest | null> {
+  let raw: string
+  try {
+    raw = await readFile(manifestPath, "utf8")
+  } catch {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.skills)) return null
+  const skills = parsed.skills.filter(isManifestEntry)
+  if (skills.length !== parsed.skills.length) return null
+  const lastUpdated =
+    typeof parsed.lastUpdated === "number" ? parsed.lastUpdated : 0
+  return { lastUpdated, skills }
+}
+
+/**
+ * Upsert a skill into a Claude Desktop skills manifest BY NAME.
+ * - If an entry with the same `name` exists: update its description + updatedAt,
+ *   PRESERVE its existing skillId, keep enabled as-is (default true if absent).
+ * - Else: append a new entry with a freshly-generated skillId (creatorType "user",
+ *   enabled true).
+ * Always bumps `lastUpdated`. Returns a NEW object (no mutation of the input).
+ * `nowMs` and `newSkillId` are injected so the function is deterministic/testable.
+ */
+export function upsertSkillManifestEntry(
+  manifest: SkillsManifest,
+  skill: { name: string; description: string },
+  nowMs: number,
+  newSkillId: string,
+): SkillsManifest {
+  const updatedAt = new Date(nowMs).toISOString()
+  const skills = [...manifest.skills]
+  const idx = skills.findIndex((e) => e.name === skill.name)
+  if (idx !== -1) {
+    const existing = skills[idx]!
+    skills[idx] = {
+      skillId: existing.skillId,
+      name: existing.name,
+      description: skill.description,
+      creatorType: existing.creatorType,
+      updatedAt,
+      enabled: existing.enabled ?? true,
+    }
+  } else {
+    skills.push({
+      skillId: newSkillId,
+      name: skill.name,
+      description: skill.description,
+      creatorType: "user",
+      updatedAt,
+      enabled: true,
+    })
+  }
+  return { lastUpdated: nowMs, skills }
+}
+
+/**
+ * Install a skill into Claude Desktop's local-agent skills plugin bundle.
+ *
+ * Claude Desktop stores user-local-agent skills under:
+ *   ~/Library/Application Support/Claude/local-agent-mode-sessions/
+ *     skills-plugin/<outerUuid>/<innerUuid>/
+ *       .claude-plugin/plugin.json
+ *       manifest.json
+ *       skills/<name>/SKILL.md
+ *
+ * We discover the existing bundle dir (never fabricate one — Claude Desktop
+ * creates it when local-agent skills are enabled), then copy the skill folder
+ * into it and upsert its registry entry in `manifest.json`.
+ */
+async function installToClaudeDesktop(
+  skill: SkillInfo,
+  opts: InstallOpts,
+): Promise<InstallAction> {
+  const appSupport = claudeDesktopAppSupportDir()
+
+  // Dry-run: describe what would happen without checking existence.
+  // This way `--dry-run` works even when Claude Desktop is not installed.
+  if (opts.dryRun) {
+    return {
+      target: "claude-desktop",
+      status: "dry-run",
+      label: skill.name,
+      detail: `[dry-run] would install skill into Claude Desktop plugin bundle (${appSupport}/local-agent-mode-sessions/skills-plugin/...)`,
+    }
+  }
+
+  const baseExists = await pathExists(appSupport)
+  if (!baseExists) {
+    return {
+      target: "claude-desktop",
+      status: "skipped",
+      label: skill.name,
+      detail: `Claude Desktop not found at ${appSupport}`,
+    }
+  }
+
+  const pluginDir = await discoverClaudeSkillsPluginDir(appSupport)
+  if (!pluginDir) {
+    return {
+      target: "claude-desktop",
+      status: "skipped",
+      label: skill.name,
+      detail:
+        "Claude Desktop local-agent skills bundle not found. " +
+        "Open Claude Desktop → enable local skills first.",
+    }
+  }
+
+  const destSkillDir = join(pluginDir, "skills", skill.name)
+  const manifestPath = join(pluginDir, "manifest.json")
+
+  // Load + validate the existing registry FIRST. discover() guarantees the
+  // manifest exists; if we cannot parse it into a registry we skip entirely
+  // rather than risk overwriting (and thereby wiping) the user's other skills.
+  const manifest = await loadSkillsManifest(manifestPath)
+  if (!manifest) {
+    return {
+      target: "claude-desktop",
+      status: "skipped",
+      label: skill.name,
+      detail: `could not parse Claude Desktop manifest at ${manifestPath}; left it untouched`,
+    }
+  }
+
+  const existingSkillDir = await pathExists(destSkillDir)
+  const existingManifestEntry = manifest.skills.some(
+    (e) => e.name === skill.name,
+  )
+  const exists = existingSkillDir || existingManifestEntry
+
+  if (exists && !opts.force) {
+    const overwrite = await promptOverwrite("claude-desktop", skill.name)
+    if (!overwrite) {
+      return {
+        target: "claude-desktop",
+        status: "skipped",
+        label: skill.name,
+        detail: `already exists in Claude Desktop plugin (${pluginDir})`,
+      }
+    }
+  }
+
+  // Copy skill folder
+  await mkdir(dirname(destSkillDir), { recursive: true })
+  await cp(skill.dir, destSkillDir, { recursive: true, force: true })
+
+  // Backup the manifest before modifying it.
+  try {
+    await copyFile(manifestPath, `${manifestPath}.bak`)
+  } catch {
+    // Best-effort — if the backup write fails, still proceed with the upsert.
+  }
+
+  const nowMs = Date.now()
+  const newId = "skill_local_" + randomUUID().replace(/-/g, "")
+  const updated = upsertSkillManifestEntry(manifest, skill, nowMs, newId)
+  await writeFile(manifestPath, JSON.stringify(updated, null, 2) + "\n", "utf8")
+
+  return {
+    target: "claude-desktop",
+    status: exists ? "overwritten" : "created",
+    label: skill.name,
+    detail: destSkillDir,
+  }
+}
+
+function claudeDesktopAppSupportDir(): string {
+  const home = homedir()
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "Claude")
+  }
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA
+    if (!appData) {
+      // should not happen on real Windows, but guard gracefully
+      return join(home, "AppData", "Roaming", "Claude")
+    }
+    return join(appData, "Claude")
+  }
+  // linux
+  return join(home, ".config", "Claude")
+}
+
+async function discoverClaudeSkillsPluginDir(
+  appSupport: string,
+): Promise<string | null> {
+  const sessionsDir = join(appSupport, "local-agent-mode-sessions", "skills-plugin")
+  let outerEntries: string[]
+  try {
+    outerEntries = await readdir(sessionsDir)
+  } catch {
+    return null
+  }
+
+  const candidates: { path: string; hasAnthropicName: boolean }[] = []
+
+  for (const outer of outerEntries) {
+    const outerPath = join(sessionsDir, outer)
+    try {
+      const st = await stat(outerPath)
+      if (!st.isDirectory()) continue
+    } catch {
+      continue
+    }
+
+    let innerEntries: string[]
+    try {
+      innerEntries = await readdir(outerPath)
+    } catch {
+      continue
+    }
+
+    for (const inner of innerEntries) {
+      const innerPath = join(outerPath, inner)
+      try {
+        const st = await stat(innerPath)
+        if (!st.isDirectory()) continue
+      } catch {
+        continue
+      }
+
+      const hasManifest = await pathExists(join(innerPath, "manifest.json"))
+      const hasSkillsDir = await pathExists(join(innerPath, "skills"))
+      if (!hasManifest || !hasSkillsDir) continue
+
+      let hasAnthropicName = false
+      try {
+        const pluginJsonPath = join(
+          innerPath,
+          ".claude-plugin",
+          "plugin.json",
+        )
+        const raw = await readFile(pluginJsonPath, "utf8")
+        const parsed: unknown = JSON.parse(raw)
+        if (isRecord(parsed) && parsed.name === "anthropic-skills") {
+          hasAnthropicName = true
+        }
+      } catch {
+        // plugin.json missing or unreadable
+      }
+
+      candidates.push({ path: innerPath, hasAnthropicName })
+    }
+  }
+
+  if (candidates.length === 0) return null
+  const preferred = candidates.find((c) => c.hasAnthropicName)
+  const selected = preferred ?? candidates[0]
+  if (!selected) return null
+  return selected.path
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
