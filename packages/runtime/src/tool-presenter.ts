@@ -90,6 +90,13 @@ export function formatToolCall(toolName: string, args: unknown): string {
 
   const salient = pickSalientArg(argsRecord)
   if (salient !== null) {
+    // Some ACP agents (e.g. claude-agent-acp) already bake the salient
+    // value into a curated title — "Read src/foo.ts" alongside
+    // arguments.path === "src/foo.ts". Appending it again would render
+    // "Read src/foo.ts src/foo.ts". Only append when it adds new info.
+    if (name.toLowerCase().includes(salient.toLowerCase())) {
+      return truncate(name, MAX_CALL_LENGTH)
+    }
     return truncate(`${name} ${salient}`, MAX_CALL_LENGTH)
   }
 
