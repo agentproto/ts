@@ -26,12 +26,14 @@ import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import { runWorkflow } from "@agentproto/workflow-runtime"
 import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { StepCache } from "@agentproto/workflow-runtime"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { RoutinePolicy, RoutineStepState } from "./routine-runner.js"
 import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
+import { createFileStepCache } from "./workflow-step-cache.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -45,6 +47,8 @@ export interface WorkflowStep {
    *  identified by that step's `label`. Ignored if `adapter` is set. */
   sessionRef?: string
   policy?: RoutinePolicy
+  /** Cache this step's output under the run's `cacheKey` — opt-in, for idempotent steps. */
+  cacheable?: boolean
 }
 
 export interface WorkflowStage {
@@ -87,6 +91,8 @@ export interface WorkflowRunner {
     workspaceSlug?: string
     cwd?: string
     notifyUrl?: string
+    /** Enable journal caching for this run; cacheable steps replay unchanged outputs. */
+    cacheKey?: string
   }): Promise<WorkflowRun>
 
   status(runId: string): WorkflowRun | undefined
@@ -133,6 +139,7 @@ function translateStages(
           id: step.label,
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
+          ...(step.cacheable ? { cacheable: true } : {}),
           prompt: () => step.prompt ?? "",
           policy: step.policy ?? { awaiting: "fail" as const },
         },
@@ -260,6 +267,8 @@ async function executeRunWorkflow(
   runtimeWf: RuntimeWorkflow,
   agents: SessionsRegistryAgentHost,
   signal: AbortSignal,
+  cache?: StepCache,
+  cacheKey?: string,
 ): Promise<void> {
   try {
     await runWorkflow({
@@ -268,6 +277,7 @@ async function executeRunWorkflow(
       signal,
       cwd: state.cwd,
       workspaceSlug: state.workspaceSlug,
+      ...(cache ? { cache, cacheKey } : {}),
     })
 
     // Success — mark all stages/steps done.
@@ -380,7 +390,9 @@ export function createWorkflowRunner(opts: {
         },
       )
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal).then(() => {
+      const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
+
+      void executeRunWorkflow(state, workflow, agents, abort.signal, cache, input.cacheKey).then(() => {
         persist()
       })
 

@@ -556,6 +556,7 @@ export function registerOrchestrationTools(
             "Ignored if `adapter` is set. Lets a later-stage step act on an earlier stage's output " +
             "(e.g. a 'verify' step reusing a 'produce' step's session).",
         ),
+      cacheable: z.boolean().optional().describe("Cache this step's output under the run's cacheKey (opt-in; for idempotent/pure steps only)."),
       policy: z
         .discriminatedUnion("awaiting", [
           z.object({ awaiting: z.literal("auto-allow"), prompt: z.string() }),
@@ -594,6 +595,7 @@ export function registerOrchestrationTools(
         workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         notifyUrl: z.string().url().optional().describe("Webhook URL to call on run completion or escalation."),
+        cacheKey: z.string().optional().describe("Enable journal caching for this run. On a re-invocation with the same cacheKey, cacheable steps whose inputs are unchanged replay their cached output instead of re-spawning."),
       },
       async input => {
         const run = await workflowRunner.start(input)

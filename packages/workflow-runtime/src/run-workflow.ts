@@ -8,6 +8,7 @@
  */
 
 import { runTool } from "@agentproto/driver"
+import { createHash } from "node:crypto"
 import type { ZodError } from "zod"
 import type {
   AgentStep,
@@ -50,6 +51,8 @@ interface RunCtx {
   readonly agents?: RunWorkflowArgs["agents"]
   readonly cwd?: string
   readonly workspaceSlug?: string
+  readonly cache?: RunWorkflowArgs["cache"]
+  readonly cacheKey?: RunWorkflowArgs["cacheKey"]
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
@@ -90,6 +93,38 @@ function spentUsd(state: RunState): number {
   return total
 }
 
+/** Deterministic content hash of a step's resolved inputs. */
+function hashResolvedInputs(kind: string, resolved: unknown): string {
+  return createHash("sha256")
+    .update(`${kind}\u0000${JSON.stringify(resolved) ?? "undefined"}`)
+    .digest("hex")
+}
+
+/** Namespaced journal key for a step under a run's cacheKey. */
+function stepJournalKey(cacheKey: string, step: RunStep): string {
+  return `${cacheKey}\u0000${step.id}\u0000${step.kind}`
+}
+
+/** True when this step should consult/populate the journal. */
+function isCacheEnabled(ctx: RunCtx, step: { cacheable?: boolean }): boolean {
+  return step.cacheable === true && ctx.cache !== undefined && ctx.cacheKey !== undefined
+}
+
+/** Read the journal; on a hit return the output, else the key+hash to write on miss. */
+async function readStepCache(
+  ctx: RunCtx,
+  step: RunStep,
+  resolvedInputs: unknown,
+): Promise<{ hit: true; output: unknown } | { hit: false; key: string; hash: string }> {
+  const key = stepJournalKey(ctx.cacheKey!, step)
+  const hash = hashResolvedInputs(step.kind, resolvedInputs)
+  const entry = await ctx.cache!.get(key)
+  if (entry !== undefined && entry.resolvedInputHash === hash) {
+    return { hit: true, output: entry.output }
+  }
+  return { hit: false, key, hash }
+}
+
 function formatZodError(err: ZodError): string {
   return err.issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
@@ -112,6 +147,69 @@ async function runSequence(
   return last
 }
 
+/** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
+async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise<unknown> {
+  if (
+    step.adapter &&
+    ctx.state.maxTotalCostUsd !== undefined &&
+    spentUsd(ctx.state) >= ctx.state.maxTotalCostUsd
+  ) {
+    throw new Error(
+      `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
+    )
+  }
+  const sessionId = step.adapter
+    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), { cwd: ctx.cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
+    : ctx.agents!.resolveByLabel(step.sessionRef!)
+  if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))
+  if (step.policy && ctx.agents!.onAwaitingInput) {
+    await ctx.agents!.onAwaitingInput(sessionId, step.policy)
+  }
+
+  if (ctx.agents!.readCostUsd) {
+    ctx.state.costBySession.set(sessionId, await ctx.agents!.readCostUsd(sessionId))
+  }
+
+  if (!step.outputSchema) return { sessionId }
+
+  // Validate-and-retry loop
+  if (!ctx.agents!.readFinalMessage) {
+    throw new Error(`step '${step.id}': outputSchema requires a host with readFinalMessage`)
+  }
+  const maxRetries = step.maxRetries ?? 2
+  let lastErr = ""
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const raw = await ctx.agents!.readFinalMessage(sessionId)
+    const candidate = extractJsonCandidate(raw)
+    let value: unknown
+    try {
+      value = JSON.parse(candidate)
+    } catch {
+      lastErr = "not valid JSON"
+      if (attempt < maxRetries) {
+        await ctx.agents!.sendPromptAndWait(
+          sessionId,
+          `Your previous reply did not match the required schema: ${lastErr}. ` +
+            `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+        )
+      }
+      continue
+    }
+    const res = step.outputSchema.safeParse(value)
+    if (res.success) return { sessionId, output: res.data }
+    lastErr = formatZodError(res.error)
+    if (attempt < maxRetries) {
+      await ctx.agents!.sendPromptAndWait(
+        sessionId,
+        `Your previous reply did not match the required schema: ${lastErr}. ` +
+          `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+      )
+    }
+  }
+  throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
+}
+
 async function execStep(
   step: RunStep,
   ctx: RunCtx,
@@ -121,16 +219,25 @@ async function execStep(
   const { state, signal } = ctx
   const b = view(state, item, index)
   switch (step.kind) {
-    case "tool":
-      return runTool({
-        tool: step.tool,
-        candidates: step.candidates,
-        input: step.input(b),
-        context: step.context ? step.context(b) : undefined,
-        resolverContext: step.resolverContext,
-        secrets: step.secrets,
-        signal,
-      })
+    case "tool": {
+      const input = step.input(b)
+      const runIt = (): Promise<unknown> =>
+        runTool({
+          tool: step.tool,
+          candidates: step.candidates,
+          input,
+          context: step.context ? step.context(b) : undefined,
+          resolverContext: step.resolverContext,
+          secrets: step.secrets,
+          signal,
+        })
+      if (!isCacheEnabled(ctx, step)) return runIt()
+      const c = await readStepCache(ctx, step, input)
+      if (c.hit) return c.output
+      const out = await runIt()
+      await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
+      return out
+    }
 
     case "transform":
       return step.compute(b)
@@ -238,71 +345,25 @@ async function execStep(
         agents: ctx.agents,
         cwd: ctx.cwd,
         workspaceSlug: ctx.workspaceSlug,
+        cache: ctx.cache,
+        cacheKey: ctx.cacheKey,
       })
       return child.output
     }
 
     case "agent": {
       if (!ctx.agents) throw new Error(`step '${step.id}': AgentStep requires a host agents implementation`)
-      if (
-        step.adapter &&
-        ctx.state.maxTotalCostUsd !== undefined &&
-        spentUsd(ctx.state) >= ctx.state.maxTotalCostUsd
-      ) {
-        throw new Error(
-          `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
-        )
+      if (!isCacheEnabled(ctx, step)) return execAgentStep(step, ctx, b)
+      const resolved = {
+        prompt: step.prompt(b),
+        adapter: step.adapter ? resolveSel(step.adapter, b) : undefined,
+        sessionRef: step.sessionRef,
       }
-      const sessionId = step.adapter
-        ? await ctx.agents.spawn(resolveSel(step.adapter, b), { cwd: ctx.cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
-        : ctx.agents.resolveByLabel(step.sessionRef!)
-      if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
-      await ctx.agents.sendPromptAndWait(sessionId, step.prompt(b))
-      if (step.policy && ctx.agents.onAwaitingInput) {
-        await ctx.agents.onAwaitingInput(sessionId, step.policy)
-      }
-
-      if (ctx.agents.readCostUsd) {
-        ctx.state.costBySession.set(sessionId, await ctx.agents.readCostUsd(sessionId))
-      }
-
-      if (!step.outputSchema) return { sessionId }
-
-      // Validate-and-retry loop
-      if (!ctx.agents.readFinalMessage) {
-        throw new Error(`step '${step.id}': outputSchema requires a host with readFinalMessage`)
-      }
-      const maxRetries = step.maxRetries ?? 2
-      let lastErr = ""
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        const raw = await ctx.agents.readFinalMessage(sessionId)
-        const candidate = extractJsonCandidate(raw)
-        let value: unknown
-        try {
-          value = JSON.parse(candidate)
-        } catch {
-          lastErr = "not valid JSON"
-          if (attempt < maxRetries) {
-            await ctx.agents.sendPromptAndWait(
-              sessionId,
-              `Your previous reply did not match the required schema: ${lastErr}. ` +
-                `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
-            )
-          }
-          continue
-        }
-        const res = step.outputSchema.safeParse(value)
-        if (res.success) return { sessionId, output: res.data }
-        lastErr = formatZodError(res.error)
-        if (attempt < maxRetries) {
-          await ctx.agents.sendPromptAndWait(
-            sessionId,
-            `Your previous reply did not match the required schema: ${lastErr}. ` +
-              `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
-          )
-        }
-      }
-      throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
+      const c = await readStepCache(ctx, step, resolved)
+      if (c.hit) return c.output // cache hit ⇒ NO spawn, NO budget spend
+      const out = await execAgentStep(step, ctx, b)
+      await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
+      return out
     }
   }
 }
@@ -310,7 +371,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
@@ -340,5 +401,7 @@ export async function runWorkflow(
     agents: args.agents,
     cwd: args.cwd,
     workspaceSlug: args.workspaceSlug,
+    cache: args.cache,
+    cacheKey: args.cacheKey,
   }, args.maxTotalCostUsd)
 }
