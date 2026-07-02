@@ -102,6 +102,47 @@ describe("createPrintSession — mastracode print config", () => {
     await pending
   })
 
+  it("threads the mastra tool_start `args` field into the tool-call StreamEvent's arguments", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hello"))
+    await Promise.resolve()
+
+    feed(lastChild!, [
+      {
+        type: "tool_start",
+        toolCallId: "toolu_1",
+        toolName: "view",
+        args: { path: "/tmp/foo.ts" },
+      },
+      { type: "agent_end", reason: "complete" },
+      {
+        type: "result",
+        status: "completed",
+        text: "ok",
+        finishReason: "complete",
+        threadId: "thread-1",
+        exitCode: 0,
+      },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const toolCall = events.find(e => e.kind === "tool-call")
+    expect(toolCall).toMatchObject({
+      kind: "tool-call",
+      toolCallId: "toolu_1",
+      toolName: "view",
+      arguments: { path: "/tmp/foo.ts" },
+    })
+  })
+
   it("captures the thread id from the authoritative `result` line, not the incidental om_status event", async () => {
     const session = createPrintSession({
       bin: "npx",

@@ -57,6 +57,9 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
+import { sessionEventsPath } from "./transcript-writer.js"
+import { createReadStream } from "node:fs"
+import { createInterface } from "node:readline"
 import {
   monitorSessionWait,
   monitorPolicyWait,
@@ -1463,6 +1466,11 @@ function clampInt(
  *   GET    /sessions/:id          → one SessionDescriptor
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
+ *   GET    /sessions/:id/events   → raw structured events.jsonl records for a session.
+ *                                    Query: since=<seq> (default 0), limit=<n> (default 500,
+ *                                    max 2000). Returns {sessionId, events, nextSeq, complete};
+ *                                    404 {error:"no_transcript"} when the file doesn't exist.
+ *                                    Read-only GET, no auth gate (same policy as /export).
  *   GET    /sessions/:id/wait     → block until a lifecycle event fires (long-poll;
  *                                    requires sessionEvents + eventRing wired). Query:
  *                                    event=turn-end|awaiting-input|exited|any (default any),
@@ -1927,7 +1935,7 @@ async function handleSessions(
   // when one was set at spawn time — `findByIdOrName` resolves both
   // and the rest of the handler operates on the canonical id.
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export|\/events|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -1972,6 +1980,79 @@ async function handleSessions(
     } else {
       json(200, result)
     }
+    return true
+  }
+
+  if (suffix === "/events" && req.method === "GET") {
+    // Raw structured events.jsonl records — the same on-disk capture
+    // /export's daemon-events strategy reads, exposed directly so a web
+    // panel can render rich components instead of the collapsed
+    // markdown/JSON transcript. Read-only GET, no auth gate (same
+    // policy as /export / /preview).
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const sinceRaw = qs.get("since")
+    if (sinceRaw !== null && !/^\d+$/.test(sinceRaw)) {
+      json(400, {
+        error: "invalid_since",
+        message: "since must be a non-negative integer",
+      })
+      return true
+    }
+    const since = sinceRaw !== null ? Number.parseInt(sinceRaw, 10) : 0
+    const limit = clampInt(qs.get("limit"), 500, 1, 2000)
+
+    // events.jsonl is always keyed by the agentproto session id (same
+    // resolution export's daemon-events strategy relies on) — `id` above
+    // already resolved to that via findByIdOrName, falling back to the
+    // raw path segment when the registry doesn't know it.
+    const filePath = sessionEventsPath(id)
+    let fileStream: ReturnType<typeof createReadStream>
+    try {
+      fileStream = createReadStream(filePath, { encoding: "utf8" })
+      await new Promise<void>((resolve, reject) => {
+        fileStream.once("error", reject)
+        fileStream.once("open", resolve)
+      })
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "ENOENT") {
+        json(404, { error: "no_transcript" })
+        return true
+      }
+      throw err
+    }
+
+    const events: Record<string, unknown>[] = []
+    let truncated = false
+    const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
+    for await (const line of rl) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let rec: Record<string, unknown>
+      try {
+        rec = JSON.parse(trimmed) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      if (typeof rec.seq !== "number" || rec.seq <= since) continue
+      if (events.length >= limit) {
+        truncated = true
+        continue
+      }
+      events.push(rec)
+    }
+
+    const nextSeq =
+      events.length > 0 ? (events[events.length - 1]?.seq as number) : since
+    json(200, {
+      sessionId: id,
+      events,
+      nextSeq,
+      complete: !truncated,
+    })
     return true
   }
 
