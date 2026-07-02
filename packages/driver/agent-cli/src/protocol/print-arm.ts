@@ -552,7 +552,10 @@ export function mapMastraEvent(
           typeof evt.toolCallId === "string" ? evt.toolCallId : "",
         toolName:
           typeof evt.toolName === "string" ? evt.toolName : "?",
-        arguments: evt.input ?? {},
+        // Mastra's controller event carries the tool call payload under
+        // `args`, not `input` (that's the Claude Code stream-json field
+        // name used by the sibling mapClaudeEvent tool_use case below).
+        arguments: evt.args ?? {},
       }
 
     case "tool_end":
