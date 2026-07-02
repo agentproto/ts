@@ -12,6 +12,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
+import { exportAgentSession } from "./transcript-export.js"
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
@@ -90,6 +91,39 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     } else {
       throw new Error(`step failed: session ${sessionId} awaiting input`)
     }
+  }
+
+  async readFinalMessage(sessionId: string): Promise<string> {
+    const result = await exportAgentSession({
+      sessionId,
+      registry: this.registry,
+      format: "json",
+    })
+    // exportAgentSession returns a non-JSON `content` ("Error: …") when the
+    // session can't be exported; degrade to "" (→ the interpreter re-prompts)
+    // rather than throwing a raw SyntaxError out of the workflow.
+    let raw: unknown
+    try {
+      raw = JSON.parse(result.content)
+    } catch {
+      return ""
+    }
+    if (typeof raw !== "object" || raw === null) return ""
+    if (!("messages" in raw)) return ""
+    const msgList = raw.messages
+    if (!Array.isArray(msgList)) return ""
+    for (let i = msgList.length - 1; i >= 0; i--) {
+      const m = msgList[i]
+      if (typeof m !== "object" || m === null) continue
+      if (!("role" in m)) continue
+      if (m.role !== "assistant") continue
+      if (!("text" in m)) continue
+      const text = m.text
+      if (typeof text === "string" && text.trim()) {
+        return text
+      }
+    }
+    return ""
   }
 
   // ── Internal helpers ──────────────────────────────────────────────────

@@ -8,6 +8,7 @@
  */
 
 import { runTool } from "@agentproto/driver"
+import type { ZodError } from "zod"
 import type {
   AgentStep,
   Bindings,
@@ -53,6 +54,35 @@ function view(state: RunState, item?: unknown, index?: number): Bindings {
 /** Resolve a value that is either a static string or a binding selector. */
 function resolveSel(sel: string | ((bindings: Bindings) => string), b: Bindings): string {
   return typeof sel === "function" ? sel(b) : sel
+}
+
+/** Extract a JSON candidate from raw assistant text:
+ *  1. last ```json fenced block if present, else
+ *  2. last generic ``` fenced block if present, else
+ *  3. the whole trimmed string. */
+function extractJsonCandidate(raw: string): string {
+  const jsonFence = /```json\s*([\s\S]*?)```/g
+  const lastJson = lastMatch(jsonFence, raw)
+  if (lastJson !== undefined) return lastJson
+
+  const anyFence = /```\s*([\s\S]*?)```/g
+  const lastAny = lastMatch(anyFence, raw)
+  if (lastAny !== undefined) return lastAny
+
+  return raw.trim()
+}
+
+function lastMatch(re: RegExp, s: string): string | undefined {
+  let m: RegExpExecArray | null
+  let last: RegExpExecArray | null = null
+  while ((m = re.exec(s)) !== null) last = m
+  return last ? last[1]?.trim() : undefined
+}
+
+function formatZodError(err: ZodError): string {
+  return err.issues
+    .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
+    .join(", ")
 }
 
 /** Run an ordered list of steps, binding each output under its id; return last. */
@@ -188,7 +218,44 @@ async function execStep(
       if (step.policy && ctx.agents.onAwaitingInput) {
         await ctx.agents.onAwaitingInput(sessionId, step.policy)
       }
-      return { sessionId }
+
+      if (!step.outputSchema) return { sessionId }
+
+      // Validate-and-retry loop
+      if (!ctx.agents.readFinalMessage) {
+        throw new Error(`step '${step.id}': outputSchema requires a host with readFinalMessage`)
+      }
+      const maxRetries = step.maxRetries ?? 2
+      let lastErr = ""
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const raw = await ctx.agents.readFinalMessage(sessionId)
+        const candidate = extractJsonCandidate(raw)
+        let value: unknown
+        try {
+          value = JSON.parse(candidate)
+        } catch {
+          lastErr = "not valid JSON"
+          if (attempt < maxRetries) {
+            await ctx.agents.sendPromptAndWait(
+              sessionId,
+              `Your previous reply did not match the required schema: ${lastErr}. ` +
+                `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+            )
+          }
+          continue
+        }
+        const res = step.outputSchema.safeParse(value)
+        if (res.success) return { sessionId, output: res.data }
+        lastErr = formatZodError(res.error)
+        if (attempt < maxRetries) {
+          await ctx.agents.sendPromptAndWait(
+            sessionId,
+            `Your previous reply did not match the required schema: ${lastErr}. ` +
+              `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+          )
+        }
+      }
+      throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
     }
   }
 }

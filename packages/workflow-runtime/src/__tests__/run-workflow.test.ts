@@ -257,6 +257,7 @@ function fakeHost(
     spawn: AgentSessionHost["spawn"]
     sendPromptAndWait: AgentSessionHost["sendPromptAndWait"]
     resolveByLabel: AgentSessionHost["resolveByLabel"]
+    readFinalMessage: AgentSessionHost["readFinalMessage"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -265,6 +266,7 @@ function fakeHost(
     resolveByLabel:
       overrides.resolveByLabel ??
       vi.fn((stepId: string) => `sess_${stepId}`),
+    readFinalMessage: overrides.readFinalMessage,
   }
 }
 
@@ -356,6 +358,108 @@ describe("runWorkflow — agent step", () => {
     }
     await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
       /no session/,
+    )
+  })
+})
+
+// ── AgentStep outputSchema tests ─────────────────────────────────────
+
+const verdictSchema = z.object({ verdict: z.enum(["pass", "fail"]) })
+
+describe("runWorkflow — agent step outputSchema", () => {
+  it("valid on first try → step output is the parsed object, zero corrections", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "pass" })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-pass",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake", output: { verdict: "pass" } })
+    expect(host.readFinalMessage).toHaveBeenCalledTimes(1)
+    // No correction re-prompts beyond the initial one
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(1)
+  })
+
+  it("invalid then valid on retry 2 → succeeds, correct number of re-prompts", async () => {
+    const messages: string[] = [
+      JSON.stringify({ verdict: "nope" }),
+      JSON.stringify({ verdict: "pass" }),
+    ]
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => {
+        return messages.shift() ?? ""
+      }),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-retry",
+      steps: [
+        {
+          kind: "agent",
+          id: "s2",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(output).toEqual({ sessionId: "sess_fake", output: { verdict: "pass" } })
+    // sendPromptAndWait: 1 initial + 1 correction = 2
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(2)
+  })
+
+  it("never valid within maxRetries → rejects with output_invalid", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "nope" })),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-fail",
+      steps: [
+        {
+          kind: "agent",
+          id: "s3",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+          maxRetries: 1,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
+      /output_invalid/,
+    )
+  })
+
+  it("outputSchema set but host lacks readFinalMessage → clear throw", async () => {
+    const host = fakeHost({
+      // readFinalMessage intentionally omitted
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-noread",
+      steps: [
+        {
+          kind: "agent",
+          id: "s4",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
+      /outputSchema requires a host with readFinalMessage/,
     )
   })
 })
