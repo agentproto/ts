@@ -7,6 +7,7 @@ import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
 import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
+import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn } from "./manifest/compose.js"
 import type {
   AgentCliClient,
@@ -128,32 +129,39 @@ export function createAgentCliRuntime(
         })
       }
 
-      const child = spawn(definition.bin, composed.binArgs, {
-        cwd,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        signal: opts?.signal,
-      })
-
-      // Drain child.stderr — without this the kernel pipe buffer
-      // (~64 KB on macOS / Linux) eventually fills up and blocks the
-      // child mid-write, hanging the entire ACP exchange. Buffer the
-      // last few KB so a downstream error event can attach the tail
-      // for debugging — adapters like claude-agent-acp print useful
-      // context here ("not authenticated", "model gated") that the
-      // JSON-RPC reply would otherwise reduce to "Invalid params".
+      // `proprietary` arms are not guaranteed to own a subprocess at all
+      // (e.g. an in-process SDK integration) — `buildProtocolArm` decides
+      // per-protocol whether `child` is required. Skip the spawn entirely
+      // for `proprietary` so an in-process arm pays no subprocess cost.
+      let child: ChildProcess | undefined
       const stderrBuf: string[] = []
-      const STDERR_KEEP_LINES = 80
-      child.stderr?.setEncoding("utf8")
-      child.stderr?.on("data", (chunk: string) => {
-        for (const line of chunk.split(/\r?\n/)) {
-          if (!line) continue
-          stderrBuf.push(line)
-          if (stderrBuf.length > STDERR_KEEP_LINES) stderrBuf.shift()
-        }
-      })
+      if (definition.protocol !== "proprietary") {
+        child = spawn(definition.bin, composed.binArgs, {
+          cwd,
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+          signal: opts?.signal,
+        })
 
-      const arm = buildProtocolArm(definition, child, cwd, opts?.config?.mode)
+        // Drain child.stderr — without this the kernel pipe buffer
+        // (~64 KB on macOS / Linux) eventually fills up and blocks the
+        // child mid-write, hanging the entire ACP exchange. Buffer the
+        // last few KB so a downstream error event can attach the tail
+        // for debugging — adapters like claude-agent-acp print useful
+        // context here ("not authenticated", "model gated") that the
+        // JSON-RPC reply would otherwise reduce to "Invalid params".
+        const STDERR_KEEP_LINES = 80
+        child.stderr?.setEncoding("utf8")
+        child.stderr?.on("data", (chunk: string) => {
+          for (const line of chunk.split(/\r?\n/)) {
+            if (!line) continue
+            stderrBuf.push(line)
+            if (stderrBuf.length > STDERR_KEEP_LINES) stderrBuf.shift()
+          }
+        })
+      }
+
+      const arm = await buildProtocolArm(definition, child, cwd, opts?.config?.mode)
       arm._stderrTail = () => stderrBuf.join("\n")
 
       const abortController = new AbortController()
@@ -215,7 +223,7 @@ export function createAgentCliRuntime(
 
       return {
         sessionId,
-        pid: child.pid,
+        pid: child?.pid,
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           return promptTurn(arm, turnId, message)
@@ -225,7 +233,7 @@ export function createAgentCliRuntime(
         },
         async close() {
           await arm.close()
-          if (!child.killed) child.kill("SIGTERM")
+          if (child && !child.killed) child.kill("SIGTERM")
         },
       }
     },
@@ -294,14 +302,17 @@ async function* promptTurn(
   }
 }
 
-function buildProtocolArm(
+async function buildProtocolArm(
   def: AgentCliHandle,
-  child: ChildProcess,
+  child: ChildProcess | undefined,
   cwd: string,
   requestedMode?: string,
-): AgentCliClient {
+): Promise<AgentCliClient> {
   switch (def.protocol) {
     case "acp":
+      if (!child) {
+        throw new Error("createAgentCliRuntime: acp protocol requires a spawned subprocess")
+      }
       return createAcpProtocolArm({
         child,
         cwd,
@@ -311,9 +322,15 @@ function buildProtocolArm(
     case "mcp":
       throw new Error("createAgentCliRuntime: mcp protocol arm not yet implemented")
     case "proprietary":
-      throw new Error(
-        "createAgentCliRuntime: proprietary protocol arm not yet implemented",
-      )
+      if (!def.adapter) {
+        // defineAgentCli's validate() already enforces this for manifests
+        // built through it — this guards a hand-built AgentCliHandle that
+        // bypassed that check.
+        throw new Error(
+          "createAgentCliRuntime: proprietary protocol requires manifest.adapter",
+        )
+      }
+      return createProprietaryProtocolArm({ adapter: def.adapter, definition: def })
     case "print":
       // Unreachable: print is handled by the early-return in start() above.
       throw new Error("createAgentCliRuntime: print arm bypasses buildProtocolArm")

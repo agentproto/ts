@@ -320,12 +320,18 @@ function mapClaudeEvent(
  * Mutable per-stream state for the Mastra Code event mapper.
  * Mastra Code sends the FULL accumulated text on each `message_update`,
  * so we track the previous length to emit only the new portion.
+ *
+ * Exported so other Mastra Code protocol arms (e.g. the in-process
+ * `proprietary` arm in `@agentproto/adapter-mastracode-inprocess`) can
+ * reuse the same event mapper instead of reimplementing it — the wire
+ * shape here is `AgentControllerEvent` regardless of whether it arrived
+ * over a JSONL subprocess pipe or as a live in-process object.
  */
-interface MastraMapperState {
+export interface MastraMapperState {
   lastTextLength: number
 }
 
-function createMastraMapperState(): MastraMapperState {
+export function createMastraMapperState(): MastraMapperState {
   return { lastTextLength: 0 }
 }
 
@@ -343,7 +349,15 @@ function extractTextFromBlocks(
     .join("")
 }
 
-function mapMastraEvent(
+/**
+ * Maps a single Mastra Code `AgentControllerEvent` (already a plain
+ * object — JSON-parsed from a subprocess line, or handed over directly
+ * by an in-process arm) to this repo's {@link StreamEvent} taxonomy.
+ * `stderrLines` enriches `error` events for arms that have a real
+ * subprocess to report on; pass `[]` when there is none (e.g. the
+ * in-process arm).
+ */
+export function mapMastraEvent(
   evt: Record<string, unknown>,
   sessionId: string,
   stderrLines: string[],

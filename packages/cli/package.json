@@ -103,6 +103,7 @@
     "@agentproto/adapter-hermes": "workspace:*",
     "@agentproto/adapter-mastra-agent": "workspace:*",
     "@agentproto/adapter-mastracode": "workspace:*",
+    "@agentproto/adapter-mastracode-inprocess": "workspace:*",
     "@agentproto/adapter-openclaw": "workspace:*",
     "@agentproto/adapter-opencode": "workspace:*",
     "@agentproto/agent-runtime": "workspace:*",

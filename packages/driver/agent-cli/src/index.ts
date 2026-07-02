@@ -49,8 +49,19 @@ export {
 } from "./protocol/acp-client.js"
 export {
   createPrintSession,
+  mapMastraEvent,
+  createMastraMapperState,
   type PrintArmOptions,
+  type MastraMapperState,
 } from "./protocol/print-arm.js"
+// Generic proprietary-protocol arm loader — dynamically imports the
+// manifest's `adapter` package. Exported so proprietary adapter packages
+// (and their tests) can drive the same loader `createAgentCliRuntime`
+// uses, without duplicating the load-and-validate logic.
+export {
+  createProprietaryProtocolArm,
+  type ProprietaryProtocolOptions,
+} from "./protocol/proprietary.js"
 export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,
