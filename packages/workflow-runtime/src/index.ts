@@ -25,6 +25,7 @@ export type {
   ToolStep,
   TransformStep,
   MapStep,
+  PipelineStep,
   BranchStep,
   LoopStep,
   ParallelStep,

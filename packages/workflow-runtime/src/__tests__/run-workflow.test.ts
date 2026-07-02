@@ -539,3 +539,150 @@ describe("runWorkflow — maxTotalCostUsd budget ceiling", () => {
     expect(host.spawn).toHaveBeenCalledTimes(1)
   })
 })
+
+// ── PipelineStep tests ──────────────────────────────────────────────
+
+describe("runWorkflow — pipeline step", () => {
+  it("index-ordered results + all stages run", async () => {
+    let seq = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${seq++}`),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-basic",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => ["a", "b", "c"],
+          stages: [
+            (item) => ({
+              kind: "agent",
+              id: `s0`,
+              adapter: "mock",
+              prompt: () => `stage-0-${String(item)}`,
+            }),
+            (item) => ({
+              kind: "agent",
+              id: `s1`,
+              adapter: "mock",
+              prompt: () => `stage-1-${String(item)}`,
+            }),
+          ],
+        },
+      ],
+    }
+    const { bindings } = await runWorkflow({ workflow: wf, agents: host })
+    expect(Array.isArray(bindings.steps.p1)).toBe(true)
+    expect(bindings.steps.p1).toHaveLength(3)
+    // 3 items × 2 stages = 6 prompts
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(6)
+  })
+
+  it("no cross-item barrier — item 1 finishes its chain while item 0 is at stage 1", async () => {
+    let seq = 0
+    const order: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${seq++}`),
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt.includes("item-0-stage-1")) {
+          await new Promise<void>((r) => setTimeout(r, 50))
+        }
+        order.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-no-barrier",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [0, 1],
+          stages: [
+            (item) => ({
+              kind: "agent",
+              id: `s0`,
+              adapter: "mock",
+              prompt: () => `item-${String(item)}-stage-0`,
+            }),
+            (item) => ({
+              kind: "agent",
+              id: `s1`,
+              adapter: "mock",
+              prompt: () => `item-${String(item)}-stage-1`,
+            }),
+          ],
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    // Both of item 1's prompts must appear before item 0's stage-1 prompt
+    const idx01 = order.indexOf("item-0-stage-1")
+    const idx10 = order.indexOf("item-1-stage-0")
+    const idx11 = order.indexOf("item-1-stage-1")
+    expect(idx10).toBeLessThan(idx01)
+    expect(idx11).toBeLessThan(idx01)
+  })
+
+  it("concurrency: 1 serializes item execution", async () => {
+    let seq = 0
+    const order: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${seq++}`),
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt.includes("item-0")) {
+          await new Promise<void>((r) => setTimeout(r, 50))
+        }
+        order.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-ser",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [0, 1],
+          concurrency: 1,
+          stages: [
+            (item) => ({
+              kind: "agent",
+              id: `s`,
+              adapter: "mock",
+              prompt: () => `item-${String(item)}`,
+            }),
+          ],
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    // item 0 completes before item 1 even starts
+    expect(order.indexOf("item-0")).toBeLessThan(order.indexOf("item-1"))
+  })
+
+  it("empty over returns [] without hanging", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-empty",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [],
+          stages: [
+            () => ({
+              kind: "agent",
+              id: `s`,
+              adapter: "mock",
+              prompt: () => "should-not-run",
+            }),
+          ],
+        },
+      ],
+    }
+    const result = await runWorkflow({ workflow: wf, agents: host })
+    expect(result.bindings.steps.p1).toEqual([])
+    expect(host.sendPromptAndWait).not.toHaveBeenCalled()
+  })
+})

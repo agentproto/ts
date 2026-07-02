@@ -69,6 +69,28 @@ export interface MapStep {
   body: (item: unknown, index: number, bindings: Bindings) => RunStep
 }
 
+/**
+ * Run N items through K sequential stage bodies with NO cross-item barrier:
+ * each item flows through the stages as its own chain, independent of siblings.
+ * Only `concurrency` (max item-chains in flight) is shared. The per-item final
+ * output binds under this step's id, ordered by the item's index.
+ */
+export interface PipelineStep {
+  kind: "pipeline"
+  id: string
+  over: Selector<readonly unknown[]>
+  /** Max concurrent item-chains (default: all items at once). */
+  concurrency?: number
+  /** Ordered stage bodies; each item flows through them in order. `prevOutput`
+   *  is the previous stage's output for THIS item (undefined for stage 0). */
+  stages: readonly ((
+    item: unknown,
+    index: number,
+    prevOutput: unknown,
+    bindings: Bindings,
+  ) => RunStep)[]
+}
+
 /** Run one of two branches based on a predicate over the bindings. */
 export interface BranchStep {
   kind: "branch"
@@ -175,6 +197,7 @@ export type RunStep =
   | ToolStep<any, any, any>
   | TransformStep
   | MapStep
+  | PipelineStep
   | BranchStep
   | LoopStep
   | ParallelStep
