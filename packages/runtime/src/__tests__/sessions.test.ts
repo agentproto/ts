@@ -161,6 +161,43 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("projectEvent renders plan updates as a ring-buffer line and ignores usage_update without crashing", async () => {
+    const reg = createSessionsRegistry({ persistPath })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "plan-usage-session",
+      async *send() {
+        yield {
+          kind: "plan",
+          entries: [
+            { content: "Read the file", priority: "high", status: "completed" },
+            { content: "Write the fix", priority: "medium", status: "pending" },
+          ],
+        }
+        yield { kind: "usage_update", size: 100_000, used: 4_200 }
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "test-adapter",
+    })
+
+    await expect(reg.sendPrompt(desc.id, "go")).resolves.toBeUndefined()
+
+    const lines: string[] = []
+    const unsub = reg.attach(desc.id, line => { lines.push(line) })
+    if (unsub) unsub()
+
+    expect(lines.some(l => l.includes("[plan] 1/2") && l.includes("Read the file") && l.includes("Write the fix"))).toBe(true)
+    // usage_update deliberately produces no ring-buffer line (see projectEvent) —
+    // the assertion here is just that the turn completed without throwing.
+    reg.shutdown()
+  })
+
   it("orchestrator WP1: threads persisted mcpServers through the resume path", async () => {
     const mcpServers = [
       { name: "orchestration", transport: "http" as const, ref: "agentproto://gateway" },

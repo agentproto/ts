@@ -126,3 +126,19 @@ export type StreamEvent =
       reason: "completed" | "cancelled" | "max_turns" | "error" | "watchdog-timeout"
     }
   | { kind: "error"; sessionId?: string; error: { code?: number; message: string; data?: unknown } }
+  | {
+      kind: "plan"
+      sessionId: string
+      entries: Array<{
+        content: string
+        priority: "high" | "medium" | "low"
+        status: "pending" | "in_progress" | "completed"
+      }>
+    }
+  | {
+      kind: "usage_update"
+      sessionId: string
+      size: number
+      used: number
+      cost?: { amount: number; currency: string }
+    }

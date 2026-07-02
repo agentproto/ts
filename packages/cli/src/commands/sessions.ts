@@ -63,6 +63,7 @@ Usage:
                                             [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o <file>]
+                             [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
                               [--timeout <ms>] [--json]
@@ -748,11 +749,13 @@ async function runTerminal(args: readonly string[]): Promise<number> {
 }
 
 /**
- * `agentproto sessions export <id-or-name> [--json] [-o <file>]`
+ * `agentproto sessions export <id-or-name> [--json] [-o <file>] [--source auto|native|daemon]`
  *
- * Reads the adapter's native persistence layer (claude-code JSONL / hermes
- * SQLite) via the daemon's GET /sessions/:id/export route and renders a clean
- * transcript. Defaults to markdown on stdout; --json switches to the raw JSON
+ * Renders a clean transcript via the daemon's GET /sessions/:id/export route.
+ * `--source auto` (default) prefers the adapter's native persistence layer
+ * (claude-code JSONL / hermes SQLite) and falls back to agentproto's own
+ * events.jsonl capture when there isn't one; `native`/`daemon` force one.
+ * Defaults to markdown on stdout; --json switches to the raw JSON
  * representation; -o writes to a file instead of stdout.
  */
 async function runExport(args: readonly string[]): Promise<number> {
@@ -765,6 +768,7 @@ async function runExport(args: readonly string[]): Promise<number> {
       output: { type: "string", short: "o" },
       adapter: { type: "string" },
       cwd: { type: "string" },
+      source: { type: "string" },
     },
   })
   const id = positionals[0]
@@ -782,6 +786,12 @@ async function runExport(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  if (values.source && !["auto", "native", "daemon"].includes(values.source)) {
+    process.stderr.write(
+      `agentproto sessions export: invalid --source "${values.source}" (expected auto|native|daemon).\n`,
+    )
+    return 2
+  }
 
   const report = await discoverDaemon()
   if (!report.found) {
@@ -794,6 +804,7 @@ async function runExport(args: readonly string[]): Promise<number> {
   const qs = new URLSearchParams({ format: fmt })
   if (values.adapter) qs.set("adapter", values.adapter)
   if (values.cwd) qs.set("cwd", values.cwd)
+  if (values.source) qs.set("source", values.source)
 
   let result: { content: string; format: string; adapter: string }
   try {

@@ -27,7 +27,8 @@ import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
-import { dirname, resolve } from "node:path"
+import { createTranscriptWriter } from "./transcript-writer.js"
+import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 
@@ -79,6 +80,10 @@ export type PtyFactory = (opts: PtyFactoryOptions) => PtyProcess
 export interface AgentStreamEvent {
   kind: string
   text?: string
+  /** Correlates a "tool-call" with its later "tool-result" (and an
+   *  "agent-prompt" with the permission it's asking about) — see
+   *  @agentproto/acp's `StreamEvent`. */
+  toolCallId?: string
   toolName?: string
   /** Tool-call input, e.g. an ACP `tool_call`'s `arguments` — see @agentproto/acp's `StreamEvent`. */
   arguments?: unknown
@@ -96,6 +101,14 @@ export interface AgentStreamEvent {
    *  future driver reports); `normalizeAgentPromptOptions` narrows it
    *  defensively at the one place it's consumed. */
   options?: unknown
+  /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
+  entries?: Array<{ content: string; priority: string; status: string }>
+  /** "usage_update" context-window size (tokens). */
+  size?: number
+  /** "usage_update" tokens currently in context. */
+  used?: number
+  /** "usage_update" cumulative session cost, when the adapter reports one. */
+  cost?: { amount: number; currency: string }
 }
 
 /**
@@ -671,9 +684,17 @@ export function createSessionsRegistry(opts?: {
   /** When provided, the registry translates internal lifecycle transitions
    *  (turn-end, awaiting-input, exit) into SessionEvents on this bus. */
   sessionEvents?: SessionEventBus
+  /** Override the structured-transcript base directory. Defaults to a
+   *  `sessions` sibling of `persistPath` (`~/.agentproto/sessions` in
+   *  production) — tests that already pin `persistPath` to a tmpdir get
+   *  transcript isolation for free without also having to pass this. */
+  transcriptDir?: string
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
+  const transcriptWriter = createTranscriptWriter({
+    baseDir: opts?.transcriptDir ?? join(dirname(persistPath), "sessions"),
+  })
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents
@@ -966,6 +987,22 @@ export function createSessionsRegistry(opts?: {
         }
         break
       }
+      case "plan": {
+        const entries = evt.entries ?? []
+        const done = entries.filter(e => e.status === "completed").length
+        appendLine(
+          rt,
+          `\x1b[35m[plan] ${done}/${entries.length} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
+          "stdout"
+        )
+        break
+      }
+      // "usage_update" is high-frequency telemetry (context size/cost) —
+      // the ring buffer isn't the right place for it (cost is already
+      // surfaced via rt.desc.costUsd at turn-end); it still lands in
+      // events.jsonl via the transcript writer tap point.
+      case "usage_update":
+        break
     }
   }
 
@@ -1103,6 +1140,7 @@ export function createSessionsRegistry(opts?: {
         `\x1b[2m── ▶ ${typeof message === "string" ? message : JSON.stringify(message)} ──\x1b[0m`,
         "stdout"
       )
+      transcriptWriter.recordPrompt(rt.desc.id, message)
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
       // `{type: "text", text: "..."}` so callers can hand us
@@ -1110,6 +1148,11 @@ export function createSessionsRegistry(opts?: {
       const wrapped =
         typeof message === "string" ? { type: "text", text: message } : message
       for await (const evt of rt.agentSession.send(wrapped)) {
+        // Capture the structured event to events.jsonl BEFORE
+        // projectEvent flattens it into an ANSI ring-buffer line — the
+        // only point downstream of the driver where the original
+        // shape (tool arguments, plan entries, ...) still exists.
+        transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
         if (evt.kind === "turn-end") turnEndReason = evt.reason
       }
@@ -1158,6 +1201,7 @@ export function createSessionsRegistry(opts?: {
           rt.desc.status = "killed"
           rt.desc.endedAt = new Date().toISOString()
           void rt.agentSession?.close().catch(() => undefined)
+          void transcriptWriter.close(rt.desc.id)
         }
 
         // No driver reports a structured "agent-prompt" today (every
@@ -1718,6 +1762,7 @@ export function createSessionsRegistry(opts?: {
       // best-effort — the descriptor flip is what the UI surfaces.
       if (rt.agentSession) {
         void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
       }
       if (rt.pty) {
         try {
@@ -1742,6 +1787,7 @@ export function createSessionsRegistry(opts?: {
       if (!rt) return false
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
+      void transcriptWriter.close(id)
       sessions.delete(id)
       schedulePersist()
       return true
@@ -1801,6 +1847,7 @@ export function createSessionsRegistry(opts?: {
         rt.child?.kill("SIGTERM")
       }
     }
+    void transcriptWriter.closeAll()
     // Sync flush so quick sessions (spawned + ended in less than
     // PERSIST_DEBOUNCE_MS) aren't lost. The debounced async write
     // may have been cancelled by clearTimeout above, but a 200-byte
