@@ -1241,13 +1241,20 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory for the spawned session."),
         model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
       }),
+      z.object({
+        kind: z.literal("prompt-session"),
+        sessionId: z.string().min(1).describe(
+          "Id of an existing, already-running session (from agent_start or agent_sessions_list) to re-prompt.",
+        ),
+        prompt: z.string().min(1).describe("Prompt to send to the existing session."),
+      }),
     ])
 
     server.tool(
       "cron_create",
       "Schedule a recurring or one-shot cron job on the daemon. " +
         "Accepts a 5-field cron expression (minute hour day-of-month month day-of-week, local time) " +
-        "and either a shell command action (allowlisted) or an agent-spawn action. " +
+        "and a command, agent-spawn, or session-reprompt action. " +
         "Returns the created job id and nextRunAt. " +
         "WARNING: this installs a persistent host-level job that survives daemon restarts.",
       {
@@ -1260,7 +1267,9 @@ export function registerOrchestrationTools(
         ),
         label: z.string().optional().describe("Human-readable label for the job."),
         action: cronActionSchema.describe(
-          "What to do when the job fires. 'command' runs an allowlisted shell command; 'agent' spawns an agent session.",
+          "What to do when the job fires. 'command' runs an allowlisted shell command; " +
+          "'agent' spawns a brand-new agent session; 'prompt-session' re-prompts an " +
+          "existing, already-running session in place (for durable check-in jobs).",
         ),
       },
       async input => {

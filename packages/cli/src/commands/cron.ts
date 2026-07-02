@@ -27,7 +27,8 @@ const USAGE = `agentproto cron — manage durable cron jobs on the daemon
 Usage:
   agentproto cron add --schedule <cron-expr>
                       (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <ms>]
-                       | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>])
+                       | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
+                       | --target-session <id> --prompt <text>)
                       [--label <text>] [--once] [--json]
   agentproto cron list [--json]
   agentproto cron remove <id>
@@ -40,9 +41,17 @@ By default jobs recur indefinitely. Pass --once to fire once then deactivate.
 
 Command jobs must be allowlisted in <workspace>/.agentproto/allowed-commands.json.
 
+Three action kinds:
+  --command <cmd>         Run an allowlisted shell command.
+  --adapter <slug>        Spawn a brand-new agent session and prompt it.
+  --target-session <id>   Re-prompt an existing, already-running session in
+                          place — no new session is spawned. Use for a
+                          durable session a cron job periodically checks in on.
+
 Examples:
   agentproto cron add --schedule "* * * * *" --command echo --args hello --once
   agentproto cron add --schedule "0 9 * * 1-5" --adapter claude-code --prompt "daily standup"
+  agentproto cron add --schedule "*/15 * * * *" --target-session sess_abc123 --prompt "status?"
   agentproto cron list --json
   agentproto cron remove <id>
   agentproto cron run    <id>
@@ -85,17 +94,18 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     args: args as string[],
     allowPositionals: true,
     options: {
-      schedule:     { type: "string" },
-      command:      { type: "string" },
-      args:         { type: "string", multiple: true },
-      adapter:      { type: "string" },
-      prompt:       { type: "string" },
-      cwd:          { type: "string" },
-      model:        { type: "string" },
-      "timeout-ms": { type: "string" },
-      label:        { type: "string" },
-      once:         { type: "boolean", default: false },
-      json:         { type: "boolean", default: false },
+      schedule:         { type: "string" },
+      command:          { type: "string" },
+      args:             { type: "string", multiple: true },
+      adapter:          { type: "string" },
+      "target-session": { type: "string" },
+      prompt:           { type: "string" },
+      cwd:              { type: "string" },
+      model:            { type: "string" },
+      "timeout-ms":     { type: "string" },
+      label:            { type: "string" },
+      once:             { type: "boolean", default: false },
+      json:             { type: "boolean", default: false },
     },
     strict: false,
   })
@@ -104,15 +114,28 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto cron add: --schedule is required\n\n" + USAGE)
     return 2
   }
-  if (!values.command && !values.adapter) {
+  const kindsGiven = [values.command, values.adapter, values["target-session"]].filter(Boolean).length
+  if (kindsGiven === 0) {
     process.stderr.write(
-      "agentproto cron add: either --command or --adapter is required\n\n" + USAGE,
+      "agentproto cron add: one of --command, --adapter, or --target-session is required\n\n" + USAGE,
+    )
+    return 2
+  }
+  if (kindsGiven > 1) {
+    process.stderr.write(
+      "agentproto cron add: --command, --adapter, and --target-session are mutually exclusive\n\n" + USAGE,
     )
     return 2
   }
   if (values.adapter && !values.prompt) {
     process.stderr.write(
       "agentproto cron add: --prompt is required when using --adapter\n\n" + USAGE,
+    )
+    return 2
+  }
+  if (values["target-session"] && !values.prompt) {
+    process.stderr.write(
+      "agentproto cron add: --prompt is required when using --target-session\n\n" + USAGE,
     )
     return 2
   }
@@ -127,13 +150,19 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
           ? { timeoutMs: Number.parseInt(values["timeout-ms"] as string, 10) }
           : {}),
       }
-    : {
-        kind: "agent" as const,
-        adapter: values.adapter as string,
-        prompt: values.prompt as string,
-        ...(values.cwd ? { cwd: values.cwd } : {}),
-        ...(values.model ? { model: values.model } : {}),
-      }
+    : values["target-session"]
+      ? {
+          kind: "prompt-session" as const,
+          sessionId: values["target-session"] as string,
+          prompt: values.prompt as string,
+        }
+      : {
+          kind: "agent" as const,
+          adapter: values.adapter as string,
+          prompt: values.prompt as string,
+          ...(values.cwd ? { cwd: values.cwd } : {}),
+          ...(values.model ? { model: values.model } : {}),
+        }
 
   const report = await discoverDaemon()
   if (!report.found) {

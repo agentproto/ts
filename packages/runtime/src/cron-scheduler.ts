@@ -1,6 +1,7 @@
 /**
  * Daemon-native cron scheduler — persisted, survives restarts,
- * fires shell-command or agent-spawn jobs on a 5-field cron schedule.
+ * fires shell-command, agent-spawn, or session-reprompt jobs on a
+ * 5-field cron schedule.
  *
  * Design decisions (see PLAN.md for rationale):
  *
@@ -59,6 +60,11 @@ export type CronAction =
       prompt: string
       cwd?: string
       model?: string
+    }
+  | {
+      kind: "prompt-session"
+      sessionId: string
+      prompt: string
     }
 
 export interface CronJob {
@@ -268,6 +274,28 @@ export function createCronScheduler(opts: {
       }
       const summary = result.stdout.trim() || `exit 0 (${result.durationMs}ms)`
       return { ok: true, summary }
+    }
+
+    if (action.kind === "prompt-session") {
+      const desc = registry.get(action.sessionId)
+      if (!desc) {
+        throw new Error(
+          `cron job '${job.id}': session '${action.sessionId}' not found`,
+        )
+      }
+      if (desc.processAlive === false) {
+        throw new Error(
+          `cron job '${job.id}': session '${action.sessionId}' is not alive`,
+        )
+      }
+      // Same underlying call as the agent_prompt MCP tool / POST
+      // /sessions/:id/prompt — re-prompts the existing session in place
+      // rather than spawning a new one.
+      await registry.sendPrompt(action.sessionId, action.prompt)
+      return {
+        ok: true,
+        summary: `re-prompted session ${action.sessionId}`,
+      }
     }
 
     // action.kind === "agent"
