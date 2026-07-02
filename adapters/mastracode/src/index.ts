@@ -51,7 +51,7 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   protocol: "print",
   print: {
     prompt_flag: "--prompt",
-    output_format: ["--output-format", "stream-json"],
+    output_format: ["--output", "jsonl"],
     pre_prompt: [],
     resume: { flag: "--thread", kind: "value" },
     event_schema: "mastra-jsonl",
@@ -84,7 +84,10 @@ export const mastracode: AgentCliHandle = defineAgentCli({
     sub_agents: true,
     file_io: true,
     multimodal: false,
-    resumable: false,
+    // `mastracode --thread <id>` reattaches to a prior thread with real
+    // persisted memory (confirmed cross-process: separate spawn, same
+    // thread id, correct continuity). `print.resume` below drives this.
+    resumable: true,
     bidirectional: false,
   },
   modes: [
@@ -137,7 +140,7 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   ],
   continuation: {
     default: "none",
-    supported: ["none", "transcript"],
+    supported: ["none", "transcript", "native-resume"],
   },
   metadata: {
     acp: {

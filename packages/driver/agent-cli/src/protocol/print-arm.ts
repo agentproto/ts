@@ -17,7 +17,7 @@
  * The `sessionId` property starts empty (or pre-seeded from
  * `resumeSessionId`) and is updated after the first successful turn
  * from the wire event that carries the session / thread identifier
- * (Claude: `result.session_id`; Mastra: `agent_end.threadId`).
+ * (Claude: `result.session_id`; Mastra: `result.threadId`).
  * Subsequent turns pass the appropriate resume flag so the CLI
  * rehydrates the conversation.
  */
@@ -204,10 +204,14 @@ function captureSessionId(
         return evt.session_id
       return null
     case "mastra-jsonl":
-      // Mastra Code surfaces the thread id on om_status events:
-      // { type: "om_status", threadId: "..." }
+      // Mastra Code writes exactly one authoritative final line per run
+      // regardless of success/failure path: { type: "result", threadId,
+      // text, finishReason, exitCode, ... }. Reading it here (rather than
+      // the incidental om_status event, which only fires when
+      // Observational Memory is enabled) guarantees the thread id is
+      // captured on every turn.
       if (
-        evt.type === "om_status" &&
+        evt.type === "result" &&
         typeof evt.threadId === "string" &&
         evt.threadId
       )
@@ -401,6 +405,29 @@ function mapMastraEvent(
           : "complete"
       const reason = mapMastraFinishReason(rawReason)
       return { kind: "turn-end", sessionId, reason }
+    }
+
+    // ── Final result line ────────────────────────────────────────
+    // Always written last, once, whether or not `agent_end` fired —
+    // pre-flight failures (bad model, unresolvable thread, missing API
+    // key) call straight into this without ever streaming an
+    // `agent_end` or `error` event. `turn-end` already came from
+    // `agent_end` on the success path, so this only needs to surface
+    // an error for the pre-flight-failure path.
+    case "result": {
+      const err = evt.error as Record<string, unknown> | undefined
+      if (!err) return null
+      return {
+        kind: "error",
+        sessionId,
+        error: {
+          message:
+            typeof err.message === "string" ? err.message : "Unknown error",
+          ...(stderrLines.length
+            ? { data: { stderr: stderrLines.join("\n") } }
+            : {}),
+        },
+      }
     }
 
     // ── Errors ─────────────────────────────────────────────────
