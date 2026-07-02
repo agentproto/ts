@@ -126,6 +126,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     return ""
   }
 
+  async readCostUsd(sessionId: string): Promise<number> {
+    const desc = this.registry.get(sessionId)
+    return desc?.costUsd ?? 0
+  }
+
   // ── Internal helpers ──────────────────────────────────────────────────
 
   private waitTurnEnd(sessionId: string): Promise<void> {

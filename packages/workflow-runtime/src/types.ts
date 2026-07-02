@@ -214,6 +214,8 @@ export interface AgentSessionHost {
   onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
   /** Return the session's final assistant message text (for outputSchema validation). */
   readFinalMessage?(sessionId: string): Promise<string>
+  /** Current cumulative cost (USD) of a session, for run-level budgeting. */
+  readCostUsd?(sessionId: string): Promise<number>
 }
 
 export interface RunWorkflowArgs {
@@ -230,6 +232,9 @@ export interface RunWorkflowArgs {
   cwd?: string
   /** Workspace slug for spawned agent sessions. */
   workspaceSlug?: string
+  /** Run-level cost ceiling (USD). Once the summed cost of spawned sessions
+   *  reaches this, the next AgentStep spawn fails with `budget_exceeded`. */
+  maxTotalCostUsd?: number
 }
 
 export interface WorkflowRunResult {

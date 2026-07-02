@@ -35,6 +35,11 @@ export class WorkflowSuspendedError extends Error {
 interface RunState {
   readonly input: unknown
   readonly steps: Record<string, unknown>
+  readonly maxTotalCostUsd?: number
+  /** Last-known cost per session id; summed to get the run's total spend.
+   *  A Map (not a running delta) so a session reused across steps via
+   *  sessionRef is counted once, not double-counted. */
+  readonly costBySession: Map<string, number>
 }
 
 interface RunCtx {
@@ -77,6 +82,12 @@ function lastMatch(re: RegExp, s: string): string | undefined {
   let last: RegExpExecArray | null = null
   while ((m = re.exec(s)) !== null) last = m
   return last ? last[1]?.trim() : undefined
+}
+
+function spentUsd(state: RunState): number {
+  let total = 0
+  for (const c of state.costBySession.values()) total += c
+  return total
 }
 
 function formatZodError(err: ZodError): string {
@@ -210,6 +221,15 @@ async function execStep(
 
     case "agent": {
       if (!ctx.agents) throw new Error(`step '${step.id}': AgentStep requires a host agents implementation`)
+      if (
+        step.adapter &&
+        ctx.state.maxTotalCostUsd !== undefined &&
+        spentUsd(ctx.state) >= ctx.state.maxTotalCostUsd
+      ) {
+        throw new Error(
+          `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
+        )
+      }
       const sessionId = step.adapter
         ? await ctx.agents.spawn(resolveSel(step.adapter, b), { cwd: ctx.cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
         : ctx.agents.resolveByLabel(step.sessionRef!)
@@ -217,6 +237,10 @@ async function execStep(
       await ctx.agents.sendPromptAndWait(sessionId, step.prompt(b))
       if (step.policy && ctx.agents.onAwaitingInput) {
         await ctx.agents.onAwaitingInput(sessionId, step.policy)
+      }
+
+      if (ctx.agents.readCostUsd) {
+        ctx.state.costBySession.set(sessionId, await ctx.agents.readCostUsd(sessionId))
       }
 
       if (!step.outputSchema) return { sessionId }
@@ -264,8 +288,9 @@ async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
   hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug">,
+  maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
-  const state: RunState = { input, steps: {} }
+  const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
   const ctx: RunCtx = { state, ...hooks }
   let lastId: string | undefined
   for (const step of workflow.steps) {
@@ -292,5 +317,5 @@ export async function runWorkflow(
     agents: args.agents,
     cwd: args.cwd,
     workspaceSlug: args.workspaceSlug,
-  })
+  }, args.maxTotalCostUsd)
 }
