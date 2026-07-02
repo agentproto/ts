@@ -27,14 +27,10 @@ import type {
   AgentAdapterResolver,
   AgentAdapterLister,
 } from "./http-server.js"
-import {
-  loadWorkspacesConfig,
-  findWorkspace,
-  getActiveWorkspace,
-} from "./workspaces-config.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
@@ -53,19 +49,6 @@ const mcpPositiveNumber = z.preprocess(
   v => (typeof v === "string" && v.trim() !== "" ? Number(v) : v),
   z.number().positive(),
 )
-
-/** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
- *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
- *  human-friendly text. Used by `agent_output({clean})` and the
- *  `agent_start({wait})` one-shot output. */
-function cleanAgentLines(lines: string[]): string[] {
-  return lines
-    .map(l => l.replace(/\x1b\[[0-9;]*m/g, ""))
-    .filter(l => {
-      const t = l.trim()
-      return !t.startsWith("──") && !/^\[(thought|tool)\b/.test(t)
-    })
-}
 
 export interface RegisterAgentToolsOptions {
   registry: SessionsRegistry
@@ -314,252 +297,41 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      // cwd resolution mirrors the HTTP route: explicit cwd wins,
-      // then workspaceSlug lookup, then active workspace, then a
-      // hard error (the operator probably forgot a step).
-      let cwd = input.cwd
-      let resolvedSlug = input.workspaceSlug ?? "default"
-      if (!cwd) {
-        try {
-          const config = await loadWorkspacesConfig()
-          const ws = input.workspaceSlug
-            ? findWorkspace(config, input.workspaceSlug)
-            : getActiveWorkspace(config)
-          if (ws) {
-            cwd = ws.path
-            resolvedSlug = ws.slug
-          }
-        } catch {
-          // fall through to error below
-        }
-      }
-      if (!cwd) {
+      const result = await spawnAgentSession(
+        {
+          registry,
+          resolveAgentAdapter,
+          buildOrchestratorMcp,
+          daemonMcpUrl,
+          callerScope,
+          webhookNotifier,
+        },
+        input,
+      )
+      if (result.ok) {
+        const body = result.output
+          ? { ...result.descriptor, output: result.output }
+          : result.descriptor
         return {
-          content: [
-            {
-              type: "text",
-              text:
-                "agent_start: no cwd resolvable. Pass `cwd` explicitly, " +
-                "or pass `workspaceSlug` matching `agentproto workspace list`, " +
-                "or set an active workspace via `agentproto workspace use <slug>`.",
-            },
-          ],
-          isError: true,
+          content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
         }
       }
-      const resolved = await resolveAgentAdapter(input.adapter)
-      if (!resolved) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `agent_start: adapter "${input.adapter}" not found. Try \`agentproto install <slug>\` first.`,
-            },
-          ],
-          isError: true,
-        }
-      }
-      // ── Recursion guardrails (WP4) ──────────────────────────────
-      // When this call arrives through the scoped sub-gateway,
-      // `callerScope` is the spawning orchestrator's identity. Enforce
-      // the depth cap and per-parent child quota BEFORE spawning, and
-      // compute the new session's parent attribution. A direct `/mcp`
-      // spawn (no callerScope) is a root: depth 0, no parent, no caps.
-      const childDepth = callerScope ? callerScope.depth + 1 : 0
-      const parentSessionId = callerScope?.ownerSessionId
-      if (callerScope) {
-        if (childDepth > callerScope.maxDepth) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "orchestrator_max_depth_exceeded",
-                    message:
-                      `Spawn rejected: this orchestrator is at depth ${callerScope.depth}; ` +
-                      `a child would be depth ${childDepth}, exceeding the max depth ` +
-                      `${callerScope.maxDepth}. No session was created.`,
-                    depth: callerScope.depth,
-                    childDepth,
-                    maxDepth: callerScope.maxDepth,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-            isError: true,
-          }
-        }
-        // Count this orchestrator's currently-alive children. Killed/
-        // exited children free a slot (the cap bounds concurrent load,
-        // not lifetime spawns).
-        const aliveChildren = parentSessionId
-          ? registry.list().filter(
-              s =>
-                s.parentSessionId === parentSessionId &&
-                (s.status === "running" || s.status === "starting"),
-            ).length
-          : 0
-        if (aliveChildren >= callerScope.maxChildren) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "orchestrator_child_quota_exceeded",
-                    message:
-                      `Spawn rejected: this orchestrator already has ${aliveChildren} ` +
-                      `alive children, at the max of ${callerScope.maxChildren}. ` +
-                      `Kill one before spawning another. No session was created.`,
-                    aliveChildren,
-                    maxChildren: callerScope.maxChildren,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-            isError: true,
-          }
-        }
-      }
-      // Orchestrator role (WP3): when requested, mint a scoped
-      // sub-gateway token and MERGE its `mcpServers` entry with any
-      // caller-provided ones (WP1) — both coexist on the child's
-      // session. The child thus receives the curated orchestration
-      // toolset and can spawn + supervise its own sub-agents. The
-      // token is revoked when the session exits (bindLifecycle below).
-      // When the spawn is itself recursive (callerScope present), the
-      // child's token inherits depth+1 and is bounded by the caller's
-      // tools (non-re-grant — a child can't widen past its parent).
-      let mcpServers = input.mcpServers
-      // hermes (unlike claude-code) has zero built-in tools — without an
-      // explicit `mcpServers`, it silently spawns as a chat-only session
-      // with no error. Default it to the daemon's own gateway so it's no
-      // longer possible to get this wrong by omission. An explicit `[]`
-      // is a deliberate opt-out and must be respected as such, so this
-      // only fires when the caller passed no `mcpServers` at all.
-      if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
-        mcpServers = [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }]
-      }
-      let bindOrchestratorLifecycle:
-        | ((sessionId: string) => () => void)
-        | undefined
-      if (input.orchestrator !== undefined && input.orchestrator !== false) {
-        if (!buildOrchestratorMcp) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  "agent_start: `orchestrator` is not enabled — the daemon " +
-                  "was started without the scoped orchestrator sub-gateway. Wire " +
-                  "`buildOrchestratorMcp` in createGateway (it needs the scope-token " +
-                  "registry + HTTP port + session-event bus).",
-              },
-            ],
-            isError: true,
-          }
-        }
-        const orchestratorOpts =
-          typeof input.orchestrator === "object"
-            ? input.orchestrator
-            : undefined
-        const requestedTools = orchestratorOpts?.tools
-        const injection = buildOrchestratorMcp({
-          ...(requestedTools ? { tools: requestedTools } : {}),
-          ...(callerScope ? { caller: callerScope } : {}),
-          ...(orchestratorOpts?.maxDepth !== undefined
-            ? { maxDepth: orchestratorOpts.maxDepth }
-            : {}),
-          ...(orchestratorOpts?.maxChildren !== undefined
-            ? { maxChildren: orchestratorOpts.maxChildren }
-            : {}),
-        })
-        mcpServers = [...(mcpServers ?? []), injection.entry]
-        bindOrchestratorLifecycle = injection.bindLifecycle
-      }
-      try {
-        // The registry doesn't assign a session id until `spawnAgent`
-        // returns below, but `onActivity` can start firing as soon as
-        // `startSession` connects — this box lets the closure defer
-        // pulsing until the id is known, dropping any pre-spawn activity.
-        let liveSessionId: string | undefined
-        const agentSession = await resolved.startSession({
-          cwd,
-          ...(input.mode ? { mode: input.mode } : {}),
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.effort ? { effort: input.effort } : {}),
-          ...(mcpServers ? { mcpServers } : {}),
-          onActivity: () => {
-            if (liveSessionId) registry.pulseActivity(liveSessionId)
-          },
-        })
-        const desc = registry.spawnAgent({
-          workspaceSlug: resolvedSlug,
-          cwd,
-          agentSession,
-          adapterSlug: input.adapter,
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.wait && input.prompt ? {} : input.prompt ? { initialPrompt: input.prompt } : {}),
-          ...(input.label ? { label: input.label } : {}),
-          ...(mcpServers ? { mcpServers } : {}),
-          // Parent attribution + depth (WP4) — only set for spawns that
-          // arrived via the scoped sub-gateway; root spawns stay
-          // parentless at depth 0.
-          ...(parentSessionId ? { parentSessionId } : {}),
-          depth: childDepth,
-          ...(resolved.commandPreview
-            ? { commandPreview: resolved.commandPreview }
-            : {}),
-          ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
-          ...(resolved.readUsage ? { readUsage: () => resolved.readUsage!(agentSession.sessionId) } : {}),
-        })
-        liveSessionId = desc.id
-        // Bind the scope-token's lifetime to the child session — once
-        // it exits, the token is revoked so it can't outlive its child.
-        bindOrchestratorLifecycle?.(desc.id)
-        // Per-session webhook: register if notifyUrl was supplied and
-        // the notifier is wired. Unregistered on session:exited by the
-        // gateway's session-event bus handler.
-        if (input.notifyUrl && webhookNotifier) {
-          webhookNotifier.register(desc.id, input.notifyUrl)
-        }
-        // wait mode: block until the first turn completes, then return
-        // the descriptor with cleaned output appended.
-        if (input.wait && input.prompt) {
-          await registry.sendPrompt(desc.id, input.prompt)
-          const waitLines: string[] = []
-          const waitUnsub = registry.attach(desc.id, (line: string) => {
-            waitLines.push(line)
-          })
-          if (waitUnsub) waitUnsub()
-          const waitTail = waitLines.slice(-80)
-          const output = cleanAgentLines(waitTail)
-          return {
-            content: [
-              { type: "text", text: JSON.stringify({ ...desc, output }, null, 2) },
-            ],
-          }
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `agent_start: spawn failed — ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            },
-          ],
-          isError: true,
-        }
+      // The two orchestrator guardrail errors have always been reported
+      // as a structured JSON blob (error/message/+details); every other
+      // failure is a plain-text message. Preserved verbatim here so the
+      // MCP tool's output shape doesn't change under this refactor.
+      const text =
+        result.code === "orchestrator_max_depth_exceeded" ||
+        result.code === "orchestrator_child_quota_exceeded"
+          ? JSON.stringify(
+              { error: result.code, message: result.message, ...result.details },
+              null,
+              2,
+            )
+          : result.message
+      return {
+        content: [{ type: "text", text }],
+        isError: true,
       }
     }
   )
