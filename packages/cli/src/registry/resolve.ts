@@ -16,6 +16,7 @@
 import { promises as fs } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { createRequire } from "node:module"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
@@ -74,6 +75,39 @@ export interface AdapterInfo {
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
 
+// Scoped to this module's own location — used only to RESOLVE a
+// specifier to an absolute path (never to `require()` anything), so its
+// CJS-vs-ESM provenance doesn't matter.
+const resolveFromHere = createRequire(import.meta.url)
+
+/**
+ * `protocol: "proprietary"` handles carry an `adapter` field naming an npm
+ * package that `createProprietaryProtocolArm` (inside
+ * `@agentproto/driver-agent-cli`) dynamic-`import()`s a SECOND time, at
+ * session-start, to obtain the `createAgentCliClient` factory. That second
+ * import runs from a module that deliberately does NOT depend on any
+ * specific adapter package (driver-agent-cli is adapter-agnostic by
+ * design) — so a bare specifier that resolves fine from HERE (this module
+ * lists every known adapter as a devDependency, and just proved the
+ * specifier resolves by successfully importing it above) can fail to
+ * resolve there, because Node's ancestor `node_modules` walk for a bare
+ * specifier starts from the IMPORTING module's own location, not this
+ * one's. Rewrite `adapter` to the fully-resolved absolute path before
+ * handing the handle off: dynamic `import()` of an absolute path always
+ * succeeds regardless of which module performs it, so the second import
+ * is no longer sensitive to where in the dependency graph it runs. This
+ * applies uniformly to every `protocol: "proprietary"` handle — not just
+ * this one — since any future proprietary adapter hits the exact same
+ * two-context-resolution gap.
+ */
+function withResolvedProprietaryAdapter(
+  candidate: AgentCliHandle,
+  packageSpecifier: string
+): AgentCliHandle {
+  if (candidate.protocol !== "proprietary" || !candidate.adapter) return candidate
+  return { ...candidate, adapter: resolveFromHere.resolve(packageSpecifier) }
+}
+
 export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
     throw new Error(
@@ -102,7 +136,12 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           typeof parentCandidate === "object" &&
           "name" in parentCandidate
         ) {
-          return { slug, handle: parentCandidate, source: "npm", packageName: parentPkg }
+          return {
+            slug,
+            handle: withResolvedProprietaryAdapter(parentCandidate, parentPkg),
+            source: "npm",
+            packageName: parentPkg,
+          }
         }
       } catch {
         /* parent also missing — fall through to original error */
@@ -128,7 +167,12 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
-  return { slug, handle: candidate, source: "npm", packageName: resolvedPackageName }
+  return {
+    slug,
+    handle: withResolvedProprietaryAdapter(candidate, resolvedPackageName),
+    source: "npm",
+    packageName: resolvedPackageName,
+  }
 }
 
 /**
