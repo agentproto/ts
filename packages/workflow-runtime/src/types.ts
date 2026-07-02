@@ -13,6 +13,7 @@
 
 import type { DriverHandle, ResolverContext } from "@agentproto/driver"
 import type { ToolContext, ToolHandle } from "@agentproto/tool"
+import type { ZodType } from "zod"
 
 /** The run-scoped data every selector reads from. */
 export interface Bindings {
@@ -154,6 +155,10 @@ export interface AgentStep {
     | { awaiting: "auto-allow"; prompt: string }
     | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
     | { awaiting: "fail" }
+  /** Validate the session's final message against this schema; re-prompt on mismatch. */
+  outputSchema?: ZodType<unknown>
+  /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
+  maxRetries?: number
 }
 
 /**
@@ -207,6 +212,8 @@ export interface AgentSessionHost {
   resolveByLabel(stepId: string): string | undefined
   /** Handle an awaiting-input policy for a session. */
   onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
+  /** Return the session's final assistant message text (for outputSchema validation). */
+  readFinalMessage?(sessionId: string): Promise<string>
 }
 
 export interface RunWorkflowArgs {
