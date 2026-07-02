@@ -69,6 +69,10 @@ export {
   type RuntimeConfigInput,
 } from "./schema.js"
 export {
+  toFileBasedMcpServers,
+  type MastracodeMcpServerConfig,
+} from "./mcp-servers.js"
+export {
   composeSpawn,
   resolveContinuationStrategy,
   RuntimeConfigError,

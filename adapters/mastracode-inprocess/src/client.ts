@@ -40,6 +40,7 @@ import { runMC, type MCRun } from "mastracode/headless"
 import {
   mapMastraEvent,
   createMastraMapperState,
+  toFileBasedMcpServers,
   type AgentCliClient,
   type AgentCliConnectOptions,
   type AgentCliHandle,
@@ -108,6 +109,18 @@ interface MastraCodeHandle {
     thread: { getId(): string | null }
     mode: { get(): string; switch(args: { modeId: string }): Promise<void> }
   }
+  /** Present when `bootLocalAgentController` builds an MCP manager (i.e.
+   *  MCP servers were configured). `createMastraCode` does NOT initialize
+   *  it automatically — verified against mastracode's own headless CLI
+   *  entrypoint (`runMCCli` in `dist/chunk-HADE25EX.cjs`), which explicitly
+   *  calls `mcpManager.initInBackground()` itself right after boot, before
+   *  running any prompt. Skipping this step (as an earlier version of this
+   *  arm did) leaves `mcpServers` connected-but-never-initialized: the
+   *  config is accepted, but no MCP tools ever reach the agent's toolset. */
+  mcpManager?: {
+    hasServers(): boolean
+    initInBackground(): Promise<unknown>
+  }
 }
 
 export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient {
@@ -136,7 +149,24 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
         initialState: { homeDir: isolatedHome },
         disablePlugins: true,
         storage: { backend: "libsql", url: `file:${storagePath}`, isRemote: false },
+        ...(opts.mcpServers?.length
+          ? { mcpServers: toFileBasedMcpServers(opts.mcpServers) }
+          : {}),
       })) as unknown as MastraCodeHandle
+
+      // `createMastraCode` builds the MCP manager but does not initialize
+      // it — mirror mastracode's own headless CLI (`runMCCli`), which
+      // explicitly awaits this before running any prompt. Without it, MCP
+      // servers are configured but never connected, so their tools never
+      // reach the agent. Best-effort: a failed MCP connection shouldn't
+      // fail the whole session (matches the CLI's own warn-and-continue).
+      if (handle.mcpManager?.hasServers()) {
+        try {
+          await handle.mcpManager.initInBackground()
+        } catch {
+          // Best-effort — the session still starts on its non-MCP tools.
+        }
+      }
 
       connectEnv = opts.env
       connectModel = opts.model

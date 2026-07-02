@@ -125,6 +125,7 @@ export function createAgentCliRuntime(
           ...(opts?.resumeSessionId
             ? { resumeSessionId: opts.resumeSessionId }
             : {}),
+          ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
           printConfig: definition.print,
         })
       }
