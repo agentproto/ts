@@ -116,7 +116,10 @@ export interface ShellGateSpec {
   command: string
   args?: string[]
   /** Working directory for the gate command. Defaults to the watched
-   *  session's cwd, anchored to the workspace. */
+   *  session's own cwd (trusted as-is — it was already an explicit,
+   *  vetted choice made at `agent_start` time). When given explicitly,
+   *  anchored to that session's cwd (not the daemon's boot workspace)
+   *  so a stray/injected value can't escape it. */
   cwd?: string
   timeoutMs?: number
 }
@@ -424,7 +427,6 @@ export function createCompletionPolicySupervisor(opts: {
   // don't touch ~/.agentproto. Set opts.persist:true in production
   // (createGateway) or supply persistPath to implicitly enable it.
   const persist = opts.persist ?? (opts.persistPath !== undefined)
-  const anchorCwd = makeCwdAnchor(workspace)
   const runs = new Map<string, RunEntry>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   let shutdownDone = false
@@ -710,7 +712,11 @@ export function createCompletionPolicySupervisor(opts: {
         // WP5: commit action. Prepare the plan in the watched session's cwd.
         if (input.then === "commit") {
           const commit = input.commit!
-          const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+          // The watched session's own cwd is already a vetted, explicit
+          // choice made at agent_start time — trust it as-is rather than
+          // re-anchoring it to the daemon's own boot workspace, which
+          // would reject any session spawned in a sibling worktree.
+          const cwd = registry.get(repr)?.cwd ?? workspace
           state.commitPlan = {
             paths: commit.paths,
             message: commit.message,
@@ -844,7 +850,9 @@ export function createCompletionPolicySupervisor(opts: {
         return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
       }
 
-      const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+      // Same trust rationale as the commit-plan cwd above: the watched
+      // session's own cwd was already vetted at spawn time.
+      const cwd = registry.get(repr)?.cwd ?? workspace
       const timeoutMs = spec.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS
 
       // Minimal context: the tail of each watched session's output, if readable.
@@ -957,8 +965,18 @@ export function createCompletionPolicySupervisor(opts: {
           return
         }
 
+        // The watched session's own cwd is already a vetted, explicit
+        // choice made at agent_start time (arbitrary absolute path or a
+        // registered workspaceSlug) — trust it as-is rather than
+        // re-anchoring it to the daemon's own boot workspace, which
+        // would reject every session spawned in a sibling worktree. An
+        // explicit `gate.cwd` override IS untrusted input, though — it
+        // still gets anchored, but against the session's own cwd rather
+        // than the daemon's, so it can't escape that session's tree.
         const sessionCwd = registry.get(repr)?.cwd ?? workspace
-        const resolvedCwd = anchorCwd(input.gate.cwd ?? sessionCwd)
+        const resolvedCwd = input.gate.cwd
+          ? makeCwdAnchor(sessionCwd)(input.gate.cwd)
+          : sessionCwd
 
         const result = await exec({
           command: input.gate.command,
