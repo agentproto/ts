@@ -258,6 +258,7 @@ function fakeHost(
     sendPromptAndWait: AgentSessionHost["sendPromptAndWait"]
     resolveByLabel: AgentSessionHost["resolveByLabel"]
     readFinalMessage: AgentSessionHost["readFinalMessage"]
+    readCostUsd: AgentSessionHost["readCostUsd"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -267,6 +268,7 @@ function fakeHost(
       overrides.resolveByLabel ??
       vi.fn((stepId: string) => `sess_${stepId}`),
     readFinalMessage: overrides.readFinalMessage,
+    readCostUsd: overrides.readCostUsd,
   }
 }
 
@@ -461,5 +463,79 @@ describe("runWorkflow — agent step outputSchema", () => {
     await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
       /outputSchema requires a host with readFinalMessage/,
     )
+  })
+})
+
+// ── AgentStep maxTotalCostUsd tests ──────────────────────────────────
+
+describe("runWorkflow — maxTotalCostUsd budget ceiling", () => {
+  // 3 sequential agent steps, each spawning a fresh session that costs $0.50.
+  const threeStepWorkflow: RuntimeWorkflow = {
+    id: "budget",
+    steps: [
+      { kind: "agent", id: "s0", adapter: "mock", prompt: () => "task-0" },
+      { kind: "agent", id: "s1", adapter: "mock", prompt: () => "task-1" },
+      { kind: "agent", id: "s2", adapter: "mock", prompt: () => "task-2" },
+    ],
+  }
+
+  it("refuses the spawn that would cross the cap", async () => {
+    let seq = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${seq++}`),
+      readCostUsd: vi.fn(async () => 0.5), // each session costs $0.50
+    })
+    // spend after 2 sessions = $1.00 = cap → the 3rd spawn is refused.
+    await expect(
+      runWorkflow({ workflow: threeStepWorkflow, agents: host, maxTotalCostUsd: 1.0 }),
+    ).rejects.toThrow(/budget_exceeded/)
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it("allows all spawns when total stays under the cap", async () => {
+    let seq = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${seq++}`),
+      readCostUsd: vi.fn(async () => 0.5),
+    })
+    const { output } = await runWorkflow({
+      workflow: threeStepWorkflow,
+      agents: host,
+      maxTotalCostUsd: 10.0,
+    })
+    expect(output).toEqual({ sessionId: "sess_2" })
+    expect(host.spawn).toHaveBeenCalledTimes(3)
+  })
+
+  it("cap set but host has no readCostUsd — budgeting is a no-op, never throws", async () => {
+    const host = fakeHost({
+      // readCostUsd intentionally omitted → no cost is ever tallied
+    })
+    const { output } = await runWorkflow({
+      workflow: threeStepWorkflow,
+      agents: host,
+      maxTotalCostUsd: 0.01,
+    })
+    expect(output).toEqual({ sessionId: "sess_fake" })
+    expect(host.spawn).toHaveBeenCalledTimes(3)
+  })
+
+  it("a sessionRef reuse is not counted as a new spend", async () => {
+    const host = fakeHost({
+      spawn: vi.fn(async () => "sess_r"),
+      resolveByLabel: vi.fn(() => "sess_r"),
+      readCostUsd: vi.fn(async () => 0.6), // the single reused session costs $0.60
+    })
+    const wf: RuntimeWorkflow = {
+      id: "budget-reuse",
+      steps: [
+        { kind: "agent", id: "s1", adapter: "mock", prompt: () => "first" },
+        { kind: "agent", id: "s2", sessionRef: "s1", prompt: () => "second" },
+      ],
+    }
+    // Only one session ever spawns; its $0.60 is counted once (not doubled to
+    // $1.20 across the two steps), so the run stays under the $0.80 cap.
+    await runWorkflow({ workflow: wf, agents: host, maxTotalCostUsd: 0.8 })
+    expect(host.spawn).toHaveBeenCalledTimes(1)
   })
 })
