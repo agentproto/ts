@@ -15,6 +15,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { SessionsRegistry } from "./sessions.js"
+import { formatToolCall } from "./tool-presenter.js"
 
 // ── Common model ──────────────────────────────────────────────────────
 
@@ -138,8 +139,13 @@ export function renderMarkdown(
     if (m.toolCalls?.length) {
       out.push("")
       for (const tc of m.toolCalls) {
-        const argsDisplay = trunc(tc.args, 300).replace(/\n/g, " ")
-        out.push(`> 📞 **${tc.name}**(\`${argsDisplay}\`)`)
+        let parsedArgs: unknown
+        try {
+          parsedArgs = JSON.parse(tc.args)
+        } catch {
+          parsedArgs = tc.args
+        }
+        out.push(`> 📞 ${formatToolCall(tc.name, parsedArgs)}`)
       }
     }
 

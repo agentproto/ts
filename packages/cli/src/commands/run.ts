@@ -16,6 +16,7 @@ import {
   type AgentCliRuntimeSession,
   type StreamEvent,
 } from "@agentproto/driver-agent-cli"
+import { formatToolCall, formatToolResult } from "@agentproto/runtime"
 import { resolveAdapter } from "../registry/resolve.js"
 import { readStdinIfPiped } from "../util/stdin.js"
 
@@ -96,12 +97,23 @@ function printPretty(ev: StreamEvent): void {
       process.stderr.write(`\x1b[2m[thought] ${ev.text}\x1b[0m\n`)
       break
     case "tool-call":
-      process.stderr.write(`\x1b[36m[tool] ${ev.toolName}\x1b[0m\n`)
+      process.stderr.write(
+        `\x1b[36m[tool] ${formatToolCall(ev.toolName, ev.arguments)}\x1b[0m\n`
+      )
       break
-    case "tool-result":
-      if (ev.isError)
+    case "tool-result": {
+      const summary = formatToolResult(undefined, ev.result, ev.isError ?? false)
+      if (summary) {
+        process.stderr.write(
+          ev.isError
+            ? `\x1b[31m[tool-error] ${summary}\x1b[0m\n`
+            : `\x1b[2m[tool-result] ${summary}\x1b[0m\n`
+        )
+      } else if (ev.isError) {
         process.stderr.write(`\x1b[31m[tool-error]\x1b[0m\n`)
+      }
       break
+    }
     case "agent-prompt":
       process.stderr.write(`\x1b[33m[agent-prompt: needs input]\x1b[0m\n`)
       break

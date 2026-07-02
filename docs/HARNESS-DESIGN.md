@@ -58,7 +58,7 @@ Adapters live in top-level `adapters/`. The `adapter` field of
 > `OPENROUTER_API_KEY` set. The harness therefore treats `model` as an **opaque
 > string** and exposes overridable preset defaults rather than a hard enum.
 > Confirm the exact OpenRouter slugs against a live `hermes` before relying on
-> them — see WP6. (Reference: `.skills/agentproto-plugin-v0.2.0/skills/light-coder-orchestration/SKILL.md`.)
+> them — see WP6. (Reference: `.skills/agentproto-plugin-v0.3.0/skills/light-coder-orchestration/SKILL.md`.)
 
 ### 1.3 Existing harness-like code
 
