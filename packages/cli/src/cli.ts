@@ -34,6 +34,7 @@ import { runTunnel } from "./commands/tunnel.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
+import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
@@ -77,6 +78,8 @@ Usage:
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
+  agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
+                                           first-run: register MCP + install the skill pack
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
@@ -101,6 +104,7 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
+  agentproto onboard --yes                 # wire all detected agents in one pass
 `
 
 const VERBS = new Set([
@@ -122,6 +126,7 @@ const VERBS = new Set([
   "browser",
   "mcp-bridge",
   "install-mcp",
+  "onboard",
   "cron",
 ])
 
@@ -191,6 +196,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runMcpBridge(rest)
     case "install-mcp":
       return runInstallMcp(rest)
+    case "onboard":
+      return runOnboard(rest)
     case "cron":
       return runCron(rest)
     default:
