@@ -42,6 +42,15 @@ describe("formatToolCall", () => {
     expect(formatToolCall("Bash", { command: "ls -la" })).toBe("Bash ls -la")
   })
 
+  it("does not duplicate a salient arg already baked into a curated title", () => {
+    // claude-agent-acp maps known tools to a curated title ("Read src/foo.ts")
+    // alongside structured arguments (path: "src/foo.ts") — appending the
+    // salient arg again would render "Read src/foo.ts src/foo.ts".
+    expect(formatToolCall("Read src/foo.ts", { path: "src/foo.ts" })).toBe(
+      "Read src/foo.ts"
+    )
+  })
+
   it("falls back to compact JSON when no salient key is present", () => {
     const result = formatToolCall("mystery_tool", { a: 1, b: 2 })
     expect(result).toBe('mystery_tool {"a":1,"b":2}')
