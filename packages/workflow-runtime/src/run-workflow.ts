@@ -153,6 +153,29 @@ async function execStep(
       return results
     }
 
+    case "pipeline": {
+      const items = [...step.over(b)]
+      if (items.length === 0) return []
+      const cap = Math.max(1, step.concurrency ?? items.length)
+      const results: unknown[] = new Array(items.length)
+      let next = 0
+      const runItem = async (idx: number): Promise<void> => {
+        let prev: unknown = undefined
+        for (const stage of step.stages) {
+          prev = await execStep(stage(items[idx], idx, prev, view(state, items[idx], idx)), ctx, items[idx], idx)
+        }
+        results[idx] = prev
+      }
+      const worker = async (): Promise<void> => {
+        while (next < items.length) {
+          const idx = next++
+          await runItem(idx)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()))
+      return results
+    }
+
     case "branch": {
       const chosen = step.cond(b) ? step.then : (step.otherwise ?? [])
       return runSequence(chosen, ctx, item, index)
