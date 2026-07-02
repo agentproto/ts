@@ -33,6 +33,8 @@ import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { RoutineRunner, RoutineStep } from "./routine-runner.js"
+import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -65,7 +67,7 @@ import type {
   SessionEventType,
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
-import type { CompletionPolicySupervisor } from "./supervisor.js"
+import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -294,6 +296,16 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
+  /** Optional — when wired, exposes /routines/* routes for starting and
+   *  managing background routine runs (sequential steps with per-step
+   *  fan-in). Same service the MCP `routine_start/status/cancel/
+   *  escalation_resolve/list` tools call. Without it the routes 404. */
+  routineRunner?: RoutineRunner
+  /** Optional — when wired, exposes /workflows/* routes for starting and
+   *  managing background workflow runs (stage-barrier parallel steps).
+   *  Same service the MCP `workflow_start/status/cancel/
+   *  escalation_resolve/list` tools call. Without it the routes 404. */
+  workflowRunner?: WorkflowRunner
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -1096,13 +1108,42 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // Policy blocking-wait — `GET /policies/:id/wait`. Blocks until
-        // the named policy resolves (done/blocked/awaiting-ack/cancelled)
-        // or timeoutMs elapses. Same state the MCP `policy_status` tool
-        // reports. Read-only GET, no auth gate. Only mounted when a
-        // supervisor is wired.
-        if (opts.supervisor && path.startsWith("/policies/")) {
-          const handled = await handlePoliciesWait(
+        // Routine routes — only registered when the gateway was built with
+        // a RoutineRunner. /routines, /routines/:id, /routines/:id/cancel,
+        // /routines/:id/escalation/resolve. Mirrors the MCP `routine_*`
+        // tools (orchestration-tools.ts) — same RoutineRunner instance.
+        if (
+          opts.routineRunner &&
+          (path === "/routines" || path.startsWith("/routines/"))
+        ) {
+          const handled = await handleRoutines(req, res, path, opts.routineRunner)
+          if (handled) return
+        }
+
+        // Workflow routes — only registered when the gateway was built with
+        // a WorkflowRunner. /workflows, /workflows/:id, /workflows/:id/cancel,
+        // /workflows/:id/escalation/resolve. Mirrors the MCP `workflow_*`
+        // tools (orchestration-tools.ts) — same WorkflowRunner instance.
+        if (
+          opts.workflowRunner &&
+          (path === "/workflows" || path.startsWith("/workflows/"))
+        ) {
+          const handled = await handleWorkflows(req, res, path, opts.workflowRunner)
+          if (handled) return
+        }
+
+        // Policy routes — POST /policies (attach), GET /policies (list),
+        // POST /policies/:id/cancel, POST /policies/:id/ack, and the
+        // blocking long-poll `GET /policies/:id/wait` (resolves when the
+        // policy leaves watching/gating → done/blocked/awaiting-ack/
+        // cancelled, or timeoutMs elapses). Mirrors the MCP `policy_attach/
+        // status/cancel/ack/list` tools — same CompletionPolicySupervisor
+        // instance. Only mounted when a supervisor is wired.
+        if (
+          opts.supervisor &&
+          (path === "/policies" || path.startsWith("/policies/"))
+        ) {
+          const handled = await handlePolicies(
             req,
             res,
             path,
@@ -2162,22 +2203,274 @@ async function handleTunnels(
 }
 
 /**
- * `GET /policies/:id/wait` — block until the named completion policy
- * transitions out of `watching` / `queued` / `gating` / `nudging` (i.e.
- * reaches done / blocked / awaiting-ack / cancelled), then return the
- * full PolicyRunState. Same shape the MCP `policy_status` tool returns.
- * Returns `{timedOut:true}` when `timeoutMs` elapses with no resolution.
+ * /routines routes — start, list, poll, cancel, and resolve escalations
+ * for background routine runs (a flat sequential list of steps with
+ * per-step `waitFor` fan-in). Returns `true` when it handled the
+ * request so the dispatcher skips the 404 path.
  *
- * Query params:
- *   timeoutMs=<n>  max wait in ms (default 25000, cap 55000 to stay
- *                  under typical HTTP client/proxy timeouts; the CLI
- *                  chains multiple calls for longer budgets).
+ *   POST /routines                          → start a run (RoutineRun)
+ *   GET  /routines                          → { runs: RoutineRun[] }
+ *   GET  /routines/:id                      → RoutineRun
+ *   POST /routines/:id/cancel               → { runId, status }
+ *   POST /routines/:id/escalation/resolve   → { runId, ok }
  *
- * Only mounted when a supervisor is wired (the dispatcher guards on
- * `opts.supervisor`). Read-only GET — no auth gate, same policy as the
- * other /sessions read routes.
+ * Thin adapters over the same RoutineRunner the MCP `routine_start/
+ * status/cancel/escalation_resolve/list` tools call — no duplicated
+ * orchestration logic between the two transports.
  */
-async function handlePoliciesWait(
+async function handleRoutines(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  routineRunner: RoutineRunner,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/routines" && req.method === "GET") {
+    json(200, { runs: routineRunner.list() })
+    return true
+  }
+
+  if (path === "/routines" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const routineId = typeof b.routineId === "string" ? b.routineId : ""
+    if (!routineId) {
+      json(400, { error: "missing_routineId" })
+      return true
+    }
+    if (!Array.isArray(b.steps) || b.steps.length === 0) {
+      json(400, {
+        error: "missing_steps",
+        message: "body must include a non-empty `steps` array",
+      })
+      return true
+    }
+    try {
+      const run = await routineRunner.start({
+        routineId,
+        steps: b.steps as RoutineStep[],
+        ...(typeof b.workspaceSlug === "string" ? { workspaceSlug: b.workspaceSlug } : {}),
+        ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+        ...(typeof b.notifyUrl === "string" ? { notifyUrl: b.notifyUrl } : {}),
+      })
+      json(201, run)
+    } catch (err) {
+      json(400, {
+        error: "start_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /routines/:id/cancel
+  const cancelMatch = path.match(/^\/routines\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const runId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!routineRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    routineRunner.cancel(runId)
+    const run = routineRunner.status(runId)
+    json(200, { runId, status: run?.status ?? "not_found" })
+    return true
+  }
+
+  // /routines/:id/escalation/resolve
+  const resolveMatch = path.match(/^\/routines\/([^/]+)\/escalation\/resolve$/)
+  if (resolveMatch && req.method === "POST") {
+    const runId = decodeURIComponent(resolveMatch[1] ?? "")
+    if (!routineRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const stepIndex = typeof b.stepIndex === "number" ? b.stepIndex : undefined
+    const response = typeof b.response === "string" ? b.response : undefined
+    if (stepIndex === undefined || response === undefined) {
+      json(400, {
+        error: "invalid_body",
+        message: "body must include `stepIndex` (number) and `response` (string)",
+      })
+      return true
+    }
+    routineRunner.resolve(runId, stepIndex, response)
+    json(200, { runId, ok: true })
+    return true
+  }
+
+  // /routines/:id
+  const idMatch = path.match(/^\/routines\/([^/]+)$/)
+  if (idMatch && req.method === "GET") {
+    const runId = decodeURIComponent(idMatch[1] ?? "")
+    const run = routineRunner.status(runId)
+    if (!run) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    json(200, run)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /workflows routes — start, list, poll, cancel, and resolve escalations
+ * for background workflow runs (ordered stages of steps that run
+ * concurrently within a stage, gated by a barrier). Returns `true` when
+ * it handled the request so the dispatcher skips the 404 path.
+ *
+ *   POST /workflows                          → start a run (WorkflowRun)
+ *   GET  /workflows                          → { runs: WorkflowRun[] }
+ *   GET  /workflows/:id                      → WorkflowRun
+ *   POST /workflows/:id/cancel               → { runId, status }
+ *   POST /workflows/:id/escalation/resolve   → { runId, ok }
+ *
+ * Thin adapters over the same WorkflowRunner the MCP `workflow_start/
+ * status/cancel/escalation_resolve/list` tools call — no duplicated
+ * orchestration logic between the two transports.
+ */
+async function handleWorkflows(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  workflowRunner: WorkflowRunner,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/workflows" && req.method === "GET") {
+    json(200, { runs: workflowRunner.list() })
+    return true
+  }
+
+  if (path === "/workflows" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const workflowId = typeof b.workflowId === "string" ? b.workflowId : ""
+    if (!workflowId) {
+      json(400, { error: "missing_workflowId" })
+      return true
+    }
+    if (!Array.isArray(b.stages) || b.stages.length === 0) {
+      json(400, {
+        error: "missing_stages",
+        message: "body must include a non-empty `stages` array",
+      })
+      return true
+    }
+    try {
+      const run = await workflowRunner.start({
+        workflowId,
+        stages: b.stages as WorkflowStage[],
+        ...(typeof b.workspaceSlug === "string" ? { workspaceSlug: b.workspaceSlug } : {}),
+        ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+        ...(typeof b.notifyUrl === "string" ? { notifyUrl: b.notifyUrl } : {}),
+      })
+      json(201, run)
+    } catch (err) {
+      json(400, {
+        error: "start_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /workflows/:id/cancel
+  const cancelMatch = path.match(/^\/workflows\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const runId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!workflowRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    workflowRunner.cancel(runId)
+    const run = workflowRunner.status(runId)
+    json(200, { runId, status: run?.status ?? "not_found" })
+    return true
+  }
+
+  // /workflows/:id/escalation/resolve
+  const resolveMatch = path.match(/^\/workflows\/([^/]+)\/escalation\/resolve$/)
+  if (resolveMatch && req.method === "POST") {
+    const runId = decodeURIComponent(resolveMatch[1] ?? "")
+    if (!workflowRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const stageIndex = typeof b.stageIndex === "number" ? b.stageIndex : undefined
+    const stepIndex = typeof b.stepIndex === "number" ? b.stepIndex : undefined
+    const response = typeof b.response === "string" ? b.response : undefined
+    if (stageIndex === undefined || stepIndex === undefined || response === undefined) {
+      json(400, {
+        error: "invalid_body",
+        message:
+          "body must include `stageIndex` (number), `stepIndex` (number), and `response` (string)",
+      })
+      return true
+    }
+    workflowRunner.resolve(runId, stageIndex, stepIndex, response)
+    json(200, { runId, ok: true })
+    return true
+  }
+
+  // /workflows/:id
+  const idMatch = path.match(/^\/workflows\/([^/]+)$/)
+  if (idMatch && req.method === "GET") {
+    const runId = decodeURIComponent(idMatch[1] ?? "")
+    const run = workflowRunner.status(runId)
+    if (!run) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    json(200, run)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /policies routes — attach, list, cancel, ack, and blocking-wait for
+ * completion policies. Returns `true` when it handled the request so
+ * the dispatcher skips the 404 path.
+ *
+ *   POST /policies              → attach a policy (PolicyRunState)
+ *   GET  /policies              → { policies: PolicyRunState[] }
+ *   POST /policies/:id/cancel   → { policyId, status }
+ *   POST /policies/:id/ack      → { policyId, status, sha?, error? }
+ *   GET  /policies/:id/wait     → block until the policy resolves, then
+ *                                 return the full PolicyRunState. Same
+ *                                 shape the MCP `policy_status` tool
+ *                                 returns. `{timedOut:true}` when
+ *                                 `timeoutMs` elapses with no resolution.
+ *
+ * Thin adapters over the same CompletionPolicySupervisor the MCP
+ * `policy_attach/status/cancel/ack/list` tools call — no duplicated
+ * policy-state-machine logic between the two transports. Only mounted
+ * when a supervisor is wired (the dispatcher guards on `opts.supervisor`).
+ */
+async function handlePolicies(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
@@ -2189,9 +2482,110 @@ async function handlePoliciesWait(
     res.end(JSON.stringify(body))
   }
 
-  const match = path.match(/^\/policies\/([^/]+)\/wait$/)
-  if (!match) return false
-  const policyId = decodeURIComponent(match[1] ?? "")
+  if (path === "/policies" && req.method === "GET") {
+    json(200, { policies: supervisor.list() })
+    return true
+  }
+
+  if (path === "/policies" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined
+    const sessionIds = Array.isArray(b.sessionIds)
+      ? b.sessionIds.filter((s): s is string => typeof s === "string")
+      : undefined
+    if (!sessionId && !(sessionIds && sessionIds.length > 0)) {
+      json(400, {
+        error: "missing_sessions",
+        message: "body must include `sessionId` or a non-empty `sessionIds`",
+      })
+      return true
+    }
+    const then = b.then as "emit" | "commit"
+    if (then !== "emit" && then !== "commit") {
+      json(400, { error: "invalid_then", message: 'body.then must be "emit" or "commit"' })
+      return true
+    }
+    if (then === "commit" && !b.commit) {
+      json(400, {
+        error: "missing_commit",
+        message: 'then:"commit" requires a `commit` spec',
+      })
+      return true
+    }
+    try {
+      const state = supervisor.attach({
+        ...(sessionId ? { sessionId } : {}),
+        ...(sessionIds && sessionIds.length > 0 ? { sessionIds } : {}),
+        ...(b.gate ? { gate: b.gate as AttachPolicyInput["gate"] } : {}),
+        then,
+        ...(b.commit ? { commit: b.commit as AttachPolicyInput["commit"] } : {}),
+        ...(b.onFail ? { onFail: b.onFail as AttachPolicyInput["onFail"] } : {}),
+        ...(b.next ? { next: b.next as AttachPolicyInput["next"] } : {}),
+      })
+      json(201, state)
+    } catch (err) {
+      json(400, {
+        error: "attach_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /policies/:id/cancel
+  const cancelMatch = path.match(/^\/policies\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const policyId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!supervisor.getStatus(policyId)) {
+      json(404, { error: "policy_not_found", policyId })
+      return true
+    }
+    supervisor.cancel(policyId)
+    const state = supervisor.getStatus(policyId)
+    json(200, { policyId, status: state?.status ?? "not_found" })
+    return true
+  }
+
+  // /policies/:id/ack
+  const ackMatch = path.match(/^\/policies\/([^/]+)\/ack$/)
+  if (ackMatch && req.method === "POST") {
+    const policyId = decodeURIComponent(ackMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const approve = typeof b.approve === "boolean" ? b.approve : undefined
+    if (approve === undefined) {
+      json(400, { error: "missing_approve", message: "body must include boolean `approve`" })
+      return true
+    }
+    const state = await supervisor.ack(policyId, approve)
+    if (!state) {
+      json(404, { error: "policy_not_found", policyId })
+      return true
+    }
+    json(200, {
+      policyId: state.policyId,
+      status: state.status,
+      ...(state.commitSha ? { sha: state.commitSha } : {}),
+      ...(state.error ? { error: state.error } : {}),
+    })
+    return true
+  }
+
+  // /policies/:id/wait — block until the named completion policy
+  // transitions out of watching/queued/gating/nudging (i.e. reaches
+  // done/blocked/awaiting-ack/cancelled), then return the full
+  // PolicyRunState. Query params: timeoutMs=<n> (default 25000, cap
+  // 55000 to stay under typical HTTP client/proxy timeouts; the CLI
+  // chains multiple calls for longer budgets). Read-only GET — no auth
+  // gate, same policy as the other /sessions read routes.
+  const waitMatch = path.match(/^\/policies\/([^/]+)\/wait$/)
+  if (!waitMatch) return false
+  const policyId = decodeURIComponent(waitMatch[1] ?? "")
   if (!policyId) return false
   if (req.method !== "GET") {
     json(405, { error: "method_not_allowed", message: "GET only" })
