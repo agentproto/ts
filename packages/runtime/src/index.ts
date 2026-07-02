@@ -59,6 +59,7 @@ import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
+import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
@@ -113,6 +114,7 @@ export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
+export { createFileStepCache } from "./workflow-step-cache.js"
 export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,

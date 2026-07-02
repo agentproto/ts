@@ -35,6 +35,8 @@ export type {
   SubworkflowStep,
   AgentStep,
   AgentSessionHost,
+  StepCache,
+  StepCacheEntry,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,

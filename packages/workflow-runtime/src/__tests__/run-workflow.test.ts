@@ -13,6 +13,7 @@ import {
   runWorkflow,
   WorkflowSuspendedError,
   type RuntimeWorkflow,
+  type StepCache,
 } from "../index.js"
 
 // double(n) and addTen(n) — two trivial tools to thread between.
@@ -684,5 +685,171 @@ describe("runWorkflow — pipeline step", () => {
     const result = await runWorkflow({ workflow: wf, agents: host })
     expect(result.bindings.steps.p1).toEqual([])
     expect(host.sendPromptAndWait).not.toHaveBeenCalled()
+  })
+})
+
+// ── Step cache tests ─────────────────────────────────────────────────
+
+function memCache(): { cache: StepCache; store: Map<string, { output: unknown; resolvedInputHash: string }> } {
+  const store = new Map<string, { output: unknown; resolvedInputHash: string }>()
+  const cache: StepCache = {
+    get: async (k) => store.get(k),
+    set: async (k, e) => { store.set(k, e) },
+  }
+  return { cache, store }
+}
+
+describe("step cache", () => {
+  it("agent cacheable — hit skips spawn, reuses output", async () => {
+    const spawns: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        const id = `sess_${spawns.length}`
+        spawns.push(id)
+        return id
+      }),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-agent",
+      steps: [
+        {
+          kind: "agent",
+          id: "research",
+          adapter: "claude",
+          cacheable: true,
+          prompt: () => "do research",
+          outputSchema: z.object({ ok: z.boolean() }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    const r1 = await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
+    const r2 = await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
+    expect(spawns.length).toBe(1)
+    expect(r2.output).toEqual(r1.output)
+    expect(r1.output).toMatchObject({ output: { ok: true } })
+  })
+
+  it("input changed — hash miss re-executes", async () => {
+    const spawns: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        const id = `sess_${spawns.length}`
+        spawns.push(id)
+        return id
+      }),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-input-changed",
+      steps: [
+        {
+          kind: "agent",
+          id: "research",
+          adapter: "claude",
+          cacheable: true,
+          prompt: (b) => `do ${String(b.input)}`,
+          outputSchema: z.object({ ok: z.boolean() }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "alpha" })
+    // same input → cache hit
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "alpha" })
+    // different input → cache miss
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1", input: "beta" })
+    expect(spawns.length).toBe(2)
+  })
+
+  it("no cacheKey ⇒ no caching", async () => {
+    const spawns: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        spawns.push(`sess_${spawns.length}`)
+        return `sess_${spawns.length - 1}`
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-no-key",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "claude",
+          cacheable: true,
+          prompt: () => "hello",
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await runWorkflow({ workflow: wf, agents: host, cache })
+    await runWorkflow({ workflow: wf, agents: host, cache })
+    expect(spawns.length).toBe(2)
+  })
+
+  it("cacheable:false ⇒ no caching", async () => {
+    const spawns: string[] = []
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        spawns.push(`sess_${spawns.length}`)
+        return `sess_${spawns.length - 1}`
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-not-cacheable",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "claude",
+          cacheable: false,
+          prompt: () => "hello",
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-1" })
+    expect(spawns.length).toBe(2)
+  })
+
+  it("tool cacheable — hit skips dispatch", async () => {
+    let toolRuns = 0
+    const countingProvider = defineDriver({
+      id: "counting",
+      name: "Counting",
+      description: "Counts runs",
+      kind: "builtin",
+      implements: [
+        { tool: "demo.double", version: "0.1.0" },
+      ],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          toolRuns++
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    const countingCandidates = [countingProvider]
+    const wf: RuntimeWorkflow = {
+      id: "cache-tool",
+      steps: [
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates: countingCandidates,
+          cacheable: true,
+          input: () => ({ n: 5 }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    const r1 = await runWorkflow({ workflow: wf, cache, cacheKey: "run-tool" })
+    const r2 = await runWorkflow({ workflow: wf, cache, cacheKey: "run-tool" })
+    expect(toolRuns).toBe(1)
+    expect(r2.output).toEqual(r1.output)
   })
 })

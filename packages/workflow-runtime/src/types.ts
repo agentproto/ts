@@ -46,6 +46,9 @@ export interface ToolStep<
   context?: Selector<TContext>
   resolverContext?: ResolverContext
   secrets?: Record<string, string>
+  /** Cache this step's output under the run's cacheKey; only its `input` is hashed
+   *  (not `context`/secrets). Default false. */
+  cacheable?: boolean
 }
 
 /** A pure in-run computation (combine / filter / shape) — no tool dispatch. */
@@ -181,6 +184,10 @@ export interface AgentStep {
   outputSchema?: ZodType<unknown>
   /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
   maxRetries?: number
+  /** Cache this step's output under the run's cacheKey; the resolved prompt +
+   *  adapter + sessionRef are hashed. Default false — most agent steps have
+   *  side effects. */
+  cacheable?: boolean
 }
 
 /**
@@ -241,6 +248,20 @@ export interface AgentSessionHost {
   readCostUsd?(sessionId: string): Promise<number>
 }
 
+/** One journal entry: a cached step output plus the hash of the inputs that produced it. */
+export interface StepCacheEntry {
+  output: unknown
+  resolvedInputHash: string
+}
+
+/** Opt-in journal for cacheable steps. Host-injected; file-backed in the runtime. */
+export interface StepCache {
+  /** Look up a step's journal entry by its namespaced key. */
+  get(stepCacheKey: string): Promise<StepCacheEntry | undefined>
+  /** Write/overwrite a step's journal entry. */
+  set(stepCacheKey: string, entry: StepCacheEntry): Promise<void>
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -258,6 +279,11 @@ export interface RunWorkflowArgs {
   /** Run-level cost ceiling (USD). Once the summed cost of spawned sessions
    *  reaches this, the next AgentStep spawn fails with `budget_exceeded`. */
   maxTotalCostUsd?: number
+  /** Opt-in journal cache for cacheable steps. Undefined ⇒ caching disabled. */
+  cache?: StepCache
+  /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
+   *  Both `cache` and `cacheKey` must be set for any caching to happen. */
+  cacheKey?: string
 }
 
 export interface WorkflowRunResult {
