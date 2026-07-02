@@ -25,7 +25,7 @@ This adapter wraps Mastra Code as an AIP-45 agent CLI using the currently
 documented headless command surface:
 
 ```sh
-npx -y mastracode --prompt "Fix the bug" --output-format stream-json
+npx -y mastracode --prompt "Fix the bug" --output jsonl
 ```
 
 As of 2026-06-30, `mastracode acp --help` prints the top-level CLI help rather
