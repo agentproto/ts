@@ -54,8 +54,38 @@ describe("createTranscriptWriter", () => {
 
     const textLines = readLines("sess_1").filter(l => l.kind === "text-delta")
     expect(textLines).toHaveLength(2)
-    expect(textLines[0]?.text).toBe("Hello world")
-    expect(textLines[1]?.text).toBe("second line")
+    expect(textLines[0]?.text).toBe("Hello world\n")
+    expect(textLines[1]?.text).toBe("second line\n")
+  })
+
+  it("represents a blank (paragraph-break) line as a bare newline, not an empty string", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordEvent("sess_1", { kind: "text-delta", text: "para one\n\npara two\n" })
+    await writer.close("sess_1")
+
+    const textLines = readLines("sess_1").filter(l => l.kind === "text-delta")
+    expect(textLines.map(l => l.text)).toEqual(["para one\n", "\n", "para two\n"])
+  })
+
+  it("reproduces multi-line markdown (incl. blank lines) byte-for-byte when the emitted deltas are concatenated", async () => {
+    const original =
+      "## Heading\n\n- item one\n- item two\n\nSome prose that keeps going" +
+      " across multiple word-sized chunks.\n\nFinal line, no trailing newline"
+
+    // Feed it through in small, arbitrarily-sized chunks — mirrors a
+    // real CLI streaming word-by-word rather than one flush per line.
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    const CHUNK = 7
+    for (let i = 0; i < original.length; i += CHUNK) {
+      writer.recordEvent("sess_1", { kind: "text-delta", text: original.slice(i, i + CHUNK) })
+    }
+    await writer.close("sess_1")
+
+    const reconstructed = readLines("sess_1")
+      .filter(l => l.kind === "text-delta")
+      .map(l => l.text as string)
+      .join("")
+    expect(reconstructed).toBe(original)
   })
 
   it("coalesces thought chunks independently of text-delta", async () => {
@@ -66,7 +96,7 @@ describe("createTranscriptWriter", () => {
 
     const lines = readLines("sess_1")
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatchObject({ kind: "thought", text: "thinking a bit more" })
+    expect(lines[0]).toMatchObject({ kind: "thought", text: "thinking a bit more\n" })
   })
 
   it("flushes a partial (no-newline) text buffer before a tool-call so on-disk order matches emission order", async () => {
