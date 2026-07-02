@@ -77,7 +77,11 @@ vi.mock("@agentproto/runtime/config", async importOriginal => {
   }
 })
 
-import { runInstallMcp } from "../commands/install-mcp.js"
+import {
+  runInstallMcp,
+  upsertHermesMcpServer,
+  removeHermesMcpServer,
+} from "../commands/install-mcp.js"
 
 const helpers = await import("../commands/_daemon-helpers.js")
 const discoverDaemon = vi.mocked(helpers.discoverDaemon)
@@ -884,5 +888,76 @@ describe("YAML key removal via --uninstall", () => {
     )![1] as string
     expect(written).not.toContain("mcp_servers:")
     expect(written).toContain("other: val")
+  })
+})
+
+// ── hermes config.yaml surgery (pure helpers) ────────────────────────────────
+
+describe("upsertHermesMcpServer / removeHermesMcpServer (unit)", () => {
+  // A hermes config.yaml with EXISTING mcp servers that must survive edits.
+  const realish = `agent:
+  max_turns: 60
+mcp_servers:
+  bureau:
+    url: http://localhost:8830/mcp
+    enabled: true
+  guilde:
+    url: https://api.guilde.work/guilde/mcp
+    enabled: true
+other_key:
+  foo: bar
+`
+  const url = "http://127.0.0.1:18790/mcp"
+
+  it("inserts agentproto as the first child, preserving every sibling", () => {
+    const out = upsertHermesMcpServer(realish, "agentproto", url)
+    expect(out).toContain("  bureau:")
+    expect(out).toContain("http://localhost:8830/mcp")
+    expect(out).toContain("  guilde:")
+    expect(out).toContain("https://api.guilde.work/guilde/mcp")
+    expect(out).toContain("other_key:")
+    expect(out).toMatch(
+      /mcp_servers:\n {2}agentproto:\n {4}url: http:\/\/127\.0\.0\.1:18790\/mcp\n {4}enabled: true\n {2}bureau:/,
+    )
+  })
+
+  it("is idempotent — a second upsert with the same url is a no-op", () => {
+    const once = upsertHermesMcpServer(realish, "agentproto", url)
+    expect(upsertHermesMcpServer(once, "agentproto", url)).toBe(once)
+  })
+
+  it("updates the url in place, keeping siblings intact", () => {
+    const once = upsertHermesMcpServer(realish, "agentproto", url)
+    const updated = upsertHermesMcpServer(once, "agentproto", "http://127.0.0.1:9999/mcp")
+    expect(updated).toContain("http://127.0.0.1:9999/mcp")
+    expect(updated).not.toContain("18790")
+    expect(updated).toContain("  bureau:")
+    expect(updated).toContain("  guilde:")
+  })
+
+  it("converts inline-empty `mcp_servers: {}` to block form", () => {
+    const out = upsertHermesMcpServer("foo: 1\nmcp_servers: {}\nbar: 2\n", "agentproto", url)
+    expect(out).toMatch(/mcp_servers:\n {2}agentproto:/)
+    expect(out).toContain("bar: 2")
+  })
+
+  it("appends a fresh block when mcp_servers is absent", () => {
+    const out = upsertHermesMcpServer("foo: 1\nbar: 2\n", "agentproto", url)
+    expect(out).toMatch(/mcp_servers:\n {2}agentproto:/)
+    expect(out).toContain("foo: 1")
+  })
+
+  it("removes ONLY the agentproto sub-block, keeping siblings", () => {
+    const once = upsertHermesMcpServer(realish, "agentproto", url)
+    const removed = removeHermesMcpServer(once, "agentproto")
+    expect(removed).not.toContain("agentproto")
+    expect(removed).toContain("  bureau:")
+    expect(removed).toContain("http://localhost:8830/mcp")
+    expect(removed).toContain("  guilde:")
+    expect(removed).toContain("other_key:")
+  })
+
+  it("remove is a no-op when agentproto is absent", () => {
+    expect(removeHermesMcpServer(realish, "agentproto")).toBe(realish)
   })
 })
