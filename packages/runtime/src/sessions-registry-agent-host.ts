@@ -11,12 +11,7 @@
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
-import type { AgentSessionHost } from "@agentproto/workflow-runtime"
-
-type AgentPolicy =
-  | { awaiting: "auto-allow"; prompt: string }
-  | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
-  | { awaiting: "fail" }
+import type { AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
@@ -68,7 +63,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
 
   async onAwaitingInput(
     sessionId: string,
-    policy: AgentPolicy,
+    policy: NonNullable<AgentStep["policy"]>,
   ): Promise<void> {
     const desc = this.registry.get(sessionId)
     if (!desc?.awaitingInput) return
@@ -100,11 +95,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
   // ── Internal helpers ──────────────────────────────────────────────────
 
   private waitTurnEnd(sessionId: string): Promise<void> {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       const unsubs: Array<() => void> = []
       const done = (): void => {
         for (const u of unsubs) u()
         resolve()
+      }
+      const fail = (reason: string): void => {
+        for (const u of unsubs) u()
+        reject(new Error(reason))
       }
       unsubs.push(
         this.sessionEvents.on("session:turn-end", (ev) => {
@@ -122,12 +121,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         }),
       )
       const desc = this.registry.get(sessionId)
-      const isTerminal =
-        desc?.status === "exited" ||
-        desc?.status === "killed" ||
-        desc?.status === "error" ||
-        desc?.awaitingInput === true
-      if (isTerminal) done()
+      if (desc?.status === "exited" || desc?.awaitingInput === true) {
+        done()
+      } else if (desc?.status === "killed" || desc?.status === "error") {
+        fail(`session ${sessionId} ended with status '${desc.status}'`)
+      }
     })
   }
 }
