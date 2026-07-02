@@ -95,6 +95,7 @@ export type {
   RegisterBrowserInput,
   RegisterSessionInput,
 } from "./sessions.js"
+export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
