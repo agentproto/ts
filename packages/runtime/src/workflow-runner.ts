@@ -107,6 +107,14 @@ interface RunState {
   abort: AbortController
   /** Original stages — retained so sessionRef lookups can resolve step labels. */
   stages: WorkflowStage[]
+  /**
+   * Reserved for a future durable suspend/resume of an escalated step. NOT set
+   * by the current engine: an `escalate` policy fails the step fast
+   * (`SessionsRegistryAgentHost.onAwaitingInput` throws) instead of suspending
+   * on a resolver, so `resolve()` is a no-op today. Kept as a documented stub
+   * rather than removed, to avoid a breaking change for the `http-server` /
+   * `orchestration-tools` callers pending the durable-suspend follow-up.
+   */
   pendingResolve?: { stageIndex: number; stepIndex: number; resolver: (response: string) => void }
 }
 
@@ -125,7 +133,7 @@ function translateStages(
           id: step.label,
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
-          prompt: (() => step.prompt ?? "") as (() => string),
+          prompt: () => step.prompt ?? "",
           policy: step.policy ?? { awaiting: "fail" as const },
         },
       ],
@@ -383,6 +391,9 @@ export function createWorkflowRunner(opts: {
 
     list: () => Array.from(runs.values()).map(s => s.run),
 
+    // No-op today: `pendingResolve` is never set (escalate fails fast — see
+    // RunState.pendingResolve). Retained for the durable suspend/resume
+    // follow-up so the interface stays stable for existing callers.
     resolve: (runId, stageIndex, stepIndex, response) => {
       const state = runs.get(runId)
       if (!state) return

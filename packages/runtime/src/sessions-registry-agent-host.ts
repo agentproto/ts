@@ -120,6 +120,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           if (ev.sessionId === sessionId) done()
         }),
       )
+      // NOTE: resolves (never rejects) on a terminal error/killed status —
+      // a lifted, pre-existing behavior: a failed agent turn currently
+      // surfaces as a resolved wait rather than a rejected one. Rejecting on
+      // terminal-error so step failures propagate to the run as `failed` is a
+      // deliberate follow-up, kept out of this behavior-preserving refactor.
       const desc = this.registry.get(sessionId)
       if (desc?.status === "exited" || desc?.awaitingInput === true) {
         done()
