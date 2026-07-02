@@ -95,6 +95,7 @@ export type {
   RegisterBrowserInput,
   RegisterSessionInput,
 } from "./sessions.js"
+export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
@@ -755,6 +756,12 @@ export async function createGateway(
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
+    // Same injector + gateway URL passed to `registerAgentTools` above —
+    // lets POST /sessions/agent mint the same scoped orchestrator
+    // sub-gateway + hermes default-mcpServers safety net the MCP
+    // `agent_start` tool gets (session-spawn.ts is the shared logic).
+    buildOrchestratorMcp: orchestratorInjector,
+    daemonMcpUrl,
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),

@@ -45,6 +45,7 @@ import {
   tokenizeCommand,
 } from "@agentproto/runtime/resume-strategies"
 import type { SessionDescriptor } from "@agentproto/runtime"
+import type { AcpMcpServer } from "@agentproto/acp"
 
 const USAGE = `agentproto sessions — browse and control daemon sessions
 
@@ -54,6 +55,8 @@ Usage:
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
                                       [--model <id>] [--prompt <text>]
                                       [--label <text>] [--attach] [--json]
+                                      [--orchestrator | --orchestrator-json <json>]
+                                      [--mcp-servers-json <json|@file>]
                                       [--no-color]
   agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                             [--name <slug>] [--label <text>]
@@ -67,6 +70,13 @@ Usage:
 Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
 is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
 AGENTPROTO_DAEMON_TOKEN to override.
+
+sessions start flags:
+  --orchestrator                shorthand for orchestrator: true
+  --orchestrator-json <json>    object form: {"tools":[...],"maxDepth":N,"maxChildren":N}
+                                 (wins over --orchestrator when both are given)
+  --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
+  --mcp-servers-json @<file>    same, read from a file instead of inline JSON
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -156,6 +166,9 @@ async function runStart(args: readonly string[]): Promise<number> {
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
+      orchestrator: { type: "boolean" },
+      "orchestrator-json": { type: "string" },
+      "mcp-servers-json": { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -175,6 +188,55 @@ async function runStart(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  // Parse --orchestrator-json / --mcp-servers-json client-side, before any
+  // network activity, so malformed JSON fails fast with a clear message
+  // instead of surfacing as an opaque 400 from the daemon.
+  let orchestrator: boolean | Record<string, unknown> | undefined
+  if (values["orchestrator-json"] !== undefined) {
+    try {
+      orchestrator = JSON.parse(values["orchestrator-json"])
+    } catch (err) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --orchestrator-json: ${err instanceof Error ? err.message : String(err)}\n`
+      )
+      return 2
+    }
+  } else if (values.orchestrator) {
+    orchestrator = true
+  }
+
+  let mcpServers: AcpMcpServer[] | undefined
+  if (values["mcp-servers-json"] !== undefined) {
+    const raw = values["mcp-servers-json"]
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: could not read --mcp-servers-json file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    try {
+      const parsed = JSON.parse(text)
+      if (!Array.isArray(parsed)) {
+        throw new Error("expected a JSON array of {name, transport, ref?}")
+      }
+      mcpServers = parsed
+    } catch (err) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --mcp-servers-json: ${err instanceof Error ? err.message : String(err)}\n`
+      )
+      return 2
+    }
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -182,12 +244,14 @@ async function runStart(args: readonly string[]): Promise<number> {
   }
   const endpoint = report.found
 
-  const body: Record<string, string> = { adapter: slug }
+  const body: Record<string, unknown> = { adapter: slug }
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
   if (values.model) body.model = values.model
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
+  if (orchestrator !== undefined) body.orchestrator = orchestrator
+  if (mcpServers !== undefined) body.mcpServers = mcpServers
 
   let desc: SessionDescriptor
   try {

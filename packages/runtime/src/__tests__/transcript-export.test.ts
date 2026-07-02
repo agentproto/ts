@@ -69,8 +69,7 @@ describe("renderMarkdown", () => {
       ],
     }
     const md = renderMarkdown(session)
-    expect(md).toContain("> 📞 **bash**")
-    expect(md).toContain("ls -la")
+    expect(md).toContain("> 📞 bash ls -la")
   })
 
   it("wraps tool role output in a code block with tool name suffix", () => {
@@ -225,7 +224,7 @@ describe("claude-code JSONL exporter", () => {
     expect(result.content).toContain("List files.")
     expect(result.content).toContain("🤖 Assistant")
     expect(result.content).toContain("Let me check.")
-    expect(result.content).toContain("> 📞 **bash**")
+    expect(result.content).toContain("> 📞 bash ls")
     expect(result.content).toContain("🔧 Tool")
     expect(result.content).toContain("file1.txt")
     expect(result.content).toContain("2 files found.")
@@ -391,7 +390,7 @@ describe("hermes SQLite exporter", () => {
     expect(result.content).toContain("Hi there!")
     expect(result.content).toContain("💭 reasoning")
     expect(result.content).toContain("I should be helpful.")
-    expect(result.content).toContain("> 📞 **bash**")
+    expect(result.content).toContain("> 📞 bash echo hi")
     // tool result
     expect(result.content).toContain("🔧 Tool · `bash`")
     expect(result.content).toContain("hi")

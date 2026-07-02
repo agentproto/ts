@@ -68,6 +68,8 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
+import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import { tryParseJson } from "./json-tolerant.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -224,6 +226,17 @@ export interface RuntimeHttpServerOptions {
    *  Hosts that ship adapters (`agentproto serve`, playground)
    *  pass the cli's `resolveAdapter` via a thin shim. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Optional — mirrors `RegisterAgentToolsOptions.buildOrchestratorMcp`
+   *  (agent-tools.ts). When wired, `POST /sessions/agent`'s
+   *  `orchestrator` field mints a scoped sub-gateway token the same way
+   *  the MCP `agent_start` tool does. Omitted → `orchestrator` on the
+   *  HTTP route is rejected with a 501. */
+  buildOrchestratorMcp?: BuildOrchestratorMcp
+  /** Optional — mirrors `RegisterAgentToolsOptions.daemonMcpUrl`. When
+   *  wired, a `POST /sessions/agent` spawn for a `hermes` adapter with
+   *  no caller-supplied `mcpServers` defaults to mounting this gateway
+   *  (same hermes safety net as the MCP tool). */
+  daemonMcpUrl?: string
   /** Optional — when wired, enables `GET /adapters` route + the
    *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
@@ -895,6 +908,8 @@ export async function startHttpServer(
             opts.listBrowserAdapters,
             opts.sessionEvents,
             opts.eventRing,
+            opts.buildOrchestratorMcp,
+            opts.daemonMcpUrl,
           )
           if (handled) return
         }
@@ -1461,6 +1476,56 @@ function clampInt(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
+/** Parse the `orchestrator` body field on `POST /sessions/agent` — the
+ *  same flexible `boolean | object` shape the MCP `agent_start` tool's
+ *  `jsonTolerant` schema accepts, including a JSON-stringified form of
+ *  either (some HTTP clients serialize nested fields as strings the
+ *  same way the MCP-over-stdio clients that motivated `jsonTolerant`
+ *  do). Malformed values are dropped (undefined) rather than 400'd —
+ *  matches this route's existing lenient body-field parsing. */
+function parseOrchestratorField(
+  raw: unknown,
+): boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (typeof value === "boolean") return value
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>
+    const tools = Array.isArray(obj.tools)
+      ? obj.tools.filter((t): t is string => typeof t === "string")
+      : undefined
+    const maxDepth = typeof obj.maxDepth === "number" ? obj.maxDepth : undefined
+    const maxChildren = typeof obj.maxChildren === "number" ? obj.maxChildren : undefined
+    return {
+      ...(tools ? { tools } : {}),
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+      ...(maxChildren !== undefined ? { maxChildren } : {}),
+    }
+  }
+  return undefined
+}
+
+/** Parse the `mcpServers` body field — the same `AcpMcpServer[]` shape
+ *  the MCP tool accepts, tolerant of a JSON-stringified array (see
+ *  `parseOrchestratorField`). Entries missing a valid `name`/`transport`
+ *  are dropped rather than failing the whole array. */
+function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!Array.isArray(value)) return undefined
+  const servers: AcpMcpServer[] = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const o = item as Record<string, unknown>
+    if (typeof o.name !== "string") continue
+    if (o.transport !== "stdio" && o.transport !== "http" && o.transport !== "sse") continue
+    servers.push({
+      name: o.name,
+      transport: o.transport,
+      ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
+    })
+  }
+  return servers
+}
+
 async function handleSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1472,6 +1537,8 @@ async function handleSessions(
   listBrowserAdapters?: BrowserAdapterLister,
   sessionEvents?: SessionEventBus,
   eventRing?: EventRing,
+  buildOrchestratorMcp?: BuildOrchestratorMcp,
+  daemonMcpUrl?: string,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -1486,7 +1553,11 @@ async function handleSessions(
   // Long-running agent session — spawn via the cli's adapter
   // resolver, hold across multiple turns. Body shape:
   //   {adapter: "claude-code"|"hermes"|...,
-  //    workspaceSlug, cwd, prompt?, label?}
+  //    workspaceSlug, cwd, prompt?, label?, orchestrator?, mcpServers?}
+  // Delegates to the same `spawnAgentSession` the MCP `agent_start`
+  // tool uses (session-spawn.ts) — keeps this route from re-implementing
+  // (and re-drifting from) the orchestrator/mcpServers/hermes-default
+  // logic that lives there.
   if (path === "/sessions/agent" && req.method === "POST") {
     if (!resolveAgentAdapter) {
       json(501, {
@@ -1508,90 +1579,54 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
-    // cwd resolution priority:
-    //   1. explicit `cwd` in the body
-    //   2. lookup `workspaceSlug` in ~/.agentproto/workspaces.json
-    //   3. active workspace from the same config
-    //   4. process.cwd() (last resort, almost certainly not what
-    //      the user wants — log it so the operator notices)
-    let cwd: string | null =
-      typeof b.cwd === "string" && b.cwd.length > 0 ? b.cwd : null
-    let workspaceSlug =
-      typeof b.workspaceSlug === "string" ? b.workspaceSlug : ""
-    if (!cwd) {
-      try {
-        const config = await loadWorkspacesConfig()
-        const ws = workspaceSlug
-          ? findWorkspace(config, workspaceSlug)
-          : getActiveWorkspace(config)
-        if (ws) {
-          cwd = ws.path
-          workspaceSlug = ws.slug
-        }
-      } catch {
-        // Config missing / unreadable — fall through to process.cwd()
-      }
-    }
-    if (!cwd) {
-      cwd = process.cwd()
-      console.warn(
-        `[/sessions/agent] no cwd resolvable for adapter=${adapter} ` +
-          `(no body.cwd, no workspaceSlug match in ~/.agentproto/workspaces.json, ` +
-          `no active workspace) — falling back to daemon's cwd ${cwd}`
-      )
-    }
-    if (!workspaceSlug) workspaceSlug = "default"
-    const resolved = await resolveAgentAdapter(adapter)
-    if (!resolved) {
-      json(404, { error: "adapter_not_found", adapter })
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter, buildOrchestratorMcp, daemonMcpUrl },
+      {
+        adapter,
+        ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
+        ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
+          ? { workspaceSlug: b.workspaceSlug }
+          : {}),
+        ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
+          ? { resumeSessionId: b.resumeSessionId }
+          : {}),
+        ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
+        ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
+        ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+        ...(typeof b.label === "string" ? { label: b.label } : {}),
+        ...(b.orchestrator !== undefined
+          ? (() => {
+              const parsed = parseOrchestratorField(b.orchestrator)
+              return parsed !== undefined ? { orchestrator: parsed } : {}
+            })()
+          : {}),
+        ...(b.mcpServers !== undefined
+          ? (() => {
+              const parsed = parseMcpServersField(b.mcpServers)
+              return parsed !== undefined ? { mcpServers: parsed } : {}
+            })()
+          : {}),
+      },
+    )
+    if (!result.ok) {
+      const status =
+        result.code === "adapter_not_found" || result.code === "no_cwd"
+          ? 404
+          : result.code === "orchestrator_not_enabled"
+            ? 501
+            : result.code === "orchestrator_max_depth_exceeded" ||
+                result.code === "orchestrator_child_quota_exceeded"
+              ? 409
+              : 500
+      json(status, {
+        error: result.code,
+        message: result.message,
+        ...result.details,
+      })
       return true
     }
-    try {
-      const resumeSessionId =
-        typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
-          ? b.resumeSessionId
-          : undefined
-      const bodyMode = typeof b.mode === "string" && b.mode.length > 0
-        ? b.mode
-        : undefined
-      const bodyModel = typeof b.model === "string" && b.model.length > 0
-        ? b.model
-        : undefined
-      const bodyEffort = typeof b.effort === "string" && b.effort.length > 0
-        ? b.effort
-        : undefined
-      // See agent-tools.ts's agent_start handler for why this box is
-      // needed — onActivity can fire before spawnAgent assigns an id.
-      let liveSessionId: string | undefined
-      const agentSession = await resolved.startSession({
-        cwd,
-        ...(resumeSessionId ? { resumeSessionId } : {}),
-        ...(bodyMode ? { mode: bodyMode } : {}),
-        ...(bodyModel ? { model: bodyModel } : {}),
-        ...(bodyEffort ? { effort: bodyEffort } : {}),
-        onActivity: () => {
-          if (liveSessionId) registry.pulseActivity(liveSessionId)
-        },
-      })
-      const desc = registry.spawnAgent({
-        workspaceSlug,
-        cwd,
-        agentSession,
-        adapterSlug: adapter,
-        ...(typeof b.prompt === "string" ? { initialPrompt: b.prompt } : {}),
-        ...(typeof b.label === "string" ? { label: b.label } : {}),
-        ...(resolved.commandPreview
-          ? { commandPreview: resolved.commandPreview }
-          : {}),
-      })
-      liveSessionId = desc.id
-      json(201, desc)
-    } catch (err) {
-      json(500, {
-        error: "agent_spawn_failed",
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
+    json(201, result.descriptor)
     return true
   }
 
