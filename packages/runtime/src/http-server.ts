@@ -32,6 +32,7 @@ import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
+import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { RoutineRunner, RoutineStep } from "./routine-runner.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -1869,13 +1870,21 @@ async function handleSessions(
     const fireAndForget = wait === "false" || wait === "0"
     try {
       if (fireAndForget) {
-        registry.enqueuePrompt(id, prompt)
+        // Awaited: enqueuePrompt only resolves once the resume attempt
+        // (if any) + admission checks pass — a dead or busy session
+        // rejects here, before the 202 goes out, instead of us
+        // reporting `queued: true` for a prompt nothing will dispatch.
+        await registry.enqueuePrompt(id, prompt)
         json(202, { ok: true, id, queued: true })
       } else {
         await registry.sendPrompt(id, prompt)
         json(200, { ok: true, id })
       }
     } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", status: err.status })
+        return true
+      }
       const msg = err instanceof Error ? err.message : String(err)
       // Differentiate "not found" / "wrong kind" / "busy" — they
       // surface as readable thrown messages from the registry.

@@ -146,6 +146,27 @@ export type SessionStatus =
   | "killed"
   | "error"
 
+/**
+ * Thrown by `sendPrompt` / `enqueuePrompt` when the target agent-cli
+ * session is dead (status exited/killed/error) and either isn't
+ * resumable or its resume attempt already failed. Carries the actual
+ * `status` so ingress layers (MCP `agent_prompt`, HTTP
+ * `POST /sessions/:id/prompt`) can report a truthful, structured error
+ * instead of the prompt silently going nowhere — see the "prompt to a
+ * dead session" bug this type fixes at its throw site in
+ * `validateAgentTurn`.
+ */
+export class SessionNotAliveError extends Error {
+  readonly sessionId: string
+  readonly status: SessionStatus
+  constructor(sessionId: string, status: SessionStatus, caller: string) {
+    super(`${caller}: session "${sessionId}" is not alive (status=${status})`)
+    this.name = "SessionNotAliveError"
+    this.sessionId = sessionId
+    this.status = status
+  }
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -446,19 +467,22 @@ export interface SessionsRegistry {
    *  `kill()` best-effort. */
   registerBrowser(input: RegisterBrowserInput): SessionDescriptor
   /** Send a follow-up turn to a live agent session. Throws when the
-   *  session is missing, not an agent-cli kind, or busy. The events
-   *  stream into the existing ring buffer + line emitter so /stream
-   *  consumers see them as they arrive. */
+   *  session is missing, not an agent-cli kind, dead (exited/killed/
+   *  error and unresumable — `SessionNotAliveError`), or busy
+   *  (mid-turn). The events stream into the existing ring buffer +
+   *  line emitter so /stream consumers see them as they arrive. */
   sendPrompt(id: string, message: unknown): Promise<void>
-  /** Fire-and-forget variant of `sendPrompt`. Validates the same
-   *  preconditions synchronously — throws on missing session / wrong
-   *  kind / busy — but returns immediately after the turn is started,
-   *  letting the caller stream output via the SSE endpoint instead of
-   *  blocking on the full turn. Async errors during the turn are
-   *  pushed into the ring buffer as `[error]` lines so `/stream`
-   *  subscribers see them. Used by the web UI's chat input where a
-   *  long turn would otherwise freeze the textbox. */
-  enqueuePrompt(id: string, message: unknown): void
+  /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
+   *  Admission (resume attempt + the missing/wrong-kind/dead/busy
+   *  checks `sendPrompt` throws) is AWAITED before this resolves, so a
+   *  dead or busy session rejects instead of silently reporting
+   *  success — only resolves once the turn has actually started.
+   *  Errors during the turn's own execution (network drop, child died
+   *  mid-turn) are pushed into the ring buffer as `[error]` lines so
+   *  `/stream` subscribers see them. Used by the web UI's chat input
+   *  and MCP `agent_prompt`, where a long turn would otherwise freeze
+   *  the caller. */
+  enqueuePrompt(id: string, message: unknown): Promise<void>
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -1014,17 +1038,37 @@ export function createSessionsRegistry(opts?: {
    */
   /**
    * Shared sync validation for sendPrompt + enqueuePrompt. Throws on
-   * missing session / wrong kind / busy so both code paths surface
-   * the exact same error messages — the only difference is whether
-   * the caller awaits the turn.
+   * missing session / wrong kind / dead session / busy so both code
+   * paths surface the exact same error messages — the only difference
+   * is whether the caller awaits the turn.
+   *
+   * Must be called AFTER `maybeResumeAgent(rt)` has already been
+   * awaited — a dead-but-resumable agent-cli session only regains
+   * `rt.agentSession` there.
+   *
+   * Liveness is checked via `rt.desc.status`, NOT merely
+   * `!rt.agentSession` — `kill()` flips status to "killed" but leaves
+   * `rt.agentSession` referencing the now-closed session object (it
+   * only calls `.close()`, it doesn't clear the field), so a
+   * `!rt.agentSession` check alone would miss a live-killed session
+   * and let `runAgentTurn` call `.send()` on a dead connection. Status
+   * catches that case too, not just the daemon-restart/dead-and-
+   * unresumable case where `agentSession` really is absent. Either way
+   * this throws `SessionNotAliveError` (not a generic Error) so
+   * ingress can report status/409 truthfully instead of the caller
+   * getting back a lie like `{queued: true}`.
    */
   const validateAgentTurn = (id: string, caller: string): SessionRuntime => {
     const rt = sessions.get(id)
     if (!rt) throw new Error(`${caller}: no session "${id}"`)
-    if (!rt.agentSession) {
+    if (rt.desc.kind !== "agent-cli") {
       throw new Error(
         `${caller}: session "${id}" is not an agent session (kind=${rt.desc.kind})`
       )
+    }
+    const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+    if (!isAlive || !rt.agentSession) {
+      throw new SessionNotAliveError(id, rt.desc.status, caller)
     }
     if (rt.busy) {
       throw new Error(
@@ -1599,44 +1643,32 @@ export function createSessionsRegistry(opts?: {
       const rt = validateAgentTurn(id, "sendPrompt")
       await runAgentTurn(rt, message)
     },
-    enqueuePrompt(id, message) {
-      // For sync `enqueuePrompt`, we need to surface an immediate
-      // error when the session is missing OR when it's a non-agent
-      // kind that can't be resumed at all. But when the session IS
-      // an agent-cli with resume metadata, defer validation until
-      // after the resume attempt so a dead-but-resumable row Just
-      // Works for the caller (no "not an agent session" error after
-      // a daemon restart).
+    async enqueuePrompt(id, message) {
+      // Admission phase — AWAITED, unlike the turn itself below. This
+      // is what makes `{queued: true}` truthful: a dead (exited/
+      // killed/error) session gets one resume attempt, then
+      // validateAgentTurn throws `SessionNotAliveError` (or the busy /
+      // wrong-kind errors) synchronously enough for the caller (MCP
+      // `agent_prompt`, HTTP `?wait=false`) to surface it instead of
+      // reporting success for a prompt that will never be dispatched.
       const rtPre = sessions.get(id)
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
       }
-      if (rtPre.desc.kind !== "agent-cli") {
-        throw new Error(
-          `enqueuePrompt: session "${id}" is not an agent session (kind=${rtPre.desc.kind})`
+      await maybeResumeAgent(rtPre)
+      const rt = validateAgentTurn(id, "enqueuePrompt")
+      // Execution phase — fire-and-forget from here on. Errors during
+      // the turn itself (network drop, child died mid-turn) land in
+      // the ring buffer as `[error]` lines so the SSE consumer sees
+      // them; admission already succeeded so there's nothing else to
+      // report back to the original caller.
+      void runAgentTurn(rt, message).catch(err => {
+        appendLine(
+          rtPre,
+          `[error] ${err instanceof Error ? err.message : String(err)}`,
+          "stderr"
         )
-      }
-      if (rtPre.busy) {
-        throw new Error(
-          `enqueuePrompt: session "${id}" is mid-turn — wait for it to finish or cancel`
-        )
-      }
-      // Fire-and-forget: resume (if needed) then dispatch. Errors
-      // during either step land in the ring buffer as `[error]`
-      // lines so the SSE consumer sees them.
-      void (async () => {
-        try {
-          await maybeResumeAgent(rtPre)
-          const rt = validateAgentTurn(id, "enqueuePrompt")
-          await runAgentTurn(rt, message)
-        } catch (err) {
-          appendLine(
-            rtPre,
-            `[error] ${err instanceof Error ? err.message : String(err)}`,
-            "stderr"
-          )
-        }
-      })()
+      })
     },
     pulseActivity(id) {
       const rt = sessions.get(id)

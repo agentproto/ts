@@ -349,14 +349,16 @@ export function registerAgentTools(
     },
     async input => {
       try {
-        // Note: sendPrompt awaits the full turn (drains the event
-        // stream into the ring buffer). For long turns the operator
-        // would prefer fire-and-forget — kick the promise without
-        // awaiting and report "queued". The caller polls
-        // agent_output for completion.
-        void registry.sendPrompt(input.sessionId, input.prompt).catch(() => {
-          // Errors land in the ring buffer; nothing to do here.
-        })
+        // enqueuePrompt awaits admission (resume attempt + the dead/
+        // wrong-kind/busy checks) before resolving, then fires the
+        // turn itself without waiting for it to drain — long turns
+        // don't block this tool call. Only the awaited admission
+        // phase can reject, so a dead session (killed by a daemon
+        // restart, exited, errored) or a session already mid-turn
+        // surfaces here as a real tool error instead of a lying
+        // `{queued: true}` for a prompt that goes nowhere. The caller
+        // polls agent_output for the turn's actual progress/completion.
+        await registry.enqueuePrompt(input.sessionId, input.prompt)
         return {
           content: [
             {
