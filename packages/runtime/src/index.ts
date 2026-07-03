@@ -40,6 +40,7 @@ import {
   registerSummarizeSessionTool,
 } from "./agents-overview-app.js"
 import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
+import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -676,6 +677,7 @@ export async function createGateway(
       makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
       makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
       makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
+      makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
     ])
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
