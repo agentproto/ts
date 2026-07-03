@@ -576,6 +576,165 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  describe("P5: synthesized terminal turn-end", () => {
+    // Count the `── turn-end (reason) ──` ring-buffer separators that
+    // projectEvent renders — one per turn-end event that reached the
+    // stream, adapter-emitted or synthesized.
+    const turnEndLines = (reg: ReturnType<typeof createSessionsRegistry>, id: string): string[] => {
+      const lines: string[] = []
+      const unsub = reg.attach(id, line => { lines.push(line) })
+      if (unsub) unsub()
+      return lines.filter(l => l.includes("── turn-end ("))
+    }
+
+    it("(a) synthesizes exactly one turn-end when the arm ends its stream WITHOUT one", async () => {
+      const bus = createSessionEventBus()
+      const handler = vi.fn()
+      bus.on("session:turn-end", handler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      // Arm returns cleanly after streaming text — never yields turn-end
+      // (the abnormal-but-non-throwing case: generator just returns).
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-no-turnend",
+        async *send() {
+          yield { kind: "text-delta", text: "partial output, then the stream just ends\n" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+
+      const ends = turnEndLines(reg, desc.id)
+      expect(ends).toHaveLength(1)
+      expect(ends[0]).toContain("── turn-end (exited)")
+      // Completion is stamped + surfaced on the bus so waiters don't hang.
+      expect(reg.get(desc.id)?.turnsCompleted).toBe(1)
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "session:turn-end", sessionId: desc.id, reason: "exited" }),
+      )
+      reg.shutdown()
+    })
+
+    it("(b) does NOT synthesize a duplicate when the arm already emitted a turn-end", async () => {
+      const bus = createSessionEventBus()
+      const handler = vi.fn()
+      bus.on("session:turn-end", handler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-has-turnend",
+        async *send() {
+          yield { kind: "text-delta", text: "all done" }
+          yield { kind: "turn-end", reason: "completed" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+
+      const ends = turnEndLines(reg, desc.id)
+      // Exactly one — the adapter's, not a second synthesized one.
+      expect(ends).toHaveLength(1)
+      expect(ends[0]).toContain("── turn-end (completed)")
+      expect(reg.get(desc.id)?.turnsCompleted).toBe(1)
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "completed" }),
+      )
+      reg.shutdown()
+    })
+
+    it("(c) synthesizes a turn-end with reason 'error' when the arm's stream throws", async () => {
+      const bus = createSessionEventBus()
+      const handler = vi.fn()
+      bus.on("session:turn-end", handler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-throws",
+        // eslint-disable-next-line require-yield
+        async *send(): AsyncGenerator<never> {
+          throw new Error("subprocess exited with ENOBUFS")
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+
+      const ends = turnEndLines(reg, desc.id)
+      expect(ends).toHaveLength(1)
+      expect(ends[0]).toContain("── turn-end (error)")
+      // Genuine error marks the session errored + stamps completion.
+      expect(reg.get(desc.id)?.status).toBe("error")
+      expect(reg.get(desc.id)?.turnsCompleted).toBe(1)
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "session:turn-end", sessionId: desc.id, reason: "error" }),
+      )
+      reg.shutdown()
+    })
+
+    it("(c') synthesizes a turn-end with reason 'aborted' when the turn is cancelled (AbortError)", async () => {
+      const bus = createSessionEventBus()
+      const handler = vi.fn()
+      bus.on("session:turn-end", handler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-aborts",
+        // eslint-disable-next-line require-yield
+        async *send(): AsyncGenerator<never> {
+          throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" })
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+
+      const ends = turnEndLines(reg, desc.id)
+      expect(ends).toHaveLength(1)
+      expect(ends[0]).toContain("── turn-end (aborted)")
+      // An abort (cancel) leaves the session alive for the next turn —
+      // it is NOT marked errored.
+      expect(reg.get(desc.id)?.status).toBe("running")
+      expect(reg.get(desc.id)?.turnsCompleted).toBe(1)
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "session:turn-end", sessionId: desc.id, reason: "aborted" }),
+      )
+      reg.shutdown()
+    })
+  })
+
   describe("liveness: pid / lastActivityAt / processAlive", () => {
     const fakeAgent = (pid?: number): AgentSessionLike => ({
       sessionId: "acp-liveness-test",
