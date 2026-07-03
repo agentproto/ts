@@ -241,6 +241,7 @@ const capabilitiesSchema = z.object({
 const modeSchema = z.object({
   id: z.string().regex(MODE_ID_PATTERN),
   description: z.string().optional(),
+  bin_args_prepend: z.array(z.string()).optional(),
   bin_args_append: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
 }).strict()
@@ -253,6 +254,7 @@ const optionSchema = z.object({
   default: z.union([z.boolean(), z.number(), z.string()]).optional(),
   min: z.number().int().optional(),
   max: z.number().int().optional(),
+  bin_args_prepend: z.array(z.string()).optional(),
   bin_args_template: z.array(z.string()).optional(),
   bin_args_append_when_true: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),

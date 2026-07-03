@@ -259,6 +259,11 @@
           "description": "Stable id. The operator config references this id."
         },
         "description": { "type": "string" },
+        "bin_args_prepend": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra argv prepended before the manifest's bin_args when this mode is active."
+        },
         "bin_args_append": {
           "type": "array",
           "items": { "type": "string" },
@@ -302,6 +307,11 @@
         "max": {
           "type": "integer",
           "description": "Upper bound when type=integer."
+        },
+        "bin_args_prepend": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Argv template prepended before the manifest's bin_args when the option has a non-default value. The literal token `{value}` is replaced with the option's value (stringified)."
         },
         "bin_args_template": {
           "type": "array",
