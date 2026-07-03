@@ -141,6 +141,21 @@ function normalizeAgentPromptOptions(raw: unknown): string[] | undefined {
   return labels.length > 0 ? labels : undefined
 }
 
+/**
+ * True when a thrown value represents a turn ABORT rather than a genuine
+ * error — a cancelled/killed turn surfaces as a DOMException-style
+ * `AbortError` (`name`) or Node's `ABORT_ERR` (`code`). Lets the turn
+ * finalizer synthesize a `turn-end` tagged `"aborted"` instead of
+ * mislabelling a deliberate cancel as a turn error. Kill-driven aborts are
+ * additionally caught by inspecting the descriptor status at the call site.
+ */
+function isAbortError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  const name = "name" in err ? err.name : undefined
+  const code = "code" in err ? err.code : undefined
+  return name === "AbortError" || code === "ABORT_ERR"
+}
+
 export const SESSIONS_FILE_PATH = (): string =>
   resolve(homedir(), ".agentproto", "sessions.json")
 
@@ -1239,6 +1254,15 @@ export function createSessionsRegistry(opts?: {
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     let turnCompleted = false
+    // Whether the adapter itself emitted a `turn-end` during this turn.
+    // Drives the P5 guarantee: when the event stream ends WITHOUT one
+    // (crash / exit / error / abort), the finally block synthesizes a
+    // terminal `turn-end` — but only if the adapter didn't already send
+    // one, so exactly one is emitted per turn.
+    let sawTurnEnd = false
+    // Set in `catch` to the abnormal-end reason ("error" | "aborted") so
+    // the finally block can tag the synthesized turn-end correctly.
+    let abnormalReason: string | undefined
     // Captures the driver's reported `turn-end` reason (e.g.
     // "completed", "watchdog-timeout") so it can ride along on the
     // `session:turn-end` bus event below — otherwise it's dropped after
@@ -1264,23 +1288,59 @@ export function createSessionsRegistry(opts?: {
         // shape (tool arguments, plan entries, ...) still exists.
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
-        if (evt.kind === "turn-end") turnEndReason = evt.reason
+        if (evt.kind === "turn-end") {
+          sawTurnEnd = true
+          turnEndReason = evt.reason
+        }
       }
       turnCompleted = true
     } catch (err) {
-      rt.desc.status = "error"
-      rt.desc.endedAt = new Date().toISOString()
-      appendLine(
-        rt,
-        `[turn error] ${err instanceof Error ? err.message : String(err)}`,
-        "stderr"
-      )
-      recordExitUsageSnapshot(rt)
-      schedulePersist()
-      emitExited(rt)
+      // A turn that ends by throwing is either a genuine error or an
+      // ABORT (cancel()/kill()). Aborts must not be mislabelled as turn
+      // errors — kill() already flipped status to "killed" and emitted
+      // session:exited, and cancel() leaves the session alive for the
+      // next turn — so only the genuine-error branch marks the session
+      // errored. Either way the finally block below still guarantees a
+      // terminal turn-end.
+      if (isAbortError(err) || rt.desc.status === "killed") {
+        abnormalReason = "aborted"
+      } else {
+        abnormalReason = "error"
+        rt.desc.status = "error"
+        rt.desc.endedAt = new Date().toISOString()
+        appendLine(
+          rt,
+          `[turn error] ${err instanceof Error ? err.message : String(err)}`,
+          "stderr"
+        )
+        recordExitUsageSnapshot(rt)
+        schedulePersist()
+        emitExited(rt)
+      }
     } finally {
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
+
+      // ── P5: guarantee exactly one terminal turn-end per turn ──────────
+      // If the adapter's event stream ended without a turn-end (generator
+      // returned early, subprocess exited, threw, or was aborted), inject
+      // one so downstream orchestration can rely on turn-end as a uniform
+      // completion signal instead of hanging. Idempotent — `sawTurnEnd`
+      // short-circuits when the adapter already produced one.
+      if (!sawTurnEnd) {
+        const reason =
+          abnormalReason ??
+          (rt.desc.status === "killed" ? "aborted" : "exited")
+        const synthetic: AgentStreamEvent = { kind: "turn-end", reason }
+        // Record to the durable transcript first (matches the in-loop
+        // order: recordEvent before projectEvent), then flatten into the
+        // ring buffer so /stream + events.jsonl consumers both see it.
+        transcriptWriter.recordEvent(rt.desc.id, synthetic)
+        projectEvent(rt, synthetic)
+        sawTurnEnd = true
+        turnEndReason = reason
+      }
+
       if (turnCompleted) {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
@@ -1361,6 +1421,24 @@ export function createSessionsRegistry(opts?: {
           }
         }
         if (overBudget) emitExited(rt)
+      } else {
+        // ── Abnormal turn end (error / abort) ────────────────────────
+        // The adapter's stream broke before a turn-end. We already
+        // synthesized the terminal turn-end above; still stamp
+        // turnsCompleted and emit the bus turn-end so a `session_monitor`
+        // (or any consumer waiting on completion) doesn't hang on a turn
+        // that will never signal done through the normal path.
+        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        if (sessionEvents) {
+          sessionEvents.emit({
+            type: "session:turn-end",
+            sessionId: rt.desc.id,
+            awaitingInput: rt.desc.awaitingInput ?? false,
+            label: rt.desc.label,
+            ts: new Date().toISOString(),
+            ...(turnEndReason ? { reason: turnEndReason } : {}),
+          })
+        }
       }
     }
   }
