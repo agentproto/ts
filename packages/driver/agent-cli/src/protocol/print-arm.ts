@@ -643,6 +643,44 @@ export function mapMastraEvent(
       }
     }
 
+    // ── Token usage ─────────────────────────────────────────────
+    // Mastra Code DOES expose usage: its `AgentController` emits a native
+    // `usage_update` event ({ type: "usage_update", usage: TokenUsage })
+    // on every model step-finish — verified against @mastra/core 1.48.0's
+    // AgentControllerEvent union and its emit site
+    // (`this.#session.emit({ type: "usage_update", usage: stepUsage })`).
+    // `TokenUsage` carries `{ promptTokens, completionTokens, totalTokens }`.
+    // Map it to this repo's `usage_update` StreamEvent (the SAME shape
+    // claude-code emits over ACP) so mastracode sessions — both the print
+    // arm and the in-process arm, which share this mapper — carry token
+    // telemetry in the transcript. mastracode reports these cumulatively
+    // (its own headless `runMC` result-usage is last-write-wins over these
+    // events), and last-write-wins on the descriptor matches that. It
+    // carries no context-window size/used or per-turn cost here, so those
+    // stay 0 / absent (projectEvent guards on >0, never clobbering a real
+    // size).
+    case "usage_update": {
+      const usage = evt.usage as Record<string, unknown> | undefined
+      const promptTokens =
+        typeof usage?.promptTokens === "number" ? usage.promptTokens : undefined
+      const completionTokens =
+        typeof usage?.completionTokens === "number"
+          ? usage.completionTokens
+          : undefined
+      if (promptTokens === undefined && completionTokens === undefined)
+        return null
+      return {
+        kind: "usage_update",
+        sessionId,
+        size: 0,
+        used: 0,
+        ...(promptTokens !== undefined ? { tokensIn: promptTokens } : {}),
+        ...(completionTokens !== undefined
+          ? { tokensOut: completionTokens }
+          : {}),
+      }
+    }
+
     // ── Shell output (tool-like) ────────────────────────────────
     case "shell_output":
       return typeof evt.output === "string"
