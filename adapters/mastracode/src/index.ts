@@ -148,6 +148,18 @@ export const mastracode: AgentCliHandle = defineAgentCli({
       result:
         "`mastracode acp --help` prints top-level Mastra Code help; no ACP subcommand is currently discoverable.",
     },
+    lean: {
+      checked: "2026-07-03",
+      result:
+        "No `lean` mode declared. The headless entrypoint this adapter spawns " +
+        "(runMCCli, driven by `--prompt`) has no flag to drop skill/subagent/OM " +
+        "scaffolding, and does not read the MASTRACODE_DISABLE_MCP / " +
+        "MASTRACODE_DISABLE_HOOKS / MASTRACODE_DISABLE_MEMORY env vars — those " +
+        "are wired only into the interactive TUI entrypoint (tuiMain), so declaring " +
+        "them here would silently do nothing. `--settings <path>` could point at a " +
+        "leaner packaged settings.json, but that means shipping and maintaining an " +
+        "actual settings file, not just a manifest patch — revisit if worth doing.",
+    },
   },
   tags: ["mastracode", "mastra", "print", "agent-runtime", "coding"],
 })
