@@ -1,5 +1,49 @@
 # @agentproto/runtime
 
+## 0.4.0
+
+### Minor Changes
+
+- 8d1191e: Rename all MCP tool verbs to family-first taxonomy (agent*\*, session*_, terminal\__, command*\*, file*_, directory\__, browser*\*, policy*_, routine\__, tunnel\_\*), split agent tools into a dedicated `agent-tools.ts` module, and fix harness call-sites.
+- 16d52cd: Add WorkflowRunner primitive, deferred tool gateway, structured awaiting-input, and agent_start mode wiring
+- 17aff95: Add durable cron scheduler with MCP tools, REST routes, and CLI verb
+- 5c207ca: Add scriptable session/policy wait — REST endpoints and CLI subcommand
+- 83aa850: Add session liveness tracking: pid, lastActivityAt, processAlive on SessionDescriptor
+- 872226b: Add per-turn silence watchdog to ACP client to fix hermes hang-without-turn-end
+- 5616041: Add session_restart MCP tool and extract shared resume decision tree
+- 111a599: Add prompt-session cron action to re-prompt a live session
+- 29d9c55: Add REST parity for routines, workflows, and policies HTTP routes
+- 4f1565b: Share agent_start spawn logic between MCP tool and HTTP route via spawnAgentSession
+- 3ab696d: Render tool calls/results informatively instead of the generic `[tool] view` line
+- caab49e: Add AgentStep kind and AgentSessionHost; wire WorkflowRunner onto the interpreter
+- 79a209a: Add structured per-session transcript capture and daemon-events export source
+- 3cfe18a: Add outputSchema/maxRetries to AgentStep with validate-and-retry loop
+- 887ea34: Add run-level cost ceiling (maxTotalCostUsd) and AgentSessionHost.readCostUsd
+- 4b76485: Add opt-in journal cache for cacheable steps — replay unchanged outputs on re-invocation
+- e27fc94: Add GET /sessions/:id/events for incremental polling; fix mastra tool_start args
+
+### Patch Changes
+
+- f89be1f: Default-mount daemon MCP gateway for hermes agent_start spawns; fix orchestrator merge-line bug
+- fb1e5f0: Thread daemonMcpUrl into scoped orchestrator gateway to fix hermes zero-tool spawns
+- a648994: Fix processAlive returning undefined from findByIdOrName on live sessions
+- 71c52eb: Fix policy_attach gates throwing "cwd escapes workspace" for worktree sessions
+- 3812f01: Don't duplicate a salient arg already baked into a curated tool title
+- 8ce517b: Fix silent prompt-delivery failures for dead and busy sessions
+- 837967a: Fix transcript-writer stripping newlines from text-delta/thought events
+- Updated dependencies [83aa850]
+- Updated dependencies [872226b]
+- Updated dependencies [3ab696d]
+- Updated dependencies [caab49e]
+- Updated dependencies [79a209a]
+- Updated dependencies [3cfe18a]
+- Updated dependencies [887ea34]
+- Updated dependencies [987db7b]
+- Updated dependencies [4b76485]
+- Updated dependencies [a5c4701]
+  - @agentproto/acp@0.3.0
+  - @agentproto/workflow-runtime@0.2.0
+
 ## 0.3.0
 
 ### Minor Changes

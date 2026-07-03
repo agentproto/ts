@@ -1,5 +1,54 @@
 # @agentproto/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- 096e8b3: Migrate chat-tui renderer from Ink/React to @earendil-works/pi-tui
+- 1759ffc: Add install-mcp command for one-shot MCP registration with coding-CLI agents
+- 17aff95: Add durable cron scheduler with MCP tools, REST routes, and CLI verb
+- 5c207ca: Add scriptable session/policy wait — REST endpoints and CLI subcommand
+- 1d78a32: sessions start: add --orchestrator, --orchestrator-json, --mcp-servers-json flags
+- 1d8d9b4: Add `agentproto install skill/<slug>` command with hermes and claude-code targets
+- 79a209a: Add structured per-session transcript capture and daemon-events export source
+- 75ffe74: Add claude-desktop target to `install skill` with manifest upsert and backup
+- be164fe: Add hermes target to install-mcp (surgical config.yaml upsert/remove)
+- c61093f: feat(cli): add `agentproto onboard` first-run umbrella (register MCP + install skill pack)
+
+### Patch Changes
+
+- 06132bc: Implement the AIP-45 `protocol: "proprietary"` arm end to end: `createProprietaryProtocolArm` now dynamic-loads an adapter's `createAgentCliClient` factory and `createAgentCliRuntime` skips the subprocess spawn for it. Ship `@agentproto/adapter-mastracode-inprocess`, a new adapter driving Mastra Code in-process via its SDK (`createMastraCode` + `runMC`) instead of spawning the CLI, with a composite `resourceId:threadId` session id that verifiably survives a process restart. Register the new `mastracode-inprocess` slug in the CLI's adapter catalog.
+
+  Fix `resolveAdapter` to rewrite a `protocol: "proprietary"` handle's `adapter` field to a fully-resolved absolute path before handing it off — `createProprietaryProtocolArm` re-imports that field a second time from `@agentproto/driver-agent-cli`'s own module location (which deliberately depends on no specific adapter), so a bare package-name specifier that resolved fine during discovery could fail to resolve at session-start. Applies to every proprietary adapter, not just this one.
+
+- b6887aa: Fix chat-tui inline code rendering, prompt-echo regex, and cast consolidation
+- f25d0ab: render inline code without backticks and fix prompt-echo dash match
+- 2d1434a: Add mastra-jsonl print-arm schema, AgentCliPrintConfig, and adapter-mastracode
+- 16d52cd: Add WorkflowRunner primitive, deferred tool gateway, structured awaiting-input, and agent_start mode wiring
+- 83aa850: Add session liveness tracking: pid, lastActivityAt, processAlive on SessionDescriptor
+- 872226b: Add per-turn silence watchdog to ACP client to fix hermes hang-without-turn-end
+- f28c925: Surface busy/idle and stale-running (dead pid) state in sessions dashboard
+- 5616041: Add session_restart MCP tool and extract shared resume decision tree
+- 111a599: Add prompt-session cron action to re-prompt a live session
+- 06132bc: Implement AIP-45 proprietary protocol arm; ship adapter-mastracode-inprocess
+- 3ab696d: Render tool calls/results informatively instead of the generic `[tool] view` line
+- 3635eb8: fix(cli): skill install no longer crashes overwriting a file/symlink dest
+- Updated dependencies [06132bc]
+- Updated dependencies [2d1434a]
+- Updated dependencies [1bf295b]
+- Updated dependencies [83aa850]
+- Updated dependencies [872226b]
+- Updated dependencies [78d09e6]
+- Updated dependencies [559cff3]
+- Updated dependencies [06132bc]
+- Updated dependencies [c2b6779]
+- Updated dependencies [3ab696d]
+- Updated dependencies [79a209a]
+- Updated dependencies [e27fc94]
+- Updated dependencies [837967a]
+  - @agentproto/driver-agent-cli@0.3.0
+  - @agentproto/acp@0.3.0
+
 ## 0.3.0
 
 ### Minor Changes
