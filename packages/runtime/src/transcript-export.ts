@@ -748,12 +748,16 @@ async function exportDaemonEventsSession(
         messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
         break
       case "text-delta":
+        // Terminated lines already carry their own trailing "\n" (see
+        // transcript-writer.ts) — only an unterminated tail fragment
+        // (still `partial`, or flushed bare at a turn boundary) lacks one,
+        // and that's exactly the byte-for-byte original content.
         if (asmTs === undefined) asmTs = tsOrUndefined
-        asmText += (rec.text ?? "") + (rec.partial ? "" : "\n")
+        asmText += rec.text ?? ""
         break
       case "thought":
         if (asmTs === undefined) asmTs = tsOrUndefined
-        asmReasoning += (rec.text ?? "") + (rec.partial ? "" : "\n")
+        asmReasoning += rec.text ?? ""
         break
       case "tool-call": {
         if (asmTs === undefined) asmTs = tsOrUndefined

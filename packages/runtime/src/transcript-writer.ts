@@ -174,8 +174,11 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           const combined = state.textBuf + evt.text
           const lines = combined.split(/\r?\n/)
           state.textBuf = lines.pop() ?? ""
+          // `split` consumes each line's terminator — reappend it so the
+          // on-disk record stays byte-for-byte reconstructable (a blank
+          // line becomes "\n" rather than a lossy "").
           for (const line of lines) {
-            writeRecord(sessionId, state, { kind: "text-delta", sessionId, text: line })
+            writeRecord(sessionId, state, { kind: "text-delta", sessionId, text: `${line}\n` })
           }
           if (state.textBuf) scheduleTextDebounce(sessionId, state)
           break
@@ -186,7 +189,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           const lines = combined.split(/\r?\n/)
           state.thoughtBuf = lines.pop() ?? ""
           for (const line of lines) {
-            writeRecord(sessionId, state, { kind: "thought", sessionId, text: line })
+            writeRecord(sessionId, state, { kind: "thought", sessionId, text: `${line}\n` })
           }
           if (state.thoughtBuf) scheduleThoughtDebounce(sessionId, state)
           break

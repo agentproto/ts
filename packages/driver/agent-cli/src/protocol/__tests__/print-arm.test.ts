@@ -102,6 +102,50 @@ describe("createPrintSession — mastracode print config", () => {
     await pending
   })
 
+  it("preserves embedded newlines (incl. blank lines) across message_update deltas byte-for-byte", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hello"))
+    await Promise.resolve()
+
+    // Mastracode streams the FULL accumulated text on each message_update —
+    // simulate it growing word-by-word across a markdown reply with a
+    // paragraph break (blank line) in the middle.
+    const original = "## Done\n\nFirst paragraph.\n\nSecond paragraph, no trailing newline"
+    const growthPoints = [10, 25, original.length]
+    for (const cut of growthPoints) {
+      const content = [{ type: "text", text: original.slice(0, cut) }]
+      feed(lastChild!, [
+        { type: "message_update", message: { role: "assistant", content } },
+      ])
+    }
+    feed(lastChild!, [
+      { type: "agent_end", reason: "complete" },
+      {
+        type: "result",
+        status: "completed",
+        text: original,
+        finishReason: "complete",
+        threadId: "thread-1",
+        exitCode: 0,
+      },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const reconstructed = events
+      .filter(e => e.kind === "text-delta")
+      .map(e => (e as { text: string }).text)
+      .join("")
+    expect(reconstructed).toBe(original)
+  })
+
   it("threads the mastra tool_start `args` field into the tool-call StreamEvent's arguments", async () => {
     const session = createPrintSession({
       bin: "npx",
