@@ -98,6 +98,14 @@ export type {
   RegisterSessionInput,
 } from "./sessions.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
+export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
+export type {
+  UsageSource,
+  SessionUsage,
+  UsageComputeInput,
+  PricingResolver,
+  TokenPricing,
+} from "./usage.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"

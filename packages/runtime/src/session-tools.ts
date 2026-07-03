@@ -32,6 +32,7 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import { projectSessionUsage } from "./usage.js"
 import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -240,6 +241,68 @@ export function registerSessionTools(
       return {
         content: [
           { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+        ],
+      }
+    },
+  )
+
+  // ── session_usage ────────────────────────────────────────────────
+  server.tool(
+    "session_usage",
+    "Return the usage accounting for one session — model, cumulative cost " +
+      "(USD), input/output token counts, and the latest context-window size / " +
+      "tokens-in-context. `source` says where `costUsd` came from: `adapter` " +
+      "(the adapter's own usage reader, e.g. hermes state.db, or a usage_update " +
+      "cost block), `computed` (tokens priced against agentproto's in-repo LLM " +
+      "catalog), `no-pricing` (tokens present but the model isn't in the catalog " +
+      "— cost is deliberately omitted, never fabricated), or `none` (nothing " +
+      "measured). Absent fields are omitted rather than zeroed. Same lookup as " +
+      "`session_list` / `session_restart` (by id or name).",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`, alive or historical."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.idOrName)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirror session_restart — a scoped orchestrator
+      // only sees usage for sessions in its own subtree.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_usage: session "${desc.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only inspect sessions it (transitively) spawned.",
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const usage = projectSessionUsage(desc)
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
         ],
       }
     },
