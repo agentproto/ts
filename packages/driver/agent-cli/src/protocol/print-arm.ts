@@ -138,20 +138,38 @@ export function createPrintSession(
       try {
         if (!child.stdout)
           throw new Error("print-arm: child has no stdout pipe")
-        const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
 
         let capturedSessionId = ""
         const mastraState =
           eventSchema === "mastra-jsonl"
             ? createMastraMapperState()
             : undefined
-        for await (const line of rl) {
-          if (!line.trim()) continue
+
+        // ── Decouple pipe draining from downstream consumption ────────
+        // A `for await (const line of rl)` loop backpressures onto
+        // `child.stdout`: when the loop suspends at a slow downstream
+        // consumer (e.g. an SSE write to the orchestrator client that has
+        // stopped reading), readline pauses the stream, the child's stdout
+        // OS pipe buffer fills, and the child's next `write()` fails with
+        // `ENOBUFS` and the process dies. High-volume producers (kimi via
+        // mastracode: 900+ tool results / 1200+ lines) hit this reliably.
+        //
+        // Instead, readline's `"line"` event (flowing mode) drains the
+        // pipe CONTINUOUSLY — parsing and mapping each line the instant it
+        // arrives — and pushes mapped events into an in-memory queue. The
+        // generator below yields from that queue at whatever pace
+        // downstream consumes. The child therefore never observes
+        // backpressure from a slow client.
+        const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
+        const queue = new EventQueue()
+
+        rl.on("line", (line: string) => {
+          if (!line.trim()) return
           let evt: Record<string, unknown>
           try {
             evt = JSON.parse(line) as Record<string, unknown>
           } catch {
-            continue
+            return
           }
 
           // Capture the session/thread id from the wire event
@@ -160,8 +178,14 @@ export function createPrintSession(
 
           const sid = capturedSessionId || sessionId || ""
           const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState)
-          if (!mapped) continue
+          if (mapped) queue.push(mapped)
+        })
+        rl.once("close", () => queue.end())
 
+        // Yield mapped events as downstream pulls them; the `"line"`
+        // handler above keeps draining the pipe regardless of how far
+        // behind this loop is.
+        for await (const mapped of queue) {
           yield mapped
         }
 
@@ -641,6 +665,91 @@ export function mapMastraEvent(
 
     default:
       return null
+  }
+}
+
+// ── Decoupling queue ────────────────────────────────────────────────
+
+/**
+ * High-water mark (in buffered events) at which {@link EventQueue} logs a
+ * single warning. This does NOT cap the buffer or drop events: the whole
+ * point of this queue is to keep draining `child.stdout` so the subprocess
+ * never hits `ENOBUFS`, and dropping mapped events would corrupt the
+ * transcript / ring buffer this feeds. The mark exists purely to make a
+ * genuinely stuck downstream consumer (one that has stopped pulling for an
+ * extended period, letting the buffer grow toward a memory problem)
+ * observable to operators instead of failing silently.
+ *
+ * Sized well above the worst incident seen in the wild (a mastracode run
+ * emitting ~1200 lines / ~900 tool results): a transient burst is absorbed
+ * without noise, while a persistently slow client trips the warning.
+ */
+const QUEUE_HIGH_WATER_MARK = 10_000
+
+/**
+ * A bounded-signal async FIFO that decouples a fast push-side producer
+ * (readline draining a subprocess pipe) from a slow pull-side consumer
+ * (the daemon's event projector → transcript + ring buffer + SSE stream).
+ *
+ * `push()` never blocks and never rejects — the producer keeps draining
+ * the OS pipe so the child never backpressures into `ENOBUFS`. The
+ * consumer drives it as an async iterable; each `next()` resolves as soon
+ * as an event is available (or immediately if one is already buffered),
+ * and completes once {@link end} is called and the buffer is exhausted.
+ *
+ * Backpressure is applied to the CONSUMER, not the producer: the iterator
+ * only advances when the caller pulls. If the caller stops pulling for a
+ * long time the buffer grows; crossing {@link QUEUE_HIGH_WATER_MARK} emits
+ * one warning so the condition is never silent (see the constant's doc for
+ * why we favour bounded-visibility growth over dropping events).
+ */
+class EventQueue implements AsyncIterable<StreamEvent> {
+  private readonly buffer: StreamEvent[] = []
+  private resolveNext: (() => void) | null = null
+  private ended = false
+  private highWaterWarned = false
+
+  push(evt: StreamEvent): void {
+    this.buffer.push(evt)
+    if (
+      this.buffer.length > QUEUE_HIGH_WATER_MARK &&
+      !this.highWaterWarned
+    ) {
+      this.highWaterWarned = true
+      console.warn(
+        `print-arm: event backlog exceeded ${QUEUE_HIGH_WATER_MARK} ` +
+          `buffered events — downstream consumer is not keeping up. The ` +
+          `child's stdout is still being drained (no ENOBUFS), but memory ` +
+          `will grow until the consumer catches up.`,
+      )
+    }
+    // Wake a consumer parked in next().
+    const resolve = this.resolveNext
+    this.resolveNext = null
+    resolve?.()
+  }
+
+  /** Signal that no further events will be pushed. */
+  end(): void {
+    this.ended = true
+    const resolve = this.resolveNext
+    this.resolveNext = null
+    resolve?.()
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+    for (;;) {
+      const evt = this.buffer.shift()
+      if (evt !== undefined) {
+        yield evt
+        continue
+      }
+      if (this.ended) return
+      // Nothing buffered and not ended — park until push()/end() wakes us.
+      await new Promise<void>(resolve => {
+        this.resolveNext = resolve
+      })
+    }
   }
 }
 

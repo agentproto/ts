@@ -62,6 +62,23 @@ async function collect(iterable: AsyncIterable<StreamEvent>) {
   return out
 }
 
+/** Yield the macrotask queue once (lets readline's flowing-mode 'line'
+ *  handler drain whatever was just written to the fake child's stdout). */
+function tick() {
+  return new Promise<void>(resolve => setImmediate(resolve))
+}
+
+/** Poll until the stream's readable buffer is empty (readline has consumed
+ *  every buffered line) or `maxTurns` macrotasks elapse. Returns whether it
+ *  actually drained — false means the consumer stalled the pipe. */
+async function waitForDrain(stream: PassThrough, maxTurns = 200) {
+  for (let i = 0; i < maxTurns; i++) {
+    if (stream.readableLength === 0) return true
+    await tick()
+  }
+  return stream.readableLength === 0
+}
+
 beforeEach(() => {
   spawnCalls.length = 0
   lastChild = undefined
@@ -315,6 +332,73 @@ describe("createPrintSession — mastracode print config", () => {
     ])
     finish(lastChild!, 0)
     await pending
+  })
+
+  it("drains a fast child's stdout independently of a slow downstream consumer — no stall, every event delivered in order", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    // Drive the stream by hand so we can hold the consumer still while the
+    // child keeps producing — the exact shape of the ENOBUFS incident,
+    // where the daemon's downstream (transcript + ring buffer + SSE) had
+    // backpressured and stopped pulling.
+    const iterator = session.send("hello")[Symbol.asyncIterator]()
+
+    // First pull kicks the generator: spawns the child, wires readline.
+    const firstPull = iterator.next()
+    await Promise.resolve()
+    expect(lastChild).toBeDefined()
+    const child = lastChild!
+
+    // Fast producer: a big burst of tool_start events (~140 KB, well over
+    // a pipe's high-water mark — the regime where the old async-iterator
+    // loop paused the stream and let the OS pipe fill until ENOBUFS).
+    const N = 2000
+    const produced: Array<Record<string, unknown>> = []
+    for (let i = 0; i < N; i++) {
+      produced.push({
+        type: "tool_start",
+        toolCallId: `t${i}`,
+        toolName: "view",
+        args: { i },
+      })
+    }
+    feed(child, produced)
+
+    // The strongest possible slow-consumer proof: the consumer has pulled
+    // NOTHING yet (firstPull is still unawaited), yet the child's stdout is
+    // fully drained. readline consumes the pipe in flowing mode regardless
+    // of how far behind the consumer is. Under the old
+    // `for await (const line of rl)` code this stalls — readline pauses the
+    // stream at the suspended `yield`, so readableLength stays > 0 and, on a
+    // real OS pipe, the child hits ENOBUFS.
+    expect(await waitForDrain(child.stdout)).toBe(true)
+
+    // Now let the producer finish and drain the queue. No crash, and every
+    // produced event arrives exactly once, in order — nothing was dropped
+    // while the consumer lagged the fully-buffered producer.
+    finish(child, 0)
+
+    const received: StreamEvent[] = []
+    let result = await firstPull
+    while (!result.done) {
+      received.push(result.value)
+      result = await iterator.next()
+    }
+
+    expect(received).toHaveLength(N)
+    received.forEach((evt, i) => {
+      expect(evt.kind).toBe("tool-call")
+      if (evt.kind === "tool-call") {
+        expect(evt.toolCallId).toBe(`t${i}`)
+        expect(evt.arguments).toEqual({ i })
+      }
+    })
   })
 
   it("wires the thread id captured from turn 1's result into --thread on turn 2's spawn", async () => {
