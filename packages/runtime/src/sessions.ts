@@ -1359,6 +1359,37 @@ export function createSessionsRegistry(opts?: {
               }
               if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
               if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
+
+              // Record a `usage_update` into the transcript so non-claude
+              // adapters (hermes reads its state.db here; claude-code emits
+              // this inline over ACP) carry the SAME token/cost telemetry in
+              // events.jsonl. Only when the reader actually returned a signal
+              // — never synthesize a usage event from nothing. Shape is
+              // identical to the ACP-arm's usage_update: size/used default to
+              // 0 (this reader carries no context-window figure, and
+              // `projectEvent` guards on >0 so the 0s never clobber a real
+              // size already mirrored onto the descriptor).
+              if (
+                usage.costUsd !== undefined ||
+                usage.tokensIn !== undefined ||
+                usage.tokensOut !== undefined
+              ) {
+                const usageEvent: AgentStreamEvent = {
+                  kind: "usage_update",
+                  size: 0,
+                  used: 0,
+                  ...(usage.costUsd !== undefined
+                    ? { cost: { amount: usage.costUsd, currency: "USD" } }
+                    : {}),
+                  ...(usage.tokensIn !== undefined
+                    ? { tokensIn: usage.tokensIn }
+                    : {}),
+                  ...(usage.tokensOut !== undefined
+                    ? { tokensOut: usage.tokensOut }
+                    : {}),
+                }
+                transcriptWriter.recordEvent(rt.desc.id, usageEvent)
+              }
             }
           } catch {
             // best-effort — swallow

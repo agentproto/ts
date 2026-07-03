@@ -250,6 +250,12 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             size: evt.size,
             used: evt.used,
             ...(evt.cost ? { cost: evt.cost } : {}),
+            // Persist cumulative token counts when the adapter reports them
+            // (claude-code over ACP, hermes via its state.db reader,
+            // mastracode via its native usage_update) so the transcript can
+            // price/aggregate a session even without a `cost` block.
+            ...(evt.tokensIn !== undefined ? { tokensIn: evt.tokensIn } : {}),
+            ...(evt.tokensOut !== undefined ? { tokensOut: evt.tokensOut } : {}),
           })
           break
         default:

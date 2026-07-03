@@ -204,6 +204,52 @@ describe("createPrintSession — mastracode print config", () => {
     })
   })
 
+  it("maps mastracode's native usage_update event to a usage_update StreamEvent carrying tokens", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hello"))
+    await Promise.resolve()
+
+    // Mastra Code emits `{ type: "usage_update", usage: TokenUsage }` on each
+    // model step-finish (cumulative). promptTokens → tokensIn,
+    // completionTokens → tokensOut; last-write-wins on the descriptor.
+    feed(lastChild!, [
+      {
+        type: "usage_update",
+        usage: { promptTokens: 1200, completionTokens: 340, totalTokens: 1540 },
+      },
+      { type: "agent_end", reason: "complete" },
+      {
+        type: "result",
+        status: "completed",
+        text: "ok",
+        finishReason: "complete",
+        usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540 },
+        threadId: "thread-1",
+        exitCode: 0,
+      },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const usage = events.find(e => e.kind === "usage_update")
+    expect(usage).toMatchObject({
+      kind: "usage_update",
+      size: 0,
+      used: 0,
+      tokensIn: 1200,
+      tokensOut: 340,
+    })
+    // No fabricated cost — mastracode's usage_update carries none.
+    expect((usage as { cost?: unknown }).cost).toBeUndefined()
+  })
+
   it("captures the thread id from the authoritative `result` line, not the incidental om_status event", async () => {
     const session = createPrintSession({
       bin: "npx",
