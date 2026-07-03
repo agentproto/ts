@@ -611,12 +611,25 @@ function translateSessionUpdate(
     }
     case "usage_update": {
       const cost = update.cost as { amount: number; currency: string } | null | undefined
+      // Accept both camelCase and snake_case token fields — agents differ on
+      // the convention and this update kind is non-standard ACP.
+      const numeric = (...keys: string[]): number | undefined => {
+        for (const key of keys) {
+          const v = update[key]
+          if (typeof v === "number") return v
+        }
+        return undefined
+      }
+      const tokensIn = numeric("tokensIn", "input_tokens", "inputTokens")
+      const tokensOut = numeric("tokensOut", "output_tokens", "outputTokens")
       return {
         kind: "usage_update",
         sessionId,
         size: (update.size as number) ?? 0,
         used: (update.used as number) ?? 0,
         ...(cost ? { cost } : {}),
+        ...(tokensIn !== undefined ? { tokensIn } : {}),
+        ...(tokensOut !== undefined ? { tokensOut } : {}),
       }
     }
     case "user_message_chunk":

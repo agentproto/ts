@@ -28,6 +28,7 @@ import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
+import { deriveSessionUsage, type SessionUsage } from "./usage.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -109,6 +110,11 @@ export interface AgentStreamEvent {
   used?: number
   /** "usage_update" cumulative session cost, when the adapter reports one. */
   cost?: { amount: number; currency: string }
+  /** "usage_update" cumulative input/output token counts, when the adapter
+   *  reports them (lets the daemon price a session whose adapter gives tokens
+   *  but no `cost`). */
+  tokensIn?: number
+  tokensOut?: number
 }
 
 /**
@@ -226,6 +232,16 @@ export interface SessionDescriptor {
   /** Cumulative input / output token counts (same source + cadence as costUsd). */
   tokensIn?: number
   tokensOut?: number
+  /** Context-window size + tokens-in-context from the latest `usage_update`
+   *  event (ACP adapters that report a context window). Refreshed live as
+   *  usage_update events arrive, not just at turn-end. */
+  contextSize?: number
+  contextUsed?: number
+  /** Where `costUsd` came from — `"adapter"` (adapter's own reader or a
+   *  usage_update cost block), `"computed"` (tokens × in-repo catalog price),
+   *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
+   *  deliberately left undefined), or `"none"`. Stamped at each turn-end. */
+  usageSource?: import("./usage.js").UsageSource
   /** ACP-level session id (the adapter's own handle — claude-code's
    *  conversation id, hermes' chat id, …). Set at spawnAgent time
    *  from `agentSession.sessionId`. Survives across daemon restarts
@@ -361,6 +377,11 @@ interface SessionRuntime {
   /** Best-effort usage reader called after each turn. The adapter returns
    *  accumulated cost/token counts which are mirrored onto the descriptor. */
   readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** True once an authoritative cost has been observed from the adapter —
+   *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
+   *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
+   *  turn-end. */
+  adapterReportedCost?: boolean
 }
 
 const RECENT_LINES_CAP = 500
@@ -1021,12 +1042,23 @@ export function createSessionsRegistry(opts?: {
         )
         break
       }
-      // "usage_update" is high-frequency telemetry (context size/cost) —
-      // the ring buffer isn't the right place for it (cost is already
-      // surfaced via rt.desc.costUsd at turn-end); it still lands in
-      // events.jsonl via the transcript writer tap point.
-      case "usage_update":
+      // "usage_update" is high-frequency telemetry (context size/cost) — the
+      // ring buffer isn't the right place for it (cost is surfaced via
+      // rt.desc.costUsd at turn-end); it still lands in events.jsonl via the
+      // transcript writer tap point. We DO mirror its structured fields onto
+      // the descriptor here so the latest context window + any adapter-
+      // reported cost/tokens are available live to session_list / session_usage.
+      case "usage_update": {
+        if (typeof evt.size === "number" && evt.size > 0) rt.desc.contextSize = evt.size
+        if (typeof evt.used === "number" && evt.used > 0) rt.desc.contextUsed = evt.used
+        if (evt.cost) {
+          rt.desc.costUsd = evt.cost.amount
+          rt.adapterReportedCost = true
+        }
+        if (typeof evt.tokensIn === "number") rt.desc.tokensIn = evt.tokensIn
+        if (typeof evt.tokensOut === "number") rt.desc.tokensOut = evt.tokensOut
         break
+      }
     }
   }
 
@@ -1161,6 +1193,40 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Resolve a session's usage snapshot from the descriptor's accumulated
+   * signals: the adapter-reported cost (readUsage or a usage_update cost
+   * block) is authoritative; otherwise tokens are priced against the in-repo
+   * catalog (`deriveSessionUsage`), or tagged no-pricing when the model is
+   * unknown. Pure read of `rt` — mutation is the caller's job.
+   */
+  const buildUsageSnapshot = (rt: SessionRuntime): SessionUsage =>
+    deriveSessionUsage({
+      ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
+      ...(rt.adapterReportedCost && rt.desc.costUsd !== undefined
+        ? { adapterCostUsd: rt.desc.costUsd }
+        : {}),
+      ...(rt.desc.tokensIn !== undefined ? { tokensIn: rt.desc.tokensIn } : {}),
+      ...(rt.desc.tokensOut !== undefined ? { tokensOut: rt.desc.tokensOut } : {}),
+      ...(rt.desc.contextSize !== undefined ? { contextSize: rt.desc.contextSize } : {}),
+      ...(rt.desc.contextUsed !== undefined ? { contextUsed: rt.desc.contextUsed } : {}),
+    })
+
+  /**
+   * Write a final `usage_snapshot` recap when an agent session exits (kill,
+   * turn error, cost-cap, shutdown). Stamps `usageSource` on the descriptor
+   * and skips writing when there's nothing measured (`source: "none"`) so a
+   * never-run session doesn't leave an empty transcript file. Must run BEFORE
+   * `transcriptWriter.close(id)`.
+   */
+  const recordExitUsageSnapshot = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    const usage = buildUsageSnapshot(rt)
+    rt.desc.usageSource = usage.source
+    if (usage.source === "none") return
+    transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown
@@ -1209,22 +1275,28 @@ export function createSessionsRegistry(opts?: {
         `[turn error] ${err instanceof Error ? err.message : String(err)}`,
         "stderr"
       )
+      recordExitUsageSnapshot(rt)
       schedulePersist()
       emitExited(rt)
     } finally {
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
-      if (turnCompleted && sessionEvents) {
+      if (turnCompleted) {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
 
-        // ── Cost refresh + cap (best-effort) ─────────────────────────
+        // ── Cost refresh (best-effort) ───────────────────────────────
+        // The adapter's own reader (e.g. hermes state.db) is authoritative —
+        // a returned `costUsd` marks the session as adapter-priced.
         if (rt.readUsage) {
           try {
             const usage = await rt.readUsage()
             if (usage) {
-              if (usage.costUsd !== undefined) rt.desc.costUsd = usage.costUsd
+              if (usage.costUsd !== undefined) {
+                rt.desc.costUsd = usage.costUsd
+                rt.adapterReportedCost = true
+              }
               if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
               if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
             }
@@ -1232,6 +1304,16 @@ export function createSessionsRegistry(opts?: {
             // best-effort — swallow
           }
         }
+
+        // ── Resolve usage source (adapter / computed / no-pricing / none)
+        //    and write the durable turn-boundary recap. Runs on every
+        //    turn-end, even without a session-event bus wired.
+        const usage = buildUsageSnapshot(rt)
+        rt.desc.usageSource = usage.source
+        rt.desc.costUsd = usage.costUsd
+        transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+
+        // ── Cost cap (best-effort, turn-granular) ────────────────────
         const overBudget =
           rt.maxCostUsd !== undefined &&
           rt.desc.costUsd !== undefined &&
@@ -1248,33 +1330,35 @@ export function createSessionsRegistry(opts?: {
           void transcriptWriter.close(rt.desc.id)
         }
 
-        // No driver reports a structured "agent-prompt" today (every
-        // currently-supported adapter auto-answers ACP permission
-        // requests rather than surfacing them) — fall back to a
-        // best-effort scan of the transcript tail so awaiting-input still
-        // carries SOME signal beyond a bare boolean.
-        if (rt.desc.awaitingInput && !rt.desc.awaitingQuestion) {
-          rt.desc.awaitingQuestion = deriveHeuristicQuestion(rt.recentLines)
-        }
+        if (sessionEvents) {
+          // No driver reports a structured "agent-prompt" today (every
+          // currently-supported adapter auto-answers ACP permission
+          // requests rather than surfacing them) — fall back to a
+          // best-effort scan of the transcript tail so awaiting-input still
+          // carries SOME signal beyond a bare boolean.
+          if (rt.desc.awaitingInput && !rt.desc.awaitingQuestion) {
+            rt.desc.awaitingQuestion = deriveHeuristicQuestion(rt.recentLines)
+          }
 
-        const ts = new Date().toISOString()
-        sessionEvents.emit({
-          type: "session:turn-end",
-          sessionId: rt.desc.id,
-          awaitingInput: rt.desc.awaitingInput ?? false,
-          label: rt.desc.label,
-          ts,
-          ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
-          ...(turnEndReason ? { reason: turnEndReason } : {}),
-        })
-        if (rt.desc.awaitingInput) {
+          const ts = new Date().toISOString()
           sessionEvents.emit({
-            type: "session:awaiting-input",
+            type: "session:turn-end",
             sessionId: rt.desc.id,
+            awaitingInput: rt.desc.awaitingInput ?? false,
             label: rt.desc.label,
             ts,
             ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+            ...(turnEndReason ? { reason: turnEndReason } : {}),
           })
+          if (rt.desc.awaitingInput) {
+            sessionEvents.emit({
+              type: "session:awaiting-input",
+              sessionId: rt.desc.id,
+              label: rt.desc.label,
+              ts,
+              ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+            })
+          }
         }
         if (overBudget) emitExited(rt)
       }
@@ -1793,6 +1877,8 @@ export function createSessionsRegistry(opts?: {
       // SIGTERM the underlying child/pty if any. Either branch is a
       // best-effort — the descriptor flip is what the UI surfaces.
       if (rt.agentSession) {
+        // Durable usage recap on exit — before close() flushes the stream.
+        recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
         void transcriptWriter.close(rt.desc.id)
       }
@@ -1867,6 +1953,7 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status = "killed"
         rt.desc.endedAt = nowIso
         if (rt.agentSession) {
+          recordExitUsageSnapshot(rt)
           void rt.agentSession.close().catch(() => undefined)
         }
         if (rt.pty) {

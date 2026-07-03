@@ -141,4 +141,10 @@ export type StreamEvent =
       size: number
       used: number
       cost?: { amount: number; currency: string }
+      /** Cumulative input/output token counts, when the agent reports them
+       *  (some ACP agents send per-token usage alongside the context-window
+       *  `size`/`used`). Lets the daemon price a session that has tokens but
+       *  no adapter-reported `cost`. */
+      tokensIn?: number
+      tokensOut?: number
     }
