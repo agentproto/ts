@@ -101,6 +101,15 @@ export const CATALOG: readonly CatalogEntry[] = [
     packageName: "@agentproto/adapter-openclaw",
     hint: "gateway · ACP · plugins",
   },
+  {
+    type: "agent-cli",
+    slug: "claude-sdk",
+    name: "Claude (SDK)",
+    description:
+      "First-party agentproto adapter — Claude Code's agent harness run as a library via the Claude Agent SDK's headless query(), behind an ACP server. Clean model pinning, native usage, custom base_url.",
+    packageName: "@agentproto/adapter-claude-sdk",
+    hint: "anthropic · first-party · ACP · resumable",
+  },
 ] as const
 
 /** Filter the catalog by entry type. */
