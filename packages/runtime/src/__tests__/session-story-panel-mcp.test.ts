@@ -132,6 +132,11 @@ describe("session story panel McpApp — MCP protocol", () => {
     expect(content.text).toContain("session story")
     // Bridge protocol must be present
     expect(content.text).toContain("ui/initialize")
+    // Spec 2026-01-26: ui/initialize params REQUIRE `appInfo` — hosts
+    // (ext-apps McpUiInitializeRequestSchema) reject/drop `clientInfo`,
+    // leaving the panel blank. Guard the handshake shape.
+    expect(content.text).toContain("appInfo")
+    expect(content.text).not.toContain("clientInfo")
     // Live data wiring must be present
     expect(content.text).toContain("session_list")
     expect(content.text).toContain("agent_export")
