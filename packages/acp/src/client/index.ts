@@ -132,6 +132,11 @@ export interface AcpClient {
      * Model to select via `session/set_config_option` immediately after
      * `newSession`. The claude-agent-acp wrapper supports this as
      * `configId:"model"`. Omit to keep the agent's own default.
+     *
+     * Best-effort: a value the agent can't resolve (a stale/gated/typo'd id)
+     * is warned about and dropped — the session still starts on the agent's
+     * default model rather than crashing the spawn. See the reject handler
+     * in `newSession` for the reasoning (agentproto#186).
      */
     model?: string
     /**
@@ -236,12 +241,34 @@ export async function createAcpClient(
       // We call these sequentially so a model switch (which rebuilds the
       // effort options) always precedes the effort set.
       if (params.model) {
-        await connection.setSessionConfigOption({
-          configId: "model",
-          value: params.model,
-          sessionId,
-        } as never)
-        options.onActivity?.()
+        try {
+          await connection.setSessionConfigOption({
+            configId: "model",
+            value: params.model,
+            sessionId,
+          } as never)
+          options.onActivity?.()
+        } catch (err) {
+          // Non-fatal by design. claude-agent-acp validates the requested
+          // model against the concrete option ids it advertises for THIS
+          // session (e.g. "default", "opus[1m]", "sonnet", "claude-sonnet-5",
+          // "haiku") and rejects anything it can't resolve — including stale
+          // or gated ids like "claude-sonnet-4-6" — with a JSON-RPC -32603
+          // whose only useful text is buried in `error.data.details`
+          // ("Invalid value for config option model: <id>"). Letting that
+          // reject `newSession` turned a bad model id into an opaque
+          // "spawn failed — Internal error" that killed the whole session
+          // (agentproto#186). The accepted vocabulary is dynamic (it varies
+          // by wrapper version and account entitlements), so there is no
+          // version-stable way to know it before the call — a rejected model
+          // must therefore never be fatal. This is NOT a silent drop: the
+          // requested id AND the server's own reason are logged, and the
+          // session continues on the agent's default model.
+          console.warn(
+            `[acp] set_config_option model="${params.model}" rejected by server ` +
+              `— keeping the agent's default model. Reason: ${configOptionErrorDetail(err)}`,
+          )
+        }
       }
       if (params.effort) {
         try {
@@ -257,8 +284,8 @@ export async function createAcpClient(
           // some versions reject them outright). A rejected set_config_option
           // must never kill the spawn — effort is silently ignored instead.
           console.warn(
-            `[acp] set_config_option effort="${params.effort}" rejected by server (best-effort):`,
-            err instanceof Error ? err.message : err,
+            `[acp] set_config_option effort="${params.effort}" rejected by server ` +
+              `(best-effort): ${configOptionErrorDetail(err)}`,
           )
         }
       }
@@ -637,6 +664,39 @@ function translateSessionUpdate(
     default:
       return null
   }
+}
+
+/**
+ * Best human-readable reason from a failed `session/set_config_option`.
+ *
+ * The ACP SDK surfaces a server-side rejection as a JSON-RPC `RequestError`
+ * whose generic `message` is just "Internal error" (code -32603) — the useful
+ * text lives in `error.data.details` (e.g. claude-agent-acp's
+ * "Invalid value for config option model: claude-sonnet-4-6"). Prefer that
+ * detail, falling back to the error's own message, then a stringified form.
+ * Narrows `unknown` with `in`/`typeof` guards — no casts.
+ */
+function configOptionErrorDetail(err: unknown): string {
+  if (typeof err === "object" && err !== null) {
+    if ("data" in err && typeof err.data === "object" && err.data !== null) {
+      const data = err.data
+      if (
+        "details" in data &&
+        typeof data.details === "string" &&
+        data.details.length > 0
+      ) {
+        return data.details
+      }
+    }
+    if (
+      "message" in err &&
+      typeof err.message === "string" &&
+      err.message.length > 0
+    ) {
+      return err.message
+    }
+  }
+  return String(err)
 }
 
 function extractText(content: unknown): string {

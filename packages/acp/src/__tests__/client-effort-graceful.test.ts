@@ -84,17 +84,57 @@ describe("createAcpClient — newSession effort graceful degradation", () => {
     expect(mockSetSessionConfigOption).not.toHaveBeenCalled()
   })
 
-  it("does NOT swallow a model set_config_option failure (only effort is best-effort)", async () => {
-    // The try/catch must wrap ONLY effort, not model — if model is rejected
-    // the whole newSession should propagate the error.
-    mockSetSessionConfigOption.mockRejectedValue(
-      new Error("model config rejected"),
-    )
+  it("does NOT crash the spawn when a model set_config_option is rejected (agentproto#186)", async () => {
+    // Reproduces the real wrapper behaviour: claude-agent-acp rejects a model
+    // id it can't resolve (e.g. the stale "claude-sonnet-4-6") with a JSON-RPC
+    // -32603 whose only useful text is in `error.data.details`. That MUST NOT
+    // reject newSession — the session starts on the agent's default model.
+    const rejection: Error & { code?: number; data?: { details?: string } } =
+      Object.assign(new Error("Internal error"), {
+        code: -32603,
+        data: { details: "Invalid value for config option model: claude-sonnet-4-6" },
+      })
+    mockSetSessionConfigOption.mockRejectedValue(rejection)
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
     const client = await createAcpClient({ ...fakeStreams() })
 
-    await expect(
-      client.newSession({ cwd: "/tmp", model: "claude-haiku-4-5-20251001" }),
-    ).rejects.toThrow("model config rejected")
+    // Act — must NOT throw even though the model set is rejected.
+    const session = await client.newSession({
+      cwd: "/tmp",
+      model: "claude-sonnet-4-6",
+    })
+
+    expect(session).toBeDefined()
+    expect(session.sessionId).toBe("sess-graceful")
+
+    // The warning is loud, not silent: it names the requested model AND
+    // surfaces the server's captured `data.details` reason.
+    expect(warnSpy).toHaveBeenCalledOnce()
+    const warned = String(warnSpy.mock.calls[0]?.[0])
+    expect(warned).toMatch(/model="claude-sonnet-4-6".*rejected by server/i)
+    expect(warned).toContain(
+      "Invalid value for config option model: claude-sonnet-4-6",
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it("applies a valid model via set_config_option before effort", async () => {
+    mockSetSessionConfigOption.mockResolvedValue({})
+
+    const client = await createAcpClient({ ...fakeStreams() })
+    await client.newSession({ cwd: "/tmp", model: "claude-sonnet-5", effort: "high" })
+
+    // Model is set first (a switch rebuilds the effort options), then effort.
+    expect(mockSetSessionConfigOption).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ configId: "model", value: "claude-sonnet-5" }),
+    )
+    expect(mockSetSessionConfigOption).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ configId: "effort", value: "high" }),
+    )
   })
 })

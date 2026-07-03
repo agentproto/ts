@@ -43,15 +43,20 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
+  // Every id below is validated against the wrapper's live
+  // `session/new` → configOptions[model] selector: the wrapper resolves
+  // these (via its own `resolveModelPreference`) and rejects anything it
+  // can't — a rejected `session/set_config_option` used to kill the spawn
+  // (agentproto#186; the apply is now best-effort, see @agentproto/acp's
+  // newSession). Stale ids that the wrapper no longer offers were removed:
+  // `claude-sonnet-4-6` (the old default), `claude-opus-4-7`, `claude-opus-4-6`.
   models: {
-    default: "claude-sonnet-4-6",
+    default: "claude-sonnet-5",
     allowed: [
       "claude-sonnet-5",
-      "claude-sonnet-4-6",
       "claude-opus-4-8",
-      "claude-opus-4-7",
-      "claude-opus-4-6",
       "claude-haiku-4-5",
+      "claude-fable-5",
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
@@ -152,9 +157,11 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       // cannot select the model.
       type: "string" as const,
       description:
-        "Anthropic model ID (e.g. 'claude-opus-4-8', 'claude-sonnet-4-6'). " +
-        "Applied via ACP session/set_config_option after the session is created. " +
-        "Omit to use the claude-code default.",
+        "Anthropic model ID or wrapper alias (e.g. 'claude-opus-4-8', " +
+        "'claude-sonnet-5', 'sonnet', 'opus'). Applied via ACP " +
+        "session/set_config_option after the session is created; an id the " +
+        "wrapper can't resolve is warned about and ignored (the session keeps " +
+        "the claude-code default). Omit to use the claude-code default.",
     },
     {
       id: "effort",
