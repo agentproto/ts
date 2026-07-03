@@ -16,6 +16,9 @@ agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                           [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
 agentproto sessions mirror   <id-or-name> [--no-color]
+agentproto sessions export   <id-or-name> [--json] [-o <file>]
+                                          [--source auto|native|daemon]
+                                          [--adapter <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--json]
 ```
 
@@ -220,6 +223,37 @@ Dead sessions (exited/killed/error) print a hint pointing at
 `restart`; the WS upgrade would only return a confusing close 1011
 mid-stream.
 
+### `export <id-or-name>`
+
+```bash
+agentproto sessions export ses_abc12
+agentproto sessions export claude-tui --json -o transcript.json
+agentproto sessions export ses_abc12 --source daemon
+```
+
+GETs `/sessions/:id/export` — renders a clean transcript from the
+session's structured history (see
+[concepts/session-transcripts.md](../concepts/session-transcripts.md)
+for what's captured and where). Works on stopped sessions as well as
+running ones.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--json` | markdown | Emit the raw `ExportedSession` JSON instead of rendered markdown. |
+| `--output <file>`, `-o` | stdout | Write to a file instead of stdout. |
+| `--source <auto\|native\|daemon>` | `auto` | Which backend to read. `auto` prefers the adapter's own native store (claude-code JSONL, hermes SQLite) and falls back to agentproto's `events.jsonl` capture when there isn't one or it can't be read; `native`/`daemon` force one and surface its own error instead of falling back. |
+| `--adapter <slug>` | from registry | Override the adapter slug — required with `--source native` when exporting a raw adapter-native id that isn't in the registry. |
+| `--cwd <dir>` | from registry | Override the working directory — required for a claude-code native export when the session isn't in the registry (used to locate the JSONL file). |
+
+The `/sessions/:id/export` route accepts the same `format`
+(`markdown`|`json`), `source`, `adapter`, and `cwd` as query params.
+On failure it responds `{error: "export_failed", message, sessionId,
+adapter}` — `404` when the session/adapter/store couldn't be found at
+all, `422` for any other export error (e.g. a native store that
+failed to parse). `--source` values other than `auto`/`native`/`daemon`
+are rejected client-side by the CLI (exit `2`) before any request is
+made.
+
 ### `stop <id-or-name>`
 
 ```bash
@@ -229,6 +263,33 @@ agentproto sessions stop claude-tui --json
 
 POSTs `/sessions/:id/kill` — sends SIGTERM to the child. Idempotent
 on already-dead sessions (reports "not running"; exit `1`).
+
+## Raw events (HTTP)
+
+```text
+GET /sessions/:id/events?since=<seq>&limit=<n>
+```
+
+No CLI subverb wraps this — it's an HTTP-only route for a frontend
+that wants the raw, per-kind records (tool calls, plans, usage
+updates, …) instead of the collapsed markdown/JSON `/export` gives.
+It reads the same `events.jsonl` agentproto's daemon-events export
+strategy reads (see
+[concepts/session-transcripts.md](../concepts/session-transcripts.md)).
+
+| Query param | Default | Notes |
+|-------------|---------|-------|
+| `since` | `0` | Only return records with `seq` greater than this cursor. Must be a non-negative integer or the route 400s (`invalid_since`). |
+| `limit` | `500` | Max records per call, clamped to `[1, 2000]`. |
+
+Response: `{sessionId, events, nextSeq, complete}` — `events` is the
+raw parsed JSONL objects (`seq > since`, capped at `limit`); `nextSeq`
+is the last returned event's `seq` (or `since` unchanged if nothing
+matched); `complete` is `false` when more events exist beyond
+`limit` — poll again with `since=nextSeq` to keep draining. `404`
+(`no_transcript`) when the session never wrote an `events.jsonl` (a
+PTY/command session, or an agent-cli session that predates this
+feature).
 
 ## Examples
 
@@ -251,4 +312,15 @@ agentproto sessions --watch
 
 # Stop everything you can find
 agentproto sessions --json | jq -r '.[].id' | xargs -n1 agentproto sessions stop
+
+# Export a transcript once the session is done
+agentproto sessions export ses_abc12 -o transcript.md
 ```
+
+## See also
+
+- [Session transcripts](../concepts/session-transcripts.md) — what's
+  captured in `events.jsonl`, event kinds, native vs daemon export
+  sources, the PTY exception
+- [`chat.md`](./chat.md) — sending follow-up prompts to a live
+  session, incl. what happens when the target is dead or mid-turn
