@@ -195,6 +195,17 @@ export interface AgentCliCapabilities {
 }
 
 /**
+ * Support status for a declared mode. Absent ⇒ treated as `"active"`.
+ *   active  — the mode does what its description claims.
+ *   noop    — declared and accepted, but measured to have no effect
+ *             (argv/env compose fine, but the observable outcome is
+ *             identical to not passing it). Kept declared for honesty
+ *             and so a future fix can flip it back to `active`.
+ *   planned — declared as an intended surface but not wired yet.
+ */
+export type AgentCliModeStatus = "active" | "noop" | "planned"
+
+/**
  * AIP-45 mode declaration — a mutually-exclusive operation profile
  * the CLI exposes. The host picks at most ONE mode per turn via
  * `OPERATOR.runtime.config.mode`. Mode patches apply AFTER the
@@ -213,6 +224,14 @@ export interface AgentCliMode {
   bin_args_prepend?: string[]
   bin_args_append?: string[]
   env?: Record<string, string>
+  /**
+   * Honest support status surfaced to clients (e.g. via `adapter_list`).
+   * Lets an adapter admit that a declared mode is a measured no-op or
+   * not-yet-wired instead of silently accepting it. Absent ⇒ `"active"`.
+   */
+  status?: AgentCliModeStatus
+  /** Human-readable reason backing `status` (e.g. what was measured). */
+  status_note?: string
 }
 
 export type AgentCliOptionType = "boolean" | "integer" | "string" | "enum"

@@ -162,6 +162,22 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
 } | null>
 
 /**
+ * UI-safe projection of an AIP-45 `modes[]` entry as surfaced by
+ * `adapter_list`. Mirrors `@agentproto/cli`'s `AdapterMode` without
+ * importing it (the runtime deliberately carries no cli dep — see the
+ * `AgentAdapterLister` note above). Spawn internals (`bin_args_*`, `env`)
+ * are intentionally omitted; `status` is normalised to `"active"` by the
+ * lister when the manifest omits it, so a declared mode is never
+ * silently statusless.
+ */
+export interface AdapterListMode {
+  id: string
+  description?: string
+  status: "active" | "noop" | "planned"
+  status_note?: string
+}
+
+/**
  * Compact adapter metadata for the discovery endpoints. Independent
  * of the resolver function above — hosts that can list installed
  * adapters wire this; hosts that can only resolve by-slug skip it
@@ -175,6 +191,10 @@ export interface AdapterListEntry {
   protocol: string
   streaming: boolean
   packageName: string
+  /** Declared operation modes with their honest support status, so a
+   *  client can see e.g. hermes' `lean` mode is a measured no-op instead
+   *  of being silently accepted. Empty when the adapter declares none. */
+  modes: AdapterListMode[]
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>

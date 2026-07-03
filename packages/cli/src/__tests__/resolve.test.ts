@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { resolveAdapter } from "../registry/resolve.js"
+import { resolveAdapter, listInstalledAdapters } from "../registry/resolve.js"
 
 // Regression test for a real bug: `createProprietaryProtocolArm` (inside
 // @agentproto/driver-agent-cli, a package that deliberately does NOT
@@ -31,3 +31,28 @@ describe("resolveAdapter — proprietary adapter re-import fix", () => {
     expect(resolved.handle.adapter).toBeUndefined()
   })
 })
+
+// `adapter_list` (the daemon MCP tool + GET /adapters) serialises exactly
+// what `listInstalledAdapters()` returns. Each entry now carries the
+// adapter's declared `modes[]` projected to the UI-safe subset with an
+// honest support `status` — so a declared-but-no-op mode is visible to
+// clients instead of being silently accepted. hermes' `lean` mode is the
+// canonical measured no-op (see adapters/hermes/src/index.ts).
+describe("listInstalledAdapters — mode status projection", () => {
+  it("surfaces hermes' lean mode as status 'noop' with a status_note", async () => {
+    const adapters = await listInstalledAdapters()
+    const hermes = adapters.find((a) => a.slug === "hermes")
+    expect(hermes).toBeDefined()
+
+    const lean = hermes?.modes.find((m) => m.id === "lean")
+    expect(lean).toBeDefined()
+    expect(lean?.status).toBe("noop")
+    expect(lean?.status_note).toBeTruthy()
+
+    // A mode without an explicit status normalises to "active" (never
+    // left statusless), so clients can rely on the field always being set.
+    const def = hermes?.modes.find((m) => m.id === "default")
+    expect(def?.status).toBe("active")
+  })
+})
+

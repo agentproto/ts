@@ -24,7 +24,7 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
     aip: 45,
     name: "agent-cli",
     readIdentity: (def) => def.id,
-    validate(def) {
+    validate(def: AgentCliDefinition) {
       const result = agentCliFrontmatterSchema.safeParse(def)
       if (!result.success) {
         throw new Error(
@@ -61,7 +61,7 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
         )
       }
     },
-    build(def) {
+    build(def: AgentCliDefinition) {
       return { ...def } as AgentCliHandle
     },
   },

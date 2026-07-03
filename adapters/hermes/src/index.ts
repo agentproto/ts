@@ -110,6 +110,12 @@ export const hermes: AgentCliHandle = defineAgentCli({
         "acp` — the global flag MUST precede the `acp` subcommand baked into `bin_args`, " +
         "which is why this needs bin_args_prepend rather than bin_args_append.",
       bin_args_prepend: ["--ignore-user-config"],
+      status: "noop",
+      status_note:
+        "Measured no-op: --ignore-user-config skips ~/.hermes/config.yaml, but hermes " +
+        "skills live in a separate skills dir (not config), so prompt-size is " +
+        "byte-identical. The real lean lever is narrowing the mounted toolset, not " +
+        "this flag.",
     },
   ],
   options: [

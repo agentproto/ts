@@ -17,7 +17,7 @@ import { promises as fs } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
-import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle, AgentCliMode } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
   makeAdapterLister,
@@ -38,6 +38,18 @@ export interface ResolvedAdapter {
   readonly handle: AgentCliHandle
   readonly source: "npm" | "file" | "bundled"
   readonly packageName?: string
+}
+
+/** Mode metadata surfaced in `adapter_list` — the UI-safe subset of an
+ *  AIP-45 `modes[]` entry. Omits the spawn internals (`bin_args_*`, `env`)
+ *  since those aren't information a picker needs; carries the honest
+ *  `status`/`status_note` so a declared-but-no-op mode is visible. */
+export interface AdapterMode {
+  id: string
+  description?: string
+  /** Absent in the manifest ⇒ normalised to "active" here. */
+  status: NonNullable<AgentCliMode["status"]>
+  status_note?: string
 }
 
 /**
@@ -70,10 +82,29 @@ export interface AdapterInfo {
    *  binary accepts). Pass one of these as `model` in `agent_start`
    *  to avoid trial-and-error validation errors. */
   models: string[]
+  /** AIP-45 `modes[]` the adapter declares, projected to the UI-safe
+   *  subset (id + description + honest status). Empty when the adapter
+   *  declares no modes. `status` defaults to "active" when the manifest
+   *  omits it, so a declared mode is never silently statusless. */
+  modes: AdapterMode[]
 }
 
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
+
+/** Project a manifest's `modes[]` to the UI-safe `AdapterMode[]`,
+ *  normalising an absent `status` to "active". Accepts the loosely-typed
+ *  handle field (a handle is `Readonly<AgentCliDefinition>` whose `modes`
+ *  is `AgentCliMode[] | undefined`); anything not an array yields []. */
+function toAdapterModes(modes: AgentCliMode[] | undefined): AdapterMode[] {
+  if (!Array.isArray(modes)) return []
+  return modes.map((m) => ({
+    id: m.id,
+    ...(m.description !== undefined ? { description: m.description } : {}),
+    status: m.status ?? "active",
+    ...(m.status_note !== undefined ? { status_note: m.status_note } : {}),
+  }))
+}
 
 // Scoped to this module's own location — used only to RESOLVE a
 // specifier to an absolute path (never to `require()` anything), so its
@@ -240,6 +271,7 @@ export async function listInstalledAdapters(opts?: {
           models: Array.isArray(modelsField)
             ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
             : [],
+          modes: toAdapterModes(resolved.handle.modes),
         }
         out.push(info)
       } catch (err) {
@@ -290,12 +322,13 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
   readonly streaming: boolean
   readonly commands: AgentCliCommand[]
   readonly models: string[]
+  readonly modes: AdapterMode[]
   readonly packageName: string
   readonly originalHandle: AgentCliHandle
 }
 
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
-type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models">
+type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models" | "modes">
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
   return {
@@ -303,6 +336,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     streaming: h.streaming,
     commands: h.commands,
     models: h.models,
+    modes: h.modes,
   }
 }
 
@@ -328,6 +362,7 @@ export function wrapCliHandle(
     models: Array.isArray(modelsField)
       ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
       : [],
+    modes: toAdapterModes(handle.modes),
     originalHandle: handle,
   }
 }
@@ -403,6 +438,7 @@ export async function listAdaptersWithCatalog(
     packageName: e.packageName,
     commands: e.info?.commands ?? [],
     models: e.info?.models ?? [],
+    modes: e.info?.modes ?? [],
     status: e.status,
     ...(e.hint !== undefined ? { hint: e.hint } : {}),
   }))
