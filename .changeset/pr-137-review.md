@@ -1,5 +1,5 @@
 ---
-"@agentproto/runtime": major
+"@agentproto/runtime": minor
 "@agentproto/harness": patch
 ---
 
