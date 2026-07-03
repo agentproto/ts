@@ -214,8 +214,27 @@ jobs:
       statuses: write       # post explicit commit-status on HEAD after push
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
+
+      # The re-triggered run (from the reviewer's changeset commit) can race
+      # GitHub auto-merge, which merges the PR and deletes its branch. Every
+      # branch-dependent step below then fails on a dead-branch checkout
+      # (`agent-setup` does `ref: github.head_ref`). Query the LIVE PR state
+      # here — the bootstrap checkout above works post-merge and this `gh`
+      # call needs no branch — and skip the rest of the job if it's gone.
+      - name: Skip if PR already merged/closed
+        id: prstate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MERGED=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --json state,mergedAt \
+            --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
+          echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
+
       - uses: ./.github/actions/agent-setup
         id: setup
+        if: steps.prstate.outputs.skip != 'true'
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
@@ -229,6 +248,7 @@ jobs:
       # convenience for trusted contributors, not a security boundary.
       - name: Check local-review bypass
         id: bypass
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
@@ -241,7 +261,9 @@ jobs:
 
       - name: Run agentic PR reviewer
         id: reviewer
-        if: steps.bypass.outputs.skip != 'true'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -254,7 +276,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
-        if: steps.bypass.outputs.skip != 'true'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
         id: changeset
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
@@ -283,6 +307,7 @@ jobs:
       # Three steps so pr-fix (always()) still sees a red job and triggers.
       - name: Resolve review decision + blocking config
         id: gate
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           DECISION=$(gh pr view "$PR_NUMBER" --json reviewDecision -q '.reviewDecision')
           BLOCKING="${{ vars.AGENTIC_REVIEW_BLOCKING }}"
@@ -314,6 +339,7 @@ jobs:
           REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
 
       - name: Post explicit statuses on PR HEAD
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           SHA=$(git rev-parse HEAD)
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -337,7 +363,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Gate — fail run if blocking changes requested
-        if: steps.gate.outputs.state == 'failure'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.gate.outputs.state == 'failure'
         run: |
           echo "::error::Agentic reviewer requested changes (blocking mode) — merge blocked until fixes or admin force-merge."
           exit 1
@@ -430,14 +458,34 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
+
+      # The re-triggered run (from the reviewer's changeset commit) can race
+      # GitHub auto-merge, which merges the PR and deletes its branch. Every
+      # branch-dependent step below then fails on a dead-branch checkout
+      # (`agent-setup` does `ref: github.head_ref`). Query the LIVE PR state
+      # here — the bootstrap checkout above works post-merge and this `gh`
+      # call needs no branch — and skip the rest of the job if it's gone.
+      - name: Skip if PR already merged/closed
+        id: prstate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MERGED=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --json state,mergedAt \
+            --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
+          echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
+
       - uses: ./.github/actions/agent-setup
         id: setup
+        if: steps.prstate.outputs.skip != 'true'
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge when approved + opted-in
+        if: steps.prstate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
