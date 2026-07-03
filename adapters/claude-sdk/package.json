@@ -1,0 +1,69 @@
+{
+  "name": "@agentproto/adapter-claude-sdk",
+  "version": "0.1.0",
+  "description": "@agentproto/adapter-claude-sdk — first-party agentproto adapter that runs Claude Code's agent harness as a library via the Claude Agent SDK headless query(), behind an AIP-44 ACP server. 100% Anthropic-native I/O; clean model pinning + base_url; native usage telemetry.",
+  "keywords": [
+    "agentproto",
+    "aip-42",
+    "aip-44",
+    "aip-45",
+    "anthropic",
+    "claude",
+    "claude-agent-sdk",
+    "acp",
+    "agent-cli",
+    "adapter"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-45",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/claude-sdk"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agentproto-claude-sdk": "dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./claude-sdk.ACP.md": "./claude-sdk.ACP.md",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "claude-sdk.ACP.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentclientprotocol/sdk": "^0.21.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.200"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

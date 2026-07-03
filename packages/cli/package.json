@@ -99,6 +99,7 @@
   },
   "devDependencies": {
     "@agentproto/adapter-claude-code": "workspace:*",
+    "@agentproto/adapter-claude-sdk": "workspace:*",
     "@agentproto/adapter-codex": "workspace:*",
     "@agentproto/adapter-hermes": "workspace:*",
     "@agentproto/adapter-mastra-agent": "workspace:*",
