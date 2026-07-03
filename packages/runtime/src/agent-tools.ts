@@ -181,6 +181,17 @@ export function registerAgentTools(
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
         ),
+      options: jsonTolerant(
+        z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
+      )
+        .optional()
+        .describe(
+          "Manifest-declared option id → value map (AIP-45 `options`), applied at " +
+            "spawn time alongside `mode` — e.g. hermes' `skills` (string, prepended " +
+            "before the subcommand) or a boolean flag appended when true. Each value " +
+            "is validated against the option's declared `type`/`enum`/`min`/`max`; " +
+            "unknown ids reject. Adapters that don't declare a given option id reject it."
+        ),
       model: z
         .string()
         .optional()

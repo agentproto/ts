@@ -121,6 +121,17 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      * manifest, so a typo fails the spawn rather than silently no-op).
      */
     mode?: string
+    /**
+     * Manifest-declared option id → value map forwarded from
+     * `agent_start` (AIP-45 `AgentCliHandle.options` — e.g. hermes'
+     * `skills`). Applied at spawn time via `composeSpawn`'s option
+     * patches (`bin_args_prepend` / `bin_args_template` /
+     * `bin_args_append_when_true` / `env`), validated against each
+     * option's declared `type`/`enum`/`min`/`max`. An id the adapter
+     * doesn't declare throws `RuntimeConfigError` (composeSpawn
+     * validates against the manifest, same as an unknown `mode`).
+     */
+    options?: Record<string, boolean | number | string>
     /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
