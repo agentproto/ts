@@ -21,6 +21,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { AgentStreamEvent } from "./sessions.js"
+import type { SessionUsage } from "./usage.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
  *  that hasn't hit a newline yet. Keeps a long no-newline stream from
@@ -52,6 +53,12 @@ export interface TranscriptWriter {
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
+  /** Record a durable `usage_snapshot` recap at a turn boundary or on
+   *  session exit — the cumulative cost/token/context view resolved by
+   *  `deriveSessionUsage`. Distinct from the high-frequency `usage_update`
+   *  stream: this is the aggregable turn-boundary durable record, so a
+   *  daemon restart doesn't lose the session's accumulated usage. */
+  recordUsageSnapshot(sessionId: string, usage: SessionUsage): void
   /** Flush buffers and close the session's append stream. Safe to call
    *  more than once (subsequent calls are no-ops) and safe to call for a
    *  session that never wrote anything (also a no-op). Production call
@@ -250,6 +257,24 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           // no-op for anything it doesn't switch on.
           break
       }
+    },
+    recordUsageSnapshot(sessionId, usage) {
+      const state = getState(sessionId)
+      // Order after any buffered text/thought so on-disk order matches
+      // wall-clock order.
+      flushBuffers(sessionId, state)
+      writeRecord(sessionId, state, {
+        kind: "usage_snapshot",
+        sessionId,
+        // Omit absent fields so a missing value never reads as a measured 0.
+        ...(usage.model !== undefined ? { model: usage.model } : {}),
+        ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
+        ...(usage.tokensIn !== undefined ? { tokensIn: usage.tokensIn } : {}),
+        ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
+        ...(usage.contextSize !== undefined ? { contextSize: usage.contextSize } : {}),
+        ...(usage.contextUsed !== undefined ? { contextUsed: usage.contextUsed } : {}),
+        source: usage.source,
+      })
     },
     close(sessionId) {
       const state = states.get(sessionId)
