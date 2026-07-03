@@ -7,6 +7,8 @@ agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--prompt <text>] [--label <text>]
+                                       [--orchestrator | --orchestrator-json <json>]
+                                       [--mcp-servers-json <json|@file>]
                                        [--attach] [--json] [--no-color]
 agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                           [--name <slug>] [--label <text>]
@@ -131,8 +133,37 @@ reattached later.
 | `--workspace <slug>` | Registered workspace to bind to (see [`workspace.md`](./workspace.md)). |
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
+| `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
+| `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
+| `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
+
+#### Orchestrator & `mcpServers`
+
+`--orchestrator` and `--mcp-servers-json` reach the same spawn capability as
+the `agent_start` MCP tool: the CLI, the HTTP route (`POST /sessions/agent`),
+and MCP all delegate to one shared spawn path, so any surface can start an
+orchestrator-enabled or `mcpServers`-injected session.
+
+```bash
+# Scoped orchestrator — the child can spawn + supervise its own sub-agents
+agentproto sessions start claude-code --orchestrator --workspace my-app --attach
+
+# Bound it: at most 2 levels deep, 3 concurrent children
+agentproto sessions start claude-code \
+  --orchestrator-json '{"maxDepth":2,"maxChildren":3}'
+
+# Inject MCP servers (here: mount the daemon's own gateway into hermes)
+agentproto sessions start hermes \
+  --mcp-servers-json '[{"name":"agentproto","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]'
+```
+
+Both are parsed and validated client-side **before** the daemon round-trip:
+malformed JSON, a non-array `--mcp-servers-json`, or an unreadable `@file`
+fail fast with exit `2`. `--orchestrator` requires a daemon started with the
+scoped orchestrator sub-gateway wired (the default for `agentproto serve`);
+otherwise the route returns `501`.
 
 ### `terminal -- <argv...>`
 
@@ -204,6 +235,9 @@ on already-dead sessions (reports "not running"; exit `1`).
 ```bash
 # Start a persistent Claude Code session and attach
 agentproto sessions start claude-code --workspace my-app --attach
+
+# Start a scoped orchestrator that can spawn + supervise sub-agents
+agentproto sessions start claude-code --orchestrator --attach
 
 # Spawn a PTY-backed REPL with a friendly name
 agentproto sessions terminal --name claude-tui --attach -- claude
