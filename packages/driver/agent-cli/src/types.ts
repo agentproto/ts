@@ -203,6 +203,14 @@ export interface AgentCliCapabilities {
 export interface AgentCliMode {
   id: string
   description?: string
+  /**
+   * Extra argv prepended BEFORE the manifest's default `bin_args` when
+   * this mode is active. Needed for CLIs whose global flags must
+   * precede a subcommand baked into `bin_args` (e.g. hermes'
+   * `--ignore-user-config` must come before `acp`, where
+   * `bin_args_append` would land it too late).
+   */
+  bin_args_prepend?: string[]
   bin_args_append?: string[]
   env?: Record<string, string>
 }
@@ -225,6 +233,14 @@ export interface AgentCliOption {
   min?: number
   /** Inclusive upper bound when type === "integer". */
   max?: number
+  /**
+   * Argv template prepended BEFORE the manifest's default `bin_args`
+   * when the option has a non-default value. The literal token
+   * `{value}` is replaced with the option's value (stringified). Use
+   * for value-bearing global flags that must precede a subcommand
+   * (e.g. hermes' `--skills {value}`).
+   */
+  bin_args_prepend?: string[]
   /**
    * Argv template appended when the option has a non-default value.
    * The literal token `{value}` is replaced with the option's value

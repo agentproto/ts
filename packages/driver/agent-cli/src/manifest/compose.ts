@@ -9,11 +9,15 @@
  * configured something the manifest doesn't accept).
  *
  * Composition order (matches AIP-45 spec):
- *   1. Manifest's default `bin_args` (from `handle.bin_args`).
- *   2. Mode patch (`bin_args_append`, `env`) when `config.mode` set.
- *   3. Option patches in DECLARATION order (`bin_args_template` /
- *      `bin_args_append_when_true` / `env`) for each option present
- *      in `config.options`.
+ *   1. Every declared `bin_args_prepend` (mode's, then each present
+ *      option's in declaration order) — argv that must precede a
+ *      subcommand baked into `bin_args` (e.g. hermes'
+ *      `--ignore-user-config` ahead of `acp`).
+ *   2. Manifest's default `bin_args` (from `handle.bin_args`).
+ *   3. Every declared `bin_args_append` / `bin_args_append_when_true`
+ *      / `bin_args_template` (mode's, then each present option's in
+ *      declaration order).
+ * Final argv is `[...prepend, ...bin_args, ...append]`.
  *
  * Mode is applied before options because modes are coarse profile
  * switches (claude-code's `--permission-mode`) — options refine them.
@@ -81,10 +85,11 @@ export function composeSpawn(
   handle: AgentCliHandle,
   config?: RuntimeConfig
 ): ComposedSpawn {
-  const binArgs: string[] = [...(handle.bin_args ?? [])]
-  const env: Record<string, string> = {}
+  if (!config) return { binArgs: [...(handle.bin_args ?? [])], env: {} }
 
-  if (!config) return { binArgs, env }
+  const prepend: string[] = []
+  const append: string[] = []
+  const env: Record<string, string> = {}
 
   // ── Mode patch ──────────────────────────────────────────────────
   if (config.mode !== undefined) {
@@ -97,7 +102,8 @@ export function composeSpawn(
         `Mode '${config.mode}' is not declared by manifest '${handle.id}'. Known modes: ${known}`
       )
     }
-    if (mode.bin_args_append) binArgs.push(...mode.bin_args_append)
+    if (mode.bin_args_prepend) prepend.push(...mode.bin_args_prepend)
+    if (mode.bin_args_append) append.push(...mode.bin_args_append)
     if (mode.env) Object.assign(env, mode.env)
   }
 
@@ -124,7 +130,8 @@ export function composeSpawn(
       const value = config.options[option.id] as boolean | number | string
       validateOptionValue(option, value)
       const patch = renderOptionPatch(option, value)
-      binArgs.push(...patch.binArgs)
+      prepend.push(...patch.prepend)
+      append.push(...patch.append)
       Object.assign(env, patch.env)
     }
   }
@@ -140,7 +147,10 @@ export function composeSpawn(
     }
   }
 
-  return { binArgs, env }
+  return {
+    binArgs: [...prepend, ...(handle.bin_args ?? []), ...append],
+    env,
+  }
 }
 
 /**
@@ -225,26 +235,34 @@ function validateOptionValue(
 function renderOptionPatch(
   option: AgentCliOption,
   value: boolean | number | string
-): { binArgs: string[]; env: Record<string, string> } {
+): { prepend: string[]; append: string[]; env: Record<string, string> } {
   const stringValue = String(value)
 
   // boolean type: only emit the bare flag when value === true and the
   // option declared `bin_args_append_when_true`. Honor `env` too —
-  // adapter authors might want to surface the bool via env.
+  // adapter authors might want to surface the bool via env. Booleans
+  // have no prepend counterpart — `bin_args_append_when_true` is for
+  // bare flags, which never need to precede a baked-in subcommand.
   if (option.type === "boolean") {
-    if (value !== true) return { binArgs: [], env: {} }
+    if (value !== true) return { prepend: [], append: [], env: {} }
     return {
-      binArgs: option.bin_args_append_when_true
+      prepend: [],
+      append: option.bin_args_append_when_true
         ? [...option.bin_args_append_when_true]
         : [],
       env: option.env ? interpolateEnv(option.env, stringValue) : {},
     }
   }
 
-  // value-bearing types — apply `bin_args_template` (with `{value}`
-  // interpolation) and merge `env`.
+  // value-bearing types — apply `bin_args_prepend` / `bin_args_template`
+  // (with `{value}` interpolation) and merge `env`.
   return {
-    binArgs: option.bin_args_template
+    prepend: option.bin_args_prepend
+      ? option.bin_args_prepend.map(token =>
+          token.replace(/\{value\}/g, stringValue)
+        )
+      : [],
+    append: option.bin_args_template
       ? option.bin_args_template.map(token =>
           token.replace(/\{value\}/g, stringValue)
         )

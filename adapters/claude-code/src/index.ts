@@ -111,6 +111,16 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   modes: [
     { id: "default", description: "Standard interactive mode." },
     {
+      id: "lean",
+      description:
+        "Drop Claude Code's bundled skills and workflows from context (built-in slash " +
+        "commands stay typable but are hidden from the model). Plugins, project " +
+        "`.claude/skills/`, and `.claude/commands/` are unaffected. The ACP wrapper has " +
+        "no CLI flag for this — the underlying claude binary reads " +
+        "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
+      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+    },
+    {
       id: "plan",
       description:
         "Plan-only mode — Claude Code reasons and proposes a plan, requesting explicit " +

@@ -299,11 +299,17 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, mode, model, effort, mcpServers, onActivity }) {
+        async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
-          // "no declared options" early-return in composeSpawn.
-          const optionOverrides: Record<string, string> = {}
+          // "no declared options" early-return in composeSpawn. Caller-
+          // supplied `options` (AIP-45 option ids, e.g. hermes' `skills`)
+          // seed the map first; the dedicated `model`/`effort` fields win
+          // on collision since those have their own ACP-level handling
+          // elsewhere and predate the generic `options` map.
+          const optionOverrides: Record<string, boolean | number | string> = {
+            ...options,
+          }
           if (model) optionOverrides.model = model
           if (effort) optionOverrides.effort = effort
           // composeSpawn validates `mode` against the manifest's declared
@@ -311,7 +317,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
           // adapter with no `modes` at all (hermes) that means ANY `mode`
           // value fails the spawn rather than being silently ignored, so
           // callers should only pass `mode` for adapters known to declare it.
-          const config: { mode?: string; options?: Record<string, string> } = {}
+          const config: {
+            mode?: string
+            options?: Record<string, boolean | number | string>
+          } = {}
           if (mode) config.mode = mode
           if (Object.keys(optionOverrides).length > 0) config.options = optionOverrides
           return runtime.start({

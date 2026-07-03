@@ -77,6 +77,10 @@ export interface SpawnAgentSessionInput {
   prompt?: string
   label?: string
   mode?: string
+  /** Manifest-declared option id → value map (AIP-45 `options`), applied
+   *  at spawn time alongside `mode`. Forwarded verbatim to the driver's
+   *  `startSession({ options })` → `composeSpawn`'s option patches. */
+  options?: Record<string, boolean | number | string>
   model?: string
   effort?: string
   mcpServers?: AcpMcpServer[]
@@ -260,6 +264,9 @@ export async function spawnAgentSession(
       cwd,
       ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
+      ...(input.options && Object.keys(input.options).length > 0
+        ? { options: input.options }
+        : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(mcpServers ? { mcpServers } : {}),

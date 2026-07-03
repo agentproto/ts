@@ -46,6 +46,25 @@ capabilities:
   multimodal: true
   resumable: false
   bidirectional: true
+modes:
+  - id: default
+    description: Standard interactive mode — loads ~/.hermes/config.yaml and auto-injects rules/memory/preloaded skills as usual.
+  - id: lean
+    description: >-
+      Skip ~/.hermes/config.yaml, cutting the skills/rules/memory scaffolding
+      hermes would otherwise preload into context. Composed as
+      `hermes --ignore-user-config acp` — the global flag MUST precede the
+      `acp` subcommand baked into `bin_args`, which is why this needs
+      `bin_args_prepend` rather than `bin_args_append`.
+    bin_args_prepend: ["--ignore-user-config"]
+options:
+  - id: skills
+    type: string
+    description: >-
+      Preload one or more agentskills.io-compatible skills for the session
+      (comma-separate for multiple), via hermes' `--skills` global flag.
+      Same prepend-before-`acp` constraint as the `lean` mode.
+    bin_args_prepend: ["--skills", "{value}"]
 tags: [hermes, nous, acp, agent-runtime]
 ---
 
