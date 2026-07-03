@@ -103,6 +103,8 @@ dispatchers, executors, or state stores. See
 
 - Persistent sessions you can detach + reattach:
   [`verbs/sessions.md`](./verbs/sessions.md)
+- What a session's transcript captures and how to export it:
+  [`concepts/session-transcripts.md`](./concepts/session-transcripts.md)
 - Hosting your CLI for a remote agent over a tunnel:
   [`verbs/serve.md`](./verbs/serve.md) +
   [`verbs/auth.md`](./verbs/auth.md)

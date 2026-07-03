@@ -59,6 +59,7 @@ Pick whichever matches what you're trying to do:
 - [Runtime profiles](./concepts/runtime-profiles.md) — `runtime-profile/<name>` scaffolding
 - [Swarms](./concepts/swarms.md) — manifest + kernel cycle model
 - [Credentials](./concepts/credentials.md) — how host tokens are stored
+- [Session transcripts](./concepts/session-transcripts.md) — structured per-session capture, event kinds, native vs daemon export
 
 ### Guides
 

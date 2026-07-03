@@ -46,6 +46,21 @@ The default system prompt instructs the model to use clean terminal
 markdown (headings, bullets, code spans, fenced blocks) and to avoid
 `**`\``code`\``**` patterns.
 
+## Prompt delivery
+
+Each line you type POSTs to `/sessions/:id/prompt`. If the session
+died in the meantime (exited/killed/errored — e.g. the daemon
+restarted, or the adapter process crashed), the daemon attempts one
+resume before giving up; if that doesn't bring it back, the request
+fails with `409 {"error":"session_not_alive","status":"<exited|killed|error>"}`
+and `chat`/`chat-tui` print `prompt failed: HTTP 409: …` instead of
+silently going nowhere. `chat`'s own readline loop won't send a
+second prompt while a turn is still in flight, but the same route
+also rejects an overlapping prompt outright (`409
+{"error":"send_prompt_failed", message: "...is mid-turn — wait for it
+to finish or cancel"}`) rather than queuing it — a prompt to a busy
+session is never silently dropped or run out of order.
+
 ## In-session commands
 
 | Input | Action |
@@ -75,6 +90,6 @@ agentproto chat-tui claude-code --system ""
 ## See also
 
 - [`run.md`](./run.md) — one-shot turn, script-friendly
-- [`sessions.md`](./sessions.md) — spawn, attach, watch persistent sessions
+- [`sessions.md`](./sessions.md) — spawn, attach, watch, export persistent sessions
 - [`serve.md`](./serve.md) — daemon that the chat connects to
 - [`models.md`](./models.md) — list runnable models per adapter
