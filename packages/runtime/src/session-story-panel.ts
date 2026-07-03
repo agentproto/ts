@@ -22,6 +22,8 @@
  *     (timeline, re-fetched on turn boundaries) + agent_prompt (composer)
  */
 
+import { panelBridgeScript } from "./panel-bridge.js"
+
 const RESOURCE_URI = "ui://agentproto_session_story/view"
 const MIME_TYPE = "text/html;profile=mcp-app"
 void RESOURCE_URI
@@ -241,59 +243,18 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
 var $=function(id){ return document.getElementById(id); };
 var esc=function(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); };
 
-// ============================================================
-// MCP Apps bridge — JSON-RPC 2.0 over window.parent.postMessage
-// Spec: io.modelcontextprotocol/ui 2026-01-26
-// ============================================================
-var _nextId=1, _pending={};
-function post(msg){ window.parent.postMessage(msg,'*'); }
-function rpcRequest(method,params){
-  return new Promise(function(resolve,reject){
-    var id=_nextId++;
-    _pending[id]={resolve:resolve,reject:reject};
-    post({jsonrpc:'2.0', id:id, method:method, params:params||{}});
-  });
-}
-function rpcNotify(method,params){ post({jsonrpc:'2.0', method:method, params:params||{}}); }
+${panelBridgeScript("agentproto-session-story-panel")}
+// Best-effort: some hosts forward the triggering tool call's arguments as
+// a notification so the panel can auto-open the right session. Purely
+// additive — the session picker is the reliable path when this never
+// arrives.
 var pendingSessionId=null;
-window.addEventListener('message', function(evt){
-  var msg=evt.data;
-  if(!msg || typeof msg!=='object' || msg.jsonrpc!=='2.0') return;
-  if(msg.id!=null && msg.method==null){
-    var p=_pending[msg.id];
-    if(!p) return;
-    delete _pending[msg.id];
-    if(msg.error) p.reject(new Error(msg.error.message||('rpc error '+msg.error.code)));
-    else p.resolve(msg.result);
-    return;
-  }
-  // Best-effort: some hosts forward the triggering tool call's arguments as
-  // a notification so the panel can auto-open the right session. Purely
-  // additive — the session picker is the reliable path when this never
-  // arrives.
-  if(msg.method && /tool-input|tool-call/.test(msg.method)){
-    var args=(msg.params && (msg.params.arguments || msg.params.input)) || {};
+onHostNotification(function(method, params){
+  if(/tool-input|tool-call/.test(method)){
+    var args=(params && (params.arguments || params.input)) || {};
     if(args && args.sessionId) pendingSessionId=args.sessionId;
   }
 });
-function initBridge(){
-  return rpcRequest('ui/initialize', {
-    capabilities:{},
-    clientInfo:{name:'agentproto-session-story-panel', version:'0.1.0'},
-    protocolVersion:'2026-01-26',
-    appCapabilities:{tools:{listChanged:false}, availableDisplayModes:['inline','fullscreen']}
-  }).then(function(){ rpcNotify('ui/notifications/initialized',{}); });
-}
-function callTool(name,args){
-  return rpcRequest('tools/call', {name:name, arguments:args||{}}).then(function(result){
-    if(result.isError){
-      var e=(result.content && result.content[0] && result.content[0].text) || 'tool error';
-      throw new Error(e);
-    }
-    var text=(result.content && result.content[0] && result.content[0].text) || '{}';
-    return JSON.parse(text);
-  });
-}
 
 // ============================================================
 // buildStory — vanilla-JS port of session-story.ts. Kept
