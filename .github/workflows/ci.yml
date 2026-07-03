@@ -230,7 +230,7 @@ jobs:
             --repo "${{ github.repository }}" --json state,mergedAt \
             --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
           echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
-          [ "$MERGED" = "true" ] && echo "PR no longer open — skipping branch-dependent steps."
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
 
       - uses: ./.github/actions/agent-setup
         id: setup
@@ -474,7 +474,7 @@ jobs:
             --repo "${{ github.repository }}" --json state,mergedAt \
             --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
           echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
-          [ "$MERGED" = "true" ] && echo "PR no longer open — skipping branch-dependent steps."
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
 
       - uses: ./.github/actions/agent-setup
         id: setup
