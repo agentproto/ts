@@ -46,6 +46,15 @@ export interface AgnoMcpApp<TInput = unknown, TOutput = unknown> {
   inputSchema: z.ZodObject<z.ZodRawShape>
   execute?: (input: TInput) => Promise<TOutput>
   html: string | ((initData: TOutput) => string)
+  /** Content-Security-Policy hints for the sandboxed host iframe, threaded
+   *  by `registerMcpApps` into the ui:// RESOURCE's `_meta.ui.csp` (spec
+   *  2026-01-26 — CSP is resource-only, the tool's `_meta.ui` never carries
+   *  it). Omit for apps that need no outbound connections beyond the host
+   *  bridge (e.g. sessions-panel/agents-overview/bureau-sessions, which
+   *  only ever talk to the host via postMessage). Apps that open their own
+   *  WebSocket/fetch from inside the iframe (e.g. terminal-panel-app.ts)
+   *  must declare the exact origin(s) they connect to here. */
+  csp?: { connectDomains?: string[]; resourceDomains?: string[] }
 }
 
 /**
