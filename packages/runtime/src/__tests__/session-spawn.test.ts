@@ -154,4 +154,77 @@ describe("spawnAgentSession", () => {
     expect(result.ok).toBe(true)
     expect(captured[0]?.mcpServers).toBeUndefined()
   })
+
+  it("(d) folds config defaults.skills into options.skills per the adapter's declared shape", async () => {
+    const captured: { options?: Record<string, boolean | number | string> }[] = []
+    const startSession = vi.fn(
+      async (opts: { options?: Record<string, boolean | number | string> }) => {
+        captured.push({ options: opts.options })
+        return fakeAgentSession()
+      },
+    )
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      declaredOptions: [{ id: "skills", type: "string" }],
+    })
+    const { deps } = baseDeps({
+      resolveAgentAdapter,
+      loadDefaultsConfig: async () => ({
+        skills: ["agentproto"],
+        adapters: { hermes: { skills: ["agentproto-package-scaffolding"] } },
+      }),
+    })
+
+    const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options?.skills).toBe(
+      "agentproto,agentproto-package-scaffolding",
+    )
+  })
+
+  it("(d) an explicit `skills` call fully replaces config defaults (no union)", async () => {
+    const captured: { options?: Record<string, boolean | number | string> }[] = []
+    const startSession = vi.fn(
+      async (opts: { options?: Record<string, boolean | number | string> }) => {
+        captured.push({ options: opts.options })
+        return fakeAgentSession()
+      },
+    )
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      declaredOptions: [{ id: "skills", type: "string" }],
+    })
+    const { deps } = baseDeps({
+      resolveAgentAdapter,
+      loadDefaultsConfig: async () => ({ skills: ["agentproto"] }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      skills: ["explicit-only"],
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options?.skills).toBe("explicit-only")
+  })
+
+  it("(d) is a no-op when the adapter declares no skills option (e.g. claude-code)", async () => {
+    const captured: { options?: Record<string, boolean | number | string> }[] = []
+    const startSession = vi.fn(
+      async (opts: { options?: Record<string, boolean | number | string> }) => {
+        captured.push({ options: opts.options })
+        return fakeAgentSession()
+      },
+    )
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      loadDefaultsConfig: async () => ({ skills: ["agentproto"] }),
+    })
+
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.options).toBeUndefined()
+  })
 })

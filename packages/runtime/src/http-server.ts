@@ -72,6 +72,7 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
+import type { DeclaredAdapterOption } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import { tryParseJson } from "./json-tolerant.js"
 
@@ -159,6 +160,14 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes state.db). */
   readUsage?: (adapterSessionId: string) => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** AIP-45 `options[]` this adapter's manifest declares (id + type only —
+   *  no spawn internals). Lets `session-spawn.ts` fold a config-level
+   *  `defaults.skills` list into `options.skills` using the shape the
+   *  manifest actually declared (e.g. hermes' comma-joined string),
+   *  instead of guessing. Omitted/empty ⇒ the skills normalization is a
+   *  documented no-op for that adapter (e.g. claude-code, which
+   *  auto-discovers skills and declares no such option). */
+  declaredOptions?: readonly DeclaredAdapterOption[]
 } | null>
 
 /**
