@@ -64,7 +64,7 @@ export class MemFsCorpusHost implements CorpusHost {
   /** Shared layer-provider registry — same providers fire for every scope. */
   private readonly providerRegistry = createRegistry<LayerProvider>({
     family: "corpus-layer-providers",
-    keyBy: (p) => p.id,
+    keyBy: (p: LayerProvider) => p.id,
   })
 
   /** Resolver that consults the provider registry to build a band-ordered stack. */
