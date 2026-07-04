@@ -11,3 +11,4 @@ export { provisionWorktreeTool, cleanupWorktreeTool, runGateTool } from "./tools
 export { worktreeProvider } from "./provider/index.js"
 export { execArgv, execShell, execGit, type ExecResult } from "./exec.js"
 export { expandGlob, globToRegExp } from "./glob.js"
+export { worktreeAgentWorkflow, worktreeAgentInputSchema, type WorktreeAgentInput } from "./workflow.js"

@@ -10,12 +10,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: [
-    "@agentproto/driver",
-    "@agentproto/tool",
-    "@agentproto/workflow-runtime",
-    "@agentproto/worktree",
-    "zod",
-  ],
+  external: ["@agentproto/worktree"],
   noExternal: [],
 })

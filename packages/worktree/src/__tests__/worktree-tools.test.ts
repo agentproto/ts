@@ -32,13 +32,14 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
 
   it("creates a real worktree on a new branch, then removes it", async () => {
     const repoRoot = await makeTempRepo()
-    cleanupPaths.push(repoRoot, join(repoRoot, "..", "_worktrees"))
+    cleanupPaths.push(repoRoot)
 
     const provisioned = await runTool({
       tool: provisionWorktreeTool,
       candidates,
       input: { repoRoot, base: "main", slug: "test-feature" },
     })
+    cleanupPaths.push(provisioned.cwd)
     expect(provisioned.branch).toBe("wt/test-feature")
     expect(provisioned.cwd).toContain("_worktrees/test-feature")
     const marker = await readFile(join(provisioned.cwd, "README.md"), "utf8")
@@ -57,7 +58,7 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
 
   it("runs depsCmd inside the new worktree", async () => {
     const repoRoot = await makeTempRepo()
-    cleanupPaths.push(repoRoot, join(repoRoot, "..", "_worktrees"))
+    cleanupPaths.push(repoRoot)
 
     const provisioned = await runTool({
       tool: provisionWorktreeTool,
@@ -69,6 +70,7 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
         depsCmd: "node -e \"require('fs').writeFileSync('deps-ran.txt','ok')\"",
       },
     })
+    cleanupPaths.push(provisioned.cwd)
     const marker = await readFile(join(provisioned.cwd, "deps-ran.txt"), "utf8")
     expect(marker).toBe("ok")
 
@@ -81,7 +83,7 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
 
   it("copies gitignored secrets matching copyGlobs into the worktree", async () => {
     const repoRoot = await makeTempRepo()
-    cleanupPaths.push(repoRoot, join(repoRoot, "..", "_worktrees"))
+    cleanupPaths.push(repoRoot)
 
     await mkdir(join(repoRoot, "envs", "prod"), { recursive: true })
     await writeFile(join(repoRoot, "envs", "prod", ".env.local"), "SECRET=1\n")
@@ -97,6 +99,7 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
         copyGlobs: ["envs/**/.env.local"],
       },
     })
+    cleanupPaths.push(provisioned.cwd)
     const copied = await readFile(join(provisioned.cwd, "envs", "prod", ".env.local"), "utf8")
     expect(copied).toBe("SECRET=1\n")
 

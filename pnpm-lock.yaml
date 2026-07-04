@@ -2492,9 +2492,18 @@ importers:
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
+      '@agentproto/harness':
+        specifier: workspace:*
+        version: link:../harness
       '@agentproto/tool':
         specifier: workspace:*
         version: link:../tool
+      '@agentproto/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -2517,21 +2526,9 @@ importers:
 
   packages/worktree-agent-example:
     dependencies:
-      '@agentproto/driver':
-        specifier: workspace:*
-        version: link:../driver/core
-      '@agentproto/tool':
-        specifier: workspace:*
-        version: link:../tool
-      '@agentproto/workflow-runtime':
-        specifier: workspace:*
-        version: link:../workflow-runtime
       '@agentproto/worktree':
         specifier: workspace:*
         version: link:../worktree
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
