@@ -196,10 +196,17 @@ function renderSidebar() {
     var label = s.label || s.name || (s.command ? s.command.split('/').pop() : null) || s.id.slice(0, 8);
     var bc = badgeClass(s.status);
     var active = s.id === activeId ? ' active' : '';
+    // blockedOn (set while the turn waits on a spawned sub-agent or a
+    // shell command) rides next to the status badge; waiting-on-user is
+    // NOT here — that's awaitingInput, a different signal.
+    var blocked = '';
+    if (s.blockedOn === 'subagent') blocked = '<span class="badge bs">&#129513; sous-agent</span>';
+    else if (s.blockedOn === 'command') blocked = '<span class="badge bs">&#9203; commande</span>';
     html += '<div class="si' + active + '" onclick="selectSession(\\'' + s.id + '\\')">'
           + '<div class="sn">' + escHtml(label) + '</div>'
           + '<div class="sm">'
           + '<span class="badge ' + bc + '">' + s.status + '</span>'
+          + blocked
           + '<span>' + escHtml(s.kind || '') + '</span>'
           + '</div></div>';
   }
