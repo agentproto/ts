@@ -51,10 +51,13 @@ async function walk(root: string, dirRel: string): Promise<string[]> {
   }
   const out: string[] = []
   for (const entry of entries) {
-    if (entry.name === ".git") continue
+    if (entry.name === ".git" || entry.name === "node_modules") continue
     const rel = dirRel ? posix.join(dirRel, entry.name) : entry.name
+    // entry.isDirectory() is false for symlinked dirs (Dirent reports the link's own
+    // type, not the target's) — keep it that way so we never follow symlinks.
     if (entry.isDirectory()) {
-      out.push(...(await walk(root, rel)))
+      const children = await walk(root, rel)
+      for (const child of children) out.push(child)
     } else if (entry.isFile()) {
       out.push(rel)
     }
