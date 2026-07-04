@@ -142,6 +142,24 @@ function normalizeAgentPromptOptions(raw: unknown): string[] | undefined {
 }
 
 /**
+ * Classify what a tool call blocks the turn on, from its tool name alone.
+ * Powers `SessionDescriptor.blockedOn`: "subagent" for an `agent_start`
+ * (the turn is waiting on a spawned child agent), "command" for shell /
+ * terminal execution tools. Anything else — including fast local tools —
+ * returns undefined and leaves the descriptor untouched. Matching is
+ * intentionally loose on the command side (bash/terminal/command
+ * substrings) so adapter-native tool names (e.g. claude-code's "Bash")
+ * classify without a per-adapter table.
+ */
+function classifyBlockedOn(toolName?: string): "subagent" | "command" | undefined {
+  if (!toolName) return undefined
+  const n = toolName.toLowerCase()
+  if (n === "agent_start") return "subagent"
+  if (/^(command_execute|terminal_start)$|bash|terminal|command/.test(n)) return "command"
+  return undefined
+}
+
+/**
  * True when a thrown value represents a turn ABORT rather than a genuine
  * error — a cancelled/killed turn surfaces as a DOMException-style
  * `AbortError` (`name`) or Node's `ABORT_ERR` (`code`). Lets the turn
@@ -309,6 +327,17 @@ export interface SessionDescriptor {
    *  finished turn" from "mid-turn" so it doesn't fast-return a stale
    *  turn-end while the NEXT turn is still generating. */
   busy?: boolean
+  /** What the in-flight turn is currently blocked on, when classifiable
+   *  from the pending tool call: a spawned sub-agent (`agent_start`) or a
+   *  shell/terminal command. Deliberately NO "user" variant — waiting on
+   *  the user is already covered by `awaitingInput`/`awaitingQuestion`.
+   *  Set on tool-call, cleared on the MATCHING tool-result (guarded by
+   *  `pendingToolCallId`), at turn start, and in the turn's finally. */
+  blockedOn?: "subagent" | "command"
+  /** toolCallId of the tool-call that set `blockedOn`. A tool-result only
+   *  clears `blockedOn` when its toolCallId matches — so a nested or
+   *  interleaved tool finishing first can't clear the flag early. */
+  pendingToolCallId?: string
   /** Session id of the orchestrator that spawned this session, set when
    *  the spawn arrived via the scoped orchestrator sub-gateway (the
    *  token carried the spawner's identity). Absent for direct `/mcp`
@@ -965,14 +994,27 @@ export function createSessionsRegistry(opts?: {
           }
         }
         break
-      case "tool-call":
+      case "tool-call": {
+        // Surface what the turn is now blocked on (sub-agent / command)
+        // when the tool name classifies. The toolCallId is remembered so
+        // only the MATCHING result clears it (nested tools can't).
+        const blocked = classifyBlockedOn(evt.toolName)
+        if (blocked) {
+          rt.desc.blockedOn = blocked
+          rt.desc.pendingToolCallId = evt.toolCallId
+        }
         appendLine(
           rt,
           `\x1b[36m[tool] ${formatToolCall(evt.toolName ?? "?", evt.arguments)}\x1b[0m`,
           "stdout"
         )
         break
+      }
       case "tool-result": {
+        if (rt.desc.blockedOn && evt.toolCallId === rt.desc.pendingToolCallId) {
+          rt.desc.blockedOn = undefined
+          rt.desc.pendingToolCallId = undefined
+        }
         // Keep this to ONE line per result — some drivers stream huge
         // payloads (file dumps, search hits) and the ring buffer is a
         // fixed-size window, not a log store.
@@ -1253,6 +1295,8 @@ export function createSessionsRegistry(opts?: {
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
+    rt.desc.blockedOn = undefined  // clear stale blocked-on from prior turn
+    rt.desc.pendingToolCallId = undefined
     let turnCompleted = false
     // Whether the adapter itself emitted a `turn-end` during this turn.
     // Drives the P5 guarantee: when the event stream ends WITHOUT one
@@ -1320,6 +1364,11 @@ export function createSessionsRegistry(opts?: {
     } finally {
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
+      // Safety net: a tool-call that never receives its tool-result (child
+      // crashed, stream ended early) must not leave the session flagged
+      // blocked forever — the turn is over, nothing is pending anymore.
+      rt.desc.blockedOn = undefined
+      rt.desc.pendingToolCallId = undefined
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
