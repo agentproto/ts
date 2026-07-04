@@ -65,4 +65,15 @@ describe.each(Object.entries(PANELS))("panel %s", (_name, html) => {
     expect(js).toContain("'dm'")
     expect(js).toContain("'pin'")
   })
+
+  if (_name === "session-story-panel") {
+    it("renders feed/transcript text through the markdown renderer, not raw esc()", () => {
+      // Regression guard: assistant/tool text is Markdown. Before the fix it
+      // was injected via esc(it.text) — raw `## `/`**bold**`/`|table|` showed
+      // up literally in the panel instead of rendered HTML.
+      expect(js).toContain("function renderMd(")
+      expect(js).toMatch(/'<div class="d-text">'\+renderMd\(it\.text\)\+'<\/div>'/)
+      expect(js).not.toMatch(/'<div class="d-text">'\+esc\(it\.text\)/)
+    })
+  }
 })

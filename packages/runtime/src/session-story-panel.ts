@@ -173,7 +173,18 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
   .titem .th .copy:hover { color:var(--ink); background:var(--line-soft); }
   .titem pre { margin:0; border-top:1px solid var(--line-soft); font-family:ui-monospace,Menlo,monospace; font-size:11.5px;
                line-height:1.55; color:#4a4236; padding:9px 12px; overflow:auto; max-height:240px; white-space:pre-wrap; word-break:break-word; }
-  .d-text { font-size:13.5px; line-height:1.7; white-space:pre-wrap; }
+  .d-text { font-size:13.5px; line-height:1.7; }
+  .d-text p { margin:0 0 8px; }
+  .d-text p:last-child { margin-bottom:0; }
+  .d-text h1, .d-text h2, .d-text h3, .d-text h4, .d-text h5, .d-text h6 { margin:12px 0 6px; line-height:1.3; }
+  .d-text h1:first-child, .d-text h2:first-child, .d-text h3:first-child { margin-top:0; }
+  .d-text ul, .d-text ol { margin:0 0 8px; padding-left:20px; }
+  .d-text code { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; background:var(--bg); border-radius:4px; padding:1px 5px; }
+  .d-text pre { margin:0 0 8px; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px 12px; overflow:auto; }
+  .d-text pre code { background:none; border-radius:0; padding:0; }
+  .d-text table { border-collapse:collapse; margin:0 0 8px; font-size:12.5px; }
+  .d-text th, .d-text td { border:1px solid var(--line); padding:4px 8px; text-align:left; }
+  .d-text a { color:var(--blue); }
   .pfoot { flex:none; border-top:1px solid var(--line); padding:9px 16px; font-size:11px; color:var(--ink-ghost); display:flex; gap:10px; }
   .kbd { font-family:ui-monospace,Menlo,monospace; font-size:10px; border:1px solid var(--line); border-bottom-width:2px;
          border-radius:5px; padding:1px 5px; background:var(--panel); color:var(--ink-mute); }
@@ -242,6 +253,80 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
 <script>
 var $=function(id){ return document.getElementById(id); };
 var esc=function(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c]; }); };
+
+// ============================================================
+// renderMd — vanilla-JS port of markdown-lite.ts. Kept
+// function-for-function identical so the two are easy to diff (same
+// self-contained-panel constraint as buildStoryJs below): headers,
+// bold/italic, inline/fenced code, bullet/numbered lists, pipe tables and
+// links, with every raw text run HTML-escaped before any generated tag
+// wraps it.
+// ============================================================
+function escHtmlMd(s){ return String(s).replace(/[&<>"]/g,function(c){ if(c==='&') return '&amp;'; if(c==='<') return '&lt;'; if(c==='>') return '&gt;'; return '&quot;'; }); }
+function renderInlineMd(text){
+  var out=escHtmlMd(text);
+  out=out.replace(/\`([^\`]+)\`/g,function(_m,code){ return '<code>'+code+'</code>'; });
+  out=out.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g,function(_m,label,url){ return '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+label+'</a>'; });
+  out=out.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');
+  out=out.replace(/(^|[^*])\\*([^*]+)\\*(?!\\*)/g,'$1<em>$2</em>');
+  return out;
+}
+function isTableSepMd(line){ return /^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)+\\|?\\s*$/.test(line); }
+function splitRowMd(line){ return line.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){ return c.trim(); }); }
+function renderMd(md){
+  var lines=String(md==null?'':md).replace(/\\r\\n?/g,'\\n').split('\\n');
+  var out=[], para=[], list=null;
+  function flushPara(){ if(para.length){ out.push('<p>'+para.map(renderInlineMd).join('<br>')+'</p>'); para=[]; } }
+  function flushList(){ if(list){ var tag=list.ordered?'ol':'ul'; out.push('<'+tag+'>'+list.items.map(function(i){ return '<li>'+renderInlineMd(i)+'</li>'; }).join('')+'</'+tag+'>'); list=null; } }
+  function flushAll(){ flushPara(); flushList(); }
+  var i=0;
+  while(i<lines.length){
+    var line=lines[i];
+    if(/^\\s*\`\`\`/.test(line)){
+      flushAll();
+      var code=[]; i+=1;
+      while(i<lines.length && !/^\\s*\`\`\`/.test(lines[i])){ code.push(lines[i]); i+=1; }
+      i+=1;
+      out.push('<pre><code>'+escHtmlMd(code.join('\\n'))+'</code></pre>');
+      continue;
+    }
+    var header=line.match(/^(#{1,6})\\s+(.*)$/);
+    if(header){
+      flushAll();
+      var level=header[1].length;
+      out.push('<h'+level+'>'+renderInlineMd(header[2].trim())+'</h'+level+'>');
+      i+=1;
+      continue;
+    }
+    if(/^\\s*\\|/.test(line) && i+1<lines.length && isTableSepMd(lines[i+1])){
+      flushAll();
+      var headCells=splitRowMd(line);
+      i+=2;
+      var bodyRows=[];
+      while(i<lines.length && /^\\s*\\|/.test(lines[i])){ bodyRows.push(splitRowMd(lines[i])); i+=1; }
+      out.push('<table><thead><tr>'+headCells.map(function(c){ return '<th>'+renderInlineMd(c)+'</th>'; }).join('')+'</tr></thead><tbody>'
+        +bodyRows.map(function(r){ return '<tr>'+r.map(function(c){ return '<td>'+renderInlineMd(c)+'</td>'; }).join('')+'</tr>'; }).join('')+'</tbody></table>');
+      continue;
+    }
+    var bullet=line.match(/^\\s*[-*+]\\s+(.*)$/);
+    var numbered=line.match(/^\\s*\\d+\\.\\s+(.*)$/);
+    if(bullet || numbered){
+      flushPara();
+      var ordered=!!numbered;
+      var item=(bullet||numbered)[1];
+      if(!list || list.ordered!==ordered){ flushList(); list={ordered:ordered,items:[]}; }
+      list.items.push(item);
+      i+=1;
+      continue;
+    }
+    if(line.trim()===''){ flushAll(); i+=1; continue; }
+    flushList();
+    para.push(line);
+    i+=1;
+  }
+  flushAll();
+  return out.join('');
+}
 
 ${panelBridgeScript("agentproto-session-story-panel")}
 // Best-effort: some hosts forward the triggering tool call's arguments as
@@ -620,7 +705,7 @@ function selectStep(i){
   }).join('');
   var tech=(s.items||[]).map(function(it,k){
     return it.text!==undefined
-      ? '<div class="d-text">'+esc(it.text)+'</div>'
+      ? '<div class="d-text">'+renderMd(it.text)+'</div>'
       : '<div class="titem"><div class="th">'+esc(it.h)+'<button class="copy" data-k="'+k+'" type="button">⧉</button></div><pre>'+esc(it.r)+'</pre></div>';
   }).join('');
   $('pBody').innerHTML=''
