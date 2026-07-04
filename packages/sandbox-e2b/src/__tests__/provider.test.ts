@@ -47,12 +47,45 @@ describe("e2bSandboxProvider.boot", () => {
       DEFAULT_TEMPLATE,
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
+    // updates the (potentially stale) baked CLI before starting the daemon
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest",
+      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    )
+    // opens the daemon's own origin allowlist for this sandbox's public host
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),
       expect.objectContaining({ background: true, envs: { OPENROUTER_API_KEY: "k" } }),
     )
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("--allow-origin https://sbx-abc-18790.e2b.dev"),
+      expect.anything(),
+    )
     expect(booted.mcpUrl).toBe("https://sbx-abc-18790.e2b.dev/mcp")
     expect(booted.sandboxId).toBe("sbx_abc")
+  })
+
+  it("skips the CLI update when updateCliOnBoot is false", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, updateCliOnBoot: false },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest",
+      expect.anything(),
+    )
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("agentproto serve"),
+      expect.anything(),
+    )
   })
 
   it("skips starting the daemon when the health probe already succeeds (autostart case)", async () => {

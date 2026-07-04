@@ -29,6 +29,18 @@ try {
 
 Requires `E2B_API_KEY` in the host process's environment.
 
+## Notes
+
+- The daemon's own origin allowlist defaults to `localhost:*`; this provider
+  opens it for the sandbox's own public host (`--allow-origin
+  https://<getHost>`) so the host process can reach it over
+  `https://<getHost>/mcp`.
+- The pre-built `agentproto-workstation` template can lag behind the latest
+  `@agentproto/cli` release. This provider runs `npm i -g
+  @agentproto/cli@latest` before starting the daemon (set `updateCliOnBoot:
+  false` in `spec.config` to skip it — e.g. once the template is rebuilt
+  against a current release, which is the cleaner long-term fix).
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

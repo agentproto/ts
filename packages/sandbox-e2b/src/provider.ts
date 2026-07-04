@@ -9,11 +9,18 @@
  * directly — e2b's per-sandbox auth token (`SandboxOpts.secure`) gates the
  * SDK's own control-plane (envd) traffic, not arbitrary listening ports the
  * sandbox process opens, so no extra auth header is threaded through here.
+ * The daemon's OWN origin allowlist is a separate gate, though: it defaults
+ * to `localhost:*`, which rejects a connection from this host process
+ * against the sandbox's public `https://<getHost>` origin. `--allow-origin`
+ * is passed the sandbox's own getHost origin to open that gate.
  *
  * The workstation template MAY already autostart the daemon; since that
  * can't be verified without a live template, this provider checks health
  * first and only issues the start command when the daemon isn't already
- * responding — correct either way.
+ * responding — correct either way. When it does start the daemon, it first
+ * updates the baked `@agentproto/cli` (the pre-built template can lag
+ * behind — verified stale against a live template) so callers aren't stuck
+ * on whatever agentproto version the template was last baked with.
  */
 
 import { Sandbox } from "e2b"
@@ -28,6 +35,7 @@ const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
 const POLL_INTERVAL_MS = 500
+const UPDATE_CLI_TIMEOUT_MS = 120_000
 
 interface E2bSandboxConfig {
   /** Template name or id. Defaults to the `agentproto-workstation` template. */
@@ -44,6 +52,13 @@ interface E2bSandboxConfig {
   daemonReadyTimeoutMs?: number
   /** Delay between health-probe attempts. */
   pollIntervalMs?: number
+  /** Run `npm i -g @agentproto/cli@latest` before starting the daemon, so a
+   *  stale template bake doesn't pin callers to an old agentproto version.
+   *  Default true. Only runs when this provider is the one starting the
+   *  daemon (skipped when the health probe finds it already autostarted). */
+  updateCliOnBoot?: boolean
+  /** Timeout for the `npm i -g` update command. Default 120s. */
+  updateCliTimeoutMs?: number
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
@@ -58,6 +73,9 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
     daemonReadyTimeoutMs:
       typeof config.daemonReadyTimeoutMs === "number" ? config.daemonReadyTimeoutMs : undefined,
     pollIntervalMs: typeof config.pollIntervalMs === "number" ? config.pollIntervalMs : undefined,
+    updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
+    updateCliTimeoutMs:
+      typeof config.updateCliTimeoutMs === "number" ? config.updateCliTimeoutMs : undefined,
   }
 }
 
@@ -84,8 +102,14 @@ export const e2bSandboxProvider: SandboxProvider = {
 
     const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
     if (!alreadyUp) {
+      if (config.updateCliOnBoot ?? true) {
+        await sandbox.commands.run("sudo npm i -g @agentproto/cli@latest", {
+          envs: opts.env,
+          timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
+        })
+      }
       await sandbox.commands.run(
-        `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace}`,
+        `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
         { background: true, envs: opts.env },
       )
       const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
