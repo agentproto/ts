@@ -45,7 +45,10 @@ export const hermes: AgentCliHandle = defineAgentCli({
   },
   auth: {
     ref: "./SECRETS.md",
-    state: { env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+    // No ANTHROPIC_API_KEY — hermes is the budget arm and deliberately does
+    // not route to Anthropic (see models.deny). Anthropic stays exclusive to
+    // the claude-code adapter.
+    state: { env: ["OPENROUTER_API_KEY", "OPENAI_API_KEY"] },
   },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
@@ -66,18 +69,22 @@ export const hermes: AgentCliHandle = defineAgentCli({
   models: {
     // Cheap OpenRouter models by default — hermes is the budget delegation
     // arm (a Sonnet default would defeat the purpose). glm-5.2 + deepseek
-    // are the go-to cheap coders; the bigger models stay available.
+    // are the go-to cheap coders. `allowed` is only the curated menu: the
+    // `model` option is free-form, so any OpenRouter id (kimi, qwen, …) can
+    // still be passed even when it isn't listed here.
     default: "z-ai/glm-5.2",
     allowed: [
       "z-ai/glm-5.2",
       "deepseek/deepseek-v4-pro",
       "meta-llama/llama-3.3-70b",
-      "anthropic/claude-sonnet-4-6",
-      "anthropic/claude-opus-4-7",
       "openai/gpt-4",
     ],
+    // Anthropic models are reserved for the dedicated claude-code adapter —
+    // hermes must NEVER route to them, even if a caller passes the id
+    // explicitly. Enforced at compose time (RuntimeConfigError), so the
+    // budget arm can't silently burn premium Anthropic spend.
+    deny: ["anthropic/*", "claude-*"],
     env: {
-      anthropic: "ANTHROPIC_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
       openai: "OPENAI_API_KEY",
     },
@@ -130,14 +137,17 @@ export const hermes: AgentCliHandle = defineAgentCli({
     },
     {
       id: "model",
-      // string (not enum) so any valid OpenRouter/Anthropic/OpenAI model ID is
-      // accepted without requiring a code change to expand the list. Applied via
-      // ACP newSession(model:...) — hermes reads the model from the ACP session
-      // config, not from its own CLI args.
+      // string (not enum) so any valid OpenRouter/OpenAI model ID is accepted
+      // without a code change to expand the list. Applied via ACP
+      // newSession(model:...) — hermes reads the model from the ACP session
+      // config, not from its own CLI args. Anthropic ids are denied
+      // (models.deny) — those are reserved for the claude-code adapter.
       type: "string" as const,
       description:
-        "Model ID routed through OpenRouter/Anthropic/OpenAI " +
-        "(e.g. 'anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2'). " +
+        "Model ID routed through OpenRouter/OpenAI " +
+        "(e.g. 'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2', 'moonshotai/kimi-k2'). " +
+        "Anthropic models are not permitted on hermes — use the claude-code " +
+        "adapter for those. " +
         "Applied via a `/model <id>` control turn after the session is created " +
         "(hermes ignores the ACP session model config). " +
         "Omit to use the hermes default.",

@@ -46,6 +46,7 @@ export class RuntimeConfigError extends Error {
     | "option_enum_violation"
     | "option_bounds_violation"
     | "unsupported_continuation"
+    | "model_denied"
   readonly path: string
   constructor(
     code: RuntimeConfigError["code"],
@@ -136,6 +137,27 @@ export function composeSpawn(
     }
   }
 
+  // ── Model deny-list enforcement ─────────────────────────────────
+  // The `model` option is deliberately free-form (any provider id), so
+  // `models.allowed` is only a curated menu — it can't *prevent* a caller
+  // from passing an off-menu id. `models.deny` is the hard guardrail: a
+  // requested model matching any deny pattern is refused here, before we
+  // spawn anything, so a budget adapter can't be steered onto a provider it
+  // must never use (e.g. Anthropic models are reserved for claude-code).
+  const requestedModel = config.options?.model
+  if (typeof requestedModel === "string" && handle.models?.deny?.length) {
+    const denyHit = handle.models.deny.find(pattern =>
+      matchesModelPattern(pattern, requestedModel)
+    )
+    if (denyHit) {
+      throw new RuntimeConfigError(
+        "model_denied",
+        "config.options.model",
+        `Model '${requestedModel}' is denied by manifest '${handle.id}' (matches deny pattern '${denyHit}'). This adapter deliberately does not route to that provider — use a permitted model or a different adapter.`
+      )
+    }
+  }
+
   // ── Continuation validation (no patch — strategy registry owns) ─
   if (config.continuation !== undefined && handle.continuation) {
     if (!handle.continuation.supported.includes(config.continuation)) {
@@ -164,6 +186,16 @@ export function resolveContinuationStrategy(
 ): import("../types.js").ContinuationStrategyId {
   if (config?.continuation) return config.continuation
   return handle.continuation?.default ?? "none"
+}
+
+/**
+ * Case-insensitive match of a model id against a deny/allow pattern.
+ * Supports a single trailing `*` wildcard (prefix match); otherwise exact.
+ */
+function matchesModelPattern(pattern: string, modelId: string): boolean {
+  const p = pattern.toLowerCase()
+  const m = modelId.toLowerCase()
+  return p.endsWith("*") ? m.startsWith(p.slice(0, -1)) : m === p
 }
 
 function validateOptionValue(

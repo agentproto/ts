@@ -240,6 +240,69 @@ describe("composeSpawn (AIP-45)", () => {
   })
 })
 
+describe("composeSpawn model deny-list (AIP-45)", () => {
+  // A budget-style handle: free-form string `model` option (any provider id
+  // accepted) plus a deny-list reserving Anthropic for another adapter.
+  const budgetHandle = (): AgentCliHandle =>
+    handle({
+      id: "hermes",
+      options: [{ id: "model", type: "string" as const }],
+      models: {
+        default: "z-ai/glm-5.2",
+        allowed: ["z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+        deny: ["anthropic/*", "claude-*"],
+        apply: "command",
+      },
+    })
+
+  it("throws model_denied on a prefix (`anthropic/*`) match", () => {
+    try {
+      composeSpawn(budgetHandle(), {
+        options: { model: "anthropic/claude-opus-4-7" },
+      })
+      throw new Error("expected composeSpawn to throw")
+    } catch (err) {
+      expect(err).toBeInstanceOf(RuntimeConfigError)
+      expect((err as RuntimeConfigError).code).toBe("model_denied")
+      expect((err as RuntimeConfigError).path).toBe("config.options.model")
+    }
+  })
+
+  it("throws model_denied on a bare `claude-*` id", () => {
+    expect(() =>
+      composeSpawn(budgetHandle(), { options: { model: "claude-opus-4-8" } })
+    ).toThrow(RuntimeConfigError)
+  })
+
+  it("matches deny patterns case-insensitively", () => {
+    expect(() =>
+      composeSpawn(budgetHandle(), {
+        options: { model: "Anthropic/Claude-Opus-4-7" },
+      })
+    ).toThrow(RuntimeConfigError)
+  })
+
+  it("allows a free-form model that is not denied (kimi/qwen stay usable)", () => {
+    // Not in `allowed` — but `allowed` is only a curated menu, so an off-menu
+    // OpenRouter id must still pass as long as it isn't denied.
+    expect(() =>
+      composeSpawn(budgetHandle(), {
+        options: { model: "moonshotai/kimi-k2" },
+      })
+    ).not.toThrow()
+  })
+
+  it("does not enforce when no deny list is declared", () => {
+    const noDeny = handle({
+      options: [{ id: "model", type: "string" as const }],
+      models: { default: "z-ai/glm-5.2" },
+    })
+    expect(() =>
+      composeSpawn(noDeny, { options: { model: "anthropic/claude-opus-4-7" } })
+    ).not.toThrow()
+  })
+})
+
 describe("resolveContinuationStrategy (AIP-45)", () => {
   it("uses operator config override when provided", () => {
     expect(
