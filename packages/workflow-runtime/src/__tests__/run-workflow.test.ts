@@ -332,6 +332,54 @@ describe("runWorkflow — agent step", () => {
     expect(host.spawn).toHaveBeenCalledWith("dynamic-adapter", expect.anything())
   })
 
+  it("step.cwd selector binds a prior step's output cwd into the spawn", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-cwd-bound",
+      steps: [
+        {
+          kind: "transform",
+          id: "provision",
+          compute: () => ({ cwd: "/tmp/worktree-xyz" }),
+        },
+        {
+          kind: "agent",
+          id: "code",
+          adapter: "mock-adapter",
+          cwd: (b) => (b.steps.provision as { cwd: string }).cwd,
+          prompt: () => "do the task",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/should/not/be/used" })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", {
+      cwd: "/tmp/worktree-xyz",
+      workspaceSlug: undefined,
+      stepId: "code",
+    })
+  })
+
+  it("no step.cwd ⇒ falls back to the run-level ctx.cwd", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-cwd-fallback",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/run/level/cwd" })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", {
+      cwd: "/run/level/cwd",
+      workspaceSlug: undefined,
+      stepId: "s1",
+    })
+  })
+
   it("throws when no host is injected", async () => {
     const wf: RuntimeWorkflow = {
       id: "agent-no-host",
