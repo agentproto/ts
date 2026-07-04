@@ -20,3 +20,14 @@ export type {
   SandboxRuntimeInput,
   SandboxRuntimeHandle,
 } from "./types.js"
+
+export {
+  createSandboxAgentSessionHost,
+  type SandboxSpec,
+  type BootedSandbox,
+  type SandboxBootOpts,
+  type SandboxProvider,
+  type SandboxSecretsConfig,
+  type CreateSandboxAgentSessionHostOpts,
+  type SandboxAgentSessionHost,
+} from "./agent-session-host.js"
