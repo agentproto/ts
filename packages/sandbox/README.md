@@ -18,6 +18,32 @@ const x = defineSandbox({
 })
 ```
 
+## Running an agent step inside a sandbox
+
+`createSandboxAgentSessionHost` turns any `SandboxProvider` into an
+`AgentSessionHost` (`@agentproto/workflow-runtime`) — the seam `runWorkflow`
+injects for every `AgentStep`. It resolves the requested secrets into an env
+map, boots the sandbox with that env, then connects
+`connectDaemonAgentSessionHost` (`@agentproto/worktree`) to the sandbox's
+exposed agentproto daemon — reusing the same daemon-backed session host a
+local run would use, unchanged.
+
+```ts
+import { createSandboxAgentSessionHost } from "@agentproto/sandbox"
+import { e2bSandboxProvider } from "@agentproto/sandbox-e2b"
+
+const host = await createSandboxAgentSessionHost({
+  provider: e2bSandboxProvider,
+  spec: { provider: "e2b", config: {} },
+  secrets: { slugs: ["OPENROUTER_API_KEY"] },
+})
+try {
+  // await runWorkflow({ workflow, input, agents: host })
+} finally {
+  await host.stop()
+}
+```
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
