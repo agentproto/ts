@@ -158,8 +158,9 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       `step '${step.id}': budget_exceeded — run spend $${spentUsd(ctx.state).toFixed(4)} >= cap $${ctx.state.maxTotalCostUsd}`,
     )
   }
+  const cwd = step.cwd ? resolveSel(step.cwd, b) : ctx.cwd
   const sessionId = step.adapter
-    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), { cwd: ctx.cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
+    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), { cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
   await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))

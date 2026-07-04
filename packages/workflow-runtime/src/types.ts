@@ -174,6 +174,8 @@ export interface AgentStep {
   adapter?: Selector<string> | string
   /** Reuse an earlier AgentStep's spawned session, by that step's id. */
   sessionRef?: string
+  /** Working directory for this spawn. Omit to fall back to the run-level `ctx.cwd`. */
+  cwd?: Selector<string>
   /** Prompt to send. */
   prompt: Selector<string>
   policy?:
