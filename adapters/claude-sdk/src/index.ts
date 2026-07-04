@@ -91,11 +91,23 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
   models: {
     // A cheap Claude by default — this is the budget first-party arm.
     default: DEFAULT_MODEL,
+    // Native Anthropic models work out of the box (mode: default). The gateway
+    // models below only route when the matching mode is selected
+    // (mode: moonshot / openrouter) — that mode pre-wires ANTHROPIC_BASE_URL.
+    // The `model` option stays free-form, so any gateway id works even if it
+    // isn't listed here.
     allowed: [
+      // Native Anthropic — mode: default
       "claude-haiku-4-5-20251001",
       "claude-sonnet-5",
       "claude-opus-4-8",
       "claude-fable-5",
+      // Moonshot (Kimi) — mode: moonshot
+      "kimi-k2.7-code",
+      // OpenRouter — mode: openrouter
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+      "moonshotai/kimi-k2",
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
@@ -115,16 +127,58 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
     resumable: true,
     bidirectional: true,
   },
+  // Gateway presets. The base_url/auth_token/thinking options already let a
+  // caller front any Anthropic-compatible gateway by hand; these modes just
+  // pre-wire the endpoint (and, for Moonshot, the model + --thinking) so the
+  // caller only has to supply the key. The `model` option still overrides.
+  modes: [
+    {
+      id: "default",
+      description:
+        "Native Anthropic — the real Anthropic API (or whatever " +
+        "ANTHROPIC_BASE_URL / cloud toggles the environment already sets). " +
+        "Uses the native Claude models in `allowed`.",
+    },
+    {
+      id: "moonshot",
+      description:
+        "Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's " +
+        "Anthropic-compatible endpoint, defaults the model to kimi-k2.7-code, " +
+        "and enables --thinking (Kimi rejects a request without it). Supply the " +
+        "Moonshot key via the `auth_token` option (or ANTHROPIC_AUTH_TOKEN); " +
+        "override `model` for another Moonshot model.",
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.moonshot.ai/anthropic",
+        // cli.ts reads CLAUDE_SDK_MODEL as the model fallback (a `--model`
+        // option still wins), so the mode ships a working default model.
+        CLAUDE_SDK_MODEL: "kimi-k2.7-code",
+      },
+      bin_args_append: ["--thinking"],
+    },
+    {
+      id: "openrouter",
+      description:
+        "OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's " +
+        "Anthropic-compatible endpoint. Pick a model via the `model` option " +
+        "(e.g. 'z-ai/glm-5.2', 'deepseek/deepseek-v4-pro', 'moonshotai/kimi-k2') " +
+        "and supply the OpenRouter key via `auth_token` (or ANTHROPIC_AUTH_TOKEN).",
+      env: {
+        ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1",
+      },
+    },
+  ],
   options: [
     {
       id: "model",
-      // string (not enum) so any Claude model id works without a code change.
-      // Applied as a `--model <id>` spawn arg → SDK options.model.
+      // string (not enum) so any model id works without a code change — native
+      // Claude ids, or a gateway id when a gateway mode is selected. Applied as
+      // a `--model <id>` spawn arg → SDK options.model.
       type: "string" as const,
       description:
-        "Claude model id (e.g. 'claude-opus-4-8', 'claude-sonnet-5', " +
-        "'claude-haiku-4-5-20251001'). Applied as a `--model` arg at spawn → " +
-        "SDK options.model. Omit for the default.",
+        "Model id → SDK options.model, applied as a `--model` arg at spawn. " +
+        "Native Claude (e.g. 'claude-opus-4-8', 'claude-sonnet-5') in the " +
+        "default mode, or a gateway id when mode is moonshot/openrouter " +
+        "(e.g. 'kimi-k2.7-code', 'z-ai/glm-5.2'). Omit for the mode's default.",
       bin_args_template: ["--model", "{value}"],
     },
     {
