@@ -1,0 +1,68 @@
+{
+  "name": "@agentproto/eval",
+  "version": "0.1.0",
+  "description": "Deterministic reference scorers as AIP-14 TOOL contracts + one builtin AIP-30 PROVIDER. A scorer IS a tool whose outputSchema is the shared `Score` shape — no new scorer port. Ships exact-match, regex-match, json-schema-valid, and latency-budget. No LLM/model calls.",
+  "keywords": [
+    "agentproto",
+    "aip-14",
+    "aip-30",
+    "eval",
+    "scorer",
+    "score",
+    "deterministic",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/eval"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/telemetry": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/workflow-runtime": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
