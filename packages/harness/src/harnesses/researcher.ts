@@ -69,7 +69,7 @@ export function renderResearcherPrompt(
 }
 
 /**
- * Build the `start_agent_session` args for the researcher preset.
+ * Build the `agent_start` args for the researcher preset.
  * Exported so WP4's unit test can assert `mcpServers` + schema are present.
  *
  * `model`, `effort`, and the system `prompt` are NOT included here —

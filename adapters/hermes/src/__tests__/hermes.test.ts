@@ -17,8 +17,20 @@ describe("@agentproto/adapter-hermes", () => {
   })
 
   it("declares model routing slots", () => {
-    expect(hermes.models?.default).toMatch(/anthropic|claude/)
-    expect(hermes.models?.env?.anthropic).toBe("ANTHROPIC_API_KEY")
+    // Cheap OpenRouter coder by default (hermes is the budget delegation arm).
+    expect(hermes.models?.default).toBe("z-ai/glm-5.2")
+    // hermes ignores the ACP session model config — model is applied via a
+    // `/model <id>` control turn (AgentCliModels.apply).
+    expect(hermes.models?.apply).toBe("command")
+  })
+
+  it("reserves Anthropic models for the claude-code adapter", () => {
+    // No anthropic env slot, no anthropic model on the menu, and a hard
+    // deny so an explicit `anthropic/…` request is refused at compose time.
+    expect(hermes.models?.env?.anthropic).toBeUndefined()
+    expect(hermes.models?.allowed).not.toContain("anthropic/claude-opus-4-7")
+    expect(hermes.models?.deny).toContain("anthropic/*")
+    expect(hermes.models?.deny).toContain("claude-*")
   })
 
   it("declares persistent session policy", () => {

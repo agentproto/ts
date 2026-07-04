@@ -8,7 +8,7 @@
  * `--connect <url>` is set. With or without the tunnel:
  *
  *   - HTTP /sessions, /sessions/agent, /sessions/:id/* routes work
- *   - MCP tools (start_agent_session, prompt_agent_session, …) are
+ *   - MCP tools (agent_start, agent_prompt, …) are
  *     reachable via the daemon's /mcp transport
  *   - the LocalDaemonSessionsCard in guilde-web sees every spawn
  *
@@ -59,12 +59,17 @@ import {
 import {
   createGateway,
   sweepStaleRuntimeMetas,
+  sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
+  injectProviderKeysIntoEnv,
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
+import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
+import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
@@ -252,33 +257,83 @@ export async function runServe(args: readonly string[]): Promise<number> {
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
   }
 
-  // ── adapter resolver (powers MCP start_agent_session) ──
+  // ── provider keys ──
+  // Inject any keys stored via `agentproto auth provider set` into this
+  // process's env BEFORE the gateway boots, so every spawned adapter
+  // (mastra-agent's Mastra gateway, hermes/opencode routers) inherits
+  // them. Explicit env always wins (a `FOO_API_KEY=… serve` or CI secret
+  // is never overwritten). Best-effort; a missing/locked store is non-fatal.
+  try {
+    const injected = await injectProviderKeysIntoEnv(process.env)
+    if (injected.length > 0) {
+      process.stderr.write(
+        `${color.dim}loaded ${injected.length} provider key(s) from store: ${injected.join(", ")}${color.reset}\n`,
+      )
+    }
+  } catch {
+    // providers.json missing / unreadable — env-only operation is fine.
+  }
+
+  // Live-on-setup catalog overlay: fold any cached provider catalogs
+  // (~/.agentproto/catalog/*.json, written by `auth provider set`) over the
+  // committed model-catalog baseline. AVAILABILITY only (account-specific
+  // voices); pricing stays pinned in the package. Best-effort and additive.
+  try {
+    const voices = await loadCachedCatalogVoices()
+    if (voices.length > 0) {
+      registerCatalogOverlay({ voice: voices })
+      process.stderr.write(
+        `${color.dim}loaded ${voices.length} catalog voice(s) from live-on-setup cache${color.reset}\n`,
+      )
+    }
+  } catch {
+    // No cache / unreadable — the committed baseline serves on its own.
+  }
+
+  // ── adapter resolver (powers MCP agent_start) ──
   // Wires the cli's adapter registry into the gateway's
-  // /sessions/agent route + the start_agent_session MCP tool.
+  // /sessions/agent route + the agent_start MCP tool.
   // When unwired, those routes return 501 with a clear message.
   const resolveAgentAdapter: AgentAdapterResolver = async slug => {
     try {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, model, effort, mcpServers }) {
+        async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
-          // "no declared options" early-return in composeSpawn.
-          const optionOverrides: Record<string, string> = {}
+          // "no declared options" early-return in composeSpawn. Caller-
+          // supplied `options` (AIP-45 option ids, e.g. hermes' `skills`)
+          // seed the map first; the dedicated `model`/`effort` fields win
+          // on collision since those have their own ACP-level handling
+          // elsewhere and predate the generic `options` map.
+          const optionOverrides: Record<string, boolean | number | string> = {
+            ...options,
+          }
           if (model) optionOverrides.model = model
           if (effort) optionOverrides.effort = effort
+          // composeSpawn validates `mode` against the manifest's declared
+          // `modes` and throws RuntimeConfigError on an unknown id — for an
+          // adapter with no `modes` at all (hermes) that means ANY `mode`
+          // value fails the spawn rather than being silently ignored, so
+          // callers should only pass `mode` for adapters known to declare it.
+          const config: {
+            mode?: string
+            options?: Record<string, boolean | number | string>
+          } = {}
+          if (mode) config.mode = mode
+          if (Object.keys(optionOverrides).length > 0) config.options = optionOverrides
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
-            ...(Object.keys(optionOverrides).length > 0
-              ? { config: { options: optionOverrides } }
-              : {}),
+            ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
+            ...(onActivity ? { onActivity } : {}),
           })
         },
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
+        ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
       }
     } catch (err) {
       console.warn(
@@ -292,7 +347,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── pty factory ──
   // Resolved once at boot and shared between the local gateway (powers
-  // POST /sessions/terminal + the four start_terminal_session MCP
+  // POST /sessions/terminal + the four terminal_start MCP
   // tools + the WS /sessions/:id/pty bridge) AND the tunnel server
   // below (cloud-driven spawns with pty:true on the spawn frame).
   // When node-pty is missing, the factory is null and both paths
@@ -300,7 +355,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // pty:true spawns.
   const spawnPty = await loadNodePtyFactory()
 
-  // ── browser adapter resolver + lister (powers MCP start_browser / list_adapter_browsers) ──
+  // ── browser adapter resolver + lister (powers MCP start_browser / browser_adapter_list) ──
   const resolveBrowserAdapter = (id: string) => getBrowserAdapter(id)
   const listBrowserAdapters = () =>
     Object.values(browserAdapters).map(a => ({
@@ -327,7 +382,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // BOOT.md is silly for a tunnel daemon — skip it.
       boot: false,
       resolveAgentAdapter,
-      // Discovery for UIs / operators — `GET /adapters` + `list_adapters`
+      // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed.
       listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),
@@ -388,6 +443,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
   } catch {
     // workspaces.json may not exist yet — no cleanup needed.
   }
+  // Same sweep for the central daemon registry — a SIGKILLed daemon
+  // leaves a dead-PID `<port>.json` there too, which discovery would
+  // otherwise trust. Independent of workspaces.json, so it runs even
+  // when no workspaces are registered.
+  try {
+    const cleaned = await sweepStaleDaemonRegistry(opts.port)
+    if (cleaned.length > 0) {
+      process.stderr.write(
+        `${color.dim}cleaned ${cleaned.length} stale daemon registry entr${cleaned.length === 1 ? "y" : "ies"} (dead PID)${color.reset}\n`,
+      )
+    }
+  } catch {
+    // best-effort
+  }
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
   const aborter = new AbortController()
@@ -403,7 +472,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // Delete our own runtime.json so the next CLI invocation doesn't
     // discover it as a "live daemon". Best-effort — the next boot
     // would clean it up anyway via the sweep above.
-    await unlinkRuntimeMeta(opts.workspace).catch(() => undefined)
+    await unlinkRuntimeMeta(opts.workspace, opts.port).catch(() => undefined)
     process.exit(0)
   }
   process.once("SIGINT", () => void shutdown("SIGINT"))
@@ -466,7 +535,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     if (!shuttingDown) {
       aborter.abort()
       await gateway.stop().catch(() => undefined)
-      await unlinkRuntimeMeta(opts.workspace).catch(() => undefined)
+      await unlinkRuntimeMeta(opts.workspace, opts.port).catch(() => undefined)
     }
     return 0
   }

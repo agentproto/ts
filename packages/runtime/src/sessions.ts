@@ -25,8 +25,11 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
-import type { SessionEventBus } from "./session-event-bus.js"
-import { dirname, resolve } from "node:path"
+import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
+import { formatToolCall, formatToolResult } from "./tool-presenter.js"
+import { createTranscriptWriter } from "./transcript-writer.js"
+import { deriveSessionUsage, type SessionUsage } from "./usage.js"
+import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 
@@ -38,6 +41,12 @@ import { randomUUID } from "node:crypto"
  */
 export interface AgentSessionLike {
   sessionId: string
+  /** OS-level process id of the spawned child, when the driver owns a
+   *  real subprocess. Mirrored onto `SessionDescriptor.pid` at
+   *  `spawnAgent` time so `processAlive` can be computed without
+   *  adapter-specific forensics. Undefined for drivers that don't
+   *  expose a process (e.g. a future non-subprocess transport). */
+  pid?: number
   send(message: unknown): AsyncIterable<AgentStreamEvent>
   cancel(): Promise<void>
   close(): Promise<void>
@@ -72,10 +81,97 @@ export type PtyFactory = (opts: PtyFactoryOptions) => PtyProcess
 export interface AgentStreamEvent {
   kind: string
   text?: string
+  /** Correlates a "tool-call" with its later "tool-result" (and an
+   *  "agent-prompt" with the permission it's asking about) — see
+   *  @agentproto/acp's `StreamEvent`. */
+  toolCallId?: string
   toolName?: string
+  /** Tool-call input, e.g. an ACP `tool_call`'s `arguments` — see @agentproto/acp's `StreamEvent`. */
+  arguments?: unknown
+  /** Tool-call output, e.g. an ACP `tool_call_update`'s `result` — see @agentproto/acp's `StreamEvent`. */
+  result?: unknown
   isError?: boolean
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
+  /** Structured options offered by an "agent-prompt" event (e.g. an ACP
+   *  `requestPermission` callback surfaced as a clarifying question rather
+   *  than auto-answered). Typed `unknown` — like `@agentproto/acp`'s own
+   *  `StreamEvent["options"]` — so this structural type stays assignable
+   *  from any driver's runtime session without a hard dependency on its
+   *  exact option shape (`{optionId,name,kind}` for ACP, or whatever a
+   *  future driver reports); `normalizeAgentPromptOptions` narrows it
+   *  defensively at the one place it's consumed. */
+  options?: unknown
+  /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
+  entries?: Array<{ content: string; priority: string; status: string }>
+  /** "usage_update" context-window size (tokens). */
+  size?: number
+  /** "usage_update" tokens currently in context. */
+  used?: number
+  /** "usage_update" cumulative session cost, when the adapter reports one. */
+  cost?: { amount: number; currency: string }
+  /** "usage_update" cumulative input/output token counts, when the adapter
+   *  reports them (lets the daemon price a session whose adapter gives tokens
+   *  but no `cost`). */
+  tokensIn?: number
+  tokensOut?: number
+}
+
+/**
+ * Defensively narrow an "agent-prompt" event's `options` (typed `unknown`
+ * — see `AgentStreamEvent.options`) into a flat label list. Accepts plain
+ * strings, or objects exposing `label`/`name`/`id`/`optionId` (covers both
+ * a hypothetical `{id,label}` shape and ACP's actual `{optionId,name,kind}`
+ * `requestPermission` options) without assuming either driver-specific
+ * shape at the type level.
+ */
+function normalizeAgentPromptOptions(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const labels = raw
+    .map(o => {
+      if (typeof o === "string") return o
+      if (o && typeof o === "object") {
+        const r = o as Record<string, unknown>
+        const label = r.label ?? r.name ?? r.id ?? r.optionId
+        if (typeof label === "string") return label
+      }
+      return undefined
+    })
+    .filter((s): s is string => typeof s === "string")
+  return labels.length > 0 ? labels : undefined
+}
+
+/**
+ * Classify what a tool call blocks the turn on, from its tool name alone.
+ * Powers `SessionDescriptor.blockedOn`: "subagent" for an `agent_start`
+ * (the turn is waiting on a spawned child agent), "command" for shell /
+ * terminal execution tools. Anything else — including fast local tools —
+ * returns undefined and leaves the descriptor untouched. Matching is
+ * intentionally loose on the command side (bash/terminal/command
+ * substrings) so adapter-native tool names (e.g. claude-code's "Bash")
+ * classify without a per-adapter table.
+ */
+function classifyBlockedOn(toolName?: string): "subagent" | "command" | undefined {
+  if (!toolName) return undefined
+  const n = toolName.toLowerCase()
+  if (n === "agent_start") return "subagent"
+  if (/^(command_execute|terminal_start)$|bash|terminal|command/.test(n)) return "command"
+  return undefined
+}
+
+/**
+ * True when a thrown value represents a turn ABORT rather than a genuine
+ * error — a cancelled/killed turn surfaces as a DOMException-style
+ * `AbortError` (`name`) or Node's `ABORT_ERR` (`code`). Lets the turn
+ * finalizer synthesize a `turn-end` tagged `"aborted"` instead of
+ * mislabelling a deliberate cancel as a turn error. Kill-driven aborts are
+ * additionally caught by inspecting the descriptor status at the call site.
+ */
+function isAbortError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  const name = "name" in err ? err.name : undefined
+  const code = "code" in err ? err.code : undefined
+  return name === "AbortError" || code === "ABORT_ERR"
 }
 
 export const SESSIONS_FILE_PATH = (): string =>
@@ -88,6 +184,27 @@ export type SessionStatus =
   | "exited"
   | "killed"
   | "error"
+
+/**
+ * Thrown by `sendPrompt` / `enqueuePrompt` when the target agent-cli
+ * session is dead (status exited/killed/error) and either isn't
+ * resumable or its resume attempt already failed. Carries the actual
+ * `status` so ingress layers (MCP `agent_prompt`, HTTP
+ * `POST /sessions/:id/prompt`) can report a truthful, structured error
+ * instead of the prompt silently going nowhere — see the "prompt to a
+ * dead session" bug this type fixes at its throw site in
+ * `validateAgentTurn`.
+ */
+export class SessionNotAliveError extends Error {
+  readonly sessionId: string
+  readonly status: SessionStatus
+  constructor(sessionId: string, status: SessionStatus, caller: string) {
+    super(`${caller}: session "${sessionId}" is not alive (status=${status})`)
+    this.name = "SessionNotAliveError"
+    this.sessionId = sessionId
+    this.status = status
+  }
+}
 
 export interface SessionDescriptor {
   id: string
@@ -104,6 +221,19 @@ export interface SessionDescriptor {
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
+  /** Last time ANY adapter-process activity was observed — ACP
+   *  JSON-RPC traffic, protocol-level events, not just ring-buffer
+   *  output lines. Stays current during long tool-call chains where
+   *  `lastOutputAt` goes stale. Updated on incoming session/update
+   *  notifications AND on outbound RPC calls. ISO 8601. */
+  lastActivityAt?: string
+  /** Whether the underlying OS process is still alive. Computed via
+   *  `process.kill(pid, 0)` at read time (list()/get()) — cheap,
+   *  zero-overhead, standard POSIX check. Absent when `pid` is null
+   *  (no process to check). Never persisted — recomputed fresh on
+   *  every read since it's a live OS query, stale the instant it's
+   *  written to disk. */
+  processAlive?: boolean
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -126,6 +256,25 @@ export interface SessionDescriptor {
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
   adapterSlug?: string
+  /** The model the session was requested to run (echoed back at spawn). */
+  model?: string
+  /** Cumulative estimated USD cost of the session — best-effort, refreshed
+   *  on each turn-end from the adapter's usage reader (e.g. hermes reads its
+   *  state.db). Absent for adapters with no usage source. */
+  costUsd?: number
+  /** Cumulative input / output token counts (same source + cadence as costUsd). */
+  tokensIn?: number
+  tokensOut?: number
+  /** Context-window size + tokens-in-context from the latest `usage_update`
+   *  event (ACP adapters that report a context window). Refreshed live as
+   *  usage_update events arrive, not just at turn-end. */
+  contextSize?: number
+  contextUsed?: number
+  /** Where `costUsd` came from — `"adapter"` (adapter's own reader or a
+   *  usage_update cost block), `"computed"` (tokens × in-repo catalog price),
+   *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
+   *  deliberately left undefined), or `"none"`. Stamped at each turn-end. */
+  usageSource?: import("./usage.js").UsageSource
   /** ACP-level session id (the adapter's own handle — claude-code's
    *  conversation id, hermes' chat id, …). Set at spawnAgent time
    *  from `agentSession.sessionId`. Survives across daemon restarts
@@ -153,8 +302,42 @@ export interface SessionDescriptor {
   resumeMetadata?: Record<string, string>
   /** Set by the orchestration layer when the agent emits an
    *  "awaiting-input" turn-end. Cleared on the next turn start.
-   *  Used by `wait_for_any` to fast-return without subscribing. */
+   *  Used by `session_monitor` to fast-return without subscribing. */
   awaitingInput?: boolean
+  /**
+   * Structured detail on WHY the session is awaiting input, when it can be
+   * determined — lets an orchestrator distinguish "blocked on a real
+   * question" from "just finished a turn" without re-reading raw output.
+   * `source: "structured"` comes from a driver-reported ACP-style prompt
+   * (`AgentStreamEvent.options`, e.g. a tool permission request);
+   * `source: "heuristic"` is a best-effort guess from the tail of the
+   * transcript (trailing "?" + an optional enumerated option list) for
+   * drivers that don't report structured prompts. Cleared alongside
+   * `awaitingInput` on the next turn start. */
+  awaitingQuestion?: SessionAwaitingQuestion
+  /** Count of turns that have fully completed (turn-end emitted) on this
+   *  session. Lets `session_monitor` fast-return for a session that already
+   *  finished its turn before the wait subscribed — a fast turn that ends
+   *  in "completed" (not "awaiting-input") leaves no other persisted
+   *  signal (status stays "running", busy clears). 0 = never ran a turn,
+   *  so a freshly-spawned idle session is NOT mistaken for done. */
+  turnsCompleted?: number
+  /** True while a turn is actively running (mirror of the internal
+   *  runtime `busy` flag). Lets `session_monitor` distinguish "idle after a
+   *  finished turn" from "mid-turn" so it doesn't fast-return a stale
+   *  turn-end while the NEXT turn is still generating. */
+  busy?: boolean
+  /** What the in-flight turn is currently blocked on, when classifiable
+   *  from the pending tool call: a spawned sub-agent (`agent_start`) or a
+   *  shell/terminal command. Deliberately NO "user" variant — waiting on
+   *  the user is already covered by `awaitingInput`/`awaitingQuestion`.
+   *  Set on tool-call, cleared on the MATCHING tool-result (guarded by
+   *  `pendingToolCallId`), at turn start, and in the turn's finally. */
+  blockedOn?: "subagent" | "command"
+  /** toolCallId of the tool-call that set `blockedOn`. A tool-result only
+   *  clears `blockedOn` when its toolCallId matches — so a nested or
+   *  interleaved tool finishing first can't clear the flag early. */
+  pendingToolCallId?: string
   /** Session id of the orchestrator that spawned this session, set when
    *  the spawn arrived via the scoped orchestrator sub-gateway (the
    *  token carried the spawner's identity). Absent for direct `/mcp`
@@ -231,6 +414,18 @@ interface SessionRuntime {
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
+  /** Per-session cost cap. When set, the turn-end finally block checks
+   *  the accumulated costUsd against this ceiling and kills the session
+   *  if exceeded. */
+  maxCostUsd?: number
+  /** Best-effort usage reader called after each turn. The adapter returns
+   *  accumulated cost/token counts which are mirrored onto the descriptor. */
+  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** True once an authoritative cost has been observed from the adapter —
+   *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
+   *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
+   *  turn-end. */
+  adapterReportedCost?: boolean
 }
 
 const RECENT_LINES_CAP = 500
@@ -243,11 +438,71 @@ const PERSIST_DEBOUNCE_MS = 1_500
  *  to render. */
 const HISTORY_CAP = 200
 
+/** Compute `desc.processAlive` from `desc.pid` via the standard POSIX
+ *  "signal 0" check — `process.kill(pid, 0)` throws `ESRCH` (or
+ *  `EPERM`, treated as "exists but not ours") when the process is
+ *  dead, and is a no-op (no actual signal delivered) when it succeeds.
+ *  Mutates `desc` in place; called at read time (list()/get()) rather
+ *  than persisted, since it's a live OS query that goes stale the
+ *  instant it's written to disk. */
+function stampProcessAlive(desc: SessionDescriptor): void {
+  if (desc.pid === null || desc.pid === undefined) {
+    delete desc.processAlive
+    return
+  }
+  try {
+    process.kill(desc.pid, 0)
+    desc.processAlive = true
+  } catch {
+    desc.processAlive = false
+  }
+}
+
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
  *  on dim/coloured output. Liberal regex covering most cases — we
  *  don't need byte-perfect parsing here. */
 function stripAnsiCodes(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
+/** Lines the ring buffer itself injects (turn separators, [tool] /
+ *  [thought] / [awaiting input] markers) — never real transcript content,
+ *  so the heuristic below skips them when looking for a trailing question. */
+const SYNTHETIC_LINE = /^(?:──|\[)/
+
+const OPTION_LINE_PATTERN = /^(?:[-*•]|\d+[.)]|[a-zA-Z][.)])\s+(.+)$/
+
+/** Best-effort fallback for drivers that never report a structured
+ *  "agent-prompt" (i.e. every currently-supported adapter — none emits
+ *  ACP's `requestPermission` as a surfaced clarifying question today, they
+ *  auto-answer it). A clarifying question's shape in a transcript is the
+ *  question line followed by its enumerated options ("1. yes", "- retry",
+ *  "a) skip", ...), so this scans backwards from the end of the transcript
+ *  collecting a trailing run of option-shaped lines, then checks whether
+ *  the line just before that run ends in "?". Always tagged
+ *  `source: "heuristic"` so callers know this is a guess, not an
+ *  authoritative signal. */
+function deriveHeuristicQuestion(
+  recentLines: string[],
+): SessionAwaitingQuestion | undefined {
+  const visible = recentLines
+    .map(stripAnsiCodes)
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !SYNTHETIC_LINE.test(l))
+  if (visible.length === 0) return undefined
+
+  const options: string[] = []
+  let i = visible.length - 1
+  while (i >= 0 && options.length < 6) {
+    const m = OPTION_LINE_PATTERN.exec(visible[i]!)
+    if (!m) break
+    options.unshift(m[1]!.trim())
+    i--
+  }
+  if (i < 0) return undefined
+  const candidate = visible[i]!
+  if (!candidate.endsWith("?")) return undefined
+  return { text: candidate, ...(options.length > 0 ? { options } : {}), source: "heuristic" }
 }
 
 export interface SessionsRegistry {
@@ -277,19 +532,29 @@ export interface SessionsRegistry {
    *  `kill()` best-effort. */
   registerBrowser(input: RegisterBrowserInput): SessionDescriptor
   /** Send a follow-up turn to a live agent session. Throws when the
-   *  session is missing, not an agent-cli kind, or busy. The events
-   *  stream into the existing ring buffer + line emitter so /stream
-   *  consumers see them as they arrive. */
+   *  session is missing, not an agent-cli kind, dead (exited/killed/
+   *  error and unresumable — `SessionNotAliveError`), or busy
+   *  (mid-turn). The events stream into the existing ring buffer +
+   *  line emitter so /stream consumers see them as they arrive. */
   sendPrompt(id: string, message: unknown): Promise<void>
-  /** Fire-and-forget variant of `sendPrompt`. Validates the same
-   *  preconditions synchronously — throws on missing session / wrong
-   *  kind / busy — but returns immediately after the turn is started,
-   *  letting the caller stream output via the SSE endpoint instead of
-   *  blocking on the full turn. Async errors during the turn are
-   *  pushed into the ring buffer as `[error]` lines so `/stream`
-   *  subscribers see them. Used by the web UI's chat input where a
-   *  long turn would otherwise freeze the textbox. */
-  enqueuePrompt(id: string, message: unknown): void
+  /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
+   *  Admission (resume attempt + the missing/wrong-kind/dead/busy
+   *  checks `sendPrompt` throws) is AWAITED before this resolves, so a
+   *  dead or busy session rejects instead of silently reporting
+   *  success — only resolves once the turn has actually started.
+   *  Errors during the turn's own execution (network drop, child died
+   *  mid-turn) are pushed into the ring buffer as `[error]` lines so
+   *  `/stream` subscribers see them. Used by the web UI's chat input
+   *  and MCP `agent_prompt`, where a long turn would otherwise freeze
+   *  the caller. */
+  enqueuePrompt(id: string, message: unknown): Promise<void>
+  /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
+   *  and schedule a debounced persist. Called from the `onActivity`
+   *  callback threaded down through the driver → ACP client, which
+   *  fires on ANY adapter-process traffic (not just ring-buffer
+   *  output) — see `SessionDescriptor.lastActivityAt`. No-op when the
+   *  id is unknown (session already forgotten). */
+  pulseActivity(id: string): void
   list(): SessionDescriptor[]
   get(id: string): SessionDescriptor | undefined
   /** Subscribe to a session's output. Returns an unsubscribe fn.
@@ -402,6 +667,18 @@ export interface SpawnAgentInput {
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
    *  0 when omitted (direct/root spawn). */
   depth?: number
+  /** Requested model id — recorded on the descriptor for display + echo. */
+  model?: string
+  /** Hard ceiling on cumulative session cost (USD). When set and the
+   *  adapter's usage reader reports a higher cost at a turn-end, the session
+   *  is stopped (best-effort, turn-granular — caps continuation, can't abort
+   *  a turn mid-flight). */
+  maxCostUsd?: number
+  /** Best-effort usage reader, called on each turn-end to refresh the
+   *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
+   *  reads its state.db keyed by the adapter session id). Omit for adapters
+   *  with no usage source. */
+  readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
 }
 
 export interface SpawnSessionInput {
@@ -471,6 +748,10 @@ export type AgentSessionResumer = (input: {
    *  same host-chosen toolset it had on the initial spawn (orchestrator
    *  WP1). Omitted for legacy rows spawned before this was persisted. */
   mcpServers?: AcpMcpServer[]
+  /** Forwarded to the re-spawned adapter's `startSession({ onActivity })`
+   *  so the resumed session keeps pulsing `lastActivityAt` the same way
+   *  the original spawn did. */
+  onActivity?: () => void
 }) => Promise<AgentSessionLike | null>
 
 export function createSessionsRegistry(opts?: {
@@ -492,9 +773,17 @@ export function createSessionsRegistry(opts?: {
   /** When provided, the registry translates internal lifecycle transitions
    *  (turn-end, awaiting-input, exit) into SessionEvents on this bus. */
   sessionEvents?: SessionEventBus
+  /** Override the structured-transcript base directory. Defaults to a
+   *  `sessions` sibling of `persistPath` (`~/.agentproto/sessions` in
+   *  production) — tests that already pin `persistPath` to a tmpdir get
+   *  transcript isolation for free without also having to pass this. */
+  transcriptDir?: string
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
+  const transcriptWriter = createTranscriptWriter({
+    baseDir: opts?.transcriptDir ?? join(dirname(persistPath), "sessions"),
+  })
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents
@@ -567,7 +856,14 @@ export function createSessionsRegistry(opts?: {
     try {
       const snapshot = {
         savedAt: new Date().toISOString(),
-        sessions: Array.from(sessions.values()).map(s => s.desc),
+        // `processAlive` is a live OS query (see stampProcessAlive) —
+        // strip it before writing so a restored descriptor is never
+        // seen with a stale value before the next list()/get() call
+        // recomputes it fresh.
+        sessions: Array.from(sessions.values()).map(s => {
+          const { processAlive: _processAlive, ...rest } = s.desc
+          return rest
+        }),
       }
       await fs.mkdir(dirname(persistPath), { recursive: true })
       await fs.writeFile(persistPath, JSON.stringify(snapshot, null, 2) + "\n")
@@ -698,21 +994,57 @@ export function createSessionsRegistry(opts?: {
           }
         }
         break
-      case "tool-call":
+      case "tool-call": {
+        // Surface what the turn is now blocked on (sub-agent / command)
+        // when the tool name classifies. The toolCallId is remembered so
+        // only the MATCHING result clears it (nested tools can't).
+        const blocked = classifyBlockedOn(evt.toolName)
+        if (blocked) {
+          rt.desc.blockedOn = blocked
+          rt.desc.pendingToolCallId = evt.toolCallId
+        }
         appendLine(
           rt,
-          `\x1b[36m[tool] ${evt.toolName ?? "?"}\x1b[0m`,
+          `\x1b[36m[tool] ${formatToolCall(evt.toolName ?? "?", evt.arguments)}\x1b[0m`,
           "stdout"
         )
         break
-      case "tool-result":
-        if (evt.isError)
+      }
+      case "tool-result": {
+        if (rt.desc.blockedOn && evt.toolCallId === rt.desc.pendingToolCallId) {
+          rt.desc.blockedOn = undefined
+          rt.desc.pendingToolCallId = undefined
+        }
+        // Keep this to ONE line per result — some drivers stream huge
+        // payloads (file dumps, search hits) and the ring buffer is a
+        // fixed-size window, not a log store.
+        const summary = formatToolResult(evt.toolName, evt.result, evt.isError ?? false)
+        if (summary) {
+          appendLine(
+            rt,
+            evt.isError
+              ? `\x1b[31m[tool-error] ${summary}\x1b[0m`
+              : `\x1b[2m[tool-result] ${summary}\x1b[0m`,
+            evt.isError ? "stderr" : "stdout"
+          )
+        } else if (evt.isError) {
           appendLine(rt, `\x1b[31m[tool-error]\x1b[0m`, "stderr")
+        }
         break
-      case "agent-prompt":
+      }
+      case "agent-prompt": {
         rt.desc.awaitingInput = true
+        const options = normalizeAgentPromptOptions(evt.options)
+        if (options) {
+          rt.desc.awaitingQuestion = {
+            text: evt.text ?? (evt.toolName ? `Allow "${evt.toolName}"?` : "Agent is requesting input."),
+            options,
+            source: "structured",
+          }
+        }
         appendLine(rt, `\x1b[33m[awaiting input]\x1b[0m`, "stdout")
         break
+      }
       case "turn-end": {
         if (evt.reason === "awaiting-input") rt.desc.awaitingInput = true
         // Flush any buffered text/thought fragments as final lines.
@@ -757,6 +1089,33 @@ export function createSessionsRegistry(opts?: {
         }
         break
       }
+      case "plan": {
+        const entries = evt.entries ?? []
+        const done = entries.filter(e => e.status === "completed").length
+        appendLine(
+          rt,
+          `\x1b[35m[plan] ${done}/${entries.length} ${entries.map(e => e.content).join("; ")}\x1b[0m`,
+          "stdout"
+        )
+        break
+      }
+      // "usage_update" is high-frequency telemetry (context size/cost) — the
+      // ring buffer isn't the right place for it (cost is surfaced via
+      // rt.desc.costUsd at turn-end); it still lands in events.jsonl via the
+      // transcript writer tap point. We DO mirror its structured fields onto
+      // the descriptor here so the latest context window + any adapter-
+      // reported cost/tokens are available live to session_list / session_usage.
+      case "usage_update": {
+        if (typeof evt.size === "number" && evt.size > 0) rt.desc.contextSize = evt.size
+        if (typeof evt.used === "number" && evt.used > 0) rt.desc.contextUsed = evt.used
+        if (evt.cost) {
+          rt.desc.costUsd = evt.cost.amount
+          rt.adapterReportedCost = true
+        }
+        if (typeof evt.tokensIn === "number") rt.desc.tokensIn = evt.tokensIn
+        if (typeof evt.tokensOut === "number") rt.desc.tokensOut = evt.tokensOut
+        break
+      }
     }
   }
 
@@ -768,17 +1127,37 @@ export function createSessionsRegistry(opts?: {
    */
   /**
    * Shared sync validation for sendPrompt + enqueuePrompt. Throws on
-   * missing session / wrong kind / busy so both code paths surface
-   * the exact same error messages — the only difference is whether
-   * the caller awaits the turn.
+   * missing session / wrong kind / dead session / busy so both code
+   * paths surface the exact same error messages — the only difference
+   * is whether the caller awaits the turn.
+   *
+   * Must be called AFTER `maybeResumeAgent(rt)` has already been
+   * awaited — a dead-but-resumable agent-cli session only regains
+   * `rt.agentSession` there.
+   *
+   * Liveness is checked via `rt.desc.status`, NOT merely
+   * `!rt.agentSession` — `kill()` flips status to "killed" but leaves
+   * `rt.agentSession` referencing the now-closed session object (it
+   * only calls `.close()`, it doesn't clear the field), so a
+   * `!rt.agentSession` check alone would miss a live-killed session
+   * and let `runAgentTurn` call `.send()` on a dead connection. Status
+   * catches that case too, not just the daemon-restart/dead-and-
+   * unresumable case where `agentSession` really is absent. Either way
+   * this throws `SessionNotAliveError` (not a generic Error) so
+   * ingress can report status/409 truthfully instead of the caller
+   * getting back a lie like `{queued: true}`.
    */
   const validateAgentTurn = (id: string, caller: string): SessionRuntime => {
     const rt = sessions.get(id)
     if (!rt) throw new Error(`${caller}: no session "${id}"`)
-    if (!rt.agentSession) {
+    if (rt.desc.kind !== "agent-cli") {
       throw new Error(
         `${caller}: session "${id}" is not an agent session (kind=${rt.desc.kind})`
       )
+    }
+    const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+    if (!isAlive || !rt.agentSession) {
+      throw new SessionNotAliveError(id, rt.desc.status, caller)
     }
     if (rt.busy) {
       throw new Error(
@@ -830,6 +1209,12 @@ export function createSessionsRegistry(opts?: {
           resumeSessionId: adapterSessionId,
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
+          // Keep pulsing lastActivityAt across a resume the same way the
+          // original spawn did.
+          onActivity: () => {
+            rt.desc.lastActivityAt = new Date().toISOString()
+            schedulePersist()
+          },
         })
         if (!fresh) {
           appendLine(
@@ -842,6 +1227,10 @@ export function createSessionsRegistry(opts?: {
         rt.agentSession = fresh
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
+        // The resumed session is a fresh child process — refresh pid so
+        // `processAlive` reflects the new process, not the dead one that
+        // triggered this resume.
+        rt.desc.pid = fresh.pid ?? null
         if (rt.desc.status !== "running") {
           rt.desc.status = "running"
           delete rt.desc.endedAt
@@ -861,6 +1250,40 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Resolve a session's usage snapshot from the descriptor's accumulated
+   * signals: the adapter-reported cost (readUsage or a usage_update cost
+   * block) is authoritative; otherwise tokens are priced against the in-repo
+   * catalog (`deriveSessionUsage`), or tagged no-pricing when the model is
+   * unknown. Pure read of `rt` — mutation is the caller's job.
+   */
+  const buildUsageSnapshot = (rt: SessionRuntime): SessionUsage =>
+    deriveSessionUsage({
+      ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
+      ...(rt.adapterReportedCost && rt.desc.costUsd !== undefined
+        ? { adapterCostUsd: rt.desc.costUsd }
+        : {}),
+      ...(rt.desc.tokensIn !== undefined ? { tokensIn: rt.desc.tokensIn } : {}),
+      ...(rt.desc.tokensOut !== undefined ? { tokensOut: rt.desc.tokensOut } : {}),
+      ...(rt.desc.contextSize !== undefined ? { contextSize: rt.desc.contextSize } : {}),
+      ...(rt.desc.contextUsed !== undefined ? { contextUsed: rt.desc.contextUsed } : {}),
+    })
+
+  /**
+   * Write a final `usage_snapshot` recap when an agent session exits (kill,
+   * turn error, cost-cap, shutdown). Stamps `usageSource` on the descriptor
+   * and skips writing when there's nothing measured (`source: "none"`) so a
+   * never-run session doesn't leave an empty transcript file. Must run BEFORE
+   * `transcriptWriter.close(id)`.
+   */
+  const recordExitUsageSnapshot = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    const usage = buildUsageSnapshot(rt)
+    rt.desc.usageSource = usage.source
+    if (usage.source === "none") return
+    transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown
@@ -869,14 +1292,33 @@ export function createSessionsRegistry(opts?: {
       throw new Error("runAgentTurn: session has no agentSession")
     }
     rt.busy = true
+    rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
+    rt.desc.awaitingQuestion = undefined
+    rt.desc.blockedOn = undefined  // clear stale blocked-on from prior turn
+    rt.desc.pendingToolCallId = undefined
     let turnCompleted = false
+    // Whether the adapter itself emitted a `turn-end` during this turn.
+    // Drives the P5 guarantee: when the event stream ends WITHOUT one
+    // (crash / exit / error / abort), the finally block synthesizes a
+    // terminal `turn-end` — but only if the adapter didn't already send
+    // one, so exactly one is emitted per turn.
+    let sawTurnEnd = false
+    // Set in `catch` to the abnormal-end reason ("error" | "aborted") so
+    // the finally block can tag the synthesized turn-end correctly.
+    let abnormalReason: string | undefined
+    // Captures the driver's reported `turn-end` reason (e.g.
+    // "completed", "watchdog-timeout") so it can ride along on the
+    // `session:turn-end` bus event below — otherwise it's dropped after
+    // `projectEvent` renders it into the ring buffer.
+    let turnEndReason: string | undefined
     try {
       appendLine(
         rt,
         `\x1b[2m── ▶ ${typeof message === "string" ? message : JSON.stringify(message)} ──\x1b[0m`,
         "stdout"
       )
+      transcriptWriter.recordPrompt(rt.desc.id, message)
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
       // `{type: "text", text: "..."}` so callers can hand us
@@ -884,36 +1326,197 @@ export function createSessionsRegistry(opts?: {
       const wrapped =
         typeof message === "string" ? { type: "text", text: message } : message
       for await (const evt of rt.agentSession.send(wrapped)) {
+        // Capture the structured event to events.jsonl BEFORE
+        // projectEvent flattens it into an ANSI ring-buffer line — the
+        // only point downstream of the driver where the original
+        // shape (tool arguments, plan entries, ...) still exists.
+        transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
+        if (evt.kind === "turn-end") {
+          sawTurnEnd = true
+          turnEndReason = evt.reason
+        }
       }
       turnCompleted = true
     } catch (err) {
-      rt.desc.status = "error"
-      rt.desc.endedAt = new Date().toISOString()
-      appendLine(
-        rt,
-        `[turn error] ${err instanceof Error ? err.message : String(err)}`,
-        "stderr"
-      )
-      schedulePersist()
-      emitExited(rt)
+      // A turn that ends by throwing is either a genuine error or an
+      // ABORT (cancel()/kill()). Aborts must not be mislabelled as turn
+      // errors — kill() already flipped status to "killed" and emitted
+      // session:exited, and cancel() leaves the session alive for the
+      // next turn — so only the genuine-error branch marks the session
+      // errored. Either way the finally block below still guarantees a
+      // terminal turn-end.
+      if (isAbortError(err) || rt.desc.status === "killed") {
+        abnormalReason = "aborted"
+      } else {
+        abnormalReason = "error"
+        rt.desc.status = "error"
+        rt.desc.endedAt = new Date().toISOString()
+        appendLine(
+          rt,
+          `[turn error] ${err instanceof Error ? err.message : String(err)}`,
+          "stderr"
+        )
+        recordExitUsageSnapshot(rt)
+        schedulePersist()
+        emitExited(rt)
+      }
     } finally {
       rt.busy = false
-      if (turnCompleted && sessionEvents) {
-        const ts = new Date().toISOString()
-        sessionEvents.emit({
-          type: "session:turn-end",
-          sessionId: rt.desc.id,
-          awaitingInput: rt.desc.awaitingInput ?? false,
-          label: rt.desc.label,
-          ts,
-        })
-        if (rt.desc.awaitingInput) {
+      rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
+      // Safety net: a tool-call that never receives its tool-result (child
+      // crashed, stream ended early) must not leave the session flagged
+      // blocked forever — the turn is over, nothing is pending anymore.
+      rt.desc.blockedOn = undefined
+      rt.desc.pendingToolCallId = undefined
+
+      // ── P5: guarantee exactly one terminal turn-end per turn ──────────
+      // If the adapter's event stream ended without a turn-end (generator
+      // returned early, subprocess exited, threw, or was aborted), inject
+      // one so downstream orchestration can rely on turn-end as a uniform
+      // completion signal instead of hanging. Idempotent — `sawTurnEnd`
+      // short-circuits when the adapter already produced one.
+      if (!sawTurnEnd) {
+        const reason =
+          abnormalReason ??
+          (rt.desc.status === "killed" ? "aborted" : "exited")
+        const synthetic: AgentStreamEvent = { kind: "turn-end", reason }
+        // Record to the durable transcript first (matches the in-loop
+        // order: recordEvent before projectEvent), then flatten into the
+        // ring buffer so /stream + events.jsonl consumers both see it.
+        transcriptWriter.recordEvent(rt.desc.id, synthetic)
+        projectEvent(rt, synthetic)
+        sawTurnEnd = true
+        turnEndReason = reason
+      }
+
+      if (turnCompleted) {
+        // Record that a turn finished so a late `session_monitor` (subscribed
+        // after a fast turn already ended) can still fast-return.
+        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+
+        // ── Cost refresh (best-effort) ───────────────────────────────
+        // The adapter's own reader (e.g. hermes state.db) is authoritative —
+        // a returned `costUsd` marks the session as adapter-priced.
+        if (rt.readUsage) {
+          try {
+            const usage = await rt.readUsage()
+            if (usage) {
+              if (usage.costUsd !== undefined) {
+                rt.desc.costUsd = usage.costUsd
+                rt.adapterReportedCost = true
+              }
+              if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
+              if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
+
+              // Record a `usage_update` into the transcript so non-claude
+              // adapters (hermes reads its state.db here; claude-code emits
+              // this inline over ACP) carry the SAME token/cost telemetry in
+              // events.jsonl. Only when the reader actually returned a signal
+              // — never synthesize a usage event from nothing. Shape is
+              // identical to the ACP-arm's usage_update: size/used default to
+              // 0 (this reader carries no context-window figure, and
+              // `projectEvent` guards on >0 so the 0s never clobber a real
+              // size already mirrored onto the descriptor).
+              if (
+                usage.costUsd !== undefined ||
+                usage.tokensIn !== undefined ||
+                usage.tokensOut !== undefined
+              ) {
+                const usageEvent: AgentStreamEvent = {
+                  kind: "usage_update",
+                  size: 0,
+                  used: 0,
+                  ...(usage.costUsd !== undefined
+                    ? { cost: { amount: usage.costUsd, currency: "USD" } }
+                    : {}),
+                  ...(usage.tokensIn !== undefined
+                    ? { tokensIn: usage.tokensIn }
+                    : {}),
+                  ...(usage.tokensOut !== undefined
+                    ? { tokensOut: usage.tokensOut }
+                    : {}),
+                }
+                transcriptWriter.recordEvent(rt.desc.id, usageEvent)
+              }
+            }
+          } catch {
+            // best-effort — swallow
+          }
+        }
+
+        // ── Resolve usage source (adapter / computed / no-pricing / none)
+        //    and write the durable turn-boundary recap. Runs on every
+        //    turn-end, even without a session-event bus wired.
+        const usage = buildUsageSnapshot(rt)
+        rt.desc.usageSource = usage.source
+        rt.desc.costUsd = usage.costUsd
+        transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+
+        // ── Cost cap (best-effort, turn-granular) ────────────────────
+        const overBudget =
+          rt.maxCostUsd !== undefined &&
+          rt.desc.costUsd !== undefined &&
+          rt.desc.costUsd > rt.maxCostUsd
+        if (overBudget) {
+          appendLine(
+            rt,
+            `[cost-cap] cost $${rt.desc.costUsd} exceeds max $${rt.maxCostUsd} — killing session`,
+            "stderr",
+          )
+          rt.desc.status = "killed"
+          rt.desc.endedAt = new Date().toISOString()
+          void rt.agentSession?.close().catch(() => undefined)
+          void transcriptWriter.close(rt.desc.id)
+        }
+
+        if (sessionEvents) {
+          // No driver reports a structured "agent-prompt" today (every
+          // currently-supported adapter auto-answers ACP permission
+          // requests rather than surfacing them) — fall back to a
+          // best-effort scan of the transcript tail so awaiting-input still
+          // carries SOME signal beyond a bare boolean.
+          if (rt.desc.awaitingInput && !rt.desc.awaitingQuestion) {
+            rt.desc.awaitingQuestion = deriveHeuristicQuestion(rt.recentLines)
+          }
+
+          const ts = new Date().toISOString()
           sessionEvents.emit({
-            type: "session:awaiting-input",
+            type: "session:turn-end",
             sessionId: rt.desc.id,
+            awaitingInput: rt.desc.awaitingInput ?? false,
             label: rt.desc.label,
             ts,
+            ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+            ...(turnEndReason ? { reason: turnEndReason } : {}),
+          })
+          if (rt.desc.awaitingInput) {
+            sessionEvents.emit({
+              type: "session:awaiting-input",
+              sessionId: rt.desc.id,
+              label: rt.desc.label,
+              ts,
+              ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
+            })
+          }
+        }
+        if (overBudget) emitExited(rt)
+      } else {
+        // ── Abnormal turn end (error / abort) ────────────────────────
+        // The adapter's stream broke before a turn-end. We already
+        // synthesized the terminal turn-end above; still stamp
+        // turnsCompleted and emit the bus turn-end so a `session_monitor`
+        // (or any consumer waiting on completion) doesn't hang on a turn
+        // that will never signal done through the normal path.
+        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        if (sessionEvents) {
+          sessionEvents.emit({
+            type: "session:turn-end",
+            sessionId: rt.desc.id,
+            awaitingInput: rt.desc.awaitingInput ?? false,
+            label: rt.desc.label,
+            ts: new Date().toISOString(),
+            ...(turnEndReason ? { reason: turnEndReason } : {}),
           })
         }
       }
@@ -1075,7 +1678,7 @@ export function createSessionsRegistry(opts?: {
         kind: "agent-cli",
         workspaceSlug: input.workspaceSlug,
         command: input.commandPreview ?? `${input.adapterSlug} (agent)`,
-        pid: null,
+        pid: input.agentSession.pid ?? null,
         status: "running", // driver already started the session
         startedAt: new Date().toISOString(),
         cwd: input.cwd,
@@ -1096,6 +1699,7 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         depth: input.depth ?? 0,
+        ...(input.model ? { model: input.model } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -1108,6 +1712,8 @@ export function createSessionsRegistry(opts?: {
         busy: false,
         textBuf: "",
         thoughtBuf: "",
+        maxCostUsd: input.maxCostUsd,
+        readUsage: input.readUsage,
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
@@ -1279,52 +1885,52 @@ export function createSessionsRegistry(opts?: {
       const rt = validateAgentTurn(id, "sendPrompt")
       await runAgentTurn(rt, message)
     },
-    enqueuePrompt(id, message) {
-      // For sync `enqueuePrompt`, we need to surface an immediate
-      // error when the session is missing OR when it's a non-agent
-      // kind that can't be resumed at all. But when the session IS
-      // an agent-cli with resume metadata, defer validation until
-      // after the resume attempt so a dead-but-resumable row Just
-      // Works for the caller (no "not an agent session" error after
-      // a daemon restart).
+    async enqueuePrompt(id, message) {
+      // Admission phase — AWAITED, unlike the turn itself below. This
+      // is what makes `{queued: true}` truthful: a dead (exited/
+      // killed/error) session gets one resume attempt, then
+      // validateAgentTurn throws `SessionNotAliveError` (or the busy /
+      // wrong-kind errors) synchronously enough for the caller (MCP
+      // `agent_prompt`, HTTP `?wait=false`) to surface it instead of
+      // reporting success for a prompt that will never be dispatched.
       const rtPre = sessions.get(id)
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
       }
-      if (rtPre.desc.kind !== "agent-cli") {
-        throw new Error(
-          `enqueuePrompt: session "${id}" is not an agent session (kind=${rtPre.desc.kind})`
+      await maybeResumeAgent(rtPre)
+      const rt = validateAgentTurn(id, "enqueuePrompt")
+      // Execution phase — fire-and-forget from here on. Errors during
+      // the turn itself (network drop, child died mid-turn) land in
+      // the ring buffer as `[error]` lines so the SSE consumer sees
+      // them; admission already succeeded so there's nothing else to
+      // report back to the original caller.
+      void runAgentTurn(rt, message).catch(err => {
+        appendLine(
+          rtPre,
+          `[error] ${err instanceof Error ? err.message : String(err)}`,
+          "stderr"
         )
-      }
-      if (rtPre.busy) {
-        throw new Error(
-          `enqueuePrompt: session "${id}" is mid-turn — wait for it to finish or cancel`
-        )
-      }
-      // Fire-and-forget: resume (if needed) then dispatch. Errors
-      // during either step land in the ring buffer as `[error]`
-      // lines so the SSE consumer sees them.
-      void (async () => {
-        try {
-          await maybeResumeAgent(rtPre)
-          const rt = validateAgentTurn(id, "enqueuePrompt")
-          await runAgentTurn(rt, message)
-        } catch (err) {
-          appendLine(
-            rtPre,
-            `[error] ${err instanceof Error ? err.message : String(err)}`,
-            "stderr"
-          )
-        }
-      })()
+      })
+    },
+    pulseActivity(id) {
+      const rt = sessions.get(id)
+      if (!rt) return
+      rt.desc.lastActivityAt = new Date().toISOString()
+      schedulePersist()
     },
     list() {
       return Array.from(sessions.values())
         .map(s => s.desc)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .map(desc => {
+          stampProcessAlive(desc)
+          return desc
+        })
     },
     get(id) {
-      return sessions.get(id)?.desc
+      const desc = sessions.get(id)?.desc
+      if (desc) stampProcessAlive(desc)
+      return desc
     },
     attach(id, onLine) {
       const rt = sessions.get(id)
@@ -1382,9 +1988,15 @@ export function createSessionsRegistry(opts?: {
     },
     findByIdOrName(query) {
       const direct = sessions.get(query)
-      if (direct) return direct.desc
+      if (direct) {
+        stampProcessAlive(direct.desc)
+        return direct.desc
+      }
       for (const rt of sessions.values()) {
-        if (rt.desc.name === query) return rt.desc
+        if (rt.desc.name === query) {
+          stampProcessAlive(rt.desc)
+          return rt.desc
+        }
       }
       return undefined
     },
@@ -1423,7 +2035,10 @@ export function createSessionsRegistry(opts?: {
       // SIGTERM the underlying child/pty if any. Either branch is a
       // best-effort — the descriptor flip is what the UI surfaces.
       if (rt.agentSession) {
+        // Durable usage recap on exit — before close() flushes the stream.
+        recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
       }
       if (rt.pty) {
         try {
@@ -1448,6 +2063,7 @@ export function createSessionsRegistry(opts?: {
       if (!rt) return false
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
+      void transcriptWriter.close(id)
       sessions.delete(id)
       schedulePersist()
       return true
@@ -1495,6 +2111,7 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status = "killed"
         rt.desc.endedAt = nowIso
         if (rt.agentSession) {
+          recordExitUsageSnapshot(rt)
           void rt.agentSession.close().catch(() => undefined)
         }
         if (rt.pty) {
@@ -1507,6 +2124,7 @@ export function createSessionsRegistry(opts?: {
         rt.child?.kill("SIGTERM")
       }
     }
+    void transcriptWriter.closeAll()
     // Sync flush so quick sessions (spawned + ended in less than
     // PERSIST_DEBOUNCE_MS) aren't lost. The debounced async write
     // may have been cancelled by clearTimeout above, but a 200-byte
@@ -1515,7 +2133,12 @@ export function createSessionsRegistry(opts?: {
       try {
         const snapshot = {
           savedAt: nowIso,
-          sessions: Array.from(sessions.values()).map(s => s.desc),
+          // Strip processAlive — see the matching comment in
+          // persistSnapshot(), same live-OS-query rationale applies here.
+          sessions: Array.from(sessions.values()).map(s => {
+            const { processAlive: _processAlive, ...rest } = s.desc
+            return rest
+          }),
         }
         mkdirSync(dirname(persistPath), { recursive: true })
         writeFileSync(persistPath, JSON.stringify(snapshot, null, 2) + "\n")

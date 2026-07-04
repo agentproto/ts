@@ -1,20 +1,31 @@
 /**
- * Export a clean, readable transcript from the source an adapter already
- * persists — instead of parsing the noisy ANSI/ACP ring buffer.
+ * Export a clean, readable transcript, dispatched between two kinds of
+ * source:
  *
- * Two backends, dispatched by adapter slug:
- *   claude-code — reads ~/.claude/projects/<cwd-encoded>/<sessionId>.jsonl
- *   hermes      — reads ~/.hermes/state.db via node:sqlite (read-only)
+ *   native — the adapter's OWN persistence, re-read after the fact:
+ *     claude-code — ~/.claude/projects/<cwd-encoded>/<sessionId>.jsonl
+ *     hermes      — ~/.hermes/state.db via node:sqlite (read-only)
+ *   daemon — agentproto's own capture, `~/.agentproto/sessions/<id>/events.jsonl`
+ *     (written by transcript-writer.ts at the same point `projectEvent`
+ *     flattens events into the ANSI ring buffer, ahead of that flattening).
+ *     Available for ANY agent-cli session (acp or print protocol), not just
+ *     the two adapters with a native store.
+ *
+ * `source: "auto"` (the default) tries native first and falls back to
+ * daemon events when there's no native strategy or its store can't be
+ * read; `"native"` / `"daemon"` force one and surface its own error.
  *
  * Output: Markdown (default) or JSON, built from a shared ExportedSession
- * model so both adapters produce identical rendering logic.
+ * model so every source produces identical rendering logic.
  */
 
 import { createReadStream } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
-import type { SessionsRegistry } from "./sessions.js"
+import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { formatToolCall } from "./tool-presenter.js"
+import { sessionEventsPath } from "./transcript-writer.js"
 
 // ── Common model ──────────────────────────────────────────────────────
 
@@ -138,8 +149,13 @@ export function renderMarkdown(
     if (m.toolCalls?.length) {
       out.push("")
       for (const tc of m.toolCalls) {
-        const argsDisplay = trunc(tc.args, 300).replace(/\n/g, " ")
-        out.push(`> 📞 **${tc.name}**(\`${argsDisplay}\`)`)
+        let parsedArgs: unknown
+        try {
+          parsedArgs = JSON.parse(tc.args)
+        } catch {
+          parsedArgs = tc.args
+        }
+        out.push(`> 📞 ${formatToolCall(tc.name, parsedArgs)}`)
       }
     }
 
@@ -635,6 +651,183 @@ export async function crossValidateHermesExport(
   return { sqliteCount, binaryCount, matched }
 }
 
+// ── daemon-events exporter (agentproto's own JSONL capture) ────────────
+
+/** Structural shape of one events.jsonl line — a superset of every
+ *  `AgentStreamEvent` kind (see sessions.ts) plus the writer's own
+ *  "user-prompt" record. Untyped fields default to undefined rather than
+ *  erroring, so a future field this reader doesn't know about is just
+ *  ignored instead of breaking the export. */
+interface TranscriptRecord {
+  seq: number
+  ts: string
+  kind: string
+  text?: string
+  partial?: boolean
+  toolCallId?: string
+  toolName?: string
+  arguments?: unknown
+  result?: unknown
+  isError?: boolean
+  reason?: string
+  error?: { message: string; code?: number }
+  entries?: Array<{ content: string; priority: string; status: string }>
+  size?: number
+  used?: number
+  cost?: { amount: number; currency: string }
+}
+
+async function exportDaemonEventsSession(
+  sessionId: string,
+  desc?: SessionDescriptor,
+): Promise<ExportedSession> {
+  const filePath = sessionEventsPath(sessionId)
+
+  let stream: ReturnType<typeof createReadStream>
+  try {
+    stream = createReadStream(filePath, { encoding: "utf8" })
+    await new Promise<void>((resolve, reject) => {
+      stream.once("error", reject)
+      stream.once("open", resolve)
+    })
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "ENOENT") {
+      throw new Error(
+        `daemon-events: no events.jsonl for session "${sessionId}" (${filePath}).\n` +
+          `Either the session never drove an agent-cli turn, or it predates this feature.`,
+      )
+    }
+    throw err
+  }
+
+  const messages: ExportedMessage[] = []
+  const toolNameById = new Map<string, string>()
+  let toolCallCount = 0
+  let lastUsage: { size?: number; used?: number; cost?: { amount: number; currency: string } } | undefined
+
+  // One assistant "turn batch" accumulator — text/thought/tool-calls that
+  // arrive between two boundary events (a tool-result, a new prompt, a
+  // turn-end, ...) collapse into ONE assistant message, mirroring how the
+  // claude-code exporter batches a single API-level assistant entry.
+  let asmText = ""
+  let asmReasoning = ""
+  let asmToolCalls: { name: string; args: string }[] = []
+  let asmTs: number | undefined
+
+  const flushAssistant = (): void => {
+    if (!asmText.trim() && !asmReasoning.trim() && asmToolCalls.length === 0) return
+    const m: ExportedMessage = { role: "assistant" }
+    if (asmText.trim()) m.text = asmText.trim()
+    if (asmReasoning.trim()) m.reasoning = asmReasoning.trim()
+    if (asmToolCalls.length) m.toolCalls = asmToolCalls
+    if (asmTs !== undefined) m.ts = asmTs
+    messages.push(m)
+    asmText = ""
+    asmReasoning = ""
+    asmToolCalls = []
+    asmTs = undefined
+  }
+
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let rec: TranscriptRecord
+    try {
+      rec = JSON.parse(trimmed) as TranscriptRecord
+    } catch {
+      continue
+    }
+    const ts = Date.parse(rec.ts)
+    const tsOrUndefined = Number.isNaN(ts) ? undefined : ts
+
+    switch (rec.kind) {
+      case "user-prompt":
+        flushAssistant()
+        messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
+        break
+      case "text-delta":
+        // Terminated lines already carry their own trailing "\n" (see
+        // transcript-writer.ts) — only an unterminated tail fragment
+        // (still `partial`, or flushed bare at a turn boundary) lacks one,
+        // and that's exactly the byte-for-byte original content.
+        if (asmTs === undefined) asmTs = tsOrUndefined
+        asmText += rec.text ?? ""
+        break
+      case "thought":
+        if (asmTs === undefined) asmTs = tsOrUndefined
+        asmReasoning += rec.text ?? ""
+        break
+      case "tool-call": {
+        if (asmTs === undefined) asmTs = tsOrUndefined
+        const name = rec.toolName ?? "tool"
+        if (rec.toolCallId) toolNameById.set(rec.toolCallId, name)
+        const args =
+          typeof rec.arguments === "string" ? rec.arguments : JSON.stringify(rec.arguments ?? {})
+        asmToolCalls.push({ name, args })
+        toolCallCount += 1
+        break
+      }
+      case "tool-result": {
+        flushAssistant()
+        const name = rec.toolCallId ? toolNameById.get(rec.toolCallId) : undefined
+        const text = typeof rec.result === "string" ? rec.result : JSON.stringify(rec.result ?? "")
+        messages.push({
+          role: "tool",
+          text: rec.isError ? `[error] ${text}` : text,
+          ...(name ? { toolName: name } : {}),
+          ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+        })
+        break
+      }
+      case "agent-prompt":
+        flushAssistant()
+        messages.push({ role: "system", text: "[awaiting input] agent requested a decision" })
+        break
+      case "plan": {
+        flushAssistant()
+        const entries = rec.entries ?? []
+        const done = entries.filter(e => e.status === "completed").length
+        const list = entries.map(e => e.content).join("; ")
+        messages.push({ role: "system", text: `[plan] ${done}/${entries.length} ${list}`.trim() })
+        break
+      }
+      case "usage_update":
+        lastUsage = { size: rec.size, used: rec.used, cost: rec.cost }
+        break
+      case "error":
+        flushAssistant()
+        messages.push({ role: "system", text: `[error] ${rec.error?.message ?? "unknown"}` })
+        break
+      case "turn-end":
+        flushAssistant()
+        break
+      default:
+        break
+    }
+  }
+  flushAssistant()
+
+  const meta: ExportedSessionMeta = { source: "daemon-events" }
+  if (desc?.label) meta.title = desc.label
+  if (desc?.model) meta.model = desc.model
+  if (desc?.startedAt) meta.startedAt = desc.startedAt
+  if (desc?.endedAt) meta.endedAt = desc.endedAt
+  meta.messageCount = messages.length
+  meta.toolCallCount = toolCallCount
+  if (desc?.costUsd !== undefined) meta.costUsd = desc.costUsd
+  else if (lastUsage?.cost) meta.costUsd = lastUsage.cost.amount
+  if (desc?.tokensIn !== undefined || desc?.tokensOut !== undefined) {
+    meta.tokens = {
+      ...(desc?.tokensIn !== undefined ? { input: desc.tokensIn } : {}),
+      ...(desc?.tokensOut !== undefined ? { output: desc.tokensOut } : {}),
+    }
+  }
+
+  return { meta, messages }
+}
+
 // ── Strategy registry ─────────────────────────────────────────────────
 
 const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
@@ -648,6 +841,8 @@ const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
 
 // ── Public API ────────────────────────────────────────────────────────
 
+export type ExportSource = "auto" | "native" | "daemon"
+
 export interface ExportAgentSessionInput {
   /** agentproto session id (sess_xxx) or an adapter-native id */
   sessionId: string
@@ -658,6 +853,11 @@ export interface ExportAgentSessionInput {
   adapter?: string
   /** Override cwd when sessionId is an adapter-native id (claude-code only) */
   cwd?: string
+  /** Which backend to read from. "auto" (default) prefers the adapter's
+   *  own native store and falls back to agentproto's own events.jsonl
+   *  capture when there isn't one (or it can't be read); "native" / "daemon"
+   *  force one and surface its own error instead of falling back. */
+  source?: ExportSource
 }
 
 export interface ExportAgentSessionResult {
@@ -672,6 +872,7 @@ export async function exportAgentSession(
   input: ExportAgentSessionInput,
 ): Promise<ExportAgentSessionResult> {
   const { sessionId, registry, format = "markdown", maxToolChars = 1200 } = input
+  const source = input.source ?? "auto"
 
   // Resolve via registry first. `err` closes over `adapterSlug` so it
   // returns the resolved slug (not the raw input) after registry lookup.
@@ -688,6 +889,9 @@ export async function exportAgentSession(
   })
 
   const desc = registry.findByIdOrName(sessionId)
+  // events.jsonl is always keyed by the agentproto session id — never the
+  // adapter-native id substituted below for the native strategies.
+  const daemonSessionId = desc?.id ?? sessionId
   if (desc) {
     adapterSlug = adapterSlug ?? desc.adapterSlug
     cwd = cwd ?? desc.cwd
@@ -695,25 +899,45 @@ export async function exportAgentSession(
     if (desc.adapterSessionId) adapterSessionId = desc.adapterSessionId
   }
 
-  if (!adapterSlug) {
-    return err(
-      `session "${sessionId}" not found in registry and no adapter override supplied.\n` +
-        `Pass adapter explicitly or use a known session id (sess_xxx or name).`,
-    )
+  const tryNative = async (): Promise<ExportedSession> => {
+    if (!adapterSlug) {
+      throw new Error(
+        `session "${sessionId}" not found in registry and no adapter override supplied.\n` +
+          `Pass adapter explicitly or use a known session id (sess_xxx or name).`,
+      )
+    }
+    const exporter = EXPORT_STRATEGIES[adapterSlug]
+    if (!exporter) {
+      const supported = Object.keys(EXPORT_STRATEGIES).join(", ")
+      throw new Error(
+        `no exporter for adapter "${adapterSlug}". Supported: ${supported}.\n` +
+          `Only sessions spawned via claude-code or hermes can be exported.`,
+      )
+    }
+    return exporter.exportSession(adapterSessionId, cwd)
   }
 
-  const exporter = EXPORT_STRATEGIES[adapterSlug]
-  if (!exporter) {
-    const supported = Object.keys(EXPORT_STRATEGIES).join(", ")
-    return err(
-      `no exporter for adapter "${adapterSlug}". Supported: ${supported}.\n` +
-        `Only sessions spawned via claude-code or hermes can be exported.`,
-    )
-  }
+  const tryDaemon = (): Promise<ExportedSession> => exportDaemonEventsSession(daemonSessionId, desc)
 
   let session: ExportedSession
   try {
-    session = await exporter.exportSession(adapterSessionId, cwd)
+    if (source === "native") {
+      session = await tryNative()
+    } else if (source === "daemon") {
+      session = await tryDaemon()
+    } else {
+      try {
+        session = await tryNative()
+      } catch (nativeErr) {
+        try {
+          session = await tryDaemon()
+        } catch (daemonErr) {
+          const nativeMsg = nativeErr instanceof Error ? nativeErr.message : String(nativeErr)
+          const daemonMsg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
+          return err(`${nativeMsg}\n(daemon-events fallback also failed: ${daemonMsg})`)
+        }
+      }
+    }
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e))
   }
@@ -725,7 +949,7 @@ export async function exportAgentSession(
 
   return {
     sessionId,
-    adapter: adapterSlug,
+    adapter: adapterSlug ?? (session.meta.source === "daemon-events" ? "daemon" : "unknown"),
     format,
     meta: session.meta,
     content,

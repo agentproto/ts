@@ -13,6 +13,7 @@
 
 import type { DriverHandle, ResolverContext } from "@agentproto/driver"
 import type { ToolContext, ToolHandle } from "@agentproto/tool"
+import type { ZodType } from "zod"
 
 /** The run-scoped data every selector reads from. */
 export interface Bindings {
@@ -45,6 +46,9 @@ export interface ToolStep<
   context?: Selector<TContext>
   resolverContext?: ResolverContext
   secrets?: Record<string, string>
+  /** Cache this step's output under the run's cacheKey; only its `input` is hashed
+   *  (not `context`/secrets). Default false. */
+  cacheable?: boolean
 }
 
 /** A pure in-run computation (combine / filter / shape) — no tool dispatch. */
@@ -66,6 +70,28 @@ export interface MapStep {
   /** Max concurrent bodies (default 1 = sequential). */
   parallelism?: number
   body: (item: unknown, index: number, bindings: Bindings) => RunStep
+}
+
+/**
+ * Run N items through K sequential stage bodies with NO cross-item barrier:
+ * each item flows through the stages as its own chain, independent of siblings.
+ * Only `concurrency` (max item-chains in flight) is shared. The per-item final
+ * output binds under this step's id, ordered by the item's index.
+ */
+export interface PipelineStep {
+  kind: "pipeline"
+  id: string
+  over: Selector<readonly unknown[]>
+  /** Max concurrent item-chains (default: all items at once). */
+  concurrency?: number
+  /** Ordered stage bodies; each item flows through them in order. `prevOutput`
+   *  is the previous stage's output for THIS item (undefined for stage 0). */
+  stages: readonly ((
+    item: unknown,
+    index: number,
+    prevOutput: unknown,
+    bindings: Bindings,
+  ) => RunStep)[]
 }
 
 /** Run one of two branches based on a predicate over the bindings. */
@@ -137,6 +163,36 @@ export interface SubworkflowStep {
 }
 
 /**
+ * Spawn or reuse an agent session and send it a prompt, waiting for the
+ * turn to complete. The host injects an {@link AgentSessionHost} — this
+ * runtime has no knowledge of concrete session registries or event buses.
+ */
+export interface AgentStep {
+  kind: "agent"
+  id: string
+  /** Adapter slug to spawn a NEW session. Omit to reuse via sessionRef. */
+  adapter?: Selector<string> | string
+  /** Reuse an earlier AgentStep's spawned session, by that step's id. */
+  sessionRef?: string
+  /** Working directory for this spawn. Omit to fall back to the run-level `ctx.cwd`. */
+  cwd?: Selector<string>
+  /** Prompt to send. */
+  prompt: Selector<string>
+  policy?:
+    | { awaiting: "auto-allow"; prompt: string }
+    | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
+    | { awaiting: "fail" }
+  /** Validate the session's final message against this schema; re-prompt on mismatch. */
+  outputSchema?: ZodType<unknown>
+  /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
+  maxRetries?: number
+  /** Cache this step's output under the run's cacheKey; the resolved prompt +
+   *  adapter + sessionRef are hashed. Default false — most agent steps have
+   *  side effects. */
+  cacheable?: boolean
+}
+
+/**
  * The element generics on `ToolStep` are erased to `any` so heterogeneous
  * steps (different contracts, different input/output/context types) coexist in
  * one `steps[]` array — per-step type safety is enforced where each step is
@@ -150,6 +206,7 @@ export type RunStep =
   | ToolStep<any, any, any>
   | TransformStep
   | MapStep
+  | PipelineStep
   | BranchStep
   | LoopStep
   | ParallelStep
@@ -157,6 +214,7 @@ export type RunStep =
   | SuspendStep
   | GroupStep
   | SubworkflowStep
+  | AgentStep
 
 export interface RuntimeWorkflow {
   id: string
@@ -177,6 +235,35 @@ export interface ResumeRequest {
   on: readonly string[]
 }
 
+export interface AgentSessionHost {
+  /** Spawn a new agent session and return its id. */
+  spawn(adapter: string, opts: { cwd?: string; workspaceSlug?: string; stepId?: string }): Promise<string>
+  /** Send a prompt to an existing session and wait for its turn to end. */
+  sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
+  /** Look up a session by the step id that spawned it (for sessionRef reuse). */
+  resolveByLabel(stepId: string): string | undefined
+  /** Handle an awaiting-input policy for a session. */
+  onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
+  /** Return the session's final assistant message text (for outputSchema validation). */
+  readFinalMessage?(sessionId: string): Promise<string>
+  /** Current cumulative cost (USD) of a session, for run-level budgeting. */
+  readCostUsd?(sessionId: string): Promise<number>
+}
+
+/** One journal entry: a cached step output plus the hash of the inputs that produced it. */
+export interface StepCacheEntry {
+  output: unknown
+  resolvedInputHash: string
+}
+
+/** Opt-in journal for cacheable steps. Host-injected; file-backed in the runtime. */
+export interface StepCache {
+  /** Look up a step's journal entry by its namespaced key. */
+  get(stepCacheKey: string): Promise<StepCacheEntry | undefined>
+  /** Write/overwrite a step's journal entry. */
+  set(stepCacheKey: string, entry: StepCacheEntry): Promise<void>
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -185,6 +272,20 @@ export interface RunWorkflowArgs {
   approve?: (req: ApprovalRequest) => boolean | Promise<boolean>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
+  /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
+  agents?: AgentSessionHost
+  /** Working directory for spawned agent sessions. */
+  cwd?: string
+  /** Workspace slug for spawned agent sessions. */
+  workspaceSlug?: string
+  /** Run-level cost ceiling (USD). Once the summed cost of spawned sessions
+   *  reaches this, the next AgentStep spawn fails with `budget_exceeded`. */
+  maxTotalCostUsd?: number
+  /** Opt-in journal cache for cacheable steps. Undefined ⇒ caching disabled. */
+  cache?: StepCache
+  /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
+   *  Both `cache` and `cacheKey` must be set for any caching to happen. */
+  cacheKey?: string
 }
 
 export interface WorkflowRunResult {

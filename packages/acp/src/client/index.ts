@@ -89,6 +89,36 @@ export interface AcpClientOptions {
   handlers?: Partial<AcpClientHandlers>
   /** Protocol version to negotiate. Defaults to the SDK's current. */
   protocolVersion?: number
+  /**
+   * Called on ANY JSON-RPC traffic with the child agent process — every
+   * incoming `session/update` notification (even ones that
+   * `translateSessionUpdate` maps to `null`, e.g. a `tool_call_update`
+   * still in progress) and every outbound RPC call this client makes
+   * (`newSession`, `loadSession`, `setSessionConfigOption`, `prompt`,
+   * `cancel`). Distinct from the `StreamEvent` stream: fires even
+   * during gaps where no event is produced, so a host can track
+   * liveness independent of what the agent actually says.
+   */
+  onActivity?: () => void
+  /**
+   * Turn-idle watchdog: if a `prompt()` call goes this many ms with NO
+   * activity signal (see `onActivity` above — incoming `session/update`
+   * notifications, outbound RPCs) and the underlying `connection.prompt()`
+   * promise still hasn't resolved, synthesize a `turn-end` event with
+   * `reason: "watchdog-timeout"` so the caller's async iterator completes
+   * instead of hanging forever. The timer resets on every activity signal
+   * observed DURING that turn, so a legitimately long tool-call chain
+   * (still producing activity, just no user-visible output) never
+   * false-positives — this is "N ms of true silence," not "N ms since the
+   * turn started."
+   *
+   * Undefined (the default) disables the watchdog entirely — existing
+   * callers see no behavior change. If the real `connection.prompt()`
+   * eventually settles after the synthetic turn-end was already emitted,
+   * the late result is logged and discarded (no crash, no duplicate
+   * turn-end for the same logical turn).
+   */
+  turnIdleTimeoutMs?: number
 }
 
 export interface AcpClient {
@@ -102,6 +132,11 @@ export interface AcpClient {
      * Model to select via `session/set_config_option` immediately after
      * `newSession`. The claude-agent-acp wrapper supports this as
      * `configId:"model"`. Omit to keep the agent's own default.
+     *
+     * Best-effort: a value the agent can't resolve (a stale/gated/typo'd id)
+     * is warned about and dropped — the session still starts on the agent's
+     * default model rather than crashing the spawn. See the reject handler
+     * in `newSession` for the reasoning (agentproto#186).
      */
     model?: string
     /**
@@ -147,6 +182,14 @@ interface SessionState {
   resolveNext: ((evt: StreamEvent | undefined) => void) | null
   done: boolean
   active: boolean
+  /**
+   * Set by `buildSession.prompt()` for the duration of an in-flight turn
+   * when a watchdog timer is armed; cleared once that turn settles. Lets
+   * the `sessionUpdate` handler (which only has a `sessionId`, not a
+   * closure over the turn's timer) bump the SAME timer an incoming
+   * notification is liveness evidence for.
+   */
+  resetWatchdogTimer?: () => void
 }
 
 export async function createAcpClient(
@@ -157,7 +200,7 @@ export async function createAcpClient(
   const stream: Stream = ndJsonStream(options.output, options.input)
 
   const connection: ClientSideConnection = new ClientSideConnection(
-    () => buildClientHandlers(options.handlers ?? {}, sessions),
+    () => buildClientHandlers(options.handlers ?? {}, sessions, options.onActivity),
     stream,
   )
 
@@ -182,6 +225,7 @@ export async function createAcpClient(
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
+      options.onActivity?.()
       const sessionId = (response as { sessionId: string }).sessionId
       const state: SessionState = {
         events: [],
@@ -197,11 +241,34 @@ export async function createAcpClient(
       // We call these sequentially so a model switch (which rebuilds the
       // effort options) always precedes the effort set.
       if (params.model) {
-        await connection.setSessionConfigOption({
-          configId: "model",
-          value: params.model,
-          sessionId,
-        } as never)
+        try {
+          await connection.setSessionConfigOption({
+            configId: "model",
+            value: params.model,
+            sessionId,
+          } as never)
+          options.onActivity?.()
+        } catch (err) {
+          // Non-fatal by design. claude-agent-acp validates the requested
+          // model against the concrete option ids it advertises for THIS
+          // session (e.g. "default", "opus[1m]", "sonnet", "claude-sonnet-5",
+          // "haiku") and rejects anything it can't resolve — including stale
+          // or gated ids like "claude-sonnet-4-6" — with a JSON-RPC -32603
+          // whose only useful text is buried in `error.data.details`
+          // ("Invalid value for config option model: <id>"). Letting that
+          // reject `newSession` turned a bad model id into an opaque
+          // "spawn failed — Internal error" that killed the whole session
+          // (agentproto#186). The accepted vocabulary is dynamic (it varies
+          // by wrapper version and account entitlements), so there is no
+          // version-stable way to know it before the call — a rejected model
+          // must therefore never be fatal. This is NOT a silent drop: the
+          // requested id AND the server's own reason are logged, and the
+          // session continues on the agent's default model.
+          console.warn(
+            `[acp] set_config_option model="${params.model}" rejected by server ` +
+              `— keeping the agent's default model. Reason: ${configOptionErrorDetail(err)}`,
+          )
+        }
       }
       if (params.effort) {
         try {
@@ -210,18 +277,26 @@ export async function createAcpClient(
             value: params.effort,
             sessionId,
           } as never)
+          options.onActivity?.()
         } catch (err) {
           // Best-effort: this ACP server does not support the "effort" config
           // option (e.g. claude-agent-acp ignores unknown config keys and
           // some versions reject them outright). A rejected set_config_option
           // must never kill the spawn — effort is silently ignored instead.
           console.warn(
-            `[acp] set_config_option effort="${params.effort}" rejected by server (best-effort):`,
-            err instanceof Error ? err.message : err,
+            `[acp] set_config_option effort="${params.effort}" rejected by server ` +
+              `(best-effort): ${configOptionErrorDetail(err)}`,
           )
         }
       }
-      return buildSession(connection, sessionId, state, sessions)
+      return buildSession(
+        connection,
+        sessionId,
+        state,
+        sessions,
+        options.onActivity,
+        options.turnIdleTimeoutMs,
+      )
     },
     async loadSession(params) {
       // SDK returns `LoadSessionResponse` (no body fields we need); the
@@ -234,6 +309,7 @@ export async function createAcpClient(
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
       } as never)
+      options.onActivity?.()
       const state: SessionState = {
         events: [],
         resolveNext: null,
@@ -241,7 +317,14 @@ export async function createAcpClient(
         active: false,
       }
       sessions.set(params.sessionId, state)
-      return buildSession(connection, params.sessionId, state, sessions)
+      return buildSession(
+        connection,
+        params.sessionId,
+        state,
+        sessions,
+        options.onActivity,
+        options.turnIdleTimeoutMs,
+      )
     },
     async close() {
       sessions.clear()
@@ -267,6 +350,8 @@ function buildSession(
   sessionId: string,
   state: SessionState,
   sessions: Map<string, SessionState>,
+  onActivity?: () => void,
+  turnIdleTimeoutMs?: number,
 ): AcpClientSession {
   return {
     sessionId,
@@ -282,12 +367,49 @@ function buildSession(
 
       const iter = makeIterator(state)
 
+      // Turn-idle watchdog — undefined turnIdleTimeoutMs disables it
+      // entirely (existing callers see no behavior change). Armed below
+      // and re-armed on every activity signal observed during this turn
+      // (outbound send, resolve, and incoming session/update via
+      // `state.resetWatchdogTimer`); cleared once the turn settles.
+      let watchdogTimer: ReturnType<typeof setTimeout> | undefined
+      let watchdogFired = false
+      const clearWatchdogTimer = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer)
+        watchdogTimer = undefined
+      }
+      const armWatchdogTimer = () => {
+        if (turnIdleTimeoutMs === undefined) return
+        clearWatchdogTimer()
+        watchdogTimer = setTimeout(() => {
+          watchdogFired = true
+          state.done = true
+          enqueue(state, { kind: "turn-end", sessionId, reason: "watchdog-timeout" })
+        }, turnIdleTimeoutMs)
+      }
+      state.resetWatchdogTimer = armWatchdogTimer
+
+      // Outbound send — proves the daemon is still driving this turn,
+      // independent of whatever StreamEvents come back. Also the initial
+      // arm of the watchdog timer, so the timeout is measured from "we
+      // just sent this" rather than some earlier idle point.
+      armWatchdogTimer()
+      onActivity?.()
       const promise = connection
         .prompt({
           sessionId,
           prompt: input.messages as never,
         } as never)
         .then((response) => {
+          clearWatchdogTimer()
+          onActivity?.()
+          if (watchdogFired) {
+            console.warn(
+              `[acp] session ${sessionId}: connection.prompt() resolved after the ` +
+                `turn-idle watchdog already synthesized a turn-end — ignoring late response.`,
+            )
+            return
+          }
           enqueue(state, {
             kind: "turn-end",
             sessionId,
@@ -300,6 +422,15 @@ function buildSession(
           })
         })
         .catch((err: unknown) => {
+          clearWatchdogTimer()
+          if (watchdogFired) {
+            console.warn(
+              `[acp] session ${sessionId}: connection.prompt() rejected after the ` +
+                `turn-idle watchdog already synthesized a turn-end — ignoring late error:`,
+              err instanceof Error ? err.message : err,
+            )
+            return
+          }
           const message =
             err instanceof Error ? err.message : String(err)
           enqueue(state, {
@@ -311,6 +442,8 @@ function buildSession(
         .finally(() => {
           state.active = false
           state.done = true
+          state.resetWatchdogTimer = undefined
+          clearWatchdogTimer()
           flush(state)
         })
 
@@ -330,6 +463,7 @@ function buildSession(
     async cancel() {
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
+      onActivity?.()
     },
     async close() {
       sessions.delete(sessionId)
@@ -381,13 +515,25 @@ function flush(state: SessionState) {
 function buildClientHandlers(
   partial: Partial<AcpClientHandlers>,
   sessions: Map<string, SessionState>,
+  onActivity?: () => void,
 ): AcpClientHandlers {
   return {
     async sessionUpdate(params) {
+      // Every notification is a liveness signal, even ones that don't
+      // translate into a StreamEvent below (e.g. an in-progress
+      // tool_call_update) — this is the gap that leaves lastOutputAt
+      // stale during a long internal tool-call chain.
+      onActivity?.()
+
       const sid = (params as { sessionId?: string }).sessionId
       if (!sid) return
       const state = sessions.get(sid)
       if (!state) return
+
+      // Reset this session's in-flight turn watchdog (if any) — an
+      // incoming notification is exactly the "not silent" signal the
+      // watchdog exists to detect the absence of.
+      state.resetWatchdogTimer?.()
 
       const update = (params as { update?: Record<string, unknown> }).update
       if (!update) return
@@ -431,12 +577,36 @@ function translateSessionUpdate(
       }
     case "tool_call": {
       const toolCallId = (update.toolCallId as string) ?? ""
+      // `title` is the descriptive label an agent gives a tool call
+      // ("Reading src/foo.ts") — prefer it over the coarse `kind`
+      // bucket (read/edit/search/execute/…) so rendered lines are
+      // informative instead of generic.
+      const toolName =
+        (update.title as string) ?? (update.kind as string) ?? "tool"
+      const locations = update.locations as
+        | Array<{ path: string; line?: number | null }>
+        | undefined
+      let args: unknown = update.rawInput ?? update.content ?? {}
+      // Some tool calls (e.g. a bare "read" with no structured input)
+      // carry only `locations` — fold the file paths into `arguments`
+      // so they survive downstream instead of being dropped.
+      if (update.rawInput == null && locations && locations.length > 0) {
+        args =
+          locations.length === 1
+            ? {
+                path: locations[0]!.path,
+                ...(locations[0]!.line != null
+                  ? { line: locations[0]!.line }
+                  : {}),
+              }
+            : { paths: locations.map((location) => location.path) }
+      }
       return {
         kind: "tool-call",
         sessionId,
         toolCallId,
-        toolName: (update.kind as string) ?? (update.title as string) ?? "tool",
-        arguments: update.rawInput ?? update.content ?? {},
+        toolName,
+        arguments: args,
       }
     }
     case "tool_call_update": {
@@ -452,11 +622,81 @@ function translateSessionUpdate(
       }
       return null
     }
+    case "plan": {
+      const entries = (update.entries as Array<Record<string, unknown>>) ?? []
+      return {
+        kind: "plan",
+        sessionId,
+        entries: entries.map((entry) => ({
+          content: (entry.content as string) ?? "",
+          priority: (entry.priority as "high" | "medium" | "low") ?? "medium",
+          status:
+            (entry.status as "pending" | "in_progress" | "completed") ??
+            "pending",
+        })),
+      }
+    }
+    case "usage_update": {
+      const cost = update.cost as { amount: number; currency: string } | null | undefined
+      // Accept both camelCase and snake_case token fields — agents differ on
+      // the convention and this update kind is non-standard ACP.
+      const numeric = (...keys: string[]): number | undefined => {
+        for (const key of keys) {
+          const v = update[key]
+          if (typeof v === "number") return v
+        }
+        return undefined
+      }
+      const tokensIn = numeric("tokensIn", "input_tokens", "inputTokens")
+      const tokensOut = numeric("tokensOut", "output_tokens", "outputTokens")
+      return {
+        kind: "usage_update",
+        sessionId,
+        size: (update.size as number) ?? 0,
+        used: (update.used as number) ?? 0,
+        ...(cost ? { cost } : {}),
+        ...(tokensIn !== undefined ? { tokensIn } : {}),
+        ...(tokensOut !== undefined ? { tokensOut } : {}),
+      }
+    }
     case "user_message_chunk":
       return null
     default:
       return null
   }
+}
+
+/**
+ * Best human-readable reason from a failed `session/set_config_option`.
+ *
+ * The ACP SDK surfaces a server-side rejection as a JSON-RPC `RequestError`
+ * whose generic `message` is just "Internal error" (code -32603) — the useful
+ * text lives in `error.data.details` (e.g. claude-agent-acp's
+ * "Invalid value for config option model: claude-sonnet-4-6"). Prefer that
+ * detail, falling back to the error's own message, then a stringified form.
+ * Narrows `unknown` with `in`/`typeof` guards — no casts.
+ */
+function configOptionErrorDetail(err: unknown): string {
+  if (typeof err === "object" && err !== null) {
+    if ("data" in err && typeof err.data === "object" && err.data !== null) {
+      const data = err.data
+      if (
+        "details" in data &&
+        typeof data.details === "string" &&
+        data.details.length > 0
+      ) {
+        return data.details
+      }
+    }
+    if (
+      "message" in err &&
+      typeof err.message === "string" &&
+      err.message.length > 0
+    ) {
+      return err.message
+    }
+  }
+  return String(err)
 }
 
 function extractText(content: unknown): string {

@@ -10,8 +10,6 @@
  * `agentproto sessions`).
  */
 import { parseArgs } from "node:util"
-import http from "node:http"
-import https from "node:https"
 import type { TunnelDescriptor } from "@agentproto/runtime"
 import {
   discoverDaemon,
@@ -19,12 +17,13 @@ import {
   httpPostJson,
   httpGetJson,
   humaniseDelta,
+  httpDelete,
 } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto tunnel — manage public cloudflared tunnels
 
 Usage:
-  agentproto tunnel create --port <n> [--provider quick|named] [--name <slug>]
+  agentproto tunnel create --port <n> [--provider <slug>] [--name <slug>]
                            [--label <text>] [--host <host>] [--autostart]
                            [--hostname <fqdn>] [--tunnel-id <id>]
                            [--credentials-file <path>] [--json]
@@ -34,13 +33,17 @@ Usage:
 
 Discovers the daemon via ~/.agentproto/runtime.json.
 
-Providers:
-  quick (default)  Cloudflare Quick Tunnel — no API key, ephemeral
+Providers (built-in; legacy aliases quick/named accepted):
+  cloudflare-quick (default)  Cloudflare Quick Tunnel — no API key, ephemeral
                    *.trycloudflare.com URL (changes every run).
-  named            A tunnel you provisioned once with the cloudflared CLI,
+  cloudflare-named A tunnel you provisioned once with the cloudflared CLI,
                    bound to a STABLE hostname that survives restarts. Needs
                    --hostname and --tunnel-id. Add --autostart to relaunch
                    it automatically when the daemon boots.
+  ngrok            Ngrok tunnel — configure its authtoken first via the
+                   setup_tunnel_provider MCP tool.
+  Any installed third-party provider (@scope/agentproto-adapter-<slug>) also
+  works; the daemon's list_tunnel_adapters tool lists the full set.
 
 One-time named-tunnel setup:
   cloudflared tunnel create <name>
@@ -49,7 +52,7 @@ One-time named-tunnel setup:
 Examples:
   agentproto tunnel create --port 3000
   agentproto tunnel create --port 5173 --name vite-preview --json
-  agentproto tunnel create --port 3040 --name guilde --provider named \\
+  agentproto tunnel create --port 3040 --name guilde --provider cloudflare-named \\
     --hostname guilde-local.example.com --tunnel-id guilde --autostart
   agentproto tunnel list --active
   agentproto tunnel stop vite-preview
@@ -122,9 +125,12 @@ async function runCreate(args: readonly string[]): Promise<number> {
   }
   const endpoint = report.found
 
-  if (values.provider === "named" && (!values.hostname || !values["tunnel-id"])) {
+  if (
+    (values.provider === "named" || values.provider === "cloudflare-named") &&
+    (!values.hostname || !values["tunnel-id"])
+  ) {
     process.stderr.write(
-      "agentproto tunnel create: --provider named requires --hostname and --tunnel-id.\n" +
+      "agentproto tunnel create: --provider cloudflare-named requires --hostname and --tunnel-id.\n" +
         "  Provision once: cloudflared tunnel create <name> && cloudflared tunnel route dns <name> <hostname>\n",
     )
     return 2
@@ -342,30 +348,4 @@ async function runStatus(args: readonly string[]): Promise<number> {
   return 0
 }
 
-function httpDelete<T>(url: string, token?: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === "https:" ? https : http
-    const headers: Record<string, string> = {}
-    if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "DELETE", headers }, res => {
-      let raw = ""
-      res.setEncoding("utf8")
-      res.on("data", c => (raw += c))
-      res.on("end", () => {
-        const status = res.statusCode ?? 0
-        if (status < 200 || status >= 300) {
-          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
-          return
-        }
-        try {
-          resolve(raw ? (JSON.parse(raw) as T) : ({} as T))
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      })
-    })
-    req.on("error", reject)
-    req.end()
-  })
-}
+

@@ -5,7 +5,7 @@
  * for fs/exec/agent-cli.
  *
  * Five tools:
- *   list_adapter_browsers   discover available browser adapter ids + metadata
+ *   browser_adapter_list   discover available browser adapter ids + metadata
  *   start_browser           ensure a browser adapter is up, register as a session
  *   stop_browser            kill a running browser session
  *   list_browsers           browse alive/recent browser sessions
@@ -99,7 +99,7 @@ export type BrowserAdapterLister = () => {
 }[]
 
 /**
- * Family-specific descriptor surfaced in the kit-path `list_adapter_browsers`
+ * Family-specific descriptor surfaced in the kit-path `browser_adapter_list`
  * response. Fields match the legacy lister shape so the tool output is
  * unchanged regardless of which path is active.
  */
@@ -129,11 +129,11 @@ interface RegisterBrowserToolsOptions {
   /** Resolver for browser adapters — injected by the serve/CLI layer (P6).
    *  Required for `start_browser`; the tool returns a clear error when unset. */
   resolveBrowserAdapter?: BrowserAdapterResolver
-  /** Lister for available browser adapters — when unset, `list_adapter_browsers`
+  /** Lister for available browser adapters — when unset, `browser_adapter_list`
    *  returns a "not configured" message. */
   listBrowserAdapters?: BrowserAdapterLister
   /**
-   * Kit-path lister (Phase 3). When provided, `list_adapter_browsers` calls
+   * Kit-path lister (Phase 3). When provided, `browser_adapter_list` calls
    * this async lister and extracts `AdapterEntry.info` fields for the response,
    * preserving the existing `{ id, name, description, defaultPort }[]` shape.
    * When absent, the legacy `listBrowserAdapters` path is used.
@@ -148,9 +148,9 @@ export function registerBrowserTools(
 ): void {
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
 
-  // ── list_adapter_browsers ────────────────────────────────────────────────────
+  // ── browser_adapter_list ────────────────────────────────────────────────────
   server.tool(
-    "list_adapter_browsers",
+    "browser_adapter_list",
     "List available browser adapter ids and their metadata (name, description, default port). " +
       "Use the `id` field to reference an adapter in `start_browser`.",
     {},
@@ -171,7 +171,7 @@ export function registerBrowserTools(
             {
               type: "text" as const,
               text:
-                "list_adapter_browsers is not enabled — the daemon was started without " +
+                "browser_adapter_list is not enabled — the daemon was started without " +
                 "a browser adapter lister. Re-run with `listBrowserAdapters` wired.",
             },
           ],
@@ -196,7 +196,7 @@ export function registerBrowserTools(
         .string()
         .min(1)
         .describe(
-          "Browser adapter id — one of the ids returned by `list_adapter_browsers` " +
+          "Browser adapter id — one of the ids returned by `browser_adapter_list` " +
             "(e.g. 'camofox', 'bureau')."
         ),
       port: z

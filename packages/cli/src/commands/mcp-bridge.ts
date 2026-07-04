@@ -33,6 +33,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListResourceTemplatesRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { loadConfig } from "@agentproto/runtime/config"
 
@@ -75,9 +78,13 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
     return 1
   }
 
+  // Resources must be forwarded too: MCP Apps hosts (Claude Desktop/Cowork)
+  // resolve a tool's `_meta.ui.resourceUri` via `resources/read`. A bridge
+  // that only forwards tools answers -32601 there and the host renders
+  // "cannot reach <server>" even though every tool call succeeds.
   const server = new Server(
     { name: "agentproto-mcp-bridge", version: "0.1.0" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {}, resources: {} } }
   )
 
   // Pass-through: forward the daemon's tool list with original JSON schemas
@@ -87,6 +94,17 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   // Pass-through: forward call-tool requests verbatim to the daemon.
   server.setRequestHandler(CallToolRequestSchema, (req) =>
     client.callTool(req.params)
+  )
+
+  // Pass-through: resources (ui:// panels for MCP Apps hosts).
+  server.setRequestHandler(ListResourcesRequestSchema, () =>
+    client.listResources()
+  )
+  server.setRequestHandler(ReadResourceRequestSchema, (req) =>
+    client.readResource(req.params)
+  )
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, () =>
+    client.listResourceTemplates()
   )
 
   const stdioTransport = new StdioServerTransport()

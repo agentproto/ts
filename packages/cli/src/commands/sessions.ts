@@ -38,10 +38,14 @@ import {
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
 import {
-  RESUME_STRATEGIES,
   hasResumeStrategy,
+  decideRestartStrategy,
+  augmentWithFsResume,
+  describeResumePath,
+  tokenizeCommand,
 } from "@agentproto/runtime/resume-strategies"
 import type { SessionDescriptor } from "@agentproto/runtime"
+import type { AcpMcpServer } from "@agentproto/acp"
 
 const USAGE = `agentproto sessions — browse and control daemon sessions
 
@@ -49,18 +53,31 @@ Usage:
   agentproto sessions [--watch] [--json]
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
-                                      [--prompt <text>] [--label <text>]
-                                      [--attach] [--json] [--no-color]
+                                      [--model <id>] [--prompt <text>]
+                                      [--label <text>] [--attach] [--json]
+                                      [--orchestrator | --orchestrator-json <json>]
+                                      [--mcp-servers-json <json|@file>]
+                                      [--no-color]
   agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                             [--name <slug>] [--label <text>]
                                             [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o <file>]
+                             [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
+                              [--timeout <ms>] [--json]
 
 Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
 is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
 AGENTPROTO_DAEMON_TOKEN to override.
+
+sessions start flags:
+  --orchestrator                shorthand for orchestrator: true
+  --orchestrator-json <json>    object form: {"tools":[...],"maxDepth":N,"maxChildren":N}
+                                 (wins over --orchestrator when both are given)
+  --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
+  --mcp-servers-json @<file>    same, read from a file instead of inline JSON
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -88,6 +105,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "export") return runExport(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
+  if (sub === "wait") return runWait(args.slice(1))
 
   const { values } = parseArgs({
     args: [...args],
@@ -143,11 +161,15 @@ async function runStart(args: readonly string[]): Promise<number> {
     options: {
       cwd: { type: "string" },
       workspace: { type: "string" },
+      model: { type: "string" },
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
+      orchestrator: { type: "boolean" },
+      "orchestrator-json": { type: "string" },
+      "mcp-servers-json": { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -167,6 +189,55 @@ async function runStart(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  // Parse --orchestrator-json / --mcp-servers-json client-side, before any
+  // network activity, so malformed JSON fails fast with a clear message
+  // instead of surfacing as an opaque 400 from the daemon.
+  let orchestrator: boolean | Record<string, unknown> | undefined
+  if (values["orchestrator-json"] !== undefined) {
+    try {
+      orchestrator = JSON.parse(values["orchestrator-json"])
+    } catch (err) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --orchestrator-json: ${err instanceof Error ? err.message : String(err)}\n`
+      )
+      return 2
+    }
+  } else if (values.orchestrator) {
+    orchestrator = true
+  }
+
+  let mcpServers: AcpMcpServer[] | undefined
+  if (values["mcp-servers-json"] !== undefined) {
+    const raw = values["mcp-servers-json"]
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: could not read --mcp-servers-json file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    try {
+      const parsed = JSON.parse(text)
+      if (!Array.isArray(parsed)) {
+        throw new Error("expected a JSON array of {name, transport, ref?}")
+      }
+      mcpServers = parsed
+    } catch (err) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --mcp-servers-json: ${err instanceof Error ? err.message : String(err)}\n`
+      )
+      return 2
+    }
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -174,11 +245,14 @@ async function runStart(args: readonly string[]): Promise<number> {
   }
   const endpoint = report.found
 
-  const body: Record<string, string> = { adapter: slug }
+  const body: Record<string, unknown> = { adapter: slug }
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
+  if (values.model) body.model = values.model
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
+  if (orchestrator !== undefined) body.orchestrator = orchestrator
+  if (mcpServers !== undefined) body.mcpServers = mcpServers
 
   let desc: SessionDescriptor
   try {
@@ -284,6 +358,271 @@ async function runStop(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto sessions stop: ${msg}\n`)
     return 1
   }
+}
+
+/**
+ * `agentproto sessions wait <id-or-name>` — scriptable blocking wait.
+ *
+ * Blocks until the session fires a lifecycle event (default: any) or, when
+ * `--policy <policyId>` is set, until the named policy resolves
+ * (done/blocked/awaiting-ack/cancelled). Then exits with a code the caller
+ * can branch on:
+ *   0  condition met (session event) / policy `done`
+ *   1  timeout — no resolution within `--timeout`
+ *   2  policy `blocked` or gate failed
+ *   3  session/policy not found or daemon unreachable
+ *
+ * The daemon-side single-call timeout is capped (~55s, under typical HTTP
+ * client timeouts). When the user's `--timeout` exceeds that, the CLI
+ * loops, calling the endpoint again with an advancing `since` cursor until
+ * the total budget is exhausted or the condition matches.
+ */
+async function runWait(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      until: { type: "string" },
+      policy: { type: "string" },
+      timeout: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+
+  const target = positionals[0]
+  if (!target && !values.policy) {
+    process.stderr.write(
+      "agentproto sessions wait: missing session id or policy id.\n" +
+        "  Try: agentproto sessions wait <id-or-name>\n" +
+        "       agentproto sessions wait <id-or-name> --until turn-end --timeout 30000\n" +
+        "       agentproto sessions wait --policy <policyId> --timeout 60000\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions wait: unexpected extra positionals: ${positionals
+        .slice(1)
+        .join(" ")}\n`,
+    )
+    return 2
+  }
+
+  // Validate --until early so a typo fails fast instead of after daemon work.
+  const rawUntil = values.until
+  const untilEvent =
+    rawUntil === "turn-end" ||
+    rawUntil === "awaiting-input" ||
+    rawUntil === "exited" ||
+    rawUntil === "any" ||
+    rawUntil === undefined
+      ? ((rawUntil ?? "any") as "turn-end" | "awaiting-input" | "exited" | "any")
+      : null
+  if (untilEvent === null) {
+    process.stderr.write(
+      `agentproto sessions wait: invalid --until "${rawUntil}". ` +
+        `Expected one of: turn-end, awaiting-input, exited, any.\n`,
+    )
+    return 2
+  }
+
+  const totalTimeout = (() => {
+    const raw = values.timeout
+    if (!raw) return 60_000
+    const n = Number.parseInt(raw, 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(
+        `agentproto sessions wait: invalid --timeout "${raw}" (must be a positive integer ms).\n`,
+      )
+      return NaN
+    }
+    return n
+  })()
+  if (Number.isNaN(totalTimeout)) return 2
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions wait")
+    return 3
+  }
+  const endpoint = report.found
+
+  // --policy wins: wait on the policy resolution endpoint instead of the
+  // session-event endpoint. The positional (if any) is ignored in that mode.
+  if (values.policy) {
+    return runWaitPolicy({
+      endpoint,
+      policyId: values.policy,
+      totalTimeout,
+      json: values.json === true,
+    })
+  }
+
+  // Reachable only with `target` set — the guard above already rejected
+  // `!target && !values.policy`, and `values.policy` is falsy on this path.
+  if (!target) {
+    process.stderr.write("agentproto sessions wait: missing session id.\n")
+    return 2
+  }
+
+  return runWaitSession({
+    endpoint,
+    idOrName: target,
+    untilEvent,
+    totalTimeout,
+    json: values.json === true,
+  })
+}
+
+/**
+ * Loop GET /sessions/:id/wait with an advancing `since` cursor until the
+ * total timeout budget is exhausted or a matching event fires. Mirrors how
+ * a client would chain multiple `session_monitor` calls.
+ */
+async function runWaitSession(opts: {
+  endpoint: DaemonEndpoint
+  idOrName: string
+  untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
+  totalTimeout: number
+  json: boolean
+}): Promise<number> {
+  const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+  const deadline = Date.now() + totalTimeout
+  // Per-call server cap is 55s; pick a slice that leaves headroom.
+  const sliceMs = 50_000
+  let cursor: number | undefined = undefined
+
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      return emitWaitTimeout(json, { kind: "session", idOrName })
+    }
+    const callTimeout = Math.min(sliceMs, remaining)
+    const qs = new URLSearchParams({
+      event: untilEvent,
+      timeoutMs: String(callTimeout),
+    })
+    if (cursor !== undefined) qs.set("since", String(cursor))
+    const url = `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}/wait?${qs.toString()}`
+    let result: Record<string, unknown>
+    try {
+      result = await httpGetJson<Record<string, unknown>>(url)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions wait: no session "${idOrName}".\n`,
+        )
+        return 3
+      }
+      if (/HTTP 501/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions wait: daemon does not expose the wait endpoint (${msg}).\n`,
+        )
+        return 3
+      }
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return 3
+    }
+    if (result.timedOut === true) {
+      // Advance the cursor from the server's response when available so the
+      // next call doesn't replay the same window.
+      if (typeof result.nextCursor === "number") cursor = result.nextCursor
+      continue
+    }
+    // Matched.
+    if (json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      const ev = typeof result.event === "string" ? result.event : "event"
+      const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
+      const status = typeof result.status === "string" ? result.status : ""
+      process.stdout.write(
+        `agentproto sessions wait: ${sid} → ${ev}` +
+          (status ? ` (${status})` : "") +
+          "\n",
+      )
+    }
+    return 0
+  }
+}
+
+/**
+ * Loop GET /policies/:id/wait until the total timeout budget is exhausted
+ * or the policy resolves. Exit codes: 0 done, 2 blocked, 1 timeout, 3 not
+ * found / unreachable.
+ */
+async function runWaitPolicy(opts: {
+  endpoint: DaemonEndpoint
+  policyId: string
+  totalTimeout: number
+  json: boolean
+}): Promise<number> {
+  const { endpoint, policyId, totalTimeout, json } = opts
+  const deadline = Date.now() + totalTimeout
+  const sliceMs = 50_000
+
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      return emitWaitTimeout(json, { kind: "policy", policyId })
+    }
+    const callTimeout = Math.min(sliceMs, remaining)
+    const qs = new URLSearchParams({ timeoutMs: String(callTimeout) })
+    const url = `${endpoint.url}/policies/${encodeURIComponent(policyId)}/wait?${qs.toString()}`
+    let result: Record<string, unknown>
+    try {
+      result = await httpGetJson<Record<string, unknown>>(url)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions wait: no policy "${policyId}".\n`,
+        )
+        return 3
+      }
+      if (/HTTP 501/.test(msg)) {
+        process.stderr.write(
+          `agentproto sessions wait: daemon does not expose the policy wait endpoint (${msg}).\n`,
+        )
+        return 3
+      }
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return 3
+    }
+    if (result.timedOut === true) {
+      continue
+    }
+    const status = typeof result.status === "string" ? result.status : ""
+    if (json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        `agentproto sessions wait: policy ${policyId} → ${status}\n`,
+      )
+    }
+    if (status === "done") return 0
+    if (status === "blocked" || status === "cancelled") return 2
+    // awaiting-ack: resolved (out of watching/gating) but needs a human —
+    // treat as a match (condition met) and exit 0.
+    return 0
+  }
+}
+
+function emitWaitTimeout(
+  json: boolean,
+  ctx: { kind: "session"; idOrName: string } | { kind: "policy"; policyId: string },
+): number {
+  if (json) {
+    process.stdout.write(
+      JSON.stringify({ timedOut: true, ...ctx }, null, 2) + "\n",
+    )
+  } else {
+    const label = ctx.kind === "session" ? `session "${ctx.idOrName}"` : `policy "${ctx.policyId}"`
+    process.stdout.write(`agentproto sessions wait: ${label} timed out.\n`)
+  }
+  return 1
 }
 
 /**
@@ -410,11 +749,13 @@ async function runTerminal(args: readonly string[]): Promise<number> {
 }
 
 /**
- * `agentproto sessions export <id-or-name> [--json] [-o <file>]`
+ * `agentproto sessions export <id-or-name> [--json] [-o <file>] [--source auto|native|daemon]`
  *
- * Reads the adapter's native persistence layer (claude-code JSONL / hermes
- * SQLite) via the daemon's GET /sessions/:id/export route and renders a clean
- * transcript. Defaults to markdown on stdout; --json switches to the raw JSON
+ * Renders a clean transcript via the daemon's GET /sessions/:id/export route.
+ * `--source auto` (default) prefers the adapter's native persistence layer
+ * (claude-code JSONL / hermes SQLite) and falls back to agentproto's own
+ * events.jsonl capture when there isn't one; `native`/`daemon` force one.
+ * Defaults to markdown on stdout; --json switches to the raw JSON
  * representation; -o writes to a file instead of stdout.
  */
 async function runExport(args: readonly string[]): Promise<number> {
@@ -427,6 +768,7 @@ async function runExport(args: readonly string[]): Promise<number> {
       output: { type: "string", short: "o" },
       adapter: { type: "string" },
       cwd: { type: "string" },
+      source: { type: "string" },
     },
   })
   const id = positionals[0]
@@ -444,6 +786,12 @@ async function runExport(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  if (values.source && !["auto", "native", "daemon"].includes(values.source)) {
+    process.stderr.write(
+      `agentproto sessions export: invalid --source "${values.source}" (expected auto|native|daemon).\n`,
+    )
+    return 2
+  }
 
   const report = await discoverDaemon()
   if (!report.found) {
@@ -456,6 +804,7 @@ async function runExport(args: readonly string[]): Promise<number> {
   const qs = new URLSearchParams({ format: fmt })
   if (values.adapter) qs.set("adapter", values.adapter)
   if (values.cwd) qs.set("cwd", values.cwd)
+  if (values.source) qs.set("source", values.source)
 
   let result: { content: string; format: string; adapter: string }
   try {
@@ -526,7 +875,7 @@ function printTable(rows: SessionDescriptor[]): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => r.status.length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
     age: 8,
   }
   const header =
@@ -544,7 +893,7 @@ function printTable(rows: SessionDescriptor[]): void {
   const now = Date.now()
   for (const r of rows) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r.status)
+    const tone = statusColour(r)
     process.stdout.write(
       pad(r.id, widths.id) +
         "  " +
@@ -552,7 +901,7 @@ function printTable(rows: SessionDescriptor[]): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(r.status, widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -562,12 +911,47 @@ function printTable(rows: SessionDescriptor[]): void {
   }
 }
 
-function statusColour(status: string): string {
-  switch (status) {
+/** True when the descriptor claims `status: "running"` but the underlying
+ *  OS process is confirmed gone (`processAlive` computed fresh from the pid
+ *  at read time — see `stampProcessAlive` in runtime/sessions.ts). Happens
+ *  when a daemon restart reaps the child without the registry catching up;
+ *  surfaced distinctly everywhere status is rendered so it never reads as a
+ *  healthy session. */
+export function isStaleRunning(
+  s: Pick<SessionDescriptor, "status" | "processAlive">,
+): boolean {
+  return s.status === "running" && s.processAlive === false
+}
+
+/** Single-character badge for the session's live activity — busy
+ *  processing a turn, awaiting input, or (the important case) claiming to
+ *  run with no process behind it. Empty string for the common idle case. */
+export function statusBadge(
+  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+): string {
+  if (isStaleRunning(s)) return "⚠" // ⚠
+  if (s.status !== "running") return ""
+  if (s.busy) return "●" // ●
+  if (s.awaitingInput) return "?"
+  return ""
+}
+
+/** STATUS column/field text — status plus its badge, when any. */
+export function statusLabel(
+  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+): string {
+  const badge = statusBadge(s)
+  return badge ? `${s.status} ${badge}` : s.status
+}
+
+export function statusColour(
+  s: Pick<SessionDescriptor, "status" | "processAlive">,
+): string {
+  if (isStaleRunning(s)) return "\x1b[33m" // amber — "running" contradicted by a dead pid
+  switch (s.status) {
     case "running":
       return "\x1b[32m" // green
     case "starting":
-    case "mounting":
       return "\x1b[33m" // yellow
     case "exited":
       return "\x1b[2m" // dim
@@ -779,7 +1163,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
-    status: Math.max(...rows.map(r => r.status.length), 8),
+    status: Math.max(...rows.map(r => statusLabel(r).length), 8),
     age: 8,
   }
   const header =
@@ -798,7 +1182,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
   const now = Date.now()
   rows.forEach((r, i) => {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
-    const tone = statusColour(r.status)
+    const tone = statusColour(r)
     const marker = i === cursor ? "\x1b[7m▸" : " "
     const reset = i === cursor ? "\x1b[0m" : ""
     process.stdout.write(
@@ -809,7 +1193,7 @@ function printPickerTable(rows: SessionDescriptor[], cursor: number): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
-        `${tone}${pad(r.status, widths.status)}\x1b[0m` +
+        `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
         "  " +
@@ -1146,14 +1530,18 @@ async function runWatch(
         cyan: "",
         red: "",
       }
-  const statusTone = (s: string): string =>
-    s === "running"
-      ? c.green
-      : s === "starting"
-        ? c.amber
-        : s === "killed" || s === "error"
-          ? c.red
-          : c.dim
+  const statusTone = (
+    s: Pick<SessionDescriptor, "status" | "processAlive">,
+  ): string =>
+    isStaleRunning(s)
+      ? c.amber
+      : s.status === "running"
+        ? c.green
+        : s.status === "starting"
+          ? c.amber
+          : s.status === "killed" || s.status === "error"
+            ? c.red
+            : c.dim
 
   const render = (): void => {
     const cols = process.stdout.columns || 100
@@ -1315,119 +1703,48 @@ interface RestartBody {
 }
 
 /**
- * Generic filesystem-fallback: for each known adapter strategy that
- * defines an `fsProbe`, run it against this session's cwd. If a
- * resume id is found, attach it to the descriptor's resumeMetadata.
- *
- * Lets `restart` recover continuity even when our own output sniffer
- * missed the resume hint (session killed too quickly, output buffered
- * past the kill, …). Eligible only when the file is at-or-after the
- * session's `startedAt` (avoid resuming an unrelated prior session
- * in the same cwd — see ResumeStrategy.fsProbe comment).
+ * Translate the shared `decideRestartStrategy` decision into a
+ * `{url, body}` REST call — the CLI-specific half (cols/rows come from
+ * the attached terminal). The daemon's `session_restart` MCP tool runs
+ * the same decision in-process instead of shaping an HTTP body.
  */
-/**
- * Describe which resume path was used for a successful restart, so
- * the CLI/dashboard banner can tell the user what happened. Returns
- * a short phrase like "resumed via claude --resume" or "resumed via
- * ACP", or an empty string when no resume was attempted.
- */
-function describeResumePath(prev: SessionDescriptor): string {
-  if (prev.adapterSlug) {
-    const s = RESUME_STRATEGIES[prev.adapterSlug]
-    if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
-      const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug
-      return `resumed via ${sample} --resume`
-    }
-  }
-  if (prev.adapterSlug && prev.adapterSessionId) {
-    return "resumed via ACP"
-  }
-  return ""
-}
-
-async function augmentWithFsResume(
-  prev: SessionDescriptor,
-): Promise<SessionDescriptor> {
-  const slug = prev.adapterSlug
-  if (!slug) return prev
-  const strategy = RESUME_STRATEGIES[slug]
-  if (!strategy?.fsProbe) return prev
-  // If we already have a captured id for this strategy's storage key,
-  // skip the FS probe — the sniffer found it during the session.
-  if (prev.resumeMetadata?.[strategy.storeAs]) return prev
-  if (!prev.cwd) return prev
-  const id = await strategy.fsProbe(prev.cwd, prev.startedAt)
-  if (!id) return prev
-  return {
-    ...prev,
-    resumeMetadata: {
-      ...(prev.resumeMetadata ?? {}),
-      [strategy.storeAs]: id,
-    },
-  }
-}
-
 function buildRestartBody(prev: SessionDescriptor): RestartBody {
-  // Provider-native resume takes precedence over ACP-level resume.
-  // Look up the adapter's strategy in the central registry; when it
-  // defines `spawnArgs` AND we've captured a resume id for it, spawn
-  // a PTY running the provider's native resume command. That works
-  // whenever the provider persisted the session, regardless of
-  // whether the ACP wrapper did — strictly more reliable.
-  if (prev.adapterSlug) {
-    const strategy = RESUME_STRATEGIES[prev.adapterSlug]
-    const id = strategy?.storeAs
-      ? prev.resumeMetadata?.[strategy.storeAs]
-      : undefined
-    if (strategy?.spawnArgs && id) {
-      return {
-        url: "__pty__",
-        body: {
-          argv: strategy.spawnArgs(id),
-          cwd: prev.cwd ?? undefined,
-          workspaceSlug: prev.workspaceSlug,
-          cols: process.stdout.columns ?? 80,
-          rows: process.stdout.rows ?? 24,
-          ...(prev.name ? { name: prev.name } : {}),
-          ...(prev.label ? { label: prev.label } : {}),
-        },
-      }
-    }
+  const strategy = decideRestartStrategy(prev)
+  if (strategy.kind === "unsupported") {
+    throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
-  if (prev.pty === true) {
-    const argv = Array.isArray(prev.argv)
-      ? prev.argv
-      : tokenizeCommand(prev.command)
-    return {
-      url: "__pty__",
-      body: {
-        argv,
-        cwd: prev.cwd ?? undefined,
-        workspaceSlug: prev.workspaceSlug,
-        cols: process.stdout.columns ?? 80,
-        rows: process.stdout.rows ?? 24,
-        ...(prev.name ? { name: prev.name } : {}),
-        ...(prev.label ? { label: prev.label } : {}),
-      },
-    }
-  }
-  if (prev.adapterSlug) {
+  if (strategy.kind === "agent") {
     return {
       url: "__agent__",
       body: {
         adapter: prev.adapterSlug,
         cwd: prev.cwd ?? undefined,
         workspaceSlug: prev.workspaceSlug,
-        ...(prev.adapterSessionId
-          ? { resumeSessionId: prev.adapterSessionId }
+        ...(strategy.resumeSessionId
+          ? { resumeSessionId: strategy.resumeSessionId }
           : {}),
         ...(prev.label ? { label: prev.label } : {}),
       },
     }
   }
-  throw new Error(
-    `${prev.id} is a generic command session — restart only supports pty + agent-cli`,
-  )
+  const argv =
+    strategy.kind === "pty-native"
+      ? strategy.argv
+      : Array.isArray(prev.argv)
+        ? prev.argv
+        : tokenizeCommand(prev.command)
+  return {
+    url: "__pty__",
+    body: {
+      argv,
+      cwd: prev.cwd ?? undefined,
+      workspaceSlug: prev.workspaceSlug,
+      cols: process.stdout.columns ?? 80,
+      rows: process.stdout.rows ?? 24,
+      ...(prev.name ? { name: prev.name } : {}),
+      ...(prev.label ? { label: prev.label } : {}),
+    },
+  }
 }
 
 async function executeRestartWithFallback(
@@ -1479,7 +1796,7 @@ function renderSidebar(
   width: number,
   height: number,
   c: Record<string, string>,
-  statusTone: (s: string) => string,
+  statusTone: (s: Pick<SessionDescriptor, "status" | "processAlive">) => string,
 ): string[] {
   const out: string[] = []
   out.push(`${c.bold}SESSIONS${c.reset} ${c.dim}(${rows.length})${c.reset}`)
@@ -1496,11 +1813,11 @@ function renderSidebar(
         ? `${c.green}PTY${c.reset}`
         : `${c.dim}   ${c.reset}`
       const label = r.name ?? r.id
-      const tone = statusTone(r.status)
+      const tone = statusTone(r)
       const age = humaniseDelta(now - new Date(r.startedAt).getTime())
       const labelTrunc = truncate(label, 18)
       const line =
-        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${r.status.padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
+        `${marker} ${ptyBadge} ${labelTrunc.padEnd(18)} ${tone}${statusLabel(r).padEnd(7)}${c.reset} ${c.dim}${age.padStart(4)}${c.reset}`
       out.push(selected ? line : line)
     }
   }
@@ -1529,7 +1846,21 @@ function renderDetail(
     out.push(`  ${kw("id")} ${s.id}`)
     if (s.name) out.push(`  ${kw("name")} ${c.bold}${s.name}${c.reset}`)
     out.push(`  ${kw("kind")} ${s.kind}${s.pty ? ` ${c.green}(pty)${c.reset}` : ""}`)
-    out.push(`  ${kw("status")} ${s.status}`)
+    const stale = isStaleRunning(s)
+    out.push(
+      `  ${kw("status")} ${stale ? c.amber : ""}${s.status}${
+        stale ? ` ⚠ dead pid${c.reset}` : ""
+      }`,
+    )
+    out.push(
+      `  ${kw("activity")} ${
+        s.busy
+          ? `${c.green}● busy${c.reset}`
+          : s.awaitingInput
+            ? `${c.amber}? awaiting input${c.reset}`
+            : `${c.dim}idle${c.reset}`
+      }`,
+    )
     out.push(`  ${kw("workspace")} ${s.workspaceSlug}`)
     out.push(`  ${kw("command")} ${c.dim}${truncate(s.command, width - 14)}${c.reset}`)
     out.push(`  ${kw("pid")} ${s.pid ?? "—"}`)
@@ -1850,39 +2181,6 @@ async function runRestart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
-}
-
-/**
- * Shell-style argv tokenizer for legacy descriptors that don't carry
- * `argv` separately. Same rules as the spawn-dialog tokenizer in the
- * web app: whitespace splits, single + double quotes group.
- */
-function tokenizeCommand(s: string): string[] {
-  const out: string[] = []
-  let buf = ""
-  let inSingle = false
-  let inDouble = false
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle
-      continue
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble
-      continue
-    }
-    if (!inSingle && !inDouble && /\s/.test(ch ?? "")) {
-      if (buf) {
-        out.push(buf)
-        buf = ""
-      }
-      continue
-    }
-    buf += ch
-  }
-  if (buf) out.push(buf)
-  return out
 }
 
 async function runMirror(args: readonly string[]): Promise<number> {

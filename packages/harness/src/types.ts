@@ -1,9 +1,9 @@
 /**
  * @agentproto/harness — shared types.
  *
- * The harness wraps the daemon's session tools (`start_agent_session`,
- * `prompt_agent_session`, `get_agent_session_output`, `kill_agent_session`,
- * `wait_for_any`) exposed over the `/mcp` endpoint. These types describe the
+ * The harness wraps the daemon's session tools (`agent_start`,
+ * `agent_prompt`, `agent_output`, `agent_kill`,
+ * `session_monitor`) exposed over the `/mcp` endpoint. These types describe the
  * client-side contract; the wire shapes mirror the tool schemas in
  * `@agentproto/runtime` (`session-tools.ts`, `orchestration-tools.ts`).
  */
@@ -16,7 +16,7 @@ export type TurnEvent =
   | "any"
   | "timeout"
 
-/** Result of `AgentHandle.waitForTurn` / `wait_for_any`. */
+/** Result of `AgentHandle.waitForTurn` / `session_monitor`. */
 export interface TurnResult {
   sessionId: string
   event: TurnEvent
@@ -25,7 +25,7 @@ export interface TurnResult {
 }
 
 /**
- * MCP-server mount forwarded verbatim to `start_agent_session.mcpServers`
+ * MCP-server mount forwarded verbatim to `agent_start.mcpServers`
  * (→ `session/new.mcpServers` on the ACP arm).
  */
 export interface McpServerMount {
@@ -36,7 +36,7 @@ export interface McpServerMount {
 }
 
 /**
- * Scoped-orchestrator request — forwarded to `start_agent_session.orchestrator`.
+ * Scoped-orchestrator request — forwarded to `agent_start.orchestrator`.
  * `true` = the default curated subset; the object form narrows it.
  */
 export type OrchestratorOption =
@@ -48,7 +48,7 @@ export type OrchestratorOption =
     }
 
 /**
- * Args handed to `start_agent_session`. 1:1 with the tool schema
+ * Args handed to `agent_start`. 1:1 with the tool schema
  * (`session-tools.ts:241-374`).
  */
 export interface StartAgentArgs {
@@ -64,7 +64,7 @@ export interface StartAgentArgs {
   notifyUrl?: string
 }
 
-/** Session descriptor as returned by `start_agent_session` (subset). */
+/** Session descriptor as returned by `agent_start` (subset). */
 export interface SessionDescriptor {
   id: string
   label?: string
@@ -93,13 +93,13 @@ export interface AgentHandle {
   readonly model?: string
   /** Send a follow-up turn (fire-and-forget at the daemon). */
   send(prompt: string): Promise<void>
-  /** Block until this session ends its current turn (`wait_for_any`). */
+  /** Block until this session ends its current turn (`session_monitor`). */
   waitForTurn(opts?: { timeoutMs?: number }): Promise<TurnResult>
   /** Convenience: `send` + `waitForTurn` + return the new output tail. */
   ask(prompt: string, opts?: { timeoutMs?: number }): Promise<string>
-  /** Tail the ring buffer (`get_agent_session_output`). */
+  /** Tail the ring buffer (`agent_output`). */
   output(opts?: { lastN?: number }): Promise<string>
-  /** SIGTERM the session (`kill_agent_session`). */
+  /** SIGTERM the session (`agent_kill`). */
   kill(): Promise<void>
 }
 

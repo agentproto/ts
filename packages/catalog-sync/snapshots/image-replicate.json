@@ -1,0 +1,217 @@
+{
+  "_meta": {
+    "source": "Curated from Replicate text-to-image collection + official models",
+    "fetched": "snapshot-authorship-date: 2026-06-29",
+    "note": "HAND-AUTHORED FIXTURE — to be refreshed against Replicate search/model-list API when available. Mirrors real Replicate model metadata shape (owner/name, description, run_count, cover_image_url) for image-generation models."
+  },
+  "models": [
+    {
+      "owner": "google",
+      "name": "nano-banana-pro",
+      "description": "Best quality, excellent text rendering (Gemini Pro) — image generation and editing",
+      "visibility": "public",
+      "run_count": 8675309,
+      "cover_image_url": "https://replicate.delivery/models/google/nano-banana-pro/cover.png",
+      "latest_version": {
+        "id": "google/nano-banana-pro:latest",
+        "created_at": "2026-05-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "image_input": { "type": "array", "items": { "type": "string" } } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "google",
+      "name": "nano-banana-2",
+      "description": "Higher quality, supports up to 4K resolution (Gemini 2.5 Pro) — image generation and editing",
+      "visibility": "public",
+      "run_count": 6123456,
+      "cover_image_url": "https://replicate.delivery/models/google/nano-banana-2/cover.png",
+      "latest_version": {
+        "id": "google/nano-banana-2:latest",
+        "created_at": "2026-04-15T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "image_input": { "type": "array", "items": { "type": "string" } } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "google",
+      "name": "nano-banana",
+      "description": "Fast generation (Gemini Flash), good for bulk — image generation and editing",
+      "visibility": "public",
+      "run_count": 12345678,
+      "cover_image_url": "https://replicate.delivery/models/google/nano-banana/cover.png",
+      "latest_version": {
+        "id": "google/nano-banana:latest",
+        "created_at": "2026-03-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "image_input": { "type": "array", "items": { "type": "string" } } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "black-forest-labs",
+      "name": "flux-2-dev",
+      "description": "General purpose, fast, good quality image generation with editing capabilities",
+      "visibility": "public",
+      "run_count": 4567890,
+      "cover_image_url": "https://replicate.delivery/models/black-forest-labs/flux-2-dev/cover.png",
+      "latest_version": {
+        "id": "black-forest-labs/flux-2-dev:latest",
+        "created_at": "2026-06-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "input_images": { "type": "array", "items": { "type": "string" } } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "black-forest-labs",
+      "name": "flux-kontext-pro",
+      "description": "Character consistency with reference images (edit mode)",
+      "visibility": "public",
+      "run_count": 2345678,
+      "cover_image_url": "https://replicate.delivery/models/black-forest-labs/flux-kontext-pro/cover.png",
+      "latest_version": {
+        "id": "black-forest-labs/flux-kontext-pro:latest",
+        "created_at": "2026-05-15T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "input_image": { "type": "string", "format": "uri" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "black-forest-labs",
+      "name": "flux-kontext-max",
+      "description": "Higher quality kontext editing with reference images",
+      "visibility": "public",
+      "run_count": 1123456,
+      "cover_image_url": "https://replicate.delivery/models/black-forest-labs/flux-kontext-max/cover.png",
+      "latest_version": {
+        "id": "black-forest-labs/flux-kontext-max:latest",
+        "created_at": "2026-05-15T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "input_image": { "type": "string", "format": "uri" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "black-forest-labs",
+      "name": "flux-1.1-pro-ultra",
+      "description": "Highest-fidelity Flux (4MP, photorealistic) — text-to-image generation",
+      "visibility": "public",
+      "run_count": 3456789,
+      "cover_image_url": "https://replicate.delivery/models/black-forest-labs/flux-1.1-pro-ultra/cover.png",
+      "latest_version": {
+        "id": "black-forest-labs/flux-1.1-pro-ultra:latest",
+        "created_at": "2025-11-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "bytedance",
+      "name": "seedream-4",
+      "description": "Photorealistic, good for landscapes — image generation and editing with reference support",
+      "visibility": "public",
+      "run_count": 1567890,
+      "cover_image_url": "https://replicate.delivery/models/bytedance/seedream-4/cover.png",
+      "latest_version": {
+        "id": "bytedance/seedream-4:latest",
+        "created_at": "2026-04-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "image_input": { "type": "array", "items": { "type": "string" } } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "recraft-ai",
+      "name": "recraft-v3",
+      "description": "Stylized illustrations and designs — text-to-image generation",
+      "visibility": "public",
+      "run_count": 890123,
+      "cover_image_url": "https://replicate.delivery/models/recraft-ai/recraft-v3/cover.png",
+      "latest_version": {
+        "id": "recraft-ai/recraft-v3:latest",
+        "created_at": "2025-10-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "minimax",
+      "name": "image-01",
+      "description": "Very fast, cheaper image generation — outputs multiple images per generation",
+      "visibility": "public",
+      "run_count": 456789,
+      "cover_image_url": "https://replicate.delivery/models/minimax/image-01/cover.png",
+      "latest_version": {
+        "id": "minimax/image-01:latest",
+        "created_at": "2025-09-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+          "output": { "type": "array", "items": { "type": "string", "format": "uri" } }
+        }
+      }
+    },
+    {
+      "owner": "openai",
+      "name": "gpt-image-1",
+      "description": "OpenAI native image generation (text-aware, edit-capable) — single reference image input",
+      "visibility": "public",
+      "run_count": 5678901,
+      "cover_image_url": "https://replicate.delivery/models/openai/gpt-image-1/cover.png",
+      "latest_version": {
+        "id": "openai/gpt-image-1:latest",
+        "created_at": "2026-03-15T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" }, "input_image": { "type": "string", "format": "uri" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "ideogram-ai",
+      "name": "ideogram-v3-turbo",
+      "description": "Excellent text rendering, posters and infographics — text-to-image generation",
+      "visibility": "public",
+      "run_count": 2345678,
+      "cover_image_url": "https://replicate.delivery/models/ideogram-ai/ideogram-v3-turbo/cover.png",
+      "latest_version": {
+        "id": "ideogram-ai/ideogram-v3-turbo:latest",
+        "created_at": "2026-02-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    {
+      "owner": "black-forest-labs",
+      "name": "flux-1.1-pro",
+      "description": "Legacy Flux model — text-to-image generation",
+      "visibility": "public",
+      "run_count": 9876543,
+      "cover_image_url": "https://replicate.delivery/models/black-forest-labs/flux-1.1-pro/cover.png",
+      "latest_version": {
+        "id": "black-forest-labs/flux-1.1-pro:latest",
+        "created_at": "2025-07-01T00:00:00Z",
+        "openapi_schema": {
+          "input": { "type": "object", "properties": { "prompt": { "type": "string" } } },
+          "output": { "type": "string", "format": "uri" }
+        }
+      }
+    }
+  ]
+}

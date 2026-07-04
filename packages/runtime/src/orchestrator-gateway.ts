@@ -3,8 +3,8 @@
  * that lets a spawned agent become a *scoped* orchestrator without
  * handing it the daemon's full toolset.
  *
- * The plain `/mcp` endpoint registers EVERY tool (execute_command,
- * fs_*, remote_*, import_mcp, terminals, driver CRUD) and bypasses auth
+ * The plain `/mcp` endpoint registers EVERY tool (command_execute,
+ * fs_*, remote_*, mcp_import, terminals, driver CRUD) and bypasses auth
  * on loopback — pointing a child at it would be a privilege handout.
  * This module builds a second, scoped MCP server that registers ONLY a
  * curated orchestration allowlist, gated by an unguessable per-child
@@ -41,40 +41,34 @@ import type { WebhookNotifier } from "./webhook-notifier.js"
  * The curated set of tools a scoped child orchestrator may call.
  *
  * INCLUDED — the orchestration primitives:
- *   start_agent_session, prompt_agent_session, get_agent_session_output,
- *   wait_for_any, poll_events  (spawn + drive + fan-in)
- *   list_sessions, list_agent_sessions, kill_agent_session  (observe +
- *     halt). NB: list/kill are NOT yet scoped to the child's own
- *     subtree — that subtree filter is WP4 (parentSessionId/depth). For
- *     WP2 they are exposed daemon-wide; documented debt.
+ *   agent_start, agent_prompt, agent_output, agent_kill,
+ *   session_monitor, session_events_poll  (spawn + drive + fan-in)
+ *   session_list, session_tree  (observe). NB: list is NOT yet scoped
+ *     to the child's own subtree — that subtree filter is WP4
+ *     (parentSessionId/depth). For WP2 it is exposed daemon-wide;
+ *     documented debt.
  *
  * EXCLUDED — the danger surface (each a separate trust boundary):
- *   execute_command, terminal/PTY tools (raw shell), fs tools
- *   (read/write/delete file, create_directory, …), remote_* (publish
- *   the daemon to the internet), import_mcp / mcp_imported_* /
- *   list_discovered_mcps / remove_imported_mcp (widen the daemon's own
- *   MCP surface), and driver CRUD (create_/delete_/update_driver — these
- *   never register here because the scoped server is built with no
- *   doctype specs).
+ *   command_execute, terminal/PTY tools (raw shell), file_* /
+ *   directory_* tools, remote_* (publish the daemon to the internet),
+ *   mcp_import / mcp_discovered_* / mcp_imported_* (widen the daemon's
+ *   own MCP surface), and driver CRUD (create_/delete_/update_driver —
+ *   these never register here because the scoped server is built with
+ *   no doctype specs).
  */
 export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
-  "start_agent_session",
-  "prompt_agent_session",
-  "get_agent_session_output",
-  "wait_for_any",
-  "poll_events",
-  "list_sessions",
-  "list_agent_sessions",
+  "agent_start",
+  "agent_prompt",
+  "agent_output",
+  "agent_kill",
+  "session_monitor",
+  "session_events_poll",
+  "session_list",
   "session_tree",
-  "kill_agent_session",
-  // WP6 — supervisor composition: a child orchestrator may attach /
-  // inspect / cancel completion policies on sessions within its own
-  // subtree. `ack_policy` is intentionally absent: triggering a host
-  // commit is an operator-or-human gesture, not a child-orchestrator one.
-  "attach_policy",
-  "get_policy_status",
-  "list_policies",
-  "cancel_policy",
+  "policy_attach",
+  "policy_status",
+  "policy_list",
+  "policy_cancel",
 ]
 
 /**
@@ -216,16 +210,21 @@ export interface OrchestratorGatewayDeps {
   listAgentAdapters?: AgentAdapterLister
   /** Orchestrator injector (WP3/WP4). When wired, a child orchestrator
    *  driving the scoped server can itself spawn sub-orchestrators
-   *  (`orchestrator: true` on its `start_agent_session`) — the new
+   *  (`orchestrator: true` on its `agent_start`) — the new
    *  token inherits depth+1 and is bounded by the caller's tools
    *  (non-re-grant). Omitted → recursion injection is unavailable on
    *  the scoped surface (a child can still spawn plain sub-agents). */
   orchestratorInjector?: OrchestratorInjector
   /** Optional webhook notifier — same singleton as the root /mcp server.
-   *  When provided, per-session notifyUrl values from start_agent_session
+   *  When provided, per-session notifyUrl values from agent_start
    *  are registered on spawn and unregistered on exit, so child
    *  orchestrators spawning through this scoped gateway also fire webhooks. */
   webhookNotifier?: WebhookNotifier
+  /** Forwarded to `registerSessionTools` — the daemon's own plain `/mcp`
+   *  gateway URL, defaulted onto `hermes` `agent_start` spawns issued
+   *  through this scoped sub-gateway that pass no `mcpServers`. See
+   *  `RegisterAgentToolsOptions.daemonMcpUrl`. */
+  daemonMcpUrl?: string
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -270,6 +269,7 @@ export function createOrchestratorMcpServerFactory(
       ...(deps.webhookNotifier
         ? { webhookNotifier: deps.webhookNotifier }
         : {}),
+      daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {
       registry: deps.registry,
@@ -353,7 +353,7 @@ export type OrchestratorInjector = (opts?: {
 /**
  * Build the orchestrator injector. Closed over the gateway's
  * scope-token registry + session-event bus + HTTP port. Returns a
- * function that the `start_agent_session` handler calls when its
+ * function that the `agent_start` handler calls when its
  * `orchestrator` field is set.
  */
 export function createOrchestratorInjector(

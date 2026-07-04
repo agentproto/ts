@@ -10,7 +10,12 @@ export default createTsupConfig({
   banner: `/**
  * @agentproto/cli v${version}
  * The \`agentproto\` binary — install / run / serve AIP-45 agent CLIs.
- */`,
+ */
+// Provide a real \`require\` in the ESM bundle. Some bundled deps (e.g.
+// gray-matter, node-pty) are CJS and call \`require("assert")\` or similar;
+// without this esbuild's interop shim throws "Dynamic require is not supported".
+import { createRequire as __agentprotoCreateRequire } from "node:module";
+const require = __agentprotoCreateRequire(import.meta.url);`,
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
@@ -46,6 +51,11 @@ export default createTsupConfig({
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/*",
     "gray-matter",
+    // pi-tui is externalised — it's pure ESM with no monorepo react conflict.
+    // Chalk is also externalised (it's widely available and ESM-safe).
+    "@earendil-works/pi-tui",
+    "chalk",
+    "cli-highlight",
     "zod",
     "ws",
     "node:child_process",
@@ -71,6 +81,8 @@ export default createTsupConfig({
     "@agentproto/agent-runtime/adapters/participant-agent-cli",
     "@agentproto/agent-runtime/adapters/telemetry",
     "@agentproto/runtime",
+    "@agentproto/model-catalog",
+    "@agentproto/model-catalog/llm",
     "@agentproto/agent",
     "@agentproto/manifest",
     "@agentproto/mcp-server",

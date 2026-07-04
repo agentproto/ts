@@ -16,8 +16,8 @@ the verb list.
 ## 2. Install your first adapter
 
 Pick an adapter — the canonical set is `claude-code`, `hermes`,
-`opencode`, `gemini-cli`, `goose`. Each is published as
-`@agentproto/adapter-<slug>`.
+`opencode`, `codex`, `mastra-agent` (the first-party agent), `openclaw`.
+Each is published as `@agentproto/adapter-<slug>`.
 
 ```bash
 agentproto install claude-code
@@ -86,11 +86,11 @@ until you Ctrl-C. See [`verbs/run-swarm.md`](./verbs/run-swarm.md) and
 ## 5. Add a plugin
 
 Built-ins (`file`, `mention`, `fs`, `agent-cli`) cover local file-mode
-swarms. To use a transport-backed substrate (e.g. Guilde), install
-its plugin:
+swarms. To use a transport-backed substrate (e.g. a hosted gateway),
+install its plugin:
 
 ```bash
-agentproto plugins install @guilde/agentproto-bridge
+agentproto plugins install <plugin-package>
 agentproto plugins list
 ```
 
@@ -103,6 +103,8 @@ dispatchers, executors, or state stores. See
 
 - Persistent sessions you can detach + reattach:
   [`verbs/sessions.md`](./verbs/sessions.md)
+- What a session's transcript captures and how to export it:
+  [`concepts/session-transcripts.md`](./concepts/session-transcripts.md)
 - Hosting your CLI for a remote agent over a tunnel:
   [`verbs/serve.md`](./verbs/serve.md) +
   [`verbs/auth.md`](./verbs/auth.md)

@@ -8,8 +8,8 @@
  * Protocol: MCP Apps ext spec 2026-01-26
  *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage
  *   – Handshake: ui/initialize → host result → ui/notifications/initialized
- *   – Data: tools/call → list_sessions + get_agent_session_output (3 s poll)
- *   – Kill action: tools/call → kill_agent_session | kill_terminal_session
+ *   – Data: tools/call → session_list + agent_output (3 s poll)
+ *   – Kill action: tools/call → agent_kill | terminal_kill
  *     (goes through Claude's normal tool approval flow)
  *
  * The HTML bundle is fully autonomous (zero CDN, zero external deps).
@@ -19,6 +19,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { panelBridgeScript } from "./panel-bridge.js"
 
 const RESOURCE_URI = "ui://agentproto/sessions-panel"
 const MIME_TYPE = "text/html;profile=mcp-app"
@@ -100,74 +101,7 @@ html,body{height:100%;font-family:Menlo,Monaco,'Courier New',monospace;font-size
   </div>
 </div>
 <script>
-// ============================================================
-// MCP Apps bridge — JSON-RPC 2.0 over window.parent.postMessage
-// Spec: io.modelcontextprotocol/ui 2026-01-26
-// ============================================================
-
-var _nextId = 1;
-var _pending = {};   // id -> {resolve, reject}
-
-function post(msg) {
-  window.parent.postMessage(msg, '*');
-}
-
-function rpcRequest(method, params) {
-  return new Promise(function(resolve, reject) {
-    var id = _nextId++;
-    _pending[id] = {resolve: resolve, reject: reject};
-    post({jsonrpc: '2.0', id: id, method: method, params: params || {}});
-  });
-}
-
-function rpcNotify(method, params) {
-  post({jsonrpc: '2.0', method: method, params: params || {}});
-}
-
-window.addEventListener('message', function(evt) {
-  var msg = evt.data;
-  if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
-  // Responses have an id and are not requests (no method)
-  if (msg.id != null && msg.method == null) {
-    var p = _pending[msg.id];
-    if (!p) return;
-    delete _pending[msg.id];
-    if (msg.error) {
-      p.reject(new Error(msg.error.message || 'rpc error ' + msg.error.code));
-    } else {
-      p.resolve(msg.result);
-    }
-  }
-  // Host notifications (ui/notifications/tool-input, ui/resource-teardown, etc.)
-  // — ignored for now; panel drives via poll
-});
-
-// Initialize bridge per spec 2026-01-26
-function initBridge() {
-  return rpcRequest('ui/initialize', {
-    capabilities: {},
-    clientInfo: {name: 'agentproto-sessions-panel', version: '0.1.0'},
-    protocolVersion: '2026-01-26',
-    appCapabilities: {
-      tools: {listChanged: false},
-      availableDisplayModes: ['inline', 'fullscreen']
-    }
-  }).then(function() {
-    rpcNotify('ui/notifications/initialized', {});
-  });
-}
-
-// Call an MCP tool through the bridge and parse the JSON result text
-function callTool(name, args) {
-  return rpcRequest('tools/call', {name: name, arguments: args || {}}).then(function(result) {
-    if (result.isError) {
-      var errText = (result.content && result.content[0] && result.content[0].text) || 'tool error';
-      throw new Error(errText);
-    }
-    var text = (result.content && result.content[0] && result.content[0].text) || '{}';
-    return JSON.parse(text);
-  });
-}
+${panelBridgeScript("agentproto-sessions-panel")}
 
 // ============================================================
 // ANSI-to-HTML renderer (SGR codes: colors 0-15, bold/dim/italic/underline)
@@ -178,13 +112,13 @@ function escHtml(s) {
 }
 
 function ansiToHtml(raw) {
-  // Strip CR overwrite sequences (progress bars: \r without \n)
-  var text = raw.replace(/[^\n]*\r([^\n])/g, '$1').replace(/\r/g, '');
+  // Strip CR overwrite sequences (progress bars: CR without LF)
+  var text = raw.replace(/[^\\n]*\\r([^\\n])/g, '$1').replace(/\\r/g, '');
   var bold = false, dim = false, italic = false, underline = false, fg = -1;
   var out = '';
   // Split on ESC [ ... m (SGR) sequences; keep delimiters
   var ESC = '';
-  var parts = text.split(/([]\[[0-9;]*m)/);
+  var parts = text.split(/([]\\[[0-9;]*m)/);
   for (var pi = 0; pi < parts.length; pi++) {
     var part = parts[pi];
     if (part.length === 0) continue;
@@ -208,7 +142,7 @@ function ansiToHtml(raw) {
       }
     } else {
       // Text segment — strip any remaining non-printable ESC sequences
-      var safe = escHtml(part).replace(/\[[^m]*[A-Za-z]/g, '');
+      var safe = escHtml(part).replace(/\\[[^m]*[A-Za-z]/g, '');
       if (safe === '') continue;
       var cls = '';
       if (bold) cls += ' ab';
@@ -262,10 +196,17 @@ function renderSidebar() {
     var label = s.label || s.name || (s.command ? s.command.split('/').pop() : null) || s.id.slice(0, 8);
     var bc = badgeClass(s.status);
     var active = s.id === activeId ? ' active' : '';
-    html += '<div class="si' + active + '" onclick="selectSession(\'' + s.id + '\')">'
+    // blockedOn (set while the turn waits on a spawned sub-agent or a
+    // shell command) rides next to the status badge; waiting-on-user is
+    // NOT here — that's awaitingInput, a different signal.
+    var blocked = '';
+    if (s.blockedOn === 'subagent') blocked = '<span class="badge bs">&#129513; sous-agent</span>';
+    else if (s.blockedOn === 'command') blocked = '<span class="badge bs">&#9203; commande</span>';
+    html += '<div class="si' + active + '" onclick="selectSession(\\'' + s.id + '\\')">'
           + '<div class="sn">' + escHtml(label) + '</div>'
           + '<div class="sm">'
           + '<span class="badge ' + bc + '">' + s.status + '</span>'
+          + blocked
           + '<span>' + escHtml(s.kind || '') + '</span>'
           + '</div></div>';
   }
@@ -273,7 +214,7 @@ function renderSidebar() {
 }
 
 function loadSessions() {
-  return callTool('list_sessions', {kind: 'all'}).then(function(data) {
+  return callTool('session_list', {kind: 'all'}).then(function(data) {
     sessions = data.sessions || [];
     renderSidebar();
     setStatus(sessions.length + ' session' + (sessions.length === 1 ? '' : 's') + ' · ' + new Date().toLocaleTimeString());
@@ -337,7 +278,7 @@ function selectSession(id) {
   document.getElementById('output').innerHTML = '<div style="padding:12px;color:var(--text2)">Loading&#8230;</div>';
 
   // Initial load
-  callTool('get_agent_session_output', {sessionId: id, lastN: 200}).then(function(data) {
+  callTool('agent_output', {sessionId: id, lastN: 200}).then(function(data) {
     outputLines = data.lines || [];
     nextCursor = data.nextCursor || 0;
     renderOutputFull();
@@ -356,7 +297,7 @@ function doKill() {
   for (var i = 0; i < sessions.length; i++) {
     if (sessions[i].id === activeId) { s = sessions[i]; break; }
   }
-  var toolName = (s && s.pty) ? 'kill_terminal_session' : 'kill_agent_session';
+  var toolName = (s && s.pty) ? 'terminal_kill' : 'agent_kill';
   callTool(toolName, {sessionId: activeId}).then(function() {
     return doRefresh();
   }).catch(function(e) {
@@ -376,7 +317,7 @@ function doPoll() {
     var capturedId = activeId;
     var capturedCursor = nextCursor;
     p = p.then(function() {
-      return callTool('get_agent_session_output', {sessionId: capturedId, since: capturedCursor});
+      return callTool('agent_output', {sessionId: capturedId, since: capturedCursor});
     }).then(function(data) {
       if (capturedId !== activeId) return; // user switched sessions
       var newLines = data.lines || [];
@@ -400,7 +341,7 @@ function doPoll() {
 function doRefresh() {
   return loadSessions().then(function() {
     if (activeId) {
-      return callTool('get_agent_session_output', {sessionId: activeId, lastN: 200}).then(function(data) {
+      return callTool('agent_output', {sessionId: activeId, lastN: 200}).then(function(data) {
         outputLines = data.lines || [];
         nextCursor = data.nextCursor || 0;
         renderOutputFull();

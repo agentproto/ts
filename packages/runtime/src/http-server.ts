@@ -32,7 +32,10 @@ import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
+import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { RoutineRunner, RoutineStep } from "./routine-runner.js"
+import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -55,6 +58,22 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
+import { sessionEventsPath } from "./transcript-writer.js"
+import { createReadStream } from "node:fs"
+import { createInterface } from "node:readline"
+import {
+  monitorSessionWait,
+  monitorPolicyWait,
+  type SessionWaitEvent,
+} from "./orchestration-tools.js"
+import type {
+  SessionEventBus,
+  SessionEventType,
+} from "./session-event-bus.js"
+import type { EventRing } from "./event-ring.js"
+import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
+import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import { tryParseJson } from "./json-tolerant.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -89,12 +108,36 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   startSession(opts: {
     cwd: string
     resumeSessionId?: string
-    /** Model identifier forwarded from `start_agent_session`. For ACP
+    /**
+     * Manifest-declared mode id forwarded from `agent_start` (AIP-45
+     * `AgentCliHandle.modes` — e.g. claude-code's `plan` /
+     * `accept-edits` / `bypass-permissions`, codex's `read-only`,
+     * mastracode/opencode's `plan`). Applied at spawn time via
+     * `composeSpawn`'s mode patch (`bin_args_append` / `env`) — BEFORE
+     * the child process is exec'd, unlike `model`/`effort` below.
+     * Adapters with no declared `modes` (e.g. hermes) ignore it; an
+     * unknown id for an adapter that DOES declare modes throws
+     * `RuntimeConfigError` (composeSpawn validates against the
+     * manifest, so a typo fails the spawn rather than silently no-op).
+     */
+    mode?: string
+    /**
+     * Manifest-declared option id → value map forwarded from
+     * `agent_start` (AIP-45 `AgentCliHandle.options` — e.g. hermes'
+     * `skills`). Applied at spawn time via `composeSpawn`'s option
+     * patches (`bin_args_prepend` / `bin_args_template` /
+     * `bin_args_append_when_true` / `env`), validated against each
+     * option's declared `type`/`enum`/`min`/`max`. An id the adapter
+     * doesn't declare throws `RuntimeConfigError` (composeSpawn
+     * validates against the manifest, same as an unknown `mode`).
+     */
+    options?: Record<string, boolean | number | string>
+    /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
      *  Adapters that don't support model selection ignore it. */
     model?: string
-    /** Effort level forwarded from `start_agent_session`. Effort is
+    /** Effort level forwarded from `agent_start`. Effort is
      *  model-dependent — same label ≠ same budget across models; defaults
      *  differ by model. Omit to keep the model's own default. Applied
      *  via session/set_config_option on ACP adapters; others ignore it. */
@@ -105,10 +148,34 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  a host-chosen scoped toolset (e.g. the daemon's own orchestration
      *  gateway). Adapters that don't model MCP mounting ignore it. */
     mcpServers?: AcpMcpServer[]
+    /** Called on any adapter-process activity (ACP JSON-RPC traffic in
+     *  either direction) — forwarded to the driver's
+     *  `runtime.start({ onActivity })`. The caller (agent_start's MCP
+     *  handler, POST /sessions/agent) wires this to pulse
+     *  `SessionDescriptor.lastActivityAt` via `registry.pulseActivity(id)`. */
+    onActivity?: () => void
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
+  /** Best-effort per-session usage reader (adapter-specific, e.g. hermes state.db). */
+  readUsage?: (adapterSessionId: string) => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
 } | null>
+
+/**
+ * UI-safe projection of an AIP-45 `modes[]` entry as surfaced by
+ * `adapter_list`. Mirrors `@agentproto/cli`'s `AdapterMode` without
+ * importing it (the runtime deliberately carries no cli dep — see the
+ * `AgentAdapterLister` note above). Spawn internals (`bin_args_*`, `env`)
+ * are intentionally omitted; `status` is normalised to `"active"` by the
+ * lister when the manifest omits it, so a declared mode is never
+ * silently statusless.
+ */
+export interface AdapterListMode {
+  id: string
+  description?: string
+  status: "active" | "noop" | "planned"
+  status_note?: string
+}
 
 /**
  * Compact adapter metadata for the discovery endpoints. Independent
@@ -124,6 +191,10 @@ export interface AdapterListEntry {
   protocol: string
   streaming: boolean
   packageName: string
+  /** Declared operation modes with their honest support status, so a
+   *  client can see e.g. hermes' `lean` mode is a measured no-op instead
+   *  of being silently accepted. Empty when the adapter declares none. */
+  modes: AdapterListMode[]
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
@@ -190,8 +261,19 @@ export interface RuntimeHttpServerOptions {
    *  Hosts that ship adapters (`agentproto serve`, playground)
    *  pass the cli's `resolveAdapter` via a thin shim. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Optional — mirrors `RegisterAgentToolsOptions.buildOrchestratorMcp`
+   *  (agent-tools.ts). When wired, `POST /sessions/agent`'s
+   *  `orchestrator` field mints a scoped sub-gateway token the same way
+   *  the MCP `agent_start` tool does. Omitted → `orchestrator` on the
+   *  HTTP route is rejected with a 501. */
+  buildOrchestratorMcp?: BuildOrchestratorMcp
+  /** Optional — mirrors `RegisterAgentToolsOptions.daemonMcpUrl`. When
+   *  wired, a `POST /sessions/agent` spawn for a `hermes` adapter with
+   *  no caller-supplied `mcpServers` defaults to mounting this gateway
+   *  (same hermes safety net as the MCP tool). */
+  daemonMcpUrl?: string
   /** Optional — when wired, enables `GET /adapters` route + the
-   *  MCP `list_adapters` tool so UIs can discover what's installed
+   *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister
@@ -245,6 +327,33 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — the session lifecycle event bus. When wired alongside
+   *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
+   *  long-poll that resolves when the session fires a lifecycle event).
+   *  Same machinery the MCP `session_monitor` tool uses. */
+  sessionEvents?: SessionEventBus
+  /** Optional — the cursor ring buffer over `sessionEvents`. Paired with
+   *  `sessionEvents` to enable `GET /sessions/:id/wait` (cursor-based
+   *  race-free replay via the `since` query param). */
+  eventRing?: EventRing
+  /** Optional — the completion-policy supervisor. When wired, enables
+   *  `GET /policies/:id/wait` (a blocking long-poll that resolves when the
+   *  policy leaves watching/gating → done/blocked/awaiting-ack/cancelled).
+   *  Same state the MCP `policy_status` tool reports. */
+  supervisor?: CompletionPolicySupervisor
+  /** Optional — when wired, exposes /cron routes for creating and
+   *  managing durable cron jobs. Without it the routes 404. */
+  cronScheduler?: import("./cron-scheduler.js").CronScheduler
+  /** Optional — when wired, exposes /routines/* routes for starting and
+   *  managing background routine runs (sequential steps with per-step
+   *  fan-in). Same service the MCP `routine_start/status/cancel/
+   *  escalation_resolve/list` tools call. Without it the routes 404. */
+  routineRunner?: RoutineRunner
+  /** Optional — when wired, exposes /workflows/* routes for starting and
+   *  managing background workflow runs (stage-barrier parallel steps).
+   *  Same service the MCP `workflow_start/status/cancel/
+   *  escalation_resolve/list` tools call. Without it the routes 404. */
+  workflowRunner?: WorkflowRunner
   /** Static fields surfaced via `/health`. */
   meta: {
     workspace: string
@@ -653,7 +762,7 @@ export async function startHttpServer(
     // NUL bytes; collapse leading dots so the file is visible. The
     // resolvePath check below catches anything this misses.
     const safeName = rawName
-      .replace(/[ /\\]/g, "_")
+      .replace(/[\x00/\\]/g, "_")
       .replace(/\.\.+/g, ".")
       .replace(/^\.+/, "")
       .slice(0, 200)
@@ -832,6 +941,10 @@ export async function startHttpServer(
             opts.ptyEnabled === true,
             opts.resolveBrowserAdapter,
             opts.listBrowserAdapters,
+            opts.sessionEvents,
+            opts.eventRing,
+            opts.buildOrchestratorMcp,
+            opts.daemonMcpUrl,
           )
           if (handled) return
         }
@@ -1042,6 +1155,58 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // Routine routes — only registered when the gateway was built with
+        // a RoutineRunner. /routines, /routines/:id, /routines/:id/cancel,
+        // /routines/:id/escalation/resolve. Mirrors the MCP `routine_*`
+        // tools (orchestration-tools.ts) — same RoutineRunner instance.
+        if (
+          opts.routineRunner &&
+          (path === "/routines" || path.startsWith("/routines/"))
+        ) {
+          const handled = await handleRoutines(req, res, path, opts.routineRunner)
+          if (handled) return
+        }
+
+        // Workflow routes — only registered when the gateway was built with
+        // a WorkflowRunner. /workflows, /workflows/:id, /workflows/:id/cancel,
+        // /workflows/:id/escalation/resolve. Mirrors the MCP `workflow_*`
+        // tools (orchestration-tools.ts) — same WorkflowRunner instance.
+        if (
+          opts.workflowRunner &&
+          (path === "/workflows" || path.startsWith("/workflows/"))
+        ) {
+          const handled = await handleWorkflows(req, res, path, opts.workflowRunner)
+          if (handled) return
+        }
+
+        // Policy routes — POST /policies (attach), GET /policies (list),
+        // POST /policies/:id/cancel, POST /policies/:id/ack, and the
+        // blocking long-poll `GET /policies/:id/wait` (resolves when the
+        // policy leaves watching/gating → done/blocked/awaiting-ack/
+        // cancelled, or timeoutMs elapses). Mirrors the MCP `policy_attach/
+        // status/cancel/ack/list` tools — same CompletionPolicySupervisor
+        // instance. Only mounted when a supervisor is wired.
+        if (
+          opts.supervisor &&
+          (path === "/policies" || path.startsWith("/policies/"))
+        ) {
+          const handled = await handlePolicies(
+            req,
+            res,
+            path,
+            opts.supervisor,
+            opts.sessions,
+          )
+          if (handled) return
+        }
+
+        // Cron routes — only registered when the gateway was built with
+        // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
+        if (opts.cronScheduler && path.startsWith("/cron")) {
+          const handled = await handleCron(req, res, path, opts.cronScheduler)
           if (handled) return
         }
 
@@ -1333,6 +1498,15 @@ function clampInt(
  *   GET    /sessions/:id          → one SessionDescriptor
  *   GET    /sessions/:id/stream   → SSE stream {line,stream} events
  *   GET    /sessions/:id/export   → ExportAgentSessionResult (transcript as markdown or JSON)
+ *   GET    /sessions/:id/events   → raw structured events.jsonl records for a session.
+ *                                    Query: since=<seq> (default 0), limit=<n> (default 500,
+ *                                    max 2000). Returns {sessionId, events, nextSeq, complete};
+ *                                    404 {error:"no_transcript"} when the file doesn't exist.
+ *                                    Read-only GET, no auth gate (same policy as /export).
+ *   GET    /sessions/:id/wait     → block until a lifecycle event fires (long-poll;
+ *                                    requires sessionEvents + eventRing wired). Query:
+ *                                    event=turn-end|awaiting-input|exited|any (default any),
+ *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
@@ -1342,6 +1516,56 @@ function clampInt(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
+/** Parse the `orchestrator` body field on `POST /sessions/agent` — the
+ *  same flexible `boolean | object` shape the MCP `agent_start` tool's
+ *  `jsonTolerant` schema accepts, including a JSON-stringified form of
+ *  either (some HTTP clients serialize nested fields as strings the
+ *  same way the MCP-over-stdio clients that motivated `jsonTolerant`
+ *  do). Malformed values are dropped (undefined) rather than 400'd —
+ *  matches this route's existing lenient body-field parsing. */
+function parseOrchestratorField(
+  raw: unknown,
+): boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (typeof value === "boolean") return value
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>
+    const tools = Array.isArray(obj.tools)
+      ? obj.tools.filter((t): t is string => typeof t === "string")
+      : undefined
+    const maxDepth = typeof obj.maxDepth === "number" ? obj.maxDepth : undefined
+    const maxChildren = typeof obj.maxChildren === "number" ? obj.maxChildren : undefined
+    return {
+      ...(tools ? { tools } : {}),
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+      ...(maxChildren !== undefined ? { maxChildren } : {}),
+    }
+  }
+  return undefined
+}
+
+/** Parse the `mcpServers` body field — the same `AcpMcpServer[]` shape
+ *  the MCP tool accepts, tolerant of a JSON-stringified array (see
+ *  `parseOrchestratorField`). Entries missing a valid `name`/`transport`
+ *  are dropped rather than failing the whole array. */
+function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!Array.isArray(value)) return undefined
+  const servers: AcpMcpServer[] = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const o = item as Record<string, unknown>
+    if (typeof o.name !== "string") continue
+    if (o.transport !== "stdio" && o.transport !== "http" && o.transport !== "sse") continue
+    servers.push({
+      name: o.name,
+      transport: o.transport,
+      ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
+    })
+  }
+  return servers
+}
+
 async function handleSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1351,6 +1575,10 @@ async function handleSessions(
   ptyEnabled = false,
   resolveBrowserAdapter?: BrowserAdapterResolver,
   listBrowserAdapters?: BrowserAdapterLister,
+  sessionEvents?: SessionEventBus,
+  eventRing?: EventRing,
+  buildOrchestratorMcp?: BuildOrchestratorMcp,
+  daemonMcpUrl?: string,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -1365,7 +1593,11 @@ async function handleSessions(
   // Long-running agent session — spawn via the cli's adapter
   // resolver, hold across multiple turns. Body shape:
   //   {adapter: "claude-code"|"hermes"|...,
-  //    workspaceSlug, cwd, prompt?, label?}
+  //    workspaceSlug, cwd, prompt?, label?, orchestrator?, mcpServers?}
+  // Delegates to the same `spawnAgentSession` the MCP `agent_start`
+  // tool uses (session-spawn.ts) — keeps this route from re-implementing
+  // (and re-drifting from) the orchestrator/mcpServers/hermes-default
+  // logic that lives there.
   if (path === "/sessions/agent" && req.method === "POST") {
     if (!resolveAgentAdapter) {
       json(501, {
@@ -1387,79 +1619,54 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
-    // cwd resolution priority:
-    //   1. explicit `cwd` in the body
-    //   2. lookup `workspaceSlug` in ~/.agentproto/workspaces.json
-    //   3. active workspace from the same config
-    //   4. process.cwd() (last resort, almost certainly not what
-    //      the user wants — log it so the operator notices)
-    let cwd: string | null =
-      typeof b.cwd === "string" && b.cwd.length > 0 ? b.cwd : null
-    let workspaceSlug =
-      typeof b.workspaceSlug === "string" ? b.workspaceSlug : ""
-    if (!cwd) {
-      try {
-        const config = await loadWorkspacesConfig()
-        const ws = workspaceSlug
-          ? findWorkspace(config, workspaceSlug)
-          : getActiveWorkspace(config)
-        if (ws) {
-          cwd = ws.path
-          workspaceSlug = ws.slug
-        }
-      } catch {
-        // Config missing / unreadable — fall through to process.cwd()
-      }
-    }
-    if (!cwd) {
-      cwd = process.cwd()
-      console.warn(
-        `[/sessions/agent] no cwd resolvable for adapter=${adapter} ` +
-          `(no body.cwd, no workspaceSlug match in ~/.agentproto/workspaces.json, ` +
-          `no active workspace) — falling back to daemon's cwd ${cwd}`
-      )
-    }
-    if (!workspaceSlug) workspaceSlug = "default"
-    const resolved = await resolveAgentAdapter(adapter)
-    if (!resolved) {
-      json(404, { error: "adapter_not_found", adapter })
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter, buildOrchestratorMcp, daemonMcpUrl },
+      {
+        adapter,
+        ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
+        ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
+          ? { workspaceSlug: b.workspaceSlug }
+          : {}),
+        ...(typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
+          ? { resumeSessionId: b.resumeSessionId }
+          : {}),
+        ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
+        ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
+        ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+        ...(typeof b.label === "string" ? { label: b.label } : {}),
+        ...(b.orchestrator !== undefined
+          ? (() => {
+              const parsed = parseOrchestratorField(b.orchestrator)
+              return parsed !== undefined ? { orchestrator: parsed } : {}
+            })()
+          : {}),
+        ...(b.mcpServers !== undefined
+          ? (() => {
+              const parsed = parseMcpServersField(b.mcpServers)
+              return parsed !== undefined ? { mcpServers: parsed } : {}
+            })()
+          : {}),
+      },
+    )
+    if (!result.ok) {
+      const status =
+        result.code === "adapter_not_found" || result.code === "no_cwd"
+          ? 404
+          : result.code === "orchestrator_not_enabled"
+            ? 501
+            : result.code === "orchestrator_max_depth_exceeded" ||
+                result.code === "orchestrator_child_quota_exceeded"
+              ? 409
+              : 500
+      json(status, {
+        error: result.code,
+        message: result.message,
+        ...result.details,
+      })
       return true
     }
-    try {
-      const resumeSessionId =
-        typeof b.resumeSessionId === "string" && b.resumeSessionId.length > 0
-          ? b.resumeSessionId
-          : undefined
-      const bodyModel = typeof b.model === "string" && b.model.length > 0
-        ? b.model
-        : undefined
-      const bodyEffort = typeof b.effort === "string" && b.effort.length > 0
-        ? b.effort
-        : undefined
-      const agentSession = await resolved.startSession({
-        cwd,
-        ...(resumeSessionId ? { resumeSessionId } : {}),
-        ...(bodyModel ? { model: bodyModel } : {}),
-        ...(bodyEffort ? { effort: bodyEffort } : {}),
-      })
-      const desc = registry.spawnAgent({
-        workspaceSlug,
-        cwd,
-        agentSession,
-        adapterSlug: adapter,
-        ...(typeof b.prompt === "string" ? { initialPrompt: b.prompt } : {}),
-        ...(typeof b.label === "string" ? { label: b.label } : {}),
-        ...(resolved.commandPreview
-          ? { commandPreview: resolved.commandPreview }
-          : {}),
-      })
-      json(201, desc)
-    } catch (err) {
-      json(500, {
-        error: "agent_spawn_failed",
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
+    json(201, result.descriptor)
     return true
   }
 
@@ -1694,13 +1901,21 @@ async function handleSessions(
     const fireAndForget = wait === "false" || wait === "0"
     try {
       if (fireAndForget) {
-        registry.enqueuePrompt(id, prompt)
+        // Awaited: enqueuePrompt only resolves once the resume attempt
+        // (if any) + admission checks pass — a dead or busy session
+        // rejects here, before the 202 goes out, instead of us
+        // reporting `queued: true` for a prompt nothing will dispatch.
+        await registry.enqueuePrompt(id, prompt)
         json(202, { ok: true, id, queued: true })
       } else {
         await registry.sendPrompt(id, prompt)
         json(200, { ok: true, id })
       }
     } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", status: err.status })
+        return true
+      }
       const msg = err instanceof Error ? err.message : String(err)
       // Differentiate "not found" / "wrong kind" / "busy" — they
       // surface as readable thrown messages from the registry.
@@ -1760,7 +1975,7 @@ async function handleSessions(
   // when one was set at spawn time — `findByIdOrName` resolves both
   // and the rest of the handler operates on the canonical id.
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export)?$/,
+    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export|\/events|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -1780,12 +1995,16 @@ async function handleSessions(
     const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
     const adapterOverride = qs.get("adapter") ?? undefined
     const cwdOverride = qs.get("cwd") ?? undefined
+    const sourceParam = qs.get("source")
+    const source =
+      sourceParam === "native" || sourceParam === "daemon" ? sourceParam : undefined
     const result = await exportAgentSession({
       sessionId: rawIdOrName,
       registry,
       format: fmt,
       ...(adapterOverride ? { adapter: adapterOverride } : {}),
       ...(cwdOverride ? { cwd: cwdOverride } : {}),
+      ...(source ? { source } : {}),
     })
     if (result.content.startsWith("Error:")) {
       const isNotFound =
@@ -1801,6 +2020,79 @@ async function handleSessions(
     } else {
       json(200, result)
     }
+    return true
+  }
+
+  if (suffix === "/events" && req.method === "GET") {
+    // Raw structured events.jsonl records — the same on-disk capture
+    // /export's daemon-events strategy reads, exposed directly so a web
+    // panel can render rich components instead of the collapsed
+    // markdown/JSON transcript. Read-only GET, no auth gate (same
+    // policy as /export / /preview).
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const sinceRaw = qs.get("since")
+    if (sinceRaw !== null && !/^\d+$/.test(sinceRaw)) {
+      json(400, {
+        error: "invalid_since",
+        message: "since must be a non-negative integer",
+      })
+      return true
+    }
+    const since = sinceRaw !== null ? Number.parseInt(sinceRaw, 10) : 0
+    const limit = clampInt(qs.get("limit"), 500, 1, 2000)
+
+    // events.jsonl is always keyed by the agentproto session id (same
+    // resolution export's daemon-events strategy relies on) — `id` above
+    // already resolved to that via findByIdOrName, falling back to the
+    // raw path segment when the registry doesn't know it.
+    const filePath = sessionEventsPath(id)
+    let fileStream: ReturnType<typeof createReadStream>
+    try {
+      fileStream = createReadStream(filePath, { encoding: "utf8" })
+      await new Promise<void>((resolve, reject) => {
+        fileStream.once("error", reject)
+        fileStream.once("open", resolve)
+      })
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "ENOENT") {
+        json(404, { error: "no_transcript" })
+        return true
+      }
+      throw err
+    }
+
+    const events: Record<string, unknown>[] = []
+    let truncated = false
+    const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
+    for await (const line of rl) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let rec: Record<string, unknown>
+      try {
+        rec = JSON.parse(trimmed) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      if (typeof rec.seq !== "number" || rec.seq <= since) continue
+      if (events.length >= limit) {
+        truncated = true
+        continue
+      }
+      events.push(rec)
+    }
+
+    const nextSeq =
+      events.length > 0 ? (events[events.length - 1]?.seq as number) : since
+    json(200, {
+      sessionId: id,
+      events,
+      nextSeq,
+      complete: !truncated,
+    })
     return true
   }
 
@@ -1837,6 +2129,61 @@ async function handleSessions(
       lines: lines.slice(-lineCap),
       bytes: bufBytes ? bufBytes.toString("base64") : null,
     })
+    return true
+  }
+
+  if (suffix === "/wait" && req.method === "GET") {
+    // Blocking long-poll — same machinery as the MCP `session_monitor`
+    // tool (monitorSessionWait). Resolves when the session fires a
+    // matching lifecycle event, or when timeoutMs elapses. Read-only GET,
+    // no auth gate (same policy as /preview / /stream).
+    if (!sessionEvents || !eventRing) {
+      json(501, {
+        error: "wait_not_configured",
+        message:
+          "GET /sessions/:id/wait needs the host to wire `sessionEvents` + `eventRing` " +
+          "into the HTTP server (the daemon does this in createGateway).",
+      })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    // 404 when the session is unknown AND no `since` cursor was passed —
+    // a cursor implies "replay events I might have missed", so we still
+    // honour it for a now-dead session. Without a cursor, waiting on a
+    // missing session would block until timeout for nothing.
+    if (!resolvedDesc && qs.get("since") === null) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const rawEvent = qs.get("event")
+    const event: SessionWaitEvent =
+      rawEvent === "turn-end" ||
+      rawEvent === "awaiting-input" ||
+      rawEvent === "exited" ||
+      rawEvent === "any"
+        ? (rawEvent as SessionWaitEvent)
+        : "any"
+    const rawSince = qs.get("since")
+    const since =
+      rawSince !== null && /^\d+$/.test(rawSince)
+        ? Number.parseInt(rawSince, 10)
+        : undefined
+    // Cap at 55s to stay under typical HTTP client/proxy timeouts; the
+    // CLI chains multiple calls when its total --timeout exceeds this.
+    const timeoutMs = clampInt(qs.get("timeoutMs"), 25_000, 1_000, 55_000)
+    const result = await monitorSessionWait({
+      registry,
+      sessionEvents,
+      eventRing,
+      sessionIds: [id],
+      event,
+      timeoutMs,
+      ...(since !== undefined ? { since } : {}),
+    })
+    json(200, result)
     return true
   }
 
@@ -1964,9 +2311,10 @@ async function handleTunnels(
     try {
       const desc = await registry.create({
         targetPort,
-        ...(b.provider === "quick" || b.provider === "named"
-          ? { provider: b.provider }
-          : {}),
+        // Any provider slug (built-in, legacy alias, or third-party) — the
+        // registry resolves/validates it and surfaces an unknown slug as a
+        // create_failed error below.
+        ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
@@ -2008,6 +2356,540 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /routines routes — start, list, poll, cancel, and resolve escalations
+ * for background routine runs (a flat sequential list of steps with
+ * per-step `waitFor` fan-in). Returns `true` when it handled the
+ * request so the dispatcher skips the 404 path.
+ *
+ *   POST /routines                          → start a run (RoutineRun)
+ *   GET  /routines                          → { runs: RoutineRun[] }
+ *   GET  /routines/:id                      → RoutineRun
+ *   POST /routines/:id/cancel               → { runId, status }
+ *   POST /routines/:id/escalation/resolve   → { runId, ok }
+ *
+ * Thin adapters over the same RoutineRunner the MCP `routine_start/
+ * status/cancel/escalation_resolve/list` tools call — no duplicated
+ * orchestration logic between the two transports.
+ */
+async function handleRoutines(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  routineRunner: RoutineRunner,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/routines" && req.method === "GET") {
+    json(200, { runs: routineRunner.list() })
+    return true
+  }
+
+  if (path === "/routines" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const routineId = typeof b.routineId === "string" ? b.routineId : ""
+    if (!routineId) {
+      json(400, { error: "missing_routineId" })
+      return true
+    }
+    if (!Array.isArray(b.steps) || b.steps.length === 0) {
+      json(400, {
+        error: "missing_steps",
+        message: "body must include a non-empty `steps` array",
+      })
+      return true
+    }
+    try {
+      const run = await routineRunner.start({
+        routineId,
+        steps: b.steps as RoutineStep[],
+        ...(typeof b.workspaceSlug === "string" ? { workspaceSlug: b.workspaceSlug } : {}),
+        ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+        ...(typeof b.notifyUrl === "string" ? { notifyUrl: b.notifyUrl } : {}),
+      })
+      json(201, run)
+    } catch (err) {
+      json(400, {
+        error: "start_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /routines/:id/cancel
+  const cancelMatch = path.match(/^\/routines\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const runId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!routineRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    routineRunner.cancel(runId)
+    const run = routineRunner.status(runId)
+    json(200, { runId, status: run?.status ?? "not_found" })
+    return true
+  }
+
+  // /routines/:id/escalation/resolve
+  const resolveMatch = path.match(/^\/routines\/([^/]+)\/escalation\/resolve$/)
+  if (resolveMatch && req.method === "POST") {
+    const runId = decodeURIComponent(resolveMatch[1] ?? "")
+    if (!routineRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const stepIndex = typeof b.stepIndex === "number" ? b.stepIndex : undefined
+    const response = typeof b.response === "string" ? b.response : undefined
+    if (stepIndex === undefined || response === undefined) {
+      json(400, {
+        error: "invalid_body",
+        message: "body must include `stepIndex` (number) and `response` (string)",
+      })
+      return true
+    }
+    routineRunner.resolve(runId, stepIndex, response)
+    json(200, { runId, ok: true })
+    return true
+  }
+
+  // /routines/:id
+  const idMatch = path.match(/^\/routines\/([^/]+)$/)
+  if (idMatch && req.method === "GET") {
+    const runId = decodeURIComponent(idMatch[1] ?? "")
+    const run = routineRunner.status(runId)
+    if (!run) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    json(200, run)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /workflows routes — start, list, poll, cancel, and resolve escalations
+ * for background workflow runs (ordered stages of steps that run
+ * concurrently within a stage, gated by a barrier). Returns `true` when
+ * it handled the request so the dispatcher skips the 404 path.
+ *
+ *   POST /workflows                          → start a run (WorkflowRun)
+ *   GET  /workflows                          → { runs: WorkflowRun[] }
+ *   GET  /workflows/:id                      → WorkflowRun
+ *   POST /workflows/:id/cancel               → { runId, status }
+ *   POST /workflows/:id/escalation/resolve   → { runId, ok }
+ *
+ * Thin adapters over the same WorkflowRunner the MCP `workflow_start/
+ * status/cancel/escalation_resolve/list` tools call — no duplicated
+ * orchestration logic between the two transports.
+ */
+async function handleWorkflows(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  workflowRunner: WorkflowRunner,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/workflows" && req.method === "GET") {
+    json(200, { runs: workflowRunner.list() })
+    return true
+  }
+
+  if (path === "/workflows" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const workflowId = typeof b.workflowId === "string" ? b.workflowId : ""
+    if (!workflowId) {
+      json(400, { error: "missing_workflowId" })
+      return true
+    }
+    if (!Array.isArray(b.stages) || b.stages.length === 0) {
+      json(400, {
+        error: "missing_stages",
+        message: "body must include a non-empty `stages` array",
+      })
+      return true
+    }
+    try {
+      const run = await workflowRunner.start({
+        workflowId,
+        stages: b.stages as WorkflowStage[],
+        ...(typeof b.workspaceSlug === "string" ? { workspaceSlug: b.workspaceSlug } : {}),
+        ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+        ...(typeof b.notifyUrl === "string" ? { notifyUrl: b.notifyUrl } : {}),
+      })
+      json(201, run)
+    } catch (err) {
+      json(400, {
+        error: "start_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /workflows/:id/cancel
+  const cancelMatch = path.match(/^\/workflows\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const runId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!workflowRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    workflowRunner.cancel(runId)
+    const run = workflowRunner.status(runId)
+    json(200, { runId, status: run?.status ?? "not_found" })
+    return true
+  }
+
+  // /workflows/:id/escalation/resolve
+  const resolveMatch = path.match(/^\/workflows\/([^/]+)\/escalation\/resolve$/)
+  if (resolveMatch && req.method === "POST") {
+    const runId = decodeURIComponent(resolveMatch[1] ?? "")
+    if (!workflowRunner.status(runId)) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const stageIndex = typeof b.stageIndex === "number" ? b.stageIndex : undefined
+    const stepIndex = typeof b.stepIndex === "number" ? b.stepIndex : undefined
+    const response = typeof b.response === "string" ? b.response : undefined
+    if (stageIndex === undefined || stepIndex === undefined || response === undefined) {
+      json(400, {
+        error: "invalid_body",
+        message:
+          "body must include `stageIndex` (number), `stepIndex` (number), and `response` (string)",
+      })
+      return true
+    }
+    workflowRunner.resolve(runId, stageIndex, stepIndex, response)
+    json(200, { runId, ok: true })
+    return true
+  }
+
+  // /workflows/:id
+  const idMatch = path.match(/^\/workflows\/([^/]+)$/)
+  if (idMatch && req.method === "GET") {
+    const runId = decodeURIComponent(idMatch[1] ?? "")
+    const run = workflowRunner.status(runId)
+    if (!run) {
+      json(404, { error: "run_not_found", runId })
+      return true
+    }
+    json(200, run)
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /policies routes — attach, list, cancel, ack, and blocking-wait for
+ * completion policies. Returns `true` when it handled the request so
+ * the dispatcher skips the 404 path.
+ *
+ *   POST /policies              → attach a policy (PolicyRunState)
+ *   GET  /policies              → { policies: PolicyRunState[] }
+ *   POST /policies/:id/cancel   → { policyId, status }
+ *   POST /policies/:id/ack      → { policyId, status, sha?, error? }
+ *   GET  /policies/:id/wait     → block until the policy resolves, then
+ *                                 return the full PolicyRunState. Same
+ *                                 shape the MCP `policy_status` tool
+ *                                 returns. `{timedOut:true}` when
+ *                                 `timeoutMs` elapses with no resolution.
+ *
+ * Thin adapters over the same CompletionPolicySupervisor the MCP
+ * `policy_attach/status/cancel/ack/list` tools call — no duplicated
+ * policy-state-machine logic between the two transports. Only mounted
+ * when a supervisor is wired (the dispatcher guards on `opts.supervisor`).
+ */
+async function handlePolicies(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  supervisor: CompletionPolicySupervisor,
+  registry?: SessionsRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/policies" && req.method === "GET") {
+    json(200, { policies: supervisor.list() })
+    return true
+  }
+
+  if (path === "/policies" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined
+    const sessionIds = Array.isArray(b.sessionIds)
+      ? b.sessionIds.filter((s): s is string => typeof s === "string")
+      : undefined
+    if (!sessionId && !(sessionIds && sessionIds.length > 0)) {
+      json(400, {
+        error: "missing_sessions",
+        message: "body must include `sessionId` or a non-empty `sessionIds`",
+      })
+      return true
+    }
+    const then = b.then as "emit" | "commit"
+    if (then !== "emit" && then !== "commit") {
+      json(400, { error: "invalid_then", message: 'body.then must be "emit" or "commit"' })
+      return true
+    }
+    if (then === "commit" && !b.commit) {
+      json(400, {
+        error: "missing_commit",
+        message: 'then:"commit" requires a `commit` spec',
+      })
+      return true
+    }
+    try {
+      const state = supervisor.attach({
+        ...(sessionId ? { sessionId } : {}),
+        ...(sessionIds && sessionIds.length > 0 ? { sessionIds } : {}),
+        ...(b.gate ? { gate: b.gate as AttachPolicyInput["gate"] } : {}),
+        then,
+        ...(b.commit ? { commit: b.commit as AttachPolicyInput["commit"] } : {}),
+        ...(b.onFail ? { onFail: b.onFail as AttachPolicyInput["onFail"] } : {}),
+        ...(b.next ? { next: b.next as AttachPolicyInput["next"] } : {}),
+      })
+      json(201, state)
+    } catch (err) {
+      json(400, {
+        error: "attach_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /policies/:id/cancel
+  const cancelMatch = path.match(/^\/policies\/([^/]+)\/cancel$/)
+  if (cancelMatch && req.method === "POST") {
+    const policyId = decodeURIComponent(cancelMatch[1] ?? "")
+    if (!supervisor.getStatus(policyId)) {
+      json(404, { error: "policy_not_found", policyId })
+      return true
+    }
+    supervisor.cancel(policyId)
+    const state = supervisor.getStatus(policyId)
+    json(200, { policyId, status: state?.status ?? "not_found" })
+    return true
+  }
+
+  // /policies/:id/ack
+  const ackMatch = path.match(/^\/policies\/([^/]+)\/ack$/)
+  if (ackMatch && req.method === "POST") {
+    const policyId = decodeURIComponent(ackMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const approve = typeof b.approve === "boolean" ? b.approve : undefined
+    if (approve === undefined) {
+      json(400, { error: "missing_approve", message: "body must include boolean `approve`" })
+      return true
+    }
+    const state = await supervisor.ack(policyId, approve)
+    if (!state) {
+      json(404, { error: "policy_not_found", policyId })
+      return true
+    }
+    json(200, {
+      policyId: state.policyId,
+      status: state.status,
+      ...(state.commitSha ? { sha: state.commitSha } : {}),
+      ...(state.error ? { error: state.error } : {}),
+    })
+    return true
+  }
+
+  // /policies/:id/wait — block until the named completion policy
+  // transitions out of watching/queued/gating/nudging (i.e. reaches
+  // done/blocked/awaiting-ack/cancelled), then return the full
+  // PolicyRunState. Query params: timeoutMs=<n> (default 25000, cap
+  // 55000 to stay under typical HTTP client/proxy timeouts; the CLI
+  // chains multiple calls for longer budgets). Read-only GET — no auth
+  // gate, same policy as the other /sessions read routes.
+  const waitMatch = path.match(/^\/policies\/([^/]+)\/wait$/)
+  if (!waitMatch) return false
+  const policyId = decodeURIComponent(waitMatch[1] ?? "")
+  if (!policyId) return false
+  if (req.method !== "GET") {
+    json(405, { error: "method_not_allowed", message: "GET only" })
+    return true
+  }
+
+  // Fast 404 when the policy doesn't exist at all — no point blocking.
+  const current = supervisor.getStatus(policyId)
+  if (!current) {
+    json(404, { error: "policy_not_found", policyId })
+    return true
+  }
+
+  const reqUrl = req.url ?? ""
+  const qs = new URLSearchParams(
+    reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+  )
+  const timeoutMs = clampInt(qs.get("timeoutMs"), 25_000, 1_000, 55_000)
+
+  const result = await monitorPolicyWait({
+    supervisor,
+    policyId,
+    timeoutMs,
+  })
+  // monitorPolicyWait returns `{timedOut:false, state}` on resolution, or
+  // `{timedOut:true}` on timeout. Forward the full PolicyRunState for parity
+  // with policy_status — including the `awaitingQuestions` enrichment the
+  // MCP policy_status tool applies (harness-parity): cross-reference the
+  // watched sessions' live awaitingQuestion so a REST caller can tell
+  // "stuck on a question" from "still legitimately running".
+  if ("timedOut" in result && result.timedOut) {
+    json(200, { timedOut: true, policyId })
+    return true
+  }
+  const state = result.state
+  if (registry) {
+    const awaitingQuestions = state.sessionIds
+      .map(id => ({ sessionId: id, desc: registry.get(id) }))
+      .filter((s): s is { sessionId: string; desc: NonNullable<ReturnType<typeof registry.get>> } => !!s.desc?.awaitingInput)
+      .map(s => ({ sessionId: s.sessionId, question: s.desc.awaitingQuestion }))
+    if (awaitingQuestions.length > 0) {
+      json(200, { ...state, awaitingQuestions })
+      return true
+    }
+  }
+  json(200, state)
+  return true
+}
+
+/**
+ * /cron routes:
+ *   POST   /cron          → create a new cron job
+ *   GET    /cron          → list all cron jobs
+ *   DELETE /cron/:id      → delete a cron job
+ *   POST   /cron/:id/run  → manually fire a cron job
+ */
+async function handleCron(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  scheduler: import("./cron-scheduler.js").CronScheduler,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/cron" && req.method === "GET") {
+    json(200, { jobs: scheduler.list() })
+    return true
+  }
+
+  if (path === "/cron" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const schedule = typeof b.schedule === "string" ? b.schedule : ""
+    if (!schedule) {
+      json(400, { error: "missing_schedule" })
+      return true
+    }
+    const action = b.action
+    if (!action || typeof action !== "object") {
+      json(400, { error: "missing_action" })
+      return true
+    }
+    try {
+      const job = scheduler.create({
+        label: typeof b.label === "string" ? b.label : undefined,
+        schedule,
+        recurring: typeof b.recurring === "boolean" ? b.recurring : true,
+        action: action as import("./cron-scheduler.js").CronAction,
+      })
+      json(201, job)
+    } catch (err) {
+      json(400, {
+        error: "create_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  // /cron/:id/run — manual fire
+  const runMatch = path.match(/^\/cron\/([^/]+)\/run$/)
+  if (runMatch && req.method === "POST") {
+    const jobId = decodeURIComponent(runMatch[1] ?? "")
+    try {
+      const result = await scheduler.run(jobId)
+      json(200, { jobId, result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("not found") ? 404 : 500
+      json(status, { error: "run_failed", message: msg })
+    }
+    return true
+  }
+
+  // /cron/:id
+  const idMatch = path.match(/^\/cron\/([^/]+)$/)
+  if (!idMatch) return false
+  const jobId = decodeURIComponent(idMatch[1] ?? "")
+
+  if (req.method === "GET") {
+    const job = scheduler.get(jobId)
+    if (!job) {
+      json(404, { error: "job_not_found", jobId })
+      return true
+    }
+    json(200, job)
+    return true
+  }
+
+  if (req.method === "DELETE") {
+    try {
+      scheduler.delete(jobId)
+      json(200, { ok: true, jobId })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(404, { error: "job_not_found", message: msg })
+    }
     return true
   }
 

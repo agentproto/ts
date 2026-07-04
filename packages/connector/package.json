@@ -1,0 +1,77 @@
+{
+  "name": "@agentproto/connector",
+  "version": "0.1.0",
+  "description": "@agentproto/connector — ConnectorMcpDescriptor: the portable, host-agnostic description of an MCP connector (how its server runs / is reached + what credentials it needs).",
+  "keywords": [
+    "agentproto",
+    "connector",
+    "mcp",
+    "descriptor"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/connector"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./descriptor": {
+      "types": "./dist/descriptor.d.ts",
+      "import": "./dist/descriptor.mjs",
+      "default": "./dist/descriptor.mjs"
+    },
+    "./requirements": {
+      "types": "./dist/requirements.d.ts",
+      "import": "./dist/requirements.mjs",
+      "default": "./dist/requirements.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/adapter-kit": "workspace:*",
+    "@agentproto/secrets": "workspace:*"
+  },
+  "peerDependencies": {
+    "zod": ">=3.0.0"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

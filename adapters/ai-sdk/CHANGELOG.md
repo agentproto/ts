@@ -1,5 +1,16 @@
 # @agentproto/adapter-ai-sdk
 
+## 0.1.2
+
+### Patch Changes
+
+- dc870cf: tool: toolFromManifestOnly + optional inputSchema/outputSchema; runtime: session lifecycle events on bus + completion-policy supervisor MVP
+- Updated dependencies [78ac79e]
+- Updated dependencies [dc870cf]
+- Updated dependencies [2186e9e]
+  - @agentproto/tool@0.2.0
+  - @agentproto/driver@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

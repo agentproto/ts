@@ -26,9 +26,9 @@
  *
  * Trigger: session:turn-end on the watched session(s).
  * Gate: optional shell command via the same allowlist + cwd-anchor as
- *       execute_command. exit 0 = pass.
+ *       command_execute. exit 0 = pass.
  * Action (then:"emit"): emits policy:passed / policy:failed on the bus
- *       (readable via poll_events).
+ *       (readable via session_events_poll).
  *
  * WP5 (then:"commit"): on a GREEN gate, prepare a host-side git commit in the
  * watched session's cwd — `git add -- <explicit paths>` then `git commit -m
@@ -40,7 +40,7 @@
  * "nothing to commit" is treated as SUCCESS (idempotent re-commit after a
  * restart). `requireHumanAck` defaults to TRUE: the gate-green transition goes
  * to `awaiting-ack` and emits `policy:commit-ready` (paths + message) instead of
- * committing; the commit runs only on `ack_policy(approve:true)` →
+ * committing; the commit runs only on `policy_ack(approve:true)` →
  * `policy:committed` (+ sha) → done; `approve:false` → cancelled. With
  * `requireHumanAck:false` the commit runs directly at the green gate.
  * onFail (WP2): when gate fails, re-prompts the session(s) (sendPrompt) up to
@@ -116,7 +116,10 @@ export interface ShellGateSpec {
   command: string
   args?: string[]
   /** Working directory for the gate command. Defaults to the watched
-   *  session's cwd, anchored to the workspace. */
+   *  session's own cwd (trusted as-is — it was already an explicit,
+   *  vetted choice made at `agent_start` time). When given explicitly,
+   *  anchored to that session's cwd (not the daemon's boot workspace)
+   *  so a stray/injected value can't escape it. */
   cwd?: string
   timeoutMs?: number
 }
@@ -182,7 +185,7 @@ export interface CommitSpec {
   /**
    * Human-in-the-loop gate before the commit actually runs. Default TRUE:
    * the green gate transitions to `awaiting-ack` + emits `policy:commit-ready`
-   * and waits for `ack_policy`. Set false to commit directly at the green gate.
+   * and waits for `policy_ack`. Set false to commit directly at the green gate.
    */
   requireHumanAck?: boolean
 }
@@ -292,6 +295,15 @@ export interface CompletionPolicySupervisor {
   ack(policyId: string, approve: boolean): Promise<PolicyRunState | undefined>
   list(): PolicyRunState[]
   /**
+   * Subscribe to policy settlements — fired whenever a policy transitions
+   * into a terminal state (done / blocked / cancelled) OR into awaiting-ack.
+   * Used by the `/policies/:id/wait` long-poll to block until a policy
+   * resolves without reimplementing the state machine's event surface.
+   * Returns an unsubscribe fn. The callback receives the policyId; read
+   * the full state via `getStatus(policyId)`.
+   */
+  onSettle(cb: (policyId: string) => void): () => void
+  /**
    * Sync flush of the policy snapshot to disk. Call from the daemon
    * stop() path — mirrors sessions.shutdown().
    */
@@ -328,7 +340,7 @@ function resolveGroup(input: AttachPolicyInput): string[] {
         : []
   const group = Array.from(new Set(raw))
   if (group.length === 0) {
-    throw new Error("attach_policy requires sessionId or a non-empty sessionIds")
+    throw new Error("policy_attach requires sessionId or a non-empty sessionIds")
   }
   return group
 }
@@ -399,7 +411,7 @@ export function createCompletionPolicySupervisor(opts: {
   concurrencyCap?: number
   /**
    * Adapter resolver used to spawn a judge agent for a judge-gate (WP7).
-   * Same resolver the daemon passes to `start_agent_session`. When absent, a
+   * Same resolver the daemon passes to `agent_start`. When absent, a
    * judge-gate fails fail-safe (FAIL) with a clear reason — shell gates are
    * unaffected.
    */
@@ -415,10 +427,33 @@ export function createCompletionPolicySupervisor(opts: {
   // don't touch ~/.agentproto. Set opts.persist:true in production
   // (createGateway) or supply persistPath to implicitly enable it.
   const persist = opts.persist ?? (opts.persistPath !== undefined)
-  const anchorCwd = makeCwdAnchor(workspace)
   const runs = new Map<string, RunEntry>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   let shutdownDone = false
+
+  // ── settlement listeners (for /policies/:id/wait long-poll) ──────
+
+  /**
+   * Listeners fired whenever a policy reaches a terminal state (done /
+   * blocked / cancelled) or parks in awaiting-ack. The HTTP long-poll
+   * `GET /policies/:id/wait` subscribes here to block until a policy
+   * resolves, mirroring the MCP `policy_status` semantics but as a
+   * blocking call. Some transitions (cancel(), ack(false), single-session
+   * exit) emit no SessionEventBus event, so this hook is the single
+   * reliable signal — see `notifySettled`.
+   */
+  const settleListeners = new Set<(policyId: string) => void>()
+  const notifySettled = (policyId: string): void => {
+    for (const cb of settleListeners) {
+      try {
+        cb(policyId)
+      } catch (err) {
+        console.warn(
+          `[supervisor] onSettle listener threw: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+  }
 
   // ── persistence helpers ──────────────────────────────────────────
 
@@ -585,6 +620,7 @@ export function createCompletionPolicySupervisor(opts: {
         ts: new Date().toISOString(),
       })
       schedulePersist()
+      notifySettled(state.policyId)
       return
     }
 
@@ -600,6 +636,7 @@ export function createCompletionPolicySupervisor(opts: {
         ts: new Date().toISOString(),
       })
       schedulePersist()
+      notifySettled(state.policyId)
       pumpQueue() // WP6: release the slot this commit held
       return
     }
@@ -619,6 +656,7 @@ export function createCompletionPolicySupervisor(opts: {
     schedulePersist()
     maybeChain(entry) // WP6: attach `next` now that this policy is done
     pumpQueue() // WP6: release the slot this commit held
+    notifySettled(state.policyId)
   }
 
   // ── arm logic (shared by attach() and reload) ────────────────────
@@ -662,6 +700,7 @@ export function createCompletionPolicySupervisor(opts: {
       schedulePersist()
       cleanup()
       pumpQueue() // WP6: release the slot (if any) this run held
+      notifySettled(state.policyId)
     }
 
     const act = async (passed: boolean, exitCode: number) => {
@@ -673,7 +712,11 @@ export function createCompletionPolicySupervisor(opts: {
         // WP5: commit action. Prepare the plan in the watched session's cwd.
         if (input.then === "commit") {
           const commit = input.commit!
-          const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+          // The watched session's own cwd is already a vetted, explicit
+          // choice made at agent_start time — trust it as-is rather than
+          // re-anchoring it to the daemon's own boot workspace, which
+          // would reject any session spawned in a sibling worktree.
+          const cwd = registry.get(repr)?.cwd ?? workspace
           state.commitPlan = {
             paths: commit.paths,
             message: commit.message,
@@ -692,10 +735,11 @@ export function createCompletionPolicySupervisor(opts: {
               message: commit.message,
               ts: new Date().toISOString(),
             })
-            // Stop watching the bus; ack_policy drives the rest. The entry
+            // Stop watching the bus; policy_ack drives the rest. The entry
             // stays in `runs` so ack() can find it.
             cleanup()
             pumpQueue() // WP6: parked awaiting ack — release the slot
+            notifySettled(state.policyId)
             return
           }
           // Unattended commit — run it directly at the green gate.
@@ -718,6 +762,7 @@ export function createCompletionPolicySupervisor(opts: {
         cleanup()
         maybeChain(entry) // WP6: attach `next` now that this policy is done
         pumpQueue() // WP6: release the slot this run held
+        notifySettled(state.policyId)
         return
       }
 
@@ -763,7 +808,7 @@ export function createCompletionPolicySupervisor(opts: {
     /**
      * Read the recent ring-buffer tail of a session (best-effort) — used to
      * give the judge a minimal context of the watched session's output. Mirrors
-     * get_agent_session_output: attach captures the backfill synchronously, then
+     * agent_output: attach captures the backfill synchronously, then
      * unsubscribe. Returns "" when the session/attach is unavailable.
      */
     const readTail = (sessionId: string, lastN: number): string => {
@@ -805,7 +850,9 @@ export function createCompletionPolicySupervisor(opts: {
         return { passed: false, exitCode: 1, reason: `judge adapter '${spec.adapter}' not found` }
       }
 
-      const cwd = anchorCwd(registry.get(repr)?.cwd ?? workspace)
+      // Same trust rationale as the commit-plan cwd above: the watched
+      // session's own cwd was already vetted at spawn time.
+      const cwd = registry.get(repr)?.cwd ?? workspace
       const timeoutMs = spec.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS
 
       // Minimal context: the tail of each watched session's output, if readable.
@@ -918,8 +965,18 @@ export function createCompletionPolicySupervisor(opts: {
           return
         }
 
+        // The watched session's own cwd is already a vetted, explicit
+        // choice made at agent_start time (arbitrary absolute path or a
+        // registered workspaceSlug) — trust it as-is rather than
+        // re-anchoring it to the daemon's own boot workspace, which
+        // would reject every session spawned in a sibling worktree. An
+        // explicit `gate.cwd` override IS untrusted input, though — it
+        // still gets anchored, but against the session's own cwd rather
+        // than the daemon's, so it can't escape that session's tree.
         const sessionCwd = registry.get(repr)?.cwd ?? workspace
-        const resolvedCwd = anchorCwd(input.gate.cwd ?? sessionCwd)
+        const resolvedCwd = input.gate.cwd
+          ? makeCwdAnchor(sessionCwd)(input.gate.cwd)
+          : sessionCwd
 
         const result = await exec({
           command: input.gate.command,
@@ -995,6 +1052,7 @@ export function createCompletionPolicySupervisor(opts: {
             state.endedAt = new Date().toISOString()
             schedulePersist()
             cleanup()
+            notifySettled(state.policyId)
           }
           return
         }
@@ -1045,7 +1103,7 @@ export function createCompletionPolicySupervisor(opts: {
 
           // WP5: a commit parked awaiting human ack stays awaiting-ack across a
           // restart — re-armed neither to watching nor to a terminal state. No
-          // bus subscription (it's past gating); ack_policy drives it. The
+          // bus subscription (it's past gating); policy_ack drives it. The
           // commitPlan persisted with it carries the exact paths/message/cwd.
           if (state.status === "awaiting-ack") {
             runs.set(state.policyId, {
@@ -1218,6 +1276,7 @@ export function createCompletionPolicySupervisor(opts: {
         if (qi >= 0) gateQueue.splice(qi, 1)
         schedulePersist()
         if (wasActive) pumpQueue()
+        notifySettled(policyId)
       }
     },
 
@@ -1232,15 +1291,24 @@ export function createCompletionPolicySupervisor(opts: {
         entry.state.status = "cancelled"
         entry.state.endedAt = new Date().toISOString()
         schedulePersist()
+        notifySettled(policyId)
         return entry.state
       }
 
       await finishCommit(entry)
+      notifySettled(policyId)
       return entry.state
     },
 
     list() {
       return Array.from(runs.values()).map(e => e.state)
+    },
+
+    onSettle(cb) {
+      settleListeners.add(cb)
+      return () => {
+        settleListeners.delete(cb)
+      }
     },
 
     shutdown() {

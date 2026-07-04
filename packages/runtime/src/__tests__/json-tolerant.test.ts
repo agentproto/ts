@@ -4,8 +4,8 @@
  * the daemon's strict zod validation.
  *
  * The schemas below mirror the REAL fields they protect:
- *   - `orchestrator` on start_agent_session: z.union([boolean, object])
- *   - `gate` on attach_policy: z.object({...})
+ *   - `orchestrator` on agent_start: z.union([boolean, object])
+ *   - `gate` on policy_attach: z.object({...})
  * so the tests prove the actual wire-shapes are accepted, not a toy schema.
  */
 
@@ -14,7 +14,7 @@ import { z } from "zod"
 
 import { jsonTolerant, tryParseJson } from "../json-tolerant.js"
 
-// Mirrors start_agent_session.orchestrator (union boolean | object).
+// Mirrors agent_start.orchestrator (union boolean | object).
 const orchestratorSchema = jsonTolerant(
   z.union([
     z.boolean(),
@@ -25,7 +25,7 @@ const orchestratorSchema = jsonTolerant(
   ]),
 )
 
-// Mirrors attach_policy.gate (object).
+// Mirrors policy_attach.gate (object).
 const gateSchema = jsonTolerant(
   z.object({
     command: z.string().min(1),

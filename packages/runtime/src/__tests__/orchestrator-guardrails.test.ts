@@ -1,8 +1,8 @@
 /**
  * Orchestrator recursion guardrails + subtree scoping (WP4).
  *
- * Drives the REAL `start_agent_session` / `list_sessions` /
- * `kill_agent_session` MCP tools with a `callerScope` set — exactly the
+ * Drives the REAL `agent_start` / `session_list` /
+ * `agent_kill` MCP tools with a `callerScope` set — exactly the
  * shape `createOrchestratorMcpServerFactory` builds per scoped request —
  * so the guards are exercised through the production handlers, not a
  * re-implementation. Proves:
@@ -12,7 +12,7 @@
  *   (c) a spawn past the per-parent child quota is rejected — no session;
  *   (d) a recursive child's requested subset is bounded by the PARENT's
  *       tools (non-re-grant), not just the global default;
- *   (e) `list_sessions`/`kill_agent_session` via a scoped token only
+ *   (e) `session_list`/`agent_kill` via a scoped token only
  *       see/affect the caller's subtree (descendants), nothing else;
  *   (f) the SAME tools, called WITHOUT a scope (root /mcp), see all
  *       sessions and may kill any of them.
@@ -179,7 +179,7 @@ describe("orchestrator guardrails — parent attribution (WP4)", () => {
     })
     try {
       const res = await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: startArgs,
       })
       const { id } = payload<{ id: string }>(res)
@@ -197,7 +197,7 @@ describe("orchestrator guardrails — parent attribution (WP4)", () => {
     const h = await harness() // no callerScope
     try {
       const res = await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: startArgs,
       })
       const { id } = payload<{ id: string }>(res)
@@ -222,7 +222,7 @@ describe("orchestrator guardrails — recursion caps (WP4)", () => {
     })
     try {
       const res = await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: startArgs,
       })
       const body = payload<{ error: string; childDepth: number }>(res)
@@ -247,15 +247,15 @@ describe("orchestrator guardrails — recursion caps (WP4)", () => {
     })
     try {
       // Two children: both alive, both attributed to `owner`.
-      await h.client.callTool({ name: "start_agent_session", arguments: startArgs })
-      await h.client.callTool({ name: "start_agent_session", arguments: startArgs })
+      await h.client.callTool({ name: "agent_start", arguments: startArgs })
+      await h.client.callTool({ name: "agent_start", arguments: startArgs })
       expect(
         h.registry.list().filter(s => s.parentSessionId === owner),
       ).toHaveLength(2)
 
       // Third exceeds maxChildren=2 → rejected, no new session.
       const res = await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: startArgs,
       })
       const body = payload<{ error: string; aliveChildren: number }>(res)
@@ -281,17 +281,17 @@ describe("orchestrator guardrails — recursion caps (WP4)", () => {
     })
     try {
       const first = payload<{ id: string }>(
-        await h.client.callTool({ name: "start_agent_session", arguments: startArgs }),
+        await h.client.callTool({ name: "agent_start", arguments: startArgs }),
       )
       // At the cap (1). Second is rejected.
       const blocked = payload<{ error?: string }>(
-        await h.client.callTool({ name: "start_agent_session", arguments: startArgs }),
+        await h.client.callTool({ name: "agent_start", arguments: startArgs }),
       )
       expect(blocked.error).toBe("orchestrator_child_quota_exceeded")
       // Free the slot, then a fresh spawn succeeds (no error field).
       h.registry.kill(first.id)
       const third = payload<{ error?: string; id?: string }>(
-        await h.client.callTool({ name: "start_agent_session", arguments: startArgs }),
+        await h.client.callTool({ name: "agent_start", arguments: startArgs }),
       )
       expect(third.error).toBeUndefined()
       expect(third.id).toBeDefined()
@@ -307,7 +307,7 @@ describe("orchestrator guardrails — non-re-grant (WP4)", () => {
       caller: st => {
         // Parent holds only a narrow subset (notably NOT kill/list).
         const scope = st.mint({
-          tools: ["start_agent_session", "poll_events"],
+          tools: ["agent_start", "session_events_poll"],
           depth: 0,
         })
         st.bindOwner(scope.token, "narrow-parent")
@@ -318,7 +318,7 @@ describe("orchestrator guardrails — non-re-grant (WP4)", () => {
       // The child asks for the FULL default subset — strictly wider than
       // the parent's. It must be clamped to ⊆ the parent's tools.
       await h.client.callTool({
-        name: "start_agent_session",
+        name: "agent_start",
         arguments: {
           ...startArgs,
           orchestrator: { tools: [...DEFAULT_ORCHESTRATOR_TOOLS] },
@@ -328,10 +328,10 @@ describe("orchestrator guardrails — non-re-grant (WP4)", () => {
       const childScope = h.scopeTokens.verify(token)
       expect(childScope, "child token verifiable").not.toBeNull()
       expect([...childScope!.tools].sort()).toEqual([
-        "poll_events",
-        "start_agent_session",
+        "agent_start",
+        "session_events_poll",
       ])
-      expect(childScope!.tools.has("kill_agent_session")).toBe(false)
+      expect(childScope!.tools.has("agent_kill")).toBe(false)
       // Depth inherited as parent + 1.
       expect(childScope!.depth).toBe(1)
     } finally {
@@ -358,7 +358,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
     return { C: C.id, D: D.id, E: E.id, G: G.id, X: X.id }
   }
 
-  it("(e) list_sessions via a scoped token returns only the subtree; kill is subtree-bound", async () => {
+  it("(e) session_list via a scoped token returns only the subtree; kill is subtree-bound", async () => {
     let ids!: ReturnType<typeof buildTree>
     const h = await harness({
       caller: (st, reg) => {
@@ -371,7 +371,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
     try {
       // list — only C's subtree {C,D,E,G}, never the unrelated X.
       const listed = payload<{ sessions: SessionDescriptor[] }>(
-        await h.client.callTool({ name: "list_sessions", arguments: {} }),
+        await h.client.callTool({ name: "session_list", arguments: {} }),
       )
       const seen = new Set(listed.sessions.map(s => s.id))
       expect(seen).toEqual(new Set([ids.C, ids.D, ids.E, ids.G]))
@@ -380,7 +380,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       // kill OUT of subtree → refused, X stays alive.
       const refused = payload<{ error?: string; ok?: boolean }>(
         await h.client.callTool({
-          name: "kill_agent_session",
+          name: "agent_kill",
           arguments: { sessionId: ids.X },
         }),
       )
@@ -390,7 +390,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       // kill IN subtree (the grandchild) → allowed.
       const allowed = payload<{ ok: boolean }>(
         await h.client.callTool({
-          name: "kill_agent_session",
+          name: "agent_kill",
           arguments: { sessionId: ids.G },
         }),
       )
@@ -411,7 +411,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
     })
     try {
       const listed = payload<{ sessions: SessionDescriptor[] }>(
-        await h.client.callTool({ name: "list_sessions", arguments: {} }),
+        await h.client.callTool({ name: "session_list", arguments: {} }),
       )
       const seen = new Set(listed.sessions.map(s => s.id))
       // Everything is visible, including the unrelated X.
@@ -422,7 +422,7 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       // The root may kill the unrelated X (no subtree restriction).
       const killed = payload<{ ok: boolean }>(
         await h.client.callTool({
-          name: "kill_agent_session",
+          name: "agent_kill",
           arguments: { sessionId: ids.X },
         }),
       )

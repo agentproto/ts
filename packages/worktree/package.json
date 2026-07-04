@@ -1,0 +1,81 @@
+{
+  "name": "@agentproto/worktree",
+  "version": "0.1.0",
+  "description": "AIP-14 TOOL contracts + builtin AIP-30 PROVIDER for provisioning, gating, and cleaning up a git worktree — the primitive an AgentStep binds its `cwd` to for a launch-agent-in-a-worktree workflow.",
+  "keywords": [
+    "agentproto",
+    "aip-14",
+    "aip-30",
+    "worktree",
+    "git",
+    "workflow",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/worktree"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "worktree-agent": "dist/bin/worktree-agent.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.mjs",
+      "default": "./dist/tools/index.mjs"
+    },
+    "./provider": {
+      "types": "./dist/provider/index.d.ts",
+      "import": "./dist/provider/index.mjs",
+      "default": "./dist/provider/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/harness": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/workflow-runtime": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

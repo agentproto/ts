@@ -5,7 +5,7 @@
  * the workspace lives on the user's machine, so the only place a
  * `claude -p`, `gh pr view`, `pnpm test` etc. can actually run *is*
  * the user's machine. This module exposes one MCP tool,
- * `execute_command`, that any MCP client (cloud Guilde Blake,
+ * `command_execute`, that any MCP client (cloud Guilde Blake,
  * Claude Code as a sub-agent, …) can call to spawn a subprocess.
  *
  * ## Allowlist
@@ -132,10 +132,10 @@ export interface ExecuteResult {
 }
 
 /**
- * Register `execute_command` on the given MCP server. The tool returns
+ * Register `command_execute` on the given MCP server. The tool returns
  * a JSON-encoded `ExecuteResult` as a single text content item — that
  * matches the response shape `@modelcontextprotocol/server-filesystem`
- * uses for `read_file` and friends, so the existing
+ * uses for `file_read` and friends, so the existing
  * `parseReadFileResponse`-style parsers in workspace-providers can
  * decode it without bespoke logic.
  */
@@ -146,7 +146,7 @@ export function registerCommandTools(
   const anchorCwd = makeCwdAnchor(opts.workspace)
 
   server.tool(
-    "execute_command",
+    "command_execute",
     "Run a shell command on the host running the runtime. The command basename must be in `<workspace>/.agentproto/allowed-commands.json`; default-deny otherwise. Captures stdout / stderr / exit code and returns them as JSON. Use this to drive local CLIs (Claude Code, gh, pnpm, …) from a remote agent.",
     {
       command: z

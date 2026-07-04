@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>maquette v4 — big picture + sous-tâches</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg:#faf8f5; --panel:#fffdfa; --line:#ece5da; --line-soft:#f2ede3;
+    --ink:#241f1a; --ink-mute:#7d7060; --ink-faint:#a9997f; --ink-ghost:#b3a893;
+    --accent:#0d7a4f; --accent-soft:#e8f4ec;
+    --gold:#a6701b; --gold-soft:#fff2dc;
+    --blue:#1d4e80; --blue-soft:#e9f1fb;
+    --violet:#5b3fa6; --violet-soft:#ede9ff;
+    --sel:#fbeccd;
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; }
+  body { margin:0; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased; }
+  .app { height:100vh; display:flex; flex-direction:column; }
+
+  /* ── big picture : mission + plan de sous-tâches ── */
+  .hero { flex:none; padding:13px 20px 0; border-bottom:1px solid var(--line); background:var(--panel); }
+  .hero-top { display:flex; align-items:center; gap:13px; }
+  .pulse { width:10px; height:10px; border-radius:50%; background:var(--accent); flex:none;
+           box-shadow:0 0 0 0 rgba(13,122,79,.35); animation:pulse 2.4s infinite; }
+  @keyframes pulse { 70% { box-shadow:0 0 0 9px rgba(13,122,79,0); } 100% { box-shadow:0 0 0 0 rgba(13,122,79,0); } }
+  .who { min-width:0; flex:1; }
+  .who .h1 { font-size:14.5px; font-weight:700; }
+  .who .h2 { font-size:12px; color:var(--ink-mute); margin-top:1px; }
+  .modewrap { display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; flex:none; }
+  .modewrap button { border:none; background:var(--panel); color:var(--ink-mute); font-size:11px; font-weight:700; padding:6px 11px; cursor:pointer; }
+  .modewrap button.on { background:var(--ink); color:#fdf9f2; }
+  button.sim { border:1px solid var(--line); background:var(--panel); color:var(--ink-mute); font-weight:700;
+               font-size:11.5px; border-radius:8px; padding:6px 12px; cursor:pointer; flex:none; }
+  button.sim.on { background:var(--ink); border-color:var(--ink); color:#fdf9f2; }
+
+  /* plan strip : les sous-tâches, l'avancement d'un coup d'œil */
+  .plan { display:flex; gap:6px; overflow-x:auto; padding:11px 0 12px; scrollbar-width:none; }
+  .plan::-webkit-scrollbar { display:none; }
+  .pt { flex:none; display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; padding:5px 11px;
+        border-radius:999px; border:1px solid var(--line); background:var(--bg); color:var(--ink-mute); cursor:pointer; white-space:nowrap; }
+  .pt:hover { border-color:var(--ink-ghost); }
+  .pt .st { font-size:10px; }
+  .pt.done { color:var(--accent); background:var(--accent-soft); border-color:transparent; }
+  .pt.cur { color:var(--gold); background:var(--gold-soft); border-color:transparent; }
+  .pt.cur .st { animation:blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
+
+  /* ── corps ── */
+  .body { flex:1; display:flex; min-height:0; }
+  .feedcol { flex:1; min-width:320px; display:flex; flex-direction:column; }
+  .feed { flex:1; overflow-y:auto; padding:4px 14px 10px; display:flex; flex-direction:column; scroll-behavior:smooth; }
+  .fspacer { flex:1; }
+
+  /* chapitres */
+  .chap { flex:none; position:sticky; top:0; z-index:5; margin:8px -4px 2px; padding:7px 12px; display:flex; align-items:center; gap:9px;
+          background:color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter:blur(6px);
+          border-radius:9px; cursor:pointer; font-size:11.5px; font-weight:800; letter-spacing:.03em; color:var(--ink-mute); }
+  .chap:hover { color:var(--ink); }
+  .chap .cst { flex:none; width:17px; height:17px; border-radius:50%; display:grid; place-items:center; font-size:9.5px; font-weight:900; }
+  .chap.done .cst { background:var(--accent-soft); color:var(--accent); }
+  .chap.cur .cst { background:var(--gold-soft); color:var(--gold); }
+  .chap .cnum { color:var(--ink-ghost); font-weight:700; }
+  .chap .csum { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chap .cmeta { flex:none; font-size:10.5px; color:var(--ink-ghost); font-weight:600; }
+  .chap .cchev { flex:none; color:var(--ink-ghost); transition:transform .15s; }
+  .chap.open .cchev { transform:rotate(90deg); }
+
+  .row { flex:none; min-height:44px; margin:1px 0 1px 10px; padding:5px 12px 5px 10px; display:flex; align-items:center; gap:11px;
+         cursor:pointer; border-radius:10px; border-left:3px solid transparent; transition:background .12s; }
+  .row:hover { background:var(--line-soft); }
+  .row[aria-selected="true"] { background:var(--sel); border-left-color:var(--gold); }
+  .row .ico { width:24px; height:24px; border-radius:8px; flex:none; display:grid; place-items:center; font-size:11.5px; font-weight:800; }
+  .ico.k-text { background:var(--blue-soft); color:var(--blue); }
+  .ico.k-edit { background:var(--gold-soft); color:var(--gold); }
+  .ico.k-bash { background:var(--accent-soft); color:var(--accent); }
+  .ico.k-read { background:var(--violet-soft); color:var(--violet); }
+  .ico.k-user { background:var(--ink); color:#fdf9f2; }
+  .row .mid { flex:1; min-width:0; }
+  .row .sum { display:block; font-size:13.5px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .raw1 { display:block; font-size:10.5px; color:var(--ink-faint); font-family:ui-monospace,Menlo,monospace;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+  body:not(.tech) .row .raw1 { display:none; }
+  .row .route { display:inline-block; font-size:10px; font-weight:800; padding:1px 8px; border-radius:999px; margin-top:2px; }
+  .route.cont { background:var(--blue-soft); color:var(--blue); }
+  .route.newt { background:var(--gold-soft); color:var(--gold); }
+  .row .cnt { flex:none; font-size:10px; font-weight:800; color:var(--gold); background:var(--gold-soft); padding:2px 7px; border-radius:999px; }
+  .row .ts { flex:none; font-size:10.5px; color:var(--ink-ghost); font-variant-numeric:tabular-nums; }
+  @keyframes slidein { from { opacity:0; transform:translateY(6px); } }
+  .row.new { animation:slidein .25s ease-out; }
+
+  /* ── panneau ancré ── */
+  .panel { flex:none; width:0; overflow:hidden; border-left:1px solid transparent; background:var(--panel);
+           display:flex; flex-direction:column; transition:width .22s ease, border-color .22s; }
+  .panel.open { width:min(430px,46vw); border-left-color:var(--line); }
+  .panel-inner { width:min(430px,46vw); flex:1; display:flex; flex-direction:column; min-height:0; }
+  .phead { flex:none; padding:14px 16px 12px; border-bottom:1px solid var(--line); display:flex; align-items:flex-start; gap:11px; }
+  .phead .ico { width:28px; height:28px; font-size:13px; border-radius:9px; }
+  .phead .tt { min-width:0; flex:1; }
+  .phead .t { font-size:14px; font-weight:700; line-height:1.4; }
+  .phead .s { font-size:11px; color:var(--ink-faint); margin-top:3px; font-variant-numeric:tabular-nums; }
+  .pnav { display:flex; gap:4px; flex:none; }
+  .pnav button { width:26px; height:26px; border:1px solid var(--line); background:var(--panel); border-radius:8px;
+                 color:var(--ink-mute); font-size:12px; cursor:pointer; display:grid; place-items:center; }
+  .pnav button:disabled { opacity:.3; cursor:default; }
+  .pbody { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; }
+  .plain { font-size:14px; line-height:1.7; }
+  .plain .why { margin-top:8px; font-size:12.5px; color:var(--ink-mute); line-height:1.6; }
+  .facts { display:flex; flex-wrap:wrap; gap:6px; }
+  .fact { font-size:11px; font-weight:700; background:var(--bg); border:1px solid var(--line); color:var(--ink-mute); padding:4px 10px; border-radius:999px; }
+  .fact.ok { background:var(--accent-soft); border-color:transparent; color:var(--accent); }
+  details.techbox { border:1px solid var(--line); border-radius:12px; background:var(--bg); overflow:hidden; }
+  details.techbox summary { list-style:none; cursor:pointer; padding:10px 14px; font-size:11.5px; font-weight:800;
+          letter-spacing:.04em; text-transform:uppercase; color:var(--ink-faint); display:flex; align-items:center; gap:8px; }
+  details.techbox summary::-webkit-details-marker { display:none; }
+  details.techbox summary::after { content:"▸"; margin-left:auto; transition:transform .15s; }
+  details.techbox[open] summary::after { transform:rotate(90deg); }
+  .techlist { padding:0 12px 12px; display:flex; flex-direction:column; gap:8px; }
+  .titem { border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; }
+  .titem .th { padding:8px 12px; font-size:11.5px; font-weight:700; color:var(--ink-mute); display:flex; align-items:center; gap:8px; }
+  .titem .th .copy { margin-left:auto; border:none; background:none; color:var(--ink-ghost); font-size:11px; cursor:pointer; padding:2px 4px; border-radius:5px; }
+  .titem .th .copy:hover { color:var(--ink); background:var(--line-soft); }
+  .titem pre { margin:0; border-top:1px solid var(--line-soft); font-family:ui-monospace,Menlo,monospace; font-size:11.5px;
+               line-height:1.55; color:#4a4236; padding:9px 12px; overflow:auto; max-height:240px; white-space:pre-wrap; word-break:break-word; }
+  .d-text { font-size:13.5px; line-height:1.7; white-space:pre-wrap; }
+  .pfoot { flex:none; border-top:1px solid var(--line); padding:9px 16px; font-size:11px; color:var(--ink-ghost); display:flex; gap:10px; }
+  .kbd { font-family:ui-monospace,Menlo,monospace; font-size:10px; border:1px solid var(--line); border-bottom-width:2px;
+         border-radius:5px; padding:1px 5px; background:var(--panel); color:var(--ink-mute); }
+
+  /* ── boîte d'envoi + routage IA ── */
+  .composer { flex:none; border-top:1px solid var(--line); background:var(--panel); padding:10px 14px; }
+  .composer .cbar { display:flex; gap:8px; }
+  .composer textarea { flex:1; resize:none; border:1px solid var(--line); border-radius:10px; padding:9px 12px; font:inherit; font-size:13px; max-height:110px; background:var(--bg); }
+  .composer textarea:focus { outline:2px solid #241f1a22; }
+  .composer button { border:none; border-radius:10px; padding:0 16px; background:var(--ink); color:#fdf9f2; font-weight:700; font-size:13px; cursor:pointer; }
+  .composer .routing { font-size:11px; color:var(--ink-faint); padding:6px 2px 0; min-height:22px; }
+  .composer .routing .r-cont { color:var(--blue); font-weight:700; }
+  .composer .routing .r-newt { color:var(--gold); font-weight:700; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="hero">
+    <div class="hero-top">
+      <span class="pulse"></span>
+      <div class="who">
+        <div class="h1">fix-pricing-book</div>
+        <div class="h2" id="heroSub">Mission : construire le pricing book — totaux, câblage main(), scaffold pricing.json, vérifications.</div>
+      </div>
+      <div class="modewrap"><button id="modeSimple" class="on" type="button">Simple</button><button id="modeTech" type="button">Tech</button></div>
+      <button class="sim" id="liveBtn" type="button">▶ Live</button>
+    </div>
+    <div class="plan" id="plan"></div>
+  </div>
+
+  <div class="body">
+    <div class="feedcol">
+      <div class="feed" id="feed"><div class="fspacer"></div><div id="rows"></div></div>
+      <div class="composer">
+        <div class="cbar">
+          <textarea id="msgBox" rows="1" placeholder="Écris à l'agent… (la surcouche classe ton message : suite de la sous-tâche ou nouvelle sous-tâche)"></textarea>
+          <button id="sendBtn" type="button">Envoyer</button>
+        </div>
+        <div class="routing" id="routing"></div>
+      </div>
+    </div>
+
+    <aside class="panel" id="panel" aria-label="Détail de l'étape">
+      <div class="panel-inner">
+        <div class="phead">
+          <span class="ico" id="pIco"></span>
+          <div class="tt"><div class="t" id="pTitle"></div><div class="s" id="pSub"></div></div>
+          <div class="pnav"><button id="pPrev" type="button">↑</button><button id="pNext" type="button">↓</button><button id="pClose" type="button">✕</button></div>
+        </div>
+        <div class="pbody" id="pBody"></div>
+        <div class="pfoot"><span class="kbd">↑</span><span class="kbd">↓</span> naviguer · <span class="kbd">Esc</span> fermer</div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const $=(id)=>document.getElementById(id);
+const esc=(s)=>String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+/*
+ * Deux niveaux de structure :
+ *  - CHAPTERS = les sous-tâches À L'INTÉRIEUR de la session (pas la tâche de la session elle-même).
+ *    Dans la vraie version, la surcouche IA les infère du transcript (annonces de plan, transitions)
+ *    et route chaque message humain : "suite de la sous-tâche courante" vs "nouvelle sous-tâche".
+ *  - steps = les actions, chacune rattachée à un chapitre (chap).
+ */
+let CHAPTERS=[
+  { id:"c1", title:"Cadrage & repérage", status:"done" },
+  { id:"c2", title:"Totaux + câblage main()", status:"done" },
+  { id:"c3", title:"Scaffold pricing.json", status:"done" },
+  { id:"c4", title:"Vérifications", status:"done" },
+  { id:"c5", title:"Edge cases & suite", status:"cur" },
+];
+let open={ c5:true }; // chapitres dépliés (le courant par défaut)
+
+let steps=[
+  { chap:"c1", kind:"read", ts:"01:22:04", sum:"Explore l'arborescence du package pricing", why:"Repérage initial des fichiers du package.", raw1:"ls -R pricing/ · 3 reads", count:3, facts:["3 lectures"], items:[{h:"Bash · ls -R pricing/",r:"pricing/\n  summary.ts\n  loader.ts\n  …"}] },
+  { chap:"c1", kind:"text", ts:"01:23:11", sum:"Reformule le brief et ses contraintes", why:"Confirme les règles : pas de any/as, imports ESM .js, env typée, pas de git.", raw1:"assistant · 12 lignes", facts:[], items:[{text:"Brief understood: no any/as casts, ESM .js imports, typed env, no git."}] },
+  { chap:"c1", kind:"bash", ts:"01:25:52", sum:"Typecheck de départ : déjà vert", why:"Photo de l'état initial pour distinguer les erreurs préexistantes des siennes.", raw1:"pnpm check-types (baseline)", count:1, facts:["baseline : exit 0"], items:[{h:"Bash · pnpm check-types",r:"tsc — 0 errors\nExit code 0 (baseline)"}] },
+  { chap:"c2", kind:"edit", ts:"01:30:12", sum:"Ajoute la ligne de totaux au résumé", why:"Le tableau de sortie affiche maintenant totaux calculés et rapportés.", raw1:"Edit pricing/summary.ts", count:1, facts:["+1 ligne"], items:[{h:"Edit · pricing/summary.ts",r:"1 addition, 0 deletions — applied cleanly."}] },
+  { chap:"c2", kind:"edit", ts:"01:31:52", sum:"Câble loadPricingBook() dans main()", why:"Le pricing book est chargé au démarrage et transmis au reste du programme.", raw1:"Edit main.ts", count:1, facts:["+1 ligne"], items:[{h:"Edit · main.ts — wire loadPricingBook()",r:"1 addition, 0 deletions — applied cleanly."}] },
+  { chap:"c2", kind:"edit", ts:"01:32:18", sum:"Met à jour la doc d'en-tête", why:"Le commentaire d'en-tête documente le nouveau comportement.", raw1:"Edit main.ts", count:1, facts:["+1/−1"], items:[{h:"Edit · main.ts — header doc",r:"1 addition, 1 deletion — applied cleanly."}] },
+  { chap:"c3", kind:"edit", ts:"01:33:01", sum:"Scaffolde pricing.json + schéma + fixtures", why:"Cinq fichiers : le fichier de prix, son schéma, un échantillon, et le loader qui les lit.", raw1:"Edit ×5", count:5, facts:["5 fichiers"], items:[
+      {h:"Edit · pricing.json — create",r:"File created, 42 lines."},{h:"Edit · pricing.schema.json — create",r:"File created, 18 lines."},
+      {h:"Edit · fixtures/pricing.sample.json — create",r:"File created, 42 lines."},{h:"Edit · pricing/loader.ts",r:"1 addition, 0 deletions."},{h:"Edit · pricing/loader.test.ts",r:"1 addition, 0 deletions."}]},
+  { chap:"c4", kind:"bash", ts:"01:33:41", sum:"Vérifie : grep propre + typecheck vert", why:"Aucun any/as introduit, et le compilateur ne signale aucune erreur.", raw1:"bash ×2 grep + check-types", count:2, facts:["grep : 0 match","exit 0"], items:[
+      {h:"Bash · grep any/as",r:"(no matches)"},{h:"Bash · pnpm check-types",r:"tsc — 0 errors\nExit code 0"}]},
+  { chap:"c4", kind:"bash", ts:"01:34:15", sum:"Prouve que le typecheck détecte bien les erreurs", why:"Erreur volontaire dans une copie jetable → détectée : le check vert est fiable.", raw1:"tsc --noEmit /tmp/probe.ts", count:1, facts:["erreur détectée ✓"], items:[{h:"Bash · probe",r:"error TS2322 … Confirmed: real typecheck."}]},
+  { chap:"c5", kind:"user", ts:"01:35:20", sum:"« Gère aussi le cas pricing.json vide stp »", why:"Message humain — la surcouche l'a classé : nouvelle sous-tâche (edge cases).", raw1:"user · 1 ligne", route:"newt", facts:["→ nouvelle sous-tâche"], items:[{text:"Gère aussi le cas pricing.json vide stp"}] },
+  { chap:"c5", kind:"edit", ts:"01:36:02", sum:"Corrige l'edge case : pricing.json vide", why:"Un pricing book vide retombe sur les valeurs par défaut au lieu de planter.", raw1:"Edit pricing/loader.ts", count:1, facts:["+3/−1"], items:[{h:"Edit · loader.ts — empty-book fallback",r:"3 additions, 1 deletion."}] },
+  { chap:"c5", kind:"bash", ts:"01:36:40", sum:"Re-typecheck : vert", why:"Le correctif ne casse rien.", raw1:"pnpm check-types", count:1, facts:["exit 0"], items:[{h:"Bash · pnpm check-types",r:"tsc — 0 errors\nExit code 0"}] },
+];
+
+const LIVE=[
+  { kind:"bash", sum:"Relance la suite de tests du loader", why:"Les 6 tests passent.", raw1:"pnpm vitest loader.test.ts", count:1, facts:["6/6 ✓"], items:[{h:"Bash · vitest",r:"✓ 6 passed (6)\nExit code 0"}] },
+  { kind:"text", sum:"Attend ta décision : committer ou continuer ?", why:"L'agent a fini cette sous-tâche et pose une question.", raw1:"assistant · 2 lignes", facts:["décision attendue"], items:[{text:"Edge case fixed and green. Commit now, or continue?"}] },
+];
+
+let selected=-1;
+const ICONS={text:["k-text","A"],edit:["k-edit","✎"],bash:["k-bash","▸"],read:["k-read","⌕"],user:["k-user","T"]};
+const icoSpec=(k)=>ICONS[k]||ICONS.text;
+const chapOf=(id)=>CHAPTERS.find(c=>c.id===id);
+const curChap=()=>CHAPTERS.find(c=>c.status==="cur")||CHAPTERS[CHAPTERS.length-1];
+
+/* big picture strip */
+function renderPlan(){
+  const done=CHAPTERS.filter(c=>c.status==="done").length;
+  $("plan").innerHTML=CHAPTERS.map((c,i)=>`<span class="pt ${c.status}" data-c="${c.id}"><span class="st">${c.status==="done"?"✓":"●"}</span>${i+1}. ${esc(c.title)}</span>`).join("")
+    +`<span class="pt" style="cursor:default"><b>${done}/${CHAPTERS.length}</b>&nbsp;faites</span>`;
+  [...$("plan").querySelectorAll(".pt[data-c]")].forEach(el=>el.onclick=()=>{ open[el.dataset.c]=true; renderRows(); jumpToChap(el.dataset.c); });
+}
+function jumpToChap(cid){ const el=document.querySelector(`.chap[data-c="${cid}"]`); if(el) el.scrollIntoView({block:"start",behavior:"smooth"}); }
+
+/* feed segmenté par chapitres */
+function rowHtml(s,i,isNew){
+  const [cls,ch]=icoSpec(s.kind);
+  const route=s.route?`<span class="route ${s.route==="newt"?"newt":"cont"}">${s.route==="newt"?"★ nouvelle sous-tâche":"↳ suite"}</span>`:"";
+  return `<div class="row ${isNew?'new':''}" aria-selected="${i===selected}" data-i="${i}">
+    <span class="ico ${cls}">${ch}</span>
+    <span class="mid"><span class="sum">${esc(s.sum)}</span><span class="raw1">${esc(s.raw1||"")}</span>${route}</span>
+    ${s.count>1?`<span class="cnt">×${s.count}</span>`:""}<span class="ts">${esc(s.ts||"")}</span>
+  </div>`;
+}
+function renderRows(keepScroll,newIdx){
+  const feed=$("feed");
+  const prevH=feed.scrollHeight, prevTop=feed.scrollTop;
+  let html="";
+  CHAPTERS.forEach((c,ci)=>{
+    const chapSteps=steps.map((s,i)=>({s,i})).filter(x=>x.s.chap===c.id);
+    if(!chapSteps.length) return;
+    const isOpen=!!open[c.id];
+    html+=`<div class="chap ${c.status} ${isOpen?'open':''}" data-c="${c.id}">
+      <span class="cst">${c.status==="done"?"✓":"●"}</span><span class="cnum">${ci+1}.</span>
+      <span class="csum">${esc(c.title)}</span>
+      <span class="cmeta">${chapSteps.length} étape${chapSteps.length>1?"s":""}</span><span class="cchev">▸</span>
+    </div>`;
+    if(isOpen) html+=chapSteps.map(x=>rowHtml(x.s,x.i,x.i===newIdx)).join("");
+  });
+  $("rows").innerHTML=html;
+  [...document.querySelectorAll(".row")].forEach(el=>el.onclick=()=>selectStep(Number(el.dataset.i)));
+  [...document.querySelectorAll(".chap")].forEach(el=>el.onclick=()=>{ open[el.dataset.c]=!open[el.dataset.c]; renderRows(); });
+  if(keepScroll==="bottom") feed.scrollTop=feed.scrollHeight;
+  else if(keepScroll==="preserve") feed.scrollTop=feed.scrollHeight-prevH+prevTop;
+}
+
+/* panneau ancré */
+function selectStep(i){
+  selected=i;
+  const s=steps[i]; if(!s) return;
+  open[s.chap]=true;
+  $("panel").classList.add("open");
+  const [cls,ch]=icoSpec(s.kind);
+  const ico=$("pIco"); ico.className="ico "+cls; ico.textContent=ch;
+  $("pTitle").textContent=s.sum;
+  const c=chapOf(s.chap);
+  $("pSub").textContent=(s.ts?s.ts+" · ":"")+(c?("sous-tâche : "+c.title):"");
+  const facts=(s.facts||[]).map(f=>`<span class="fact ${/✓|exit 0|passed|0 match/.test(f)?'ok':''}">${esc(f)}</span>`).join("");
+  const tech=(s.items||[]).map((it,k)=> it.text
+    ? `<div class="d-text">${esc(it.text)}</div>`
+    : `<div class="titem"><div class="th">${esc(it.h)}<button class="copy" data-k="${k}" type="button">⧉</button></div><pre>${esc(it.r)}</pre></div>`).join("");
+  $("pBody").innerHTML=`
+    <div class="plain"><div>${esc(s.sum)}.</div><div class="why">${esc(s.why||"")}</div></div>
+    ${facts?`<div class="facts">${facts}</div>`:""}
+    <details class="techbox" ${document.body.classList.contains("tech")?"open":""}>
+      <summary>Détail technique · ${(s.items||[]).length}</summary><div class="techlist">${tech}</div>
+    </details>`;
+  [...$("pBody").querySelectorAll(".copy")].forEach(btn=>btn.onclick=(e)=>{ e.stopPropagation();
+    const it=(s.items||[])[Number(btn.dataset.k)];
+    navigator.clipboard&&navigator.clipboard.writeText((it.h||"")+"\n"+(it.r||it.text||"")).catch(()=>{});
+    btn.textContent="✓"; setTimeout(()=>btn.textContent="⧉",900); });
+  $("pPrev").disabled=i<=0; $("pNext").disabled=i>=steps.length-1;
+  renderRows();
+  const el=document.querySelector(`.row[data-i="${i}"]`); if(el) el.scrollIntoView({block:"nearest",behavior:"smooth"});
+}
+function closePanel(){ selected=-1; $("panel").classList.remove("open"); renderRows(); }
+$("pClose").addEventListener("click",closePanel);
+$("pPrev").addEventListener("click",()=>{ if(selected>0) selectStep(selected-1); });
+$("pNext").addEventListener("click",()=>{ if(selected<steps.length-1) selectStep(selected+1); });
+document.addEventListener("keydown",(e)=>{
+  if(e.key==="Escape"){ closePanel(); return; }
+  if(selected<0||e.target.tagName==="TEXTAREA") return;
+  if(e.key==="ArrowUp"){ e.preventDefault(); if(selected>0) selectStep(selected-1); }
+  if(e.key==="ArrowDown"){ e.preventDefault(); if(selected<steps.length-1) selectStep(selected+1); }
+});
+
+/* modes */
+function setMode(tech){ document.body.classList.toggle("tech",tech); $("modeTech").classList.toggle("on",tech); $("modeSimple").classList.toggle("on",!tech); if(selected>=0) selectStep(selected); }
+$("modeSimple").addEventListener("click",()=>setMode(false));
+$("modeTech").addEventListener("click",()=>setMode(true));
+
+/* ── routage IA d'un message humain (simulé) ──
+ * Vraie version : askClaude("ce message continue-t-il la sous-tâche courante « X »
+ * ou ouvre-t-il une nouvelle sous-tâche ? réponds {route, title}", [message, plan courant]).
+ * Ici : heuristique — mots d'ouverture ("aussi", "autre", "ensuite", "nouveau", "plutôt",
+ * "peux-tu", "il faudrait") ⇒ nouvelle sous-tâche, sinon suite. */
+function classify(text){
+  const t=text.toLowerCase();
+  const newt=/\b(aussi|autre|ensuite|nouveau|nouvelle|plutôt|maintenant|apr[eè]s ça|il faudrait|peux[- ]tu|on pourrait|ajoute|g[eè]re)\b/.test(t);
+  return newt ? {route:"newt", title:text.replace(/[.?!].*$/,"").slice(0,42)} : {route:"cont"};
+}
+function nowTs(){ return new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}); }
+$("sendBtn").addEventListener("click",sendMsg);
+$("msgBox").addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMsg(); } });
+function sendMsg(){
+  const box=$("msgBox"); const text=box.value.trim(); if(!text) return;
+  box.value="";
+  const r=classify(text);
+  const cur=curChap();
+  let chapId=cur.id;
+  if(r.route==="newt"){
+    cur.status="done";
+    const id="c"+(CHAPTERS.length+1);
+    CHAPTERS.push({id, title:r.title||"Nouvelle sous-tâche", status:"cur"});
+    chapId=id; open[id]=true;
+    $("routing").innerHTML=`✦ classé : <span class="r-newt">★ nouvelle sous-tâche « ${esc(r.title)} »</span>`;
+  } else {
+    $("routing").innerHTML=`✦ classé : <span class="r-cont">↳ suite de « ${esc(cur.title)} »</span>`;
+  }
+  setTimeout(()=>{ $("routing").textContent=""; },5000);
+  steps.push({ chap:chapId, kind:"user", ts:nowTs(), sum:"« "+text.slice(0,80)+(text.length>80?"…":"")+" »",
+    why:"Message humain — classé "+(r.route==="newt"?"nouvelle sous-tâche.":"suite de la sous-tâche courante."),
+    raw1:"user · "+text.split("\n").length+" ligne(s)", route:r.route, facts:[], items:[{text}] });
+  renderPlan(); renderRows("bottom", steps.length-1);
+}
+
+/* simulateur live : les nouvelles étapes vont dans la sous-tâche courante */
+let liveTimer=null, liveQueue=[];
+$("liveBtn").addEventListener("click",()=>{
+  if(liveTimer){ clearInterval(liveTimer); liveTimer=null; $("liveBtn").classList.remove("on"); $("liveBtn").textContent="▶ Live"; return; }
+  liveQueue=LIVE.map(s=>Object.assign({},s));
+  $("liveBtn").classList.add("on"); $("liveBtn").textContent="⏸ Stop";
+  liveTimer=setInterval(()=>{
+    const next=liveQueue.shift();
+    if(!next){ clearInterval(liveTimer); liveTimer=null; $("liveBtn").classList.remove("on"); $("liveBtn").textContent="▶ Live"; return; }
+    next.ts=nowTs(); next.chap=curChap().id;
+    steps.push(next);
+    const feed=$("feed");
+    const atBottom=feed.scrollHeight-feed.scrollTop-feed.clientHeight<60;
+    renderRows(atBottom?"bottom":"preserve", steps.length-1);
+  },2500);
+});
+
+renderPlan(); renderRows("bottom");
+</script>
+</body>
+</html>

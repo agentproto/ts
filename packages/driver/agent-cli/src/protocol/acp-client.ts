@@ -62,6 +62,9 @@ export type AcpPermissionHandler = (
  * approved the operator binding once; subsequent tool calls don't
  * re-prompt by default. Hosts that want explicit per-call gating
  * pass their own `onPermissionRequest`.
+ *
+ * NOT safe to use as-is for a `mode: "plan"` session — see
+ * `planModePermissionHandler` below.
  */
 export const autoAllowPermissionHandler: AcpPermissionHandler = ({
   options,
@@ -77,16 +80,92 @@ export const autoAllowPermissionHandler: AcpPermissionHandler = ({
   return { outcome: { outcome: "selected", optionId: allow!.optionId } }
 }
 
+/**
+ * `toolCall.kind` Claude Code's ACP wrapper attaches to the "ready to
+ * code?" permission request it raises when the agent wants to leave
+ * plan mode (its internal `ExitPlanMode` tool, mapped by
+ * `@agentclientprotocol/claude-agent-acp`'s `toolInfoFromToolUse`).
+ * This is the ONLY reliable discriminator for that request — its
+ * `options[].kind` values (`allow_always` / `allow_once` / `reject_once`)
+ * are the same vocabulary an ordinary tool-permission request uses, so
+ * `option.kind` alone can't tell the two apart.
+ */
+const PLAN_MODE_EXIT_TOOL_CALL_KIND = "switch_mode"
+
+/**
+ * Permission handler for a session spawned with `mode: "plan"`.
+ *
+ * `autoAllowPermissionHandler` picks the first `allow_*` option, but for
+ * the plan-mode-exit request that option is always an escalation away
+ * from plan (`auto`, `acceptEdits`, or `bypassPermissions` depending on
+ * what the wrapper offers) — auto-approving it silently defeats the
+ * mode the caller asked for (see the regression this fixes: a `plan`
+ * session that wrote a file when prompted to). Noted as a known gap in
+ * a naive auto-allow handler when #143 shipped the `CLAUDE_CONFIG_DIR`
+ * override that makes `mode: "plan"` take effect in the first place;
+ * this closes it.
+ *
+ * Behaves exactly like `autoAllowPermissionHandler` for every other
+ * request. For the plan-mode-exit request specifically, it selects the
+ * offered `reject_once` option ("No, keep planning") so the wrapper
+ * denies the exit with a clean, structured outcome — the tool call
+ * fails, the agent stays in plan mode and can keep reasoning or tell
+ * the user it's blocked, instead of the turn throwing on a `cancelled`
+ * outcome. Falls back to `cancelled` if no `reject_once` option is
+ * offered (shouldn't happen with the current wrapper, but a safe
+ * default beats guessing an allow).
+ *
+ * This is a deliberate one-way gate: a plan-mode session driven by this
+ * handler can never escalate itself out of plan mode. A caller that
+ * wants a human (or a policy engine) to approve that escalation must
+ * supply its own `onPermissionRequest` — this handler is only the
+ * default for callers that don't.
+ */
+export const planModePermissionHandler: AcpPermissionHandler = params => {
+  const { options, toolCall } = params
+  if (!options || options.length === 0) {
+    return { outcome: { outcome: "cancelled" } }
+  }
+  if (toolCall?.kind === PLAN_MODE_EXIT_TOOL_CALL_KIND) {
+    const keepPlanning = options.find(o => o.kind === "reject_once")
+    return keepPlanning
+      ? { outcome: { outcome: "selected", optionId: keepPlanning.optionId } }
+      : { outcome: { outcome: "cancelled" } }
+  }
+  return autoAllowPermissionHandler(params)
+}
+
+/** Picks the safe default permission handler for a requested AIP-45
+ *  mode when the caller didn't supply their own `onPermissionRequest`.
+ *  Only `"plan"` gets special handling today — other modes (accept-edits,
+ *  bypass-permissions) are already at-or-above the auto-allow handler's
+ *  trust level, so there's no escalation for it to guard against. */
+function defaultPermissionHandlerForMode(
+  requestedMode: string | undefined,
+): AcpPermissionHandler {
+  return requestedMode === "plan"
+    ? planModePermissionHandler
+    : autoAllowPermissionHandler
+}
+
 export interface AcpProtocolOptions {
   child: ChildProcess
   cwd: string
   clientInfo?: { name: string; title?: string; version?: string }
   /** Called when the agent asks for permission to run a tool (Write,
-   *  Bash, ...). Defaults to `autoAllowPermissionHandler`. Pass a
+   *  Bash, ...). Defaults to `autoAllowPermissionHandler`, or
+   *  `planModePermissionHandler` when `requestedMode === "plan"`. Pass a
    *  custom handler to plumb requests through a UI / governance
    *  policy. Throwing or returning a rejected promise bubbles to the
    *  agent as an internal error. */
   onPermissionRequest?: AcpPermissionHandler
+  /**
+   * AIP-45 mode requested at spawn (`opts.config.mode` in
+   * `define-agent-cli.ts`'s `start()`), if any. Used to pick the default
+   * permission handler when `onPermissionRequest` is omitted — see
+   * `defaultPermissionHandlerForMode`.
+   */
+  requestedMode?: string
 }
 
 export function createAcpProtocolArm(
@@ -113,7 +192,8 @@ export function createAcpProtocolArm(
     },
     async connect(opts: AgentCliConnectOptions) {
       const permissionHandler =
-        options.onPermissionRequest ?? autoAllowPermissionHandler
+        options.onPermissionRequest ??
+        defaultPermissionHandlerForMode(options.requestedMode)
       client = await createAcpClient({
         output,
         input,
@@ -121,6 +201,8 @@ export function createAcpProtocolArm(
         capabilities: {
           fs: { readTextFile: true, writeTextFile: true },
         },
+        onActivity: opts.onActivity,
+        turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
         // Wire the permission handler so the agent's `session/request_permission`
         // callbacks get a real answer instead of bubbling up as
         // "AcpClient.requestPermission: no handler configured" → which

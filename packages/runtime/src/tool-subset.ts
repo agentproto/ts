@@ -9,7 +9,7 @@
  * before running the normal `registerSessionTools` /
  * `registerOrchestrationTools` passes, so a scoped child orchestrator
  * only ever sees the curated allowlist (spawn / prompt / wait / poll /
- * output / list / kill) — never `execute_command`, fs, remote, import,
+ * output / list / kill) — never `command_execute`, fs, remote, import,
  * or terminal tools.
  *
  * Backward-compatible by construction: callers that don't pass a subset

@@ -275,7 +275,7 @@ agentproto sessions stop claude-tui
 |-----------------------------|----------------------|---------------|--------|------------------|
 | `--attach` to PTY           | WebSocket `/pty`     | raw bytes ✓   | ✓      | `Ctrl-] q` chord |
 | `mirror` to PTY             | WebSocket `/pty`     | **no** (read-only) | no | `Ctrl-C`         |
-| `--attach` to agent-cli     | SSE `/stream`        | n/a (use `prompt_agent_session` MCP tool) | n/a | `Ctrl-C`        |
+| `--attach` to agent-cli     | SSE `/stream`        | n/a (use `agent_prompt` MCP tool) | n/a | `Ctrl-C`        |
 | `--attach` to command/piped | SSE `/stream`        | n/a           | n/a    | `Ctrl-C`         |
 
 **When to pick which:**
@@ -290,24 +290,24 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 
 | Tool                          | Purpose                                                   |
 |-------------------------------|-----------------------------------------------------------|
-| **`list_sessions`**           | List sessions with `kind` / `status` / `onlyAlive` filters (canonical lister) |
-| `list_agent_sessions`         | Deprecated alias for `list_sessions` (no filters)         |
-| `start_agent_session`         | Spawn a long-lived ACP adapter (claude-code/hermes/…)     |
-| `prompt_agent_session`        | Send a follow-up turn to a live agent session             |
-| `get_agent_session_output`    | Tail the recent ring buffer (lines)                       |
-| `kill_agent_session`          | SIGTERM an agent session                                  |
-| **`start_terminal_session`**  | Spawn a PTY-backed process (any argv)                     |
-| **`write_terminal_input`**    | Send keystrokes to a PTY's stdin                          |
-| **`read_terminal_output`**    | Snapshot the recent byte buffer (base64)                  |
-| **`kill_terminal_session`**   | SIGTERM a PTY session                                     |
-| `list_adapters`               | Enumerate installed `@agentproto/adapter-*` packages      |
-| `list_discovered_mcps`        | MCP servers configured in claude / cursor / goose         |
-| `list_imported_mcps`          | The user's curated MCP set                                |
-| `import_mcp` / `remove_imported_mcp` | Curate the set                                     |
+| **`session_list`**            | List sessions with `kind` / `status` / `onlyAlive` filters (canonical lister) |
+| `agent_sessions_list`         | Agent-only view; use `session_list` with `kind` for full control |
+| `agent_start`                 | Spawn a long-lived ACP adapter (claude-code/hermes/…)     |
+| `agent_prompt`                | Send a follow-up turn to a live agent session             |
+| `agent_output`                | Tail the recent ring buffer (lines)                       |
+| `agent_kill`                  | SIGTERM an agent session                                  |
+| **`terminal_start`**          | Spawn a PTY-backed process (any argv)                     |
+| **`terminal_input`**          | Send keystrokes to a PTY's stdin                          |
+| **`terminal_output`**         | Snapshot the recent byte buffer (base64)                  |
+| **`terminal_kill`**           | SIGTERM a PTY session                                     |
+| `adapter_list`                | Enumerate installed `@agentproto/adapter-*` packages      |
+| `mcp_discovered_list`         | MCP servers configured in claude / cursor / goose         |
+| `mcp_imported_list`           | The user's curated MCP set                                |
+| `mcp_import` / `mcp_imported_remove` | Curate the set                                     |
 | `mcp_imported_status`         | Connection status of every imported MCP                   |
-| `mcp_imported_list_tools` / `mcp_imported_call` | Proxy the imported MCP's tools         |
+| `mcp_imported_tool_list` / `mcp_imported_call` | Proxy the imported MCP's tools         |
 
-The terminal tools let one agent **orchestrate** other sessions: an agent in a structured ACP session can call `start_terminal_session({argv: ["bash"]})`, then drive it turn-by-turn with `write_terminal_input` + `read_terminal_output`. Same surface backs the future `wire`/`tee` primitive for cross-session piping.
+The terminal tools let one agent **orchestrate** other sessions: an agent in a structured ACP session can call `terminal_start({argv: ["bash"]})`, then drive it turn-by-turn with `terminal_input` + `terminal_output`. Same surface backs the future `wire`/`tee` primitive for cross-session piping.
 
 ## Adapter resolution
 

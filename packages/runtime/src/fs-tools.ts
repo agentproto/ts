@@ -8,12 +8,12 @@
  * shape used by `@modelcontextprotocol/server-filesystem` so existing
  * MCP-fs proxy clients can target the runtime without bespoke logic:
  *
- *   read_file        ({ path })          → string
- *   write_file       ({ path, content }) → "ok"
- *   list_directory   ({ path? })         → "[FILE] x\n[DIR]  y" lines
- *   get_file_info    ({ path })          → { name, type, size, modified }
- *   create_directory ({ path })          → "ok"
- *   delete_file      ({ path })          → "ok"
+ *   file_read        ({ path })          → string
+ *   file_write       ({ path, content }) → "ok"
+ *   directory_list   ({ path? })         → "[FILE] x\n[DIR]  y" lines
+ *   file_info        ({ path })          → { name, type, size, modified }
+ *   directory_create ({ path })          → "ok"
+ *   file_delete      ({ path })          → "ok"
  *
  * All paths are resolved relative to the workspace root via the same
  * escape guard used by `WorkspaceFs`. Absolute paths inside the root
@@ -81,7 +81,7 @@ export function registerFsTools(
   const anchor = makeAnchor(opts.workspace)
 
   server.tool(
-    "read_file",
+    "file_read",
     "Read a UTF-8 file from the workspace.",
     { path: z.string().describe("Workspace-relative path to the file.") },
     async ({ path }) => {
@@ -92,7 +92,7 @@ export function registerFsTools(
   )
 
   server.tool(
-    "write_file",
+    "file_write",
     "Write a file to the workspace. Parent directories are created on demand.",
     {
       path: z.string().describe("Workspace-relative path to the file."),
@@ -107,7 +107,7 @@ export function registerFsTools(
   )
 
   server.tool(
-    "list_directory",
+    "directory_list",
     "List entries of a directory in the workspace. Returns one '[FILE]' or '[DIR]' line per entry, mirroring `@modelcontextprotocol/server-filesystem`.",
     {
       path: z
@@ -126,7 +126,7 @@ export function registerFsTools(
   )
 
   server.tool(
-    "get_file_info",
+    "file_info",
     "Stat a file or directory in the workspace.",
     { path: z.string().describe("Workspace-relative path.") },
     async ({ path }) => {
@@ -144,7 +144,7 @@ export function registerFsTools(
   )
 
   server.tool(
-    "create_directory",
+    "directory_create",
     "Create a directory (recursive) in the workspace.",
     { path: z.string().describe("Workspace-relative directory path.") },
     async ({ path }) => {
@@ -155,7 +155,7 @@ export function registerFsTools(
   )
 
   server.tool(
-    "delete_file",
+    "file_delete",
     "Delete a file or empty directory in the workspace.",
     { path: z.string().describe("Workspace-relative path.") },
     async ({ path }) => {

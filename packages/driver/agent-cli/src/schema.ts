@@ -201,6 +201,11 @@ const authSchema = z.object({
 const sessionSchema = z.object({
   mode: z.enum(["ephemeral", "persistent", "resumable"]).default("ephemeral"),
   idle_timeout_ms: z.number().int().min(1000).default(600_000),
+  // No default: undefined disables the per-turn watchdog entirely. Only
+  // adapters known to sometimes drop the final `prompt` response (e.g.
+  // hermes) should declare this — applying it broadly would risk
+  // false-positiving on another adapter's legitimately long turns.
+  turn_idle_timeout_ms: z.number().int().min(1000).optional(),
   max_turns: z.number().int().positive().optional(),
   context_carryover: z.boolean().default(true),
 }).strict()
@@ -208,7 +213,15 @@ const sessionSchema = z.object({
 const modelsSchema = z.object({
   default: z.string().optional(),
   allowed: z.array(z.string()).optional(),
+  // Model-id patterns the adapter must never route to (case-insensitive,
+  // trailing `*` = prefix match). Enforced at compose time — see
+  // AgentCliModels.deny. Reserves premium providers for dedicated adapters.
+  deny: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  // How a model is selected at session start: "config" (ACP
+  // set_config_option, default) | "command" (a `/model <id>` control turn,
+  // for agents like hermes that ignore the ACP session model config).
+  apply: z.enum(["config", "command"]).optional(),
 }).strict()
 
 const capabilitiesSchema = z.object({
@@ -229,11 +242,15 @@ const capabilitiesSchema = z.object({
   file_attach: z.boolean().optional(),
 }).strict()
 
-const modeSchema = z.object({
+export const modeSchema = z.object({
   id: z.string().regex(MODE_ID_PATTERN),
   description: z.string().optional(),
+  bin_args_prepend: z.array(z.string()).optional(),
   bin_args_append: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  // Honest support status surfaced to clients. Absent ⇒ "active".
+  status: z.enum(["active", "noop", "planned"]).optional(),
+  status_note: z.string().optional(),
 }).strict()
 
 const optionSchema = z.object({
@@ -244,6 +261,7 @@ const optionSchema = z.object({
   default: z.union([z.boolean(), z.number(), z.string()]).optional(),
   min: z.number().int().optional(),
   max: z.number().int().optional(),
+  bin_args_prepend: z.array(z.string()).optional(),
   bin_args_template: z.array(z.string()).optional(),
   bin_args_append_when_true: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -283,6 +301,17 @@ const mcpBlockSchema = z.object({
   url: z.string().url().optional(),
 }).strict()
 
+const printConfigSchema = z.object({
+  prompt_flag: z.string().optional(),
+  output_format: z.array(z.string()).optional(),
+  pre_prompt: z.array(z.string()).optional(),
+  resume: z.object({
+    flag: z.string(),
+    kind: z.enum(["value", "boolean"]),
+  }).strict().optional(),
+  event_schema: z.enum(["claude-stream-json", "mastra-jsonl"]).optional(),
+}).strict().optional()
+
 export const agentCliFrontmatterSchema = z
   .object({
     name: z.string().min(1).max(80),
@@ -301,6 +330,7 @@ export const agentCliFrontmatterSchema = z
     acp: z.string().optional(),
     mcp: mcpBlockSchema.optional(),
     adapter: z.string().regex(ADAPTER_PATTERN).optional(),
+    print: printConfigSchema,
     session: sessionSchema.optional(),
     models: modelsSchema.optional(),
     capabilities: capabilitiesSchema.optional(),

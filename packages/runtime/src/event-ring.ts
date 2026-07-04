@@ -1,6 +1,6 @@
 /**
  * Cursor-based ring buffer for session events. Bridges the in-process
- * SessionEventBus (push) to the poll_events MCP tool (pull).
+ * SessionEventBus (push) to the session_events_poll MCP tool (pull).
  *
  * Capacity default: 1 000 events. Oldest entry dropped on overflow —
  * callers that lag beyond the cap see a gap in their cursor but never
@@ -56,7 +56,10 @@ export function createEventRing(cap = DEFAULT_CAP): EventRing {
 
       if (opts.sessionIds && opts.sessionIds.length > 0) {
         const ids = new Set(opts.sessionIds)
-        slice = slice.filter(e => ids.has(e.sessionId))
+        slice = slice.filter(e => {
+          const sid = "sessionId" in e ? ((e as unknown) as Record<string, unknown>)["sessionId"] : undefined
+          return typeof sid === "string" && ids.has(sid)
+        })
       }
       if (opts.types && opts.types.length > 0) {
         const types = new Set<string>(opts.types)

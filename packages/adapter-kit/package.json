@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-kit",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/adapter-kit — generic adapter catalog, status, creds, setup-ledger, and MCP tool primitives shared by the agent-CLI, browser, and tunnel adapter families.",
   "keywords": [
     "agentproto",
@@ -59,6 +59,11 @@
       "types": "./dist/wizard.d.ts",
       "import": "./dist/wizard.mjs",
       "default": "./dist/wizard.mjs"
+    },
+    "./discover": {
+      "types": "./dist/discover.d.ts",
+      "import": "./dist/discover.mjs",
+      "default": "./dist/discover.mjs"
     },
     "./package.json": "./package.json"
   },

@@ -1,40 +1,30 @@
 /**
  * MCP tools that expose the sessions registry to agents connected to
- * the daemon. Lets a remote operator (Mastra agent in cloud Guilde,
+ * the daemon. This module is now a FACADE over the agent-session,
+ * terminal-session, session-tree, and MCP-import tool families.
+ *
+ * The agent-family tools live in `agent-tools.ts` and are imported here
+ * so existing callers of `registerSessionTools` continue to work
+ * unchanged.
+ *
+ * Lets a remote operator (Mastra agent in cloud Guilde,
  * Claude Code as a sub-agent, …) spawn + drive agent CLIs on the
  * user's machine through the same MCP connection they already use
  * for fs/exec.
- *
- * Five tools:
- *   start_agent_session   spawn a long-running agent (claude / hermes / …)
- *   prompt_agent_session  send a follow-up turn to a live session
- *   list_agent_sessions   browse alive + recent sessions
- *   get_agent_session_output   tail the ring buffer
- *   kill_agent_session    SIGTERM the session
- *
- * Auth: same as every other daemon tool — gated by the gateway's
- * auth source (loopback bypass when no tunnel is up).
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { AcpMcpServer } from "@agentproto/acp"
-import type { SessionsRegistry } from "./sessions.js"
-import {
-  exportAgentSession,
-  type ExportAgentSessionInput,
-  type ExportAgentSessionResult,
-} from "./transcript-export.js"
-import type {
-  AgentAdapterResolver,
-  AgentAdapterLister,
-} from "./http-server.js"
-import {
-  loadWorkspacesConfig,
-  findWorkspace,
-  getActiveWorkspace,
-} from "./workspaces-config.js"
+import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
+import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
+import {
+  decideRestartStrategy,
+  augmentWithFsResume,
+  describeResumePath,
+  tokenizeCommand,
+} from "./resume-strategies.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -42,16 +32,19 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import { projectSessionUsage } from "./usage.js"
 import { withToolSubset } from "./tool-subset.js"
-import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
-import type { SessionDescriptor } from "./sessions.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import type { AgentAdapterResolver, AgentAdapterLister } from "./http-server.js"
+import {
+  loadWorkspacesConfig,
+  findWorkspace,
+  getActiveWorkspace,
+} from "./workspaces-config.js"
 
-/** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
-export function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
-}
+/** Re-exported from agent-tools.ts for backwards compatibility. */
+export { stripAnsi } from "./agent-tools.js"
 
 /**
  * One node in the session-tree output (WP5). Mirrors the descriptor
@@ -82,11 +75,11 @@ export interface SessionTreeNode {
  * Exported for testing.
  */
 export function buildSessionTree(
-  sessions: readonly SessionDescriptor[],
+  sessions: readonly import("./sessions.js").SessionDescriptor[],
 ): SessionTreeNode[] {
   const idSet = new Set(sessions.map(s => s.id))
   // Build parent→children index.
-  const childrenOf = new Map<string, SessionDescriptor[]>()
+  const childrenOf = new Map<string, import("./sessions.js").SessionDescriptor[]>()
   for (const s of sessions) {
     if (s.parentSessionId && idSet.has(s.parentSessionId)) {
       const arr = childrenOf.get(s.parentSessionId)
@@ -97,7 +90,7 @@ export function buildSessionTree(
   // Identify nodes that spawned at least one child (isOrchestrator).
   const orchestratorIds = new Set(childrenOf.keys())
 
-  const toNode = (s: SessionDescriptor): SessionTreeNode => ({
+  const toNode = (s: import("./sessions.js").SessionDescriptor): SessionTreeNode => ({
     id: s.id,
     ...(s.label ? { label: s.label } : {}),
     status: s.status,
@@ -117,52 +110,20 @@ export function buildSessionTree(
     .map(toNode)
 }
 
-/**
- * Compute the set of session ids in the subtree rooted at `rootId` —
- * the root itself plus every descendant reachable through the
- * `parentSessionId` chain (orchestrator WP4). Used to scope
- * `list`/`kill` on the scoped sub-gateway so a child orchestrator only
- * ever sees/affects the sessions it (transitively) spawned, never the
- * whole daemon. Returns an empty set when `rootId` is undefined (an
- * unbound scope sees nothing — safe default).
- */
-export function collectSubtree(
-  rootId: string | undefined,
-  all: readonly SessionDescriptor[],
-): Set<string> {
-  const result = new Set<string>()
-  if (!rootId) return result
-  const childrenOf = new Map<string, string[]>()
-  for (const s of all) {
-    if (!s.parentSessionId) continue
-    const arr = childrenOf.get(s.parentSessionId)
-    if (arr) arr.push(s.id)
-    else childrenOf.set(s.parentSessionId, [s.id])
-  }
-  const queue = [rootId]
-  result.add(rootId)
-  while (queue.length > 0) {
-    const id = queue.shift() as string
-    for (const child of childrenOf.get(id) ?? []) {
-      if (!result.has(child)) {
-        result.add(child)
-        queue.push(child)
-      }
-    }
-  }
-  return result
-}
-
-interface RegisterSessionToolsOptions {
+export interface RegisterSessionToolsOptions {
   registry: SessionsRegistry
-  /** Optional adapter resolver — required for `start_agent_session`
+  /** Optional adapter resolver — required for `agent_start`
    *  (the others work with raw spawn sessions too). When unset the
    *  start tool returns a clear error pointing at the host wiring. */
   resolveAgentAdapter?: AgentAdapterResolver
-  /** Optional adapter lister — when wired, exposes `list_adapters`
+  /** Optional adapter lister — when wired, exposes `adapter_list`
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
+   *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
+   *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */
+  daemonMcpUrl?: string
   /** Optional MCP proxy registry — when wired, exposes 3 tools that
    *  let the operator drive imported MCPs (chrome-devtools, goose-bridge,
    *  …) through the daemon as a single MCP entry point. */
@@ -176,7 +137,7 @@ interface RegisterSessionToolsOptions {
    *  Omitted → register everything, today's behaviour. */
   toolSubset?: ReadonlySet<string>
   /** Optional orchestrator-injection builder (WP3). When wired, the
-   *  `orchestrator` field on `start_agent_session` mints a scoped
+   *  `orchestrator` field on `agent_start` mints a scoped
    *  sub-gateway token, builds the `mcpServers` entry pointing the
    *  child at `/mcp/orchestrator?scope=<token>`, and returns a
    *  `bindLifecycle` hook the handler calls (with the spawned session
@@ -184,38 +145,32 @@ interface RegisterSessionToolsOptions {
    *  the gateway's scope-token registry + HTTP port + session-event
    *  bus in `createGateway`. Omitted → `orchestrator` is rejected with
    *  a clear "not enabled" error. */
-  buildOrchestratorMcp?: (opts: {
-    tools?: readonly string[]
-    /** Caller orchestrator scope (WP4) — when a child orchestrator
-     *  spawns its OWN sub-orchestrator, the new token inherits depth+1
-     *  and is bounded by the caller's tools (non-re-grant). */
-    caller?: OrchestratorScope
-    /** Override max depth for the minted child scope (clamped to the
-     *  caller's, then HARD_MAX_DEPTH). */
-    maxDepth?: number
-    /** Override the child quota for the minted child scope (clamped to
-     *  the caller's). */
-    maxChildren?: number
-  }) => {
-    entry: AcpMcpServer
-    bindLifecycle: (sessionId: string) => () => void
-  }
+  buildOrchestratorMcp?: RegisterAgentToolsOptions["buildOrchestratorMcp"]
   /** Calling orchestrator's scope (orchestrator WP4). Present ONLY on
    *  the scoped sub-gateway server (built per-request from a verified
    *  scope-token), absent on the root `/mcp` server. When present it is
    *  the identity of the orchestrator driving these tools, so:
    *    - spawns are attributed (`parentSessionId = ownerSessionId`,
    *      `depth = depth + 1`) and gated by the depth cap + child quota;
-   *    - `list_sessions`/`list_agent_sessions`/`kill_agent_session` are
+   *    - `session_list`/`agent_sessions_list`/`agent_kill` are
    *      restricted to the caller's subtree.
    *  Absent → full visibility, depth-0 spawns, no parent (today's root
    *  behaviour). */
   callerScope?: OrchestratorScope
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
-   *  values from `start_agent_session` are registered on spawn and
+   *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
   webhookNotifier?: WebhookNotifier
 }
+
+/** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
+ *  These coercers let a flag work whether the client sends a real JSON
+ *  boolean/number or its string form — avoids opaque "expected boolean,
+ *  received string" validation errors over the wire. */
+const mcpBool = z.preprocess(
+  v => (v === "true" ? true : v === "false" ? false : v),
+  z.boolean(),
+)
 
 export function registerSessionTools(
   rawServer: McpServer,
@@ -228,426 +183,18 @@ export function registerSessionTools(
     : rawServer
   const {
     registry,
-    resolveAgentAdapter,
-    listAgentAdapters,
     mcpProxy,
-    buildOrchestratorMcp,
     callerScope,
-    webhookNotifier,
+    resolveAgentAdapter,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
-  // ── start_agent_session ────────────────────────────────────────
-  server.tool(
-    "start_agent_session",
-    "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
-      "The session stays alive across multiple turns — call `prompt_agent_session` " +
-      "to continue the conversation. Returns the session id + initial descriptor. " +
-      "When `workspaceSlug` is set, resolves the cwd via " +
-      "`~/.agentproto/workspaces.json`; otherwise pass `cwd` explicitly or " +
-      "fall back to the active workspace.",
-    {
-      adapter: z
-        .string()
-        .min(1)
-        .describe(
-          "Adapter slug — one of the installed `@agentproto/adapter-*` packages " +
-            "(e.g. 'claude-code', 'hermes', 'aider')."
-        ),
-      workspaceSlug: z
-        .string()
-        .optional()
-        .describe(
-          "Workspace slug from `agentproto workspace list`. The daemon resolves it " +
-            "to an absolute path. Omit to use the `cwd` field or the active workspace."
-        ),
-      cwd: z
-        .string()
-        .optional()
-        .describe(
-          "Absolute path to spawn the agent in. Wins over `workspaceSlug` when both are set."
-        ),
-      prompt: z
-        .string()
-        .optional()
-        .describe(
-          "Optional initial prompt. The session is spawned and the prompt dispatched " +
-            "in one shot — equivalent to `start` then `prompt` back-to-back. Skip to spawn idle."
-        ),
-      label: z
-        .string()
-        .optional()
-        .describe(
-          "Free-text label that surfaces in `list_agent_sessions` and the UI — useful " +
-            "for tagging sessions with a conversation id or operator name."
-        ),
-      model: z
-        .string()
-        .optional()
-        .describe(
-          "Model identifier to pass to the adapter (e.g. 'claude-opus-4-8'). " +
-            "For ACP adapters (claude-code) applied via session/set_config_option " +
-            "after newSession — NOT via a CLI flag. Others may ignore it."
-        ),
-      effort: z
-        .string()
-        .optional()
-        .describe(
-          "Reasoning effort level (e.g. 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'). " +
-            "IMPORTANT: effort is calibrated per model — the same label maps to different " +
-            "compute budgets across models, and defaults differ by model " +
-            "(Sonnet 4.6 / Opus 4.8 default 'high'; Opus 4.7 default 'xhigh'). " +
-            "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
-        ),
-      mcpServers: jsonTolerant(
-        z.array(
-          z.object({
-            name: z.string(),
-            transport: z.enum(["stdio", "http", "sse"]),
-            ref: z.string().optional(),
-          })
-        )
-      )
-        .optional()
-        .describe(
-          "MCP servers to mount into the spawned agent's session at spawn time. " +
-            "Forwarded verbatim to `session/new.mcpServers` on the ACP arm — gives " +
-            "the child agent a host-chosen scoped toolset (e.g. the daemon's own " +
-            "orchestration gateway so it can spawn + supervise sub-agents). " +
-            "Adapters that don't model MCP mounting ignore it."
-        ),
-      orchestrator: jsonTolerant(
-        z.union([
-          z.boolean(),
-          z.object({
-            tools: z
-              .array(z.string())
-              .optional()
-              .describe(
-                "Explicit allowlist — narrows the orchestration toolset to ⊆ the " +
-                  "default subset. Names outside the default are dropped (a child " +
-                  "can never widen its own scope). Omit for the full default subset."
-              ),
-            maxDepth: z
-              .number()
-              .int()
-              .min(1)
-              .max(8)
-              .optional()
-              .describe(
-                "Max recursion depth reachable through this child (default 3, hard " +
-                  "ceiling 8). A spawn that would exceed it is rejected. For a " +
-                  "recursive spawn it can only LOWER the inherited cap, never raise it."
-              ),
-            maxChildren: z
-              .number()
-              .int()
-              .min(1)
-              .optional()
-              .describe(
-                "Max concurrently-alive sub-agents this child may spawn (default 8). " +
-                  "For a recursive spawn it can only lower the inherited quota."
-              ),
-          }),
-        ])
-      )
-        .optional()
-        .describe(
-          "Make this child a SCOPED orchestrator — auto-mount the daemon's own " +
-            "orchestration MCP tools (start/prompt/wait/poll/output + subtree " +
-            "list/kill) so it can spawn and supervise its OWN sub-agents. " +
-            "`true` = the default curated subset; `{ tools: [...] }` narrows it. " +
-            "The daemon mints a per-child scope-token, injects the scoped " +
-            "sub-gateway URL into the child's session (alongside any `mcpServers` " +
-            "you pass), and revokes the token when the session exits. Shell/fs/" +
-            "remote/import/terminal tools are NEVER exposed this way."
-        ),
-      notifyUrl: z
-        .string()
-        .url()
-        .optional()
-        .describe(
-          "Optional per-session webhook URL. POSTed (fire-and-forget) on this " +
-            "session's turn-end / awaiting-input / exited events, in addition to " +
-            "any global notify URL."
-        ),
-    },
-    async input => {
-      if (!resolveAgentAdapter) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "start_agent_session is not enabled — the daemon was started without " +
-                "an adapter resolver. Re-run the daemon with the `@agentproto/cli` " +
-                "shim wired (see playground/scripts/gateway.ts).",
-            },
-          ],
-          isError: true,
-        }
-      }
-      // cwd resolution mirrors the HTTP route: explicit cwd wins,
-      // then workspaceSlug lookup, then active workspace, then a
-      // hard error (the operator probably forgot a step).
-      let cwd = input.cwd
-      let resolvedSlug = input.workspaceSlug ?? "default"
-      if (!cwd) {
-        try {
-          const config = await loadWorkspacesConfig()
-          const ws = input.workspaceSlug
-            ? findWorkspace(config, input.workspaceSlug)
-            : getActiveWorkspace(config)
-          if (ws) {
-            cwd = ws.path
-            resolvedSlug = ws.slug
-          }
-        } catch {
-          // fall through to error below
-        }
-      }
-      if (!cwd) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "start_agent_session: no cwd resolvable. Pass `cwd` explicitly, " +
-                "or pass `workspaceSlug` matching `agentproto workspace list`, " +
-                "or set an active workspace via `agentproto workspace use <slug>`.",
-            },
-          ],
-          isError: true,
-        }
-      }
-      const resolved = await resolveAgentAdapter(input.adapter)
-      if (!resolved) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `start_agent_session: adapter "${input.adapter}" not found. Try \`agentproto install <slug>\` first.`,
-            },
-          ],
-          isError: true,
-        }
-      }
-      // ── Recursion guardrails (WP4) ──────────────────────────────
-      // When this call arrives through the scoped sub-gateway,
-      // `callerScope` is the spawning orchestrator's identity. Enforce
-      // the depth cap and per-parent child quota BEFORE spawning, and
-      // compute the new session's parent attribution. A direct `/mcp`
-      // spawn (no callerScope) is a root: depth 0, no parent, no caps.
-      const childDepth = callerScope ? callerScope.depth + 1 : 0
-      const parentSessionId = callerScope?.ownerSessionId
-      if (callerScope) {
-        if (childDepth > callerScope.maxDepth) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "orchestrator_max_depth_exceeded",
-                    message:
-                      `Spawn rejected: this orchestrator is at depth ${callerScope.depth}; ` +
-                      `a child would be depth ${childDepth}, exceeding the max depth ` +
-                      `${callerScope.maxDepth}. No session was created.`,
-                    depth: callerScope.depth,
-                    childDepth,
-                    maxDepth: callerScope.maxDepth,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-            isError: true,
-          }
-        }
-        // Count this orchestrator's currently-alive children. Killed/
-        // exited children free a slot (the cap bounds concurrent load,
-        // not lifetime spawns).
-        const aliveChildren = parentSessionId
-          ? registry.list().filter(
-              s =>
-                s.parentSessionId === parentSessionId &&
-                (s.status === "running" || s.status === "starting"),
-            ).length
-          : 0
-        if (aliveChildren >= callerScope.maxChildren) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "orchestrator_child_quota_exceeded",
-                    message:
-                      `Spawn rejected: this orchestrator already has ${aliveChildren} ` +
-                      `alive children, at the max of ${callerScope.maxChildren}. ` +
-                      `Kill one before spawning another. No session was created.`,
-                    aliveChildren,
-                    maxChildren: callerScope.maxChildren,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-            isError: true,
-          }
-        }
-      }
-      // Orchestrator role (WP3): when requested, mint a scoped
-      // sub-gateway token and MERGE its `mcpServers` entry with any
-      // caller-provided ones (WP1) — both coexist on the child's
-      // session. The child thus receives the curated orchestration
-      // toolset and can spawn + supervise its own sub-agents. The
-      // token is revoked when the session exits (bindLifecycle below).
-      // When the spawn is itself recursive (callerScope present), the
-      // child's token inherits depth+1 and is bounded by the caller's
-      // tools (non-re-grant — a child can't widen past its parent).
-      let mcpServers = input.mcpServers
-      let bindOrchestratorLifecycle:
-        | ((sessionId: string) => () => void)
-        | undefined
-      if (input.orchestrator !== undefined && input.orchestrator !== false) {
-        if (!buildOrchestratorMcp) {
-          return {
-            content: [
-              {
-                type: "text",
-                text:
-                  "start_agent_session: `orchestrator` is not enabled — the daemon " +
-                  "was started without the scoped orchestrator sub-gateway. Wire " +
-                  "`buildOrchestratorMcp` in createGateway (it needs the scope-token " +
-                  "registry + HTTP port + session-event bus).",
-              },
-            ],
-            isError: true,
-          }
-        }
-        const orchestratorOpts =
-          typeof input.orchestrator === "object"
-            ? input.orchestrator
-            : undefined
-        const requestedTools = orchestratorOpts?.tools
-        const injection = buildOrchestratorMcp({
-          ...(requestedTools ? { tools: requestedTools } : {}),
-          ...(callerScope ? { caller: callerScope } : {}),
-          ...(orchestratorOpts?.maxDepth !== undefined
-            ? { maxDepth: orchestratorOpts.maxDepth }
-            : {}),
-          ...(orchestratorOpts?.maxChildren !== undefined
-            ? { maxChildren: orchestratorOpts.maxChildren }
-            : {}),
-        })
-        mcpServers = [...(input.mcpServers ?? []), injection.entry]
-        bindOrchestratorLifecycle = injection.bindLifecycle
-      }
-      try {
-        const agentSession = await resolved.startSession({
-          cwd,
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.effort ? { effort: input.effort } : {}),
-          ...(mcpServers ? { mcpServers } : {}),
-        })
-        const desc = registry.spawnAgent({
-          workspaceSlug: resolvedSlug,
-          cwd,
-          agentSession,
-          adapterSlug: input.adapter,
-          ...(input.prompt ? { initialPrompt: input.prompt } : {}),
-          ...(input.label ? { label: input.label } : {}),
-          ...(mcpServers ? { mcpServers } : {}),
-          // Parent attribution + depth (WP4) — only set for spawns that
-          // arrived via the scoped sub-gateway; root spawns stay
-          // parentless at depth 0.
-          ...(parentSessionId ? { parentSessionId } : {}),
-          depth: childDepth,
-          ...(resolved.commandPreview
-            ? { commandPreview: resolved.commandPreview }
-            : {}),
-        })
-        // Bind the scope-token's lifetime to the child session — once
-        // it exits, the token is revoked so it can't outlive its child.
-        bindOrchestratorLifecycle?.(desc.id)
-        // Per-session webhook: register if notifyUrl was supplied and
-        // the notifier is wired. Unregistered on session:exited by the
-        // gateway's session-event bus handler.
-        if (input.notifyUrl && webhookNotifier) {
-          webhookNotifier.register(desc.id, input.notifyUrl)
-        }
-        return {
-          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `start_agent_session: spawn failed — ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
+  // Delegate the agent-family tools to the dedicated module.
+  registerAgentTools(server, opts)
 
-  // ── prompt_agent_session ───────────────────────────────────────
+  // ── session_list (canonical lister) ──────────────────────────
   server.tool(
-    "prompt_agent_session",
-    "Send a follow-up prompt to a live agent session — multi-turn continuity " +
-      "without re-spawning. The session id comes from `start_agent_session` " +
-      "(or `list_agent_sessions`). Returns immediately; tail output via " +
-      "`get_agent_session_output` or the SSE /sessions/:id/stream endpoint.",
-    {
-      sessionId: z.string().describe("Session id returned by start_agent_session."),
-      prompt: z.string().min(1).describe("The next user turn (plain text)."),
-    },
-    async input => {
-      try {
-        // Note: sendPrompt awaits the full turn (drains the event
-        // stream into the ring buffer). For long turns the operator
-        // would prefer fire-and-forget — kick the promise without
-        // awaiting and report "queued". The caller polls
-        // get_agent_session_output for completion.
-        void registry.sendPrompt(input.sessionId, input.prompt).catch(() => {
-          // Errors land in the ring buffer; nothing to do here.
-        })
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { ok: true, sessionId: input.sessionId, queued: true },
-                null,
-                2
-              ),
-            },
-          ],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `prompt_agent_session: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
-      }
-    }
-  )
-
-  // ── list_sessions (canonical lister) ──────────────────────────
-  server.tool(
-    "list_sessions",
+    "session_list",
     "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
       "hermes, …), terminal/PTY sessions (claude TUI, bash, …), and raw " +
       "commands. Each entry includes `kind`, `pty` (true for real PTYs), " +
@@ -699,140 +246,165 @@ export function registerSessionTools(
     },
   )
 
-  // ── list_agent_sessions (kept for backwards compatibility) ─────
+  // ── session_usage ────────────────────────────────────────────────
   server.tool(
-    "list_agent_sessions",
-    "DEPRECATED — prefer `list_sessions` which returns ALL kinds + filters. " +
-      "Despite the name this tool already returns every kind, not just " +
-      "agent-cli sessions; the new tool's name reflects the actual surface.",
+    "session_usage",
+    "Return the usage accounting for one session — model, cumulative cost " +
+      "(USD), input/output token counts, and the latest context-window size / " +
+      "tokens-in-context. `source` says where `costUsd` came from: `adapter` " +
+      "(the adapter's own usage reader, e.g. hermes state.db, or a usage_update " +
+      "cost block), `computed` (tokens priced against agentproto's in-repo LLM " +
+      "catalog), `no-pricing` (tokens present but the model isn't in the catalog " +
+      "— cost is deliberately omitted, never fabricated), or `none` (nothing " +
+      "measured). Absent fields are omitted rather than zeroed. Same lookup as " +
+      "`session_list` / `session_restart` (by id or name).",
     {
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe("Filter to status running/starting only. Default false."),
-    },
-    async input => {
-      let all = registry.list()
-      // Subtree scoping (WP4) — same as list_sessions.
-      if (callerScope) {
-        const subtree = collectSubtree(callerScope.ownerSessionId, all)
-        all = all.filter(s => subtree.has(s.id))
-      }
-      const filtered = input.onlyAlive
-        ? all.filter(s => s.status === "running" || s.status === "starting")
-        : all
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ sessions: filtered }, null, 2),
-          },
-        ],
-      }
-    }
-  )
-
-  // ── get_agent_session_output ───────────────────────────────────
-  server.tool(
-    "get_agent_session_output",
-    "Tail the recent output of a session. Returns the last N lines of the " +
-      "ring buffer (stdout + stderr inter-leaved, newest last). Use this to read " +
-      "an agent's reply after `prompt_agent_session`.",
-    {
-      sessionId: z.string().describe("Session id."),
-      lastN: z
-        .number()
-        .int()
+      idOrName: z
+        .string()
         .min(1)
-        .max(500)
-        .optional()
-        .describe("Max lines to return. Default 80, max 500."),
+        .describe("Session id or name — from `session_list`, alive or historical."),
     },
     async input => {
-      const desc = registry.get(input.sessionId)
+      const desc = registry.findByIdOrName(input.idOrName)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: `get_agent_session_output: no session "${input.sessionId}"` },
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
           ],
           isError: true,
         }
       }
-      // Best-effort tail — re-attach with a temp listener, capture
-      // backfill (which is the recent ring buffer), unsubscribe.
-      const limit = input.lastN ?? 80
-      const lines: string[] = []
-      const unsub = registry.attach(input.sessionId, (line, _stream) => {
-        lines.push(line)
-      })
-      if (unsub) unsub()
-      const tail = lines.slice(-limit)
+      // Subtree scoping (WP4): mirror session_restart — a scoped orchestrator
+      // only sees usage for sessions in its own subtree.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_usage: session "${desc.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only inspect sessions it (transitively) spawned.",
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const usage = projectSessionUsage(desc)
       return {
         content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                sessionId: input.sessionId,
-                status: desc.status,
-                lastOutputAt: desc.lastOutputAt,
-                lines: tail,
-              },
-              null,
-              2
-            ),
-          },
+          { type: "text", text: JSON.stringify({ sessionId: desc.id, ...usage }, null, 2) },
         ],
       }
-    }
+    },
   )
 
-  // ── list_adapters ──────────────────────────────────────────────
+  // ── terminal_sessions_list ──────────────────────────────────────
   server.tool(
-    "list_adapters",
-    "Enumerate every agent CLI adapter installed on the host (claude-code, " +
-      "hermes, aider, …). Returns slug + display name + version + protocol so " +
-      "callers can let users pick from the installed set instead of guessing. " +
-      "Use before `start_agent_session` when the model doesn't already know " +
-      "what's available.",
-    {},
-    async () => {
-      if (!listAgentAdapters) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "list_adapters is not enabled — the daemon was started without " +
-                "an adapter lister. Wire `@agentproto/cli`'s " +
-                "`listInstalledAdapters` via `createGateway({ listAgentAdapters })`.",
-            },
-          ],
-          isError: true,
-        }
+    "terminal_sessions_list",
+    "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
+      "Each entry includes `kind`, `pty`, `status`, age, etc. Use this when you only want " +
+      "the terminal subset.",
+    {
+      kind: z
+        .enum(["terminal", "agent-cli", "command", "all"])
+        .optional()
+        .describe(
+          "Optional override of the default `terminal` filter. `all` returns every kind."
+        ),
+      onlyAlive: z
+        .boolean()
+        .optional()
+        .describe("When true, only running/starting sessions. Default false."),
+      status: z
+        .enum(["starting", "running", "exited", "killed", "error"])
+        .optional()
+        .describe("Filter by exact status (overrides onlyAlive)."),
+    },
+    async input => {
+      let rows = registry.list()
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
       }
-      try {
-        const adapters = await listAgentAdapters()
-        return {
-          content: [{ type: "text", text: JSON.stringify({ adapters }, null, 2) }],
-        }
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `list_adapters failed: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          ],
-          isError: true,
-        }
+      const kind = input.kind ?? "terminal"
+      if (kind !== "all") {
+        rows = rows.filter(s => s.kind === kind)
       }
-    }
+      if (input.status) {
+        rows = rows.filter(s => s.status === input.status)
+      } else if (input.onlyAlive) {
+        rows = rows.filter(
+          s => s.status === "running" || s.status === "starting",
+        )
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+        ],
+      }
+    },
   )
 
-  // ── list_discovered_mcps ───────────────────────────────────────
+  // ── command_list ────────────────────────────────────────────────
   server.tool(
-    "list_discovered_mcps",
+    "command_list",
+    "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
+      "Each entry includes `kind`, `status`, age, exit code, etc. Use this when you only want " +
+      "the command subset.",
+    {
+      kind: z
+        .enum(["terminal", "agent-cli", "command", "all"])
+        .optional()
+        .describe(
+          "Optional override of the default `command` filter. `all` returns every kind."
+        ),
+      onlyAlive: z
+        .boolean()
+        .optional()
+        .describe("When true, only running/starting sessions. Default false."),
+      status: z
+        .enum(["starting", "running", "exited", "killed", "error"])
+        .optional()
+        .describe("Filter by exact status (overrides onlyAlive)."),
+    },
+    async input => {
+      let rows = registry.list()
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, rows)
+        rows = rows.filter(s => subtree.has(s.id))
+      }
+      const kind = input.kind ?? "command"
+      if (kind !== "all") {
+        rows = rows.filter(s => s.kind === kind)
+      }
+      if (input.status) {
+        rows = rows.filter(s => s.status === input.status)
+      } else if (input.onlyAlive) {
+        rows = rows.filter(
+          s => s.status === "running" || s.status === "starting",
+        )
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ sessions: rows }, null, 2) },
+        ],
+      }
+    },
+  )
+
+  // ── mcp_discovered_list ───────────────────────────────────────
+  server.tool(
+    "mcp_discovered_list",
     "Discover MCP servers already configured in the user's other agent " +
       "tooling (claude-code, cursor, goose). Returns the union with source " +
       "attribution so the operator can suggest 'I see you have a chrome-devtools " +
@@ -850,7 +422,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `list_discovered_mcps failed: ${err instanceof Error ? err.message : String(err)}`,
+              text: `mcp_discovered_list failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -859,13 +431,13 @@ export function registerSessionTools(
     }
   )
 
-  // ── list_imported_mcps ─────────────────────────────────────────
+  // ── mcp_imported_list ─────────────────────────────────────────
   server.tool(
-    "list_imported_mcps",
+    "mcp_imported_list",
     "Return the user's curated set of MCP servers — the ones they've " +
       "imported from claude / cursor / workspace configs into the daemon. " +
       "Use to know which MCPs the operator may freely call vs. ones still " +
-      "showing up in `list_discovered_mcps` waiting on the user's blessing.",
+      "showing up in `mcp_discovered_list` waiting on the user's blessing.",
     {},
     async () => {
       try {
@@ -880,7 +452,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `list_imported_mcps failed: ${err instanceof Error ? err.message : String(err)}`,
+              text: `mcp_imported_list failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -889,11 +461,11 @@ export function registerSessionTools(
     }
   )
 
-  // ── import_mcp ─────────────────────────────────────────────────
+  // ── mcp_import ─────────────────────────────────────────────────
   server.tool(
-    "import_mcp",
+    "mcp_import",
     "Import a discovered MCP into the daemon's curated set. The agent " +
-      "calls `list_discovered_mcps` first, asks the user, then commits the " +
+      "calls `mcp_discovered_list` first, asks the user, then commits the " +
       "choice via this tool. The snapshot is captured at import time so " +
       "the entry stays usable if the source config (claude/cursor) is " +
       "later removed.",
@@ -902,7 +474,7 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe(
-          "The discovered MCP id from `list_discovered_mcps` " +
+          "The discovered MCP id from `mcp_discovered_list` " +
             "(e.g. 'claude-code:project:/path:chrome-devtools')."
         ),
       alias: z
@@ -921,7 +493,7 @@ export function registerSessionTools(
             content: [
               {
                 type: "text",
-                text: `import_mcp: discovered MCP "${input.sourceMcpId}" not found. Re-run list_discovered_mcps to get current ids.`,
+                text: `mcp_import: discovered MCP "${input.sourceMcpId}" not found. Re-run mcp_discovered_list to get current ids.`,
               },
             ],
             isError: true,
@@ -942,7 +514,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `import_mcp failed: ${err instanceof Error ? err.message : String(err)}`,
+              text: `mcp_import failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -951,9 +523,9 @@ export function registerSessionTools(
     }
   )
 
-  // ── remove_imported_mcp ────────────────────────────────────────
+  // ── mcp_imported_remove ────────────────────────────────────────
   server.tool(
-    "remove_imported_mcp",
+    "mcp_imported_remove",
     "Remove a previously-imported MCP from the daemon's curated set. " +
       "Use when the user no longer wants the operator referencing it.",
     {
@@ -972,7 +544,7 @@ export function registerSessionTools(
             content: [
               {
                 type: "text",
-                text: `remove_imported_mcp: id "${input.id}" not in imports. Use list_imported_mcps to see current entries.`,
+                text: `mcp_imported_remove: id "${input.id}" not in imports. Use mcp_imported_list to see current entries.`,
               },
             ],
             isError: true,
@@ -989,7 +561,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `remove_imported_mcp failed: ${err instanceof Error ? err.message : String(err)}`,
+              text: `mcp_imported_remove failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -1046,9 +618,9 @@ export function registerSessionTools(
     }
   )
 
-  // ── mcp_imported_list_tools ────────────────────────────────────
+  // ── mcp_imported_tool_list ────────────────────────────────────
   server.tool(
-    "mcp_imported_list_tools",
+    "mcp_imported_tool_list",
     "List the tools exposed by one imported MCP server. The proxy " +
       "lazily connects on first call — first-use latency includes the " +
       "transport handshake (stdio: ~1-2s for npx-spawned servers; " +
@@ -1060,7 +632,7 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe(
-          "Alias from `list_imported_mcps` / `mcp_imported_status` " +
+          "Alias from `mcp_imported_list` / `mcp_imported_status` " +
             "(typically the original MCP name, e.g. 'chrome-devtools')."
         ),
     },
@@ -1070,7 +642,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: "mcp_imported_list_tools is not enabled — see mcp_imported_status.",
+              text: "mcp_imported_tool_list is not enabled — see mcp_imported_status.",
             },
           ],
           isError: true,
@@ -1082,7 +654,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `mcp_imported_list_tools "${input.alias}": ${out.error}`,
+              text: `mcp_imported_tool_list "${input.alias}": ${out.error}`,
             },
           ],
           isError: true,
@@ -1102,7 +674,7 @@ export function registerSessionTools(
     "Invoke a tool on an imported MCP server. The daemon proxies the " +
       "call through the live client connection — the upstream server " +
       "validates `arguments` against its own input schema (which you " +
-      "can fetch via `mcp_imported_list_tools`). The full upstream " +
+      "can fetch via `mcp_imported_tool_list`). The full upstream " +
       "result is returned verbatim, including `isError` flags so the " +
       "operator sees the original failure shape.",
     {
@@ -1111,7 +683,7 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe(
-          "Tool name as it appears in `mcp_imported_list_tools` " +
+          "Tool name as it appears in `mcp_imported_tool_list` " +
             "(NOT a namespaced version — pass the upstream's own name)."
         ),
       args: z
@@ -1181,7 +753,7 @@ export function registerSessionTools(
     },
     async input => {
       let rows = registry.list()
-      // Subtree scoping (WP5 / WP4): same gate as list_sessions.
+      // Subtree scoping (WP5 / WP4): same gate as session_list.
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
@@ -1198,60 +770,6 @@ export function registerSessionTools(
         ],
       }
     },
-  )
-
-  // ── kill_agent_session ─────────────────────────────────────────
-  server.tool(
-    "kill_agent_session",
-    "Stop a session — SIGTERM the underlying child + close the agent protocol " +
-      "session. Use to free resources after the operator is done, or when a " +
-      "session is wedged.",
-    {
-      sessionId: z.string().describe("Session id."),
-    },
-    async input => {
-      // Subtree scoping (WP4): on the scoped sub-gateway a child
-      // orchestrator may only kill sessions in its own subtree — never
-      // an arbitrary id (e.g. a sibling's, or the root operator's).
-      if (callerScope) {
-        const subtree = collectSubtree(
-          callerScope.ownerSessionId,
-          registry.list(),
-        )
-        if (!subtree.has(input.sessionId)) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    error: "orchestrator_session_out_of_scope",
-                    message:
-                      `kill_agent_session: session "${input.sessionId}" is not in ` +
-                      `your subtree — a scoped orchestrator can only kill sessions ` +
-                      `it (transitively) spawned. No action taken.`,
-                    ok: false,
-                    sessionId: input.sessionId,
-                  },
-                  null,
-                  2,
-                ),
-              },
-            ],
-            isError: true,
-          }
-        }
-      }
-      const ok = registry.kill(input.sessionId)
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
-          },
-        ],
-      }
-    }
   )
 
   // ── Terminal session tools ─────────────────────────────────────
@@ -1278,8 +796,264 @@ export function registerSessionTools(
     isError: true,
   })
 
+  // ── session_restart ──────────────────────────────────────────────
+  // In-process equivalent of `agentproto sessions restart <id>` — the
+  // CLI has to shape an HTTP body and POST it back to this same daemon
+  // because it's a separate process; here we can go straight to the
+  // registry + adapter resolver. Both sides share `decideRestartStrategy`
+  // (resume-strategies.ts) so the two surfaces never diverge on which
+  // resume path wins.
   server.tool(
-    "start_terminal_session",
+    "session_restart",
+    "Respawn a session that has exited or been killed, preferring conversation " +
+      "continuity over a blank restart. Looks up the (possibly historical) " +
+      "descriptor by id or name — same lookup as `session_list` — and picks " +
+      "the same resume strategy `agentproto sessions restart` uses on the CLI: " +
+      "provider-native resume (spawns a PTY running the provider's own resume " +
+      "command, e.g. `claude --resume <id>`) when the adapter persisted one; " +
+      "else ACP-level resume via the adapter's own session id (retried as a " +
+      "fresh spawn if the adapter rejects the id with \"not found\" — typical " +
+      "when the prior session died before its first turn); else a plain PTY " +
+      "re-run for raw terminal sessions with no adapter match. Generic " +
+      "`command` sessions have no resume path and return an error. Returns " +
+      "the NEW session's descriptor plus `resumedFrom` (the prior id) and " +
+      "`resumeVia` (which path was used, empty string for a fresh respawn).",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe(
+          "Session id or name to restart — from `session_list`, alive or " +
+            "historical (killed/exited/error)."
+        ),
+      cols: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          "PTY cols — only used when the restart resolves to a provider-native " +
+            "or plain PTY resume. Default 80."
+        ),
+      rows: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe("PTY rows — same case as `cols`. Default 24."),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors agent_kill — a child orchestrator
+      // may only restart sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_restart: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only restart sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      const augmented = await augmentWithFsResume(prev)
+      const strategy = decideRestartStrategy(augmented)
+
+      if (strategy.kind === "unsupported") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: strategy.reason, sessionId: prev.id }),
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      // cwd resolution mirrors /sessions/agent + /sessions/terminal:
+      // the prior descriptor's cwd is authoritative (it's how the
+      // session was actually running); fall back to the daemon's own
+      // cwd only for a legacy row that predates the field.
+      let cwd = prev.cwd
+      if (!cwd) {
+        cwd = process.cwd()
+        console.warn(
+          `[session_restart] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${cwd}`
+        )
+      }
+
+      try {
+        if (strategy.kind === "pty-native" || strategy.kind === "pty-plain") {
+          if (!ptyEnabled) return ptyNotConfigured("session_restart")
+          const argv =
+            strategy.kind === "pty-native"
+              ? strategy.argv
+              : Array.isArray(prev.argv) && prev.argv.length > 0
+                ? [...prev.argv]
+                : tokenizeCommand(prev.command)
+          const desc = registry.spawnPty({
+            argv,
+            cwd,
+            workspaceSlug: prev.workspaceSlug,
+            cols: input.cols ?? 80,
+            rows: input.rows ?? 24,
+            ...(prev.name ? { name: prev.name } : {}),
+            ...(prev.label ? { label: prev.label } : {}),
+          })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  { ...desc, resumedFrom: prev.id, resumeVia: describeResumePath(augmented) },
+                  null,
+                  2
+                ),
+              },
+            ],
+          }
+        }
+
+        // strategy.kind === "agent" — decideRestartStrategy only returns
+        // this when `adapterSlug` is set, but TS can't see across the
+        // two objects, so re-check at runtime rather than casting.
+        const adapterSlug = prev.adapterSlug
+        if (!adapterSlug) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "session_restart: internal error — agent resume strategy without adapterSlug",
+              },
+            ],
+            isError: true,
+          }
+        }
+        if (!resolveAgentAdapter) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "session_restart: agent_start is not enabled — the daemon was started " +
+                  "without an adapter resolver.",
+              },
+            ],
+            isError: true,
+          }
+        }
+        const resolved = await resolveAgentAdapter(adapterSlug)
+        if (!resolved) {
+          return {
+            content: [
+              { type: "text", text: `session_restart: adapter "${adapterSlug}" not found.` },
+            ],
+            isError: true,
+          }
+        }
+        const spawnWithResume = async (
+          resumeSessionId?: string
+        ): Promise<SessionDescriptor> => {
+          let liveSessionId: string | undefined
+          const agentSession = await resolved.startSession({
+            cwd,
+            ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(prev.model ? { model: prev.model } : {}),
+            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+            onActivity: () => {
+              if (liveSessionId) registry.pulseActivity(liveSessionId)
+            },
+          })
+          const desc = registry.spawnAgent({
+            workspaceSlug: prev.workspaceSlug,
+            cwd,
+            agentSession,
+            adapterSlug,
+            ...(prev.label ? { label: prev.label } : {}),
+            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+            ...(prev.model ? { model: prev.model } : {}),
+            ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+          })
+          liveSessionId = desc.id
+          return desc
+        }
+
+        let desc: SessionDescriptor
+        let resumeFallback = false
+        try {
+          desc = await spawnWithResume(strategy.resumeSessionId)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          // Adapter doesn't recognize the resume id — typically means the
+          // prior session never got past the spawn (no turn happened).
+          // Retry as a fresh spawn so the caller at least gets the agent
+          // back, same fallback the CLI's `sessions restart` applies.
+          if (strategy.resumeSessionId && /not found|Resource not found/i.test(msg)) {
+            desc = await spawnWithResume(undefined)
+            resumeFallback = true
+          } else {
+            throw err
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ...desc,
+                  resumedFrom: prev.id,
+                  resumeVia: resumeFallback ? "" : describeResumePath(augmented),
+                  ...(resumeFallback ? { resumeFallback: true } : {}),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  server.tool(
+    "terminal_start",
     "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +
       "ANSI escapes, alt-screen sequences) flow through the daemon's byte ring " +
       "buffer; subscribers attach via the WS at /sessions/:id/pty. Use for " +
@@ -1317,11 +1091,11 @@ export function registerSessionTools(
         .string()
         .optional()
         .describe(
-          "Free-text label surfaced in list_agent_sessions and the UI."
+          "Free-text label surfaced in agent_sessions_list and the UI."
         ),
     },
     async input => {
-      if (!ptyEnabled) return ptyNotConfigured("start_terminal_session")
+      if (!ptyEnabled) return ptyNotConfigured("terminal_start")
       let cwd = input.cwd
       let resolvedSlug = input.workspaceSlug ?? "default"
       if (!cwd) {
@@ -1344,7 +1118,7 @@ export function registerSessionTools(
             {
               type: "text",
               text:
-                "start_terminal_session: no cwd resolvable. Pass `cwd` explicitly " +
+                "terminal_start: no cwd resolvable. Pass `cwd` explicitly " +
                 "or `workspaceSlug` matching `agentproto workspace list`.",
             },
           ],
@@ -1369,7 +1143,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `start_terminal_session: ${err instanceof Error ? err.message : String(err)}`,
+              text: `terminal_start: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
@@ -1379,25 +1153,25 @@ export function registerSessionTools(
   )
 
   server.tool(
-    "write_terminal_input",
+    "terminal_input",
     "Send keystrokes to a PTY session's stdin. The text is forwarded verbatim — " +
       "include trailing newlines if the target needs them (e.g. shell commands). " +
-      "Use after `start_terminal_session` to drive an interactive CLI.",
+      "Use after `terminal_start` to drive an interactive CLI.",
     {
       sessionId: z
         .string()
-        .describe("Session id OR name from start_terminal_session."),
+        .describe("Session id OR name from terminal_start."),
       text: z.string().describe("Text to write. Sent as-is to the PTY's stdin."),
     },
     async input => {
-      if (!ptyEnabled) return ptyNotConfigured("write_terminal_input")
+      if (!ptyEnabled) return ptyNotConfigured("terminal_input")
       const desc = registry.findByIdOrName(input.sessionId)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `write_terminal_input: no session "${input.sessionId}"`,
+              text: `terminal_input: no session "${input.sessionId}"`,
             },
           ],
           isError: true,
@@ -1417,14 +1191,14 @@ export function registerSessionTools(
   )
 
   server.tool(
-    "read_terminal_output",
+    "terminal_output",
     "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
       "bytes (the buffer is RAW including ANSI escapes — strip with a regex if " +
       "you want plain text). `lastBytes` caps the read from the tail.",
     {
       sessionId: z
         .string()
-        .describe("Session id OR name from start_terminal_session."),
+        .describe("Session id OR name from terminal_start."),
       lastBytes: z
         .number()
         .int()
@@ -1434,14 +1208,14 @@ export function registerSessionTools(
         .describe("Max bytes from the tail. Default: full ring buffer (~64 KiB)."),
     },
     async input => {
-      if (!ptyEnabled) return ptyNotConfigured("read_terminal_output")
+      if (!ptyEnabled) return ptyNotConfigured("terminal_output")
       const desc = registry.findByIdOrName(input.sessionId)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `read_terminal_output: no session "${input.sessionId}"`,
+              text: `terminal_output: no session "${input.sessionId}"`,
             },
           ],
           isError: true,
@@ -1456,7 +1230,7 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: `read_terminal_output: session "${desc.id}" is not a PTY`,
+              text: `terminal_output: session "${desc.id}" is not a PTY`,
             },
           ],
           isError: true,
@@ -1483,24 +1257,24 @@ export function registerSessionTools(
   )
 
   server.tool(
-    "kill_terminal_session",
+    "terminal_kill",
     "SIGTERM a PTY session and drop it from the alive set. Same effect as " +
-      "`kill_agent_session` for the PTY family — separate name so it's obvious " +
+      "`agent_kill` for the PTY family — separate name so it's obvious " +
       "what's being stopped.",
     {
       sessionId: z
         .string()
-        .describe("Session id OR name from start_terminal_session."),
+        .describe("Session id OR name from terminal_start."),
     },
     async input => {
-      if (!ptyEnabled) return ptyNotConfigured("kill_terminal_session")
+      if (!ptyEnabled) return ptyNotConfigured("terminal_kill")
       const desc = registry.findByIdOrName(input.sessionId)
       if (!desc) {
         return {
           content: [
             {
               type: "text",
-              text: `kill_terminal_session: no session "${input.sessionId}"`,
+              text: `terminal_kill: no session "${input.sessionId}"`,
             },
           ],
           isError: true,
@@ -1519,66 +1293,10 @@ export function registerSessionTools(
   )
 }
 
-// ── export_agent_session tool ─────────────────────────────────────────────────
-
-export interface ExportSessionOps {
-  registry: SessionsRegistry
-  /**
-   * Override the export function — primarily for testing so callers can inject
-   * a stub without needing real JSONL / SQLite fixtures.
-   */
-  exportFn?: (input: ExportAgentSessionInput) => Promise<ExportAgentSessionResult>
-}
-
 /**
- * Register the `export_agent_session` MCP tool.
- *
- * Wraps `exportAgentSession` from transcript-export.ts. Resolves the session
- * descriptor via the registry (same registry-access pattern as `summarize_session`)
- * then delegates to the per-adapter exporter (claude-code JSONL / hermes SQLite).
- * Returns the rendered transcript as a text content block.
+ * Re-exported from agent-tools.ts for backwards compatibility.
+ * The canonical definition lives there; callers importing from this
+ * module still compile.
  */
-export function registerExportSessionTool(server: McpServer, ops: ExportSessionOps): void {
-  const doExport = ops.exportFn ?? exportAgentSession
-  server.tool(
-    "export_agent_session",
-    "Export a clean, human-readable transcript of an agent session. " +
-      "Reads the source the adapter already persists (claude-code: JSONL in " +
-      "~/.claude/projects/; hermes: state.db in ~/.hermes/). Returns markdown " +
-      "(default) or JSON. Works on stopped and running sessions alike. Use " +
-      "after a long agent run to review the full conversation without the " +
-      "ANSI noise of the ring buffer.",
-    {
-      sessionId: z.string().describe(
-        "agentproto session id (sess_xxx), adapter-native id, or session name."
-      ),
-      adapter: z.string().optional().describe(
-        "Override adapter slug (e.g. 'claude-code', 'hermes') when the session " +
-          "is not in the registry. Required when passing a raw adapter-native id."
-      ),
-      cwd: z.string().optional().describe(
-        "Override cwd (absolute path) — required for claude-code when the session " +
-          "is not in the registry (used to locate the JSONL file)."
-      ),
-      format: z.enum(["markdown", "json"]).optional().describe(
-        "Output format. `markdown` (default) renders a human-friendly transcript " +
-          "with a metadata table and role-labelled messages; `json` returns the raw " +
-          "ExportedSession object for programmatic processing."
-      ),
-    },
-    async input => {
-      const result = await doExport({
-        sessionId: input.sessionId,
-        registry: ops.registry,
-        ...(input.adapter ? { adapter: input.adapter } : {}),
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(input.format ? { format: input.format } : {}),
-      })
-      const isError = result.content.startsWith("Error:")
-      return {
-        content: [{ type: "text" as const, text: result.content }],
-        ...(isError ? { isError: true as const } : {}),
-      }
-    },
-  )
-}
+export { registerExportSessionTool, collectSubtree } from "./agent-tools.js"
+export type { ExportSessionOps } from "./agent-tools.js"

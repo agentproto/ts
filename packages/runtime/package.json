@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/runtime",
-  "version": "0.1.1",
+  "version": "0.4.0",
   "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
   "keywords": [
     "agentproto",
@@ -56,6 +56,11 @@
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
     },
+    "./providers-store": {
+      "types": "./dist/providers-store.d.ts",
+      "import": "./dist/providers-store.mjs",
+      "default": "./dist/providers-store.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",
@@ -85,10 +90,13 @@
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
+    "@agentproto/workflow-runtime": "workspace:*",
+    "croner": "^9.0.0",
     "@agentproto/adapter-kit": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
+    "@agentproto/model-catalog": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.18.0",

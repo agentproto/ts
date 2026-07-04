@@ -14,14 +14,15 @@
  */
 
 import { promises as fs } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { dirname, join, resolve as resolvePath } from "node:path"
+import { join } from "node:path"
 import { homedir } from "node:os"
-import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import { createRequire } from "node:module"
+import type { AgentCliHandle, AgentCliMode } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
   makeAdapterLister,
   makeSetupLedger,
+  collectAgentprotoNamespaceRoots,
   type AdapterHandle,
   type AdapterCatalogEntry,
 } from "@agentproto/adapter-kit"
@@ -39,10 +40,22 @@ export interface ResolvedAdapter {
   readonly packageName?: string
 }
 
+/** Mode metadata surfaced in `adapter_list` — the UI-safe subset of an
+ *  AIP-45 `modes[]` entry. Omits the spawn internals (`bin_args_*`, `env`)
+ *  since those aren't information a picker needs; carries the honest
+ *  `status`/`status_note` so a declared-but-no-op mode is visible. */
+export interface AdapterMode {
+  id: string
+  description?: string
+  /** Absent in the manifest ⇒ normalised to "active" here. */
+  status: NonNullable<AgentCliMode["status"]>
+  status_note?: string
+}
+
 /**
  * Compact metadata about an installed adapter — the shape returned
  * by `listInstalledAdapters()` and exposed via the daemon's
- * `GET /adapters` route + `list_adapters` MCP tool. Only fields
+ * `GET /adapters` route + `adapter_list` MCP tool. Only fields
  * safe to surface in a UI list (no install scripts, no env keys).
  * For full handle access call `resolveAdapter(slug)`.
  */
@@ -66,13 +79,65 @@ export interface AdapterInfo {
   /** Known-valid model identifiers for this adapter, drawn from the
    *  adapter manifest's `models.allowed` field. Empty when the adapter
    *  doesn't declare a model list (accepts whatever the underlying
-   *  binary accepts). Pass one of these as `model` in `start_agent_session`
+   *  binary accepts). Pass one of these as `model` in `agent_start`
    *  to avoid trial-and-error validation errors. */
   models: string[]
+  /** AIP-45 `modes[]` the adapter declares, projected to the UI-safe
+   *  subset (id + description + honest status). Empty when the adapter
+   *  declares no modes. `status` defaults to "active" when the manifest
+   *  omits it, so a declared mode is never silently statusless. */
+  modes: AdapterMode[]
 }
 
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
+
+/** Project a manifest's `modes[]` to the UI-safe `AdapterMode[]`,
+ *  normalising an absent `status` to "active". Accepts the loosely-typed
+ *  handle field (a handle is `Readonly<AgentCliDefinition>` whose `modes`
+ *  is `AgentCliMode[] | undefined`); anything not an array yields []. */
+function toAdapterModes(modes: AgentCliMode[] | undefined): AdapterMode[] {
+  if (!Array.isArray(modes)) return []
+  return modes.map((m) => ({
+    id: m.id,
+    ...(m.description !== undefined ? { description: m.description } : {}),
+    status: m.status ?? "active",
+    ...(m.status_note !== undefined ? { status_note: m.status_note } : {}),
+  }))
+}
+
+// Scoped to this module's own location — used only to RESOLVE a
+// specifier to an absolute path (never to `require()` anything), so its
+// CJS-vs-ESM provenance doesn't matter.
+const resolveFromHere = createRequire(import.meta.url)
+
+/**
+ * `protocol: "proprietary"` handles carry an `adapter` field naming an npm
+ * package that `createProprietaryProtocolArm` (inside
+ * `@agentproto/driver-agent-cli`) dynamic-`import()`s a SECOND time, at
+ * session-start, to obtain the `createAgentCliClient` factory. That second
+ * import runs from a module that deliberately does NOT depend on any
+ * specific adapter package (driver-agent-cli is adapter-agnostic by
+ * design) — so a bare specifier that resolves fine from HERE (this module
+ * lists every known adapter as a devDependency, and just proved the
+ * specifier resolves by successfully importing it above) can fail to
+ * resolve there, because Node's ancestor `node_modules` walk for a bare
+ * specifier starts from the IMPORTING module's own location, not this
+ * one's. Rewrite `adapter` to the fully-resolved absolute path before
+ * handing the handle off: dynamic `import()` of an absolute path always
+ * succeeds regardless of which module performs it, so the second import
+ * is no longer sensitive to where in the dependency graph it runs. This
+ * applies uniformly to every `protocol: "proprietary"` handle — not just
+ * this one — since any future proprietary adapter hits the exact same
+ * two-context-resolution gap.
+ */
+function withResolvedProprietaryAdapter(
+  candidate: AgentCliHandle,
+  packageSpecifier: string
+): AgentCliHandle {
+  if (candidate.protocol !== "proprietary" || !candidate.adapter) return candidate
+  return { ...candidate, adapter: resolveFromHere.resolve(packageSpecifier) }
+}
 
 export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
@@ -102,7 +167,12 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           typeof parentCandidate === "object" &&
           "name" in parentCandidate
         ) {
-          return { slug, handle: parentCandidate, source: "npm", packageName: parentPkg }
+          return {
+            slug,
+            handle: withResolvedProprietaryAdapter(parentCandidate, parentPkg),
+            source: "npm",
+            packageName: parentPkg,
+          }
         }
       } catch {
         /* parent also missing — fall through to original error */
@@ -128,13 +198,18 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
-  return { slug, handle: candidate, source: "npm", packageName: resolvedPackageName }
+  return {
+    slug,
+    handle: withResolvedProprietaryAdapter(candidate, resolvedPackageName),
+    source: "npm",
+    packageName: resolvedPackageName,
+  }
 }
 
 /**
  * Enumerate every `@agentproto/adapter-*` package reachable from the
  * current node module-resolution path. Used by the daemon's
- * `GET /adapters` route and `list_adapters` MCP tool so UIs (web
+ * `GET /adapters` route and `adapter_list` MCP tool so UIs (web
  * spawn dialog) and operators can pick from the installed set
  * without trial-and-error against `resolveAdapter(slug)`.
  *
@@ -196,6 +271,7 @@ export async function listInstalledAdapters(opts?: {
           models: Array.isArray(modelsField)
             ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
             : [],
+          modes: toAdapterModes(resolved.handle.modes),
         }
         out.push(info)
       } catch (err) {
@@ -233,51 +309,6 @@ export async function listInstalledAdapters(opts?: {
   return out.sort((a, b) => a.slug.localeCompare(b.slug))
 }
 
-/**
- * Walk up from the cli package looking for `node_modules/@agentproto`
- * directories. Returns every match (pnpm + global + nvm hoisting can
- * produce more than one) so adapters installed in any reachable
- * scope are discoverable.
- */
-async function collectAgentprotoNamespaceRoots(
-  start?: string
-): Promise<string[]> {
-  const seen = new Set<string>()
-  const roots: string[] = []
-  const candidatesAt = (dir: string): string[] => [
-    resolvePath(dir, "node_modules", "@agentproto"),
-    resolvePath(dir, "node_modules", ".pnpm", "node_modules", "@agentproto"),
-  ]
-
-  async function walkUp(from: string): Promise<void> {
-    let cur = from
-    for (let depth = 0; depth < 20; depth++) {
-      if (seen.has(cur)) break
-      seen.add(cur)
-      for (const candidate of candidatesAt(cur)) {
-        try {
-          const s = await fs.stat(candidate)
-          if (s.isDirectory() && !roots.includes(candidate)) roots.push(candidate)
-        } catch { /* not present */ }
-      }
-      const parent = resolvePath(cur, "..")
-      if (parent === cur) break
-      cur = parent
-    }
-  }
-
-  // Walk from the caller-supplied root (or cwd) — covers the workspace root.
-  await walkUp(start ?? process.cwd())
-  // Also walk from this file's location so pnpm-linked adapters in
-  // packages/cli/node_modules/@agentproto/ are found regardless of cwd.
-  // Resolves correctly whether running from dist (node file.mjs) or ts-node.
-  try {
-    await walkUp(dirname(fileURLToPath(import.meta.url)))
-  } catch { /* ESM not available in this context */ }
-
-  return roots
-}
-
 // ── catalog-aware lister ─────────────────────────────────────────────────────
 
 /**
@@ -291,12 +322,13 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
   readonly streaming: boolean
   readonly commands: AgentCliCommand[]
   readonly models: string[]
+  readonly modes: AdapterMode[]
   readonly packageName: string
   readonly originalHandle: AgentCliHandle
 }
 
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
-type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models">
+type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models" | "modes">
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
   return {
@@ -304,6 +336,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     streaming: h.streaming,
     commands: h.commands,
     models: h.models,
+    modes: h.modes,
   }
 }
 
@@ -329,6 +362,7 @@ export function wrapCliHandle(
     models: Array.isArray(modelsField)
       ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
       : [],
+    modes: toAdapterModes(handle.modes),
     originalHandle: handle,
   }
 }
@@ -404,6 +438,7 @@ export async function listAdaptersWithCatalog(
     packageName: e.packageName,
     commands: e.info?.commands ?? [],
     models: e.info?.models ?? [],
+    modes: e.info?.modes ?? [],
     status: e.status,
     ...(e.hint !== undefined ? { hint: e.hint } : {}),
   }))

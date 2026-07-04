@@ -40,6 +40,7 @@ import {
   registerSummarizeSessionTool,
 } from "./agents-overview-app.js"
 import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
+import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -58,8 +59,12 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
+import { createWorkflowRunner } from "./workflow-runner.js"
+import { createFileStepCache } from "./workflow-step-cache.js"
+import { withDeferredTools } from "./deferred-tools.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
+import { createCronScheduler } from "./cron-scheduler.js"
 export type {
   WatcherStartInput,
   WatcherDescriptor,
@@ -92,11 +97,23 @@ export type {
   RegisterBrowserInput,
   RegisterSessionInput,
 } from "./sessions.js"
+export { formatToolCall, formatToolResult } from "./tool-presenter.js"
+export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
+export type {
+  UsageSource,
+  SessionUsage,
+  UsageComputeInput,
+  PricingResolver,
+  TokenPricing,
+} from "./usage.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
-import { registerTunnelAdapterTools } from "./tunnel-adapters.js"
+import {
+  registerTunnelAdapterTools,
+  makeTunnelCredsStore,
+} from "./tunnel-adapters.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -106,13 +123,30 @@ export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
+export { createFileStepCache } from "./workflow-step-cache.js"
 export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,
   readRuntimeMeta,
+  daemonRegistryDir,
+  readDaemonRegistry,
+  sweepStaleDaemonRegistry,
+  writeDaemonRegistryEntry,
+  unlinkDaemonRegistryEntry,
   type RuntimeMeta,
 } from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"
+export {
+  loadProviders,
+  setProviderKey,
+  removeProviderKey,
+  injectProviderKeysIntoEnv,
+  providerEnvVar,
+  providersPath,
+  PROVIDER_ENV_VARS,
+  type ProviderEntry,
+  type ProvidersFile,
+} from "./providers-store.js"
 export {
   DEFAULT_ORCHESTRATOR_TOOLS,
   narrowOrchestratorTools,
@@ -127,6 +161,27 @@ export {
   type OrchestratorInjection,
   type OrchestratorInjectorDeps,
 } from "./orchestrator-gateway.js"
+
+// Blocking-wait service functions + supervisor types — shared between the
+// MCP tool surface (session_monitor / policy_status) and the REST HTTP
+// surface (GET /sessions/:id/wait, GET /policies/:id/wait).
+export {
+  monitorSessionWait,
+  monitorPolicyWait,
+  type SessionWaitEvent,
+  type SessionWaitResult,
+} from "./orchestration-tools.js"
+export type {
+  AttachPolicyInput,
+  CommitSpec,
+  CompletionPolicySupervisor,
+  GateSpec,
+  JudgeGateSpec,
+  OnFailSpec,
+  PolicyRunState,
+  PolicyRunStatus,
+  ShellGateSpec,
+} from "./supervisor.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>
@@ -168,18 +223,18 @@ export interface CreateGatewayOptions {
    *  Without this, /sessions still works for raw `argv` spawns. */
   resolveAgentAdapter?: AgentAdapterResolver
   /** Optional adapter lister — when provided, enables
-   *  `GET /adapters` HTTP route + `list_adapters` MCP tool so UIs
+   *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
   /** Optional browser adapter resolver — when provided, enables the
    *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
   resolveBrowserAdapter?: BrowserAdapterResolver
   /** Optional browser adapter lister — when provided, enables the
-   *  `list_adapter_browsers` MCP tool. */
+   *  `browser_adapter_list` MCP tool. */
   listBrowserAdapters?: BrowserAdapterLister
   /** Optional PTY factory (node-pty wrapper, typically from the cli
    *  layer's `loadNodePtyFactory()`). When provided, enables
-   *  `POST /sessions/terminal`, the `start_terminal_session` MCP
+   *  `POST /sessions/terminal`, the `terminal_start` MCP
    *  tool family, and the `/sessions/:id/pty` WebSocket. Without it,
    *  those routes return 501 / the MCP tools aren't registered. */
   spawnPty?: PtyFactory
@@ -196,7 +251,36 @@ export interface CreateGatewayOptions {
   /** When true, drop the localhost-wildcard defaults — only the
    *  explicit `allowedOrigins` list is honoured. */
   strictOrigins?: boolean
+  /**
+   * Opt-in deferred/lazy MCP tool loading (harness-parity item 3, see
+   * `deferred-tools.ts`). When set, every root-gateway tool outside
+   * `alwaysOn` registers but starts disabled — excluded from the first
+   * `tools/list` — until the always-on `tool_search` meta-tool pulls it
+   * in by keyword. Omitted (default) → every tool is eagerly enabled,
+   * identical to pre-existing behaviour. Does not affect the scoped
+   * `/mcp/orchestrator` sub-gateway, which already exposes a small
+   * curated allowlist (`DEFAULT_ORCHESTRATOR_TOOLS`).
+   */
+  deferredTools?: { alwaysOn?: readonly string[] }
 }
+
+/**
+ * Default always-on set when `deferredTools` is enabled without an
+ * explicit `alwaysOn` override: the core spawn/drive/observe loop most
+ * sessions need immediately. Everything else (fs_*, directory_*,
+ * command_*, remote_*, browser_*, terminal_*, mcp_*, routine_*,
+ * workflow_*, policy_*, inbound_watcher_*, session_tree, agent_export,
+ * adapter_list, ...) starts deferred.
+ */
+const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
+  "agent_start",
+  "agent_prompt",
+  "agent_output",
+  "agent_kill",
+  "session_list",
+  "session_monitor",
+  "session_events_poll",
+]
 
 export interface GatewayHandle {
   url: string
@@ -247,6 +331,12 @@ export async function createGateway(
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
   }
   const port = opts.port ?? 18790
+  // Loopback URL for the daemon's own plain `/mcp` gateway — always
+  // 127.0.0.1 regardless of `opts.bind`, mirroring the orchestrator
+  // injector's loopback default (orchestrator-gateway.ts), since a
+  // spawned child is co-located on the same host and reaches the
+  // daemon over loopback, never the LAN-bind address.
+  const daemonMcpUrl = `http://127.0.0.1:${port}/mcp`
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -269,8 +359,12 @@ export async function createGateway(
 
   // Multi-tunnel registry — independent from RemoteController. Manages
   // the general "create a public URL for any local port" surface
-  // (create_tunnel / list_tunnels / stop_tunnel MCP tools + /tunnels HTTP
+  // (tunnel_create / tunnel_list / tunnel_stop MCP tools + /tunnels HTTP
   // routes). Logs flow through the same events stream.
+  // Shared tunnel creds store (~/.agentproto/tunnel-creds/, 0600) — lets the
+  // registry rebuild a provider that keeps its secrets off the descriptor
+  // (ngrok authtoken, third-party creds) when restoring on boot / creating.
+  const tunnelCredsStore = makeTunnelCredsStore()
   const tunnels = new TunnelRegistry({
     workspace,
     onLog: line =>
@@ -279,6 +373,7 @@ export async function createGateway(
         at: new Date().toISOString(),
         line,
       }),
+    readCreds: slug => tunnelCredsStore.read(slug),
   })
   // Relaunch any `autostart` (named) tunnels that were live before this
   // daemon restarted. Non-blocking — boot must not wait on cloudflared,
@@ -300,11 +395,11 @@ export async function createGateway(
     version: opts.version ?? "0.1.0-alpha",
   })
 
-  // Event bus + ring for orchestration tools (poll_events / wait_for_any).
+  // Event bus + ring for orchestration tools (session_events_poll / session_monitor).
   // Declared before the sessions registry so we can pass the bus into it.
   const sessionEvents = createSessionEventBus()
   const eventRing = createEventRing()
-  // Wire the ring so every session:* event is buffered for poll_events.
+  // Wire the ring so every session:* event is buffered for session_events_poll.
   eventRing.wire(sessionEvents)
   // Wire the webhook notifier so per-session and global URLs are
   // notified on turn-end / awaiting-input / exited events.
@@ -338,6 +433,7 @@ export async function createGateway(
             cwd,
             resumeSessionId,
             mcpServers,
+            onActivity,
           }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
             if (!adapter) return null
@@ -349,6 +445,7 @@ export async function createGateway(
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
                 ...(mcpServers ? { mcpServers } : {}),
+                ...(onActivity ? { onActivity } : {}),
               })
             } catch (err) {
               console.warn(
@@ -378,7 +475,7 @@ export async function createGateway(
       return Number.isFinite(n) && n > 0 ? n : undefined
     })(),
     // WP7: judge-agent gate spawns a short-lived agent via the same resolver
-    // start_agent_session uses. Absent → judge gates fail-safe (FAIL).
+    // agent_start uses. Absent → judge gates fail-safe (FAIL).
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -392,6 +489,35 @@ export async function createGateway(
   // available (routine steps need to spawn agent sessions).
   const routineRunner = opts.resolveAgentAdapter
     ? createRoutineRunner({
+        registry: sessions,
+        sessionEvents,
+        resolveAgentAdapter: opts.resolveAgentAdapter,
+        webhookNotifier,
+        persist: true,
+      })
+    : undefined
+
+  // Cron scheduler — singleton per daemon, persisted to
+  // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
+  // skipped fires during downtime are NOT backfilled (documented behaviour).
+  // Declared after `sessions` so it can spawn agent sessions via the registry.
+  // Agent jobs need `resolveAgentAdapter`; command jobs work without it.
+  const cronScheduler = createCronScheduler({
+    sessionEvents,
+    registry: sessions,
+    ...(opts.resolveAgentAdapter
+      ? { resolveAgentAdapter: opts.resolveAgentAdapter }
+      : {}),
+    workspace,
+    persist: true,
+  })
+
+  // Workflow runner — sibling primitive to routineRunner (stage-barrier
+  // parallel orchestration rather than a flat sequential list). Same
+  // singleton-per-daemon, same persistence pattern, own persist file
+  // (~/.agentproto/workflow-runs.json) so the two run stores never collide.
+  const workflowRunner = opts.resolveAgentAdapter
+    ? createWorkflowRunner({
         registry: sessions,
         sessionEvents,
         resolveAgentAdapter: opts.resolveAgentAdapter,
@@ -433,7 +559,7 @@ export async function createGateway(
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when
-  // `start_agent_session` is called with `orchestrator`, this mints a
+  // `agent_start` is called with `orchestrator`, this mints a
   // scoped token, builds the `mcpServers` entry pointing the child at
   // `/mcp/orchestrator?scope=<token>` on the daemon's own loopback
   // port, and revokes the token on the child's `session:exited`. The
@@ -444,7 +570,7 @@ export async function createGateway(
   // child's orchestration tools surface under a stable namespace,
   // independent of the daemon's advertised server name.
   // Defined BEFORE the scoped factory so the factory can hand it to the
-  // scoped server's `start_agent_session` — that's what lets a child
+  // scoped server's `agent_start` — that's what lets a child
   // orchestrator recursively spawn its OWN sub-orchestrators (WP4),
   // bounded by depth/quota/tools inheritance.
   const orchestratorInjector = createOrchestratorInjector({
@@ -470,6 +596,7 @@ export async function createGateway(
     supervisor,
     orchestratorInjector,
     webhookNotifier,
+    daemonMcpUrl,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -479,12 +606,20 @@ export async function createGateway(
   })
 
   const mcpServerFactory = async () => {
-    const { server } = await createMcpServer({
+    const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
       name: opts.name ?? "agentproto-runtime",
       version: opts.version ?? "0.1.0-alpha",
     })
+    // Deferred/lazy tool loading (opt-in — see deferred-tools.ts). Wraps
+    // every subsequent `registerXTools(server, ...)` pass below so tools
+    // outside `alwaysOn` register but start disabled (hidden from the
+    // first `tools/list`) until `tool_search` pulls them in. Omitted →
+    // `server` is the raw, fully-eager gateway, today's behaviour.
+    const server = opts.deferredTools
+      ? withDeferredTools(rawServer, { alwaysOn: new Set(opts.deferredTools.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS) })
+      : rawServer
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
@@ -492,7 +627,7 @@ export async function createGateway(
     registerFsTools(server, { workspace })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
-    // pnpm, …) is reachable via `execute_command`. Allowlist lives at
+    // pnpm, …) is reachable via `command_execute`. Allowlist lives at
     // `.agentproto/allowed-commands.json`; default-deny.
     registerCommandTools(server, { workspace })
     // Remote-tunnel lifecycle. The controller is a singleton on the
@@ -510,6 +645,7 @@ export async function createGateway(
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
       webhookNotifier,
+      daemonMcpUrl,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -532,7 +668,9 @@ export async function createGateway(
       eventRing,
       supervisor,
       ...(routineRunner ? { routineRunner } : {}),
+      ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
+      cronScheduler,
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -547,13 +685,14 @@ export async function createGateway(
       makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
       makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
       makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
+      makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
     ])
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
       tailLines: (id, lastN) => {
-        // Same source as get_agent_session_output: attach replays the ring
+        // Same source as agent_output: attach replays the ring
         // buffer synchronously, then we unsubscribe immediately.
         const lines: string[] = []
         const unsub = sessions.attach(id, (line) => { lines.push(line) })
@@ -571,7 +710,7 @@ export async function createGateway(
     // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
-    registerTunnelAdapterTools(server, {})
+    await registerTunnelAdapterTools(server, {})
     return server
   }
 
@@ -619,11 +758,22 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    sessionEvents,
+    eventRing,
+    supervisor,
+    ...(routineRunner ? { routineRunner } : {}),
+    ...(workflowRunner ? { workflowRunner } : {}),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
+    // Same injector + gateway URL passed to `registerAgentTools` above —
+    // lets POST /sessions/agent mint the same scoped orchestrator
+    // sub-gateway + hermes default-mcpServers safety net the MCP
+    // `agent_start` tool gets (session-spawn.ts is the shared logic).
+    buildOrchestratorMcp: orchestratorInjector,
+    daemonMcpUrl,
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
@@ -634,6 +784,7 @@ export async function createGateway(
       ? { listBrowserAdapters: opts.listBrowserAdapters }
       : {}),
     meta: { workspace, registered },
+    cronScheduler,
   })
 
   heartbeat.start()
@@ -672,6 +823,8 @@ export async function createGateway(
       heartbeat.stop()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Stop the cron scheduler tick loop before sessions shut down.
+      cronScheduler.shutdown()
       // Flush completion-policy state before sessions shut down so
       // policies referencing live sessions are persisted with their
       // current status (not "killed" sessions).

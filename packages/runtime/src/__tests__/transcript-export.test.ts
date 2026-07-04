@@ -69,8 +69,7 @@ describe("renderMarkdown", () => {
       ],
     }
     const md = renderMarkdown(session)
-    expect(md).toContain("> 📞 **bash**")
-    expect(md).toContain("ls -la")
+    expect(md).toContain("> 📞 bash ls -la")
   })
 
   it("wraps tool role output in a code block with tool name suffix", () => {
@@ -225,7 +224,7 @@ describe("claude-code JSONL exporter", () => {
     expect(result.content).toContain("List files.")
     expect(result.content).toContain("🤖 Assistant")
     expect(result.content).toContain("Let me check.")
-    expect(result.content).toContain("> 📞 **bash**")
+    expect(result.content).toContain("> 📞 bash ls")
     expect(result.content).toContain("🔧 Tool")
     expect(result.content).toContain("file1.txt")
     expect(result.content).toContain("2 files found.")
@@ -391,7 +390,7 @@ describe("hermes SQLite exporter", () => {
     expect(result.content).toContain("Hi there!")
     expect(result.content).toContain("💭 reasoning")
     expect(result.content).toContain("I should be helpful.")
-    expect(result.content).toContain("> 📞 **bash**")
+    expect(result.content).toContain("> 📞 bash echo hi")
     // tool result
     expect(result.content).toContain("🔧 Tool · `bash`")
     expect(result.content).toContain("hi")
@@ -599,5 +598,198 @@ describe("adapter dispatch", () => {
     })
     expect(result.content).toContain("Error:")
     expect(result.content).toContain("not found in registry")
+  })
+})
+
+// ── daemon-events exporter (events.jsonl) ──────────────────────────────
+
+describe("daemon-events exporter", () => {
+  const SESSION_ID = "sess_x1"
+  let tmp: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "daemon-export-"))
+    vi.mocked(os.homedir).mockReturnValue(tmp)
+  })
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+    vi.clearAllMocks()
+  })
+
+  function writeEvents(lines: object[]): void {
+    const dir = join(tmp, ".agentproto", "sessions", SESSION_ID)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, "events.jsonl"),
+      lines.map((l, i) => JSON.stringify({ seq: i + 1, ts: "2026-06-01T00:00:00.000Z", ...l })).join("\n") + "\n",
+    )
+  }
+
+  function makeRegistry(desc: Record<string, unknown> = {}): SessionsRegistry {
+    return {
+      findByIdOrName: vi.fn().mockReturnValue({
+        id: SESSION_ID,
+        kind: "agent-cli",
+        workspaceSlug: "default",
+        command: "aider",
+        pid: null,
+        status: "exited",
+        startedAt: "2026-06-01T00:00:00Z",
+        adapterSlug: "aider", // no native exporter for this adapter
+        ...desc,
+      }),
+    } as unknown as SessionsRegistry
+  }
+
+  it("reconstructs a user -> assistant+tool_call -> tool_result -> assistant flow", async () => {
+    writeEvents([
+      { kind: "user-prompt", sessionId: SESSION_ID, text: "List files." },
+      { kind: "text-delta", sessionId: SESSION_ID, text: "Let me check." },
+      {
+        kind: "tool-call",
+        sessionId: SESSION_ID,
+        toolCallId: "t1",
+        toolName: "bash",
+        arguments: { command: "ls" },
+      },
+      {
+        kind: "tool-result",
+        sessionId: SESSION_ID,
+        toolCallId: "t1",
+        result: "file1.txt\nfile2.txt",
+        isError: false,
+      },
+      { kind: "text-delta", sessionId: SESSION_ID, text: "2 files found." },
+      { kind: "turn-end", sessionId: SESSION_ID, reason: "completed" },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    expect(result.content).not.toContain("Error:")
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta.source).toBe("daemon-events")
+    const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
+    expect(parsed.messages).toEqual([
+      { role: "user", text: "List files.", ts: FIXTURE_TS },
+      {
+        role: "assistant",
+        text: "Let me check.",
+        toolCalls: [{ name: "bash", args: JSON.stringify({ command: "ls" }) }],
+        ts: FIXTURE_TS,
+      },
+      { role: "tool", text: "file1.txt\nfile2.txt", toolName: "bash", ts: FIXTURE_TS },
+      { role: "assistant", text: "2 files found.", ts: FIXTURE_TS },
+    ])
+  })
+
+  it("renders plan and error events as system messages, and folds usage_update into meta", async () => {
+    writeEvents([
+      {
+        kind: "plan",
+        sessionId: SESSION_ID,
+        entries: [
+          { content: "step 1", priority: "high", status: "completed" },
+          { content: "step 2", priority: "medium", status: "pending" },
+        ],
+      },
+      {
+        kind: "usage_update",
+        sessionId: SESSION_ID,
+        size: 100_000,
+        used: 4_200,
+        cost: { amount: 0.42, currency: "USD" },
+      },
+      { kind: "error", sessionId: SESSION_ID, error: { message: "boom" } },
+    ])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+      format: "json",
+    })
+
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.messages).toContainEqual({ role: "system", text: "[plan] 1/2 step 1; step 2" })
+    expect(parsed.messages).toContainEqual({ role: "system", text: "[error] boom" })
+    expect(parsed.meta.costUsd).toBe(0.42)
+  })
+
+  it("enriches meta from the registry descriptor (model, label, cost, tokens)", async () => {
+    writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi" }])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry({
+        label: "my-session",
+        model: "claude-opus-4-8",
+        costUsd: 1.23,
+        tokensIn: 500,
+        tokensOut: 200,
+        startedAt: "2026-06-01T00:00:00Z",
+        endedAt: "2026-06-01T00:05:00Z",
+      }),
+      source: "daemon",
+      format: "json",
+    })
+
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta).toMatchObject({
+      title: "my-session",
+      model: "claude-opus-4-8",
+      costUsd: 1.23,
+      tokens: { input: 500, output: 200 },
+      startedAt: "2026-06-01T00:00:00Z",
+      endedAt: "2026-06-01T00:05:00Z",
+      messageCount: 1,
+      toolCallCount: 0,
+    })
+  })
+
+  it("returns an actionable error when events.jsonl is missing (source='daemon')", async () => {
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "daemon",
+    })
+    expect(result.content).toContain("Error:")
+    expect(result.content).toContain("no events.jsonl")
+  })
+
+  it("source='auto' falls back to daemon events when the adapter has no native exporter", async () => {
+    writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi via fallback" }])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      format: "json",
+      // source omitted — defaults to "auto"
+    })
+
+    expect(result.content).not.toContain("Error:")
+    expect(result.adapter).toBe("aider")
+    const parsed = JSON.parse(result.content) as ExportedSession
+    expect(parsed.meta.source).toBe("daemon-events")
+    expect(parsed.messages[0]).toMatchObject({ role: "user", text: "hi via fallback" })
+  })
+
+  it("source='native' does NOT fall back to daemon events, even when events.jsonl exists", async () => {
+    writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "should not be read" }])
+
+    const result = await exportAgentSession({
+      sessionId: SESSION_ID,
+      registry: makeRegistry(),
+      source: "native",
+    })
+
+    expect(result.content).toContain("Error:")
+    expect(result.content).toContain("no exporter for adapter")
+    expect(result.content).not.toContain("daemon-events fallback")
   })
 })

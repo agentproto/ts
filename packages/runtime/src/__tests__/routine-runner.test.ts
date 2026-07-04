@@ -354,7 +354,7 @@ describe("RoutineRunner regression — fast-session race + cwd threading", () =>
   }, 500)
 
   it("uses the cwd from start() for the first spawned session", async () => {
-    // Reproduces Bug 2: cwd passed to start_routine was silently ignored;
+    // Reproduces Bug 2: cwd passed to routine_start was silently ignored;
     // sessions always spawned in process.cwd() of the daemon.
     const bus = createSessionEventBus()
     const capturedCwds: string[] = []

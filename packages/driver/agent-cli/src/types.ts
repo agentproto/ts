@@ -142,6 +142,18 @@ export type AgentCliSetupStep =
 export interface AgentCliSession {
   mode?: AgentCliSessionMode
   idle_timeout_ms?: number
+  /**
+   * Per-turn silence watchdog (ms) — distinct from `idle_timeout_ms`,
+   * which bounds time BETWEEN turns. This bounds true silence DURING a
+   * single turn: if the adapter goes this long with no activity signal
+   * and its `prompt` call still hasn't resolved, the ACP client
+   * synthesizes a `turn-end` with `reason: "watchdog-timeout"` instead
+   * of hanging forever (see `@agentproto/acp/client`'s
+   * `AcpClientOptions.turnIdleTimeoutMs`). Undefined (the default)
+   * disables the watchdog — set this only for adapters known to
+   * sometimes drop the final `prompt` response (e.g. hermes).
+   */
+  turn_idle_timeout_ms?: number
   max_turns?: number
   context_carryover?: boolean
 }
@@ -149,7 +161,31 @@ export interface AgentCliSession {
 export interface AgentCliModels {
   default?: string
   allowed?: string[]
+  /**
+   * Model-id patterns this adapter must NEVER route to, even when a caller
+   * passes the id explicitly (the `model` option is free-form, so `allowed`
+   * is only a curated menu and can't *prevent* an off-menu id). Each pattern
+   * matches case-insensitively against the requested model id and supports a
+   * single trailing `*` wildcard (prefix match); otherwise exact. A match is
+   * refused at compose time (`RuntimeConfigError`, code `model_denied`).
+   * Use to reserve a premium provider for a dedicated adapter — e.g. hermes
+   * denies `["anthropic/*", "claude-*"]` so Anthropic models stay exclusive
+   * to the claude-code adapter.
+   */
+  deny?: string[]
   env?: Record<string, string>
+  /**
+   * How the host selects a model at session start:
+   *   - "config"  (default) — apply via ACP `session/set_config_option`
+   *     with `configId:"model"` right after `newSession`. Works for ACP
+   *     wrappers that expose model as a session config (e.g. claude-code).
+   *   - "command" — `set_config_option` is a no-op / silently rejected on
+   *     this agent (e.g. hermes), so instead send a `/model <id>` control
+   *     turn after `newSession` and drain it. The agent's reply is checked
+   *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   * Omit → "config".
+   */
+  apply?: "config" | "command"
 }
 
 export interface AgentCliCapabilities {
@@ -171,6 +207,17 @@ export interface AgentCliCapabilities {
 }
 
 /**
+ * Support status for a declared mode. Absent ⇒ treated as `"active"`.
+ *   active  — the mode does what its description claims.
+ *   noop    — declared and accepted, but measured to have no effect
+ *             (argv/env compose fine, but the observable outcome is
+ *             identical to not passing it). Kept declared for honesty
+ *             and so a future fix can flip it back to `active`.
+ *   planned — declared as an intended surface but not wired yet.
+ */
+export type AgentCliModeStatus = "active" | "noop" | "planned"
+
+/**
  * AIP-45 mode declaration — a mutually-exclusive operation profile
  * the CLI exposes. The host picks at most ONE mode per turn via
  * `OPERATOR.runtime.config.mode`. Mode patches apply AFTER the
@@ -179,8 +226,24 @@ export interface AgentCliCapabilities {
 export interface AgentCliMode {
   id: string
   description?: string
+  /**
+   * Extra argv prepended BEFORE the manifest's default `bin_args` when
+   * this mode is active. Needed for CLIs whose global flags must
+   * precede a subcommand baked into `bin_args` (e.g. hermes'
+   * `--ignore-user-config` must come before `acp`, where
+   * `bin_args_append` would land it too late).
+   */
+  bin_args_prepend?: string[]
   bin_args_append?: string[]
   env?: Record<string, string>
+  /**
+   * Honest support status surfaced to clients (e.g. via `adapter_list`).
+   * Lets an adapter admit that a declared mode is a measured no-op or
+   * not-yet-wired instead of silently accepting it. Absent ⇒ `"active"`.
+   */
+  status?: AgentCliModeStatus
+  /** Human-readable reason backing `status` (e.g. what was measured). */
+  status_note?: string
 }
 
 export type AgentCliOptionType = "boolean" | "integer" | "string" | "enum"
@@ -201,6 +264,14 @@ export interface AgentCliOption {
   min?: number
   /** Inclusive upper bound when type === "integer". */
   max?: number
+  /**
+   * Argv template prepended BEFORE the manifest's default `bin_args`
+   * when the option has a non-default value. The literal token
+   * `{value}` is replaced with the option's value (stringified). Use
+   * for value-bearing global flags that must precede a subcommand
+   * (e.g. hermes' `--skills {value}`).
+   */
+  bin_args_prepend?: string[]
   /**
    * Argv template appended when the option has a non-default value.
    * The literal token `{value}` is replaced with the option's value
@@ -285,6 +356,59 @@ export interface AgentCliExample {
   note?: string
 }
 
+/**
+ * AIP-45 § Print protocol configuration.
+ *
+ * When `protocol: "print"`, this block declares the CLI's one-shot
+ * headless surface so the print arm can construct the correct argv and
+ * map the CLI's wire events to {@link StreamEvent}. Omit to use
+ * Claude Code defaults (backward-compatible).
+ */
+export interface AgentCliPrintConfig {
+  /**
+   * How the prompt text is passed to the binary.
+   * - absent / `"positional"` — appended as the last positional arg
+   *   (Claude: `claude --print ... <prompt>`).
+   * - a string — passed as `--<prompt_flag> <text>` before any trailing
+   *   positional args (Mastra Code: `--prompt`).
+   */
+  prompt_flag?: string
+  /**
+   * Output format flags appended before the prompt. Defaults to
+   * `["--output-format", "stream-json"]` (Claude Code).
+   *
+   * Mastra Code uses `["--output", "jsonl"]`.
+   */
+  output_format?: string[]
+  /**
+   * Extra flags inserted between `output_format` and the prompt.
+   * Claude Code uses `["--no-interactive"]`; Mastra Code omits this.
+   */
+  pre_prompt?: string[]
+  /**
+   * Resume / continue flag for reattaching to a prior session.
+   *
+   * Claude:  `{ flag: "--resume", kind: "value" }`
+   * Mastra:  `{ flag: "--continue", kind: "boolean" }` — OR
+   *          `{ flag: "--thread", kind: "value" }` for explicit thread id
+   */
+  resume?: {
+    flag: string
+    /** "value" = `--flag <sessionId>`, "boolean" = `--flag` (bare). */
+    kind: "value" | "boolean"
+  }
+  /**
+   * Which event taxonomy the CLI emits on stdout (JSONL / stream-json).
+   * The print arm picks the matching event mapper.
+   *
+   * - `"claude-stream-json"` (default) — Claude Code's
+   *   `--output-format stream-json` taxonomy.
+   * - `"mastra-jsonl"` — Mastra Code's `--output jsonl` taxonomy
+   *   (`AgentControllerEvent` shapes).
+   */
+  event_schema?: "claude-stream-json" | "mastra-jsonl"
+}
+
 export interface AgentCliDefinition {
   name: string
   id: string
@@ -306,6 +430,8 @@ export interface AgentCliDefinition {
   mcp?: AgentCliMcpBlock
   /** REQUIRED when protocol=proprietary. NPM package implementing AgentCliClient. */
   adapter?: string
+  /** OPTIONAL when protocol=print. Declares the one-shot CLI surface. */
+  print?: AgentCliPrintConfig
   session?: AgentCliSession
   models?: AgentCliModels
   capabilities?: AgentCliCapabilities
@@ -371,6 +497,29 @@ export interface AgentCliConnectOptions {
    * `session/set_config_option` with `configId:"effort"` on ACP arms.
    */
   effort?: string
+  /**
+   * Called on ANY adapter-process activity observed by the protocol
+   * arm — incoming ACP `session/update` notifications (even ones that
+   * don't translate into a `StreamEvent`) and outbound RPC calls
+   * (`newSession`/`loadSession`/`prompt`/`cancel`/`setSessionConfigOption`).
+   * Distinct from ring-buffer output: fires during long internal
+   * tool-call chains where no `StreamEvent` reaches the host, so a
+   * supervisor can tell "still working" apart from "gone quiet."
+   * Arms that don't model a stdio JSON-RPC channel (proprietary
+   * one-shots) MAY ignore this field.
+   */
+  onActivity?: () => void
+  /**
+   * Turn-idle watchdog, forwarded verbatim to the ACP arm's
+   * `createAcpClient({ turnIdleTimeoutMs })` (see
+   * `@agentproto/acp/client`'s `AcpClientOptions.turnIdleTimeoutMs` for
+   * the full contract). If a turn goes this many ms with no activity
+   * signal and the underlying adapter call still hasn't resolved, the
+   * arm synthesizes a `turn-end` event with `reason: "watchdog-timeout"`
+   * instead of hanging forever. Undefined disables the watchdog. Arms
+   * that don't model a stdio JSON-RPC channel MAY ignore this field.
+   */
+  turnIdleTimeoutMs?: number
 }
 
 /**
@@ -446,6 +595,25 @@ export interface AgentCliStartOptions {
    * (e.g. the daemon's orchestration gateway) at spawn time.
    */
   mcpServers?: AcpMcpServer[]
+  /**
+   * Called on any adapter-process activity (ACP JSON-RPC traffic in
+   * either direction). Forwarded verbatim to
+   * `protocolArm.connect({ onActivity })` — see
+   * {@link AgentCliConnectOptions.onActivity} for the full contract.
+   * Lets a host track session liveness independent of ring-buffer
+   * output, e.g. during a long internal tool-call chain.
+   */
+  onActivity?: () => void
+  /**
+   * Turn-idle watchdog timeout in ms, forwarded to
+   * `protocolArm.connect({ turnIdleTimeoutMs })` — see
+   * {@link AgentCliConnectOptions.turnIdleTimeoutMs}. When omitted here,
+   * `createAgentCliRuntime(...).start()` falls back to the manifest's
+   * `session.turn_idle_timeout_ms` (if the adapter declares one), so a
+   * host doesn't have to opt in per-call for an adapter that always
+   * wants this protection.
+   */
+  turnIdleTimeoutMs?: number
 }
 
 /**
@@ -479,6 +647,15 @@ export interface TurnContext {
 
 export interface AgentCliRuntimeSession {
   readonly sessionId: string
+  /**
+   * OS-level process id of the spawned child, when the runtime owns a
+   * real subprocess (every current arm — ACP, print — does). Lets a
+   * host compute a cheap `processAlive` liveness check
+   * (`process.kill(pid, 0)`) without adapter-specific forensics.
+   * Undefined for a future arm with no owned process (e.g. a
+   * WebSocket transport).
+   */
+  readonly pid?: number
   send(message: unknown): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
   close(): Promise<void>

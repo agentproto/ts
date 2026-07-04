@@ -3,9 +3,9 @@
  * RuntimeEvents (global daemon bus) — session events are scoped to
  * individual sessions and fire at turn-level granularity.
  *
- * Consumers: EventRing (poll_events cursor), WebhookNotifier
+ * Consumers: EventRing (session_events_poll cursor), WebhookNotifier
  * (fire-and-forget HTTP), RoutineRunner (state machine fan-in),
- * and wait_for_any MCP tool (long-poll multiplexed).
+ * and session_monitor MCP tool (long-poll multiplexed).
  */
 
 import { EventEmitter } from "node:events"
@@ -19,6 +19,24 @@ export type SessionEventType =
   | "policy:failed"
   | "policy:commit-ready"
   | "policy:committed"
+  | "cron:fired"
+  | "cron:succeeded"
+  | "cron:failed"
+
+/**
+ * Structured detail on why a session is awaiting input, when derivable.
+ * `source: "structured"` — a driver-reported ACP-style prompt (e.g. a tool
+ * permission request with real options). `source: "heuristic"` — a
+ * best-effort guess from the tail of the transcript (trailing "?" plus
+ * an optional enumerated option list) for drivers that don't report
+ * structured prompts. Absent entirely when neither could be determined —
+ * callers still have the plain `awaitingInput` boolean in that case.
+ */
+export interface SessionAwaitingQuestion {
+  text: string
+  options?: string[]
+  source: "structured" | "heuristic"
+}
 
 export interface SessionTurnEndEvent {
   type: "session:turn-end"
@@ -26,6 +44,16 @@ export interface SessionTurnEndEvent {
   awaitingInput: boolean
   label?: string
   ts: string
+  question?: SessionAwaitingQuestion
+  /**
+   * The adapter's stream `turn-end` reason, when the driver reports one
+   * (e.g. `"completed"`, `"cancelled"`, `"max_turns"`, or
+   * `"watchdog-timeout"` when the ACP client's turn-idle watchdog fired
+   * because the adapter went silent — see
+   * `@agentproto/acp/client`'s `AcpClientOptions.turnIdleTimeoutMs`).
+   * Absent for drivers that don't report a reason.
+   */
+  reason?: string
 }
 
 export interface SessionAwaitingInputEvent {
@@ -33,6 +61,7 @@ export interface SessionAwaitingInputEvent {
   sessionId: string
   label?: string
   ts: string
+  question?: SessionAwaitingQuestion
 }
 
 export interface SessionExitedEvent {
@@ -44,8 +73,8 @@ export interface SessionExitedEvent {
   ts: string
 }
 
-/** Emitted when execute_command finishes. commandId matches the id
- *  returned by the execute_command MCP tool. */
+/** Emitted when command_execute finishes. commandId matches the id
+ *  returned by the command_execute MCP tool. */
 export interface SessionCommandDoneEvent {
   type: "session:command-done"
   sessionId: string
@@ -74,7 +103,7 @@ export interface PolicyFailedEvent {
 /**
  * Emitted by the supervisor (WP5) when a `then:"commit"` policy's gate passes
  * but `requireHumanAck` is set: the commit is staged-and-ready but NOT yet
- * executed. Carries the exact paths + message that `ack_policy(approve:true)`
+ * executed. Carries the exact paths + message that `policy_ack(approve:true)`
  * will commit. The policy sits in `awaiting-ack` until acked.
  */
 export interface PolicyCommitReadyEvent {
@@ -88,7 +117,7 @@ export interface PolicyCommitReadyEvent {
 
 /** Emitted by the supervisor (WP5) when a `then:"commit"` policy has actually
  *  committed — either directly (requireHumanAck:false) or after an approving
- *  `ack_policy`. Carries the resulting commit sha. */
+ *  `policy_ack`. Carries the resulting commit sha. */
 export interface PolicyCommittedEvent {
   type: "policy:committed"
   policyId: string
@@ -96,6 +125,32 @@ export interface PolicyCommittedEvent {
   sha: string
   paths: string[]
   message: string
+  ts: string
+}
+
+/** Emitted by CronScheduler when a job fires (before the action runs). */
+export interface CronFiredEvent {
+  type: "cron:fired"
+  jobId: string
+  label?: string
+  ts: string
+}
+
+/** Emitted by CronScheduler when a job action completes successfully. */
+export interface CronSucceededEvent {
+  type: "cron:succeeded"
+  jobId: string
+  label?: string
+  summary: string
+  ts: string
+}
+
+/** Emitted by CronScheduler when a job action fails. */
+export interface CronFailedEvent {
+  type: "cron:failed"
+  jobId: string
+  label?: string
+  error: string
   ts: string
 }
 
@@ -108,6 +163,9 @@ export type SessionEvent =
   | PolicyFailedEvent
   | PolicyCommitReadyEvent
   | PolicyCommittedEvent
+  | CronFiredEvent
+  | CronSucceededEvent
+  | CronFailedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

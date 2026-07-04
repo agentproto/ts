@@ -10,6 +10,15 @@
  *     for `cat .agentproto/runtime.json` diagnostics + future tooling
  *     that wants to discover a running gateway from disk.
  *
+ * The same snapshot is ALSO mirrored to the central, workspace-
+ * independent daemon registry at `~/.agentproto/daemons/<port>.json`
+ * (see daemonRegistryDir / writeDaemonRegistryEntry below). The
+ * per-workspace file only helps `cat`-style local diagnostics and
+ * discovery for REGISTERED workspaces; a daemon launched from an
+ * arbitrary cwd (tunnel mode, a repo checkout) writes its workspace
+ * file somewhere discovery never walks. The central entry is what
+ * makes `agentproto chat` / `sessions` find such a daemon.
+ *
  * What does NOT go here:
  *   - HEARTBEAT.md — user-edited content
  *   - conversations/ — user-readable chat history
@@ -25,8 +34,9 @@
  * spawn vector.
  */
 
-import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 
 export interface RuntimeMeta {
   /** Absolute path to the workspace root the gateway is bound to. */
@@ -74,6 +84,111 @@ export async function writeRuntimeMeta(
   } catch (err) {
     console.error("[runtime] failed to write .agentproto/runtime.json:", err)
   }
+  // Also publish to the central daemon registry so the CLI can discover
+  // this daemon WITHOUT its workspace being registered in
+  // workspaces.json. A daemon launched from an arbitrary cwd (the common
+  // case: `agentproto serve` from a repo checkout, or tunnel mode) lands
+  // its workspace runtime.json somewhere discovery never walks; the
+  // central entry closes that gap. Keyed by port so multiple daemons
+  // coexist. Best-effort — the workspace file above is the source of
+  // truth; this is purely an additional discovery hint.
+  await writeDaemonRegistryEntry(meta)
+}
+
+/** `~/.agentproto/daemons/` — the central, workspace-independent daemon
+ *  registry. Each live daemon owns one `<port>.json` here. */
+export function daemonRegistryDir(): string {
+  return resolve(homedir(), ".agentproto", "daemons")
+}
+
+function daemonRegistryPath(port: number): string {
+  return join(daemonRegistryDir(), `${port}.json`)
+}
+
+/**
+ * Write `<registry>/<port>.json` (mode 0600 — holds the bearer token).
+ * Best-effort; failure here never gates the gateway. Mirrors the
+ * per-workspace runtime.json so the same `RuntimeMeta` shape is readable
+ * from either location.
+ */
+export async function writeDaemonRegistryEntry(meta: RuntimeMeta): Promise<void> {
+  try {
+    await mkdir(daemonRegistryDir(), { recursive: true })
+    await writeFile(
+      daemonRegistryPath(meta.port),
+      JSON.stringify(meta, null, 2) + "\n",
+      { encoding: "utf8", mode: 0o600 },
+    )
+  } catch (err) {
+    console.error("[runtime] failed to write daemons/<port>.json:", err)
+  }
+}
+
+/** Remove a daemon's central registry entry. Best-effort; missing is a
+ *  no-op. Called from graceful shutdown alongside unlinkRuntimeMeta. */
+export async function unlinkDaemonRegistryEntry(port: number): Promise<void> {
+  try {
+    await unlink(daemonRegistryPath(port))
+  } catch {
+    // ENOENT / permission — not worth surfacing on shutdown.
+  }
+}
+
+/**
+ * Read every entry in the central daemon registry, newest-first by
+ * `startedAt`. No liveness filtering here — callers decide (discovery
+ * skips dead PIDs; the sweep deletes them). Malformed / unreadable
+ * entries are skipped silently.
+ */
+export async function readDaemonRegistry(): Promise<
+  Array<{ meta: Partial<RuntimeMeta> & Record<string, unknown>; path: string; mtime: Date }>
+> {
+  let names: string[]
+  try {
+    names = await readdir(daemonRegistryDir())
+  } catch {
+    return [] // registry dir doesn't exist yet — no daemons published.
+  }
+  const out: Array<{
+    meta: Partial<RuntimeMeta> & Record<string, unknown>
+    path: string
+    mtime: Date
+  }> = []
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue
+    const path = join(daemonRegistryDir(), name)
+    try {
+      const [raw, st] = await Promise.all([readFile(path, "utf8"), stat(path)])
+      out.push({ meta: JSON.parse(raw) as Record<string, unknown>, path, mtime: st.mtime })
+    } catch {
+      // skip malformed / unreadable
+    }
+  }
+  // Newest daemon first — discovery prefers the most recently booted.
+  return out.sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+}
+
+/**
+ * Delete central registry entries whose PID is dead (kill -9, crash,
+ * reboot). Returns the paths cleaned. Called at `serve` boot — the same
+ * footgun the per-workspace sweep guards against, applied to the central
+ * registry. Skips `currentPort` (the booting daemon's own entry).
+ */
+export async function sweepStaleDaemonRegistry(currentPort: number): Promise<string[]> {
+  const cleaned: string[] = []
+  for (const entry of await readDaemonRegistry()) {
+    if (entry.meta.port === currentPort) continue
+    const pid = entry.meta.pid
+    if (typeof pid === "number" && !isPidAlive(pid)) {
+      try {
+        await unlink(entry.path)
+        cleaned.push(entry.path)
+      } catch {
+        // ignore — best-effort
+      }
+    }
+  }
+  return cleaned
 }
 
 /**
@@ -82,12 +197,18 @@ export async function writeRuntimeMeta(
  * live daemon doesn't pick up a stale token after this process exits.
  * Missing file is a no-op (the daemon may never have written one).
  */
-export async function unlinkRuntimeMeta(workspace: string): Promise<void> {
+export async function unlinkRuntimeMeta(
+  workspace: string,
+  port?: number,
+): Promise<void> {
   try {
     await unlink(join(workspace, ".agentproto", "runtime.json"))
   } catch {
     // ENOENT / permission — not worth surfacing on shutdown.
   }
+  // Tear down the matching central registry entry too (when the caller
+  // knows the port) so discovery doesn't pick up a dead daemon.
+  if (typeof port === "number") await unlinkDaemonRegistryEntry(port)
 }
 
 /**

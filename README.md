@@ -114,10 +114,11 @@ adapters/hermes/              @agentproto/adapter-hermes         AIP-45 adapter 
 adapters/opencode/            @agentproto/adapter-opencode       AIP-45 adapter for OpenCode
 adapters/codex/               @agentproto/adapter-codex          AIP-45 adapter for Codex
 adapters/openclaw/            @agentproto/adapter-openclaw       AIP-45 adapter for Openclaw
+adapters/mastra-agent/        @agentproto/adapter-mastra-agent   First-party agent — AIP-42 AGENT.md run as a live Mastra agent behind ACP
 adapters/browser/             @agentproto/adapter-browser        Browser / CDP session adapter
 ```
 
-All agent-CLI adapters share the `adapter-kit` primitives: `makeSetupTool` (single-field or multi-field creds), `makeStatusTool`, `makeCatalogEntry`, and the creds store.
+All agent-CLI adapters share the `adapter-kit` primitives: `makeSetupTool` (single-field or multi-field creds), `makeStatusTool`, `makeCatalogEntry`, and the creds store. `mastra-agent` is the odd one out: every other adapter wraps an *external* agent CLI, whereas `mastra-agent` is ours end to end — an `AGENT.md` run as a live Mastra agent (our loop, our models), spawned by the daemon like any arm or standalone via `agentproto-mastra acp`.
 
 ### 5 — Knowledge & workflow
 
@@ -150,7 +151,7 @@ Key specs implemented here:
 | AIP-40 | EXTENSION.md | `@agentproto/extension` |
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
 | AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
-| AIP-45 | Agent CLI adapter | `adapters/{claude-code,hermes,opencode,codex,openclaw}` |
+| AIP-45 | Agent CLI adapter | `adapters/{claude-code,hermes,opencode,codex,openclaw,mastra-agent}` |
 
 ## License
 

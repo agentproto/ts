@@ -2,7 +2,7 @@
  * Unit tests for the per-session notifyUrl lifecycle in registerSessionTools.
  *
  * Proves:
- *   (a) start_agent_session with notifyUrl calls webhookNotifier.register(sessionId, url)
+ *   (a) agent_start with notifyUrl calls webhookNotifier.register(sessionId, url)
  *   (b) a session:exited event (wired the same way index.ts does) calls
  *       webhookNotifier.unregister(sessionId) — preventing map leaks.
  */
@@ -74,13 +74,13 @@ async function buildHarness(notifier: WebhookNotifier) {
   return { client, registry, sessionEvents, close: () => client.close() }
 }
 
-describe("start_agent_session — notifyUrl register/unregister lifecycle", () => {
+describe("agent_start — notifyUrl register/unregister lifecycle", () => {
   it("(a) register(sessionId, url) is called on spawn when notifyUrl is provided", async () => {
     const notifier = makeNotifierSpy()
     const { client, close } = await buildHarness(notifier)
 
     const result = await client.callTool({
-      name: "start_agent_session",
+      name: "agent_start",
       arguments: {
         adapter: "claude-code",
         cwd: process.cwd(),
@@ -103,7 +103,7 @@ describe("start_agent_session — notifyUrl register/unregister lifecycle", () =
     const { client, registry, sessionEvents, close } = await buildHarness(notifier)
 
     const result = await client.callTool({
-      name: "start_agent_session",
+      name: "agent_start",
       arguments: {
         adapter: "claude-code",
         cwd: process.cwd(),
@@ -137,7 +137,7 @@ describe("start_agent_session — notifyUrl register/unregister lifecycle", () =
     const { client, close } = await buildHarness(notifier)
 
     await client.callTool({
-      name: "start_agent_session",
+      name: "agent_start",
       arguments: {
         adapter: "claude-code",
         cwd: process.cwd(),

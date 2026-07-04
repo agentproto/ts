@@ -61,8 +61,14 @@ jobs:
           fetch-depth: 0
 
       - name: Check for changeset
+        # Pass the PR title via env, NOT inline `${{ … }}` interpolation into the
+        # script body — a title containing backticks / $( ) would otherwise be
+        # executed by the shell (command injection; e.g. a title with
+        # `agentproto models` failed this step with "command not found", 127).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          TITLE="${{ github.event.pull_request.title }}"
+          TITLE="$PR_TITLE"
           if [[ "$TITLE" == chore\(release\):* ]]; then
             echo "Version Packages PR — no changeset required."
             exit 0
@@ -83,6 +89,80 @@ jobs:
             exit 1
           fi
           echo "✓ Changeset present: $ADDED"
+
+  # On PRs: enforce two conventions that used to rely on remembering to say
+  # them in every prompt — no per-worktree scratch docs land in the repo, and
+  # no AI-attribution trailers ride into commits or PR bodies. Fast,
+  # pure-git/shell, runs in parallel with build-and-test.
+  hygiene-check:
+    name: Hygiene checks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check for scratch docs and AI-attribution trailers
+        # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
+        # changeset-check step above for why (shell injection via backticks).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="$PR_TITLE"
+          if [[ "$TITLE" == chore\(release\):* ]]; then
+            echo "Version Packages PR — hygiene checks skipped."
+            exit 0
+          fi
+
+          FAIL=0
+          # Match on the email domain, not the display name — a human
+          # contributor named "Claude" (or similar) must not false-positive.
+          ATTRIBUTION_PATTERN='Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with'
+
+          # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
+          # are per-worktree planning scratch and must never land in the repo —
+          # they've collided across sibling branches repeatedly. Check the
+          # checked-out HEAD tree directly (not the diff), so one that slipped
+          # in via a bad merge is still caught, not just ones added in this PR.
+          SCRATCH_FILES=()
+          for f in PLAN.md BRIEF.md MERGE-CONFLICT-BRIEF*.md; do
+            if [ -f "$f" ]; then
+              SCRATCH_FILES+=("$f")
+            fi
+          done
+          if [ "${#SCRATCH_FILES[@]}" -gt 0 ]; then
+            echo "::error::Root-level scratch doc(s) present in this PR's tree: ${SCRATCH_FILES[*]}"
+            echo "These are per-worktree planning scratch files (PLAN.md / BRIEF.md / MERGE-CONFLICT-BRIEF*.md) and must never be committed to the repo."
+            echo "Fix: git rm ${SCRATCH_FILES[*]}"
+            FAIL=1
+          fi
+
+          # 2. No AI-attribution trailer in any commit in this PR's range, or in
+          # the PR body. Forward-looking only — commits already on main before
+          # this convention existed are never scanned.
+          BAD_COMMITS=$(git log --format=%B origin/main..HEAD | grep -iE "$ATTRIBUTION_PATTERN" || true)
+          if [ -n "$BAD_COMMITS" ]; then
+            echo "::error::A commit in this PR carries an AI-attribution trailer."
+            echo "Commit messages must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Amend/rebase to remove them."
+            echo "Matched line(s): $BAD_COMMITS"
+            FAIL=1
+          fi
+
+          PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body || true)
+          if printf '%s' "$PR_BODY" | grep -iE "$ATTRIBUTION_PATTERN" > /dev/null; then
+            echo "::error::The PR body carries an AI-attribution trailer."
+            echo "PR bodies must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Edit the PR description to remove them."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            exit 1
+          fi
+          echo "✓ No scratch docs, no AI-attribution trailers."
 
   # On PR open: fill an empty description from the diff (never clobbers a
   # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
@@ -134,8 +214,27 @@ jobs:
       statuses: write       # post explicit commit-status on HEAD after push
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
+
+      # The re-triggered run (from the reviewer's changeset commit) can race
+      # GitHub auto-merge, which merges the PR and deletes its branch. Every
+      # branch-dependent step below then fails on a dead-branch checkout
+      # (`agent-setup` does `ref: github.head_ref`). Query the LIVE PR state
+      # here — the bootstrap checkout above works post-merge and this `gh`
+      # call needs no branch — and skip the rest of the job if it's gone.
+      - name: Skip if PR already merged/closed
+        id: prstate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MERGED=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --json state,mergedAt \
+            --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
+          echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
+
       - uses: ./.github/actions/agent-setup
         id: setup
+        if: steps.prstate.outputs.skip != 'true'
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
@@ -149,6 +248,7 @@ jobs:
       # convenience for trusted contributors, not a security boundary.
       - name: Check local-review bypass
         id: bypass
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
@@ -161,7 +261,9 @@ jobs:
 
       - name: Run agentic PR reviewer
         id: reviewer
-        if: steps.bypass.outputs.skip != 'true'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -174,7 +276,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Commit changeset (if written by reviewer)
-        if: steps.bypass.outputs.skip != 'true'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
         id: changeset
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
@@ -188,10 +292,11 @@ jobs:
             echo "committed=false" >> "$GITHUB_OUTPUT"
             echo "No changeset changes to commit."
           else
-            # [skip ci] prevents a redundant build cycle — explicit statuses
-            # below cover both "Agentic review" and "Changeset present?" on
-            # the new HEAD, so the merge gate stays green without a second run.
-            git commit -m "chore: agentic reviewer — changeset [skip ci]"
+            # Explicit statuses below already cover "Agentic review" and
+            # "Changeset present?" on the new HEAD. No [skip ci] here — that
+            # token ends up in squash-merge commit bodies and silently skips
+            # the Release workflow after merge (GitHub checks the full message).
+            git commit -m "chore: agentic reviewer — changeset"
             git push
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -202,6 +307,7 @@ jobs:
       # Three steps so pr-fix (always()) still sees a red job and triggers.
       - name: Resolve review decision + blocking config
         id: gate
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           DECISION=$(gh pr view "$PR_NUMBER" --json reviewDecision -q '.reviewDecision')
           BLOCKING="${{ vars.AGENTIC_REVIEW_BLOCKING }}"
@@ -233,6 +339,7 @@ jobs:
           REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
 
       - name: Post explicit statuses on PR HEAD
+        if: steps.prstate.outputs.skip != 'true'
         run: |
           SHA=$(git rev-parse HEAD)
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -256,7 +363,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Gate — fail run if blocking changes requested
-        if: steps.gate.outputs.state == 'failure'
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.gate.outputs.state == 'failure'
         run: |
           echo "::error::Agentic reviewer requested changes (blocking mode) — merge blocked until fixes or admin force-merge."
           exit 1
@@ -349,14 +458,34 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v5 # bootstrap: load the local composite action
+
+      # The re-triggered run (from the reviewer's changeset commit) can race
+      # GitHub auto-merge, which merges the PR and deletes its branch. Every
+      # branch-dependent step below then fails on a dead-branch checkout
+      # (`agent-setup` does `ref: github.head_ref`). Query the LIVE PR state
+      # here — the bootstrap checkout above works post-merge and this `gh`
+      # call needs no branch — and skip the rest of the job if it's gone.
+      - name: Skip if PR already merged/closed
+        id: prstate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MERGED=$(gh pr view "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --json state,mergedAt \
+            --jq 'if (.mergedAt != null) or (.state != "OPEN") then "true" else "false" end')
+          echo "skip=$MERGED" >> "$GITHUB_OUTPUT"
+          if [ "$MERGED" = "true" ]; then echo "PR no longer open — skipping branch-dependent steps."; fi
+
       - uses: ./.github/actions/agent-setup
         id: setup
+        if: steps.prstate.outputs.skip != 'true'
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge when approved + opted-in
+        if: steps.prstate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

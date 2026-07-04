@@ -14,7 +14,7 @@
  *   2. execute() returns the agent-session snapshot → injected into the
  *      HTML as the initial render via the tool result JSON.
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and polls
- *      `list_sessions` every ~12 s, then calls `summarize_session` for
+ *      `session_list` every ~12 s, then calls `summarize_session` for
  *      each visible session to fetch the plain sentence + state.
  *
  * The per-session summary is generated SERVER-SIDE by the
@@ -31,6 +31,7 @@
 
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { panelBridgeScript } from "./panel-bridge.js"
 import type { SessionDescriptor } from "./sessions.js"
 import type { AgnoMcpApp } from "./sessions-panel-app.js"
 
@@ -115,7 +116,7 @@ export function summarizeSession(
 export interface SummarizeOps {
   getSession(id: string): SessionDescriptor | undefined
   /** Tail the recent ring buffer for a session (same source as
-   *  get_agent_session_output). Returns [] for unknown sessions. */
+   *  agent_output). Returns [] for unknown sessions. */
   tailLines(id: string, lastN: number): string[]
   /** Current epoch-ms, injectable for tests. Defaults to Date.now. */
   now?: () => number
@@ -253,47 +254,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',He
   <div id="statusbar">Connexion&#8230;</div>
 </div>
 <script>
-// ── MCP Apps bridge — JSON-RPC 2.0 over window.parent.postMessage ──
-// Spec: io.modelcontextprotocol/ui 2026-01-26
-var _nextId = 1, _pending = {};
-function post(msg){ window.parent.postMessage(msg, '*'); }
-function rpcRequest(method, params){
-  return new Promise(function(resolve, reject){
-    var id = _nextId++;
-    _pending[id] = {resolve: resolve, reject: reject};
-    post({jsonrpc:'2.0', id:id, method:method, params:params||{}});
-  });
-}
-function rpcNotify(method, params){ post({jsonrpc:'2.0', method:method, params:params||{}}); }
-window.addEventListener('message', function(evt){
-  var msg = evt.data;
-  if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
-  if (msg.id != null && msg.method == null){
-    var p = _pending[msg.id];
-    if (!p) return;
-    delete _pending[msg.id];
-    if (msg.error) p.reject(new Error(msg.error.message || ('rpc error ' + msg.error.code)));
-    else p.resolve(msg.result);
-  }
-});
-function initBridge(){
-  return rpcRequest('ui/initialize', {
-    capabilities: {},
-    clientInfo: {name:'agentproto-agents-overview', version:'0.1.0'},
-    protocolVersion: '2026-01-26',
-    appCapabilities: {tools:{listChanged:false}, availableDisplayModes:['inline','fullscreen']}
-  }).then(function(){ rpcNotify('ui/notifications/initialized', {}); });
-}
-function callTool(name, args){
-  return rpcRequest('tools/call', {name:name, arguments:args||{}}).then(function(result){
-    if (result.isError){
-      var e = (result.content && result.content[0] && result.content[0].text) || 'tool error';
-      throw new Error(e);
-    }
-    var text = (result.content && result.content[0] && result.content[0].text) || '{}';
-    return JSON.parse(text);
-  });
-}
+${panelBridgeScript("agentproto-agents-overview")}
 
 // ── State ──
 var REFRESH_MS = 12000;
@@ -353,7 +314,7 @@ function render(sessions, summaries){
 }
 
 function loadAndRender(){
-  return callTool('list_sessions', {kind:'all'}).then(function(data){
+  return callTool('session_list', {kind:'all'}).then(function(data){
     var all = data.sessions || [];
     var agents = all.filter(function(s){ return s.kind === 'agent-cli'; });
     // Render shells immediately, then fill summaries as they arrive.

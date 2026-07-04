@@ -48,6 +48,25 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastracode",
+    name: "Mastra Code",
+    description:
+      "Mastra Code terminal coding agent via its documented headless CLI. Current CLI does not expose ACP.",
+    packageName: "@agentproto/adapter-mastracode",
+    hint: "mastra · headless · multi-provider",
+  },
+  {
+    type: "agent-cli",
+    slug: "mastracode-inprocess",
+    name: "Mastra Code (in-process)",
+    description:
+      "Mastra Code driven in-process via its SDK (createMastraCode + runMC) — no " +
+      "subprocess spawn, no npx cold-start. Same underlying agent as `mastracode`.",
+    packageName: "@agentproto/adapter-mastracode-inprocess",
+    hint: "mastra · in-process · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "codex",
     name: "Codex",
     description:
@@ -66,12 +85,30 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "mastra-agent",
+    name: "Mastra Agent",
+    description:
+      "First-party agentproto agent — an AIP-42 AGENT.md run as a live Mastra agent behind an ACP server. No external CLI: our own loop, our own models.",
+    packageName: "@agentproto/adapter-mastra-agent",
+    hint: "first-party · ACP · mastra",
+  },
+  {
+    type: "agent-cli",
     slug: "openclaw",
     name: "OpenClaw",
     description:
       "OpenClaw coding-agent platform with native ACP bridge and plugin surface.",
     packageName: "@agentproto/adapter-openclaw",
     hint: "gateway · ACP · plugins",
+  },
+  {
+    type: "agent-cli",
+    slug: "claude-sdk",
+    name: "Claude (SDK)",
+    description:
+      "First-party agentproto adapter — Claude Code's agent harness run as a library via the Claude Agent SDK's headless query(), behind an ACP server. Clean model pinning, native usage, custom base_url.",
+    packageName: "@agentproto/adapter-claude-sdk",
+    hint: "anthropic · first-party · ACP · resumable",
   },
 ] as const
 

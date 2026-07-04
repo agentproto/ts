@@ -43,14 +43,20 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
+  // Every id below is validated against the wrapper's live
+  // `session/new` → configOptions[model] selector: the wrapper resolves
+  // these (via its own `resolveModelPreference`) and rejects anything it
+  // can't — a rejected `session/set_config_option` used to kill the spawn
+  // (agentproto#186; the apply is now best-effort, see @agentproto/acp's
+  // newSession). Stale ids that the wrapper no longer offers were removed:
+  // `claude-sonnet-4-6` (the old default), `claude-opus-4-7`, `claude-opus-4-6`.
   models: {
-    default: "claude-sonnet-4-6",
+    default: "claude-sonnet-5",
     allowed: [
-      "claude-sonnet-4-6",
+      "claude-sonnet-5",
       "claude-opus-4-8",
-      "claude-opus-4-7",
-      "claude-opus-4-6",
       "claude-haiku-4-5",
+      "claude-fable-5",
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
@@ -81,12 +87,51 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multimodal round-trip needed; pure file-path injection.
     file_attach: true,
   },
+  // `bin_args_append: ["--permission-mode", ...]` below is a no-op against
+  // the @agentclientprotocol/claude-agent-acp wrapper — it never reads
+  // `--permission-mode` from argv. The wrapper instead resolves
+  // `permissions.defaultMode` exclusively via the SDK's `resolveSettings`,
+  // which merges `${CLAUDE_CONFIG_DIR}/settings.json` (user tier),
+  // `<cwd>/.claude/settings(.local).json` (project tier), and a managed
+  // tier. The driver (`packages/driver/agent-cli/src/define-agent-cli.ts`,
+  // `resolveClaudeCodePermissionMode`) makes the mode actually take effect
+  // by pointing a per-session `CLAUDE_CONFIG_DIR` at a throwaway temp dir
+  // containing `{"permissions":{"defaultMode":"<value>"}}` — reading the
+  // same `--permission-mode <value>` pair declared here as its one source
+  // of truth for the value vocabulary. `bin_args_append` is kept for a
+  // future wrapper version that might start reading argv.
+  //
+  // Known limitation (empirically confirmed, not just theorized): a target
+  // repo that commits its own escalated `.claude/settings.json`
+  // `permissions.defaultMode` (e.g. "bypassPermissions") does NOT let the
+  // repo's escalation win — the wrapper's `filterEscalatingDefaultMode`
+  // strips an escalating project-tier value entirely — but it also means
+  // OUR requested mode is defeated in the same merge pass (project tier
+  // out-prioritizes the user tier for the raw merge, before the filter
+  // ever runs). The net effect for that adversarial case is the session
+  // falls back to "default" (normal per-action prompting) rather than the
+  // requested mode. This does not reintroduce the original bug (silent,
+  // zero-prompt writes) — it just doesn't guarantee plan-only reasoning
+  // against a repo actively trying to escalate its own trust level.
   modes: [
     { id: "default", description: "Standard interactive mode." },
     {
+      id: "lean",
+      description:
+        "Drop Claude Code's bundled skills and workflows from context (built-in slash " +
+        "commands stay typable but are hidden from the model). Plugins, project " +
+        "`.claude/skills/`, and `.claude/commands/` are unaffected. The ACP wrapper has " +
+        "no CLI flag for this — the underlying claude binary reads " +
+        "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
+      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+    },
+    {
       id: "plan",
       description:
-        "Plan-only mode — Claude Code reasons and proposes but does not edit or run commands.",
+        "Plan-only mode — Claude Code reasons and proposes a plan, requesting explicit " +
+        "approval before writing files or running commands. Applied via a per-session " +
+        "CLAUDE_CONFIG_DIR override (see comment above `modes`); can be defeated by a " +
+        "target repo's own committed, escalated .claude/settings.json.",
       bin_args_append: ["--permission-mode", "plan"],
     },
     {
@@ -112,9 +157,11 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       // cannot select the model.
       type: "string" as const,
       description:
-        "Anthropic model ID (e.g. 'claude-opus-4-8', 'claude-sonnet-4-6'). " +
-        "Applied via ACP session/set_config_option after the session is created. " +
-        "Omit to use the claude-code default.",
+        "Anthropic model ID or wrapper alias (e.g. 'claude-opus-4-8', " +
+        "'claude-sonnet-5', 'sonnet', 'opus'). Applied via ACP " +
+        "session/set_config_option after the session is created; an id the " +
+        "wrapper can't resolve is warned about and ignored (the session keeps " +
+        "the claude-code default). Omit to use the claude-code default.",
     },
     {
       id: "effort",

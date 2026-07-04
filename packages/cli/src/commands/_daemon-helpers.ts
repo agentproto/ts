@@ -12,6 +12,7 @@ import {
   loadWorkspacesConfig,
   getActiveWorkspace,
 } from "@agentproto/runtime/workspaces-config"
+import { readDaemonRegistry } from "@agentproto/runtime"
 
 export interface DaemonEndpoint {
   url: string
@@ -65,8 +66,30 @@ export async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
       stale: [],
     }
   }
+  // Central daemon registry first (~/.agentproto/daemons/<port>.json).
+  // This is workspace-independent, so it finds a daemon launched from
+  // ANY cwd — including tunnel mode and repo checkouts whose workspace
+  // isn't registered in workspaces.json. Entries are newest-first; take
+  // the first live one, collecting dead-PID entries as stale.
+  const registryStale: DaemonDiscoveryReport["stale"] = []
+  for (const entry of await readDaemonRegistry().catch(() => [])) {
+    const { meta, path } = entry
+    if (typeof meta.port !== "number") continue
+    if (typeof meta.pid === "number" && !isPidAlive(meta.pid)) {
+      registryStale.push({ path, pid: meta.pid, mtime: entry.mtime })
+      continue
+    }
+    return {
+      found: {
+        url: `http://${typeof meta.bind === "string" ? meta.bind : "127.0.0.1"}:${meta.port}`,
+        sourcePath: path,
+        ...(typeof meta.token === "string" ? { token: meta.token } : {}),
+      },
+      stale: registryStale,
+    }
+  }
   const config = await loadWorkspacesConfig().catch(() => null)
-  if (!config) return { found: null, stale: [] }
+  if (!config) return { found: null, stale: registryStale }
   const candidates = [
     getActiveWorkspace(config),
     ...config.workspaces,
@@ -74,7 +97,7 @@ export async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
     (w, i, arr): w is NonNullable<typeof w> =>
       !!w && arr.findIndex(x => x?.slug === w.slug) === i,
   )
-  const stale: DaemonDiscoveryReport["stale"] = []
+  const stale: DaemonDiscoveryReport["stale"] = [...registryStale]
   for (const w of candidates) {
     const result = await readRuntimeJsonWithStatus(w.path)
     if (result.endpoint) {
@@ -239,4 +262,32 @@ export function humaniseDelta(ms: number): string {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
   return `${Math.floor(ms / 86_400_000)}d`
+}
+
+export function httpDelete<T>(url: string, token?: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const lib = u.protocol === "https:" ? https : http
+    const headers: Record<string, string> = {}
+    if (token) headers.authorization = `Bearer ${token}`
+    const req = lib.request(u, { method: "DELETE", headers }, res => {
+      let raw = ""
+      res.setEncoding("utf8")
+      res.on("data", (c: string) => { raw += c })
+      res.on("end", () => {
+        const status = res.statusCode ?? 0
+        if (status < 200 || status >= 300) {
+          reject(new Error(`HTTP ${status}: ${raw.slice(0, 200)}`))
+          return
+        }
+        try {
+          resolve(raw ? (JSON.parse(raw) as T) : ({} as T))
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+    })
+    req.on("error", reject)
+    req.end()
+  })
 }

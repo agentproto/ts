@@ -1405,3 +1405,98 @@ describe("WP6 — DAG chaining + concurrency cap", () => {
     await rm(tmp, { recursive: true, force: true })
   })
 })
+
+// ── Regression: gate cwd must anchor to the SESSION's own cwd, not the
+// daemon's boot-time workspace — a session spawned in a sibling worktree
+// (the dominant real usage pattern) must still be able to gate at all.
+describe("gate cwd — session cwd outside the daemon's boot workspace", () => {
+  let daemonWorkspace: string
+  let sessionCwd: string
+
+  beforeEach(async () => {
+    daemonWorkspace = await makeWorkspace(["true"])
+    // Sibling directory, NOT nested inside daemonWorkspace — mirrors a
+    // feature worktree spawned next to the daemon's main checkout via
+    // `agent_start({ cwd: <absolute-worktree-path> })`.
+    sessionCwd = await mkdtemp(join(tmpdir(), "agentproto-session-worktree-"))
+  })
+
+  afterEach(async () => {
+    await rm(daemonWorkspace, { recursive: true, force: true })
+    await rm(sessionCwd, { recursive: true, force: true })
+  })
+
+  it("gate resolves against the session's own cwd instead of throwing 'cwd escapes the workspace'", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(sessionCwd),
+      sessionEvents: bus,
+      workspace: daemonWorkspace,
+      runCommand: exec,
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true" },
+      then: "emit",
+    })
+
+    bus.emit({
+      type: "session:turn-end",
+      sessionId: "sess_test",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+
+    await waitFor(() => {
+      const s = supervisor.getStatus(state.policyId)?.status
+      return s === "done" || s === "blocked"
+    })
+
+    const finalState = supervisor.getStatus(state.policyId)
+    // Pre-fix this settled "blocked" with error "cwd escapes the workspace:
+    // '<sessionCwd>' (workspace=<daemonWorkspace>)" — the anchor was built
+    // from the daemon's own boot workspace instead of the session's cwd.
+    expect(finalState?.status).toBe("done")
+    expect(finalState?.error).toBeUndefined()
+    // The gate command actually ran in the session's own cwd (the sibling
+    // worktree), never the daemon's boot workspace.
+    expect(calls.some(c => c.cwd === sessionCwd)).toBe(true)
+    expect(calls.some(c => c.cwd === daemonWorkspace)).toBe(false)
+  })
+
+  it("an explicit gate.cwd override is still anchored — but to the session's own cwd", async () => {
+    const { exec, calls } = makeGitMock()
+    const bus = createSessionEventBus()
+    const supervisor = createCompletionPolicySupervisor({
+      registry: makeMockRegistry(sessionCwd),
+      sessionEvents: bus,
+      workspace: daemonWorkspace,
+      runCommand: exec,
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { command: "true", cwd: "../../etc" },
+      then: "emit",
+    })
+
+    bus.emit({
+      type: "session:turn-end",
+      sessionId: "sess_test",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+
+    await waitFor(() => {
+      const s = supervisor.getStatus(state.policyId)?.status
+      return s === "done" || s === "blocked"
+    })
+
+    const finalState = supervisor.getStatus(state.policyId)
+    expect(finalState?.status).toBe("blocked")
+    expect(finalState?.error).toMatch(/cwd escapes the workspace/)
+    expect(calls.length).toBe(0)
+  })
+})

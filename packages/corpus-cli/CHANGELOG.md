@@ -1,5 +1,20 @@
 # @agentproto/corpus-cli
 
+## 0.2.0
+
+### Minor Changes
+
+- 7560f31: Add ffmpegLocation option and harden YouTube yt-dlp args in import-web
+- 7d1b98c: Add corpus discover command, distill --lang flag, and hermes engine
+
+### Patch Changes
+
+- Updated dependencies [a5b12cf]
+- Updated dependencies [7d1b98c]
+- Updated dependencies [a16968b]
+  - @agentproto/corpus-presets@0.2.0
+  - @agentproto/corpus@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes

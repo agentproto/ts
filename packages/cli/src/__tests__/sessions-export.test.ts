@@ -151,6 +151,51 @@ describe("agentproto sessions export — dispatch", () => {
     expect(calledUrl).toContain("format=json")
   })
 
+  it("passes --source through to the query string", async () => {
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+    httpGetJson.mockResolvedValue({
+      sessionId: "sess_004",
+      adapter: "daemon",
+      format: "markdown",
+      meta: {},
+      content: "# Daemon-events transcript",
+    })
+
+    await runSessions(["export", "sess_004", "--source", "daemon"])
+
+    const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(calledUrl).toContain("source=daemon")
+  })
+
+  it("omits source from the query string when not supplied", async () => {
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+    httpGetJson.mockResolvedValue({
+      sessionId: "sess_005",
+      adapter: "claude-code",
+      format: "markdown",
+      meta: {},
+      content: "# ok",
+    })
+
+    await runSessions(["export", "sess_005"])
+
+    const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(calledUrl).not.toContain("source=")
+  })
+
+  it("returns exit code 2 for an invalid --source value", async () => {
+    const code = await runSessions(["export", "sess_006", "--source", "bogus"])
+    expect(code).toBe(2)
+    expect(stderrChunks.join("")).toContain("invalid --source")
+    expect(discoverDaemon).not.toHaveBeenCalled()
+  })
+
   it("writes output to a file when -o is supplied", async () => {
     writeFileSync.mockClear()
     discoverDaemon.mockResolvedValue({

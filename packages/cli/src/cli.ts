@@ -23,6 +23,9 @@ import { runInstall } from "./commands/install.js"
 import { runSetupCommand } from "./commands/setup.js"
 import { runPlugins } from "./commands/plugins.js"
 import { runRun } from "./commands/run.js"
+import { runChat } from "./commands/chat.js"
+import { runChatTui } from "./commands/chat-tui.js"
+import { runModels } from "./commands/models.js"
 import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
@@ -30,6 +33,9 @@ import { runSessions } from "./commands/sessions.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
+import { runInstallMcp } from "./commands/install-mcp.js"
+import { runOnboard } from "./commands/onboard.js"
+import { runCron } from "./commands/cron.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -42,6 +48,9 @@ Usage:
   agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
+  agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
+  agentproto chat-tui  <adapter> [--model <id>] [--cwd <dir>] [--keep]
+  agentproto models    [adapter] [--json]                  runnable models + provider-key status
   agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>] [--verbose]
   agentproto serve     [--profile <name>]
                        [--workspace <dir>] [--port <n>] [--bind <ip>]
@@ -67,6 +76,14 @@ Usage:
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
+  agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
+                                           register the daemon's MCP server with coding CLIs
+  agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
+                                           first-run: register MCP + install the skill pack
+  agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
+  agentproto cron      list [--json]
+  agentproto cron      remove <id>
+  agentproto cron      run    <id>
   agentproto --help
   agentproto --version
 
@@ -87,6 +104,7 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
+  agentproto onboard --yes                 # wire all detected agents in one pass
 `
 
 const VERBS = new Set([
@@ -97,6 +115,9 @@ const VERBS = new Set([
   "plugins",
   "setup",
   "run",
+  "chat",
+  "chat-tui",
+  "models",
   "run-swarm",
   "serve",
   "workspace",
@@ -104,6 +125,9 @@ const VERBS = new Set([
   "tunnel",
   "browser",
   "mcp-bridge",
+  "install-mcp",
+  "onboard",
+  "cron",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -150,6 +174,12 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSetupCommand(rest)
     case "run":
       return runRun(rest)
+    case "chat":
+      return runChat(rest)
+    case "chat-tui":
+      return runChatTui(rest)
+    case "models":
+      return runModels(rest)
     case "run-swarm":
       return runRunSwarm(rest)
     case "serve":
@@ -164,6 +194,12 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrowser(rest)
     case "mcp-bridge":
       return runMcpBridge(rest)
+    case "install-mcp":
+      return runInstallMcp(rest)
+    case "onboard":
+      return runOnboard(rest)
+    case "cron":
+      return runCron(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)

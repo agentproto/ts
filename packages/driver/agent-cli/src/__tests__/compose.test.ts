@@ -39,6 +39,10 @@ const handle = (
         bin_args_append: ["--permission-mode", "bypassPermissions"],
         env: { CLAUDE_BYPASS_PERMS: "1" },
       },
+      {
+        id: "lean",
+        bin_args_prepend: ["--ignore-user-config"],
+      },
     ],
     options: [
       {
@@ -58,6 +62,11 @@ const handle = (
         id: "auto",
         type: "boolean" as const,
         bin_args_append_when_true: ["--auto"],
+      },
+      {
+        id: "skills",
+        type: "string" as const,
+        bin_args_prepend: ["--skills", "{value}"],
       },
     ],
     continuation: {
@@ -85,6 +94,45 @@ describe("composeSpawn (AIP-45)", () => {
       "@agentclientprotocol/claude-agent-acp",
       "--permission-mode",
       "plan",
+    ])
+  })
+
+  it("prepends mode bin_args_prepend before manifest bin_args", () => {
+    const out = composeSpawn(handle(), { mode: "lean" })
+    expect(out.binArgs).toEqual([
+      "--ignore-user-config",
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+    ])
+  })
+
+  it("interpolates {value} in option bin_args_prepend", () => {
+    const out = composeSpawn(handle(), {
+      options: { skills: "changelog,pr-summary" },
+    })
+    expect(out.binArgs).toEqual([
+      "--skills",
+      "changelog,pr-summary",
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+    ])
+  })
+
+  it("composes the full [...prepend, ...bin_args, ...append] order across mode + options", () => {
+    const out = composeSpawn(handle(), {
+      mode: "lean",
+      options: { skills: "foo", auto: true },
+    })
+    expect(out.binArgs).toEqual([
+      // mode prepend first, then option prepends in declaration order
+      "--ignore-user-config",
+      "--skills",
+      "foo",
+      // manifest's base bin_args
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+      // option append last
+      "--auto",
     ])
   })
 
@@ -151,9 +199,15 @@ describe("composeSpawn (AIP-45)", () => {
     ).toThrow(/option_type_mismatch/)
   })
 
-  it("rejects out-of-range integer", () => {
+  it("rejects out-of-range integer (above max)", () => {
     expect(() =>
       composeSpawn(handle(), { options: { max_turns: 999 } })
+    ).toThrow(/option_bounds_violation/)
+  })
+
+  it("rejects out-of-range integer (below min)", () => {
+    expect(() =>
+      composeSpawn(handle(), { options: { max_turns: 0 } })
     ).toThrow(/option_bounds_violation/)
   })
 
@@ -183,6 +237,69 @@ describe("composeSpawn (AIP-45)", () => {
       "claude-opus-4-7",
       "--auto",
     ])
+  })
+})
+
+describe("composeSpawn model deny-list (AIP-45)", () => {
+  // A budget-style handle: free-form string `model` option (any provider id
+  // accepted) plus a deny-list reserving Anthropic for another adapter.
+  const budgetHandle = (): AgentCliHandle =>
+    handle({
+      id: "hermes",
+      options: [{ id: "model", type: "string" as const }],
+      models: {
+        default: "z-ai/glm-5.2",
+        allowed: ["z-ai/glm-5.2", "deepseek/deepseek-v4-pro"],
+        deny: ["anthropic/*", "claude-*"],
+        apply: "command",
+      },
+    })
+
+  it("throws model_denied on a prefix (`anthropic/*`) match", () => {
+    try {
+      composeSpawn(budgetHandle(), {
+        options: { model: "anthropic/claude-opus-4-7" },
+      })
+      throw new Error("expected composeSpawn to throw")
+    } catch (err) {
+      expect(err).toBeInstanceOf(RuntimeConfigError)
+      expect((err as RuntimeConfigError).code).toBe("model_denied")
+      expect((err as RuntimeConfigError).path).toBe("config.options.model")
+    }
+  })
+
+  it("throws model_denied on a bare `claude-*` id", () => {
+    expect(() =>
+      composeSpawn(budgetHandle(), { options: { model: "claude-opus-4-8" } })
+    ).toThrow(RuntimeConfigError)
+  })
+
+  it("matches deny patterns case-insensitively", () => {
+    expect(() =>
+      composeSpawn(budgetHandle(), {
+        options: { model: "Anthropic/Claude-Opus-4-7" },
+      })
+    ).toThrow(RuntimeConfigError)
+  })
+
+  it("allows a free-form model that is not denied (kimi/qwen stay usable)", () => {
+    // Not in `allowed` — but `allowed` is only a curated menu, so an off-menu
+    // OpenRouter id must still pass as long as it isn't denied.
+    expect(() =>
+      composeSpawn(budgetHandle(), {
+        options: { model: "moonshotai/kimi-k2" },
+      })
+    ).not.toThrow()
+  })
+
+  it("does not enforce when no deny list is declared", () => {
+    const noDeny = handle({
+      options: [{ id: "model", type: "string" as const }],
+      models: { default: "z-ai/glm-5.2" },
+    })
+    expect(() =>
+      composeSpawn(noDeny, { options: { model: "anthropic/claude-opus-4-7" } })
+    ).not.toThrow()
   })
 })
 

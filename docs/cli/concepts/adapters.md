@@ -2,7 +2,8 @@
 
 An **agent-CLI adapter** is the npm-installable definition of how to
 drive a specific CLI agent — claude-code, hermes, opencode,
-gemini-cli, goose, and whatever your team ships. Adapters declare:
+codex, mastra-agent, openclaw, and whatever your team ships. Adapters
+declare:
 
 - Where to download the binary (npm / brew / curl / pip / cargo / go /
   download) — see [`verbs/install.md`](../verbs/install.md).
@@ -58,6 +59,37 @@ agentproto sessions start claude-code --workspace my-project --attach
 
 See [`verbs/run.md`](../verbs/run.md) and
 [`verbs/sessions.md`](../verbs/sessions.md).
+
+## The mastra-agent adapter
+
+`@agentproto/adapter-mastra-agent` is the **first-party agent** — unlike
+the other adapters, it does not wrap an external CLI. It parses an
+AIP-42 `AGENT.md` manifest, builds a live Mastra agent
+(`@agentproto/mastra`), and serves it over AIP-44 ACP (Agent Client
+Protocol). Internally it uses Mastra's model router, which accepts any
+`provider/model` string the Mastra gateway can route:
+
+- `anthropic/claude-opus-4-8` → `ANTHROPIC_API_KEY`
+- `openrouter/z-ai/glm-5.2` → `OPENROUTER_API_KEY` (the default model)
+- `openai/gpt-4.1` → `OPENAI_API_KEY`
+- `google/gemini-2.5-pro` → `GOOGLE_GENERATIVE_AI_API_KEY`
+- Plus `groq/…`, `xai/…`, `mistral/…`, `deepseek/…`
+
+The adapter includes workspace tools (list_dir, read_file, write_file,
+edit_file, run_command) confined to the session cwd, and per-conversation
+memory via Mastra's LibSQL (SQLite) store at
+`~/.agentproto/mastra-agent/memory.db`.
+
+```bash
+# Via the agentproto CLI
+agentproto run mastra-agent --model anthropic/claude-opus-4-8 -p "Hello"
+
+# Standalone ACP binary
+agentproto-mastra acp --model openrouter/z-ai/glm-5.2
+```
+
+See [`models.md`](../verbs/models.md) to list mastra-agent's models with
+provider-key status.
 
 ## Authoring an adapter
 
