@@ -54,11 +54,30 @@ real Anthropic, Bedrock/Vertex/Azure, or an Anthropic-compatible gateway.
 `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_FOUNDRY`
 pass through from the spawn env.
 
+When `base_url` is set the adapter enters **gateway mode** and pins every
+internal model tier the harness may request to the resolved `model`:
+`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`. This stops a
+single-model gateway (e.g. Moonshot serving only `kimi-k2.7-code`) from
+receiving a background `claude-haiku-*` request it can't serve. Native Anthropic
+(no `base_url`) leaves tier routing untouched.
+
 ## Auth / secrets
 
 `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` on the spawn env (direct or via an
 Anthropic-compatible gateway), or the cloud-provider toggles above. No ACP-level
-auth handshake.
+auth handshake. The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` in the child
+env (manifest `auth_token` option's `env` template) — the SDK sends it as
+`Authorization: Bearer <token>`, letting one spawn target a gateway (Moonshot,
+OpenRouter) with a per-spawn Bearer key. The token value is never logged.
+
+## Thinking
+
+`thinking` (boolean) appends `--thinking`, which sets SDK
+`options.thinking = { type: "enabled" }` (`Options.thinking?: ThinkingConfig`).
+Required by thinking-gated gateway models such as `kimi-k2.7-code`, which reject
+a request that omits `thinking`. Off by default so native Claude models keep
+their own adaptive thinking.
 
 ## Permissions
 

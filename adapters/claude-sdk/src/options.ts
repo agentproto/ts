@@ -21,6 +21,18 @@ export interface ClaudeSdkConfig {
   /** Sets `ANTHROPIC_BASE_URL` in the child env — points the harness at real
    *  Anthropic, Bedrock/Vertex/Azure, or an Anthropic-compatible gateway. */
   baseUrl?: string
+  /** Sets `ANTHROPIC_AUTH_TOKEN` in the child env — the SDK sends it as
+   *  `Authorization: Bearer`. Pair with {@link baseUrl} to target a gateway
+   *  (Moonshot / OpenRouter) with a per-spawn key instead of the ambient
+   *  `ANTHROPIC_API_KEY`. Never logged. */
+  authToken?: string
+  /**
+   * Enable extended thinking (SDK `options.thinking = { type: "enabled" }`).
+   * Required by some gateway models (e.g. Moonshot's `kimi-k2.7-code`, which
+   * rejects a request without it). Off by default — native Claude models pick
+   * their own thinking behaviour.
+   */
+  thinking?: boolean
   /** Working directory for the session (tools are confined here). */
   cwd?: string
   /**
@@ -84,9 +96,14 @@ function flattenPairs(
  * - `sessionId` pins a stable UUID on the FIRST turn so the ACP session id and
  *   the SDK session id match (enabling resume).
  * - `resume` continues that same session on later turns.
- * - `base_url` is injected as `ANTHROPIC_BASE_URL` in the child env; the rest
- *   of `process.env` (auth, `CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`,
- *   `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`) is passed through unchanged.
+ * - `base_url` is injected as `ANTHROPIC_BASE_URL`, `auth_token` as
+ *   `ANTHROPIC_AUTH_TOKEN` (sent by the SDK as `Authorization: Bearer`); the
+ *   rest of `process.env` (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`,
+ *   `ANTHROPIC_API_KEY`) is passed through unchanged.
+ * - When `base_url` is set (gateway mode), every internal model tier is pinned
+ *   to the resolved model so a single-model gateway never receives a request
+ *   for a tier it can't serve (e.g. Moonshot rejecting `claude-haiku-*`).
+ *   Native mode (no `base_url`) leaves tier routing untouched.
  */
 export function buildQueryOptions(args: {
   config: ClaudeSdkConfig
@@ -99,12 +116,25 @@ export function buildQueryOptions(args: {
   env?: Record<string, string | undefined>
 }): Options {
   const { config, abortController, sessionId, resume, mcpServers } = args
+  const model = config.model ?? DEFAULT_MODEL
   const baseEnv = args.env ?? process.env
   const env: Record<string, string | undefined> = { ...baseEnv }
   if (config.baseUrl) env.ANTHROPIC_BASE_URL = config.baseUrl
+  if (config.authToken) env.ANTHROPIC_AUTH_TOKEN = config.authToken
+  // Gateway mode: pin every tier the harness might request (opus/sonnet/haiku
+  // defaults + the small/fast background model) to the one model the gateway
+  // serves. Only when a custom base_url is set — native Anthropic is left to
+  // route tiers itself.
+  if (config.baseUrl) {
+    env.ANTHROPIC_MODEL = model
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
+    env.ANTHROPIC_SMALL_FAST_MODEL = model
+  }
 
   const options: Options = {
-    model: config.model ?? DEFAULT_MODEL,
+    model,
     abortController,
     permissionMode: config.permissionMode ?? "bypassPermissions",
     // Required companion to bypassPermissions — this arm runs unattended.
@@ -117,6 +147,10 @@ export function buildQueryOptions(args: {
     ...(sessionId ? { sessionId } : {}),
     ...(resume ? { resume } : {}),
   }
+  // Extended thinking, opt-in. Required by thinking-gated gateway models such
+  // as kimi-k2.7-code (rejects a request with no `thinking`). The property's
+  // type contextualises the literal, so no cast is needed.
+  if (config.thinking) options.thinking = { type: "enabled" }
   const mapped = mapAcpMcpServers(mcpServers)
   if (Object.keys(mapped).length > 0) options.mcpServers = mapped
   return options

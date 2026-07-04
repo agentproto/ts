@@ -131,13 +131,43 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       id: "base_url",
       // Injected into the child env as ANTHROPIC_BASE_URL — keeps the harness
       // Anthropic-native while fronting real Anthropic, a cloud provider, or an
-      // Anthropic-compatible gateway (LiteLLM / claude-code-router).
+      // Anthropic-compatible gateway (LiteLLM / claude-code-router). When set,
+      // buildQueryOptions also pins every model tier to `model` (gateway mode).
       type: "string" as const,
       description:
         "Custom Anthropic base URL. Injected as ANTHROPIC_BASE_URL in the " +
         "child env — front real Anthropic, Bedrock/Vertex/Azure, or an " +
-        "Anthropic-compatible gateway. Omit to use the default endpoint.",
+        "Anthropic-compatible gateway. When set, every internal model tier " +
+        "(opus/sonnet/haiku/small-fast) is pinned to `model` so a single-model " +
+        "gateway never gets an unservable tier. Omit to use the default endpoint.",
       env: { ANTHROPIC_BASE_URL: "{value}" },
+    },
+    {
+      id: "auth_token",
+      // Injected into the child env as ANTHROPIC_AUTH_TOKEN — the SDK sends it
+      // as `Authorization: Bearer <token>`, which Anthropic-compatible gateways
+      // (Moonshot, OpenRouter) accept. Pair with base_url for a per-spawn key.
+      type: "string" as const,
+      description:
+        "Bearer token for the Anthropic API or a compatible gateway. Injected " +
+        "as ANTHROPIC_AUTH_TOKEN in the child env (sent as `Authorization: " +
+        "Bearer`). Pair with base_url to target a gateway (e.g. Moonshot, " +
+        "OpenRouter) with a per-spawn key instead of the ambient " +
+        "ANTHROPIC_API_KEY. Omit to use ANTHROPIC_API_KEY from the environment.",
+      env: { ANTHROPIC_AUTH_TOKEN: "{value}" },
+    },
+    {
+      id: "thinking",
+      // Bare flag → cli.ts parses `--thinking` → SDK options.thinking =
+      // { type: "enabled" }. Needed by thinking-gated gateway models such as
+      // kimi-k2.7-code, which reject a request that omits `thinking`.
+      type: "boolean" as const,
+      description:
+        "Enable extended thinking (SDK options.thinking = { type: 'enabled' }). " +
+        "Required by thinking-gated gateway models such as Moonshot's " +
+        "kimi-k2.7-code, which reject a request without it. Off by default — " +
+        "native Claude models choose their own thinking behaviour.",
+      bin_args_append_when_true: ["--thinking"],
     },
   ],
   tags: ["anthropic", "claude", "claude-agent-sdk", "agentproto", "acp", "first-party"],
