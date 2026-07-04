@@ -9,7 +9,7 @@ import { mkdtemp, rm, writeFile, access } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runWorkflow, type AgentSessionHost } from "@agentproto/workflow-runtime"
-import { execGit } from "@agentproto/worktree"
+import { execGit } from "../exec.js"
 import { worktreeAgentWorkflow, type WorktreeAgentInput } from "../workflow.js"
 
 async function makeTempRepo(): Promise<string> {

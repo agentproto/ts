@@ -18,5 +18,28 @@ and cleaning up a git worktree — the primitive a `@agentproto/workflow-runtime
 All three are agnostic: no hardcoded package manager, env layout, or gate
 command — everything is an input.
 
-See `examples/worktree-agent` for the full provision → agent → gate →
-approval → cleanup workflow.
+## `worktreeAgentWorkflow`
+
+This package also exports the `RuntimeWorkflow` def that chains the three
+tools above around an `AgentStep`: provision → agent (`cwd` bound to the
+provisioned worktree) → gate → on pass, human approval → cleanup. On gate
+failure the worktree is left in place for inspection.
+
+## `worktree-agent` CLI
+
+A `bin` runs that workflow end-to-end against a real agentproto daemon (the
+coding agent is a real, supervisable `agent_start` session — not a bare
+subprocess):
+
+```
+worktree-agent run \
+  --repo <abs repo root> --slug <id> --task "<prompt>" --gate "<check cmd>" \
+  [--base origin/main] [--adapter claude-code] [--deps-cmd "pnpm install --prefer-offline"] \
+  [--copy-glob <glob>]... [--no-cleanup] [--yes]
+```
+
+It connects to the daemon's MCP endpoint (`http://127.0.0.1:18790/mcp`, or
+`AGENTPROTO_MCP_URL`) and fails loudly if it can't reach one. The approval
+step reads a y/n answer from `/dev/tty`; `--yes` auto-approves, and a
+non-interactive run (no TTY) defaults to NOT approving — the worktree is left
+in place rather than silently cleaned up.

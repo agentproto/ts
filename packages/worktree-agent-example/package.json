@@ -16,11 +16,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver": "workspace:*",
-    "@agentproto/tool": "workspace:*",
-    "@agentproto/workflow-runtime": "workspace:*",
-    "@agentproto/worktree": "workspace:*",
-    "zod": "^4.4.3"
+    "@agentproto/worktree": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
