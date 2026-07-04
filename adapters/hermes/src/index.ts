@@ -162,6 +162,14 @@ export const hermes: AgentCliHandle = defineAgentCli({
     },
   ],
   tags: ["hermes", "nous", "acp", "agent-runtime"],
+  metadata: {
+    // Opts hermes into `agentproto install skill/<slug>` fan-out (no
+    // --target given): skills get copied one subdir per skill into
+    // hermes's own skills directory, alongside whatever it ships
+    // natively. See packages/cli/src/commands/skill-install/types.ts
+    // `AdapterSkillsTarget` for the shape + guard.
+    skills: { format: "flat-dir", dir: "~/.hermes/skills" },
+  },
 })
 
 export function hermesRuntime(): AgentCliRuntime {
