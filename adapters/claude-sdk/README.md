@@ -65,6 +65,23 @@ Verified live: Moonshot `https://api.moonshot.ai/anthropic` +
 `model=kimi-k2.7-code`, and OpenRouter `https://openrouter.ai/api/v1`, both
 return valid Anthropic Messages format under `Authorization: Bearer`.
 
+### Gateway presets (modes)
+
+So you don't hand-type the base URL each spawn, two modes pre-wire the gateway
+endpoint (`base_url`/`auth_token`/`thinking` still work manually for anything
+else):
+
+| mode        | pre-wires                                                        | you supply                          |
+| ----------- | --------------------------------------------------------------- | ----------------------------------- |
+| `default`   | nothing — native Anthropic                                       | `ANTHROPIC_API_KEY`                 |
+| `moonshot`  | `ANTHROPIC_BASE_URL` + `model=kimi-k2.7-code` + `--thinking`     | `auth_token` (Moonshot key)         |
+| `openrouter`| `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
+
+`mode: moonshot` is a one-pick Kimi run; override `model` for another Moonshot
+model. `mode: openrouter` still needs a `model` (e.g. `z-ai/glm-5.2`,
+`deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2`). The `auth_token` is the
+gateway key — the ambient `ANTHROPIC_API_KEY` stays for real Anthropic.
+
 ### Extended thinking
 
 Some gateway models are thinking-gated — `kimi-k2.7-code` rejects any request
