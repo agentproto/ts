@@ -41,13 +41,26 @@ export function registerMcpApps(
       typeof app.html === "string" ? app.html : app.html({} as never)
 
     // 1. Resource — HTML panel served at ui://<id>/view
+    //
+    // _meta is duplicated onto both the registration options (→ resources/list
+    // entry) AND the read handler's content item (→ resources/read result),
+    // because the ext-apps spec has hosts read csp from resources/read FIRST,
+    // falling back to resources/list only if that's absent. The SDK's
+    // registerResource() only auto-projects the options-level _meta into
+    // resources/list, not into the handler's own return value.
+    const resourceMeta = {
+      ui: {
+        prefersBorder: true,
+        ...(app.csp ? { csp: app.csp } : {}),
+      },
+    }
     server.registerResource(
       app.id,
       resourceUri,
       {
         mimeType: MIME_TYPE,
         description: app.description,
-        _meta: { ui: { prefersBorder: true } },
+        _meta: resourceMeta,
       },
       async () => ({
         contents: [
@@ -55,6 +68,7 @@ export function registerMcpApps(
             uri: resourceUri,
             mimeType: MIME_TYPE,
             text: html,
+            _meta: resourceMeta,
           },
         ],
       }),

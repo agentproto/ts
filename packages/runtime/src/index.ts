@@ -41,6 +41,12 @@ import {
 } from "./agents-overview-app.js"
 import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
 import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
+import { makeTerminalPanelApp } from "./terminal-panel-app.js"
+import {
+  loadWorkspacesConfig,
+  findWorkspace,
+  getActiveWorkspace,
+} from "./workspaces-config.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -337,6 +343,26 @@ export async function createGateway(
   // spawned child is co-located on the same host and reaches the
   // daemon over loopback, never the LAN-bind address.
   const daemonMcpUrl = `http://127.0.0.1:${port}/mcp`
+  // Same loopback reasoning as `daemonMcpUrl` above, for the terminal MCP
+  // app's PTY WebSocket: this process already knows its own bind/port, so
+  // there's no need to shell out to `.agentproto/runtime.json` (the CLI's
+  // discovery path in packages/cli — see sessions.ts) just to re-learn
+  // something we're holding in a local variable. Prototype shortcut: a
+  // genuinely remote host would need the daemon's LAN-reachable address
+  // instead, which isn't modelled here.
+  //
+  // Override via AGENTPROTO_PUBLIC_WS_ORIGIN when the daemon sits behind a
+  // public reverse proxy/tunnel (e.g. a Cloudflare Quick Tunnel) — hosts
+  // like Claude.ai appear to reject a `connectDomains` CSP entry pointing
+  // at `ws://` + a private/loopback address outright, before ever trying
+  // the WS handshake. Pointing this at the tunnel's public `wss://` origin
+  // instead makes the panel's WebSocket ride the same hostname the `/mcp`
+  // endpoint is already reachable on (Quick Tunnel proxies the whole port,
+  // including the WS upgrade). No trailing slash expected — it's used as
+  // `${origin}/sessions/:id/pty`.
+  const ptyWsBaseUrl =
+    process.env.AGENTPROTO_PUBLIC_WS_ORIGIN?.trim().replace(/\/+$/, "") ||
+    `ws://127.0.0.1:${port}`
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -686,6 +712,55 @@ export async function createGateway(
       makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
       makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
       makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
+      // Same ptyEnabled gate as terminal_start/terminal_input/… in
+      // session-tools.ts — the panel would be able to open the WS but
+      // every spawn/attach would fail once node-pty isn't available, so
+      // just don't register the tool/resource at all in that case.
+      ...(opts.spawnPty != null
+        ? [
+            makeTerminalPanelApp({
+              wsBaseUrl: ptyWsBaseUrl,
+              ...(token ? { token } : {}),
+              async spawnOrAttach(input) {
+                if (input.sessionId) {
+                  const desc = sessions.findByIdOrName(input.sessionId)
+                  if (!desc) {
+                    throw new Error(
+                      `agentproto_terminal: no session "${input.sessionId}"`,
+                    )
+                  }
+                  if (desc.pty !== true) {
+                    throw new Error(
+                      `agentproto_terminal: session "${input.sessionId}" is not a PTY session`,
+                    )
+                  }
+                  return { sessionId: desc.id }
+                }
+                let cwd = input.cwd
+                let resolvedSlug = input.workspaceSlug ?? "default"
+                if (!cwd) {
+                  const config = await loadWorkspacesConfig()
+                  const ws = input.workspaceSlug
+                    ? findWorkspace(config, input.workspaceSlug)
+                    : getActiveWorkspace(config)
+                  if (ws) {
+                    cwd = ws.path
+                    resolvedSlug = ws.slug
+                  }
+                }
+                if (!cwd) cwd = workspace
+                const desc = sessions.spawnPty({
+                  argv: input.argv && input.argv.length > 0 ? input.argv : ["bash"],
+                  cwd,
+                  workspaceSlug: resolvedSlug,
+                  cols: input.cols ?? 80,
+                  rows: input.rows ?? 24,
+                })
+                return { sessionId: desc.id }
+              },
+            }),
+          ]
+        : []),
     ])
     // Server-side per-session summariser backing the agents-overview panel.
     // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
