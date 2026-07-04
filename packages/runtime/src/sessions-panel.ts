@@ -184,6 +184,21 @@ function badgeClass(status) {
   return 'be'; // exited
 }
 
+// Derive a turn-aware display badge. A session's `status` only tracks process
+// liveness, so an agent-cli process stays "running" while idle between turns.
+// Read `busy` / `awaitingInput` to show real activity instead:
+//   working  — a turn is in flight (busy)
+//   waiting  — turn ended on awaiting-input (needs a reply)
+//   idle     — process alive, no turn running (last turn done)
+function displayBadge(s) {
+  if (s.status === 'running' && s.kind === 'agent-cli') {
+    if (s.busy) return { label: 'working', cls: 'br' };
+    if (s.awaitingInput) return { label: 'waiting', cls: 'bs' };
+    return { label: 'idle', cls: 'be' };
+  }
+  return { label: s.status, cls: badgeClass(s.status) };
+}
+
 function renderSidebar() {
   var el = document.getElementById('session-list');
   if (sessions.length === 0) {
@@ -194,7 +209,7 @@ function renderSidebar() {
   for (var i = 0; i < sessions.length; i++) {
     var s = sessions[i];
     var label = s.label || s.name || (s.command ? s.command.split('/').pop() : null) || s.id.slice(0, 8);
-    var bc = badgeClass(s.status);
+    var db = displayBadge(s);
     var active = s.id === activeId ? ' active' : '';
     // blockedOn (set while the turn waits on a spawned sub-agent or a
     // shell command) rides next to the status badge; waiting-on-user is
@@ -205,7 +220,7 @@ function renderSidebar() {
     html += '<div class="si' + active + '" onclick="selectSession(\\'' + s.id + '\\')">'
           + '<div class="sn">' + escHtml(label) + '</div>'
           + '<div class="sm">'
-          + '<span class="badge ' + bc + '">' + s.status + '</span>'
+          + '<span class="badge ' + db.cls + '">' + db.label + '</span>'
           + blocked
           + '<span>' + escHtml(s.kind || '') + '</span>'
           + '</div></div>';
