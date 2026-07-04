@@ -25,7 +25,8 @@ buys us:
 
 ```bash
 # Spawned by the daemon as the `claude-sdk` arm, or standalone:
-agentproto-claude-sdk acp [--model claude-opus-4-8] [--base-url https://gateway.example/v1]
+agentproto-claude-sdk acp [--model claude-opus-4-8] \
+  [--base-url https://gateway.example/v1] [--auth-token <token>] [--thinking]
 ```
 
 Auth is read from the spawn env: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`,
@@ -33,13 +34,45 @@ or `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_FOUND
 
 ## Options (AIP-45 manifest)
 
-| id         | type   | applied as                              |
-| ---------- | ------ | --------------------------------------- |
-| `model`    | string | `--model <id>` → SDK `options.model`    |
-| `base_url` | string | `ANTHROPIC_BASE_URL` in the child env   |
+| id           | type    | applied as                                              |
+| ------------ | ------- | ------------------------------------------------------- |
+| `model`      | string  | `--model <id>` → SDK `options.model`                    |
+| `base_url`   | string  | `ANTHROPIC_BASE_URL` in the child env (see below)       |
+| `auth_token` | string  | `ANTHROPIC_AUTH_TOKEN` in the child env (`Bearer` auth) |
+| `thinking`   | boolean | `--thinking` → SDK `options.thinking = { type: enabled }` |
 
 Injected MCP servers (`session/new.mcpServers`) forward to SDK
 `options.mcpServers`, so the daemon can mount a scoped toolset like any other
 arm.
+
+### Anthropic-compatible gateways
+
+`base_url` + `auth_token` point one spawn at an Anthropic-compatible gateway
+with a per-spawn Bearer key (the ambient `ANTHROPIC_API_KEY` is for real
+Anthropic). `auth_token` becomes `ANTHROPIC_AUTH_TOKEN`, which the SDK sends as
+`Authorization: Bearer <token>` — accepted by both Moonshot and OpenRouter.
+The token value is never logged.
+
+When `base_url` is set the adapter enters **gateway mode**: it pins every model
+tier the harness might internally request — `ANTHROPIC_MODEL`,
+`ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL` — to the resolved
+`model`. Without this, a single-model gateway (e.g. Moonshot serving only
+`kimi-k2.7-code`) rejects the harness's background `claude-haiku-*` requests.
+Native Anthropic (no `base_url`) leaves tier routing untouched.
+
+Verified live: Moonshot `https://api.moonshot.ai/anthropic` +
+`model=kimi-k2.7-code`, and OpenRouter `https://openrouter.ai/api/v1`, both
+return valid Anthropic Messages format under `Authorization: Bearer`.
+
+### Extended thinking
+
+Some gateway models are thinking-gated — `kimi-k2.7-code` rejects any request
+that omits `thinking` (`invalid thinking: only type=enabled is allowed for this
+model`). The SDK's `query()` exposes `Options.thinking?: ThinkingConfig`
+(`{ type: 'adaptive' } | { type: 'enabled', budgetTokens? } | { type:
+'disabled' }`); the `thinking` boolean option pass-through sets
+`options.thinking = { type: 'enabled' }`. Off by default so native Claude models
+keep their own (adaptive) thinking behaviour.
 
 See [`claude-sdk.ACP.md`](./claude-sdk.ACP.md) for the full wire profile.

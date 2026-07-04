@@ -2,7 +2,8 @@
 /**
  * Standalone CLI for the first-party Claude Agent SDK adapter.
  *
- *   agentproto-claude-sdk acp [--model <id>] [--base-url <url>]
+ *   agentproto-claude-sdk acp [--model <id>] [--base-url <url>] \
+ *     [--auth-token <token>] [--thinking]
  *
  * `acp` boots the ACP server over stdio — this is both what the agentproto
  * daemon spawns (as the `claude-sdk` arm) and what a user runs directly to
@@ -18,6 +19,8 @@ interface ParsedArgs {
   cmd?: string
   model?: string
   baseUrl?: string
+  authToken?: string
+  thinking?: boolean
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -27,12 +30,15 @@ function parseArgs(argv: string[]): ParsedArgs {
     const arg = rest[i]
     if (arg === "--model") out.model = rest[++i]
     else if (arg === "--base-url") out.baseUrl = rest[++i]
+    else if (arg === "--auth-token") out.authToken = rest[++i]
+    else if (arg === "--thinking") out.thinking = true
   }
   return out
 }
 
 const USAGE =
-  "usage: agentproto-claude-sdk acp [--model <claude-model>] [--base-url <url>]\n"
+  "usage: agentproto-claude-sdk acp [--model <claude-model>] " +
+  "[--base-url <url>] [--auth-token <token>] [--thinking]\n"
 
 /** Recognised permission-mode overrides (env `CLAUDE_SDK_PERMISSION_MODE`). */
 const PERMISSION_MODES: readonly PermissionMode[] = [
@@ -51,7 +57,7 @@ function permissionModeFromEnv(
 }
 
 function main(): void {
-  const { cmd, model, baseUrl } = parseArgs(process.argv)
+  const { cmd, model, baseUrl, authToken, thinking } = parseArgs(process.argv)
   if (cmd !== "acp") {
     process.stderr.write(USAGE)
     process.exit(cmd ? 1 : 0)
@@ -59,6 +65,11 @@ function main(): void {
   const config: ClaudeSdkConfig = {
     model: model ?? process.env.CLAUDE_SDK_MODEL,
     baseUrl: baseUrl ?? process.env.ANTHROPIC_BASE_URL,
+    // The daemon injects the manifest `auth_token` option as ANTHROPIC_AUTH_TOKEN
+    // (env template); the flag is the standalone equivalent. Never logged.
+    authToken: authToken ?? process.env.ANTHROPIC_AUTH_TOKEN,
+    // `--thinking` (manifest bin_args_append_when_true) → options.thinking.
+    ...(thinking ? { thinking: true } : {}),
     // Tools are confined to the dir the daemon spawned us in.
     cwd: process.cwd(),
     ...(permissionModeFromEnv(process.env.CLAUDE_SDK_PERMISSION_MODE)
