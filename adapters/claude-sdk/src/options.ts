@@ -96,14 +96,18 @@ function flattenPairs(
  * - `sessionId` pins a stable UUID on the FIRST turn so the ACP session id and
  *   the SDK session id match (enabling resume).
  * - `resume` continues that same session on later turns.
- * - `base_url` is injected as `ANTHROPIC_BASE_URL`, `auth_token` as
- *   `ANTHROPIC_AUTH_TOKEN` (sent by the SDK as `Authorization: Bearer`); the
- *   rest of `process.env` (`CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY`,
- *   `ANTHROPIC_API_KEY`) is passed through unchanged.
- * - When `base_url` is set (gateway mode), every internal model tier is pinned
- *   to the resolved model so a single-model gateway never receives a request
- *   for a tier it can't serve (e.g. Moonshot rejecting `claude-haiku-*`).
- *   Native mode (no `base_url`) leaves tier routing untouched.
+ * - Native mode (no `base_url`): the ambient env — `ANTHROPIC_API_KEY` or the
+ *   Claude Code subscription/OAuth login — is passed through unchanged; an
+ *   explicit `auth_token` still wins as `ANTHROPIC_AUTH_TOKEN`.
+ * - Gateway mode (`base_url` set → a non-Anthropic host): the ambient
+ *   `ANTHROPIC_API_KEY` is SCRUBBED (it must never be sent to a third-party
+ *   gateway — that both 401s and leaks the real key). The gateway bearer is
+ *   resolved from, in order, the explicit `auth_token`, an explicit
+ *   `ANTHROPIC_AUTH_TOKEN`, or the gateway's conventional key env named by the
+ *   mode via `CLAUDE_SDK_GATEWAY_KEY_ENV` (e.g. `MOONSHOT_API_KEY`). Every
+ *   internal model tier is also pinned to the resolved model so a single-model
+ *   gateway never gets a tier it can't serve (e.g. Moonshot rejecting
+ *   `claude-haiku-*`).
  */
 export function buildQueryOptions(args: {
   config: ClaudeSdkConfig
@@ -119,18 +123,36 @@ export function buildQueryOptions(args: {
   const model = config.model ?? DEFAULT_MODEL
   const baseEnv = args.env ?? process.env
   const env: Record<string, string | undefined> = { ...baseEnv }
-  if (config.baseUrl) env.ANTHROPIC_BASE_URL = config.baseUrl
-  if (config.authToken) env.ANTHROPIC_AUTH_TOKEN = config.authToken
-  // Gateway mode: pin every tier the harness might request (opus/sonnet/haiku
-  // defaults + the small/fast background model) to the one model the gateway
-  // serves. Only when a custom base_url is set — native Anthropic is left to
-  // route tiers itself.
   if (config.baseUrl) {
+    // Gateway mode (non-Anthropic host). Auth hygiene: an ambient
+    // ANTHROPIC_API_KEY must NEVER reach a third-party gateway (it 401s AND
+    // leaks the real Anthropic key). Resolve the gateway bearer from, in order,
+    // the explicit auth_token, an explicit ANTHROPIC_AUTH_TOKEN, or the
+    // gateway's conventional key env named by the mode via
+    // CLAUDE_SDK_GATEWAY_KEY_ENV (e.g. MOONSHOT_API_KEY). Then scrub the
+    // Anthropic key so exactly the gateway's own credential is presented; if
+    // none resolves, present no credential (fail clean, never leak).
+    env.ANTHROPIC_BASE_URL = config.baseUrl
+    const gatewayKeyEnv = baseEnv.CLAUDE_SDK_GATEWAY_KEY_ENV
+    const bearer =
+      config.authToken ??
+      baseEnv.ANTHROPIC_AUTH_TOKEN ??
+      (gatewayKeyEnv ? baseEnv[gatewayKeyEnv] : undefined)
+    delete env.ANTHROPIC_API_KEY
+    if (bearer) env.ANTHROPIC_AUTH_TOKEN = bearer
+    else delete env.ANTHROPIC_AUTH_TOKEN
+    // Pin every tier the harness might request (opus/sonnet/haiku defaults + the
+    // small/fast background model) to the one model the gateway serves.
     env.ANTHROPIC_MODEL = model
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = model
     env.ANTHROPIC_DEFAULT_SONNET_MODEL = model
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
     env.ANTHROPIC_SMALL_FAST_MODEL = model
+  } else if (config.authToken) {
+    // Native Anthropic: an explicit bearer (e.g. a subscription/OAuth token)
+    // still wins; otherwise the SDK uses the ambient ANTHROPIC_API_KEY or the
+    // Claude Code login (subscription), left untouched.
+    env.ANTHROPIC_AUTH_TOKEN = config.authToken
   }
 
   const options: Options = {
