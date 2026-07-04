@@ -22,7 +22,15 @@ describe("@agentproto/adapter-hermes", () => {
     // hermes ignores the ACP session model config — model is applied via a
     // `/model <id>` control turn (AgentCliModels.apply).
     expect(hermes.models?.apply).toBe("command")
-    expect(hermes.models?.env?.anthropic).toBe("ANTHROPIC_API_KEY")
+  })
+
+  it("reserves Anthropic models for the claude-code adapter", () => {
+    // No anthropic env slot, no anthropic model on the menu, and a hard
+    // deny so an explicit `anthropic/…` request is refused at compose time.
+    expect(hermes.models?.env?.anthropic).toBeUndefined()
+    expect(hermes.models?.allowed).not.toContain("anthropic/claude-opus-4-7")
+    expect(hermes.models?.deny).toContain("anthropic/*")
+    expect(hermes.models?.deny).toContain("claude-*")
   })
 
   it("declares persistent session policy", () => {

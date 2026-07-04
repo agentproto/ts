@@ -161,6 +161,18 @@ export interface AgentCliSession {
 export interface AgentCliModels {
   default?: string
   allowed?: string[]
+  /**
+   * Model-id patterns this adapter must NEVER route to, even when a caller
+   * passes the id explicitly (the `model` option is free-form, so `allowed`
+   * is only a curated menu and can't *prevent* an off-menu id). Each pattern
+   * matches case-insensitively against the requested model id and supports a
+   * single trailing `*` wildcard (prefix match); otherwise exact. A match is
+   * refused at compose time (`RuntimeConfigError`, code `model_denied`).
+   * Use to reserve a premium provider for a dedicated adapter — e.g. hermes
+   * denies `["anthropic/*", "claude-*"]` so Anthropic models stay exclusive
+   * to the claude-code adapter.
+   */
+  deny?: string[]
   env?: Record<string, string>
   /**
    * How the host selects a model at session start:
