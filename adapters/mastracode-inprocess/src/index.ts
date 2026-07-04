@@ -80,13 +80,15 @@ export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
   },
   models: {
     default: "anthropic/claude-sonnet-4-5",
+    // Anthropic is no longer advertised as a pickable escalation — only the
+    // adapter's own default Claude model stays listed (repointing the default
+    // is out of scope). The extra Sonnet + gateway dupe are dropped from the
+    // menu; the free-form `model` option still accepts any id.
     allowed: [
       "anthropic/claude-sonnet-4-5",
-      "anthropic/claude-sonnet-4-6",
       "openai/gpt-5.1",
       "openai/gpt-5.1-mini",
       "google/gemini-2.5-flash",
-      "openrouter/anthropic/claude-sonnet-4-6",
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

@@ -63,13 +63,15 @@ export const opencode: AgentCliHandle = defineAgentCli({
   },
   models: {
     default: "anthropic/claude-sonnet-4-6",
+    // Anthropic is no longer advertised as a pickable escalation — only the
+    // adapter's own default Claude model stays listed (repointing the default
+    // is out of scope). Premium Anthropic (Opus/Haiku) and the redundant
+    // gateway dupe are dropped from the menu so orchestrators don't select
+    // them here; the free-form `model` option still accepts any id.
     allowed: [
       "anthropic/claude-sonnet-4-6",
-      "anthropic/claude-opus-4-7",
-      "anthropic/claude-haiku-4-5",
       "openai/gpt-5",
       "openai/gpt-5-mini",
-      "openrouter/anthropic/claude-sonnet-4-6",
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

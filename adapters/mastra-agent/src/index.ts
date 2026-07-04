@@ -66,12 +66,13 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
   },
   models: {
     // Cheap OpenRouter coder by default — this is the budget first-party arm.
+    // Anthropic models are not advertised here (this arm shouldn't be steered
+    // onto premium Anthropic spend); the free-form `model` option still
+    // accepts any Mastra-routable id.
     default: "openrouter/z-ai/glm-5.2",
     allowed: [
       "openrouter/z-ai/glm-5.2",
       "openrouter/deepseek/deepseek-v4-pro",
-      "anthropic/claude-opus-4-8",
-      "anthropic/claude-sonnet-4-6",
       "openai/gpt-5",
     ],
     env: {
@@ -101,7 +102,7 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
       type: "string" as const,
       description:
         "Model id routed via Mastra's model gateway (e.g. " +
-        "'anthropic/claude-opus-4-8', 'openrouter/z-ai/glm-5.2'). " +
+        "'openrouter/z-ai/glm-5.2', 'openrouter/deepseek/deepseek-v4-pro'). " +
         "Applied as a `--model` arg at spawn. Omit for the default.",
       bin_args_template: ["--model", "{value}"],
     },
