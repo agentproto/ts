@@ -192,6 +192,19 @@ export function registerAgentTools(
             "is validated against the option's declared `type`/`enum`/`min`/`max`; " +
             "unknown ids reject. Adapters that don't declare a given option id reject it."
         ),
+      skills: jsonTolerant(z.array(z.string()))
+        .optional()
+        .describe(
+          "Normalized, adapter-agnostic skill ids for this session (e.g. " +
+            "['agentproto']). Merges with `~/.agentproto/config.json`'s " +
+            "`defaults.skills` / `defaults.adapters.<slug>.skills` (global < " +
+            "per-adapter < this field, which REPLACES rather than unions the " +
+            "config defaults when provided — a deliberate exact set). Folded " +
+            "into `options.skills` using the resolved adapter's declared " +
+            "shape (e.g. hermes' comma-joined `--skills a,b`); adapters with " +
+            "no declared `skills` option (e.g. claude-code, which auto-" +
+            "discovers from `~/.claude/skills`) ignore this — no-op."
+        ),
       model: z
         .string()
         .optional()

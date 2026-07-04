@@ -334,6 +334,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
+        declaredOptions: (adapter.handle.options ?? []).map(o => ({
+          id: o.id,
+          type: o.type,
+        })),
       }
     } catch (err) {
       console.warn(

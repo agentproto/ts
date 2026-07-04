@@ -14,8 +14,14 @@ import {
   findWorkspace,
   getActiveWorkspace,
 } from "./workspaces-config.js"
+import { loadConfig } from "./config.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import {
+  resolveSpawnDefaults,
+  normalizeSkillsOption,
+  type SpawnDefaultsConfig,
+} from "./spawn-defaults.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -63,6 +69,12 @@ export interface SpawnAgentSessionDeps {
   callerScope?: OrchestratorScope
   /** Optional webhook notifier — see `RegisterAgentToolsOptions.webhookNotifier`. */
   webhookNotifier?: WebhookNotifier
+  /** Loads config.json's `defaults` block (global + per-adapter skills/
+   *  options auto-applied at every spawn — see `resolveSpawnDefaults`).
+   *  Defaults to reading the real `~/.agentproto/config.json` via
+   *  `loadConfig` when omitted; tests inject a stub to avoid touching
+   *  the real file. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
 }
 
 export interface SpawnAgentSessionInput {
@@ -81,6 +93,15 @@ export interface SpawnAgentSessionInput {
    *  at spawn time alongside `mode`. Forwarded verbatim to the driver's
    *  `startSession({ options })` → `composeSpawn`'s option patches. */
   options?: Record<string, boolean | number | string>
+  /** Normalized, adapter-agnostic skill ids for this session. Merged with
+   *  config.json's `defaults.skills` / `defaults.adapters.<slug>.skills`
+   *  (global < per-adapter < this field, which REPLACES the union rather
+   *  than merging into it when provided — a deliberate exact set). Folded
+   *  into `options.skills` per the resolved adapter's declared `skills`
+   *  option shape (e.g. hermes' comma-joined string); adapters with no
+   *  such option (e.g. claude-code, which auto-discovers skills) ignore
+   *  it. See `resolveSpawnDefaults` / `normalizeSkillsOption`. */
+  skills?: string[]
   model?: string
   effort?: string
   mcpServers?: AcpMcpServer[]
@@ -116,6 +137,7 @@ export async function spawnAgentSession(
     daemonMcpUrl,
     callerScope,
     webhookNotifier,
+    loadDefaultsConfig,
   } = deps
 
   // cwd resolution mirrors the HTTP route: explicit cwd wins,
@@ -254,6 +276,24 @@ export async function spawnAgentSession(
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
   }
+  // Config-level defaults (WP: session-skills-defaults) — auto-apply
+  // `defaults.skills` / `defaults.options` (global + per-adapter) unless
+  // the caller's explicit `agent_start` fields already say otherwise.
+  // Pure merge in `resolveSpawnDefaults`; adapter-shape folding (e.g.
+  // hermes' comma-joined `options.skills`) in `normalizeSkillsOption`,
+  // using the manifest's own declared option type via `resolved`.
+  const configDefaults = loadDefaultsConfig
+    ? await loadDefaultsConfig()
+    : (await loadConfig()).defaults
+  const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
+    skills: input.skills,
+    options: input.options,
+  })
+  const effectiveOptions = normalizeSkillsOption(
+    spawnDefaults.skills,
+    spawnDefaults.options,
+    resolved.declaredOptions,
+  )
   try {
     // The registry doesn't assign a session id until `spawnAgent`
     // returns below, but `onActivity` can start firing as soon as
@@ -264,8 +304,8 @@ export async function spawnAgentSession(
       cwd,
       ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
-      ...(input.options && Object.keys(input.options).length > 0
-        ? { options: input.options }
+      ...(Object.keys(effectiveOptions).length > 0
+        ? { options: effectiveOptions }
         : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),

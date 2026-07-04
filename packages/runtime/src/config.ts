@@ -28,6 +28,7 @@
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 
 export const CONFIG_VERSION = 1 as const
 
@@ -114,6 +115,11 @@ export interface AgentprotoConfig {
   /** Profile name to use when `--profile` isn't passed. When unset,
    *  the top-level `daemon` / `tunnel` blocks are used directly. */
   activeProfile?: string
+  /** Default `skills` + `options` auto-applied to every `agent_start`
+   *  spawn — global and per-adapter. See `resolveSpawnDefaults` in
+   *  `spawn-defaults.ts` for the merge precedence with an explicit call.
+   *  Absent ⇒ current behaviour exactly (no regression). */
+  defaults?: SpawnDefaultsConfig
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }

@@ -184,9 +184,9 @@ function badgeClass(status) {
   return 'be'; // exited
 }
 
-// Derive a turn-aware display badge. A session's `status` only tracks process
+// Derive a turn-aware display badge. A session's 'status' only tracks process
 // liveness, so an agent-cli process stays "running" while idle between turns.
-// Read `busy` / `awaitingInput` to show real activity instead:
+// Read 'busy' / 'awaitingInput' to show real activity instead:
 //   working  — a turn is in flight (busy)
 //   waiting  — turn ended on awaiting-input (needs a reply)
 //   idle     — process alive, no turn running (last turn done)
