@@ -53,4 +53,16 @@ describe.each(Object.entries(PANELS))("panel %s", (_name, html) => {
     // Exactly one bridge copy — the shared panel-bridge.ts one.
     expect(js.match(/function initBridge/g)).toHaveLength(1)
   })
+
+  it("wires the display-mode toggle (fullscreen/pip)", () => {
+    // The app must advertise all three modes, else the host never offers them.
+    expect(js).toContain("['inline', 'fullscreen', 'pip']")
+    expect(js).toContain("ui/request-display-mode")
+    // Host context plumbing feeding syncBtn.
+    expect(js).toContain("ui/notifications/host-context-changed")
+    expect(js).toContain("availableDisplayModes")
+    // The two injected buttons (same ids as guilde's canvas reference).
+    expect(js).toContain("'dm'")
+    expect(js).toContain("'pin'")
+  })
 })
