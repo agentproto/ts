@@ -14,7 +14,11 @@ export const provisionWorktreeTool = defineTool({
     "given, it runs inside the new worktree afterwards (e.g. install deps). " +
     "If `copyGlobs` is given, matching files under `repoRoot` (including " +
     "gitignored ones, e.g. local secrets) are copied into the worktree at " +
-    "the same relative path.",
+    "the same relative path. If `linkPaths` is given, each is symlinked from " +
+    "`repoRoot` into the worktree before `depsCmd` runs — for gitignored, " +
+    "expensive-to-recreate trees a fresh worktree lacks (node_modules, " +
+    "sibling workspace repos) so the workspace graph resolves without a full " +
+    "reinstall.",
   version: "0.1.0",
   inputSchema: z.object({
     repoRoot: z.string().describe("Absolute path to the git repository root."),
@@ -34,6 +38,10 @@ export const provisionWorktreeTool = defineTool({
       .array(z.string())
       .optional()
       .describe("Glob patterns (relative to repoRoot) of gitignored files to copy into the worktree, e.g. 'envs/**/.env.local'."),
+    linkPaths: z
+      .array(z.string())
+      .optional()
+      .describe("Relative paths (dirs or files) symlinked from repoRoot into the worktree before depsCmd, e.g. 'node_modules' or a gitignored sibling workspace repo. Lets the workspace graph resolve without a full reinstall."),
   }),
   outputSchema: z.object({
     cwd: z.string().describe("Absolute path to the created worktree."),

@@ -1,4 +1,4 @@
-import { mkdir, copyFile } from "node:fs/promises"
+import { mkdir, copyFile, symlink, lstat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { implementTool } from "@agentproto/driver"
 import { ToolError } from "@agentproto/tool"
@@ -14,6 +14,20 @@ export const provisionWorktreeBuiltin = implementTool(
     const cwd = resolve(input.repoRoot, "..", "_worktrees", input.slug)
 
     await execGit(input.repoRoot, ["worktree", "add", "-b", branch, cwd, base])
+
+    // Symlink gitignored, expensive-to-recreate trees from the host repo into
+    // the worktree BEFORE depsCmd, so a workspace whose graph spans gitignored
+    // dirs (sibling repos, node_modules) resolves without a full reinstall.
+    for (const rel of input.linkPaths ?? []) {
+      const target = resolve(input.repoRoot, rel)
+      const dest = join(cwd, rel)
+      // A fresh worktree shouldn't already carry a gitignored path; if it does
+      // (a tracked dir, or a re-run), leave it untouched rather than clobber.
+      const existing = await lstat(dest).catch(() => null)
+      if (existing) continue
+      await mkdir(dirname(dest), { recursive: true })
+      await symlink(target, dest, "dir")
+    }
 
     if (input.depsCmd) {
       const result = await execShell(input.depsCmd, cwd)

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runTool } from "@agentproto/driver"
@@ -73,6 +73,67 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     cleanupPaths.push(provisioned.cwd)
     const marker = await readFile(join(provisioned.cwd, "deps-ran.txt"), "utf8")
     expect(marker).toBe("ok")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
+    })
+  })
+
+  it("symlinks linkPaths from the host repo into the worktree, before depsCmd", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    // A gitignored, host-only dir a fresh worktree wouldn't carry.
+    await mkdir(join(repoRoot, "node_modules", "dep"), { recursive: true })
+    await writeFile(join(repoRoot, "node_modules", "dep", "index.js"), "module.exports = 1\n")
+    await writeFile(join(repoRoot, ".gitignore"), "node_modules\n")
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "with-links",
+        linkPaths: ["node_modules"],
+        // Proves the link exists BEFORE depsCmd: reads through the symlink.
+        depsCmd:
+          "node -e \"require('fs').writeFileSync('linked.txt', require('fs').readFileSync('node_modules/dep/index.js','utf8'))\"",
+      },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const linkStat = await lstat(join(provisioned.cwd, "node_modules"))
+    expect(linkStat.isSymbolicLink()).toBe(true)
+    const seenByDeps = await readFile(join(provisioned.cwd, "linked.txt"), "utf8")
+    expect(seenByDeps).toBe("module.exports = 1\n")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
+    })
+  })
+
+  it("leaves an already-present path untouched instead of clobbering it", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    // README.md is tracked, so the fresh worktree already has it — a link for
+    // it must be a no-op (keep the checked-out file, not a symlink to host).
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "no-clobber", linkPaths: ["README.md"] },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const stat = await lstat(join(provisioned.cwd, "README.md"))
+    expect(stat.isSymbolicLink()).toBe(false)
+    const content = await readFile(join(provisioned.cwd, "README.md"), "utf8")
+    expect(content).toBe("hello\n")
 
     await runTool({
       tool: cleanupWorktreeTool,
