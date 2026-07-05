@@ -68,6 +68,7 @@ import { createRoutineRunner } from "./routine-runner.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
+import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
@@ -631,7 +632,7 @@ export async function createGateway(
       : {}),
   })
 
-  const mcpServerFactory = async () => {
+  const mcpServerFactory = async (denyTools?: ReadonlySet<string>) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
@@ -643,9 +644,18 @@ export async function createGateway(
     // outside `alwaysOn` register but start disabled (hidden from the
     // first `tools/list`) until `tool_search` pulls them in. Omitted →
     // `server` is the raw, fully-eager gateway, today's behaviour.
-    const server = opts.deferredTools
+    let server = opts.deferredTools
       ? withDeferredTools(rawServer, { alwaysOn: new Set(opts.deferredTools.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS) })
       : rawServer
+    // Spawn-role-profiles tool gate (the hard part of the executor/
+    // supervisor primitive — see role.ts). Per-request denylist parsed
+    // from `?denyTools=a,b` on THIS `/mcp` call (see `handleMcp` in
+    // http-server.ts) — outermost wrap so it wins over deferred-tools
+    // unconditionally: an excluded name never reaches registration at
+    // all, regardless of `alwaysOn`.
+    if (denyTools && denyTools.size > 0) {
+      server = withToolExclusion(server, denyTools)
+    }
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match

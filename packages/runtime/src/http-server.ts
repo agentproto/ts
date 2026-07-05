@@ -239,8 +239,18 @@ export interface RuntimeHttpServerOptions {
    * tools / resources / prompts on the returned server before
    * resolving — by the time the transport's `handleRequest` fires,
    * the server is locked in.
+   *
+   * `denyTools`, when non-empty, is parsed from the request's
+   * `?denyTools=a,b` query string (see `handleMcp` below) and is the
+   * spawn-role-profiles tool gate for THIS surface: the hermes-default
+   * `mcpServers` entry injected for an executor-role child (see
+   * `session-spawn.ts`) carries this query param so the resulting
+   * server excludes `agent_start`/`agent_prompt` while keeping every
+   * other tool (fs, command_execute, …) — unlike the orchestrator's
+   * curated allowlist, this surface can't just narrow to a small
+   * subset without breaking the child's ability to do real work.
    */
-  mcpServerFactory: () => Promise<McpServer>
+  mcpServerFactory: (denyTools?: ReadonlySet<string>) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -594,9 +604,19 @@ export async function startHttpServer(
     }
   }
 
+  function parseDenyToolsQuery(url: string): Set<string> | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("denyTools")
+    if (!raw) return undefined
+    const names = raw.split(",").map(s => s.trim()).filter(Boolean)
+    return names.length > 0 ? new Set(names) : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorize(req, res)) return
-    const server = await opts.mcpServerFactory()
+    const denyTools = parseDenyToolsQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools)
     await serveMcp(req, res, server)
   }
 
@@ -1644,6 +1664,8 @@ async function handleSessions(
         ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
         ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
+        ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
+        ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
         ...(b.orchestrator !== undefined
           ? (() => {
               const parsed = parseOrchestratorField(b.orchestrator)
@@ -1667,7 +1689,9 @@ async function handleSessions(
             : result.code === "orchestrator_max_depth_exceeded" ||
                 result.code === "orchestrator_child_quota_exceeded"
               ? 409
-              : 500
+              : result.code === "invalid_role"
+                ? 400
+                : 500
       json(status, {
         error: result.code,
         message: result.message,

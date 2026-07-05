@@ -41,3 +41,35 @@ export function withToolSubset(
     },
   })
 }
+
+/**
+ * The denylist complement of `withToolSubset` — blocks registration of
+ * specific tool NAMES while letting everything else through unchanged.
+ *
+ * Used on the plain, full `/mcp` gateway (unlike the orchestrator's
+ * curated allowlist, this surface registers fs/command/remote/etc. and
+ * must keep doing so) to enforce the spawn-role-profiles tool gate: an
+ * executor-role child still needs `command_execute`/fs tools to do real
+ * work, it just must never see `agent_start`/`agent_prompt`. See
+ * `DELEGATION_TOOL_NAMES` in `role.ts` and the `denyTools` query param
+ * on `/mcp` in `http-server.ts`.
+ */
+export function withToolExclusion(
+  server: McpServer,
+  excluded: ReadonlySet<string>,
+): McpServer {
+  return new Proxy(server, {
+    get(target, prop, receiver) {
+      if (prop === "tool") {
+        return (name: string, ...rest: unknown[]): unknown => {
+          if (excluded.has(name)) return undefined
+          return (
+            target.tool as unknown as (n: string, ...r: unknown[]) => unknown
+          )(name, ...rest)
+        }
+      }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+}

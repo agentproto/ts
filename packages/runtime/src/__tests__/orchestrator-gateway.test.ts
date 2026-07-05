@@ -138,7 +138,13 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     expect(reg.verify(scope.token)).toBeNull()
   })
 
-  it("threads daemonMcpUrl to a hermes child spawned with no mcpServers through the scoped gateway", async () => {
+  it("threads daemonMcpUrl to a hermes child spawned with no mcpServers through the scoped gateway, deny-gated by the depth-derived executor default", async () => {
+    // A spawn made THROUGH an orchestrator's scoped gateway lands at
+    // depth 1 — at/above the default role-depth cutoff (1), so with no
+    // explicit `role` it defaults to executor (spawn-role-profiles).
+    // The hermes-default entry still points at the full daemon gateway
+    // (fs/command tools stay available) but carries `denyTools` so the
+    // daemon strips the delegation surface from what it registers.
     const deps = makeFactoryDeps()
     const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
     const startSession = vi.fn(async () => ({
@@ -168,6 +174,53 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     const result = await client.callTool({
       name: "agent_start",
       arguments: { adapter: "hermes", cwd: process.cwd() },
+    })
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
+    const desc = JSON.parse(text) as {
+      mcpServers?: Array<{ name: string; transport: string; ref: string }>
+    }
+
+    const expectedEntry = [
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt` },
+    ]
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpServers: expectedEntry }),
+    )
+    expect(desc.mcpServers).toEqual(expectedEntry)
+
+    await client.close()
+  })
+
+  it("keeps the plain daemonMcpUrl (no denyTools) when the caller explicitly requests role: supervisor", async () => {
+    const deps = makeFactoryDeps()
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const startSession = vi.fn(async () => ({
+      sessionId: "hermes_scoped_supervisor_test",
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> { return },
+      async cancel() {},
+      async close() {},
+    }))
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "hermes",
+    })
+    const factory = createOrchestratorMcpServerFactory({
+      workspace: process.cwd(),
+      ...deps,
+      resolveAgentAdapter,
+      daemonMcpUrl,
+    })
+    const scope = createScopeTokenRegistry().mint()
+    const server = await factory(scope)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "hermes-default-supervisor-test", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    const result = await client.callTool({
+      name: "agent_start",
+      arguments: { adapter: "hermes", cwd: process.cwd(), role: "supervisor" },
     })
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
     const desc = JSON.parse(text) as {

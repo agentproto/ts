@@ -22,6 +22,7 @@ import {
   normalizeSkillsOption,
   type SpawnDefaultsConfig,
 } from "./spawn-defaults.js"
+import { resolveRole, composeRoleContext, DELEGATION_TOOL_NAMES } from "./role.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -109,6 +110,18 @@ export interface SpawnAgentSessionInput {
   notifyUrl?: string
   wait?: boolean
   maxCostUsd?: number
+  /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
+   *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
+   *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
+   *  role with `toolPolicy.delegation === "deny"` is a HARD gate:
+   *  `orchestrator` is ignored outright and the hermes/default
+   *  full-gateway injection excludes `DELEGATION_TOOL_NAMES` — neither
+   *  this field's own request nor `promptAppend` can re-open it. */
+  role?: string
+  /** One-off runtime text layered ON TOP of the resolved role's
+   *  disposition (never replacing it) and prepended to `prompt`. See
+   *  `composeRoleContext`. Cannot widen `toolPolicy` — see `role` above. */
+  promptAppend?: string
 }
 
 export type SpawnAgentSessionResult =
@@ -121,6 +134,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_not_enabled"
         | "orchestrator_max_depth_exceeded"
         | "orchestrator_child_quota_exceeded"
+        | "invalid_role"
         | "agent_spawn_failed"
       message: string
       details?: Record<string, unknown>
@@ -226,6 +240,32 @@ export async function spawnAgentSession(
       }
     }
   }
+  // Config-level defaults (WP: session-skills-defaults) — auto-apply
+  // `defaults.skills` / `defaults.options` (global + per-adapter) unless
+  // the caller's explicit `agent_start` fields already say otherwise.
+  // Pure merge in `resolveSpawnDefaults`; adapter-shape folding (e.g.
+  // hermes' comma-joined `options.skills`) in `normalizeSkillsOption`,
+  // using the manifest's own declared option type via `resolved`.
+  // Loaded here (before the role/orchestrator decisions below) because
+  // both `defaultRoleDepthCutoff` and `skills`/`options` come from the
+  // same block.
+  const configDefaults = loadDefaultsConfig
+    ? await loadDefaultsConfig()
+    : (await loadConfig()).defaults
+  // Spawn-time role (see role.ts). Resolved BEFORE the orchestrator/
+  // hermes-default mcpServers decisions below so `toolPolicy.delegation`
+  // can gate both — the hard tool gate this whole primitive exists for.
+  let role
+  try {
+    role = resolveRole(input.role, childDepth, configDefaults?.defaultRoleDepthCutoff)
+  } catch (err) {
+    return {
+      ok: false,
+      code: "invalid_role",
+      message: `agent_start: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  const delegationDenied = role.toolPolicy.delegation === "deny"
   // Orchestrator role (WP3): when requested, mint a scoped
   // sub-gateway token and MERGE its `mcpServers` entry with any
   // caller-provided ones (WP1) — both coexist on the child's
@@ -235,6 +275,11 @@ export async function spawnAgentSession(
   // When the spawn is itself recursive (callerScope present), the
   // child's token inherits depth+1 and is bounded by the caller's
   // tools (non-re-grant — a child can't widen past its parent).
+  //
+  // HARD GATE: a role that denies delegation drops `orchestrator`
+  // outright, regardless of what the caller requested — this is the
+  // capability gate applied from outside; `promptAppend` cannot
+  // reopen it (it's never consulted here at all).
   let mcpServers = input.mcpServers
   // hermes (unlike claude-code) has zero built-in tools — without an
   // explicit `mcpServers`, it silently spawns as a chat-only session
@@ -242,13 +287,22 @@ export async function spawnAgentSession(
   // longer possible to get this wrong by omission. An explicit `[]`
   // is a deliberate opt-out and must be respected as such, so this
   // only fires when the caller passed no `mcpServers` at all.
+  //
+  // HARD GATE: when the resolved role denies delegation, the injected
+  // gateway URL carries `denyTools=<DELEGATION_TOOL_NAMES>` so the
+  // daemon's `/mcp` handler strips `agent_start`/`agent_prompt` from
+  // what it registers for this one request — the child still gets the
+  // rest of the daemon's tools (fs, command_execute, …) to do real work.
   if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
-    mcpServers = [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }]
+    const ref = delegationDenied
+      ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
+      : daemonMcpUrl
+    mcpServers = [{ name: "agentproto", transport: "http", ref }]
   }
   let bindOrchestratorLifecycle:
     | ((sessionId: string) => () => void)
     | undefined
-  if (input.orchestrator !== undefined && input.orchestrator !== false) {
+  if (!delegationDenied && input.orchestrator !== undefined && input.orchestrator !== false) {
     if (!buildOrchestratorMcp) {
       return {
         ok: false,
@@ -276,15 +330,6 @@ export async function spawnAgentSession(
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
   }
-  // Config-level defaults (WP: session-skills-defaults) — auto-apply
-  // `defaults.skills` / `defaults.options` (global + per-adapter) unless
-  // the caller's explicit `agent_start` fields already say otherwise.
-  // Pure merge in `resolveSpawnDefaults`; adapter-shape folding (e.g.
-  // hermes' comma-joined `options.skills`) in `normalizeSkillsOption`,
-  // using the manifest's own declared option type via `resolved`.
-  const configDefaults = loadDefaultsConfig
-    ? await loadDefaultsConfig()
-    : (await loadConfig()).defaults
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -294,6 +339,15 @@ export async function spawnAgentSession(
     spawnDefaults.options,
     resolved.declaredOptions,
   )
+  // Compose the role's disposition (+ optional promptAppend, layered on
+  // top, never replacing it) into the initial prompt — the only text
+  // channel this codebase has into a freshly-spawned child (there's no
+  // separate system-prompt field on `startSession`). No `prompt` at all
+  // ⇒ nothing to compose onto; the child still gets the tool gate above,
+  // it just doesn't see the disposition until its first turn.
+  const effectivePrompt = input.prompt
+    ? `${composeRoleContext(role, input.promptAppend)}\n\n${input.prompt}`
+    : input.prompt
   try {
     // The registry doesn't assign a session id until `spawnAgent`
     // returns below, but `onActivity` can start firing as soon as
@@ -320,7 +374,7 @@ export async function spawnAgentSession(
       agentSession,
       adapterSlug: input.adapter,
       ...(input.model ? { model: input.model } : {}),
-      ...(input.wait && input.prompt ? {} : input.prompt ? { initialPrompt: input.prompt } : {}),
+      ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       // Parent attribution + depth (WP4) — only set for spawns that
@@ -346,8 +400,8 @@ export async function spawnAgentSession(
     }
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.
-    if (input.wait && input.prompt) {
-      await registry.sendPrompt(desc.id, input.prompt)
+    if (input.wait && effectivePrompt) {
+      await registry.sendPrompt(desc.id, effectivePrompt)
       const waitLines: string[] = []
       const waitUnsub = registry.attach(desc.id, (line: string) => {
         waitLines.push(line)
