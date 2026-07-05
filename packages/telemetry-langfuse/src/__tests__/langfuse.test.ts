@@ -87,7 +87,7 @@ describe("langfuseTelemetry", () => {
 
     const [trace, score, meanScore, passRateScore] = body.batch
     expect(trace).toEqual({
-      id: 1,
+      id: started.runId,
       type: "trace-create",
       timestamp: started.at,
       body: {
@@ -99,7 +99,7 @@ describe("langfuseTelemetry", () => {
       },
     })
     expect(score).toEqual({
-      id: 2,
+      id: `${scored.runId}:${scored.caseId}:${scored.scorerId}`,
       type: "score-create",
       timestamp: scored.at,
       body: {
@@ -114,7 +114,7 @@ describe("langfuseTelemetry", () => {
       },
     })
     expect(meanScore).toEqual({
-      id: 3,
+      id: `${finished.runId}:eval.meanValue`,
       type: "score-create",
       timestamp: finished.at,
       body: {
@@ -128,7 +128,7 @@ describe("langfuseTelemetry", () => {
       },
     })
     expect(passRateScore).toEqual({
-      id: 4,
+      id: `${finished.runId}:eval.passRate`,
       type: "score-create",
       timestamp: finished.at,
       body: {
