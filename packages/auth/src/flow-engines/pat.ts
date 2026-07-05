@@ -117,6 +117,8 @@ export const patFlowEngine: FlowEngine = {
     const token = await promptToken(`${provider.id} personal access token`)
     if (!token) throw new Error("no token provided")
 
+    await store.write(ref, { value: token, kind: "pat" })
+
     return { accessToken: token, tokenKind: "pat" }
   },
 }

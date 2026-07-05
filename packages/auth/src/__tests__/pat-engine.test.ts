@@ -52,6 +52,13 @@ describe("patFlowEngine", () => {
     expect(r).toEqual({ accessToken: "gld_typed", tokenKind: "pat" })
   })
 
+  it("persists the prompted token to the store", async () => {
+    promptAnswer.value = "gld_new"
+    await patFlowEngine.run(provider, null, opts())
+    const stored = await store.read(ref)
+    expect(stored).toEqual({ value: "gld_new", kind: "pat" })
+  })
+
   it("rejects when the prompt yields nothing", async () => {
     promptAnswer.value = ""
     await expect(patFlowEngine.run(provider, null, opts())).rejects.toThrow(
@@ -154,7 +161,7 @@ describe("patFlowEngine — masked TTY entry", () => {
     const p = patFlowEngine.run(provider, null, opts)
     await tick()
     fake.emit("data", "abc")
-    fake.emit("data", "") // delete the 'c'
+    fake.emit("data", "\u007f") // delete the 'c'
     fake.emit("data", "X")
     fake.emit("data", "\n")
 
@@ -165,7 +172,7 @@ describe("patFlowEngine — masked TTY entry", () => {
   it("rejects on Ctrl-C and restores raw mode", async () => {
     const p = patFlowEngine.run(provider, null, opts)
     await tick()
-    fake.emit("data", "")
+    fake.emit("data", "\u0003") // Ctrl-C
 
     await expect(p).rejects.toThrow(/cancelled/)
     expect(fake.setRawMode).toHaveBeenCalledWith(false)
