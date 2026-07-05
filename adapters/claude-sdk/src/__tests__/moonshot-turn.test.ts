@@ -1,15 +1,24 @@
 /**
- * Regression coverage for the Moonshot gateway STALL.
+ * Coverage for the Moonshot gateway turn + the idle-stall watchdog.
  *
  * `gateway-modes.test.ts` only checks manifest env wiring; it never drives a
- * turn, which is why it stayed green while a real moonshot turn hung forever.
- * These tests DRIVE a turn to completion against a mock Moonshot-shaped SDK
- * stream — `system/init` (non-`msg_` id) → a `thinking` block with an EMPTY
- * `signature` → a `text` block → the terminal `result` — and, critically, one
- * where the stream never delivers a terminal `result` and never closes (the
- * observed moonshot failure). The latter asserts the turn TERMINATES via the
- * idle watchdog instead of hanging with zero output; on the pre-fix `#drive`
- * (an unbounded `for await`) that test hangs and fails on the test timeout.
+ * turn. These tests DRIVE a turn end to end. Two things are verified:
+ *
+ *  1. A Moonshot-shaped SDK stream — `system/init` (a non-`msg_` `chatcmpl-…`
+ *     id) → a `thinking` block with an EMPTY `signature` → a `text` block → the
+ *     terminal `result` — drives to completion. This is exactly the response
+ *     shape that was suspected of wedging the turn; the SDK consumes it fine,
+ *     and the live e2e below confirms the same against the real endpoint (a
+ *     real `kimi-k2.7-code` turn reaches `stop_reason: end_turn` with text).
+ *
+ *  2. The idle watchdog terminates a genuinely WEDGED stream — one that yields
+ *     some content then stops emitting messages and never closes — with a
+ *     surfaced error instead of hanging with zero output. On the pre-watchdog
+ *     `#drive` (an unbounded `for await`) that case hangs and fails on the test
+ *     timeout. This is the defensive safety net for a wedged SDK child (in
+ *     practice, a conflicting host env — a stray `ANTHROPIC_BASE_URL` or a
+ *     `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX` toggle — leaking into the spawned
+ *     subprocess), independent of any response shape.
  *
  * The host is driven through a REAL `AgentSideConnection` over in-memory
  * streams so the fakes stay fully typed (no casts): the connection is a class
@@ -58,7 +67,7 @@ function moonshotInit(sessionId: string): SDKSystemMessage {
   }
 }
 
-/** The block at the heart of the bug: Moonshot ships `signature: ""`. */
+/** The suspected-but-benign shape: Moonshot ships `signature: ""`. */
 function moonshotThinking(sessionId: string): SDKAssistantMessage {
   return {
     type: "assistant",
@@ -246,7 +255,7 @@ describe("claude-sdk moonshot turn (mock SDK stream)", () => {
         prompt: [{ type: "text", text: "Reply PONG" }],
       })
 
-      // The turn TERMINATES (this is the property that hangs on moonshot).
+      // The turn TERMINATES on the empty-signature / `chatcmpl-…` shape.
       expect(res.stopReason).toBe("end_turn")
       // …and the assistant text made it through.
       expect(agentChunkTexts(harness.captured)).toContain("PONG")
@@ -260,8 +269,8 @@ describe("claude-sdk moonshot turn (mock SDK stream)", () => {
   })
 
   it("ends the turn (does not hang) when the stream never yields a terminal result", async () => {
-    // The moonshot failure mode: content streams, then the iterator never
-    // delivers `result` and never closes. Pre-fix `#drive` awaits forever.
+    // The wedged-stream failure mode: content streams, then the iterator never
+    // delivers `result` and never closes. Pre-watchdog `#drive` awaits forever.
     const query: QueryFn = () =>
       (async function* (): AsyncGenerator<SDKMessage> {
         const sid = "sdk-moonshot-hang"
@@ -322,8 +331,17 @@ describe("claude-sdk moonshot turn (mock SDK stream)", () => {
 
 /**
  * Gated live e2e (skipped without `MOONSHOT_API_KEY`) — mirrors the repo's
- * `describe.skipIf(!process.env.X_API_KEY)` convention. Drives a real turn
- * against Moonshot's Anthropic-compatible endpoint and asserts it terminates.
+ * `describe.skipIf(!process.env.X_API_KEY)` convention. Drives a REAL turn
+ * against Moonshot's Anthropic-compatible endpoint and asserts genuine
+ * completion: `stopReason: "end_turn"` plus the assistant text.
+ *
+ * The assertion cannot silently pass on a hang: `idleTimeoutMs` bounds each
+ * wait, so a wedged stream aborts to `stopReason: "refusal"` well inside the
+ * test's own ceiling and FAILS the `end_turn` assertion rather than the test
+ * timing out or (worse) reporting a false pass. Run with the key set to verify
+ * the arm end to end:
+ *   MOONSHOT_API_KEY=… npx vitest run src/__tests__/moonshot-turn.test.ts \
+ *     -t "completes a real moonshot turn"
  */
 describe.skipIf(!process.env.MOONSHOT_API_KEY)(
   "claude-sdk moonshot turn (live e2e)",
@@ -335,6 +353,9 @@ describe.skipIf(!process.env.MOONSHOT_API_KEY)(
         authToken: process.env.MOONSHOT_API_KEY,
         thinking: true,
         cwd: "/tmp",
+        // Bound the wait so a stall surfaces as a refusal (failing the
+        // assertion) instead of hanging up to the test ceiling.
+        idleTimeoutMs: 45_000,
       }
       const harness = makeHarness(config, sdkQuery)
       try {
