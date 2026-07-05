@@ -2234,6 +2234,12 @@ importers:
       '@agentproto/telemetry-langfuse':
         specifier: workspace:*
         version: link:../telemetry-langfuse
+      '@agentproto/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      '@agentproto/workflow-loader':
+        specifier: workspace:*
+        version: link:../workflow-loader
       '@agentproto/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
@@ -2253,6 +2259,12 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling

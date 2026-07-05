@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { z } from "zod"
+import { defineTool } from "@agentproto/tool"
+import { defineDriver, implementTool } from "@agentproto/driver"
+import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner } from "../workflow-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -467,5 +471,139 @@ describe("WorkflowRunner persistence", () => {
       persistPath,
     })
     expect(runner2.list()).toHaveLength(0)
+  })
+})
+
+// ── startFromFile tests ─────────────────────────────────────────────────
+
+describe("WorkflowRunner.startFromFile", () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "workflow-startFromFile-test-"))
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  function writeWorkflowMd(content: string): string {
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(path, content, "utf8")
+    return path
+  }
+
+  function makeStubTools() {
+    const doubleTool = defineTool({
+      id: "demo.double",
+      description: "Double a number.",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ n: z.number() }),
+    })
+    const addTenTool = defineTool({
+      id: "demo.add-ten",
+      description: "Add ten.",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ n: z.number() }),
+    })
+    const provider = defineDriver({
+      id: "math-builtin",
+      name: "Math",
+      description: "Trivial arithmetic.",
+      kind: "builtin",
+      implements: [
+        { tool: "demo.double", version: "0.1.0" },
+        { tool: "demo.add-ten", version: "0.1.0" },
+      ],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => ({ n: input.n * 2 })),
+        implementTool(addTenTool, ({ input }) => ({ n: input.n + 10 })),
+      ],
+    })
+    return {
+      tools: { "demo.double": doubleTool, "demo.add-ten": addTenTool },
+      candidates: [provider],
+    }
+  }
+
+  it("loads and runs a declarative WORKFLOW.md to done with stub tools", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const { tools, candidates } = makeStubTools()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Double then add
+id: double-add
+description: Double the input, then add ten.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: d
+    kind: tool
+    tool: demo.double
+    inputs:
+      n: $input.n
+  - id: a
+    kind: tool
+    tool: demo.add-ten
+    inputs:
+      n: $steps.d.n
+---
+
+# Double then add
+`)
+
+    const run = await runner.startFromFile({ path, input: { n: 5 } })
+    expect(run.status).toBe("running")
+    expect(run.runId).toMatch(/^wfrun_/)
+    expect(run.workflowId).toBe("double-add")
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(final?.stages[0]?.status).toBe("done")
+    expect(final?.stages[0]?.steps[0]?.status).toBe("done")
+  })
+
+  it("returns an error when no compileWorkflow callback is configured", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Empty
+id: empty
+description: Empty workflow.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: d
+    kind: tool
+    tool: demo.double
+    inputs:
+      n: $input.n
+---
+`)
+
+    await expect(runner.startFromFile({ path })).rejects.toThrow(
+      "compileWorkflow callback",
+    )
   })
 })
