@@ -438,6 +438,13 @@ const PERSIST_DEBOUNCE_MS = 1_500
  *  to render. */
 const HISTORY_CAP = 200
 
+/** Bound on how long `enqueuePrompt({interrupt: true})` waits for a
+ *  cancelled turn to actually settle (busy → false) before giving up.
+ *  A well-behaved adapter settles within a few event-loop turns of
+ *  `cancel()` resolving; this is a safety net against an adapter that
+ *  never delivers the corresponding turn-end, not the normal path. */
+const INTERRUPT_SETTLE_TIMEOUT_MS = 30_000
+
 /** Compute `desc.processAlive` from `desc.pid` via the standard POSIX
  *  "signal 0" check — `process.kill(pid, 0)` throws `ESRCH` (or
  *  `EPERM`, treated as "exists but not ours") when the process is
@@ -546,8 +553,20 @@ export interface SessionsRegistry {
    *  mid-turn) are pushed into the ring buffer as `[error]` lines so
    *  `/stream` subscribers see them. Used by the web UI's chat input
    *  and MCP `agent_prompt`, where a long turn would otherwise freeze
-   *  the caller. */
-  enqueuePrompt(id: string, message: unknown): Promise<void>
+   *  the caller.
+   *
+   *  `opts.interrupt` lets a caller redirect a mid-turn session instead
+   *  of hitting the busy rejection: the in-flight turn is cancelled
+   *  (`agentSession.cancel()`), admission waits for that turn to
+   *  actually settle (busy flips false — no fixed sleep), then the new
+   *  prompt is admitted + fired on the SAME live session. Ignored
+   *  (identical to the default) when the session is idle. Omitted or
+   *  `false` reproduces today's mid-turn rejection byte-for-byte. */
+  enqueuePrompt(
+    id: string,
+    message: unknown,
+    opts?: { interrupt?: boolean }
+  ): Promise<void>
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -1168,6 +1187,74 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Race-free wait for a mid-turn session to settle to idle: resolves
+   * the instant `rt.busy` flips false (the same flag `validateAgentTurn`
+   * reads), driven by the "busy" event `runAgentTurn`'s finally block
+   * emits — never a fixed sleep. Resolves immediately if the turn is
+   * already over by the time this is called. Rejects if the turn
+   * hasn't settled within `INTERRUPT_SETTLE_TIMEOUT_MS` (a hung/buggy
+   * adapter that never delivers a turn-end for the cancelled turn).
+   */
+  const waitForTurnSettled = (rt: SessionRuntime, id: string): Promise<void> => {
+    if (!rt.busy) return Promise.resolve()
+    return new Promise<void>((resolve, reject) => {
+      const onBusy = (busy: boolean): void => {
+        if (busy) return
+        cleanup()
+        resolve()
+      }
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        rt.emitter.off("busy", onBusy)
+      }
+      const timer = setTimeout(() => {
+        cleanup()
+        reject(
+          new Error(
+            `enqueuePrompt: session "${id}" did not settle after interrupt within ${INTERRUPT_SETTLE_TIMEOUT_MS}ms`
+          )
+        )
+      }, INTERRUPT_SETTLE_TIMEOUT_MS)
+      rt.emitter.on("busy", onBusy)
+    })
+  }
+
+  /**
+   * `enqueuePrompt({interrupt: true})`'s mid-turn arm: cancel the
+   * in-flight turn via the session handle's `cancel()` (the CLI-side
+   * equivalent of Ctrl-C — ACP `session/cancel`, or an adapter-specific
+   * SIGINT for process/PTY-backed adapters), then await the turn
+   * actually settling before returning. Does NOT run admission itself
+   * — the caller still goes through `validateAgentTurn` afterward, now
+   * finding the session idle.
+   */
+  const interruptInFlightTurn = async (
+    rt: SessionRuntime,
+    id: string
+  ): Promise<void> => {
+    const session = rt.agentSession
+    if (!session) {
+      // Invariant: `runAgentTurn` requires `agentSession` before it
+      // ever sets `busy = true`, and nothing clears the field once set
+      // (see the `validateAgentTurn` doc comment on `kill()`) — this
+      // only fires if that invariant is ever violated.
+      throw new Error(
+        `enqueuePrompt: session "${id}" is mid-turn but has no live agent session to cancel`
+      )
+    }
+    try {
+      await session.cancel()
+    } catch (err) {
+      throw new Error(
+        `enqueuePrompt: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+    await waitForTurnSettled(rt, id)
+  }
+
+  /**
    * Attempt to resume a dead agent-cli session by re-spawning the
    * adapter with the persisted `adapterSessionId`. The conversation
    * continues from where it left off — ACP's `resumeSessionId`
@@ -1293,6 +1380,7 @@ export function createSessionsRegistry(opts?: {
     }
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
+    rt.emitter.emit("busy", true)
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     rt.desc.blockedOn = undefined  // clear stale blocked-on from prior turn
@@ -1364,6 +1452,7 @@ export function createSessionsRegistry(opts?: {
     } finally {
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
+      rt.emitter.emit("busy", false)
       // Safety net: a tool-call that never receives its tool-result (child
       // crashed, stream ended early) must not leave the session flagged
       // blocked forever — the turn is over, nothing is pending anymore.
@@ -1885,7 +1974,7 @@ export function createSessionsRegistry(opts?: {
       const rt = validateAgentTurn(id, "sendPrompt")
       await runAgentTurn(rt, message)
     },
-    async enqueuePrompt(id, message) {
+    async enqueuePrompt(id, message, opts) {
       // Admission phase — AWAITED, unlike the turn itself below. This
       // is what makes `{queued: true}` truthful: a dead (exited/
       // killed/error) session gets one resume attempt, then
@@ -1896,6 +1985,15 @@ export function createSessionsRegistry(opts?: {
       const rtPre = sessions.get(id)
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
+      }
+      // `interrupt` only ever changes behavior on a mid-turn session —
+      // an idle session falls straight through to the normal admission
+      // path below, byte-identical to `interrupt` omitted/false. Cancel
+      // THEN await the turn actually settling (busy → false) BEFORE
+      // `validateAgentTurn` runs, so admission is never bypassed — it's
+      // only ever reached once the prior turn is genuinely over.
+      if (opts?.interrupt && rtPre.busy) {
+        await interruptInFlightTurn(rtPre, id)
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")

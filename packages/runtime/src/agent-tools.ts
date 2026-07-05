@@ -390,10 +390,24 @@ export function registerAgentTools(
     "Send a follow-up prompt to a live agent session — multi-turn continuity " +
       "without re-spawning. The session id comes from `agent_start` " +
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
-      "`agent_output` or the SSE /sessions/:id/stream endpoint.",
+      "`agent_output` or the SSE /sessions/:id/stream endpoint. By default, " +
+      "a session mid-turn rejects the new prompt — pass `interrupt: true` to " +
+      "cancel the in-flight turn and redirect the SAME session onto this " +
+      "prompt instead, without losing its context (unlike `agent_kill`, " +
+      "which ends the session entirely). `interrupt` is a no-op on an " +
+      "already-idle session.",
     {
       sessionId: z.string().describe("Session id returned by agent_start."),
       prompt: z.string().min(1).describe("The next user turn (plain text)."),
+      interrupt: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true and the session is mid-turn, cancel the in-flight " +
+            "turn and deliver this prompt on the same session instead of " +
+            "rejecting. No-op when the session is already idle. Default false " +
+            "(mid-turn rejects, as today)."
+        ),
     },
     async input => {
       try {
@@ -403,10 +417,13 @@ export function registerAgentTools(
         // don't block this tool call. Only the awaited admission
         // phase can reject, so a dead session (killed by a daemon
         // restart, exited, errored) or a session already mid-turn
-        // surfaces here as a real tool error instead of a lying
-        // `{queued: true}` for a prompt that goes nowhere. The caller
-        // polls agent_output for the turn's actual progress/completion.
-        await registry.enqueuePrompt(input.sessionId, input.prompt)
+        // (and not `interrupt`ed) surfaces here as a real tool error
+        // instead of a lying `{queued: true}` for a prompt that goes
+        // nowhere. The caller polls agent_output for the turn's actual
+        // progress/completion.
+        await registry.enqueuePrompt(input.sessionId, input.prompt, {
+          interrupt: input.interrupt,
+        })
         return {
           content: [
             {
