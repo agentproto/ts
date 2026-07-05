@@ -126,7 +126,7 @@ export function compareSemver(a: string, b: string): number {
 // ── npm dual-convention lookup for named packs ───────────────────────────
 
 /** Walk up from `start` collecting every `node_modules` dir reachable
- *  (mirrors the walker in `@agentproto/adapter-kit`'s discover.ts, kept
+ *  (mirrors the walker in `@agentproto/provider-kit`'s discover.ts, kept
  *  local here since this convention is "skill-pack-<name>", not
  *  "adapter-<slug>"). */
 async function collectNodeModulesRoots(start: string): Promise<string[]> {

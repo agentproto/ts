@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { makeSetupLedger } from "@agentproto/adapter-kit"
+import { makeSetupLedger } from "@agentproto/provider-kit"
 import {
   TUNNEL_CATALOG,
   TUNNEL_FAMILY,
@@ -15,7 +15,7 @@ import {
   type TunnelNamedCreds,
   type TunnelProviderCreds,
 } from "../tunnel-adapters.js"
-import type { AdapterEntry } from "@agentproto/adapter-kit"
+import type { AdapterEntry } from "@agentproto/provider-kit"
 import { quickTunnelProvider } from "../remote-providers/quick.js"
 import { namedTunnelProvider } from "../remote-providers/named.js"
 import {

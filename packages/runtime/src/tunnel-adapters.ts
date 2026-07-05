@@ -1,5 +1,5 @@
 /**
- * Tunnel family on top of `@agentproto/adapter-kit` — the PILOT consumer.
+ * Tunnel family on top of `@agentproto/provider-kit` — the PILOT consumer.
  *
  * This module is the entire bridge between the generic kit and the two
  * concrete Cloudflare tunnel providers. It contributes nothing the kit
@@ -35,7 +35,7 @@ import {
   type CredsStore,
   type SetupField,
   type SetupLedger,
-} from "@agentproto/adapter-kit"
+} from "@agentproto/provider-kit"
 
 import { CLOUDFLARE_QUICK_SLUG } from "./remote-providers/quick.js"
 import { CLOUDFLARE_NAMED_SLUG } from "./remote-providers/named.js"

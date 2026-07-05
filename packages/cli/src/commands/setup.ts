@@ -31,7 +31,7 @@ import {
   type SetupLedgerRecord,
   type AdapterWizardStep,
   type WizardStepResult,
-} from "@agentproto/adapter-kit"
+} from "@agentproto/provider-kit"
 import { resolveAdapter } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 import {

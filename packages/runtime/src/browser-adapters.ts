@@ -1,5 +1,5 @@
 /**
- * Browser family on top of `@agentproto/adapter-kit` — Phase 3 (lightest
+ * Browser family on top of `@agentproto/provider-kit` — Phase 3 (lightest
  * adoption: no creds, no wizard, no catalog file).
  *
  * Provides the kit-compatible types (`BrowserAdapterHandle`) and the
@@ -22,7 +22,7 @@ import {
   makeAdapterLister,
   type AdapterHandle,
   type AdapterLister,
-} from "@agentproto/adapter-kit"
+} from "@agentproto/provider-kit"
 import type {
   BrowserAdapterInfo,
   BrowserAdapterLister,

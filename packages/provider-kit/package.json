@@ -1,7 +1,7 @@
 {
-  "name": "@agentproto/adapter-kit",
-  "version": "0.2.0",
-  "description": "DEPRECATED — renamed @agentproto/provider-kit. This package re-exports it unchanged.",
+  "name": "@agentproto/provider-kit",
+  "version": "0.1.0",
+  "description": "@agentproto/provider-kit — generic provider/backend catalog, status, creds, setup-ledger, and MCP tool primitives shared by the agent-CLI, browser, tunnel, and eval-reporter families.",
   "keywords": [
     "agentproto",
     "adapter",
@@ -14,7 +14,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "packages/adapter-kit"
+    "directory": "packages/provider-kit"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -86,9 +86,6 @@
   "peerDependencies": {
     "@modelcontextprotocol/sdk": ">=1.0.0",
     "zod": ">=3.0.0"
-  },
-  "dependencies": {
-    "@agentproto/provider-kit": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

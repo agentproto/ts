@@ -6,7 +6,7 @@ import {
   type AdapterHandle,
   type AdapterResolver,
   type CredsStore,
-} from "@agentproto/adapter-kit"
+} from "@agentproto/provider-kit"
 import { EVAL_REPORTER_CATALOG } from "./catalog.js"
 import type { EvalReporterCreds, LangfuseCreds } from "./creds.js"
 

@@ -21,7 +21,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { AdapterLister } from "@agentproto/adapter-kit"
+import type { AdapterLister } from "@agentproto/provider-kit"
 import type { SessionsRegistry } from "./sessions.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────

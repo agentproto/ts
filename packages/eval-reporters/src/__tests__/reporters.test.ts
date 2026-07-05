@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { EvalEvent } from "@agentproto/eval"
-import { computeStatus } from "@agentproto/adapter-kit"
+import { computeStatus } from "@agentproto/provider-kit"
 import {
   EVAL_REPORTER_CATALOG,
   makeEvalReporterCredsStore,

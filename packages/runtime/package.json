@@ -92,7 +92,7 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
     "croner": "^9.0.0",
-    "@agentproto/adapter-kit": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/manifest": "workspace:*",
