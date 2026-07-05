@@ -348,6 +348,14 @@ export function registerAgentTools(
             "tool gate (an executor asked to 'delegate anyway' via this " +
             "field still has no delegation tools)."
         ),
+      trace: z
+        .boolean()
+        .optional()
+        .describe(
+          "Emit Langfuse observability traces for this session (prompt/completion + " +
+            "tool spans + tokens/cost). Off by default; requires langfuse eval-reporter " +
+            "creds configured."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {

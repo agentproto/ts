@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { composeSessionObservers, type SessionObserver } from "../session-observer.js"
+import {
+  composeSessionObservers,
+  filterSessionObserver,
+  type SessionObserver,
+} from "../session-observer.js"
 import type { AgentStreamEvent } from "../sessions.js"
 import type { SessionUsage } from "../usage.js"
 
@@ -107,5 +111,62 @@ describe("composeSessionObservers", () => {
     const composite = composeSessionObservers([])
     expect(() => composite.recordEvent("s1", evt)).not.toThrow()
     await expect(composite.closeAll()).resolves.toBeUndefined()
+  })
+})
+
+describe("filterSessionObserver", () => {
+  it("forwards record* calls only for ids the predicate accepts", () => {
+    const log: string[] = []
+    const filtered = filterSessionObserver(makeRecorder(log, "inner"), (id) => id === "traced")
+
+    filtered.recordPrompt("traced", "hello")
+    filtered.recordPrompt("untraced", "hello")
+    filtered.recordEvent("traced", evt)
+    filtered.recordEvent("untraced", evt)
+    filtered.recordUsageSnapshot("traced", usage)
+    filtered.recordUsageSnapshot("untraced", usage)
+
+    expect(log).toEqual([
+      "inner:prompt:traced:hello",
+      "inner:event:traced:turn-end",
+      "inner:usage:traced",
+    ])
+  })
+
+  it("always forwards close and closeAll, regardless of the predicate", async () => {
+    const log: string[] = []
+    const filtered = filterSessionObserver(makeRecorder(log, "inner"), () => false)
+
+    await filtered.close("untraced")
+    await filtered.closeAll()
+
+    expect(log).toEqual(["inner:close:untraced", "inner:closeAll"])
+  })
+
+  it("isolates a throwing inner observer: nothing propagates", async () => {
+    const boom: SessionObserver = {
+      recordPrompt() {
+        throw new Error("sync boom")
+      },
+      recordEvent() {
+        throw new Error("sync boom")
+      },
+      recordUsageSnapshot() {
+        throw new Error("sync boom")
+      },
+      async close() {
+        throw new Error("async boom")
+      },
+      async closeAll() {
+        throw new Error("async boom")
+      },
+    }
+    const filtered = filterSessionObserver(boom, () => true)
+
+    expect(() => filtered.recordPrompt("s1", "x")).not.toThrow()
+    expect(() => filtered.recordEvent("s1", evt)).not.toThrow()
+    expect(() => filtered.recordUsageSnapshot("s1", usage)).not.toThrow()
+    await expect(filtered.close("s1")).resolves.toBeUndefined()
+    await expect(filtered.closeAll()).resolves.toBeUndefined()
   })
 })

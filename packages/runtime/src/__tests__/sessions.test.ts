@@ -935,4 +935,102 @@ describe("createSessionsRegistry", () => {
       reg2.shutdown()
     })
   })
+
+  describe("opt-in Langfuse tracing", () => {
+    const fakeTracingAgent = (): AgentSessionLike => ({
+      sessionId: "acp-tracing-session",
+      async *send() {
+        yield { kind: "text-delta", text: "hi" }
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    })
+
+    it("only forwards events for sessions that opted in via `trace: true`", async () => {
+      const seen: string[] = []
+      const fakeTracer = {
+        recordPrompt(id: string) {
+          seen.push(`prompt:${id}`)
+        },
+        recordEvent(id: string) {
+          seen.push(`event:${id}`)
+        },
+        recordUsageSnapshot(id: string) {
+          seen.push(`usage:${id}`)
+        },
+        async close(id: string) {
+          seen.push(`close:${id}`)
+        },
+        async closeAll() {
+          seen.push("closeAll")
+        },
+      }
+      const reg = createSessionsRegistry({ persistPath, langfuseTracer: fakeTracer })
+
+      const traced = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeTracingAgent(),
+        adapterSlug: "fake",
+        trace: true,
+      })
+      const untraced = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeTracingAgent(),
+        adapterSlug: "fake",
+      })
+
+      await reg.sendPrompt(traced.id, "go")
+      await reg.sendPrompt(untraced.id, "go")
+
+      expect(seen.some(s => s.endsWith(`:${traced.id}`))).toBe(true)
+      expect(seen.some(s => s.endsWith(`:${untraced.id}`))).toBe(false)
+
+      reg.shutdown()
+    })
+
+    it("defaults to `langfuseTracingDefault` when `trace` is omitted", async () => {
+      const seen: string[] = []
+      const fakeTracer = {
+        recordPrompt(id: string) {
+          seen.push(id)
+        },
+        recordEvent() {},
+        recordUsageSnapshot() {},
+        async close() {},
+        async closeAll() {},
+      }
+      const reg = createSessionsRegistry({
+        persistPath,
+        langfuseTracer: fakeTracer,
+        langfuseTracingDefault: true,
+      })
+
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeTracingAgent(),
+        adapterSlug: "fake",
+      })
+      await reg.sendPrompt(desc.id, "go")
+
+      expect(seen).toContain(desc.id)
+      reg.shutdown()
+    })
+
+    it("behaves byte-identically to today when no tracer is configured", async () => {
+      const reg = createSessionsRegistry({ persistPath })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeTracingAgent(),
+        adapterSlug: "fake",
+        trace: true,
+      })
+      await expect(reg.sendPrompt(desc.id, "go")).resolves.toBeUndefined()
+      reg.shutdown()
+    })
+  })
 })

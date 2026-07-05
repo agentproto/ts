@@ -42,6 +42,13 @@ export interface SpawnDefaultsConfig {
    *  (default) ⇒ no cap, any pack-declared level may carry
    *  `delegation: "allow"` (back-compat: #214 had no such knob). */
   maxGrantableDelegation?: number
+  /** Default per-session Langfuse tracing opt-in when an `agent_start` call
+   *  omits `trace`. Default false — sessions trace only when they opt in or
+   *  this is on. See `filterSessionObserver` / `SpawnAgentInput.trace`. */
+  langfuseTracing?: boolean
+  /** Redactor slug applied to traced session content before it's sent to
+   *  Langfuse (see `@agentproto/redaction`'s registry). Default "deny-list". */
+  traceRedactor?: string
 }
 
 export interface ResolveSpawnDefaultsInput {
