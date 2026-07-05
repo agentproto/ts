@@ -6,23 +6,24 @@
  * a self-hosted gateway, …). Different from per-adapter setup tokens,
  * which are per-CLI and live in adapter `setup[]` blocks.
  *
- * Mechanism: OAuth 2.0 Device Authorization Grant (RFC 8628), the
- * same flow Claude Code, gh, gcloud, and stripe-cli use. Three steps:
+ * Mechanism: OAuth 2.0 Device Authorization Grant (RFC 8628), the same
+ * flow Claude Code, gh, gcloud, and stripe-cli use — via `@agentproto/auth`'s
+ * `device-code` flow engine (AIP-50). `login` builds a transient
+ * per-host auth-provider handle and calls `runAuthFlow`, which:
  *
- *   1. Discovery   — fetch `<host>/.well-known/agentproto-host.json`
- *                    to learn the device + token endpoints.
- *   2. Authorize   — POST device endpoint → user_code + verification_uri.
- *   3. Poll        — POST token endpoint with grant_type=device_code
- *                    until the user approves in the browser, then
- *                    persist {access_token, refresh_token, expires_in}
- *                    to `~/.agentproto/credentials.json`.
+ *   1. Discovers the device + token endpoints (OAuth PRM chain, falling
+ *      back to `<host>/.well-known/agentproto-host.json`).
+ *   2. POSTs the device-authorization endpoint, prints the user code +
+ *      verification URL, best-effort-opens a browser.
+ *   3. Polls the token endpoint until approved, then persists the
+ *      credential through `CredentialsJsonStore` (../util/credentials-store.ts)
+ *      to `~/.agentproto/credentials.json`.
  *
  * Everything else in `agentproto` (serve, install, run) treats this
  * file as the source of truth when no `--token` is supplied.
  */
 
-import { spawn } from "node:child_process"
-import { hostname, platform, userInfo } from "node:os"
+import { hostname, userInfo } from "node:os"
 import { parseArgs } from "node:util"
 import {
   credentialsPath,
@@ -32,9 +33,9 @@ import {
   loadCredentials,
   normaliseHost,
   readHost,
-  writeHost,
-  type HostCredential,
 } from "../util/credentials.js"
+import { CredentialsJsonStore } from "../util/credentials-store.js"
+import { defineAuthProvider, runAuthFlow } from "@agentproto/auth"
 import {
   loadProviders,
   setProviderKey,
@@ -276,43 +277,6 @@ interface HostDiscovery {
   scopes_supported?: string[]
 }
 
-interface DeviceAuthResponse {
-  device_code: string
-  user_code: string
-  verification_uri: string
-  /** Optional pre-filled URL with the user_code embedded. RFC 8628 §3.3.1. */
-  verification_uri_complete?: string
-  expires_in: number
-  /** Polling interval in seconds. RFC 8628 default 5. */
-  interval?: number
-}
-
-interface TokenSuccessResponse {
-  access_token: string
-  token_type: "Bearer" | "bearer"
-  expires_in: number
-  refresh_token?: string
-  scope?: string
-  /** Custom (not in RFC 6749): host's revocation hint, e.g. JTI or
-   *  internal token row id. We pass it back on logout. */
-  revocation_id?: string
-  /** Custom: subject id surfaced in `auth status`. */
-  subject?: string
-}
-
-interface TokenErrorResponse {
-  error:
-    | "authorization_pending"
-    | "slow_down"
-    | "access_denied"
-    | "expired_token"
-    | "invalid_client"
-    | "invalid_grant"
-    | "unsupported_grant_type"
-    | string
-  error_description?: string
-}
-
 async function runAuthLogin(args: readonly string[]): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
@@ -333,132 +297,79 @@ async function runAuthLogin(args: readonly string[]): Promise<number> {
   }
   const label = values.label ?? `${userInfo().username}@${hostname()}`
   const requestedScope = values.scope ?? "tunnel:connect agent-cli:dispatch"
-
+  const normalizedHost = normaliseHost(host)
   const httpHost = toHttp(host)
-  const discoveryUrl = `${httpHost}/.well-known/agentproto-host.json`
-  process.stdout.write(`agentproto auth: discovering ${discoveryUrl}\n`)
-  let discovery: HostDiscovery
+
+  // NOTE: --no-browser is parsed for CLI-surface compatibility, but can't be
+  // threaded through today — the device-code flow engine (@agentproto/auth)
+  // always best-effort-opens the verification URL itself; neither
+  // `FlowRunOptions` nor `DeviceCodeAuthConfig` expose an opt-out. The open
+  // is best-effort/non-fatal (silently ignored on headless hosts), so this
+  // is a UX-only gap, not a functional one.
+
+  // A transient, per-host auth-provider handle — built fresh on every login
+  // rather than registered, since the host is whatever `--host`/the config
+  // says today. `runAuthFlow` does discovery (PRM chain, then
+  // agentproto-host.json) and dispatches to the device-code engine, which
+  // prints the user code + verification URL and polls to completion.
+  const provider = defineAuthProvider({
+    id: providerIdForHost(normalizedHost),
+    description: `Transient device-code auth provider for agentproto tunnel host ${normalizedHost}.`,
+    apiBase: httpHost,
+    audience: "tunnel",
+    auth: {
+      flow: "device-code",
+      clientId: "agentproto-cli",
+      scope: requestedScope,
+      deviceLabel: label,
+      tokenStore: {
+        keychain: "agentproto-daemon",
+        account: normalizedHost,
+      },
+    },
+  })
+
+  process.stdout.write(`agentproto auth: logging in to ${normalizedHost}…\n`)
   try {
-    discovery = await fetchJson<HostDiscovery>(discoveryUrl)
+    await runAuthFlow(provider, {
+      server: httpHost,
+      store: new CredentialsJsonStore(),
+      force: true,
+    })
   } catch (err) {
     process.stderr.write(
-      `agentproto auth: failed to fetch host metadata: ${err instanceof Error ? err.message : String(err)}\n` +
-        `  Hosts SHOULD expose /.well-known/agentproto-host.json with device_authorization_endpoint + token_endpoint.\n`
+      `agentproto auth: login failed: ${err instanceof Error ? err.message : String(err)}\n`
     )
     return 1
   }
 
-  // Step 1 — request a device code.
-  let deviceRes: DeviceAuthResponse
-  try {
-    deviceRes = await postForm<DeviceAuthResponse>(
-      discovery.device_authorization_endpoint,
-      {
-        client_id: discovery.client_id,
-        scope: requestedScope,
-        // Custom field; hosts that ignore it stay compliant. The
-        // approval UI uses it to render "approve <label>" so the user
-        // recognises the device they're authorising.
-        device_label: label,
-      }
-    )
-  } catch (err) {
+  const cred = await readHost(host)
+  if (!cred) {
     process.stderr.write(
-      `agentproto auth: device authorization request failed: ${err instanceof Error ? err.message : String(err)}\n`
+      `agentproto auth: login appeared to succeed, but no credential was persisted for ${normalizedHost}.\n`
     )
     return 1
-  }
-
-  // Step 2 — show the code, open the browser.
-  const verifyUrl =
-    deviceRes.verification_uri_complete ?? deviceRes.verification_uri
-  process.stdout.write(
-    `\nagentproto auth: open\n  ${verifyUrl}\nand enter code  ${deviceRes.user_code}\n\n`
-  )
-  if (!values["no-browser"]) {
-    void openBrowser(verifyUrl)
   }
   process.stdout.write(
-    `agentproto auth: waiting for approval (expires in ${formatDuration(deviceRes.expires_in * 1000)})…\n`
-  )
-
-  // Step 3 — poll the token endpoint.
-  const interval = Math.max(1, deviceRes.interval ?? 5)
-  const deadline = Date.now() + deviceRes.expires_in * 1000
-  let pollIntervalMs = interval * 1000
-  let token: TokenSuccessResponse | null = null
-  while (Date.now() < deadline) {
-    await sleep(pollIntervalMs)
-    let res: TokenSuccessResponse | TokenErrorResponse
-    try {
-      res = await postForm<TokenSuccessResponse | TokenErrorResponse>(
-        discovery.token_endpoint,
-        {
-          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-          device_code: deviceRes.device_code,
-          client_id: discovery.client_id,
-        }
-      )
-    } catch (err) {
-      process.stderr.write(
-        `agentproto auth: token poll failed: ${err instanceof Error ? err.message : String(err)}\n`
-      )
-      return 1
-    }
-    if ("access_token" in res) {
-      token = res
-      break
-    }
-    if (res.error === "authorization_pending") continue
-    if (res.error === "slow_down") {
-      // Back off as RFC 8628 §3.5 recommends; poll cadence stays slower
-      // for the rest of the flow.
-      pollIntervalMs += 5_000
-      continue
-    }
-    if (res.error === "access_denied") {
-      process.stderr.write(`agentproto auth: approval denied. Aborting.\n`)
-      return 1
-    }
-    if (res.error === "expired_token") {
-      process.stderr.write(
-        `agentproto auth: device code expired before approval. Re-run \`agentproto auth login\`.\n`
-      )
-      return 1
-    }
-    process.stderr.write(
-      `agentproto auth: token endpoint returned '${res.error}'${
-        res.error_description ? `: ${res.error_description}` : ""
-      }\n`
-    )
-    return 1
-  }
-  if (!token) {
-    process.stderr.write(
-      `agentproto auth: timed out waiting for approval. Re-run \`agentproto auth login\`.\n`
-    )
-    return 1
-  }
-
-  // Persist.
-  const cred: HostCredential = {
-    token: token.access_token,
-    tokenType: "Bearer",
-    expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
-    obtainedAt: new Date().toISOString(),
-    ...(token.refresh_token ? { refreshToken: token.refresh_token } : {}),
-    ...(token.scope ? { scope: token.scope } : {}),
-    ...(token.subject ? { subject: token.subject } : {}),
-    ...(token.revocation_id ? { revocationId: token.revocation_id } : {}),
-    deviceLabel: label,
-  }
-  await writeHost(host, cred)
-  process.stdout.write(
-    `agentproto auth: ✓ logged in to ${normaliseHost(host)}\n` +
+    `agentproto auth: ✓ logged in to ${normalizedHost}\n` +
       `  saved to ${credentialsPath()} (mode 0600)\n` +
       `  ${formatExpiry(cred)}${cred.subject ? `, subject ${cred.subject}` : ""}\n`
   )
   return 0
+}
+
+/** Derive a valid AIP cross-id (`/^[a-z0-9][a-z0-9._-]{1,79}$/`) from a host
+ *  URL for the transient provider — the id is only used for logging /
+ *  `provider.id` interpolation in the engine's ceremony output, never
+ *  persisted or looked up by name. */
+function providerIdForHost(host: string): string {
+  const slug = host
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+/, "")
+    .slice(0, 74)
+  return `tunnel-${slug || "host"}`
 }
 
 // ── status ───────────────────────────────────────────────────────────
@@ -638,33 +549,4 @@ async function postForm<T>(
     )
   }
   return (await res.json()) as T
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  return `${Math.round(ms / 3_600_000)}h`
-}
-
-function openBrowser(url: string): Promise<void> {
-  // best-effort; failure is non-fatal — the URL is already on screen.
-  const p = platform()
-  const cmd = p === "darwin" ? "open" : p === "win32" ? "cmd" : "xdg-open"
-  const args = p === "win32" ? ["/c", "start", url] : [url]
-  return new Promise((resolve) => {
-    try {
-      const child = spawn(cmd, args, { stdio: "ignore", detached: true })
-      child.once("error", () => resolve())
-      child.once("spawn", () => {
-        child.unref()
-        resolve()
-      })
-    } catch {
-      resolve()
-    }
-  })
 }

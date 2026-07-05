@@ -776,6 +776,9 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core

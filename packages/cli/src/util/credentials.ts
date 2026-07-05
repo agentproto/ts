@@ -42,8 +42,10 @@ export interface HostCredential {
   token: string
   /** Always "Bearer" today; reserved for future schemes. */
   tokenType: "Bearer"
-  /** ISO-8601. May be in the past — callers must check `isExpired`. */
-  expiresAt: string
+  /** ISO-8601. May be in the past — callers must check `isExpired`. Absent
+   *  when the issuing host didn't report an `expires_in` — treated as a
+   *  non-expiring credential. */
+  expiresAt?: string
   /** OAuth 2.0 refresh token. Present when the host issues one. */
   refreshToken?: string
   /** Space-separated scopes the token was issued with. */
@@ -139,12 +141,14 @@ export async function deleteHost(host: string): Promise<HostCredential | null> {
 }
 
 export function isExpired(cred: HostCredential, gracePeriodMs = 30_000): boolean {
+  if (!cred.expiresAt) return false // no expiry reported → treat as durable
   const exp = Date.parse(cred.expiresAt)
   if (!Number.isFinite(exp)) return false // unparseable expiry → trust the host
   return exp - gracePeriodMs <= Date.now()
 }
 
 export function formatExpiry(cred: HostCredential): string {
+  if (!cred.expiresAt) return "no expiry reported"
   const exp = new Date(cred.expiresAt)
   if (Number.isNaN(exp.getTime())) return "unknown"
   const ms = exp.getTime() - Date.now()
