@@ -1888,7 +1888,7 @@ async function handleSessions(
   }
 
   // Send a follow-up turn to a live agent session.
-  // Body: { prompt: string | ContentBlock | ContentBlock[] }
+  // Body: { prompt: string | ContentBlock | ContentBlock[], interrupt?: boolean }
   //   - string                → auto-wrapped to a single text block by
   //                             the registry (legacy / convenience).
   //   - ContentBlock          → e.g. `{type:"image", source:{...}}`
@@ -1896,6 +1896,11 @@ async function handleSessions(
   //                             Forwarded as-is to `agentSession.send`
   //                             so the adapter (claude-agent-acp, …)
   //                             negotiates its own content shape.
+  //   - interrupt             → when true and the session is mid-turn,
+  //                             cancel the in-flight turn and deliver
+  //                             this prompt on the same session instead
+  //                             of the usual mid-turn rejection. No-op
+  //                             on an idle session. Default false.
   //
   // Validation is intentionally loose — we accept anything object-
   // shaped + non-empty arrays + non-empty strings. The adapter will
@@ -1905,13 +1910,16 @@ async function handleSessions(
   // Query: ?wait=false → fire-and-forget (return 202 after sync
   //   validation; output streams via /sessions/:id/stream). Default
   //   wait=true keeps the call blocking until the turn drains, which
-  //   is what curl scripts + the MCP bridge expect.
+  //   is what curl scripts + the MCP bridge expect. `interrupt` only
+  //   takes effect on this fire-and-forget arm (mirroring MCP
+  //   `agent_prompt`, which always calls `enqueuePrompt`).
   const promptMatch = path.match(/^\/sessions\/([^/]+)\/prompt$/)
   if (promptMatch && req.method === "POST") {
     const id = promptMatch[1]
     if (!id) return false
     const body = await readJsonBody(req)
     const prompt = (body as { prompt?: unknown } | null)?.prompt
+    const interrupt = (body as { interrupt?: unknown } | null)?.interrupt === true
     const validPrompt =
       (typeof prompt === "string" && prompt.length > 0) ||
       (Array.isArray(prompt) &&
@@ -1938,7 +1946,9 @@ async function handleSessions(
         // (if any) + admission checks pass — a dead or busy session
         // rejects here, before the 202 goes out, instead of us
         // reporting `queued: true` for a prompt nothing will dispatch.
-        await registry.enqueuePrompt(id, prompt)
+        // `interrupt: true` lets a mid-turn session redirect instead of
+        // rejecting — see `SessionsRegistry.enqueuePrompt`'s doc comment.
+        await registry.enqueuePrompt(id, prompt, { interrupt })
         json(202, { ok: true, id, queued: true })
       } else {
         await registry.sendPrompt(id, prompt)
