@@ -310,6 +310,34 @@ claude-code/hermes ont persisté leur état côté adaptateur.
 - **Sessions killed** : ne badge `awaitingInput` que sur les sessions `running`.
 - **`node:sqlite`** : Node ≥ 22, API expérimentale ; ouvre toujours `{readOnly:true}`
   (la DB est verrouillée par hermes en cours d'usage ; gère `SQLITE_BUSY`).
+- **Un worker claude-code peut RE-DÉLÉGUER tout seul (grandchild inattendu).**
+  Vécu 2026-07-04 : un worker `claude-code` lancé dans un repo avec `.mcp.json`
+  hérite du MCP agentproto pour `claude` (cf. `~/.agentproto/install-state.json`),
+  donc il a `mcp__agentproto__agent_start` et peut spawner SON PROPRE sous-agent
+  au lieu de coder, puis rendre la main (parfois en se programmant un réveil).
+  Ton watcher fire alors sur le turn-end du **parent** alors que le vrai boulot
+  tourne encore dans le **petit-fils**.
+  - **Pour l'interdire** : `role: "executor"` (voir le rôle disposition dans
+    `packages/runtime/src/role.ts`) strip `agent_start`/`agent_prompt` — ou
+    mets dans le brief « code ça toi-même, ne re-délègue pas ».
+  - **Pour tracker** : `session_tree`/`session_list` montre le sous-arbre ;
+    watch l'id du petit-fils, pas le turn-end du parent.
+  - **Second vecteur, DISTINCT et NON couvert par le role gate** — vécu
+    2026-07-05 : un worker (rôle par défaut, root = supervisor) a re-délégué
+    via son propre **Task tool natif** (pas `mcp__agentproto__agent_start`).
+    Vérifié : `session_tree` montre `isOrchestrator: false, children: []` pour
+    le parent, et l'id du petit-fils (un `agentId` interne à la CLI, pas un
+    `sess_…`) n'apparaît nulle part dans `session_list`/`session_tree`. Le
+    role gate (`DELEGATION_TOOL_NAMES`, `role.ts`) ne strip que la surface
+    MCP `agent_start`/`agent_prompt` — le Task tool natif de claude-code n'est
+    pas un outil MCP, le daemon ne peut pas le gater. La disposition de rôle
+    (`EXECUTOR_ROLE`/`SUPERVISOR_ROLE` dans `role.ts`) porte maintenant une
+    consigne explicite anti-Task-natif, mais c'est une parade "soft" (prompt),
+    pas un gate "hard" — un agent qui rationalise autour reste possible.
+  - Corollaire : `role` lui-même n'est **visible nulle part** en lecture
+    (`session_tree`/`agent_sessions_list` ne l'échoient pas dans le
+    descripteur) — impossible d'auditer après coup avec quel rôle une session
+    a été lancée sans avoir gardé l'appel `agent_start` d'origine.
 - **MCP HTTP Accept header** : le daemon MCP exige `Accept: application/json, text/event-stream`.
   Sans les deux, erreur `Not Acceptable`. Si tu fais du curl/Python direct.
 - **`session_monitor` boucle sur session déjà idle** : si une session a déjà fini
