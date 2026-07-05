@@ -8,6 +8,7 @@ import {
   type PtyProcess,
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { appendCommandLogEntry } from "../command-log.js"
 
 /**
  * Tests covering the registry behaviours that have historically
@@ -1030,6 +1031,85 @@ describe("createSessionsRegistry", () => {
         trace: true,
       })
       await expect(reg.sendPrompt(desc.id, "go")).resolves.toBeUndefined()
+      reg.shutdown()
+    })
+  })
+
+  describe("priorCommandLogRef", () => {
+    let workspace: string
+
+    beforeEach(() => {
+      workspace = mkdtempSync(join(tmpdir(), "sessions-cmdlog-"))
+    })
+
+    afterEach(() => {
+      rmSync(workspace, { recursive: true, force: true })
+    })
+
+    const fakeAgent = (): AgentSessionLike => ({
+      sessionId: "acp-session-id",
+      async *send() {
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    })
+
+    it("spawnAgent leaves priorCommandLogRef unset when the workspace has no command log", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgent(),
+        adapterSlug: "fake",
+      })
+      expect(desc.priorCommandLogRef).toBeUndefined()
+      reg.shutdown()
+    })
+
+    it("spawnAgent sets priorCommandLogRef to a pointer (not the log content) when the workspace already has entries", async () => {
+      await appendCommandLogEntry(
+        workspace,
+        { command: "pnpm", args: ["test"], cwd: workspace },
+        { exitCode: 0, signal: null, stdout: "3 passed\n", stderr: "", durationMs: 10 },
+      )
+
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgent(),
+        adapterSlug: "fake",
+      })
+      expect(desc.priorCommandLogRef).toMatch(/^\.agentproto\/command-log\/\d{4}-\d{2}-\d{2}\.jsonl$/)
+      // Reference only — never the stdout/exitCode content itself.
+      expect(JSON.stringify(desc)).not.toContain("3 passed")
+      reg.shutdown()
+    })
+
+    it("spawnPty sets priorCommandLogRef the same way as spawnAgent", async () => {
+      await appendCommandLogEntry(
+        workspace,
+        { command: "gh", args: ["pr", "view"], cwd: workspace },
+        { exitCode: 0, signal: null, stdout: "", stderr: "", durationMs: 5 },
+      )
+      const fakePty = (): PtyProcess => ({
+        pid: process.pid,
+        write() {},
+        resize() {},
+        kill() {},
+        onData() {},
+        onExit() {},
+      })
+      const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: fakePty })
+      const desc = reg.spawnPty({
+        workspaceSlug: "default",
+        cwd: workspace,
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+      })
+      expect(desc.priorCommandLogRef).toMatch(/^\.agentproto\/command-log\/\d{4}-\d{2}-\d{2}\.jsonl$/)
       reg.shutdown()
     })
   })

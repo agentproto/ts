@@ -109,6 +109,33 @@ describe("CronScheduler", () => {
     }
   })
 
+  it("run() — allowlisted command appends an entry to the shared command-log audit trail", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { mkdirSync, writeFileSync } = await import("node:fs")
+    mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands: ["echo"] }),
+    )
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    const { tailCommandLog } = await import("../command-log.js")
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "command", command: "echo", args: ["from-cron"] },
+      })
+      await scheduler.run(job.id)
+      const entries = await tailCommandLog(workspace)
+      expect(entries).toHaveLength(1)
+      expect(entries[0]).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
   it("run() — one-shot job deactivates after firing", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)

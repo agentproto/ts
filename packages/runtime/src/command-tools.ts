@@ -47,6 +47,7 @@ import {
 } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { appendCommandLogEntry, tailCommandLog } from "./command-log.js"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
@@ -201,8 +202,48 @@ export function registerCommandTools(
         stdin,
         timeoutMs: limit,
       })
+      // Fire-and-forget: the audit log must never delay or fail the
+      // caller's actual result. appendCommandLogEntry swallows its own
+      // errors (console.warn on failure).
+      void appendCommandLogEntry(
+        opts.workspace,
+        { command, args: args ?? [], cwd: resolvedCwd },
+        result,
+      )
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      }
+    },
+  )
+
+  server.tool(
+    "command_log_tail",
+    "Read back recent command_execute (and cron `command` job) invocations logged for this workspace, newest last. Backed by the day-bucketed JSONL audit log at `.agentproto/command-log/<YYYY-MM-DD>.jsonl` — includes the full ExecuteResult (stdout/stderr/exitCode/durationMs) for each call, not just a status line.",
+    {
+      lastN: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe("Max entries to return. Default 50, max 500."),
+      since: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe(
+          "Only scan day-files at or after this YYYY-MM-DD date. Omit to scan backwards from today until `lastN` is filled.",
+        ),
+    },
+    async ({ lastN, since }) => {
+      const entries = await tailCommandLog(opts.workspace, { lastN, since })
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ entries }, null, 2),
+          },
+        ],
       }
     },
   )

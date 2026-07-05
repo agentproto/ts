@@ -25,6 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import { findRecentCommandLogRef } from "./command-log.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import {
   composeSessionObservers,
@@ -356,6 +357,15 @@ export interface SessionDescriptor {
    *  Treated as 0 when absent (legacy rows / direct spawns that predate
    *  WP4). */
   depth?: number
+  /** Workspace-relative pointer (e.g. `.agentproto/command-log/2026-07-04.jsonl`)
+   *  to the most recent nonempty command_execute audit log found for this
+   *  session's cwd at spawn time — see command-log.ts. Deliberately a
+   *  REFERENCE, not copied content: a session's own ring buffer / structured
+   *  transcript never gets command_execute output spliced in, it just gets
+   *  told where to look if it wants to. Set on `spawnAgent`/`spawnPty` when
+   *  the workspace already has command-log entries; absent otherwise
+   *  (including for legacy rows persisted before this field existed). */
+  priorCommandLogRef?: string
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -467,6 +477,19 @@ function stampProcessAlive(desc: SessionDescriptor): void {
     desc.processAlive = true
   } catch {
     desc.processAlive = false
+  }
+}
+
+/** Best-effort wrapper around `findRecentCommandLogRef` for the spawn
+ *  paths (`spawnAgent`/`spawnPty`) — a stat-call hiccup while looking up
+ *  a REFERENCE must never fail the actual spawn. `cwd` doubles as the
+ *  workspace root here, same assumption `resume-strategies.ts`'s
+ *  `fsProbe` makes about the session's cwd. */
+function safePriorCommandLogRef(cwd: string): string | undefined {
+  try {
+    return findRecentCommandLogRef(cwd)
+  } catch {
+    return undefined
   }
 }
 
@@ -1791,6 +1814,7 @@ export function createSessionsRegistry(opts?: {
     },
     spawnAgent(input) {
       const id = `sess_${randomUUID().slice(0, 8)}`
+      const priorCommandLogRef = safePriorCommandLogRef(input.cwd)
       const desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
@@ -1818,6 +1842,7 @@ export function createSessionsRegistry(opts?: {
           : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
+        ...(priorCommandLogRef ? { priorCommandLogRef } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -1901,6 +1926,7 @@ export function createSessionsRegistry(opts?: {
         cols: input.cols,
         rows: input.rows,
       })
+      const priorCommandLogRef = safePriorCommandLogRef(input.cwd)
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
@@ -1914,6 +1940,7 @@ export function createSessionsRegistry(opts?: {
         cwd: input.cwd,
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
+        ...(priorCommandLogRef ? { priorCommandLogRef } : {}),
       }
       const rt: SessionRuntime = {
         desc,
