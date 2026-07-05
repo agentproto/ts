@@ -92,6 +92,13 @@ export interface AuthProviderDefinition {
   auth: AuthConfig
   /** Optional AIP-19 provision target. */
   install?: InstallConfig
+  /** Optional audience this provider's credentials are scoped to (recommended
+   *  values: "tunnel" | "api" | "mcp"; free-form strings are allowed). Folded
+   *  into the store key so credentials for different audiences don't collide.
+   *  This is defense-in-depth only — it is NOT a security boundary; the
+   *  normative isolation is server-side (grant-type dispatch + scope/`aud`
+   *  validation). Absent `audience` = today's behavior, unchanged. */
+  audience?: string
 }
 
 export type AuthProviderHandle = Readonly<AuthProviderDefinition>

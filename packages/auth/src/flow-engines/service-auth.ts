@@ -28,7 +28,7 @@ import type {
   DiscoveredEndpoints,
 } from "../types.js"
 import { KeychainStore } from "../store/keychain-store.js"
-import { resolveStoreRef } from "../store/resolve-ref.js"
+import { resolveStoreRef, readStoreRefWithFallback } from "../store/resolve-ref.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 import {
   openBrowser,
@@ -147,14 +147,17 @@ export const serviceAuthFlowEngine: FlowEngine = {
     assertSecureUrl(tokenEndpoint)
 
     const store = opts.store ?? new KeychainStore()
-    const ref = resolveStoreRef(config.tokenStore, server)
+    const ref = resolveStoreRef(config.tokenStore, server, provider.audience)
+    const legacyRef = provider.audience
+      ? resolveStoreRef(config.tokenStore, server)
+      : ref
 
     // Cached path — the stored credential IS the identity_assertion JWT (AIP-50:
     // never the access token, never a refresh token). Exchange it via jwt-bearer
     // for a fresh access token; on failure (expired / invalid_grant) fall through
     // to a full browser ceremony.
     if (!opts.force) {
-      const stored = await store.read(ref)
+      const stored = await readStoreRefWithFallback(store, ref, legacyRef)
       if (stored) {
         const exchanged = await exchangeAssertion(
           tokenEndpoint,

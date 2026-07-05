@@ -62,6 +62,8 @@ export const authProviderFrontmatterSchema = z
     apiBase: z.string().url(),
     auth: authConfigSchema,
     install: installConfigSchema.optional(),
+    // Recommended values "tunnel" | "api" | "mcp" — free-form allowed, not an enum.
+    audience: z.string().min(1).optional(),
   })
   .strict()
   .describe(

@@ -26,7 +26,7 @@ import type {
   DiscoveredEndpoints,
 } from "../types.js"
 import { KeychainStore } from "../store/keychain-store.js"
-import { resolveStoreRef } from "../store/resolve-ref.js"
+import { resolveStoreRef, readStoreRefWithFallback } from "../store/resolve-ref.js"
 import type { CredentialStore, StoreRef, StoredCredential } from "../store/types.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 import {
@@ -210,14 +210,17 @@ export const deviceCodeFlowEngine: FlowEngine = {
     assertSecureUrl(tokenEndpoint)
 
     const store = opts.store ?? new KeychainStore()
-    const ref = resolveStoreRef(config.tokenStore, server)
+    const ref = resolveStoreRef(config.tokenStore, server, provider.audience)
+    const legacyRef = provider.audience
+      ? resolveStoreRef(config.tokenStore, server)
+      : ref
 
     // Cached path — the stored credential IS the access token (pat-class
     // persistence). A fresh (or expiry-less) credential short-circuits the
     // ceremony entirely; an expired one with a refresh_token is renewed via
     // grant_type=refresh_token before falling back to a ceremony.
     if (!opts.force) {
-      const stored = await store.read(ref)
+      const stored = await readStoreRefWithFallback(store, ref, legacyRef)
       if (stored) {
         if (!isExpired(stored)) {
           return resultFromStored(stored)

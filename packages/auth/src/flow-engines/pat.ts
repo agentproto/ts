@@ -15,7 +15,7 @@ import type {
   DiscoveredEndpoints,
 } from "../types.js"
 import { KeychainStore } from "../store/keychain-store.js"
-import { resolveStoreRef } from "../store/resolve-ref.js"
+import { resolveStoreRef, readStoreRefWithFallback } from "../store/resolve-ref.js"
 
 /**
  * Read a secret from the terminal WITHOUT echoing it — the typed key must not
@@ -105,10 +105,13 @@ export const patFlowEngine: FlowEngine = {
     }
 
     const store = opts.store ?? new KeychainStore()
-    const ref = resolveStoreRef(auth.tokenStore, opts.server)
+    const ref = resolveStoreRef(auth.tokenStore, opts.server, provider.audience)
+    const legacyRef = provider.audience
+      ? resolveStoreRef(auth.tokenStore, opts.server)
+      : ref
 
     if (!opts.force) {
-      const existing = await store.read(ref)
+      const existing = await readStoreRefWithFallback(store, ref, legacyRef)
       if (existing) {
         return { accessToken: existing.value, tokenKind: "pat" }
       }
