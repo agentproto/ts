@@ -1,16 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { EventEmitter } from "node:events"
 import type { AuthProviderHandle, FlowRunOptions } from "../types.js"
+import { MemoryStore } from "../store/memory-store.js"
 
-const { readKeychainToken, promptAnswer } = vi.hoisted(() => ({
-  readKeychainToken: vi.fn(),
-  promptAnswer: { value: "" },
-}))
-vi.mock("../token-store.js", () => ({
-  readKeychainToken,
-  resolveAccount: (acct: string | undefined, server: string) =>
-    acct ? acct.replace("{server}", server) : server,
-}))
+const promptAnswer = { value: "" }
 // Make the interactive prompt deterministic — no real stdin/TTY in tests.
 vi.mock("node:readline", () => ({
   createInterface: () => ({
@@ -28,42 +21,49 @@ const provider = {
   auth: { flow: "pat", tokenStore: { keychain: "acme", account: "{server}" } },
 } as AuthProviderHandle
 
-const opts: FlowRunOptions = { server: "https://api.example" }
+// Matches what resolveStoreRef(auth.tokenStore, opts.server) computes for
+// `provider` above: path = tokenStore.keychain, account = server (via the
+// {server} template).
+const ref = { path: "acme", account: "https://api.example" }
 
 describe("patFlowEngine", () => {
+  let store: MemoryStore
+
   beforeEach(() => {
-    vi.clearAllMocks()
+    store = new MemoryStore()
     promptAnswer.value = ""
   })
 
-  it("returns an existing Keychain token without prompting", async () => {
-    readKeychainToken.mockResolvedValue("gld_existing")
-    const r = await patFlowEngine.run(provider, null, opts)
+  const opts = (extra?: Partial<FlowRunOptions>): FlowRunOptions => ({
+    server: "https://api.example",
+    store,
+    ...extra,
+  })
+
+  it("returns an existing stored token without prompting", async () => {
+    await store.write(ref, { value: "gld_existing", kind: "pat" })
+    const r = await patFlowEngine.run(provider, null, opts())
     expect(r).toEqual({ accessToken: "gld_existing", tokenKind: "pat" })
-    expect(readKeychainToken).toHaveBeenCalledWith("acme", "https://api.example")
   })
 
   it("prompts for a token when none is cached", async () => {
-    readKeychainToken.mockResolvedValue(undefined)
     promptAnswer.value = "  gld_typed  "
-    const r = await patFlowEngine.run(provider, null, opts)
+    const r = await patFlowEngine.run(provider, null, opts())
     expect(r).toEqual({ accessToken: "gld_typed", tokenKind: "pat" })
   })
 
   it("rejects when the prompt yields nothing", async () => {
-    readKeychainToken.mockResolvedValue(undefined)
     promptAnswer.value = ""
-    await expect(patFlowEngine.run(provider, null, opts)).rejects.toThrow(
+    await expect(patFlowEngine.run(provider, null, opts())).rejects.toThrow(
       /no token provided/,
     )
   })
 
   it("ignores the cache when force is set (skips the read, then prompts)", async () => {
-    readKeychainToken.mockResolvedValue("gld_existing")
+    await store.write(ref, { value: "gld_existing", kind: "pat" })
     promptAnswer.value = "gld_forced"
-    const r = await patFlowEngine.run(provider, null, { ...opts, force: true })
+    const r = await patFlowEngine.run(provider, null, opts({ force: true }))
     expect(r).toEqual({ accessToken: "gld_forced", tokenKind: "pat" })
-    expect(readKeychainToken).not.toHaveBeenCalled()
   })
 
   it("throws if invoked with a non-pat provider", async () => {
@@ -71,9 +71,19 @@ describe("patFlowEngine", () => {
       ...provider,
       auth: { flow: "service-auth", tokenStore: { keychain: "k" } },
     } as AuthProviderHandle
-    await expect(patFlowEngine.run(wrong, null, opts)).rejects.toThrow(
+    await expect(patFlowEngine.run(wrong, null, opts())).rejects.toThrow(
       /invoked with flow="service-auth"/,
     )
+  })
+
+  it("defaults to a KeychainStore when opts.store is omitted", async () => {
+    // Off macOS the Keychain backend fails loudly rather than silently — this
+    // asserts the default wiring reaches KeychainStore without needing a real
+    // Keychain in CI.
+    if (process.platform === "darwin") return
+    await expect(
+      patFlowEngine.run(provider, null, { server: "https://api.example" }),
+    ).rejects.toThrow(/only supports macOS/)
   })
 })
 
@@ -96,10 +106,12 @@ describe("patFlowEngine — masked TTY entry", () => {
   let origStdin: PropertyDescriptor | undefined
   let writes: string[]
   let errSpy: { mockRestore: () => void }
+  let store: MemoryStore
+  let opts: FlowRunOptions
 
   beforeEach(() => {
-    vi.clearAllMocks()
-    readKeychainToken.mockResolvedValue(undefined)
+    store = new MemoryStore()
+    opts = { server: "https://api.example", store }
     fake = new FakeTtyStdin()
     origStdin = Object.getOwnPropertyDescriptor(process, "stdin")
     Object.defineProperty(process, "stdin", { value: fake, configurable: true })
@@ -117,7 +129,7 @@ describe("patFlowEngine — masked TTY entry", () => {
     if (origStdin) Object.defineProperty(process, "stdin", origStdin)
   })
 
-  // Let the engine attach its `data` listener (after the awaited Keychain read)
+  // Let the engine attach its `data` listener (after the awaited store read)
   // before we feed keystrokes.
   const tick = () => new Promise((r) => setImmediate(r))
 
@@ -142,7 +154,7 @@ describe("patFlowEngine — masked TTY entry", () => {
     const p = patFlowEngine.run(provider, null, opts)
     await tick()
     fake.emit("data", "abc")
-    fake.emit("data", "\u007f") // delete the 'c'
+    fake.emit("data", "") // delete the 'c'
     fake.emit("data", "X")
     fake.emit("data", "\n")
 
@@ -153,7 +165,7 @@ describe("patFlowEngine — masked TTY entry", () => {
   it("rejects on Ctrl-C and restores raw mode", async () => {
     const p = patFlowEngine.run(provider, null, opts)
     await tick()
-    fake.emit("data", "\u0003")
+    fake.emit("data", "")
 
     await expect(p).rejects.toThrow(/cancelled/)
     expect(fake.setRawMode).toHaveBeenCalledWith(false)

@@ -14,7 +14,8 @@ import type {
   AuthProviderHandle,
   DiscoveredEndpoints,
 } from "../types.js"
-import { resolveAccount, readKeychainToken } from "../token-store.js"
+import { KeychainStore } from "../store/keychain-store.js"
+import { resolveStoreRef } from "../store/resolve-ref.js"
 
 /**
  * Read a secret from the terminal WITHOUT echoing it — the typed key must not
@@ -103,12 +104,13 @@ export const patFlowEngine: FlowEngine = {
       throw new Error(`patFlowEngine: invoked with flow="${auth.flow}"`)
     }
 
-    const account = resolveAccount(auth.tokenStore.account, opts.server)
+    const store = opts.store ?? new KeychainStore()
+    const ref = resolveStoreRef(auth.tokenStore, opts.server)
 
     if (!opts.force) {
-      const existing = await readKeychainToken(auth.tokenStore.keychain, account)
+      const existing = await store.read(ref)
       if (existing) {
-        return { accessToken: existing, tokenKind: "pat" }
+        return { accessToken: existing.value, tokenKind: "pat" }
       }
     }
 

@@ -13,15 +13,21 @@
  * `id-jag` is reserved for a future agentproto-as-IdP scenario.
  */
 
+import type { CredentialStore } from "./store/types.js"
+
 /** Discriminated union of all supported auth flow ids. */
 export type FlowId = "pat" | "service-auth"
 
-/** Where a credential is stored in the platform Keychain. */
+/** Where a credential is stored, backend-agnostic. */
 export interface TokenStoreSpec {
-  /** macOS Keychain service name (or equivalent on other platforms). */
+  /** macOS Keychain service name (or equivalent on other platforms).
+   *  Back-compat alias for `path` — used when `path` is omitted. */
   keychain: string
-  /** Keychain account. The literal `{server}` is substituted with the resolved
-   *  server URL. Defaults to the resolved server URL when omitted. */
+  /** Storage slot key, passed to `CredentialStore` as `StoreRef.path`.
+   *  Defaults to `keychain` when omitted. */
+  path?: string
+  /** Storage account/sub-slot. The literal `{server}` is substituted with the
+   *  resolved server URL. Defaults to the resolved server URL when omitted. */
   account?: string
 }
 
@@ -122,6 +128,9 @@ export interface FlowRunOptions {
   /** Force re-authentication even if a stored credential is found. */
   force?: boolean
   signal?: AbortSignal
+  /** Credential backend to read/write through. Defaults to a `KeychainStore`
+   *  when omitted — existing callers keep today's Keychain-only behavior. */
+  store?: CredentialStore
 }
 
 /** A flow engine implements one auth protocol. Dispatch by provider.auth.flow —

@@ -11,6 +11,7 @@ import { z } from "zod"
 export const tokenStoreSpecSchema = z
   .object({
     keychain: z.string().min(1),
+    path: z.string().min(1).optional(),
     account: z.string().min(1).optional(),
   })
   .strict()
