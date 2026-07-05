@@ -69,6 +69,7 @@ import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createRoutineRunner } from "./routine-runner.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
+import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 import { withToolExclusion } from "./tool-subset.js"
@@ -582,6 +583,13 @@ export async function createGateway(
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
         persist: true,
+        // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
+        // for `workflow_run_file` / `startFromFile`. The daemon's workflow
+        // surface is agent-step based (like the stage primitive), so no tool/
+        // driver registry is wired here — `tool` steps in a WORKFLOW.md fail
+        // clearly ("no tool registered") until a workflow tool registry is
+        // added. Agent-step workflows compile + run.
+        compileWorkflow: handle => compileWorkflow(handle, { tools: {}, candidates: [] }),
       })
     : undefined
 
