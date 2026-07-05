@@ -25,6 +25,14 @@ export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   adapters?: Record<string, DefaultsAdapterConfig>
+  /** Depth cutoff for the role-derived default (see `resolveRole` in
+   *  `role.ts`) applied when an `agent_start` call omits `role`:
+   *  `depth < cutoff` → supervisor, `depth >= cutoff` → executor.
+   *  Default 1 (root spawns keep today's unrestricted behaviour; any
+   *  spawn made THROUGH an orchestrator defaults to executor). Tune
+   *  this up (e.g. to a large number) to restore the old permissive
+   *  behaviour for existing deep spawns wholesale. */
+  defaultRoleDepthCutoff?: number
 }
 
 export interface ResolveSpawnDefaultsInput {

@@ -317,10 +317,15 @@ describe("orchestrator guardrails — non-re-grant (WP4)", () => {
     try {
       // The child asks for the FULL default subset — strictly wider than
       // the parent's. It must be clamped to ⊆ the parent's tools.
+      // `role: "supervisor"` opts back into `orchestrator` here — this
+      // spawn is at depth 1, which now defaults to executor (role-
+      // depth-cutoff) and would otherwise drop `orchestrator` entirely,
+      // unrelated to the non-re-grant guarantee this test targets.
       await h.client.callTool({
         name: "agent_start",
         arguments: {
           ...startArgs,
+          role: "supervisor",
           orchestrator: { tools: [...DEFAULT_ORCHESTRATOR_TOOLS] },
         },
       })

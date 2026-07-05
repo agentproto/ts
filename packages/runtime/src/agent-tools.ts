@@ -305,6 +305,30 @@ export function registerAgentTools(
         .describe(
           "Hard ceiling on cumulative session cost (USD). The session is stopped at a turn-end once exceeded."
         ),
+      role: z
+        .enum(["executor", "supervisor"])
+        .optional()
+        .describe(
+          "Spawn-time role gating whether this child may itself delegate " +
+            "(spawn/drive further children). 'executor' = leaf, cannot " +
+            "delegate — `orchestrator` is ignored and `agent_start`/" +
+            "`agent_prompt` are stripped from its default toolset, " +
+            "regardless of `promptAppend`. 'supervisor' = may delegate " +
+            "(today's default behaviour). Omit to derive from spawn depth " +
+            "(root spawns default to supervisor; spawns made THROUGH an " +
+            "orchestrator default to executor — see `defaultRoleDepthCutoff` " +
+            "in config.json's `defaults` block)."
+        ),
+      promptAppend: z
+        .string()
+        .optional()
+        .describe(
+          "One-off runtime text layered ON TOP of the resolved role's " +
+            "disposition and prepended to `prompt` — it specializes the " +
+            "disposition, it cannot replace it, and it cannot re-open the " +
+            "tool gate (an executor asked to 'delegate anyway' via this " +
+            "field still has no delegation tools)."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
