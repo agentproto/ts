@@ -216,6 +216,10 @@ payoff: a scheduled agent re-resolves a valid `Authorization` at connect-time
 with no human re-auth, as long as a durable credential (a PAT, or a
 `service-auth` assertion) sits in the store.
 
+> **Runnable example:** `src/__tests__/broker.example.test.ts` is a
+> zero-mock, copy-pasteable wire-up (provider → store → broker →
+> `resolveHeaders`) you can lift verbatim.
+
 ### Feeding an MCP transport
 
 `@agentproto/secrets/exposure` declares a **structural** `McpHeaderResolver`
