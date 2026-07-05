@@ -58,6 +58,7 @@ describe("spawnAgentSession", () => {
       depth: 3,
       maxDepth: 3,
       maxChildren: 8,
+      role: "supervisor",
     }
     const result = await spawnAgentSession(
       { ...deps, callerScope },
@@ -80,6 +81,7 @@ describe("spawnAgentSession", () => {
       depth: 0,
       maxDepth: 3,
       maxChildren: 1,
+      role: "supervisor",
     }
     const first = await spawnAgentSession(
       { ...deps, callerScope },
@@ -395,6 +397,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
       depth: 0,
       maxDepth: 3,
       maxChildren: 8,
+      role: "supervisor",
     }
 
     const result = await spawnAgentSession(
@@ -406,6 +409,14 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
   })
 
   it("`defaultRoleDepthCutoff` override is respected — raising it restores supervisor at depth 1", async () => {
+    // Raising the cutoff to 2 makes the depth-1 child ALSO resolve to
+    // supervisor (level 100) by depth-derivation, same as its depth-0
+    // caller. The privilege gate's non-escalation default (child.level
+    // <= parent.level) permits a peer spawn — this is the pre-existing
+    // recursive-orchestrator pattern (fan-out bounded by maxDepth/
+    // maxChildren, not this lattice), so raising the cutoff must keep
+    // this spawn succeeding exactly as it did before this capability
+    // existed.
     const buildOrchestratorMcp = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({
       buildOrchestratorMcp,
@@ -418,6 +429,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
       depth: 0,
       maxDepth: 3,
       maxChildren: 8,
+      role: "supervisor",
     }
 
     const result = await spawnAgentSession(
@@ -426,6 +438,111 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     )
     expect(result.ok).toBe(true)
     expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("spawnAgentSession — privilege-lattice spawn gate (role-registry-extensible)", () => {
+  const PLANNER_ROLE = {
+    name: "planner",
+    disposition: "You plan work and delegate execution.",
+    toolPolicy: { delegation: "allow" as const },
+    level: 50,
+  }
+  const REVIEWER_ROLE = {
+    name: "reviewer",
+    disposition: "You review code changes.",
+    toolPolicy: { delegation: "deny" as const },
+    level: 10,
+  }
+
+  function scopeWithRole(role: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId: "parent",
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role,
+    }
+  }
+
+  it("supervisor may spawn executor (open mode, strict descent)", async () => {
+    const { registry, deps } = baseDeps()
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("supervisor") },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(result.ok).toBe(true)
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("executor (as caller) may not spawn anything — second line of defense beyond the tool gate", async () => {
+    const { registry, deps } = baseDeps()
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("executor") },
+      { adapter: "mock", cwd: "/tmp", role: "supervisor" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("role_spawn_denied")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("a custom planner (level 50) may spawn executor but not supervisor (open mode)", async () => {
+    const { deps } = baseDeps({
+      loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }),
+    })
+
+    const okResult = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(okResult.ok).toBe(true)
+
+    const rejected = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "supervisor" },
+    )
+    expect(rejected.ok).toBe(false)
+    if (rejected.ok) throw new Error("expected failure")
+    expect(rejected.code).toBe("role_spawn_denied")
+  })
+
+  it("a closed `spawnableRoles` allowlist overrides level comparison entirely", async () => {
+    const closedPlanner = { ...PLANNER_ROLE, spawnableRoles: ["executor"] }
+    const { deps } = baseDeps({
+      loadRoleRegistry: async () => ({ planner: closedPlanner, reviewer: REVIEWER_ROLE }),
+    })
+
+    const allowed = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(allowed.ok).toBe(true)
+
+    // reviewer (level 10) is strictly below planner (level 50) — would
+    // pass open-mode strict descent — but the closed allowlist only
+    // names "executor", so it's rejected anyway.
+    const rejected = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "reviewer" },
+    )
+    expect(rejected.ok).toBe(false)
+    if (rejected.ok) throw new Error("expected failure")
+    expect(rejected.code).toBe("role_spawn_denied")
+    expect(rejected.message).toMatch(/Allowed: executor/)
+  })
+
+  it("a root spawn (no callerScope) is never gated — nothing to gate against", async () => {
+    const { registry, deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+    })
+    expect(result.ok).toBe(true)
+    expect(registry.list()).toHaveLength(1)
   })
 })
 

@@ -161,6 +161,9 @@ export interface RegisterSessionToolsOptions {
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
   webhookNotifier?: WebhookNotifier
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.loadRoleRegistry`. */
+  loadRoleRegistry?: RegisterAgentToolsOptions["loadRoleRegistry"]
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").

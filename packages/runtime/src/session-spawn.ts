@@ -22,7 +22,9 @@ import {
   normalizeSkillsOption,
   type SpawnDefaultsConfig,
 } from "./spawn-defaults.js"
-import { resolveRole, composeRoleContext, DELEGATION_TOOL_NAMES } from "./role.js"
+import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
+import type { RoleProfile } from "./role.js"
+import { loadDefaultRoleRegistry } from "./role-registry.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -33,6 +35,7 @@ export type BuildOrchestratorMcp = (opts: {
   caller?: OrchestratorScope
   maxDepth?: number
   maxChildren?: number
+  role?: string
 }) => {
   entry: AcpMcpServer
   bindLifecycle: (sessionId: string) => () => void
@@ -81,6 +84,13 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Loads the custom (pack-carried) role registry, merged with the
+   *  two built-ins by `resolveRole`/`canSpawn` — see `role.ts`'s
+   *  `mergeRoleRegistry`. Defaults to `loadDefaultRoleRegistry()`
+   *  (`~/.agentproto/roles/` + adapter-carried packs) when omitted;
+   *  tests inject a stub registry to avoid touching the real
+   *  filesystem. */
+  loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
 }
 
 export interface SpawnAgentSessionInput {
@@ -140,6 +150,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_max_depth_exceeded"
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
+        | "role_spawn_denied"
         | "agent_spawn_failed"
       message: string
       details?: Record<string, unknown>
@@ -257,17 +268,68 @@ export async function spawnAgentSession(
   const configDefaults = loadDefaultsConfig
     ? await loadDefaultsConfig()
     : (await loadConfig()).defaults
+  // Role REGISTRY (spawn-role-profiles extensibility): custom
+  // (pack-carried) roles merged with the two built-ins at every
+  // resolution below — see `role.ts`'s `mergeRoleRegistry`. Loaded once
+  // per spawn so the child-role resolution and the parent-role gate
+  // check (right below) agree on the exact same set.
+  const roleRegistry = deps.loadRoleRegistry
+    ? await deps.loadRoleRegistry()
+    : await loadDefaultRoleRegistry()
   // Spawn-time role (see role.ts). Resolved BEFORE the orchestrator/
   // hermes-default mcpServers decisions below so `toolPolicy.delegation`
   // can gate both — the hard tool gate this whole primitive exists for.
   let role
   try {
-    role = resolveRole(input.role, childDepth, configDefaults?.defaultRoleDepthCutoff)
+    role = resolveRole(input.role, childDepth, configDefaults?.defaultRoleDepthCutoff, roleRegistry)
   } catch (err) {
     return {
       ok: false,
       code: "invalid_role",
       message: `agent_start: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  // Privilege-lattice spawn gate: when this spawn arrives through the
+  // scoped orchestrator sub-gateway, `callerScope` carries the resolved
+  // role of the SPAWNING session (see `OrchestratorScope.role`). Reject
+  // BEFORE any tool injection when the caller may not spawn this role —
+  // the second line of defense (after `toolPolicy.delegation`) for a
+  // custom role that keeps delegation but must not spawn UP. A root
+  // spawn (no callerScope) has no parent to gate against, same as the
+  // existing depth/quota checks above.
+  if (callerScope) {
+    let parentRole: RoleProfile
+    try {
+      parentRole = resolveRole(
+        callerScope.role,
+        callerScope.depth,
+        configDefaults?.defaultRoleDepthCutoff,
+        roleRegistry,
+      )
+    } catch (err) {
+      return {
+        ok: false,
+        code: "invalid_role",
+        message: `agent_start: caller role — ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+    if (!canSpawn(parentRole, role)) {
+      return {
+        ok: false,
+        code: "role_spawn_denied",
+        message:
+          `agent_start: role "${parentRole.name}" (level ${parentRole.level}) may not spawn ` +
+          `role "${role.name}" (level ${role.level}). ` +
+          (parentRole.spawnableRoles
+            ? `Allowed: ${parentRole.spawnableRoles.join(", ") || "(none)"}.`
+            : `Open mode requires a level at or below ${parentRole.level} — spawning something more privileged than yourself is never allowed.`),
+        details: {
+          parentRole: parentRole.name,
+          parentLevel: parentRole.level,
+          childRole: role.name,
+          childLevel: role.level,
+        },
+      }
     }
   }
   const delegationDenied = role.toolPolicy.delegation === "deny"
@@ -331,6 +393,10 @@ export async function spawnAgentSession(
       ...(orchestratorOpts?.maxChildren !== undefined
         ? { maxChildren: orchestratorOpts.maxChildren }
         : {}),
+      // This session's OWN resolved role — becomes the "parent role" the
+      // gate above checks a FUTURE spawn (made through this scope)
+      // against, once this session itself calls `agent_start`.
+      role: role.name,
     })
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
@@ -351,7 +417,7 @@ export async function spawnAgentSession(
   // ⇒ nothing to compose onto; the child still gets the tool gate above,
   // it just doesn't see the disposition until its first turn.
   const effectivePrompt = input.prompt
-    ? `${composeRoleContext(role, input.promptAppend)}\n\n${input.prompt}`
+    ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
     : input.prompt
   try {
     // The registry doesn't assign a session id until `spawnAgent`

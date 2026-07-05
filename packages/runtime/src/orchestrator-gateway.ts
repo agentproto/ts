@@ -36,6 +36,7 @@ import type {
   AgentAdapterLister,
 } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import { SUPERVISOR_ROLE } from "./role.js"
 
 /**
  * The curated set of tools a scoped child orchestrator may call.
@@ -112,6 +113,18 @@ export interface OrchestratorScope {
   /** Max concurrently-alive children the owning orchestrator may spawn
    *  before further spawns are rejected. */
   maxChildren: number
+  /**
+   * Name of the resolved role that owns this scope (spawn-role-
+   * profiles / privilege lattice). This is the "parent role" the
+   * `canSpawn` gate checks against when this scope is used to spawn a
+   * further child (`session-spawn.ts`). Defaults to `"supervisor"` at
+   * mint time when the caller doesn't say — every role that can reach
+   * `orchestrator: true` today resolves to supervisor (executor's
+   * `toolPolicy.delegation: "deny"` already excludes it from ever
+   * minting a scope), so this preserves #214 behaviour exactly until a
+   * custom role is actually granted delegation.
+   */
+  role: string
 }
 
 /**
@@ -149,6 +162,9 @@ export interface MintScopeOptions {
   maxDepth?: number
   /** Per-orchestrator alive-child quota (default DEFAULT_MAX_CHILDREN). */
   maxChildren?: number
+  /** Name of the resolved role that owns this scope. Default
+   *  `"supervisor"` — see `OrchestratorScope.role`. */
+  role?: string
 }
 
 export interface ScopeTokenRegistry {
@@ -180,6 +196,7 @@ export function createScopeTokenRegistry(): ScopeTokenRegistry {
         depth: opts?.depth ?? 0,
         maxDepth: Math.min(opts?.maxDepth ?? DEFAULT_MAX_DEPTH, HARD_MAX_DEPTH),
         maxChildren: opts?.maxChildren ?? DEFAULT_MAX_CHILDREN,
+        role: opts?.role ?? SUPERVISOR_ROLE.name,
       }
       scopes.set(token, scope)
       return scope
@@ -348,6 +365,11 @@ export type OrchestratorInjector = (opts?: {
   /** Override the per-orchestrator child quota for the minted scope
    *  (clamped to the caller's). Root-only knob. */
   maxChildren?: number
+  /** Name of the resolved role for the session THIS scope is being
+   *  minted for (i.e. the session becoming an orchestrator) — becomes
+   *  `OrchestratorScope.role`, the "parent role" a future spawn
+   *  through this scope is gated against. Default `"supervisor"`. */
+  role?: string
 }) => OrchestratorInjection
 
 /**
@@ -381,6 +403,7 @@ export function createOrchestratorInjector(
       depth,
       maxDepth,
       maxChildren,
+      ...(opts?.role ? { role: opts.role } : {}),
     })
     const entry: AcpMcpServer = {
       name,

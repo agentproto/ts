@@ -360,15 +360,31 @@ export class TunnelRegistry {
    * third-party secrets) merged with descriptor-carried config (named's
    * hostname/tunnelId/credentialsFile), descriptor taking precedence.
    */
-  private async credsForDescriptor(
+  protected async credsForDescriptor(
     desc: TunnelDescriptor,
   ): Promise<TunnelCreds> {
     const slug = normalizeProviderSlug(desc.provider)
     const stored = this.readCreds ? (await this.readCreds(slug)) ?? {} : {}
     const creds: TunnelCreds = { ...stored }
     if (desc.hostname) creds.hostname = desc.hostname
-    if (desc.tunnelId) creds.tunnelId = desc.tunnelId
     if (desc.credentialsFile) creds.credentialsFile = desc.credentialsFile
+    if (desc.tunnelId) {
+      creds.tunnelId = desc.tunnelId
+      // A stored `credentialsFile` is the provider-level default captured at
+      // `setup_tunnel_provider` time — it belongs to the stored `tunnelId`.
+      // When this descriptor targets a *different* tunnelId and carries no
+      // credentialsFile of its own, the stored one is another tunnel's secret
+      // (→ cloudflared "Unauthorized: Invalid tunnel secret"). Drop it so the
+      // named provider falls back to the per-tunnel ~/.cloudflared/<id>.json.
+      if (
+        !desc.credentialsFile &&
+        stored.credentialsFile &&
+        stored.tunnelId &&
+        stored.tunnelId !== desc.tunnelId
+      ) {
+        delete creds.credentialsFile
+      }
+    }
     return creds
   }
 
