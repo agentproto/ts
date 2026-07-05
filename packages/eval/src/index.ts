@@ -18,8 +18,11 @@
  * // → { value: 1, passed: true, label: "exact-match", rationale: "…" }
  * ```
  *
- * This pass ships only DETERMINISTIC scorers — no LLM / model calls. An
- * `llm-judge` scorer is a deliberate later step.
+ * Alongside the deterministic scorers, `eval.llm-judge` (see judge.ts) is a
+ * model-backed scorer whose judge is an INJECTED function — the driver
+ * closes over it via `makeLlmJudgeDriver(judge)`. This package still carries
+ * no LLM SDK or network dependency of its own; a real adapter (agent
+ * session, supervisor judge-gate, …) is a documented follow-up.
  *
  * Spec: https://agentproto.sh/docs/aip-14 (TOOL), /docs/aip-30 (PROVIDER)
  */
@@ -58,6 +61,18 @@ export {
   latencyBudgetImpl,
   type MinimalJsonSchema,
 } from "./scorers.js"
+
+export {
+  judgeVerdictSchema,
+  llmJudgeTool,
+  makeLlmJudgeDriver,
+  llmJudge,
+  type JudgeVerdict,
+  type JudgeFn,
+  type LlmJudgeInput,
+  type MakeLlmJudgeDriverOptions,
+  type LlmJudgeBinding,
+} from "./judge.js"
 
 export { EVAL_EVENT_SCHEMA, type EvalEvent } from "./events.js"
 
