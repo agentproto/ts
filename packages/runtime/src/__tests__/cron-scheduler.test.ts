@@ -109,6 +109,39 @@ describe("CronScheduler", () => {
     }
   })
 
+  it("run() — allowlisted command mints a kind:\"command\" session with the full result", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { mkdirSync, writeFileSync } = await import("node:fs")
+    mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands: ["echo"] }),
+    )
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "command", command: "echo", args: ["from-cron"] },
+      })
+      await scheduler.run(job.id)
+
+      const commandSessions = registry.list().filter(d => d.kind === "command")
+      expect(commandSessions).toHaveLength(1)
+      const desc = commandSessions[0]!
+      expect(desc.status).toBe("exited")
+      expect(desc.label).toBe(`cron:${job.id}`)
+
+      await new Promise(res => setTimeout(res, 20)) // fire-and-forget write
+      const entry = await registry.readCommandLog(desc.id)
+      expect(entry).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
   it("run() — one-shot job deactivates after firing", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)

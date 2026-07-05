@@ -83,6 +83,32 @@ describe("patFlowEngine", () => {
     )
   })
 
+  it("writes and reads through the audience-prefixed path when the provider declares one", async () => {
+    const scoped = { ...provider, audience: "tunnel" } as AuthProviderHandle
+    promptAnswer.value = "gld_scoped"
+    await patFlowEngine.run(scoped, null, opts())
+
+    // Written under the prefixed path, not the legacy one.
+    await expect(store.read(ref)).resolves.toBeUndefined()
+    await expect(
+      store.read({ path: "tunnel:acme", account: "https://api.example" }),
+    ).resolves.toEqual({ value: "gld_scoped", kind: "pat" })
+
+    // Read back without prompting again.
+    promptAnswer.value = ""
+    const r = await patFlowEngine.run(scoped, null, opts())
+    expect(r).toEqual({ accessToken: "gld_scoped", tokenKind: "pat" })
+  })
+
+  it("falls back once to the legacy unprefixed path for a pre-existing credential", async () => {
+    // Simulate a credential written before this provider adopted an audience.
+    await store.write(ref, { value: "gld_legacy", kind: "pat" })
+    const scoped = { ...provider, audience: "tunnel" } as AuthProviderHandle
+
+    const r = await patFlowEngine.run(scoped, null, opts())
+    expect(r).toEqual({ accessToken: "gld_legacy", tokenKind: "pat" })
+  })
+
   it("defaults to a KeychainStore when opts.store is omitted", async () => {
     // Off macOS the Keychain backend fails loudly rather than silently — this
     // asserts the default wiring reaches KeychainStore without needing a real

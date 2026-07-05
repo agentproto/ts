@@ -167,3 +167,83 @@ describe("CredentialBroker", () => {
     expect(runAuthFlowMock).not.toHaveBeenCalled()
   })
 })
+
+describe("CredentialBroker — audience", () => {
+  const scopedProvider: AuthProviderHandle = {
+    id: "acme",
+    description: "d",
+    apiBase: "https://api.example",
+    audience: "tunnel",
+    auth: { flow: "pat", tokenStore: { keychain: "acme-svc", account: "{server}" } },
+  }
+
+  let store: MemoryStore
+  let broker: CredentialBroker
+
+  beforeEach(() => {
+    store = new MemoryStore()
+    runAuthFlowMock.mockReset()
+    broker = new CredentialBroker({
+      store,
+      getProvider: (id) => (id === scopedProvider.id ? scopedProvider : undefined),
+    })
+  })
+
+  it("reads/writes an audience-scoped provider under the audience-prefixed path", async () => {
+    await store.write(
+      { path: "tunnel:acme-svc", account: "https://api.example" },
+      { value: "tok-scoped", kind: "pat" },
+    )
+
+    const headers = await broker.resolveHeaders({ path: "acme" })
+
+    expect(headers).toEqual({ Authorization: "Bearer tok-scoped" })
+    expect(runAuthFlowMock).not.toHaveBeenCalled()
+  })
+
+  it("falls back once to the legacy unprefixed path for a pre-existing credential", async () => {
+    // Simulate a credential written before "acme" declared an audience.
+    await store.write(ref, { value: "tok-legacy", kind: "pat" })
+
+    const headers = await broker.resolveHeaders({ path: "acme" })
+
+    expect(headers).toEqual({ Authorization: "Bearer tok-legacy" })
+    expect(runAuthFlowMock).not.toHaveBeenCalled()
+  })
+
+  it("throws when the caller's requested audience differs from the provider's", async () => {
+    await expect(
+      broker.resolveHeaders({ path: "acme", audience: "api" }),
+    ).rejects.toThrow(
+      /provider "acme" is scoped to audience "tunnel", requested "api"/,
+    )
+    expect(runAuthFlowMock).not.toHaveBeenCalled()
+  })
+
+  it("does not throw when the caller's requested audience matches the provider's", async () => {
+    await store.write(
+      { path: "tunnel:acme-svc", account: "https://api.example" },
+      { value: "tok-scoped", kind: "pat" },
+    )
+
+    const headers = await broker.resolveHeaders({ path: "acme", audience: "tunnel" })
+
+    expect(headers).toEqual({ Authorization: "Bearer tok-scoped" })
+  })
+
+  it("does not check audience when the provider declares none (backward compatible)", async () => {
+    const unscopedBroker = new CredentialBroker({
+      store,
+      getProvider: (id) => (id === provider.id ? provider : undefined),
+    })
+    await store.write(ref, { value: "tok-cached", kind: "pat" })
+
+    const headers = await unscopedBroker.resolveHeaders({
+      path: "acme",
+      audience: "api",
+    })
+
+    expect(headers).toEqual({ Authorization: "Bearer tok-cached" })
+    expect(runAuthFlowMock).not.toHaveBeenCalled()
+  })
+})

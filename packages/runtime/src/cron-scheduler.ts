@@ -261,11 +261,30 @@ export function createCronScheduler(opts: {
             `Add it to ${workspace}/.agentproto/allowed-commands.json. Currently allowed: ${allowed}.`,
         )
       }
+      const cwd = action.cwd ?? workspace
       const result = await runCommand({
         command: action.command,
         args: action.args ?? [],
-        cwd: action.cwd ?? workspace,
+        cwd,
         timeoutMs: action.timeoutMs ?? 60_000,
+      })
+      // Same session-based record as command_execute — cron "command" jobs
+      // already share its allowlist + runCommand ("one enforcement path,
+      // not two"), so they share its `kind:"command"` audit trail too:
+      // the fired job gets its own session row in command_list/session_list,
+      // not just a line in `job.lastResult`.
+      registry.recordCommand({
+        workspaceSlug: "default",
+        cwd,
+        command: action.command,
+        args: action.args ?? [],
+        exitCode: result.exitCode,
+        signal: result.signal,
+        durationMs: result.durationMs,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        ...(result.truncated ? { truncated: true } : {}),
+        label: `cron:${job.id}`,
       })
       if (result.exitCode !== 0) {
         throw new Error(

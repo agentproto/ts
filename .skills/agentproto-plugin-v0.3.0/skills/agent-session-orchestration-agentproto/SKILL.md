@@ -146,6 +146,38 @@ quand c'est vraiment bloqué**. Surfaces à exposer : `session_monitor({sessionI
 `session_events_poll({since})`, webhook de notification. C'est « un agent qui
 babysit un autre agent en jouant l'humain », sans polling tokenivore.
 
+## Pattern 6-bis — Lancer en arrière-plan (MCP `wait:false` / CLI sans `--attach`)
+
+Lancer une session pour la laisser tourner pendant que tu fais autre chose —
+pas pour attendre sa réponse tout de suite (ça, c'est Pattern 7/7-bis).
+
+**Via MCP** : `agent_start({..., wait: false})` (défaut) retourne le
+descripteur **immédiatement**, le spawn + le premier prompt partent en
+tâche de fond côté daemon. `wait: true` bloque jusqu'à la fin du premier
+tour et renvoie `output` inline — pratique pour un aller-retour court
+(genre un ping), pas pour un vrai chantier. Une fois lancé en `wait:false`,
+tu checkes plus tard avec `agent_output`/`session_monitor`/`session_tree`
+(Pattern 7) — ne reboucle pas dessus tout de suite, ça sert à rien de
+poller à la seconde qui suit un spawn.
+
+**Via CLI (si dispo sur l'env — vérifié 2026-07-06, voir gotcha plus bas)** :
+
+```bash
+agentproto sessions start <adapter> --cwd <dir> --prompt "<texte>" --label "<label>"
+# PAS de --attach ⇒ détaché par défaut, retourne direct, tourne sur le daemon.
+agentproto sessions terminal -- <argv...> --cwd <dir> --name <slug>
+# même défaut détaché pour un PTY (bash, vim, htop, un TUI…).
+```
+
+Ajoute `--attach` sur l'une ou l'autre commande pour rester collé au flux en
+direct (foreground) au lieu de détacher — utile pour driver interactivement
+depuis un vrai terminal humain, pas depuis cowork.
+
+Résumé décision : `wait:true` (MCP) / `--attach` (CLI) = tu veux la réponse
+tout de suite dans CE tour. `wait:false` (MCP, défaut) / pas de `--attach`
+(CLI, défaut) = tu lances et tu reviens checker plus tard (Pattern 7/7-bis)
+— c'est le mode par défaut pour une raison, pas une option à éviter.
+
 ## Pattern 7 — Multi-session supervision (session_monitor)
 
 **Mise à jour 2026-07-02 : `wait_for_any` a été renommé `session_monitor`**
@@ -304,12 +336,52 @@ claude-code/hermes ont persisté leur état côté adaptateur.
 - **Post-reboot** : `agentproto serve` peut relancer un vieux build publié. Refaire
   `pnpm -r build` (dans `projects/agentproto/ts`) + relancer le daemon en
   `--cli workspace` + reconnecter le connecteur.
+- **`agentproto` binaire présent sur le PATH mais CASSÉ** : vécu 2026-07-06 —
+  `agentproto --version` plantait avec `ERR_MODULE_NOT_FOUND` sur
+  `@agentproto/adapter-kit`, alors que le binaire global (`~/Library/pnpm/agentproto`)
+  pointait bien vers `packages/cli/dist/cli.mjs`. Cause : un build partiel/pas dans
+  l'ordre topologique (`pnpm --filter @agentproto/adapter-kit --filter @agentproto/cli
+  build` build les deux en parallèle, pas dans l'ordre de dépendance — le CLI peut
+  finir avant que adapter-kit ait fini d'écrire son `dist/`). **Fix** : builder avec
+  les `...` pour forcer l'ordre topologique complet des deps :
+  `pnpm --filter "@agentproto/cli..." build`. Donc avant de documenter/utiliser un
+  équivalent CLI d'un tool MCP, vérifie qu'il tourne vraiment
+  (`agentproto --version`, ou la sous-commande elle-même) — ne pars pas du principe
+  que parce qu'il est sur le PATH il est à jour.
 - **`awaitingInput` sur-signale** : il vaut « tour fini, j'attends » aussi bien que
   « bloqué sur une question ». Pour distinguer, lis la dernière ligne de contenu
   (une vraie question finit souvent par `?` / « valider / décision / ok pour toi »).
 - **Sessions killed** : ne badge `awaitingInput` que sur les sessions `running`.
 - **`node:sqlite`** : Node ≥ 22, API expérimentale ; ouvre toujours `{readOnly:true}`
   (la DB est verrouillée par hermes en cours d'usage ; gère `SQLITE_BUSY`).
+- **Un worker claude-code peut RE-DÉLÉGUER tout seul (grandchild inattendu).**
+  Vécu 2026-07-04 : un worker `claude-code` lancé dans un repo avec `.mcp.json`
+  hérite du MCP agentproto pour `claude` (cf. `~/.agentproto/install-state.json`),
+  donc il a `mcp__agentproto__agent_start` et peut spawner SON PROPRE sous-agent
+  au lieu de coder, puis rendre la main (parfois en se programmant un réveil).
+  Ton watcher fire alors sur le turn-end du **parent** alors que le vrai boulot
+  tourne encore dans le **petit-fils**.
+  - **Pour l'interdire** : `role: "executor"` (voir le rôle disposition dans
+    `packages/runtime/src/role.ts`) strip `agent_start`/`agent_prompt` — ou
+    mets dans le brief « code ça toi-même, ne re-délègue pas ».
+  - **Pour tracker** : `session_tree`/`session_list` montre le sous-arbre ;
+    watch l'id du petit-fils, pas le turn-end du parent.
+  - **Second vecteur, DISTINCT et NON couvert par le role gate** — vécu
+    2026-07-05 : un worker (rôle par défaut, root = supervisor) a re-délégué
+    via son propre **Task tool natif** (pas `mcp__agentproto__agent_start`).
+    Vérifié : `session_tree` montre `isOrchestrator: false, children: []` pour
+    le parent, et l'id du petit-fils (un `agentId` interne à la CLI, pas un
+    `sess_…`) n'apparaît nulle part dans `session_list`/`session_tree`. Le
+    role gate (`DELEGATION_TOOL_NAMES`, `role.ts`) ne strip que la surface
+    MCP `agent_start`/`agent_prompt` — le Task tool natif de claude-code n'est
+    pas un outil MCP, le daemon ne peut pas le gater. La disposition de rôle
+    (`EXECUTOR_ROLE`/`SUPERVISOR_ROLE` dans `role.ts`) porte maintenant une
+    consigne explicite anti-Task-natif, mais c'est une parade "soft" (prompt),
+    pas un gate "hard" — un agent qui rationalise autour reste possible.
+  - Corollaire : `role` lui-même n'est **visible nulle part** en lecture
+    (`session_tree`/`agent_sessions_list` ne l'échoient pas dans le
+    descripteur) — impossible d'auditer après coup avec quel rôle une session
+    a été lancée sans avoir gardé l'appel `agent_start` d'origine.
 - **MCP HTTP Accept header** : le daemon MCP exige `Accept: application/json, text/event-stream`.
   Sans les deux, erreur `Not Acceptable`. Si tu fais du curl/Python direct.
 - **`session_monitor` boucle sur session déjà idle** : si une session a déjà fini
