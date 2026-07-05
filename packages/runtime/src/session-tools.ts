@@ -1157,12 +1157,16 @@ export function registerSessionTools(
 
   server.tool(
     "terminal_input",
-    "Send keystrokes to a PTY session's stdin. The text is forwarded verbatim — " +
-      "include trailing newlines if the target needs them (e.g. shell commands). " +
-      "Use after `terminal_start` to drive an interactive CLI. Set `enter: true` " +
-      "to append a carriage return (\\r) so a TUI composer (e.g. Claude Code) " +
-      "submits — LF alone won't. Use `b64` to send exact control bytes " +
-      "(CR, arrows, Esc, Ctrl-*) that JSON can't carry cleanly.",
+    "Send keystrokes to a PTY session's stdin. `text`/`b64` are CONTENT written " +
+      "verbatim (a `\\n` inside `text` is a real line break in the composer). " +
+      "`enter: true` presses Enter as an ISOLATED keystroke: the content is " +
+      "written first, then a lone carriage return (\\r) is written in a SECOND, " +
+      "separate write. This matters for TUIs that do paste-detection (Claude " +
+      "Code in bracketed-paste mode): a text block ending in CR arrives as a " +
+      "multi-line PASTE (the CR becomes a newline, no submit), whereas a CR " +
+      "arriving on its own is seen as the Enter key → reliable submit. Use " +
+      "`b64` to send exact control bytes (CR, arrows, Esc, Ctrl-*) that JSON " +
+      "can't carry cleanly.",
     {
       sessionId: z
         .string()
@@ -1170,13 +1174,18 @@ export function registerSessionTools(
       text: z
         .string()
         .optional()
-        .describe("Text to write. Sent as-is to the PTY's stdin."),
+        .describe(
+          "Content to write. Sent as-is to the PTY's stdin; a `\\n` here is a " +
+            "real line break (not a submit)."
+        ),
       enter: z
         .boolean()
         .optional()
         .describe(
-          "Append a carriage return (\\r) after the text so a TUI composer " +
-            "(e.g. Claude Code) submits."
+          "Press Enter as an isolated keystroke: writes a lone carriage " +
+            "return (\\r) in a separate write AFTER any content, so paste-" +
+            "detecting TUIs (e.g. Claude Code) submit reliably instead of " +
+            "treating the trailing CR as a pasted newline."
         ),
       b64: z
         .string()
@@ -1213,12 +1222,27 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      let payload =
+      const content =
         input.b64 !== undefined
           ? Buffer.from(input.b64, "base64").toString("latin1")
           : (input.text ?? "")
-      if (input.enter) payload += "\r"
-      const ok = registry.writeTerminalInput(desc.id, payload)
+      // Enter is sent as an ISOLATED write so paste-detecting TUIs treat the
+      // CR as the Enter key (submit) rather than a trailing pasted newline.
+      // See the tool description for the paste-detection rationale.
+      //
+      // TODO(follow-up): for multi-line `text` + `enter`, when the session is
+      // in bracketed-paste mode (PTY emitted `\x1b[?2004h`), wrap the content
+      // in `\x1b[200~`…`\x1b[201~` before the isolated CR. Skipped here: it
+      // needs per-session 2004h/2004l tracking in sessions.ts onData (with
+      // escape-sequence-split handling across chunk boundaries) plus a new
+      // registry method — more than the isolated-CR fix warrants on its own.
+      let ok = true
+      if (content.length > 0) {
+        ok = registry.writeTerminalInput(desc.id, content) && ok
+      }
+      if (input.enter) {
+        ok = registry.writeTerminalInput(desc.id, "\r") && ok
+      }
       return {
         content: [
           {
