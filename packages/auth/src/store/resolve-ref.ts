@@ -25,6 +25,21 @@ export function resolveStoreRef(
   }
 }
 
+/** Derive both the audience-prefixed `ref` and the unprefixed `legacyRef` in
+ *  one call — the pair every flow engine and the broker need for the
+ *  audience back-compat read (`readStoreRefWithFallback`). When no audience
+ *  is declared, `legacyRef === ref` (same object), matching `resolveStoreRef`
+ *  called with `audience` undefined. */
+export function resolveStoreRefs(
+  spec: TokenStoreSpec,
+  server: string,
+  audience?: string,
+): { ref: StoreRef; legacyRef: StoreRef } {
+  const ref = resolveStoreRef(spec, server, audience)
+  const legacyRef = audience ? resolveStoreRef(spec, server) : ref
+  return { ref, legacyRef }
+}
+
 /**
  * Read through `ref`, falling back once to `legacyRef` on a miss.
  *

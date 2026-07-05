@@ -26,7 +26,7 @@ import type {
   DiscoveredEndpoints,
 } from "../types.js"
 import { KeychainStore } from "../store/keychain-store.js"
-import { resolveStoreRef, readStoreRefWithFallback } from "../store/resolve-ref.js"
+import { resolveStoreRefs, readStoreRefWithFallback } from "../store/resolve-ref.js"
 import type { CredentialStore, StoreRef, StoredCredential } from "../store/types.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 import {
@@ -210,10 +210,11 @@ export const deviceCodeFlowEngine: FlowEngine = {
     assertSecureUrl(tokenEndpoint)
 
     const store = opts.store ?? new KeychainStore()
-    const ref = resolveStoreRef(config.tokenStore, server, provider.audience)
-    const legacyRef = provider.audience
-      ? resolveStoreRef(config.tokenStore, server)
-      : ref
+    const { ref, legacyRef } = resolveStoreRefs(
+      config.tokenStore,
+      server,
+      provider.audience,
+    )
 
     // Cached path — the stored credential IS the access token (pat-class
     // persistence). A fresh (or expiry-less) credential short-circuits the
@@ -270,7 +271,9 @@ export const deviceCodeFlowEngine: FlowEngine = {
     process.stderr.write(`  Approve ${provider.id} access in your browser\n\n`)
     process.stderr.write(`  Code:  ${authz.user_code}\n`)
     process.stderr.write(`  URL:   ${authz.verification_uri}\n\n`)
-    await openBrowser(authz.verification_uri_complete ?? authz.verification_uri)
+    if (opts.openBrowser !== false) {
+      await openBrowser(authz.verification_uri_complete ?? authz.verification_uri)
+    }
     process.stderr.write(`  Waiting for approval (${windowMin} min)…\n\n`)
 
     // 3 — Poll until approved / denied / expired
