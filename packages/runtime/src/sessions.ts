@@ -26,6 +26,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
+import { composeSessionObservers, type SessionObserver } from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
 import { deriveSessionUsage, type SessionUsage } from "./usage.js"
@@ -800,9 +801,19 @@ export function createSessionsRegistry(opts?: {
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
-  const transcriptWriter = createTranscriptWriter({
+  const baseTranscriptWriter = createTranscriptWriter({
     baseDir: opts?.transcriptDir ?? join(dirname(persistPath), "sessions"),
   })
+  // The transcript writer is the first (today only) per-session observer. The
+  // composite fans every prompt/event/usage/close call out to its members, so
+  // additional observers (e.g. an opt-in Langfuse session tracer) attach here
+  // without touching any of the turn-loop call sites below. With a single
+  // member the behaviour is identical to calling the writer directly.
+  const extraObservers: readonly SessionObserver[] = []
+  const transcriptWriter: SessionObserver = composeSessionObservers([
+    baseTranscriptWriter,
+    ...extraObservers,
+  ])
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents

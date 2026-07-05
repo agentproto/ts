@@ -20,6 +20,7 @@
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import type { SessionUsage } from "./usage.js"
 
@@ -42,7 +43,7 @@ export function sessionEventsPath(sessionId: string, baseDir?: string): string {
   return join(sessionTranscriptDir(sessionId, baseDir), "events.jsonl")
 }
 
-export interface TranscriptWriter {
+export interface TranscriptWriter extends SessionObserver {
   /** Record the outgoing message for a new turn. Not an ACP `StreamEvent`
    *  kind (ACP's own "agent-prompt" means the agent asking the human a
    *  question, the opposite direction) — recorded under its own
