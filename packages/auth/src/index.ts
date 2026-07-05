@@ -15,6 +15,7 @@
  *   resolveAccount(acct, server)      — expand {server} template
  *   KeychainStore / MemoryStore / FileStore — built-in CredentialStore backends
  *   resolveStoreRef(spec, server)     — map a TokenStoreSpec to a StoreRef
+ *   CredentialBroker                  — path → ready-to-use auth headers
  */
 
 export { defineAuthProvider } from "./define-auth-provider.js"
@@ -49,6 +50,7 @@ export type {
   StoreRef,
   StoredCredential,
 } from "./store/types.js"
+export { CredentialBroker, type CredentialBrokerOptions } from "./broker.js"
 export { guildeAuthProvider, BUILTIN_AUTH_PROVIDERS } from "./builtins.js"
 export {
   authProviderFrontmatterSchema,
