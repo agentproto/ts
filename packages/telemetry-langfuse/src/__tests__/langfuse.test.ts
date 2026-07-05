@@ -68,7 +68,7 @@ describe("langfuseTelemetry", () => {
     const result = await sink.flush()
 
     expect(result.status).toBe(207)
-    expect(result.sent).toBe(4)
+    expect(result.sent).toBe(5)
     expect(result.body).toEqual({ successes: 1 })
     expect(calls).toHaveLength(1)
 
@@ -83,11 +83,11 @@ describe("langfuseTelemetry", () => {
 
     if (typeof call.init.body !== "string") throw new Error("expected string body")
     const body = JSON.parse(call.init.body)
-    expect(body.batch).toHaveLength(4)
+    expect(body.batch).toHaveLength(5)
 
-    const [trace, score, meanScore, passRateScore] = body.batch
+    const [trace, score, traceOutput, meanScore, passRateScore] = body.batch
     expect(trace).toEqual({
-      id: started.runId,
+      id: `${started.runId}#create`,
       type: "trace-create",
       timestamp: started.at,
       body: {
@@ -95,11 +95,12 @@ describe("langfuseTelemetry", () => {
         name: `eval:${started.suiteId}`,
         timestamp: started.at,
         environment: cfg.environment,
+        input: { suiteId: started.suiteId, caseCount: 2, scorerCount: 3 },
         metadata: { caseCount: 2, scorerCount: 3 },
       },
     })
     expect(score).toEqual({
-      id: `${scored.runId}:${scored.caseId}:${scored.scorerId}`,
+      id: `${scored.runId}:${scored.caseId}:${scored.scorerId}#score`,
       type: "score-create",
       timestamp: scored.at,
       body: {
@@ -109,12 +110,32 @@ describe("langfuseTelemetry", () => {
         value: scored.value,
         dataType: "NUMERIC",
         comment: `case=${scored.caseId} passed=${scored.passed}`,
+        observationId: `${scored.runId}:case:${scored.caseId}`,
         timestamp: scored.at,
         environment: cfg.environment,
       },
     })
+    expect(traceOutput).toEqual({
+      id: `${finished.runId}#output`,
+      type: "trace-create",
+      timestamp: finished.at,
+      body: {
+        id: finished.runId,
+        name: `eval:${finished.suiteId}`,
+        timestamp: finished.at,
+        environment: cfg.environment,
+        output: {
+          total: finished.total,
+          passedCount: finished.passedCount,
+          failedCount: finished.total - finished.passedCount,
+          meanValue: finished.meanValue,
+          passRate: finished.passedCount / finished.total,
+          durationMs: finished.durationMs,
+        },
+      },
+    })
     expect(meanScore).toEqual({
-      id: `${finished.runId}:eval.meanValue`,
+      id: `${finished.runId}:eval.meanValue#score`,
       type: "score-create",
       timestamp: finished.at,
       body: {
@@ -128,7 +149,7 @@ describe("langfuseTelemetry", () => {
       },
     })
     expect(passRateScore).toEqual({
-      id: `${finished.runId}:eval.passRate`,
+      id: `${finished.runId}:eval.passRate#score`,
       type: "score-create",
       timestamp: finished.at,
       body: {
@@ -138,6 +159,61 @@ describe("langfuseTelemetry", () => {
         value: finished.passedCount / finished.total,
         dataType: "NUMERIC",
         timestamp: finished.at,
+        environment: cfg.environment,
+      },
+    })
+  })
+
+  it("opens and closes a per-case span with nested scores", async () => {
+    const { calls, fetchImpl } = makeFetch()
+    const sink = langfuseTelemetry({ ...cfg, fetchImpl })
+    const runId = "run-span"
+    const caseId = "case-x"
+
+    sink.emit({
+      kind: "eval.case.started",
+      runId,
+      at: "2026-01-01T00:00:00.000Z",
+      caseId,
+    })
+    sink.emit({
+      kind: "eval.case.finished",
+      runId,
+      at: "2026-01-01T00:00:03.000Z",
+      caseId,
+      passed: true,
+    })
+    await sink.flush()
+
+    const call = calls[0]
+    if (call === undefined) throw new Error("expected one fetch call")
+    if (typeof call.init.body !== "string") throw new Error("expected string body")
+    const body = JSON.parse(call.init.body)
+    expect(body.batch).toHaveLength(2)
+
+    const [spanCreate, spanUpdate] = body.batch
+    expect(spanCreate).toEqual({
+      id: `${runId}:case:${caseId}#span-create`,
+      type: "span-create",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      body: {
+        id: `${runId}:case:${caseId}`,
+        traceId: runId,
+        name: `case:${caseId}`,
+        startTime: "2026-01-01T00:00:00.000Z",
+        input: { caseId },
+        environment: cfg.environment,
+      },
+    })
+    expect(spanUpdate).toEqual({
+      id: `${runId}:case:${caseId}#span-update`,
+      type: "span-update",
+      timestamp: "2026-01-01T00:00:03.000Z",
+      body: {
+        id: `${runId}:case:${caseId}`,
+        traceId: runId,
+        endTime: "2026-01-01T00:00:03.000Z",
+        output: { passed: true },
         environment: cfg.environment,
       },
     })
