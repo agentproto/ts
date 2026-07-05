@@ -152,6 +152,11 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         // cli.ts reads CLAUDE_SDK_MODEL as the model fallback (a `--model`
         // option still wins), so the mode ships a working default model.
         CLAUDE_SDK_MODEL: "kimi-k2.7-code",
+        // Declares this gateway's conventional credential source.
+        // buildQueryOptions resolves the bearer from this env when no explicit
+        // auth_token / ANTHROPIC_AUTH_TOKEN is set, and always scrubs the
+        // ambient ANTHROPIC_API_KEY so it never reaches a non-Anthropic host.
+        CLAUDE_SDK_GATEWAY_KEY_ENV: "MOONSHOT_API_KEY",
       },
       bin_args_append: ["--thinking"],
     },
@@ -164,6 +169,8 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         "and supply the OpenRouter key via `auth_token` (or ANTHROPIC_AUTH_TOKEN).",
       env: {
         ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1",
+        // Conventional credential source for this gateway (see moonshot above).
+        CLAUDE_SDK_GATEWAY_KEY_ENV: "OPENROUTER_API_KEY",
       },
     },
   ],

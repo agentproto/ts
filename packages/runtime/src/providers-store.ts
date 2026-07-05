@@ -34,6 +34,12 @@ export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   groq: "GROQ_API_KEY",
   mistral: "MISTRAL_API_KEY",
+  // Moonshot (Kimi) — an Anthropic-compatible gateway; its key is sent as a
+  // Bearer token (ANTHROPIC_AUTH_TOKEN) with a custom base_url by the claude-sdk
+  // gateway resolver. Native routers (Mastra/hermes) read this env name directly.
+  moonshot: "MOONSHOT_API_KEY",
+  // MiniMax — direct LLM provider (also serves voice/video under the same key).
+  minimax: "MINIMAX_API_KEY",
   // Vercel AI Gateway — a gateway provider, like openrouter, that fronts many
   // upstream model families behind one key.
   "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
