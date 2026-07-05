@@ -22,7 +22,7 @@ import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
 function makeDeps(workspace: string) {
   const sessionEvents = createSessionEventBus()
-  const registry = createSessionsRegistry({ sessionEvents })
+  const registry = createSessionsRegistry({ sessionEvents, persistPath: join(workspace, "sessions.json") })
   return { sessionEvents, registry }
 }
 

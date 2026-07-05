@@ -90,6 +90,8 @@
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
+    "@agentproto/workflow": "workspace:*",
+    "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
     "croner": "^9.0.0",
     "@agentproto/provider-kit": "workspace:*",
@@ -106,6 +108,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/ws": "^8.5.13",

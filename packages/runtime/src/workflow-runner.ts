@@ -27,6 +27,8 @@ import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "
 import { runWorkflow } from "@agentproto/workflow-runtime"
 import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
+import { loadWorkflowHandle } from "@agentproto/workflow-loader"
+import type { WorkflowHandle } from "@agentproto/workflow"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -92,6 +94,14 @@ export interface WorkflowRunner {
     cwd?: string
     notifyUrl?: string
     /** Enable journal caching for this run; cacheable steps replay unchanged outputs. */
+    cacheKey?: string
+  }): Promise<WorkflowRun>
+
+  startFromFile(input: {
+    path: string
+    input?: unknown
+    cwd?: string
+    workspaceSlug?: string
     cacheKey?: string
   }): Promise<WorkflowRun>
 
@@ -269,6 +279,7 @@ async function executeRunWorkflow(
   signal: AbortSignal,
   cache?: StepCache,
   cacheKey?: string,
+  input?: unknown,
 ): Promise<void> {
   try {
     await runWorkflow({
@@ -277,6 +288,7 @@ async function executeRunWorkflow(
       signal,
       cwd: state.cwd,
       workspaceSlug: state.workspaceSlug,
+      input,
       ...(cache ? { cache, cacheKey } : {}),
     })
 
@@ -332,8 +344,14 @@ export function createWorkflowRunner(opts: {
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
    *  explicitly supplied, `false` otherwise — mirrors routine-runner.ts. */
   persist?: boolean
+  /**
+   * Compile a loaded {@link WorkflowHandle} into a {@link RuntimeWorkflow}.
+   * Required for `startFromFile` when the WORKFLOW.md contains declarative
+   * tool/map/parallel/etc steps; omitted/unsupported workflows return an error.
+   */
+  compileWorkflow?: (handle: WorkflowHandle) => RuntimeWorkflow | Promise<RuntimeWorkflow>
 }): WorkflowRunner {
-  const { registry, sessionEvents, resolveAgentAdapter } = opts
+  const { registry, sessionEvents, resolveAgentAdapter, compileWorkflow } = opts
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
   const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
@@ -393,6 +411,67 @@ export function createWorkflowRunner(opts: {
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
       void executeRunWorkflow(state, workflow, agents, abort.signal, cache, input.cacheKey).then(() => {
+        persist()
+      })
+
+      return run
+    },
+
+    startFromFile: async (args) => {
+      if (!compileWorkflow) {
+        throw new Error(
+          "workflow file execution requires a compileWorkflow callback to be configured on the runner",
+        )
+      }
+      const handle = await loadWorkflowHandle(args.path)
+      const workflow = await compileWorkflow(handle)
+      const runId = `wfrun_${randomUUID()}`
+      const run: WorkflowRun = {
+        runId,
+        workflowId: handle.id,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        stages: [
+          {
+            index: 0,
+            status: "pending" as const,
+            steps: [{ index: 0, label: "workflow", status: "pending" as const }],
+          },
+        ],
+      }
+      const abort = new AbortController()
+      const state: RunState = {
+        run,
+        cancelled: false,
+        abort,
+        stages: [],
+        ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+        ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
+      }
+      runs.set(runId, state)
+      persist()
+
+      const agents = new SessionsRegistryAgentHost(
+        registry,
+        sessionEvents,
+        resolveAgentAdapter,
+        {
+          workspaceSlug: args.workspaceSlug,
+          cwd: args.cwd,
+        },
+      )
+
+      const cache = args.cacheKey ? createFileStepCache(args.cacheKey) : undefined
+
+      void executeRunWorkflow(
+        state,
+        workflow,
+        agents,
+        abort.signal,
+        cache,
+        args.cacheKey,
+        args.input,
+      ).then(() => {
         persist()
       })
 

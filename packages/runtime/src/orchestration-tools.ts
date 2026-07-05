@@ -606,6 +606,38 @@ export function registerOrchestrationTools(
     )
 
     server.tool(
+      "workflow_run_file",
+      "Load an AIP-15 WORKFLOW.md (+ optional entry.mjs) via the workflow-loader " +
+        "and run it in the background through the same runner as `workflow_start`. " +
+        "Poll with `workflow_status`.",
+      {
+        path: z.string().describe("Absolute or workspace-relative path to a WORKFLOW.md file."),
+        input: z.record(z.string(), z.unknown()).optional().describe("Workflow invocation input — bound to `$input` in the compiled workflow."),
+        cwd: z.string().optional().describe("Working directory for spawned sessions."),
+        workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
+        cacheKey: z.string().optional().describe("Enable journal caching for this run. Cacheable steps replay unchanged outputs on re-invocation with the same key."),
+      },
+      async input => {
+        try {
+          const run = await workflowRunner.startFromFile(input)
+          return {
+            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    server.tool(
       "workflow_status",
       "Poll the status of a background workflow run started with `workflow_start`. " +
         "Each stage reports its steps' status/sessionId so later work can inspect " +
