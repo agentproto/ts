@@ -7,10 +7,13 @@ import type {
 import { MemoryStore } from "../store/memory-store.js"
 
 // openBrowser shells out via execFile — no-op it so tests never spawn a browser.
-vi.mock("node:child_process", () => ({
-  execFile: (_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
+// A spy (not a plain function) so tests can assert whether it was invoked.
+const execFileMock = vi.hoisted(() =>
+  vi.fn((_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
     cb(null, { stdout: "" }),
-}))
+  ),
+)
+vi.mock("node:child_process", () => ({ execFile: execFileMock }))
 
 import { serviceAuthFlowEngine } from "../flow-engines/service-auth.js"
 
@@ -57,6 +60,7 @@ describe("serviceAuthFlowEngine", () => {
 
   beforeEach(() => {
     store = new MemoryStore()
+    execFileMock.mockClear()
   })
   afterEach(() => vi.unstubAllGlobals())
 
@@ -206,5 +210,72 @@ describe("serviceAuthFlowEngine", () => {
     await expect(
       serviceAuthFlowEngine.run(provider, discovered, { server: API }),
     ).rejects.toThrow(/only supports macOS/)
+  })
+
+  it("opens the browser by default during the ceremony", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === IDENTITY) {
+          return jsonRes({
+            registration_id: "reg-b",
+            claim_token: "claim-b",
+            claim: {
+              user_code: "B",
+              verification_uri: "https://approve.example/b",
+              expires_in: 60,
+              interval: 0,
+            },
+          })
+        }
+        expect(grantOf(init)).toBe("urn:workos:agent-auth:grant-type:claim")
+        return jsonRes({ access_token: "oat_b", token_type: "Bearer" })
+      }),
+    )
+
+    await serviceAuthFlowEngine.run(provider, discovered, opts({ force: true }))
+    expect(execFileMock).toHaveBeenCalled()
+  })
+
+  it("skips opening the browser when opts.openBrowser is false, but still prints the verification URL", async () => {
+    const writes: string[] = []
+    const errSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((s: string | Uint8Array): boolean => {
+        writes.push(String(s))
+        return true
+      })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === IDENTITY) {
+          return jsonRes({
+            registration_id: "reg-c",
+            claim_token: "claim-c",
+            claim: {
+              user_code: "NOBROWSER-1",
+              verification_uri: "https://approve.example/c",
+              expires_in: 60,
+              interval: 0,
+            },
+          })
+        }
+        expect(grantOf(init)).toBe("urn:workos:agent-auth:grant-type:claim")
+        return jsonRes({ access_token: "oat_c", token_type: "Bearer" })
+      }),
+    )
+
+    const r = await serviceAuthFlowEngine.run(
+      provider,
+      discovered,
+      opts({ force: true, openBrowser: false }),
+    )
+    errSpy.mockRestore()
+
+    expect(r.accessToken).toBe("oat_c")
+    expect(execFileMock).not.toHaveBeenCalled()
+    const out = writes.join("")
+    expect(out).toContain("NOBROWSER-1")
+    expect(out).toContain("https://approve.example/c")
   })
 })

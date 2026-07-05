@@ -7,10 +7,13 @@ import type {
 import { MemoryStore } from "../store/memory-store.js"
 
 // openBrowser shells out via execFile — no-op it so tests never spawn a browser.
-vi.mock("node:child_process", () => ({
-  execFile: (_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
+// A spy (not a plain function) so tests can assert whether it was invoked.
+const execFileMock = vi.hoisted(() =>
+  vi.fn((_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
     cb(null, { stdout: "" }),
-}))
+  ),
+)
+vi.mock("node:child_process", () => ({ execFile: execFileMock }))
 
 import { deviceCodeFlowEngine } from "../flow-engines/device-code.js"
 
@@ -57,6 +60,7 @@ describe("deviceCodeFlowEngine", () => {
 
   beforeEach(() => {
     store = new MemoryStore()
+    execFileMock.mockClear()
   })
   afterEach(() => vi.unstubAllGlobals())
 
@@ -286,5 +290,121 @@ describe("deviceCodeFlowEngine", () => {
     await expect(
       deviceCodeFlowEngine.run(provider, discovered, { server: API }),
     ).rejects.toThrow(/only supports macOS/)
+  })
+
+  it("writes and reads the daemon credential through the audience-prefixed path when the provider declares one", async () => {
+    const scoped = { ...provider, audience: "tunnel" } as AuthProviderHandle
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === DEVICE_AUTH) {
+          return jsonRes({
+            device_code: "dc-scoped",
+            user_code: "SCOPED",
+            verification_uri: "https://approve.example/scoped",
+            expires_in: 300,
+            interval: 0,
+          })
+        }
+        if (url === TOKEN) {
+          return jsonRes({ access_token: "gdt_scoped", expires_in: 3600 })
+        }
+        throw new Error(`unexpected fetch ${url}`)
+      }),
+    )
+
+    const r = await deviceCodeFlowEngine.run(scoped, discovered, opts())
+    expect(r.accessToken).toBe("gdt_scoped")
+
+    // Written under the prefixed path, not the legacy one.
+    await expect(store.read(ref)).resolves.toBeUndefined()
+    const prefixedRef = { path: "tunnel:acme-daemon", account: API }
+    await expect(store.read(prefixedRef)).resolves.toMatchObject({
+      value: "gdt_scoped",
+      kind: "daemon",
+    })
+
+    // A later run short-circuits the ceremony, reading back via the
+    // prefixed key without hitting the network.
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    const r2 = await deviceCodeFlowEngine.run(scoped, discovered, opts())
+    expect(r2.accessToken).toBe("gdt_scoped")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("falls back once to the legacy unprefixed path for a pre-existing daemon credential", async () => {
+    // Simulate a credential written before this provider adopted an audience.
+    await store.write(ref, {
+      value: "gdt_legacy",
+      kind: "daemon",
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    })
+    const scoped = { ...provider, audience: "tunnel" } as AuthProviderHandle
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const r = await deviceCodeFlowEngine.run(scoped, discovered, opts())
+    expect(r).toEqual({ accessToken: "gdt_legacy", tokenKind: "daemon" })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("opens the browser by default during the ceremony", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === DEVICE_AUTH) {
+          return jsonRes({
+            device_code: "dc-b",
+            user_code: "B",
+            verification_uri: "https://approve.example/b",
+            expires_in: 60,
+            interval: 0,
+          })
+        }
+        return jsonRes({ access_token: "gdt_b" })
+      }),
+    )
+
+    await deviceCodeFlowEngine.run(provider, discovered, opts())
+    expect(execFileMock).toHaveBeenCalled()
+  })
+
+  it("skips opening the browser when opts.openBrowser is false, but still prints the verification URL", async () => {
+    const writes: string[] = []
+    const errSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((s: string | Uint8Array): boolean => {
+        writes.push(String(s))
+        return true
+      })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === DEVICE_AUTH) {
+          return jsonRes({
+            device_code: "dc-c",
+            user_code: "NOBROWSER-1",
+            verification_uri: "https://approve.example/c",
+            expires_in: 60,
+            interval: 0,
+          })
+        }
+        return jsonRes({ access_token: "gdt_c" })
+      }),
+    )
+
+    const r = await deviceCodeFlowEngine.run(
+      provider,
+      discovered,
+      opts({ openBrowser: false }),
+    )
+    errSpy.mockRestore()
+
+    expect(r.accessToken).toBe("gdt_c")
+    expect(execFileMock).not.toHaveBeenCalled()
+    const out = writes.join("")
+    expect(out).toContain("NOBROWSER-1")
+    expect(out).toContain("https://approve.example/c")
   })
 })

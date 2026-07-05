@@ -170,6 +170,12 @@ export interface FlowRunOptions {
   /** Credential backend to read/write through. Defaults to a `KeychainStore`
    *  when omitted — existing callers keep today's Keychain-only behavior. */
   store?: CredentialStore
+  /** Whether a device/claim ceremony should best-effort open the verification
+   *  URL in a browser. Default `true` (omitted = open) — existing callers are
+   *  unaffected. Set `false` for headless/remote sessions; the verification
+   *  URL and user code are still printed to stderr so the ceremony can be
+   *  completed manually. */
+  openBrowser?: boolean
 }
 
 /** A flow engine implements one auth protocol. Dispatch by provider.auth.flow —

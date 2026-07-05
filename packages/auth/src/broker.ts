@@ -8,7 +8,7 @@
  */
 
 import { runAuthFlow } from "./run-flow.js"
-import { resolveStoreRef, readStoreRefWithFallback } from "./store/resolve-ref.js"
+import { resolveStoreRefs, readStoreRefWithFallback } from "./store/resolve-ref.js"
 import type { CredentialStore, StoredCredential } from "./store/types.js"
 import type { AuthProviderHandle } from "./types.js"
 
@@ -96,10 +96,11 @@ export class CredentialBroker {
     }
 
     const server = o.server ?? provider.apiBase
-    const ref = resolveStoreRef(provider.auth.tokenStore, server, provider.audience)
-    const legacyRef = provider.audience
-      ? resolveStoreRef(provider.auth.tokenStore, server)
-      : ref
+    const { ref, legacyRef } = resolveStoreRefs(
+      provider.auth.tokenStore,
+      server,
+      provider.audience,
+    )
     if (account !== undefined) {
       ref.account = account
       legacyRef.account = account

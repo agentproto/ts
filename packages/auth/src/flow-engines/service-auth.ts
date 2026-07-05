@@ -28,7 +28,7 @@ import type {
   DiscoveredEndpoints,
 } from "../types.js"
 import { KeychainStore } from "../store/keychain-store.js"
-import { resolveStoreRef, readStoreRefWithFallback } from "../store/resolve-ref.js"
+import { resolveStoreRefs, readStoreRefWithFallback } from "../store/resolve-ref.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 import {
   openBrowser,
@@ -147,10 +147,11 @@ export const serviceAuthFlowEngine: FlowEngine = {
     assertSecureUrl(tokenEndpoint)
 
     const store = opts.store ?? new KeychainStore()
-    const ref = resolveStoreRef(config.tokenStore, server, provider.audience)
-    const legacyRef = provider.audience
-      ? resolveStoreRef(config.tokenStore, server)
-      : ref
+    const { ref, legacyRef } = resolveStoreRefs(
+      config.tokenStore,
+      server,
+      provider.audience,
+    )
 
     // Cached path — the stored credential IS the identity_assertion JWT (AIP-50:
     // never the access token, never a refresh token). Exchange it via jwt-bearer
@@ -206,7 +207,9 @@ export const serviceAuthFlowEngine: FlowEngine = {
     process.stderr.write(`  Approve ${provider.id} access in your browser\n\n`)
     process.stderr.write(`  Code:  ${claim.user_code}\n`)
     process.stderr.write(`  URL:   ${claim.verification_uri}\n\n`)
-    await openBrowser(claim.verification_uri)
+    if (opts.openBrowser !== false) {
+      await openBrowser(claim.verification_uri)
+    }
     process.stderr.write(`  Waiting for approval (${windowMin} min)…\n\n`)
 
     // 3 — Poll until approved / denied / expired
