@@ -1,5 +1,15 @@
-import { chainRedactors, denyListRedactor, noneRedactor, truncateRedactor } from "./redactors.js"
-import type { DenyListRedactorOptions, TruncateRedactorOptions } from "./redactors.js"
+import {
+  chainRedactors,
+  denyListRedactor,
+  noneRedactor,
+  truncateRedactor,
+  valueScanRedactor,
+} from "./redactors.js"
+import type {
+  DenyListRedactorOptions,
+  TruncateRedactorOptions,
+  ValueScanRedactorOptions,
+} from "./redactors.js"
 import type { JsonValue, Redactor, RedactorCatalogEntry, RedactorSpec } from "./types.js"
 
 function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
@@ -28,6 +38,20 @@ function toTruncateOptions(options: { readonly [key: string]: JsonValue }): Trun
   return {
     maxStringLength: typeof maxStringLengthValue === "number" ? maxStringLengthValue : undefined,
     maxArrayLength: typeof maxArrayLengthValue === "number" ? maxArrayLengthValue : undefined,
+  }
+}
+
+/**
+ * Builds value-scan options from JSON. Only `placeholder` round-trips through
+ * JSON; `extraPatterns` are `RegExp` and must be passed by calling
+ * {@link valueScanRedactor} directly.
+ */
+function toValueScanOptions(options: {
+  readonly [key: string]: JsonValue
+}): ValueScanRedactorOptions {
+  const placeholderValue = options.placeholder
+  return {
+    placeholder: typeof placeholderValue === "string" ? placeholderValue : undefined,
   }
 }
 
@@ -69,6 +93,34 @@ export const REDACTOR_CATALOG: Readonly<Record<string, RedactorCatalogEntry>> = 
         throw new Error("truncate redactor options must be a JSON object")
       }
       return truncateRedactor(toTruncateOptions(options))
+    },
+  },
+  "value-scan": {
+    slug: "value-scan",
+    description:
+      "Deep walk that scans string VALUES for well-known secret shapes (prefixed API " +
+      "keys, JWTs, PEM private keys, cloud tokens) and masks the match, regardless of " +
+      "key. Complements deny-list, which only masks by key.",
+    needsCreds: false,
+    build(options) {
+      if (options === undefined) {
+        return valueScanRedactor()
+      }
+      if (!isJsonObject(options)) {
+        throw new Error("value-scan redactor options must be a JSON object")
+      }
+      return valueScanRedactor(toValueScanOptions(options))
+    },
+  },
+  secrets: {
+    slug: "secrets",
+    description:
+      "Recommended default for egress: deny-list (mask by key) chained with value-scan " +
+      "(mask secret shapes in values). Catches a credential whether it sits under a " +
+      "sensitive key or is embedded in an innocuous one.",
+    needsCreds: false,
+    build() {
+      return chainRedactors([denyListRedactor(), valueScanRedactor()], "secrets")
     },
   },
 }

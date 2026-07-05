@@ -12,8 +12,10 @@ export {
   denyListRedactor,
   noneRedactor,
   truncateRedactor,
+  valueScanRedactor,
   type DenyListRedactorOptions,
   type TruncateRedactorOptions,
+  type ValueScanRedactorOptions,
 } from "./redactors.js"
 
 export { REDACTOR_CATALOG, resolveRedactor } from "./catalog.js"
