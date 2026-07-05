@@ -20,7 +20,7 @@ importing zero concrete providers — everything flows through injected
 | `makeListTool`, `makeSetupTool` | `./mcp-tools` | MCP tool factories (`value` param is sensitive) |
 | `makeAdapterWizard` | `./wizard` | CLI radio-picker + step runner; skips ledger-completed steps |
 
-See `docs/adapter-kit.md` for the full design (the kit's concepts are unchanged; only the package name was renamed from `@agentproto/adapter-kit`).
+See `docs/provider-kit.md` for the full design (the kit's concepts are unchanged; only the package name was renamed from `@agentproto/adapter-kit`).
 
 > Status engine is **pure & sync** (fed pre-resolved booleans). `AdapterHandle.check()`
 > is async and **never** invoked during listing — status comes from resolvability

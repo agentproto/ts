@@ -1,4 +1,4 @@
-# @agentproto/adapter-kit
+# @agentproto/provider-kit
 
 ## 0.1.0
 
