@@ -47,6 +47,11 @@ export function cleanAgentLines(lines: string[]): string[] {
     .map(l => l.replace(/\x1b\[[0-9;]*m/g, ""))
     .filter(l => {
       const t = l.trim()
+      // A tool ERROR must never be filtered — a failing turn is exactly when a
+      // caller reads the output, and hiding it makes the session look silently
+      // stuck. Only decorative framing and non-error [thought]/[tool]/[tool-result]
+      // chatter is dropped in clean mode.
+      if (/^\[tool-error\]/.test(t)) return true
       return !t.startsWith("──") && !/^\[(thought|tool)\b/.test(t)
     })
 }

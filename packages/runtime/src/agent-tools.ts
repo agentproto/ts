@@ -473,7 +473,23 @@ export function registerAgentTools(
       })
       if (unsub) unsub()
       const tail = lines.slice(-limit)
-      const output = input.clean ? cleanAgentLines(tail) : tail
+      let output = input.clean ? cleanAgentLines(tail) : tail
+      // Resilience: a tool-busy turn emits `[tool]`/`[tool-result]` lines but
+      // little or no assistant text, and clean mode strips those — so an agent
+      // working hard (reading, writing files, installing) surfaces as an EMPTY
+      // `lines`, which reads as "idle/stuck" to a polling orchestrator. When
+      // clean output is empty but the ring HAS content, fall back to the
+      // ANSI-stripped raw tail so the session's activity is always visible and
+      // polling agent_output is a reliable liveness/progress signal.
+      let activityFallback = false
+      if (input.clean && output.length === 0 && tail.length > 0) {
+        output = tail
+          .map(stripAnsi)
+          .map(l => l.trimEnd())
+          .filter(l => l.trim().length > 0)
+          .slice(-limit)
+        activityFallback = output.length > 0
+      }
       return {
         content: [
           {
@@ -483,6 +499,10 @@ export function registerAgentTools(
                 sessionId: input.sessionId,
                 status: desc.status,
                 lastOutputAt: desc.lastOutputAt,
+                // Surfaced so a caller can distinguish "idle" from "mid tool
+                // call" without guessing from empty output.
+                ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),
+                ...(activityFallback ? { activityFallback: true } : {}),
                 lines: output,
               },
               null,
