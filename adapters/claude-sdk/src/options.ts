@@ -14,6 +14,15 @@ import type {
 /** A cheap Claude by default — this is a budget first-party arm. */
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+/**
+ * Default idle watchdog for a turn (ms). If `query()` yields no message for
+ * this long, {@link ClaudeSdkConfig.idleTimeoutMs} aborts the turn instead of
+ * hanging forever. Five minutes: comfortably above the SDK's default tool
+ * timeouts (so a legitimately long tool run is never mistaken for a stall) yet
+ * a decisive ceiling on a wedged stream. See {@link ClaudeSdkConfig.idleTimeoutMs}.
+ */
+export const DEFAULT_IDLE_TIMEOUT_MS = 300_000
+
 /** Static config for the adapter, parsed from CLI args / env at boot. */
 export interface ClaudeSdkConfig {
   /** SDK `options.model`. Defaults to {@link DEFAULT_MODEL}. */
@@ -35,6 +44,20 @@ export interface ClaudeSdkConfig {
   thinking?: boolean
   /** Working directory for the session (tools are confined here). */
   cwd?: string
+  /**
+   * Idle watchdog for a turn, in milliseconds. If the SDK's `query()` iterator
+   * produces no message for this long, the turn is aborted with a surfaced
+   * error instead of hanging forever. This guards against a gateway/model whose
+   * stream never delivers the SDK's terminal `result` message — observed with
+   * Moonshot's Anthropic-compatible endpoint, whose `thinking` blocks ship an
+   * empty `signature` and a non-`msg_` id — where the `query()` async iterator
+   * can never terminate, leaving the turn stuck `busy` with zero output (the
+   * worst failure mode). Idle-based (reset on every message), so a legitimately
+   * long generation or tool run is unaffected. `0` disables the watchdog.
+   * Defaults to {@link DEFAULT_IDLE_TIMEOUT_MS}. Overridable at the CLI via
+   * `CLAUDE_SDK_IDLE_TIMEOUT_MS`.
+   */
+  idleTimeoutMs?: number
   /**
    * How the harness handles tool-permission prompts. Defaults to
    * `bypassPermissions` (with the required danger flag) so the arm can act

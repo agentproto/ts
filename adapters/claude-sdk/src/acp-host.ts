@@ -39,7 +39,11 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk"
 import { sdkMessageToUpdates, systemInitSessionId } from "./message-map.js"
-import { buildQueryOptions, type ClaudeSdkConfig } from "./options.js"
+import {
+  buildQueryOptions,
+  DEFAULT_IDLE_TIMEOUT_MS,
+  type ClaudeSdkConfig,
+} from "./options.js"
 
 /** The single SDK entry point we depend on — the headless async generator.
  *  Typed structurally and injectable so tests can drive the host with a faked
@@ -65,6 +69,25 @@ interface SessionState {
 /** A message from an unknown thrown value, without an unsafe cast. */
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Thrown by the {@link ClaudeSdkAcpAgent}'s turn watchdog when `query()` stops
+ * yielding messages: the model stream stalled and never delivered the SDK's
+ * terminal `result`, so the async iterator would otherwise never terminate.
+ * Distinct from a user cancel so the host surfaces it as an error rather than
+ * silently reporting the turn as cancelled.
+ */
+export class TurnStalledError extends Error {
+  constructor(public readonly idleMs: number) {
+    super(
+      `claude-sdk: query() produced no message for ${idleMs}ms — the model ` +
+        `stream stalled and never delivered a terminal result. Aborting the ` +
+        `turn to avoid a silent, zero-output hang. If this was a slow but ` +
+        `healthy turn, raise CLAUDE_SDK_IDLE_TIMEOUT_MS.`,
+    )
+    this.name = "TurnStalledError"
+  }
 }
 
 /** Pull the user's text out of an ACP prompt (its `text` content blocks). */
@@ -148,7 +171,10 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
 
       await this.#drive(session, text, options, ac)
     } catch (err) {
-      if (ac.signal.aborted) {
+      // A watchdog stall aborts `ac` to tear down the SDK subprocess, so check
+      // the stall FIRST — otherwise it would masquerade as a user cancel and be
+      // silently swallowed, which is exactly the zero-output failure we fix.
+      if (ac.signal.aborted && !(err instanceof TurnStalledError)) {
         session.prompt = null
         return { stopReason: "cancelled" }
       }
@@ -199,20 +225,73 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
   }
 
   /** Drive one `query()` turn: adopt the SDK session id from `init`, then map
-   *  each SDK message to ACP updates and relay them. */
+   *  each SDK message to ACP updates and relay them.
+   *
+   *  Iteration is driven manually (rather than `for await`) so an idle watchdog
+   *  can bound the wait for each next message. If `query()` stalls — as it does
+   *  on Moonshot, whose stream never yields the SDK's terminal `result` — the
+   *  watchdog aborts the turn with a {@link TurnStalledError} instead of
+   *  awaiting forever with zero output. */
   async #drive(
     session: SessionState,
     text: string,
     options: Options,
     ac: AbortController,
   ): Promise<void> {
-    for await (const msg of this.#query({ prompt: text, options })) {
-      if (ac.signal.aborted) break
-      const sdkId = systemInitSessionId(msg)
-      if (sdkId) session.sdkSessionId = sdkId
-      for (const update of sdkMessageToUpdates(msg)) {
-        await this.#conn.sessionUpdate({ sessionId: session.id, update })
+    const idleMs = this.#config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+    const iterator = this.#query({ prompt: text, options })[
+      Symbol.asyncIterator
+    ]()
+    try {
+      while (!ac.signal.aborted) {
+        const next = await this.#nextMessage(iterator, idleMs, ac)
+        if (next.done) break
+        const msg = next.value
+        const sdkId = systemInitSessionId(msg)
+        if (sdkId) session.sdkSessionId = sdkId
+        for (const update of sdkMessageToUpdates(msg)) {
+          await this.#conn.sessionUpdate({ sessionId: session.id, update })
+        }
       }
+    } finally {
+      // Best-effort generator close on any exit (stall, cancel, error). Do NOT
+      // await it: on a stall the generator is suspended mid-`await` and its
+      // `.return()` never settles, so awaiting here would re-introduce the very
+      // hang we guard against. The turn's AbortController — already aborted on
+      // a stall or a cancel — is what actually tears the SDK subprocess down.
+      void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Await the next SDK message, but no longer than `idleMs`. On timeout the
+   * turn is treated as stalled: abort the shared controller (tearing down the
+   * SDK subprocess) and reject with {@link TurnStalledError}. `idleMs <= 0`
+   * disables the watchdog and awaits indefinitely (legacy behaviour).
+   */
+  async #nextMessage(
+    iterator: AsyncIterator<SDKMessage>,
+    idleMs: number,
+    ac: AbortController,
+  ): Promise<IteratorResult<SDKMessage>> {
+    const next = iterator.next()
+    if (idleMs <= 0) return next
+    // If the watchdog wins the race, `next` settles later with nobody awaiting
+    // it; pre-attach a no-op handler so a late rejection isn't "unhandled".
+    void next.catch(() => undefined)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const watchdog = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        ac.abort()
+        reject(new TurnStalledError(idleMs))
+      }, idleMs)
+      // Don't let the watchdog alone keep the event loop alive.
+      timer.unref()
+    })
+    try {
+      return await Promise.race([next, watchdog])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 }
