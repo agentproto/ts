@@ -148,7 +148,7 @@ cursor = out.nextCursor
 | Tool | Purpose |
 |------|---------|
 | `terminal_start { argv, cwd?, cols?, rows?, name? }` | PTY-backed process |
-| `terminal_input { sessionId, text }` | Send keystrokes |
+| `terminal_input { sessionId, text?, enter?, b64? }` | Send keystrokes (`enter` appends `\r` to submit TUIs; `b64` = exact control bytes) |
 | `terminal_output { sessionId, lastBytes? }` | Snapshot (base64) |
 | `terminal_kill { sessionId }` | SIGTERM |
 

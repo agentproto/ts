@@ -1159,12 +1159,34 @@ export function registerSessionTools(
     "terminal_input",
     "Send keystrokes to a PTY session's stdin. The text is forwarded verbatim — " +
       "include trailing newlines if the target needs them (e.g. shell commands). " +
-      "Use after `terminal_start` to drive an interactive CLI.",
+      "Use after `terminal_start` to drive an interactive CLI. Set `enter: true` " +
+      "to append a carriage return (\\r) so a TUI composer (e.g. Claude Code) " +
+      "submits — LF alone won't. Use `b64` to send exact control bytes " +
+      "(CR, arrows, Esc, Ctrl-*) that JSON can't carry cleanly.",
     {
       sessionId: z
         .string()
         .describe("Session id OR name from terminal_start."),
-      text: z.string().describe("Text to write. Sent as-is to the PTY's stdin."),
+      text: z
+        .string()
+        .optional()
+        .describe("Text to write. Sent as-is to the PTY's stdin."),
+      enter: z
+        .boolean()
+        .optional()
+        .describe(
+          "Append a carriage return (\\r) after the text so a TUI composer " +
+            "(e.g. Claude Code) submits."
+        ),
+      b64: z
+        .string()
+        .optional()
+        .describe(
+          "Base64-encoded exact bytes to send instead of/around `text` (for " +
+            "control keys: CR, arrows, Esc, Ctrl-*). Decoded as latin1 (1-to-1 " +
+            "byte mapping) and written verbatim. Intended for ASCII control " +
+            "keys; binary bytes >0x7f may not transit unchanged."
+        ),
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_input")
@@ -1180,7 +1202,23 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const ok = registry.writeTerminalInput(desc.id, input.text)
+      if (input.b64 === undefined && input.text === undefined && !input.enter) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "terminal_input: provide at least one of `text`, `b64`, or `enter`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      let payload =
+        input.b64 !== undefined
+          ? Buffer.from(input.b64, "base64").toString("latin1")
+          : (input.text ?? "")
+      if (input.enter) payload += "\r"
+      const ok = registry.writeTerminalInput(desc.id, payload)
       return {
         content: [
           {
