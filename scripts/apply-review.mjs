@@ -129,7 +129,8 @@ const result = await runAgentLoop({
   userPrompt:
     `Please fix all review comments on PR #${PR_NUMBER}. ` +
     `This is fix iteration ${pastIter + 1} of ${MAX_ITER} max. Delivery mode: ${DELIVERY}. ` +
-    `Start with git_diff and get_review, read each relevant file, then apply all requested changes with write_file` +
+    `Start with git_diff and get_review, read each relevant file, then apply all changes — ` +
+    `prefer edit_file for existing files; use write_file only to create a new file or fully rewrite a small one` +
     (DELIVERY === 'pr' ? ', and finally open a stacked PR with gh_open_pr.' : '.'),
   maxTokens: 8192,
   maxTurns: 20,

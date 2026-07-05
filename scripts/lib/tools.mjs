@@ -185,7 +185,7 @@ function allTools(ctx) {
       if (!existsSync(abs)) return `(file not found: ${path})`
       try {
         const content = readFileSync(abs, 'utf8')
-        const start = Math.max(0, offset | 0)
+        const start = Math.max(0, Math.trunc(offset))
         const slice = content.slice(start, start + READ_PAGE)
         const end = start + slice.length
         if (start === 0 && end >= content.length) return content
