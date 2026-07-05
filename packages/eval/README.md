@@ -22,8 +22,8 @@ export const scoreSchema = z.object({
 
 ## The four deterministic scorers
 
-All are pure functions of their input. This pass has **no LLM / model calls** —
-an `llm-judge` scorer is a deliberate later step.
+All are pure functions of their input — no LLM / model calls. For a
+model-backed scorer, see [LLM-as-judge scorer](#llm-as-judge-scorer) below.
 
 | Tool id                  | Input                                        | Behavior |
 | ------------------------ | -------------------------------------------- | -------- |
@@ -125,6 +125,74 @@ port — `Telemetry<EvalEvent>` — under the `agentproto/eval/v1` schema
 (`eval.started`, `eval.case.started`, `eval.case.scored`, `eval.case.finished`,
 `eval.finished`). Sinks MUST tolerate unknown kinds (forward-compat).
 
+## LLM-as-judge scorer
+
+`eval.llm-judge` is a **model-backed** scorer — but it stays a TOOL, exactly
+like the four deterministic scorers above. What differs is where the model
+lives: the injected judge is closed over by the **driver**, not threaded
+through tool input/context, via `makeLlmJudgeDriver(judge)`. That means it
+composes with the existing `bindScorer` / `runEval` with zero changes to
+either.
+
+The judge itself is an injected function — `JudgeFn` — so this package stays
+vendor-neutral: no LLM SDK, no network dependency here.
+
+```ts
+export type JudgeFn = (args: {
+  output: JsonValue
+  criteria: string
+  expected?: JsonValue
+}) => Promise<JudgeVerdict>
+// JudgeVerdict = { value: number (0..1); passed?: boolean; rationale?: string }
+```
+
+Build a driver around a judge, then either call the tool directly or use the
+`llmJudge(...)` convenience to get a ready-to-use `ScorerBinding`:
+
+```ts
+import { runTool } from "@agentproto/driver"
+import {
+  llmJudgeTool,
+  makeLlmJudgeDriver,
+  llmJudge,
+  bindScorer,
+  type JudgeFn,
+} from "@agentproto/eval"
+
+// A real judge is injected by the caller — an LLM call, an agent session,
+// or the supervisor's judge-gate. Shown here as a stand-in.
+const judge: JudgeFn = async ({ output, criteria }) => {
+  // ... call out to a model, or whatever satisfies JudgeFn ...
+  return { value: 0.9, rationale: "meets the criteria" }
+}
+
+// Direct tool invocation:
+const score = await runTool({
+  tool: llmJudgeTool,
+  candidates: [makeLlmJudgeDriver(judge, { threshold: 0.7 })],
+  input: { output: "the produced answer", criteria: "Is the answer helpful?" },
+})
+
+// Or as a suite scorer:
+const binding = bindScorer(
+  llmJudge<Answer>({
+    id: "helpfulness",
+    judge,
+    criteria: "Is the answer helpful and correct?",
+    threshold: 0.7,
+    mapOutput: ({ output }) => output.text,
+  }),
+)
+```
+
+`passed` resolution: when the judge's verdict includes an explicit `passed`,
+it **wins** over the threshold comparison — a judge that says `passed: false`
+is never overridden by a high `value`, and vice versa. Otherwise `passed =
+value >= threshold` (`threshold` defaults to `0.5`).
+
+A real adapter wiring `JudgeFn` up to an agent session or the supervisor's
+judge-gate is a documented follow-up — not built in this package.
+
 ## As a CI gate
 
 `toVitest` turns a suite into vitest test registrations — one `it(caseId)` per
@@ -157,6 +225,11 @@ toVitest(
 - `jsonSchemaValidTool` / `jsonSchemaValidImpl` (`MinimalJsonSchema`)
 - `latencyBudgetTool` / `latencyBudgetImpl`
 - `evalScorersProvider` — the builtin PROVIDER bundling all four
+- `llmJudgeTool` — the `eval.llm-judge` TOOL contract
+- `makeLlmJudgeDriver` — build a DRIVER that closes over an injected `JudgeFn`
+- `llmJudge` — convenience: build a ready-to-use `ScorerBinding` around a judge
+- `JudgeFn`, `JudgeVerdict`, `judgeVerdictSchema`, `LlmJudgeInput`,
+  `MakeLlmJudgeDriverOptions`, `LlmJudgeBinding`
 
 ## License
 
