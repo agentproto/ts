@@ -85,9 +85,10 @@ Your job is to address EVERY change requested in the latest PR review and write 
 
 1. Call \`git_diff\` to understand what the PR changes.
 2. Call \`get_review\` to read the CHANGES_REQUESTED review body and all inline comments.
-3. For each file mentioned, call \`read_file\` to see its current content.
-4. Call \`write_file\` for each file that needs changes, providing the COMPLETE corrected content.
-   - Never truncate — always write the full file.
+3. For each file mentioned, call \`read_file\` to see its current content. If the result is marked PARTIAL you have NOT seen the whole file — page through with \`offset\`, and never overwrite that file with write_file.
+4. Apply each change with the RIGHT tool:
+   - Prefer \`edit_file\` (surgical old_string→new_string replacement) for every change to an existing file. It cannot drop unrelated content and works no matter how large the file is. This is the default.
+   - Use \`write_file\` (COMPLETE file content) ONLY to create a new file or fully rewrite a genuinely small one. Never write_file a file you read partially — you would silently delete the part you did not see. A write that shrinks an existing file by >40% is refused unless the review explicitly asked to remove that content (then pass allowShrink:true).
    - Address every comment. If ambiguous, make the minimal change that satisfies the intent.
    - Do not make unrelated changes.
    - Optionally call \`run_command\` (pnpm build / check-types / test) to verify your fix compiles before finishing.
@@ -128,7 +129,8 @@ const result = await runAgentLoop({
   userPrompt:
     `Please fix all review comments on PR #${PR_NUMBER}. ` +
     `This is fix iteration ${pastIter + 1} of ${MAX_ITER} max. Delivery mode: ${DELIVERY}. ` +
-    `Start with git_diff and get_review, read each relevant file, then apply all requested changes with write_file` +
+    `Start with git_diff and get_review, read each relevant file, then apply all changes — ` +
+    `prefer edit_file for existing files; use write_file only to create a new file or fully rewrite a small one` +
     (DELIVERY === 'pr' ? ', and finally open a stacked PR with gh_open_pr.' : '.'),
   maxTokens: 8192,
   maxTurns: 20,

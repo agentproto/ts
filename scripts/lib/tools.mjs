@@ -160,23 +160,43 @@ function allTools(ctx) {
     },
   }
 
+  const READ_PAGE = 60_000
+
   const read_file = {
     def: {
       name: 'read_file',
-      description: 'Read a file relative to the repo root (truncated at 8000 chars).',
+      description:
+        `Read a file relative to the repo root. Returns up to ${READ_PAGE} chars; larger files are paged — ` +
+        'pass `offset` to read the next slice. IMPORTANT: if the result is marked PARTIAL, you have NOT seen ' +
+        'the whole file — do NOT overwrite it with write_file (you would drop the unseen part). Use edit_file ' +
+        'for targeted changes, or page through with offset until you have the full content.',
       input_schema: {
         type: 'object',
         required: ['path'],
-        properties: { path: { type: 'string', description: 'Path relative to repo root' } },
+        properties: {
+          path: { type: 'string', description: 'Path relative to repo root' },
+          offset: { type: 'number', description: 'Byte offset to start reading from (default 0). Use to page large files.' },
+        },
       },
     },
-    impl: ({ path }) => {
+    impl: ({ path, offset = 0 }) => {
       if (!path) return '(no path)'
       const abs = resolve(ROOT, path)
       if (!existsSync(abs)) return `(file not found: ${path})`
       try {
         const content = readFileSync(abs, 'utf8')
-        return content.length > 8_000 ? content.slice(0, 8_000) + '\n... (truncated)' : content
+        const start = Math.max(0, Math.trunc(offset))
+        const slice = content.slice(start, start + READ_PAGE)
+        const end = start + slice.length
+        if (start === 0 && end >= content.length) return content
+        const nextHint = end < content.length
+          ? `call read_file again with offset:${end} for the next slice`
+          : 'this is the final slice'
+        return (
+          `[PARTIAL view of ${path}: chars ${start}–${end} of ${content.length}. ` +
+          `Do NOT write_file this file from a partial read — use edit_file for targeted changes; ${nextHint}.]\n` +
+          slice
+        )
       } catch {
         return `(could not read: ${path})`
       }
@@ -238,27 +258,97 @@ function allTools(ctx) {
 
   // ---- write / run ----
 
+  // Refuse a whole-file overwrite that drops most of an existing file — the
+  // classic "read was truncated, model rewrote what little it saw" data-loss
+  // mode. Prefer edit_file for targeted changes; pass allowShrink for a
+  // deletion the review genuinely asked for.
+  const SHRINK_FLOOR_CHARS = 2_000
+  const SHRINK_RATIO = 0.6
+
   const write_file = {
     def: {
       name: 'write_file',
-      description: 'Overwrite a file in the working tree with new content (the COMPLETE file, not a diff). Use to apply fixes or implement changes.',
+      description:
+        'Overwrite a file with the COMPLETE new content (not a diff). Use only to CREATE a new file or fully ' +
+        'rewrite a SMALL one. For edits to an existing file prefer edit_file — write_file re-emits the whole ' +
+        'file and will silently drop anything you did not include. A write that shrinks an existing file by ' +
+        'more than 40% is refused unless allowShrink:true.',
       input_schema: {
         type: 'object',
         required: ['path', 'content'],
         properties: {
           path: { type: 'string', description: 'File path relative to repo root' },
           content: { type: 'string', description: 'Complete new file content' },
+          allowShrink: { type: 'boolean', description: 'Permit a >40% shrink of an existing file (only when the review explicitly asked to remove content). Default false.' },
         },
       },
     },
-    impl: ({ path, content }) => {
+    impl: ({ path, content, allowShrink = false }) => {
       if (!path || content === undefined) return '(invalid args: path and content required)'
-      if (dryRun) return `[dry-run] would write ${content.length} chars to ${path}`
       const abs = resolve(ROOT, path)
+      if (!allowShrink && existsSync(abs)) {
+        try {
+          const prev = readFileSync(abs, 'utf8')
+          if (prev.length >= SHRINK_FLOOR_CHARS && content.length < prev.length * SHRINK_RATIO) {
+            const pct = Math.round((content.length / prev.length) * 100)
+            return (
+              `(refused: write_file would shrink ${path} from ${prev.length} to ${content.length} chars ` +
+              `(${pct}% of the original). This is the usual signature of content lost to a truncated read. ` +
+              `Use edit_file for the targeted change. If the removal is genuinely requested by the review, ` +
+              `re-call write_file with allowShrink:true.)`
+            )
+          }
+        } catch { /* fall through to write */ }
+      }
+      if (dryRun) return `[dry-run] would write ${content.length} chars to ${path}`
       try {
         mkdirSync(dirname(abs), { recursive: true })
         writeFileSync(abs, content, 'utf8')
         return `Written: ${path}`
+      } catch (e) {
+        return `(write error: ${e.message})`
+      }
+    },
+  }
+
+  const edit_file = {
+    def: {
+      name: 'edit_file',
+      description:
+        'Surgically edit an existing file: replace an exact, unique substring (old_string) with new_string. ' +
+        'PREFER THIS over write_file for any change to an existing file — it cannot drop unrelated content, and ' +
+        'it works regardless of how large the file is or whether you read all of it. old_string must match the ' +
+        'file byte-for-byte (including whitespace) and appear exactly once, unless replace_all is set.',
+      input_schema: {
+        type: 'object',
+        required: ['path', 'old_string', 'new_string'],
+        properties: {
+          path: { type: 'string', description: 'File path relative to repo root' },
+          old_string: { type: 'string', description: 'Exact text to replace; must be unique in the file (or set replace_all)' },
+          new_string: { type: 'string', description: 'Replacement text' },
+          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match. Default false.' },
+        },
+      },
+    },
+    impl: ({ path, old_string, new_string, replace_all = false }) => {
+      if (!path || old_string === undefined || new_string === undefined) {
+        return '(invalid args: path, old_string, new_string required)'
+      }
+      const abs = resolve(ROOT, path)
+      if (!existsSync(abs)) return `(file not found: ${path} — use write_file to create a new file)`
+      if (old_string === new_string) return '(no-op: old_string and new_string are identical)'
+      let prev
+      try { prev = readFileSync(abs, 'utf8') } catch (e) { return `(could not read ${path}: ${e.message})` }
+      const occurrences = prev.split(old_string).length - 1
+      if (occurrences === 0) return `(old_string not found in ${path} — it must match byte-for-byte)`
+      if (occurrences > 1 && !replace_all) {
+        return `(old_string appears ${occurrences} times in ${path} — add surrounding context to make it unique, or pass replace_all:true)`
+      }
+      const next = replace_all ? prev.split(old_string).join(new_string) : prev.replace(old_string, new_string)
+      if (dryRun) return `[dry-run] would edit ${path} (${occurrences} replacement${occurrences > 1 ? 's' : ''})`
+      try {
+        writeFileSync(abs, next, 'utf8')
+        return `Edited ${path} (${occurrences} replacement${occurrences > 1 ? 's' : ''})`
       } catch (e) {
         return `(write error: ${e.message})`
       }
@@ -715,7 +805,7 @@ function allTools(ctx) {
 
   return {
     git_diff, git_log, grep_repo, read_file, list_dir, list_changed_packages,
-    write_file, run_command, write_changeset,
+    write_file, edit_file, run_command, write_changeset,
     gh_get_pr, gh_get_issue, get_review, gh_list_labels,
     gh_pr_comment, gh_pr_review, gh_open_pr, gh_label,
     gh_get_discussion, gh_discussion_comment, gh_wiki,
@@ -726,8 +816,8 @@ function allTools(ctx) {
 export const TOOL_GROUPS = {
   read: ['git_diff', 'git_log', 'grep_repo', 'read_file', 'list_dir', 'list_changed_packages', 'gh_get_pr'],
   review: ['write_changeset', 'gh_pr_review', 'gh_pr_comment'],
-  fix: ['write_file', 'run_command', 'get_review', 'gh_pr_comment'],
-  pr: ['write_file', 'run_command', 'write_changeset', 'gh_open_pr', 'gh_get_issue', 'gh_pr_comment'],
+  fix: ['write_file', 'edit_file', 'run_command', 'get_review', 'gh_pr_comment'],
+  pr: ['write_file', 'edit_file', 'run_command', 'write_changeset', 'gh_open_pr', 'gh_get_issue', 'gh_pr_comment'],
   explain: ['gh_pr_comment'],
   triage: ['gh_get_issue', 'gh_list_labels', 'gh_label', 'gh_pr_comment'],
   discussion: ['gh_get_discussion', 'gh_discussion_comment'],
