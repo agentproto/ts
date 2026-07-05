@@ -4,17 +4,8 @@ import type {
   DiscoveredEndpoints,
   FlowRunOptions,
 } from "../types.js"
+import { MemoryStore } from "../store/memory-store.js"
 
-const { readKeychainToken, writeKeychainToken } = vi.hoisted(() => ({
-  readKeychainToken: vi.fn(),
-  writeKeychainToken: vi.fn().mockResolvedValue(undefined),
-}))
-vi.mock("../token-store.js", () => ({
-  readKeychainToken,
-  writeKeychainToken,
-  resolveAccount: (acct: string | undefined, server: string) =>
-    acct ? acct.replace("{server}", server) : server,
-}))
 // openBrowser shells out via execFile — no-op it so tests never spawn a browser.
 vi.mock("node:child_process", () => ({
   execFile: (_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
@@ -44,7 +35,8 @@ const discovered = {
   tokenEndpoint: TOKEN,
 } as DiscoveredEndpoints
 
-const opts: FlowRunOptions = { server: API }
+// Matches resolveStoreRef(config.tokenStore, server) for `provider` above.
+const ref = { path: "bureau-guilde", account: API }
 
 function jsonRes(body: unknown, ok = true, status = 200) {
   return {
@@ -61,22 +53,32 @@ function grantOf(init?: RequestInit): string | null {
 }
 
 describe("serviceAuthFlowEngine", () => {
-  beforeEach(() => vi.clearAllMocks())
+  let store: MemoryStore
+
+  beforeEach(() => {
+    store = new MemoryStore()
+  })
   afterEach(() => vi.unstubAllGlobals())
+
+  const opts = (extra?: Partial<FlowRunOptions>): FlowRunOptions => ({
+    server: API,
+    store,
+    ...extra,
+  })
 
   it("throws if invoked with a non-service-auth provider", async () => {
     const wrong = {
       ...provider,
       auth: { flow: "pat", tokenStore: { keychain: "k" } },
     } as AuthProviderHandle
-    await expect(serviceAuthFlowEngine.run(wrong, null, opts)).rejects.toThrow(
+    await expect(serviceAuthFlowEngine.run(wrong, null, opts())).rejects.toThrow(
       /invoked with flow="pat"/,
     )
   })
 
   it("exchanges the stored identity_assertion via jwt-bearer (no ceremony)", async () => {
     // The primary slot holds the identity_assertion JWT (AIP-50 storage model).
-    readKeychainToken.mockResolvedValue("assert-jwt")
+    await store.write(ref, { value: "assert-jwt", kind: "assertion" })
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
@@ -86,14 +88,15 @@ describe("serviceAuthFlowEngine", () => {
       }),
     )
 
-    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
+    const r = await serviceAuthFlowEngine.run(provider, discovered, opts())
     expect(r).toEqual({ accessToken: "oat_from_assert", tokenKind: "oat" })
     // No refresh token is stored — the assertion stays put unless rotated.
-    expect(writeKeychainToken).not.toHaveBeenCalled()
+    const stored = await store.read(ref)
+    expect(stored).toEqual({ value: "assert-jwt", kind: "assertion" })
   })
 
   it("persists a rotated assertion returned by the exchange", async () => {
-    readKeychainToken.mockResolvedValue("assert-old")
+    await store.write(ref, { value: "assert-old", kind: "assertion" })
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -101,18 +104,15 @@ describe("serviceAuthFlowEngine", () => {
       ),
     )
 
-    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
+    const r = await serviceAuthFlowEngine.run(provider, discovered, opts())
     expect(r.accessToken).toBe("oat_x")
     expect(r.identityAssertion).toBe("assert-new")
-    expect(writeKeychainToken).toHaveBeenCalledWith(
-      "bureau-guilde",
-      API,
-      "assert-new",
-    )
+    const stored = await store.read(ref)
+    expect(stored?.value).toBe("assert-new")
+    expect(stored?.kind).toBe("assertion")
   })
 
   it("runs the full ceremony when forced and stores the assertion (not the token)", async () => {
-    readKeychainToken.mockResolvedValue(undefined)
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
@@ -141,10 +141,11 @@ describe("serviceAuthFlowEngine", () => {
       }),
     )
 
-    const r = await serviceAuthFlowEngine.run(provider, discovered, {
-      ...opts,
-      force: true,
-    })
+    const r = await serviceAuthFlowEngine.run(
+      provider,
+      discovered,
+      opts({ force: true }),
+    )
 
     expect(r.accessToken).toBe("oat_fresh")
     expect(r.identityAssertion).toBe("assert-jwt")
@@ -152,16 +153,14 @@ describe("serviceAuthFlowEngine", () => {
     expect(r.assertionExpires).toMatch(/^\d{4}-\d{2}-\d{2}T/) // ISO 8601
 
     // The assertion is stored — NOT the access token, NOT a refresh token.
-    expect(writeKeychainToken).toHaveBeenCalledTimes(1)
-    expect(writeKeychainToken).toHaveBeenCalledWith(
-      "bureau-guilde",
-      API,
-      "assert-jwt",
-    )
+    const stored = await store.read(ref)
+    expect(stored?.value).toBe("assert-jwt")
+    expect(stored?.kind).toBe("assertion")
+    expect(stored?.expiresAt).toBe(r.assertionExpires)
   })
 
   it("falls through to a ceremony when the stored assertion is rejected", async () => {
-    readKeychainToken.mockResolvedValue("assert-expired")
+    await store.write(ref, { value: "assert-expired", kind: "assertion" })
     let calls = 0
     vi.stubGlobal(
       "fetch",
@@ -187,7 +186,7 @@ describe("serviceAuthFlowEngine", () => {
       }),
     )
 
-    const r = await serviceAuthFlowEngine.run(provider, discovered, opts)
+    const r = await serviceAuthFlowEngine.run(provider, discovered, opts())
     expect(r.accessToken).toBe("oat_after_fail")
     expect(calls).toBeGreaterThanOrEqual(3)
   })
@@ -195,7 +194,17 @@ describe("serviceAuthFlowEngine", () => {
   it("rejects an insecure (non-HTTPS, non-loopback) endpoint", async () => {
     vi.stubGlobal("fetch", vi.fn())
     await expect(
-      serviceAuthFlowEngine.run(provider, null, { server: "http://evil.example" }),
+      serviceAuthFlowEngine.run(provider, null, opts({ server: "http://evil.example" })),
     ).rejects.toThrow(/requires HTTPS/)
+  })
+
+  it("defaults to a KeychainStore when opts.store is omitted", async () => {
+    // Off macOS the Keychain backend fails loudly rather than silently — this
+    // asserts the default wiring reaches KeychainStore without needing a real
+    // Keychain in CI.
+    if (process.platform === "darwin") return
+    await expect(
+      serviceAuthFlowEngine.run(provider, discovered, { server: API }),
+    ).rejects.toThrow(/only supports macOS/)
   })
 })

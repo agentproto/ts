@@ -29,11 +29,8 @@ import type {
   AuthProviderHandle,
   DiscoveredEndpoints,
 } from "../types.js"
-import {
-  resolveAccount,
-  readKeychainToken,
-  writeKeychainToken,
-} from "../token-store.js"
+import { KeychainStore } from "../store/keychain-store.js"
+import { resolveStoreRef } from "../store/resolve-ref.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
 
 const execAsync = promisify(execFile)
@@ -251,19 +248,19 @@ export const serviceAuthFlowEngine: FlowEngine = {
     assertSecureUrl(identityEndpoint)
     assertSecureUrl(tokenEndpoint)
 
-    const primarySlot = config.tokenStore.keychain
-    const account = resolveAccount(config.tokenStore.account, server)
+    const store = opts.store ?? new KeychainStore()
+    const ref = resolveStoreRef(config.tokenStore, server)
 
     // Cached path — the stored credential IS the identity_assertion JWT (AIP-50:
     // never the access token, never a refresh token). Exchange it via jwt-bearer
     // for a fresh access token; on failure (expired / invalid_grant) fall through
     // to a full browser ceremony.
     if (!opts.force) {
-      const storedAssertion = await readKeychainToken(primarySlot, account)
-      if (storedAssertion) {
+      const stored = await store.read(ref)
+      if (stored) {
         const exchanged = await exchangeAssertion(
           tokenEndpoint,
-          storedAssertion,
+          stored.value,
           clientId,
           opts.signal,
         )
@@ -271,11 +268,10 @@ export const serviceAuthFlowEngine: FlowEngine = {
           // If the server rotated the assertion, persist the new one; otherwise
           // the existing assertion stays valid for the next exchange.
           if (exchanged.identity_assertion) {
-            await writeKeychainToken(
-              primarySlot,
-              account,
-              exchanged.identity_assertion,
-            )
+            await store.write(ref, {
+              value: exchanged.identity_assertion,
+              kind: "assertion",
+            })
           }
           return {
             accessToken: exchanged.access_token,
@@ -329,10 +325,6 @@ export const serviceAuthFlowEngine: FlowEngine = {
     const accessToken = tokenResult.access_token
     const assertion = tokenResult.identity_assertion
 
-    if (assertion) {
-      await writeKeychainToken(primarySlot, account, assertion)
-    }
-
     // Resolve assertion expiry as ISO 8601
     let assertionExpires: string | undefined
     if (tokenResult.assertion_expires) {
@@ -341,6 +333,14 @@ export const serviceAuthFlowEngine: FlowEngine = {
       assertionExpires = new Date(
         Date.now() + tokenResult.assertion_expires_in * 1_000,
       ).toISOString()
+    }
+
+    if (assertion) {
+      await store.write(ref, {
+        value: assertion,
+        kind: "assertion",
+        ...(assertionExpires ? { expiresAt: assertionExpires } : {}),
+      })
     }
 
     return {

@@ -13,6 +13,9 @@
  *   writeKeychainToken(svc, acct, t)  — persist a credential to Keychain
  *   readKeychainToken(svc, acct)      — read a credential from Keychain
  *   resolveAccount(acct, server)      — expand {server} template
+ *   KeychainStore / MemoryStore / FileStore — built-in CredentialStore backends
+ *   resolveStoreRef(spec, server)     — map a TokenStoreSpec to a StoreRef
+ *   CredentialBroker                  — path → ready-to-use auth headers
  */
 
 export { defineAuthProvider } from "./define-auth-provider.js"
@@ -38,6 +41,16 @@ export {
   writeKeychainToken,
   resolveAccount,
 } from "./token-store.js"
+export { KeychainStore } from "./store/keychain-store.js"
+export { MemoryStore } from "./store/memory-store.js"
+export { FileStore } from "./store/file-store.js"
+export { resolveStoreRef } from "./store/resolve-ref.js"
+export type {
+  CredentialStore,
+  StoreRef,
+  StoredCredential,
+} from "./store/types.js"
+export { CredentialBroker, type CredentialBrokerOptions } from "./broker.js"
 export { guildeAuthProvider, BUILTIN_AUTH_PROVIDERS } from "./builtins.js"
 export {
   authProviderFrontmatterSchema,
