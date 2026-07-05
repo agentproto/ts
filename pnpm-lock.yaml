@@ -2360,6 +2360,9 @@ importers:
 
   packages/secrets:
     dependencies:
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@agentproto/define-doctype':
         specifier: workspace:*
         version: link:../define-doctype

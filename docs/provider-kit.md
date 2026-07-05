@@ -1,4 +1,7 @@
-# `@agentproto/adapter-kit` — Design
+# `@agentproto/provider-kit` — Design
+
+> Formerly `@agentproto/adapter-kit`; renamed in #245. The `@agentproto/adapter-kit`
+> name lives on as a deprecated re-export shim. Concepts below are unchanged.
 
 **Status:** Proposal · `feat/adapter-kit`  
 **Author:** Design task, 2026-06-22  
@@ -23,7 +26,7 @@ Each reinvents the same pattern with slight variations:
 | MCP setup tool | ✗ (CLI only) | ✗ | ✓ `setup_tunnel_provider` |
 | CLI wizard | ✓ `agentproto setup <slug>` | ✗ | ✓ (proposed radio chooser) |
 
-`@agentproto/adapter-kit` extracts the common skeleton into one package that
+`@agentproto/provider-kit` extracts the common skeleton into one package that
 all three families parameterise via TypeScript generics. Each family provides
 its own `TInfo` shape and `THandle` type; the kit owns everything else.
 
@@ -308,7 +311,7 @@ its own `getSteps` callback; the picker UX and ledger write are shared.
 
 ```json
 {
-  "name": "@agentproto/adapter-kit",
+  "name": "@agentproto/provider-kit",
   "version": "0.1.0",
   "description": "Generic adapter catalog, status, creds, and MCP tool primitives",
   "type": "module",
@@ -331,7 +334,7 @@ its own `getSteps` callback; the picker UX and ledger write are shared.
 ### 6.2 Source layout
 
 ```
-packages/adapter-kit/src/
+packages/provider-kit/src/
   types.ts          — AdapterStatus, AdapterCatalogEntry, AdapterEntry,
                       AdapterHandle, SetupLedgerRecord
   creds-store.ts    — makeCredsStore<TCreds> (mode 0600, never leaks value)
@@ -428,7 +431,7 @@ export type { AdapterWizardStep }
 The kit is a **new additive package**. Families adopt it incrementally —
 existing tests keep passing at every step.
 
-### Phase 1 — Publish `@agentproto/adapter-kit` (no consumers yet)
+### Phase 1 — Publish `@agentproto/provider-kit` (no consumers yet)
 
 The package is published with the types and primitives defined above. No
 family imports it yet. CI only checks that the package builds.
@@ -577,7 +580,7 @@ The recommended pattern for families that need binary-presence visibility:
    The cost is one async probe per resolved adapter per list call.
 
 Which approach to use is a per-family decision. The kit itself remains
-generic — no family-specific binary-path logic lives in `adapter-kit`.
+generic — no family-specific binary-path logic lives in `provider-kit`.
 
 ---
 
