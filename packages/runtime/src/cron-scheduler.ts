@@ -40,7 +40,6 @@ import {
 } from "node:fs"
 import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
-import { appendCommandLogEntry } from "./command-log.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -269,19 +268,24 @@ export function createCronScheduler(opts: {
         cwd,
         timeoutMs: action.timeoutMs ?? 60_000,
       })
-      // Same audit log as command_execute — cron "command" jobs already
-      // share its allowlist + runCommand ("one enforcement path, not
-      // two"), so they share its audit trail too. Unlike command_execute's
-      // MCP handler (latency-sensitive, so fire-and-forget), a cron tick
-      // isn't on any caller's critical path — awaiting here just means the
-      // entry is guaranteed on disk before `lastResult` is recorded, with
-      // no added risk (appendCommandLogEntry already swallows its own
-      // errors).
-      await appendCommandLogEntry(
-        workspace,
-        { command: action.command, args: action.args ?? [], cwd },
-        result,
-      )
+      // Same session-based record as command_execute — cron "command" jobs
+      // already share its allowlist + runCommand ("one enforcement path,
+      // not two"), so they share its `kind:"command"` audit trail too:
+      // the fired job gets its own session row in command_list/session_list,
+      // not just a line in `job.lastResult`.
+      registry.recordCommand({
+        workspaceSlug: "default",
+        cwd,
+        command: action.command,
+        args: action.args ?? [],
+        exitCode: result.exitCode,
+        signal: result.signal,
+        durationMs: result.durationMs,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        ...(result.truncated ? { truncated: true } : {}),
+        label: `cron:${job.id}`,
+      })
       if (result.exitCode !== 0) {
         throw new Error(
           `command exited with code ${result.exitCode}: ${result.stderr.trim() || result.stdout.trim() || "(no output)"}`,

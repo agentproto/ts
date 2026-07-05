@@ -47,7 +47,7 @@ import {
 } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { appendCommandLogEntry, tailCommandLog } from "./command-log.js"
+import type { SessionsRegistry } from "./sessions.js"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
@@ -55,6 +55,15 @@ const ALLOWLIST_REL = ".agentproto/allowed-commands.json"
 
 export interface RegisterCommandToolsOptions {
   workspace: string
+  /** Registry used to mint a `kind:"command"` session for every
+   *  `command_execute` call (see `SessionsRegistry.recordCommand`) so
+   *  invocations show up in `command_list`/`session_list` and their full
+   *  result is durably persisted, not just returned to the caller. */
+  registry: SessionsRegistry
+  /** Slug recorded on the minted command session's descriptor. Defaults
+   *  to "default", matching the fallback cron-scheduler.ts already uses
+   *  for its own agent-action spawns. */
+  workspaceSlug?: string
 }
 
 interface AllowlistFile {
@@ -202,41 +211,74 @@ export function registerCommandTools(
         stdin,
         timeoutMs: limit,
       })
-      // Fire-and-forget: the audit log must never delay or fail the
-      // caller's actual result. appendCommandLogEntry swallows its own
-      // errors (console.warn on failure).
-      void appendCommandLogEntry(
-        opts.workspace,
-        { command, args: args ?? [], cwd: resolvedCwd },
-        result,
-      )
+      // Mint a kind:"command" session for this completed run — synchronous,
+      // so the id is available immediately. The JSONL body write is
+      // fire-and-forget internally (recordCommand never delays or fails
+      // the caller's actual result).
+      const desc = opts.registry.recordCommand({
+        workspaceSlug: opts.workspaceSlug ?? "default",
+        cwd: resolvedCwd,
+        command,
+        args: args ?? [],
+        exitCode: result.exitCode,
+        signal: result.signal,
+        durationMs: result.durationMs,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        ...(result.truncated ? { truncated: true } : {}),
+      })
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...result, sessionId: desc.id }),
+          },
+        ],
       }
     },
   )
 
   server.tool(
     "command_log_tail",
-    "Read back recent command_execute (and cron `command` job) invocations logged for this workspace, newest last. Backed by the day-bucketed JSONL audit log at `.agentproto/command-log/<YYYY-MM-DD>.jsonl` — includes the full ExecuteResult (stdout/stderr/exitCode/durationMs) for each call, not just a status line.",
+    "Read back command_execute (and cron `command` job) results. Every invocation is its own `kind:\"command\"` session — the same rows `command_list`/`session_list({kind:'command'})` return — with its full stdout/stderr/exitCode/durationMs stored at that session's own record. Pass `sessionId` (e.g. from a session descriptor's `priorCommandSessionId`) to fetch one specific invocation, or omit it to list the most recent ones for this workspace.",
     {
+      sessionId: z
+        .string()
+        .optional()
+        .describe("Fetch one specific command session's full result by id."),
       lastN: z
         .number()
         .int()
         .min(1)
         .max(500)
         .optional()
-        .describe("Max entries to return. Default 50, max 500."),
-      since: z
+        .describe("Max invocations to return when listing (ignored with `sessionId`). Default 50, max 500."),
+      cwd: z
         .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/)
         .optional()
         .describe(
-          "Only scan day-files at or after this YYYY-MM-DD date. Omit to scan backwards from today until `lastN` is filled.",
+          "Restrict the listing to invocations spawned with this cwd (workspace-relative or absolute). Ignored with `sessionId`.",
         ),
     },
-    async ({ lastN, since }) => {
-      const entries = await tailCommandLog(opts.workspace, { lastN, since })
+    async ({ sessionId, lastN, cwd }) => {
+      if (sessionId) {
+        const entry = await opts.registry.readCommandLog(sessionId)
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ entry }) }],
+        }
+      }
+      const limit = lastN ?? 50
+      const resolvedCwd = cwd !== undefined ? anchorCwd(cwd) : undefined
+      let rows = opts.registry.list().filter(d => d.kind === "command")
+      if (resolvedCwd !== undefined) {
+        rows = rows.filter(d => d.cwd === resolvedCwd)
+      }
+      // Newest last, matching agent_output's ring-buffer tail convention.
+      rows.sort((a, b) => (a.endedAt ?? a.startedAt).localeCompare(b.endedAt ?? b.startedAt))
+      const tail = rows.slice(-limit)
+      const entries = await Promise.all(
+        tail.map(async d => ({ sessionId: d.id, ...(await opts.registry.readCommandLog(d.id)) })),
+      )
       return {
         content: [
           {

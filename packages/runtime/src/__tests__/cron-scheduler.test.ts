@@ -109,7 +109,7 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("run() — allowlisted command appends an entry to the shared command-log audit trail", async () => {
+  it("run() — allowlisted command mints a kind:\"command\" session with the full result", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { mkdirSync, writeFileSync } = await import("node:fs")
@@ -120,7 +120,6 @@ describe("CronScheduler", () => {
     )
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
-    const { tailCommandLog } = await import("../command-log.js")
     try {
       const job = scheduler.create({
         schedule: "0 0 1 1 *",
@@ -128,9 +127,16 @@ describe("CronScheduler", () => {
         action: { kind: "command", command: "echo", args: ["from-cron"] },
       })
       await scheduler.run(job.id)
-      const entries = await tailCommandLog(workspace)
-      expect(entries).toHaveLength(1)
-      expect(entries[0]).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })
+
+      const commandSessions = registry.list().filter(d => d.kind === "command")
+      expect(commandSessions).toHaveLength(1)
+      const desc = commandSessions[0]!
+      expect(desc.status).toBe("exited")
+      expect(desc.label).toBe(`cron:${job.id}`)
+
+      await new Promise(res => setTimeout(res, 20)) // fire-and-forget write
+      const entry = await registry.readCommandLog(desc.id)
+      expect(entry).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })
     } finally {
       scheduler.shutdown()
     }

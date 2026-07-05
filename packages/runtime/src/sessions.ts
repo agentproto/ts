@@ -25,7 +25,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
-import { findRecentCommandLogRef } from "./command-log.js"
+import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import {
   composeSessionObservers,
@@ -34,6 +34,7 @@ import {
 } from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
+import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, type SessionUsage } from "./usage.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
@@ -357,15 +358,17 @@ export interface SessionDescriptor {
    *  Treated as 0 when absent (legacy rows / direct spawns that predate
    *  WP4). */
   depth?: number
-  /** Workspace-relative pointer (e.g. `.agentproto/command-log/2026-07-04.jsonl`)
-   *  to the most recent nonempty command_execute audit log found for this
-   *  session's cwd at spawn time — see command-log.ts. Deliberately a
-   *  REFERENCE, not copied content: a session's own ring buffer / structured
-   *  transcript never gets command_execute output spliced in, it just gets
-   *  told where to look if it wants to. Set on `spawnAgent`/`spawnPty` when
-   *  the workspace already has command-log entries; absent otherwise
-   *  (including for legacy rows persisted before this field existed). */
-  priorCommandLogRef?: string
+  /** Id of the most recently-completed `kind: "command"` session spawned
+   *  with the same `cwd`, found at spawn time — see `recordCommand` and
+   *  `findPriorCommandSessionId`. Deliberately a REFERENCE, not copied
+   *  content: a new session's own ring buffer / structured transcript
+   *  never gets a prior command_execute's stdout/stderr spliced in, it
+   *  just gets told where to look (`command_log_tail({sessionId})` or
+   *  `agent_export`/`command_list` resolve the id into the full record).
+   *  Set on `spawnAgent`/`spawnPty` when the registry already has a
+   *  matching command session; absent otherwise (including for legacy
+   *  rows persisted before this field existed). */
+  priorCommandSessionId?: string
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -480,17 +483,26 @@ function stampProcessAlive(desc: SessionDescriptor): void {
   }
 }
 
-/** Best-effort wrapper around `findRecentCommandLogRef` for the spawn
- *  paths (`spawnAgent`/`spawnPty`) — a stat-call hiccup while looking up
- *  a REFERENCE must never fail the actual spawn. `cwd` doubles as the
- *  workspace root here, same assumption `resume-strategies.ts`'s
- *  `fsProbe` makes about the session's cwd. */
-function safePriorCommandLogRef(cwd: string): string | undefined {
-  try {
-    return findRecentCommandLogRef(cwd)
-  } catch {
-    return undefined
+/** Find the most recently-completed `kind: "command"` session whose `cwd`
+ *  matches, for stamping `priorCommandSessionId` on a freshly spawned
+ *  agent-cli/PTY session in the same workspace. Scans the in-memory
+ *  registry (not the filesystem) — that's the same source of truth
+ *  `command_list`/`session_list({kind:"command"})` themselves read from,
+ *  including sessions restored from sessions.json at boot. A pure map
+ *  scan over what's typically a handful of entries; no I/O, so nothing to
+ *  fail here the way a filesystem lookup could. */
+function findPriorCommandSessionId(
+  liveSessions: Map<string, SessionRuntime>,
+  cwd: string,
+): string | undefined {
+  let best: SessionRuntime | undefined
+  for (const rt of liveSessions.values()) {
+    if (rt.desc.kind !== "command" || rt.desc.cwd !== cwd) continue
+    const bestTs = best ? (best.desc.endedAt ?? best.desc.startedAt) : undefined
+    const candidateTs = rt.desc.endedAt ?? rt.desc.startedAt
+    if (!best || candidateTs > bestTs!) best = rt
   }
+  return best?.desc.id
 }
 
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
@@ -561,6 +573,27 @@ export interface SessionsRegistry {
    *  `attachPty(id, ...)`. Throws when the registry was constructed
    *  without a `spawnPty` factory (node-pty optional dep missing). */
   spawnPty(input: SpawnPtyInput): SessionDescriptor
+  /** Register a COMPLETED `command_execute` (or cron `kind:"command"`
+   *  action) invocation as its own `kind: "command"` session. Unlike
+   *  `spawn`/`spawnAgent`/`spawnPty`, there's no live process to track —
+   *  the command already ran to completion via `runCommand` before this
+   *  is called — so the descriptor is minted already "finished"
+   *  (status exited/error, startedAt backdated by `durationMs`,
+   *  endedAt now) and its full result is written to that session's own
+   *  `events.jsonl` (see command-log.ts), the same per-id path an
+   *  agent-cli session's structured transcript uses. Synchronous: the
+   *  descriptor (and its id) is available immediately, the JSONL write
+   *  itself is fire-and-forget internally. */
+  recordCommand(input: RecordCommandInput): SessionDescriptor
+  /** Read back a `kind:"command"` session's full logged result (the
+   *  `CommandLogEntry` `recordCommand` wrote). Resolves to null when the
+   *  session isn't a command session or has no recorded entry. Routed
+   *  through the registry (rather than callers importing
+   *  `readCommandLogEntry` directly) so the read always targets the same
+   *  base directory `recordCommand` wrote to — that dir is test-overridable
+   *  (`transcriptDir`) and callers outside sessions.ts have no other way
+   *  to know it. */
+  readCommandLog(sessionId: string): Promise<import("./command-log.js").CommandLogEntry | null>
   /** Register an already-running browser service adapter as a tracked
    *  session (kind="browser"). Idempotent by identity — each call
    *  mints a fresh session id. The `stop` callback is invoked by
@@ -775,6 +808,25 @@ export interface SpawnPtyInput {
   label?: string
 }
 
+export interface RecordCommandInput {
+  workspaceSlug: string
+  /** Working directory the command actually ran in (post cwd-anchoring).
+   *  Matched against a fresh session's cwd by `findPriorCommandSessionId`. */
+  cwd: string
+  command: string
+  args: string[]
+  /** Fields mirror `command-tools.ts`'s `ExecuteResult` — kept inline here
+   *  (rather than importing that type) so sessions.ts has no dependency
+   *  on command-tools.ts. */
+  exitCode: number
+  signal: string | null
+  durationMs: number
+  stdout: string
+  stderr: string
+  truncated?: boolean
+  label?: string
+}
+
 /**
  * Hook the registry uses to rebuild a dead agent session on demand.
  * Invoked when a prompt arrives for an agent-cli session whose
@@ -838,9 +890,12 @@ export function createSessionsRegistry(opts?: {
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
-  const baseTranscriptWriter = createTranscriptWriter({
-    baseDir: opts?.transcriptDir ?? join(dirname(persistPath), "sessions"),
-  })
+  const transcriptBaseDir = opts?.transcriptDir ?? join(dirname(persistPath), "sessions")
+  const baseTranscriptWriter = createTranscriptWriter({ baseDir: transcriptBaseDir })
+  // Sibling writer for PTY (`terminal`) sessions — same per-id directory,
+  // a `terminal.jsonl` file instead of `events.jsonl` since raw bytes
+  // (not structured StreamEvents) are what a PTY has to persist.
+  const terminalTranscriptWriter = createTerminalTranscriptWriter({ baseDir: transcriptBaseDir })
   // The transcript writer is the first (today only) per-session observer. The
   // composite fans every prompt/event/usage/close call out to its members, so
   // additional observers (e.g. an opt-in Langfuse session tracer) attach here
@@ -997,6 +1052,9 @@ export function createSessionsRegistry(opts?: {
    * sequence would corrupt multi-byte glyphs.
    */
   const appendBytes = (rt: SessionRuntime, chunk: Buffer): void => {
+    // Durable copy BEFORE the RAM ring drops anything — same ordering
+    // rule transcript-writer.ts follows for agent-cli StreamEvents.
+    terminalTranscriptWriter.appendChunk(rt.desc.id, chunk)
     rt.recentBytes.push(chunk)
     rt.recentBytesSize += chunk.byteLength
     while (
@@ -1814,7 +1872,7 @@ export function createSessionsRegistry(opts?: {
     },
     spawnAgent(input) {
       const id = `sess_${randomUUID().slice(0, 8)}`
-      const priorCommandLogRef = safePriorCommandLogRef(input.cwd)
+      const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
       const desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
@@ -1842,7 +1900,7 @@ export function createSessionsRegistry(opts?: {
           : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
-        ...(priorCommandLogRef ? { priorCommandLogRef } : {}),
+        ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -1926,7 +1984,7 @@ export function createSessionsRegistry(opts?: {
         cols: input.cols,
         rows: input.rows,
       })
-      const priorCommandLogRef = safePriorCommandLogRef(input.cwd)
+      const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
@@ -1940,7 +1998,7 @@ export function createSessionsRegistry(opts?: {
         cwd: input.cwd,
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
-        ...(priorCommandLogRef ? { priorCommandLogRef } : {}),
+        ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -1969,11 +2027,73 @@ export function createSessionsRegistry(opts?: {
         if (typeof evt.exitCode === "number") rt.desc.exitCode = evt.exitCode
         rt.emitter.emit("exit", evt)
         rt.emitter.emit("status", rt.desc.status)
+        void terminalTranscriptWriter.close(rt.desc.id)
         schedulePersist()
         emitExited(rt)
       })
       schedulePersist()
       return desc
+    },
+    recordCommand(input) {
+      const id = `sess_${randomUUID().slice(0, 8)}`
+      const now = new Date()
+      // Backdate startedAt by durationMs — the command already ran to
+      // completion by the time this is called, so this is the best
+      // available estimate of when it actually started.
+      const startedAt = new Date(now.getTime() - Math.max(0, input.durationMs)).toISOString()
+      const argv = [input.command, ...input.args]
+      const desc: SessionDescriptor = {
+        id,
+        kind: "command",
+        workspaceSlug: input.workspaceSlug,
+        command: argv.map(quoteArg).join(" "),
+        pid: null,
+        status: input.exitCode === 0 ? "exited" : "error",
+        startedAt,
+        endedAt: now.toISOString(),
+        exitCode: input.exitCode,
+        argv,
+        cwd: input.cwd,
+        ...(input.label ? { label: input.label } : {}),
+      }
+      const rt: SessionRuntime = {
+        desc,
+        recentLines: [],
+        recentBytes: [],
+        recentBytesSize: 0,
+        emitter: new EventEmitter(),
+        busy: false,
+        textBuf: "",
+        thoughtBuf: "",
+      }
+      sessions.set(id, rt)
+      writeCommandLogEntry(
+        id,
+        {
+          ts: now.toISOString(),
+          command: input.command,
+          args: input.args,
+          cwd: input.cwd,
+          exitCode: input.exitCode,
+          signal: input.signal,
+          durationMs: input.durationMs,
+          stdout: input.stdout,
+          stderr: input.stderr,
+          ...(input.truncated ? { truncated: true } : {}),
+        },
+        transcriptBaseDir,
+      )
+      schedulePersist()
+      // No live process — the session is already over, so emit its
+      // `session:exited` right away (mirrors kill()'s "agent-cli has no
+      // OS exit event — emit here" rule just below).
+      emitExited(rt)
+      return desc
+    },
+    async readCommandLog(sessionId) {
+      const rt = sessions.get(sessionId)
+      if (!rt || rt.desc.kind !== "command") return null
+      return readCommandLogEntry(sessionId, transcriptBaseDir)
     },
     registerBrowser(input) {
       const inputLocation = input.location ?? "local"
@@ -2204,6 +2324,7 @@ export function createSessionsRegistry(opts?: {
         } catch {
           // pty already gone — fall through
         }
+        void terminalTranscriptWriter.close(rt.desc.id)
       }
       rt.child?.kill(signal)
       if (rt.browserStop) {
@@ -2222,6 +2343,7 @@ export function createSessionsRegistry(opts?: {
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
       void transcriptWriter.close(id)
+      void terminalTranscriptWriter.close(id)
       tracedSessions.delete(id)
       sessions.delete(id)
       schedulePersist()
@@ -2284,6 +2406,7 @@ export function createSessionsRegistry(opts?: {
       }
     }
     void transcriptWriter.closeAll()
+    void terminalTranscriptWriter.closeAll()
     // Sync flush so quick sessions (spawned + ended in less than
     // PERSIST_DEBOUNCE_MS) aren't lost. The debounced async write
     // may have been cancelled by clearTimeout above, but a 200-byte
