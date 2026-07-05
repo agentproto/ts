@@ -697,7 +697,7 @@ export async function createGateway(
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
     // `.agentproto/allowed-commands.json`; default-deny.
-    registerCommandTools(server, { workspace })
+    registerCommandTools(server, { workspace, registry: sessions })
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
