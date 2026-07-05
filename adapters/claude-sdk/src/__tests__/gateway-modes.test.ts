@@ -109,4 +109,40 @@ describe("claude-sdk gateway auth resolution", () => {
     const env = spawnEnv({ authToken: "sub-token" }, {})
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sub-token")
   })
+
+  it("SCRUBS leaked Claude-Code cloud-provider redirect toggles under a gateway base_url", () => {
+    const env = spawnEnv(
+      { baseUrl: MOONSHOT },
+      {
+        ANTHROPIC_API_KEY: "sk-ant-REAL",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+        CLAUDE_CODE_USE_ANTHROPIC_AWS: "1",
+        CLAUDE_CODE_USE_MANTLE: "1",
+        CLAUDE_CODE_USE_GATEWAY: "1",
+      },
+    )
+    // Any of these would make the SDK redirect the turn to a cloud provider
+    // instead of the gateway base_url, wedging it forever.
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined()
+    expect(env.CLAUDE_CODE_USE_VERTEX).toBeUndefined()
+    expect(env.CLAUDE_CODE_USE_FOUNDRY).toBeUndefined()
+    expect(env.CLAUDE_CODE_USE_ANTHROPIC_AWS).toBeUndefined()
+    expect(env.CLAUDE_CODE_USE_MANTLE).toBeUndefined()
+    expect(env.CLAUDE_CODE_USE_GATEWAY).toBeUndefined()
+  })
+
+  it("leaves Claude-Code cloud-provider redirect toggles intact in native mode", () => {
+    const env = spawnEnv(
+      {},
+      {
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+      },
+    )
+    // A user legitimately running native Bedrock/Vertex must keep these.
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe("1")
+    expect(env.CLAUDE_CODE_USE_VERTEX).toBe("1")
+  })
 })

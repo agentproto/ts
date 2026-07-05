@@ -15,6 +15,27 @@ import type {
 export const DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 /**
+ * Boolean provider-select toggles the SDK's own `claude` binary groups
+ * together with `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` (same
+ * array, `ac4f1e4` build of `@anthropic-ai/claude-agent-sdk`) to pick a
+ * cloud-provider endpoint ahead of `ANTHROPIC_BASE_URL`. Leaking any of these
+ * from a Claude-Code parent shell wedges a gateway turn against the wrong
+ * provider. Deliberately excludes the non-boolean config members of that same
+ * array (`ANTHROPIC_VERTEX_PROJECT_ID`, `ANTHROPIC_AWS_WORKSPACE_ID`,
+ * `ANTHROPIC_FOUNDRY_RESOURCE`, `CLOUD_ML_REGION`) and the provider
+ * credential/skip-auth vars — both are inert once the toggle that gates them
+ * is gone.
+ */
+const CLOUD_PROVIDER_REDIRECT_TOGGLES = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+] as const
+
+/**
  * Default idle watchdog for a turn (ms). If `query()` yields no message for
  * this long, {@link ClaudeSdkConfig.idleTimeoutMs} aborts the turn instead of
  * hanging forever. Ninety seconds: the watchdog is IDLE-based (reset on every
@@ -142,7 +163,9 @@ function flattenPairs(
  *   mode via `CLAUDE_SDK_GATEWAY_KEY_ENV` (e.g. `MOONSHOT_API_KEY`). Every
  *   internal model tier is also pinned to the resolved model so a single-model
  *   gateway never gets a tier it can't serve (e.g. Moonshot rejecting
- *   `claude-haiku-*`).
+ *   `claude-haiku-*`). The {@link CLOUD_PROVIDER_REDIRECT_TOGGLES} leaked from
+ *   a Claude-Code parent shell are also scrubbed so the gateway `base_url`
+ *   isn't overridden.
  */
 export function buildQueryOptions(args: {
   config: ClaudeSdkConfig
@@ -176,6 +199,12 @@ export function buildQueryOptions(args: {
     delete env.ANTHROPIC_API_KEY
     if (bearer) env.ANTHROPIC_AUTH_TOKEN = bearer
     else delete env.ANTHROPIC_AUTH_TOKEN
+    // A Claude-Code parent shell may leak CLAUDE_CODE_USE_BEDROCK / _VERTEX
+    // (etc.) into this child's env; the SDK honours those ahead of
+    // ANTHROPIC_BASE_URL, silently sending the turn to the wrong provider
+    // instead of the gateway (the confirmed cause of turns wedging forever).
+    // Scrub so exactly the gateway base_url + bearer are presented.
+    for (const key of CLOUD_PROVIDER_REDIRECT_TOGGLES) delete env[key]
     // Pin every tier the harness might request (opus/sonnet/haiku defaults + the
     // small/fast background model) to the one model the gateway serves.
     env.ANTHROPIC_MODEL = model
