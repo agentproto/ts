@@ -16,7 +16,7 @@
 import type { CredentialStore } from "./store/types.js"
 
 /** Discriminated union of all supported auth flow ids. */
-export type FlowId = "pat" | "service-auth"
+export type FlowId = "pat" | "service-auth" | "device-code"
 
 /** Where a credential is stored, backend-agnostic. */
 export interface TokenStoreSpec {
@@ -53,7 +53,24 @@ export interface ServiceAuthConfig {
   tokenStore: TokenStoreSpec
 }
 
-export type AuthConfig = PATAuthConfig | ServiceAuthConfig
+/** device-code flow: RFC 8628 device-authorization ceremony. Discovery
+ *  (/.well-known/) determines the actual endpoints at runtime; the static
+ *  fields here are used when discovery fails. Unlike service-auth, the stored
+ *  credential IS the durable access token (pat-class persistence), with an
+ *  optional refresh_token riding in `metadata`. */
+export interface DeviceCodeAuthConfig {
+  flow: "device-code"
+  /** OAuth client id sent to the device-authorization endpoint. Default: "agentproto-cli". */
+  clientId?: string
+  /** Optional scope requested at the device-authorization endpoint. */
+  scope?: string
+  /** Optional human-readable label for the device, shown to the approving user. */
+  deviceLabel?: string
+  /** Keychain destination for the durable access token. */
+  tokenStore: TokenStoreSpec
+}
+
+export type AuthConfig = PATAuthConfig | ServiceAuthConfig | DeviceCodeAuthConfig
 
 /** AIP-19 companion: the provision endpoints on the server side. */
 export interface InstallConfig {
@@ -91,10 +108,14 @@ export interface DiscoveredEndpoints {
   tokenEndpoint: string
   /** Full revocation endpoint URL, if present. */
   revocationEndpoint?: string
-  /** Full identity endpoint URL (POST /agent/identity). */
-  identityEndpoint: string
+  /** Full identity endpoint URL (POST /agent/identity). Absent when discovery
+   *  resolved via the agentproto-host.json fallback, which doesn't carry
+   *  auth.md identity metadata. */
+  identityEndpoint?: string
   /** Full claim endpoint URL (POST /agent/identity/claim), if present. */
   claimEndpoint?: string
+  /** Full device-authorization endpoint URL (RFC 8628), if present. */
+  deviceAuthorizationEndpoint?: string
   /** Supported identity types from agent_auth.identity_types_supported. */
   identityTypesSupported: string[]
   /** Supported grant types from AS metadata. */
@@ -113,12 +134,23 @@ export interface FlowResult {
   /** ISO 8601 expiry of the identity assertion. */
   assertionExpires?: string
   /** Access token to use for this invocation — `pat` returns the stored/typed
-   *  key; `service-auth` returns the freshly minted/refreshed `oat_*`. */
+   *  key; `service-auth` returns the freshly minted/refreshed `oat_*`;
+   *  `device-code` returns the durable `gdt_*`. */
   accessToken?: string
   /** What `accessToken` is: `pat` (personal access key), `oat` (service-auth
-   *  access token). `assertion` is reserved for a future flow that returns a
-   *  bare assertion without an access token. */
-  tokenKind: "pat" | "assertion" | "oat"
+   *  access token), `daemon` (device-code access token). `assertion` is
+   *  reserved for a future flow that returns a bare assertion without an
+   *  access token. */
+  tokenKind: "pat" | "assertion" | "oat" | "daemon"
+  /** device-code flow: refresh token, when the AS issued one. */
+  refreshToken?: string
+  /** device-code flow: granted scope, when the AS reports one. */
+  scope?: string
+  /** device-code flow: subject identifier, when the AS reports one. */
+  subject?: string
+  /** device-code flow: an id usable to revoke this credential later, when the
+   *  AS issues one. */
+  revocationId?: string
 }
 
 export interface FlowRunOptions {

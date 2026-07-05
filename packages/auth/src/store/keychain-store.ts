@@ -17,7 +17,7 @@ import type { CredentialStore, StoreRef, StoredCredential } from "./types.js"
 
 const envelopeSchema = z.object({
   v: z.string(),
-  k: z.enum(["pat", "assertion", "oat"]),
+  k: z.enum(["pat", "assertion", "oat", "daemon"]),
   e: z.string().optional(),
   m: z.record(z.string(), z.unknown()).optional(),
 })

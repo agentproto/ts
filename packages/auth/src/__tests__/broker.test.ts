@@ -104,6 +104,15 @@ describe("CredentialBroker", () => {
     expect(runAuthFlowMock).toHaveBeenCalledTimes(1)
   })
 
+  it("resolves a fresh daemon credential to Bearer headers without running the flow", async () => {
+    await store.write(ref, { value: "gdt_fresh", kind: "daemon" })
+
+    const headers = await broker.resolveHeaders({ path: "acme" })
+
+    expect(headers).toEqual({ Authorization: "Bearer gdt_fresh" })
+    expect(runAuthFlowMock).not.toHaveBeenCalled()
+  })
+
   it("throws a clear error for an unknown provider id", async () => {
     await expect(broker.resolveHeaders({ path: "bogus" })).rejects.toThrow(
       /unknown auth provider "bogus"/,

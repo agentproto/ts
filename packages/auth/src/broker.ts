@@ -54,7 +54,7 @@ function bearerHeaders(
   value: string,
   kind: StoredCredential["kind"],
 ): Record<string, string> | undefined {
-  if (kind === "pat" || kind === "oat") {
+  if (kind === "pat" || kind === "oat" || kind === "daemon") {
     return { Authorization: `Bearer ${value}` }
   }
   return undefined

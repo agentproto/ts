@@ -65,6 +65,7 @@ export type {
   AuthConfig,
   PATAuthConfig,
   ServiceAuthConfig,
+  DeviceCodeAuthConfig,
   InstallConfig,
   TokenStoreSpec,
   FlowEngine,
