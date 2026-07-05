@@ -198,6 +198,65 @@ describe("discoverEndpoints", () => {
     expect(fetchMock).not.toHaveBeenCalled() // guarded before any request
   })
 
+  it("captures device_authorization_endpoint from AS metadata when present", async () => {
+    stubFetch({
+      [`${API}/.well-known/oauth-protected-resource`]: () => res(PRM),
+      [`${AS}/.well-known/oauth-authorization-server`]: () =>
+        res({ ...AS_META, device_authorization_endpoint: `${AS}/oauth2/device` }),
+    })
+    const d = await discoverEndpoints(API)
+    expect(d.deviceAuthorizationEndpoint).toBe(`${AS}/oauth2/device`)
+  })
+
+  it("falls back to agentproto-host.json when the PRM chain fails", async () => {
+    stubFetch({
+      [`${API}/.well-known/oauth-protected-resource`]: () =>
+        res({}, { ok: false, status: 404 }),
+      [`${API}/.well-known/agentproto-host.json`]: () =>
+        res({
+          device_authorization_endpoint: `${API}/oauth/device`,
+          token_endpoint: `${API}/oauth/token`,
+        }),
+    })
+    const d = await discoverEndpoints(API)
+    expect(d.tokenEndpoint).toBe(`${API}/oauth/token`)
+    expect(d.deviceAuthorizationEndpoint).toBe(`${API}/oauth/device`)
+    expect(d.authServerBase).toBe(API)
+    expect(d.identityEndpoint).toBeUndefined()
+  })
+
+  it("surfaces the original PRM error when the host.json fallback also fails", async () => {
+    stubFetch({
+      [`${API}/.well-known/oauth-protected-resource`]: () =>
+        res({ resource: API }), // missing authorization_servers
+      // agentproto-host.json intentionally left unstubbed.
+    })
+    await expect(discoverEndpoints(API)).rejects.toThrow(/authorization_servers/)
+  })
+
+  it("surfaces the original PRM error when host.json is missing required fields", async () => {
+    stubFetch({
+      [`${API}/.well-known/oauth-protected-resource`]: () =>
+        res({ resource: API }), // missing authorization_servers
+      [`${API}/.well-known/agentproto-host.json`]: () =>
+        res({ token_endpoint: `${API}/oauth/token` }), // no device_authorization_endpoint
+    })
+    await expect(discoverEndpoints(API)).rejects.toThrow(/authorization_servers/)
+  })
+
+  it("does not attempt the host.json fallback when the caller's signal is already aborted", async () => {
+    const ac = new AbortController()
+    const fetchMock = vi.fn(async () => {
+      throw new Error("PRM down")
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    ac.abort()
+    await expect(
+      discoverEndpoints(API, { signal: ac.signal }),
+    ).rejects.toBeInstanceOf(DiscoveryError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it("allows loopback http for local development", async () => {
     const LOOPBACK = "http://127.0.0.1:8080"
     vi.stubGlobal(

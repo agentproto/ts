@@ -9,8 +9,10 @@
 import type { FlowEngine } from "../types.js"
 import { patFlowEngine } from "./pat.js"
 import { serviceAuthFlowEngine } from "./service-auth.js"
+import { deviceCodeFlowEngine } from "./device-code.js"
 
 export const FLOW_ENGINES: Readonly<Record<string, FlowEngine>> = {
   [patFlowEngine.id]: patFlowEngine,
   [serviceAuthFlowEngine.id]: serviceAuthFlowEngine,
+  [deviceCodeFlowEngine.id]: deviceCodeFlowEngine,
 }

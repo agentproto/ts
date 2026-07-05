@@ -32,6 +32,28 @@ describe("authProviderFrontmatterSchema", () => {
     expect(r.success).toBe(true)
   })
 
+  it("accepts a device-code provider with optional fields", () => {
+    const r = authProviderFrontmatterSchema.safeParse({
+      ...base,
+      auth: {
+        flow: "device-code",
+        clientId: "agentproto-cli",
+        scope: "cli offline_access",
+        deviceLabel: "MacBook Pro",
+        tokenStore: { keychain: "acme-daemon", account: "{server}" },
+      },
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it("accepts a minimal device-code provider (only tokenStore required)", () => {
+    const r = authProviderFrontmatterSchema.safeParse({
+      ...base,
+      auth: { flow: "device-code", tokenStore: { keychain: "acme-daemon" } },
+    })
+    expect(r.success).toBe(true)
+  })
+
   it("rejects an unknown auth flow", () => {
     const r = authProviderFrontmatterSchema.safeParse({
       ...base,
@@ -78,7 +100,7 @@ describe("authProviderFrontmatterSchema", () => {
 })
 
 describe("authConfigSchema discriminated union", () => {
-  it("discriminates pat vs service-auth on `flow`", () => {
+  it("discriminates pat vs service-auth vs device-code on `flow`", () => {
     expect(
       authConfigSchema.safeParse({ flow: "pat", tokenStore: { keychain: "k" } })
         .success,
@@ -89,12 +111,31 @@ describe("authConfigSchema discriminated union", () => {
         tokenStore: { keychain: "k" },
       }).success,
     ).toBe(true)
+    expect(
+      authConfigSchema.safeParse({
+        flow: "device-code",
+        tokenStore: { keychain: "k" },
+      }).success,
+    ).toBe(true)
   })
 
-  it("requires tokenStore on both flows", () => {
+  it("requires tokenStore on all flows", () => {
     expect(authConfigSchema.safeParse({ flow: "pat" }).success).toBe(false)
     expect(
       authConfigSchema.safeParse({ flow: "service-auth" }).success,
+    ).toBe(false)
+    expect(
+      authConfigSchema.safeParse({ flow: "device-code" }).success,
+    ).toBe(false)
+  })
+
+  it("rejects unknown keys on the device-code branch (strict)", () => {
+    expect(
+      authConfigSchema.safeParse({
+        flow: "device-code",
+        tokenStore: { keychain: "k" },
+        nope: true,
+      }).success,
     ).toBe(false)
   })
 })

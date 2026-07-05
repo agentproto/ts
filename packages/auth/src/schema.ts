@@ -32,9 +32,20 @@ export const serviceAuthConfigSchema = z
   })
   .strict()
 
+export const deviceCodeAuthConfigSchema = z
+  .object({
+    flow: z.literal("device-code"),
+    clientId: z.string().min(1).optional(),
+    scope: z.string().min(1).optional(),
+    deviceLabel: z.string().min(1).optional(),
+    tokenStore: tokenStoreSpecSchema,
+  })
+  .strict()
+
 export const authConfigSchema = z.discriminatedUnion("flow", [
   patAuthConfigSchema,
   serviceAuthConfigSchema,
+  deviceCodeAuthConfigSchema,
 ])
 
 export const installConfigSchema = z

@@ -32,7 +32,7 @@ const sealedFileSchema = z.record(z.string(), sealedEntrySchema)
 
 const storedCredentialSchema = z.object({
   value: z.string(),
-  kind: z.enum(["pat", "assertion", "oat"]),
+  kind: z.enum(["pat", "assertion", "oat", "daemon"]),
   expiresAt: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 })

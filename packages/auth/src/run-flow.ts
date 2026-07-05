@@ -38,7 +38,10 @@ export async function runAuthFlow(
   let discovered: DiscoveredEndpoints | null =
     opts.discovered !== undefined ? opts.discovered : null
 
-  if (discovered === null && flowId === "service-auth") {
+  if (
+    discovered === null &&
+    (flowId === "service-auth" || flowId === "device-code")
+  ) {
     try {
       discovered = await discoverEndpoints(opts.server, { signal: opts.signal })
     } catch (err) {

@@ -13,7 +13,7 @@ export interface StoredCredential {
   /** The raw credential string — a PAT, an identity assertion JWT, … */
   value: string
   /** What `value` is. Mirrors `FlowResult.tokenKind`. */
-  kind: "pat" | "assertion" | "oat"
+  kind: "pat" | "assertion" | "oat" | "daemon"
   /** ISO 8601 expiry, when the credential has one. */
   expiresAt?: string
   /** Backend- or flow-specific extras that don't fit `value`/`kind`/`expiresAt`. */
