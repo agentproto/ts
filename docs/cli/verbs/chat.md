@@ -56,10 +56,9 @@ fails with `409 {"error":"session_not_alive","status":"<exited|killed|error>"}`
 and `chat`/`chat-tui` print `prompt failed: HTTP 409: …` instead of
 silently going nowhere. `chat`'s own readline loop won't send a
 second prompt while a turn is still in flight, but the same route
-also rejects an overlapping prompt outright (`409
-{"error":"send_prompt_failed", message: "...is mid-turn — wait for it
-to finish or cancel"}`) rather than queuing it — a prompt to a busy
-session is never silently dropped or run out of order.
+also rejects an overlapping prompt outright (`409 {"error":"send_prompt_failed", message: "...is mid-turn — wait for it to finish or cancel"}`)
+rather than queuing it — a prompt to a busy session is never silently
+dropped or run out of order.
 
 ## In-session commands
 
