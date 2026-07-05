@@ -54,6 +54,27 @@ describe("authProviderFrontmatterSchema", () => {
     expect(r.success).toBe(true)
   })
 
+  it("accepts an optional audience (free-form, not restricted to an enum)", () => {
+    expect(authProviderFrontmatterSchema.safeParse({ ...base, audience: "tunnel" }).success).toBe(true)
+    expect(authProviderFrontmatterSchema.safeParse({ ...base, audience: "api" }).success).toBe(true)
+    expect(authProviderFrontmatterSchema.safeParse({ ...base, audience: "mcp" }).success).toBe(true)
+    expect(
+      authProviderFrontmatterSchema.safeParse({ ...base, audience: "some-custom-value" })
+        .success,
+    ).toBe(true)
+  })
+
+  it("accepts a provider with no audience at all (today's behavior)", () => {
+    const r = authProviderFrontmatterSchema.safeParse(base)
+    expect(r.success).toBe(true)
+    if (r.success) expect(r.data.audience).toBeUndefined()
+  })
+
+  it("rejects an empty-string audience", () => {
+    const r = authProviderFrontmatterSchema.safeParse({ ...base, audience: "" })
+    expect(r.success).toBe(false)
+  })
+
   it("rejects an unknown auth flow", () => {
     const r = authProviderFrontmatterSchema.safeParse({
       ...base,

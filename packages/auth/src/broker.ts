@@ -8,7 +8,7 @@
  */
 
 import { runAuthFlow } from "./run-flow.js"
-import { resolveStoreRef } from "./store/resolve-ref.js"
+import { resolveStoreRef, readStoreRefWithFallback } from "./store/resolve-ref.js"
 import type { CredentialStore, StoredCredential } from "./store/types.js"
 import type { AuthProviderHandle } from "./types.js"
 
@@ -73,6 +73,11 @@ export class CredentialBroker {
     path: string
     server?: string
     signal?: AbortSignal
+    /** Audience the caller expects this credential to be scoped to. Checked
+     *  only when the resolved provider also declares one — see the mismatch
+     *  error below. Does not itself change which store key is read; the
+     *  provider's own `audience` (not the caller's) determines that. */
+    audience?: string
   }): Promise<Record<string, string>> {
     const { providerId, account } = parsePath(o.path)
     const provider = this.getProvider(providerId)
@@ -80,11 +85,27 @@ export class CredentialBroker {
       throw new Error(`CredentialBroker: unknown auth provider "${providerId}"`)
     }
 
-    const server = o.server ?? provider.apiBase
-    const ref = resolveStoreRef(provider.auth.tokenStore, server)
-    if (account !== undefined) ref.account = account
+    if (
+      o.audience !== undefined &&
+      provider.audience !== undefined &&
+      o.audience !== provider.audience
+    ) {
+      throw new Error(
+        `CredentialBroker: provider "${providerId}" is scoped to audience "${provider.audience}", requested "${o.audience}"`,
+      )
+    }
 
-    const stored = await this.store.read(ref)
+    const server = o.server ?? provider.apiBase
+    const ref = resolveStoreRef(provider.auth.tokenStore, server, provider.audience)
+    const legacyRef = provider.audience
+      ? resolveStoreRef(provider.auth.tokenStore, server)
+      : ref
+    if (account !== undefined) {
+      ref.account = account
+      legacyRef.account = account
+    }
+
+    const stored = await readStoreRefWithFallback(this.store, ref, legacyRef)
     if (stored && isFresh(stored)) {
       const headers = bearerHeaders(stored.value, stored.kind)
       if (headers) return headers
