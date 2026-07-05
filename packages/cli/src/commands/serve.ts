@@ -223,6 +223,15 @@ export async function runServe(args: readonly string[]): Promise<number> {
     const cred = await readHost(connectFlag)
     if (cred) {
       if (isExpired(cred)) {
+        // TODO(auth-wp5): an expired-but-refreshable credential could be
+        // renewed here via `runAuthFlow`/`CredentialBroker` (the device-code
+        // engine already knows how to exchange a stored `refreshToken`) —
+        // but calling it without `force` falls through to a full interactive
+        // ceremony (print code, open a browser, poll) on ANY refresh failure,
+        // which would hang `serve` boot on a headless/unattended host. There's
+        // no engine-level "refresh-only, no ceremony fallback" primitive
+        // today. Warn and let the host 401 the connect instead — a clearer
+        // failure than a daemon that silently blocks on stdin it'll never get.
         process.stderr.write(
           `agentproto serve: ⚠ credentials for ${connectFlag} are expired (${formatExpiry(cred)}). ` +
             `Re-run \`agentproto auth login --host ${connectFlag}\`.\n`
