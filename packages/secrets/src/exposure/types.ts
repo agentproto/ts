@@ -1,7 +1,7 @@
 /**
  * SecretExposure — describes HOW a secret value reaches the runtime
- * that needs it (env var, config file, egress placeholder, future
- * MCP-header injection, future HTTP-bearer routing, …).
+ * that needs it (env var, config file, egress placeholder, MCP-header
+ * injection, future HTTP-bearer routing, …).
  *
  * Distinct from `SecretEntry` (AIP-19), which describes the secret's
  * *declaration* (slug, kind, access policy). Exposure is a *runtime*
@@ -92,15 +92,29 @@ export interface EgressSubstituteExposure {
   intendedProviders?: string[]
 }
 
+/** Inject the secret as an HTTP header on an MCP server's transport,
+ *  resolved fresh at connect-time via a credential broker. The broker
+ *  (not this exposure) owns refresh/rotation — this variant just names
+ *  WHICH credential and, optionally, the upstream server. */
+export interface McpHeaderExposure {
+  kind: "mcp-header"
+  /** Broker path: "<providerId>" or "<providerId>/<account>". */
+  credentialPath: string
+  /** Optional upstream server / apiBase override forwarded to the
+   *  broker. Omit to let the broker use the provider's default. */
+  server?: string
+}
+
 /**
  * Discriminated union of all exposure mechanisms. Add new variants here
- * as new exposure surfaces are added (MCP-header, HTTP-bearer, etc.) —
- * each adds one variant, one switch case in consumers.
+ * as new exposure surfaces are added (HTTP-bearer, etc.) — each adds one
+ * variant, one switch case in consumers.
  */
 export type SecretExposure =
   | EnvExposure
   | FileExposure
   | EgressSubstituteExposure
+  | McpHeaderExposure
 
 /** Type guard — convenient for filtering an exposures array by kind. */
 export function isExposureKind<K extends SecretExposure["kind"]>(

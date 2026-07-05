@@ -11,6 +11,7 @@ export {
   type EnvExposure,
   type FileExposure,
   type EgressSubstituteExposure,
+  type McpHeaderExposure,
   type SecretExposureWrap,
   type SecretExposureWrapContext,
   isExposureKind,
@@ -26,3 +27,8 @@ export {
   assertSafeSecretValue,
   SecretSubstitutionError,
 } from "./substitute.js"
+
+export {
+  type McpHeaderResolver,
+  resolveMcpHeaderExposure,
+} from "./mcp-header.js"
