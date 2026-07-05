@@ -33,6 +33,15 @@ export interface SpawnDefaultsConfig {
    *  this up (e.g. to a large number) to restore the old permissive
    *  behaviour for existing deep spawns wholesale. */
   defaultRoleDepthCutoff?: number
+  /** Trust-boundary cap on pack-carried roles (see `role-registry.ts`'s
+   *  `loadRoleRegistry`): a role pack whose `toolPolicy.delegation` is
+   *  `"allow"` at a level ABOVE this cap has it forced to `"deny"` —
+   *  the pack can still declare the intent, the daemon just refuses to
+   *  grant it. Lets an operator install third-party role packs without
+   *  trusting every one of them to self-grant delegation. Undefined
+   *  (default) ⇒ no cap, any pack-declared level may carry
+   *  `delegation: "allow"` (back-compat: #214 had no such knob). */
+  maxGrantableDelegation?: number
 }
 
 export interface ResolveSpawnDefaultsInput {

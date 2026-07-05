@@ -31,6 +31,9 @@ import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
+import { listRoles, spawnableRolesFor } from "./role.js"
+import type { RoleProfile } from "./role.js"
+import { loadDefaultRoleRegistry } from "./role-registry.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
@@ -109,6 +112,14 @@ export interface RegisterAgentToolsOptions {
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
   webhookNotifier?: WebhookNotifier
+  /** Loads the custom (pack-carried) role registry — forwarded to
+   *  `spawnAgentSession` (gates `agent_start`) and used directly by
+   *  `role_list` (the introspection-only mirror of the same data), so
+   *  the two can never disagree. Defaults to `loadDefaultRoleRegistry()`
+   *  (`~/.agentproto/roles/` + adapter-carried packs) when omitted;
+   *  tests inject a stub registry to avoid touching the real
+   *  filesystem. */
+  loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
 }
 
 export function registerAgentTools(
@@ -123,6 +134,7 @@ export function registerAgentTools(
     callerScope,
     webhookNotifier,
     daemonMcpUrl,
+    loadRoleRegistry,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -306,18 +318,25 @@ export function registerAgentTools(
           "Hard ceiling on cumulative session cost (USD). The session is stopped at a turn-end once exceeded."
         ),
       role: z
-        .enum(["executor", "supervisor"])
+        .string()
         .optional()
         .describe(
           "Spawn-time role gating whether this child may itself delegate " +
-            "(spawn/drive further children). 'executor' = leaf, cannot " +
+            "(spawn/drive further children) and, if it can, which roles IT " +
+            "may in turn spawn. Built-ins: 'executor' = leaf, cannot " +
             "delegate — `orchestrator` is ignored and `agent_start`/" +
             "`agent_prompt` are stripped from its default toolset, " +
             "regardless of `promptAppend`. 'supervisor' = may delegate " +
-            "(today's default behaviour). Omit to derive from spawn depth " +
-            "(root spawns default to supervisor; spawns made THROUGH an " +
-            "orchestrator default to executor — see `defaultRoleDepthCutoff` " +
-            "in config.json's `defaults` block)."
+            "(today's default behaviour). Custom roles installed as role " +
+            "packs (see `role_list`) resolve the same way. A spawn made " +
+            "THROUGH an orchestrator is additionally gated by the " +
+            "privilege lattice: the calling role may only spawn a role " +
+            "allowlisted in its `spawnableRoles`, or — open mode, the " +
+            "default — at or below its own `level` (never something MORE " +
+            "privileged than itself). Omit `role` to " +
+            "derive from spawn depth (root spawns default to supervisor; " +
+            "spawns made through an orchestrator default to executor — see " +
+            "`defaultRoleDepthCutoff` in config.json's `defaults` block)."
         ),
       promptAppend: z
         .string()
@@ -353,6 +372,7 @@ export function registerAgentTools(
           daemonMcpUrl,
           callerScope,
           webhookNotifier,
+          loadRoleRegistry,
         },
         input,
       )
@@ -364,13 +384,15 @@ export function registerAgentTools(
           content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
         }
       }
-      // The two orchestrator guardrail errors have always been reported
-      // as a structured JSON blob (error/message/+details); every other
-      // failure is a plain-text message. Preserved verbatim here so the
-      // MCP tool's output shape doesn't change under this refactor.
+      // The orchestrator guardrail errors + the role-spawn gate have
+      // always been reported as a structured JSON blob (error/message/
+      // +details); every other failure is a plain-text message.
+      // Preserved verbatim here so the MCP tool's output shape doesn't
+      // change under this refactor.
       const text =
         result.code === "orchestrator_max_depth_exceeded" ||
-        result.code === "orchestrator_child_quota_exceeded"
+        result.code === "orchestrator_child_quota_exceeded" ||
+        result.code === "role_spawn_denied"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,
@@ -667,6 +689,43 @@ export function registerAgentTools(
             {
               type: "text",
               text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── role_list ─────────────────────────────────────────────────
+  server.tool(
+    "role_list",
+    "Enumerate every spawn-time role known to the daemon — the two " +
+      "built-ins (executor, supervisor) plus any custom role installed as " +
+      "a role pack. Read-only: pure visibility into the same registry " +
+      "`agent_start`'s `role` field and privilege-lattice spawn gate use — " +
+      "this tool never itself grants or denies a spawn. Use before " +
+      "`agent_start` with `orchestrator` to discover which roles this " +
+      "session may in turn spawn.",
+    {},
+    async () => {
+      try {
+        const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
+        const roles = listRoles(registry).map(role => ({
+          name: role.name,
+          level: role.level,
+          delegation: role.toolPolicy.delegation,
+          spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+        }))
+        return {
+          content: [{ type: "text", text: JSON.stringify({ roles }, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `role_list failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

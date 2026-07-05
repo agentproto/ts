@@ -1687,7 +1687,8 @@ async function handleSessions(
           : result.code === "orchestrator_not_enabled"
             ? 501
             : result.code === "orchestrator_max_depth_exceeded" ||
-                result.code === "orchestrator_child_quota_exceeded"
+                result.code === "orchestrator_child_quota_exceeded" ||
+                result.code === "role_spawn_denied"
               ? 409
               : result.code === "invalid_role"
                 ? 400
