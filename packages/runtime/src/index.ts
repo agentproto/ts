@@ -59,6 +59,9 @@ import {
   type SessionsRegistry,
   type PtyFactory,
 } from "./sessions.js"
+import { loadConfig } from "./config.js"
+import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
+import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { createSessionEventBus } from "./session-event-bus.js"
@@ -448,6 +451,23 @@ export async function createGateway(
     webhookNotifier.unregister(ev.sessionId)
   })
 
+  // Opt-in Langfuse session tracer — built once here (shared, pure) from the
+  // eval-reporter's stored langfuse creds, same store `setup_eval_reporter`
+  // writes to. Absent creds ⇒ undefined, and the registry never gates
+  // anything on a tracer that doesn't exist — tracing-off behaviour is
+  // unchanged from before this existed.
+  const configDefaults = (await loadConfig()).defaults
+  const lfCreds = await makeEvalReporterCredsStore().read("langfuse").catch(() => null)
+  const langfuseTracer = lfCreds
+    ? langfuseSessionTracer({
+        publicKey: lfCreds.publicKey,
+        secretKey: lfCreds.secretKey,
+        baseUrl: lfCreds.baseUrl,
+        ...(lfCreds.environment ? { environment: lfCreds.environment } : {}),
+        redactor: configDefaults?.traceRedactor ?? "deny-list",
+      })
+    : undefined
+
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
   // startHttpServer for the /sessions HTTP routes. Declared here
@@ -456,6 +476,8 @@ export async function createGateway(
   const sessions = createSessionsRegistry({
     sessionEvents,
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+    ...(langfuseTracer ? { langfuseTracer } : {}),
+    langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
     // Resume hook: when a prompt arrives for a dead agent-cli row
     // (typical after daemon restart), the registry calls back into
     // the adapter resolver to re-create the AgentSession with

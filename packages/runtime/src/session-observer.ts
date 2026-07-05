@@ -79,3 +79,60 @@ export function composeSessionObservers(
     },
   }
 }
+
+/**
+ * Wrap a `SessionObserver` so `record*` calls only reach `inner` for session
+ * ids `shouldObserve` accepts — e.g. an opt-in Langfuse tracer that should
+ * only see sessions that asked to be traced. `close`/`closeAll` always
+ * forward: cleanup is idempotent and must run regardless of opt-in state so
+ * the inner observer never leaks a per-session resource.
+ *
+ * Each forwarded call is isolated in try/catch, same as
+ * `composeSessionObservers` — a throwing inner observer must not break the
+ * turn loop.
+ */
+export function filterSessionObserver(
+  inner: SessionObserver,
+  shouldObserve: (sessionId: string) => boolean,
+): SessionObserver {
+  return {
+    recordPrompt(sessionId, message) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        inner.recordPrompt(sessionId, message)
+      } catch {
+        // isolate: a failing observer must not break the turn loop
+      }
+    },
+    recordEvent(sessionId, evt) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        inner.recordEvent(sessionId, evt)
+      } catch {
+        // isolate: a failing observer must not break the turn loop
+      }
+    },
+    recordUsageSnapshot(sessionId, usage) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        inner.recordUsageSnapshot(sessionId, usage)
+      } catch {
+        // isolate: a failing observer must not break the turn loop
+      }
+    },
+    async close(sessionId) {
+      try {
+        await inner.close(sessionId)
+      } catch {
+        // isolate close failures too — shutdown must not hang or throw
+      }
+    },
+    async closeAll() {
+      try {
+        await inner.closeAll()
+      } catch {
+        // isolate close failures too — shutdown must not hang or throw
+      }
+    },
+  }
+}

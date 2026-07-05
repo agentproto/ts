@@ -26,7 +26,11 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
-import { composeSessionObservers, type SessionObserver } from "./session-observer.js"
+import {
+  composeSessionObservers,
+  filterSessionObserver,
+  type SessionObserver,
+} from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
 import { deriveSessionUsage, type SessionUsage } from "./usage.js"
@@ -699,6 +703,9 @@ export interface SpawnAgentInput {
    *  reads its state.db keyed by the adapter session id). Omit for adapters
    *  with no usage source. */
   readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
+   *  tokens/cost). Effective opt-in is `trace ?? opts.langfuseTracingDefault ?? false`. */
+  trace?: boolean
 }
 
 export interface SpawnSessionInput {
@@ -798,6 +805,13 @@ export function createSessionsRegistry(opts?: {
    *  production) — tests that already pin `persistPath` to a tmpdir get
    *  transcript isolation for free without also having to pass this. */
   transcriptDir?: string
+  /** Shared, opt-in Langfuse session observer. Built once in the bootstrap
+   *  from eval-reporter creds. Events only reach it for sessions in the
+   *  registry's traced-session set — see `langfuseTracingDefault`. */
+  langfuseTracer?: SessionObserver
+  /** Default per-session tracing opt-in when `SpawnAgentInput.trace` is
+   *  omitted. Defaults to false (tracing off). */
+  langfuseTracingDefault?: boolean
 }): SessionsRegistry {
   const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
   const persist = opts?.persist ?? true
@@ -809,7 +823,10 @@ export function createSessionsRegistry(opts?: {
   // additional observers (e.g. an opt-in Langfuse session tracer) attach here
   // without touching any of the turn-loop call sites below. With a single
   // member the behaviour is identical to calling the writer directly.
-  const extraObservers: readonly SessionObserver[] = []
+  const tracedSessions = new Set<string>()
+  const extraObservers: readonly SessionObserver[] = opts?.langfuseTracer
+    ? [filterSessionObserver(opts.langfuseTracer, (id) => tracedSessions.has(id))]
+    : []
   const transcriptWriter: SessionObserver = composeSessionObservers([
     baseTranscriptWriter,
     ...extraObservers,
@@ -1568,6 +1585,7 @@ export function createSessionsRegistry(opts?: {
           rt.desc.endedAt = new Date().toISOString()
           void rt.agentSession?.close().catch(() => undefined)
           void transcriptWriter.close(rt.desc.id)
+          tracedSessions.delete(rt.desc.id)
         }
 
         if (sessionEvents) {
@@ -1800,6 +1818,9 @@ export function createSessionsRegistry(opts?: {
           : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
+      }
+      if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
+        tracedSessions.add(id)
       }
       const rt: SessionRuntime = {
         desc,
@@ -2148,6 +2169,7 @@ export function createSessionsRegistry(opts?: {
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
         void transcriptWriter.close(rt.desc.id)
+        tracedSessions.delete(rt.desc.id)
       }
       if (rt.pty) {
         try {
@@ -2173,6 +2195,7 @@ export function createSessionsRegistry(opts?: {
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
       void transcriptWriter.close(id)
+      tracedSessions.delete(id)
       sessions.delete(id)
       schedulePersist()
       return true

@@ -137,6 +137,10 @@ export interface SpawnAgentSessionInput {
    *  disposition (never replacing it) and prepended to `prompt`. See
    *  `composeRoleContext`. Cannot widen `toolPolicy` — see `role` above. */
   promptAppend?: string
+  /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
+   *  tokens/cost). Effective opt-in is `trace ?? langfuseTracingDefault ?? false`
+   *  — see `SpawnAgentInput.trace` in sessions.ts. */
+  trace?: boolean
 }
 
 export type SpawnAgentSessionResult =
@@ -458,6 +462,7 @@ export async function spawnAgentSession(
         : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(resolved.readUsage ? { readUsage: () => resolved.readUsage!(agentSession.sessionId) } : {}),
+      ...(input.trace !== undefined ? { trace: input.trace } : {}),
     })
     liveSessionId = desc.id
     // Bind the scope-token's lifetime to the child session — once
