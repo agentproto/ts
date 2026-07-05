@@ -56,6 +56,15 @@ function permissionModeFromEnv(
   return PERMISSION_MODES.find((mode) => mode === raw)
 }
 
+/** Parse the idle-stall watchdog override. A non-negative integer (ms); `0`
+ *  disables the watchdog. Anything else (unset, negative, non-numeric) → the
+ *  adapter default. */
+function idleTimeoutMsFromEnv(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const ms = Number.parseInt(raw, 10)
+  return Number.isInteger(ms) && ms >= 0 ? ms : undefined
+}
+
 function main(): void {
   const { cmd, model, baseUrl, authToken, thinking } = parseArgs(process.argv)
   if (cmd !== "acp") {
@@ -74,6 +83,11 @@ function main(): void {
     cwd: process.cwd(),
     ...(permissionModeFromEnv(process.env.CLAUDE_SDK_PERMISSION_MODE)
       ? { permissionMode: permissionModeFromEnv(process.env.CLAUDE_SDK_PERMISSION_MODE) }
+      : {}),
+    // Idle-stall watchdog override (ms); guards against a gateway whose stream
+    // never terminates (e.g. Moonshot). Unset → the adapter default applies.
+    ...(idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_IDLE_TIMEOUT_MS) !== undefined
+      ? { idleTimeoutMs: idleTimeoutMsFromEnv(process.env.CLAUDE_SDK_IDLE_TIMEOUT_MS) }
       : {}),
   }
   // The connection keeps the process alive (it holds stdin open); no explicit
