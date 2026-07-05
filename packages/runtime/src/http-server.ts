@@ -1687,6 +1687,23 @@ async function handleSessions(
               return parsed !== undefined ? { mcpServers: parsed } : {}
             })()
           : {}),
+        // Opt this session into Langfuse tracing — the HTTP twin of the
+        // MCP `agent_start` tool's `trace` field. Tolerate a stringified
+        // boolean (JSON `true`, or `"true"`/`"false"` from form-ish callers)
+        // so the REST driver reaches the same registry gate the MCP tool does.
+        ...(b.trace !== undefined
+          ? (() => {
+              const t =
+                typeof b.trace === "boolean"
+                  ? b.trace
+                  : b.trace === "true"
+                    ? true
+                    : b.trace === "false"
+                      ? false
+                      : undefined
+              return t !== undefined ? { trace: t } : {}
+            })()
+          : {}),
       },
     )
     if (!result.ok) {

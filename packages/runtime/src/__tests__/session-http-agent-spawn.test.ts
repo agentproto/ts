@@ -139,6 +139,53 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("trace:true (and stringified \"true\") forwards to registry.spawnAgent; omitted stays absent", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const spawnSpy = vi.spyOn(registry, "spawnAgent")
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (extra: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...extra }),
+        })
+
+      // JSON boolean true → trace:true reaches the registry.
+      expect((await spawn({ trace: true })).status).toBe(201)
+      expect(spawnSpy).toHaveBeenLastCalledWith(expect.objectContaining({ trace: true }))
+
+      // Stringified "true" (form-ish caller) coerces to boolean true.
+      expect((await spawn({ trace: "true" })).status).toBe(201)
+      expect(spawnSpy).toHaveBeenLastCalledWith(expect.objectContaining({ trace: true }))
+
+      // Omitted → the field is not forwarded at all (registry default applies).
+      expect((await spawn({})).status).toBe(201)
+      const lastArg = spawnSpy.mock.calls[spawnSpy.mock.calls.length - 1]?.[0]
+      expect(lastArg).toBeDefined()
+      expect("trace" in (lastArg as object)).toBe(false)
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("orchestrator:true with no buildOrchestratorMcp wired → 501 not-enabled", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const startSession = vi.fn(async () => fakeAgentSession())
