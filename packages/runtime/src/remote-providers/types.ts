@@ -5,13 +5,13 @@
  * `TunnelRegistry` (multi-tunnel general surface) can share the same
  * provider contract without creating a circular dep.
  *
- * The tunnel family is the FIRST consumer of `@agentproto/adapter-kit`:
+ * The tunnel family is the FIRST consumer of `@agentproto/provider-kit`:
  * {@link TunnelProviderHandle} extends the kit's generic `AdapterHandle`
  * (slug/name/version/description/requiresSetup/check) with the
  * tunnel-specific `capabilities` + the existing `start`/`stop` lifecycle.
  */
 
-import type { AdapterHandle, SetupField } from "@agentproto/adapter-kit"
+import type { AdapterHandle, SetupField } from "@agentproto/provider-kit"
 
 export interface ProviderStartOptions {
   /** Local target the tunnel forwards to. */

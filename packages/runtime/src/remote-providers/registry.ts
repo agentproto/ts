@@ -14,7 +14,7 @@
  * resolves the same way and works end to end.
  */
 
-import { discoverAdapterPackages } from "@agentproto/adapter-kit"
+import { discoverAdapterPackages } from "@agentproto/provider-kit"
 
 import {
   quickTunnelProvider,

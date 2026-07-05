@@ -824,7 +824,7 @@ export async function createGateway(
     registerExportSessionTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
-    // Tunnel adapter introspection/setup, riding on @agentproto/adapter-kit
+    // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})

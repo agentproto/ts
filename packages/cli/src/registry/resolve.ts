@@ -25,7 +25,7 @@ import {
   collectAgentprotoNamespaceRoots,
   type AdapterHandle,
   type AdapterCatalogEntry,
-} from "@agentproto/adapter-kit"
+} from "@agentproto/provider-kit"
 
 /** Slash-command declared in an adapter manifest (AIP-45 `commands[]`). */
 export interface AgentCliCommand {

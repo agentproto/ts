@@ -19,7 +19,7 @@ export default createTsupConfig({
   // sibling agentproto packages stay external — resolved at the consumer.
   external: [
     "zod",
-    "@agentproto/adapter-kit",
+    "@agentproto/provider-kit",
     "@agentproto/secrets",
     "node:fs",
     "node:path",

@@ -10,7 +10,7 @@
  * first-run UX affordance, not a complete registry.
  */
 
-import type { AdapterCatalogEntry } from "@agentproto/adapter-kit"
+import type { AdapterCatalogEntry } from "@agentproto/provider-kit"
 
 export type CatalogEntryType = "agent-cli" | "pack" | "mcp"
 

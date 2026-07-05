@@ -12,7 +12,7 @@ export default createTsupConfig({
   splitting: false,
   dts: true,
   external: [
-    "@agentproto/adapter-kit",
+    "@agentproto/provider-kit",
     "@agentproto/eval",
     "@agentproto/telemetry",
     "@agentproto/telemetry-langfuse",

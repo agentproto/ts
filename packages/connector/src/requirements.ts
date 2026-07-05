@@ -4,14 +4,14 @@
  *
  * Deliberately reuses two existing agentproto vocabularies rather than
  * inventing a third:
- *   - `SetupField` (`@agentproto/adapter-kit`) — the same "field to collect"
+ *   - `SetupField` (`@agentproto/provider-kit`) — the same "field to collect"
  *     shape the tunnel-provider setup flow uses (name / description / required /
  *     sensitive). One vocabulary for every credential input across the project.
  *   - `SecretExposure` (`@agentproto/secrets`) — how a collected value is
  *     exposed to the runtime (env var / file / egress placeholder).
  */
 
-import type { SetupField } from "@agentproto/adapter-kit"
+import type { SetupField } from "@agentproto/provider-kit"
 import type { SecretExposure } from "@agentproto/secrets/exposure"
 
 /** Coarse classification of a credential — informs storage / UI affordances. */

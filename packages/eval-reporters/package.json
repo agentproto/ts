@@ -51,7 +51,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/adapter-kit": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/eval": "workspace:*",
     "@agentproto/telemetry": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",

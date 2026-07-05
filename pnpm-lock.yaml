@@ -411,6 +411,10 @@ importers:
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.8.4)
 
   packages/adapter-kit:
+    dependencies:
+      '@agentproto/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -772,9 +776,6 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
-      '@agentproto/adapter-kit':
-        specifier: workspace:*
-        version: link:../adapter-kit
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
@@ -784,6 +785,9 @@ importers:
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
+      '@agentproto/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
       '@agentproto/runtime-profile-standard':
         specifier: workspace:*
         version: link:../runtime-profile-standard
@@ -972,9 +976,9 @@ importers:
 
   packages/connector:
     dependencies:
-      '@agentproto/adapter-kit':
+      '@agentproto/provider-kit':
         specifier: workspace:*
-        version: link:../adapter-kit
+        version: link:../provider-kit
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
@@ -1390,12 +1394,12 @@ importers:
 
   packages/eval-reporters:
     dependencies:
-      '@agentproto/adapter-kit':
-        specifier: workspace:*
-        version: link:../adapter-kit
       '@agentproto/eval':
         specifier: workspace:*
         version: link:../eval
+      '@agentproto/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
       '@agentproto/telemetry':
         specifier: workspace:*
         version: link:../telemetry
@@ -1979,6 +1983,30 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.8.4)
 
+  packages/provider-kit:
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.8.4)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/redaction:
     devDependencies:
       '@agentproto/tooling':
@@ -2182,9 +2210,6 @@ importers:
       '@agentproto/acp':
         specifier: workspace:*
         version: link:../acp
-      '@agentproto/adapter-kit':
-        specifier: workspace:*
-        version: link:../adapter-kit
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
@@ -2200,6 +2225,9 @@ importers:
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
+      '@agentproto/provider-kit':
+        specifier: workspace:*
+        version: link:../provider-kit
       '@agentproto/redaction':
         specifier: workspace:*
         version: link:../redaction

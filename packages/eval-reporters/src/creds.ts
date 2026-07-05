@@ -1,4 +1,4 @@
-import { makeCredsStore, type CredsStore } from "@agentproto/adapter-kit"
+import { makeCredsStore, type CredsStore } from "@agentproto/provider-kit"
 import { EVAL_REPORTER_FAMILY } from "./catalog.js"
 
 /** Credentials required by the Langfuse eval reporter backend. */

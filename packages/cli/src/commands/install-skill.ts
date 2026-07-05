@@ -30,7 +30,7 @@ import { join, normalize } from "node:path"
 import { parseArgs } from "node:util"
 import { homedir } from "node:os"
 
-import { discoverAdapterPackages } from "@agentproto/adapter-kit"
+import { discoverAdapterPackages } from "@agentproto/provider-kit"
 import { resolveAdapter } from "../registry/resolve.js"
 
 import {

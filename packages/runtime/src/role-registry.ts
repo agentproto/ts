@@ -30,7 +30,7 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
-import { discoverAdapterPackages } from "@agentproto/adapter-kit"
+import { discoverAdapterPackages } from "@agentproto/provider-kit"
 
 import { CONFIG_FILE_PATH, loadConfig } from "./config.js"
 import { parseRolePack } from "./role-pack.js"
@@ -141,7 +141,7 @@ export interface LoadRoleRegistryOptions {
    *  Undefined (default) ⇒ no cap. */
   maxGrantableDelegation?: number
   /** Injectable for tests — defaults to `discoverAdapterPackages` from
-   *  `@agentproto/adapter-kit`. */
+   *  `@agentproto/provider-kit`. */
   discoverAdapterPackages?: () => Promise<readonly AdapterPackageRef[]>
   /** Injectable for tests — defaults to real dynamic `import()`. */
   importPackage?: (specifier: string) => Promise<unknown>

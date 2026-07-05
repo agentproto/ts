@@ -57,7 +57,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/adapter-kit": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/secrets": "workspace:*"
   },
   "peerDependencies": {

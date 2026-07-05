@@ -8,8 +8,8 @@
  */
 
 import { z } from "zod"
-import type { AdapterEntry, AdapterLister, SetupField } from "@agentproto/adapter-kit"
-import { computeStatus } from "@agentproto/adapter-kit"
+import type { AdapterEntry, AdapterLister, SetupField } from "@agentproto/provider-kit"
+import { computeStatus } from "@agentproto/provider-kit"
 import type { EvalEvent } from "@agentproto/eval"
 import { EVAL_REPORTER_CATALOG } from "./catalog.js"
 import {

@@ -1,4 +1,4 @@
-import type { AdapterCatalog } from "@agentproto/adapter-kit"
+import type { AdapterCatalog } from "@agentproto/provider-kit"
 
 /** Family key used for the eval-reporter creds store path. */
 export const EVAL_REPORTER_FAMILY = "eval-reporter" as const
