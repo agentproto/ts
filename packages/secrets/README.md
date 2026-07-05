@@ -18,6 +18,58 @@ const x = defineSecrets({
 })
 ```
 
+## Exposure surface (`@agentproto/secrets/exposure`)
+
+The manifest says *which* secrets exist; an **exposure** says *how* a resolved
+secret reaches a runtime. `SecretExposure` is a discriminated union — one
+`kind` per delivery mechanism, so consumers filter with the `isExposureKind`
+guard and handle each with one switch case:
+
+| `kind` | Delivers the secret as… |
+| --- | --- |
+| `env` | an environment variable on the agent process |
+| `file` | a file written into the workspace |
+| `egress-substitute` | a `$$SECRET[NAME]$$` placeholder substituted on egress |
+| `mcp-header` | an HTTP **auth header** on an MCP server's transport |
+
+```ts
+import { isExposureKind, type SecretExposure } from "@agentproto/secrets/exposure"
+
+const headerExposures = exposures.filter(e => isExposureKind(e, "mcp-header"))
+```
+
+### `mcp-header` — brokered MCP auth
+
+```ts
+interface McpHeaderExposure {
+  kind: "mcp-header"
+  credentialPath: string   // broker path: "<providerId>" or "<providerId>/<account>"
+  server?: string          // optional upstream override, forwarded to the broker
+}
+```
+
+`resolveMcpHeaderExposure(exposure, resolver, { signal })` turns that path into
+a ready-to-use header map. The `resolver` is a **structural**
+`McpHeaderResolver` (`resolveHeaders({ path, server?, signal? })`) — the
+`CredentialBroker` from `@agentproto/auth` satisfies it with no adapter, so
+this package stays **dependency-free of `auth`** while still driving it.
+
+Every resolved header **value** is run through `assertSafeSecretValue` before
+return — a value containing CR/LF/NUL is rejected, closing off header-injection
+(a smuggled newline can't append extra header lines onto the transport).
+
+```ts
+import { resolveMcpHeaderExposure } from "@agentproto/secrets/exposure"
+import { CredentialBroker } from "@agentproto/auth"
+
+const headers = await resolveMcpHeaderExposure(exposure, broker, { signal })
+// → { Authorization: "Bearer …" }, guarded
+```
+
+The same guard (`assertSafeSecretValue`) and the `$$SECRET[NAME]$$` engine
+(`substituteSecrets`, `SECRET_PLACEHOLDER_PATTERN`, `formatPlaceholder`) are
+exported from this subpath for the `egress-substitute` path.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
