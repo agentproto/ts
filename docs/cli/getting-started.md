@@ -103,6 +103,8 @@ dispatchers, executors, or state stores. See
 
 - Persistent sessions you can detach + reattach:
   [`verbs/sessions.md`](./verbs/sessions.md)
+- Gating whether a spawned agent may itself delegate to sub-agents:
+  [`concepts/roles.md`](./concepts/roles.md)
 - What a session's transcript captures and how to export it:
   [`concepts/session-transcripts.md`](./concepts/session-transcripts.md)
 - Hosting your CLI for a remote agent over a tunnel:

@@ -142,6 +142,12 @@ reattached later.
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
+There is no `--role` / `--prompt-append` flag on this verb today —
+spawn-time role gating (whether this child may itself delegate, and
+to whom) is MCP/HTTP-only: the `agent_start` MCP tool's `role` /
+`promptAppend` fields, or the same fields on the `POST /sessions/agent`
+body. See [`concepts/roles.md`](../concepts/roles.md).
+
 #### Orchestrator & `mcpServers`
 
 `--orchestrator` and `--mcp-servers-json` reach the same spawn capability as
@@ -264,6 +270,48 @@ agentproto sessions stop claude-tui --json
 POSTs `/sessions/:id/kill` — sends SIGTERM to the child. Idempotent
 on already-dead sessions (reports "not running"; exit `1`).
 
+## Interrupting a live session (MCP/HTTP only)
+
+There is no `agentproto sessions` subverb for this — it's exposed on
+the MCP `agent_prompt` tool and the HTTP prompt route only:
+
+```text
+MCP:  agent_prompt { sessionId, prompt, interrupt: true }
+HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
+```
+
+By default, sending a prompt to a session that's still mid-turn is
+rejected (see [`chat.md`](./chat.md#prompt-delivery) — `409
+send_prompt_failed`, "...is mid-turn — wait for it to finish or
+cancel"). Passing `interrupt: true` changes that: the daemon cancels
+the in-flight turn (the adapter's own soft Ctrl-C — ACP
+`session/cancel`, or an adapter-specific SIGINT), waits for it to
+actually settle, then delivers the new prompt on the **same** live
+session — same process, same conversation history, no re-spawn.
+`interrupt` is a no-op when the session is already idle.
+
+This is deliberately narrower than `restart` or `stop`:
+
+| Action | Effect |
+|--------|--------|
+| `interrupt: true` on `agent_prompt` / prompt route | Cancels the current turn only; session and context survive; next prompt continues the same conversation. |
+| [`stop`](#stop-id-or-name) | Kills the process outright (SIGTERM). Conversation ends unless you `restart`. |
+| [`restart`](#restart-id-or-name) | Re-spawns from history, attempting to resume via the adapter's own session id — a new process, not a redirect of a live one. |
+
+A few edge cases worth knowing:
+
+- If the adapter's session handle doesn't support cancellation, the
+  call fails with a clear error rather than silently dropping the new
+  prompt.
+- The daemon waits up to 30s for the cancelled turn to settle
+  (`busy` flipping back to `false`) before giving up — a safety net
+  for an adapter that never delivers a turn-end for the turn it just
+  cancelled, not the normal path.
+- On the HTTP route, `interrupt` only takes effect with
+  `?wait=false` (the fire-and-forget arm, same one MCP `agent_prompt`
+  always uses) — the default blocking `wait=true` call has no
+  interrupt semantics of its own since it just waits on `sendPrompt`.
+
 ## Raw events (HTTP)
 
 ```text
@@ -324,3 +372,6 @@ agentproto sessions export ses_abc12 -o transcript.md
   sources, the PTY exception
 - [`chat.md`](./chat.md) — sending follow-up prompts to a live
   session, incl. what happens when the target is dead or mid-turn
+- [Roles](../concepts/roles.md) — the spawn-time delegation gate
+  behind `agent_start`'s `role` field, the privilege lattice, and the
+  `role_list` introspection tool
