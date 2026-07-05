@@ -87,6 +87,15 @@ const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
   "http://localhost:*",
   "http://127.0.0.1:*",
   "https://localhost:*",
+  // The canonical hosted agentproto panel (github.com/agentproto/cli-site,
+  // deployed at cli.agentproto.sh). It drives the user's OWN local daemon
+  // from the browser: read-only GETs (session list, SSE stream) are ungated
+  // and already work, but the /sessions/:id/pty WebSocket upgrade IS gated —
+  // so a PTY terminal in the panel 401s unless this first-party origin is
+  // trusted like localhost. A malicious page can't forge this Origin (the
+  // browser sets it), so the trust is scoped to agentproto's own panel,
+  // matching how guilde.work is trusted. Drop it via `strictOrigins`.
+  "https://cli.agentproto.sh",
 ]
 
 /**
