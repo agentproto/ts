@@ -19,8 +19,6 @@
  * See: https://github.com/workos/auth.md  /  AIP-50
  */
 
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
 import { z } from "zod"
 import type {
   FlowEngine,
@@ -32,8 +30,13 @@ import type {
 import { KeychainStore } from "../store/keychain-store.js"
 import { resolveStoreRef } from "../store/resolve-ref.js"
 import { fetchWithDeadline, assertSecureUrl } from "../http.js"
-
-const execAsync = promisify(execFile)
+import {
+  openBrowser,
+  postFormOAuth,
+  pollDeviceGrant,
+  tokenResponseSchema,
+  type TokenSuccess,
+} from "./device-grant.js"
 
 const CLAIM_GRANT_TYPE = "urn:workos:agent-auth:grant-type:claim"
 const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -44,6 +47,8 @@ const DEFAULT_POLL_INTERVAL_S = 5
 // JSON crosses a trust boundary here (the AS controls the bytes), so every
 // response is validated with Zod rather than asserted. `.loose()` keeps unknown
 // fields the spec may add. The inferred types feed the rest of the engine.
+// (Token success/error schemas live in device-grant.ts, shared with every flow
+// that polls a token endpoint.)
 
 const identityResponseSchema = z
   .object({
@@ -60,48 +65,7 @@ const identityResponseSchema = z
   })
   .loose()
 
-/** Successful token/refresh/exchange response — the AS minted a credential. */
-const tokenSuccessSchema = z
-  .object({
-    access_token: z.string(),
-    token_type: z.string().optional(),
-    refresh_token: z.string().optional(),
-    identity_assertion: z.string().optional(),
-    assertion_expires_in: z.number().optional(),
-    assertion_expires: z.string().optional(),
-  })
-  .loose()
-
-/** OAuth error response (`authorization_pending`, `slow_down`, `access_denied`…). */
-const tokenErrorSchema = z
-  .object({
-    error: z.string(),
-    error_description: z.string().optional(),
-  })
-  .loose()
-
-/** A token endpoint reply is either a minted credential or an OAuth error.
- *  Success is tried first so a body carrying an access_token never matches the
- *  error arm. */
-const tokenResponseSchema = z.union([tokenSuccessSchema, tokenErrorSchema])
-
-type TokenSuccess = z.infer<typeof tokenSuccessSchema>
-
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-async function openBrowser(url: string): Promise<void> {
-  const [cmd, args]: [string, string[]] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["cmd", ["/c", "start", url]]
-        : ["xdg-open", [url]]
-  try {
-    await execAsync(cmd, args)
-  } catch {
-    // best-effort — URL already printed to stderr
-  }
-}
 
 async function postJson<T>(
   url: string,
@@ -122,72 +86,6 @@ async function postJson<T>(
   return schema.parse(await res.json())
 }
 
-// NOTE: deliberately does NOT check res.ok — the OAuth device/claim flow returns
-// HTTP 400 with a JSON `{ error }` body for authorization_pending / slow_down,
-// which the poll loop reads as data. Throwing on non-2xx would break polling.
-async function postForm<T>(
-  url: string,
-  params: Record<string, string>,
-  schema: z.ZodType<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  const res = await fetchWithDeadline(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(params).toString(),
-    signal,
-  })
-  return schema.parse(await res.json())
-}
-
-async function pollForToken(
-  tokenEndpoint: string,
-  claimToken: string,
-  clientId: string,
-  intervalS: number,
-  expiresIn: number,
-  signal?: AbortSignal,
-): Promise<TokenSuccess> {
-  const deadline = Date.now() + expiresIn * 1_000
-  let pollMs = intervalS * 1_000
-
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw new Error("auth cancelled")
-    await new Promise<void>((r) => setTimeout(r, pollMs))
-
-    const data = await postForm(
-      tokenEndpoint,
-      {
-        grant_type: CLAIM_GRANT_TYPE,
-        claim_token: claimToken,
-        client_id: clientId,
-      },
-      tokenResponseSchema,
-      signal,
-    )
-
-    if (!("error" in data)) return data
-
-    const pollErr = data.error
-    if (pollErr === "authorization_pending") continue
-    if (pollErr === "slow_down") {
-      pollMs += 5_000
-      continue
-    }
-    if (pollErr === "expired_token") {
-      throw new Error("auth timeout — claim expired before user approved")
-    }
-    if (pollErr === "access_denied") {
-      throw new Error("access denied — user rejected the authorisation request")
-    }
-
-    const desc = data.error_description
-    throw new Error(`token endpoint error: ${pollErr}${desc ? ` — ${desc}` : ""}`)
-  }
-
-  throw new Error("auth timeout — approval window closed")
-}
-
 // ── Identity-assertion exchange (jwt-bearer, RFC 7523) ────────────────────────
 //
 // The stored credential IS the identity_assertion JWT. Exchange it at the token
@@ -201,7 +99,7 @@ async function exchangeAssertion(
   signal?: AbortSignal,
 ): Promise<TokenSuccess | null> {
   try {
-    const data = await postForm(
+    const data = await postFormOAuth(
       tokenEndpoint,
       {
         grant_type: JWT_BEARER_GRANT_TYPE,
@@ -309,14 +207,14 @@ export const serviceAuthFlowEngine: FlowEngine = {
     process.stderr.write(`  Waiting for approval (${windowMin} min)…\n\n`)
 
     // 3 — Poll until approved / denied / expired
-    const tokenResult = await pollForToken(
+    const tokenResult = await pollDeviceGrant({
       tokenEndpoint,
-      claim_token,
-      clientId,
+      grantType: CLAIM_GRANT_TYPE,
+      params: { claim_token, client_id: clientId },
       intervalS,
-      claim.expires_in,
-      opts.signal,
-    )
+      expiresIn: claim.expires_in,
+      signal: opts.signal,
+    })
 
     // 4 — Store the identity_assertion as the durable credential (AIP-50: the
     //     access_token is ephemeral and MUST NOT be persisted; the claim_token
