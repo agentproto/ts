@@ -4,8 +4,10 @@
  * Drives the real tool end-to-end through the MCP client surface and
  * captures what reaches the PTY's `write` via a fake PTY factory, covering
  * the `enter` / `b64` payload affordances added for TUI submission:
- *   - `enter` alone            → "\r" written
- *   - `text` + `enter`         → "foo\r" written
+ *   - `enter` alone            → single "\r" write
+ *   - `text` + `enter`         → TWO writes ["foo", "\r"] (isolated CR so
+ *                                paste-detecting TUIs submit, not paste)
+ *   - `text` alone             → single "foo" write, no CR
  *   - `b64` of a known sequence → decoded bytes written verbatim
  *   - nothing provided         → isError response, no write
  */
@@ -92,7 +94,7 @@ describe("terminal_input (enter / b64 affordances)", () => {
     registry.shutdown()
   })
 
-  it("`text` + `enter` appends the carriage return after the text", async () => {
+  it("`text` + `enter` writes the content, then the CR, as TWO separate writes", async () => {
     const { client, registry, writes, sessionId, close } = await buildHarness()
 
     const result = await client.callTool({
@@ -100,7 +102,24 @@ describe("terminal_input (enter / b64 affordances)", () => {
       arguments: { sessionId, text: "foo", enter: true },
     })
     expect(result.isError).toBeFalsy()
-    expect(writes).toEqual(["foo\r"])
+    // The isolated-CR contract: content and Enter are DISTINCT writes in
+    // order — NOT a single "foo\r" (which paste-detecting TUIs read as a
+    // multi-line paste ending in a newline rather than a submit).
+    expect(writes).toEqual(["foo", "\r"])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("`text` alone writes just the content, no carriage return", async () => {
+    const { client, registry, writes, sessionId, close } = await buildHarness()
+
+    const result = await client.callTool({
+      name: "terminal_input",
+      arguments: { sessionId, text: "foo" },
+    })
+    expect(result.isError).toBeFalsy()
+    expect(writes).toEqual(["foo"])
 
     await close()
     registry.shutdown()
@@ -118,6 +137,22 @@ describe("terminal_input (enter / b64 affordances)", () => {
     })
     expect(result.isError).toBeFalsy()
     expect(writes).toEqual([seq])
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("`b64` + `enter` writes decoded content, then the isolated CR", async () => {
+    const { client, registry, writes, sessionId, close } = await buildHarness()
+
+    const seq = "hi"
+    const b64 = Buffer.from(seq, "latin1").toString("base64")
+    const result = await client.callTool({
+      name: "terminal_input",
+      arguments: { sessionId, b64, enter: true },
+    })
+    expect(result.isError).toBeFalsy()
+    expect(writes).toEqual([seq, "\r"])
 
     await close()
     registry.shutdown()
