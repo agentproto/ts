@@ -73,10 +73,12 @@ function errorMessage(err: unknown): string {
 
 /**
  * Thrown by the {@link ClaudeSdkAcpAgent}'s turn watchdog when `query()` stops
- * yielding messages: the model stream stalled and never delivered the SDK's
- * terminal `result`, so the async iterator would otherwise never terminate.
- * Distinct from a user cancel so the host surfaces it as an error rather than
- * silently reporting the turn as cancelled.
+ * yielding messages: the SDK child wedged and never delivered the terminal
+ * `result`, so the async iterator would otherwise never terminate. A defensive
+ * safety net for an environmentally wedged child (e.g. a conflicting host env
+ * leaked into the SDK subprocess), not a response-shape problem — a healthy
+ * turn always reaches `result`. Distinct from a user cancel so the host
+ * surfaces it as an error rather than silently reporting the turn as cancelled.
  */
 export class TurnStalledError extends Error {
   constructor(public readonly idleMs: number) {
@@ -228,10 +230,13 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
    *  each SDK message to ACP updates and relay them.
    *
    *  Iteration is driven manually (rather than `for await`) so an idle watchdog
-   *  can bound the wait for each next message. If `query()` stalls — as it does
-   *  on Moonshot, whose stream never yields the SDK's terminal `result` — the
-   *  watchdog aborts the turn with a {@link TurnStalledError} instead of
-   *  awaiting forever with zero output. */
+   *  can bound the wait for each next message. If the SDK child wedges mid-turn
+   *  — stops yielding messages without delivering the terminal `result` and
+   *  without closing (e.g. a conflicting host env leaked into the subprocess) —
+   *  the watchdog aborts the turn with a {@link TurnStalledError} instead of
+   *  awaiting forever with zero output. A defensive safety net; a well-behaved
+   *  turn (Moonshot included, under a clean env) reaches `result` and this
+   *  never fires. */
   async #drive(
     session: SessionState,
     text: string,

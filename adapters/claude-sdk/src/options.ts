@@ -17,11 +17,15 @@ export const DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 /**
  * Default idle watchdog for a turn (ms). If `query()` yields no message for
  * this long, {@link ClaudeSdkConfig.idleTimeoutMs} aborts the turn instead of
- * hanging forever. Five minutes: comfortably above the SDK's default tool
- * timeouts (so a legitimately long tool run is never mistaken for a stall) yet
- * a decisive ceiling on a wedged stream. See {@link ClaudeSdkConfig.idleTimeoutMs}.
+ * hanging forever. Ninety seconds: the watchdog is IDLE-based (reset on every
+ * SDK message), and a healthy streaming turn — native or gateway — emits
+ * messages continuously with sub-second gaps, so a 90s silence means the SDK
+ * child is genuinely wedged. The prior 5-minute ceiling was needlessly slow to
+ * surface a wedged child; 90s stays well clear of any real inter-message gap
+ * while turning a wedged turn around quickly. `0` disables. See
+ * {@link ClaudeSdkConfig.idleTimeoutMs}.
  */
-export const DEFAULT_IDLE_TIMEOUT_MS = 300_000
+export const DEFAULT_IDLE_TIMEOUT_MS = 90_000
 
 /** Static config for the adapter, parsed from CLI args / env at boot. */
 export interface ClaudeSdkConfig {
@@ -47,14 +51,22 @@ export interface ClaudeSdkConfig {
   /**
    * Idle watchdog for a turn, in milliseconds. If the SDK's `query()` iterator
    * produces no message for this long, the turn is aborted with a surfaced
-   * error instead of hanging forever. This guards against a gateway/model whose
-   * stream never delivers the SDK's terminal `result` message — observed with
-   * Moonshot's Anthropic-compatible endpoint, whose `thinking` blocks ship an
-   * empty `signature` and a non-`msg_` id — where the `query()` async iterator
-   * can never terminate, leaving the turn stuck `busy` with zero output (the
-   * worst failure mode). Idle-based (reset on every message), so a legitimately
-   * long generation or tool run is unaffected. `0` disables the watchdog.
-   * Defaults to {@link DEFAULT_IDLE_TIMEOUT_MS}. Overridable at the CLI via
+   * error instead of hanging forever. This is a defensive guard against a
+   * wedged SDK child — one that stops yielding messages and never delivers the
+   * SDK's terminal `result`, nor closes — which would otherwise leave the turn
+   * stuck `busy` with zero output (the worst failure mode). The observed cause
+   * is environmental, NOT the model or its response shape: a conflicting host
+   * env leaking into the spawned SDK subprocess (e.g. a stray
+   * `ANTHROPIC_BASE_URL`, or a `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX` auth toggle
+   * inherited from a Claude Code shell) can send the child down a path that
+   * never completes. Moonshot's own Anthropic-compatible responses (empty
+   * `thinking.signature`, a non-`msg_` `chatcmpl-…` id, a `message_delta`-
+   * terminated stream) are consumed and finalised correctly by the SDK —
+   * verified live end-to-end under a clean env — so the guard is a safety net
+   * for a wedged child, not a gateway/response defect. Idle-based (reset on
+   * every message), so a legitimately long generation or tool run is
+   * unaffected. `0` disables the watchdog. Defaults to
+   * {@link DEFAULT_IDLE_TIMEOUT_MS}. Overridable at the CLI via
    * `CLAUDE_SDK_IDLE_TIMEOUT_MS`.
    */
   idleTimeoutMs?: number
