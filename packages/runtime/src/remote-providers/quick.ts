@@ -35,13 +35,14 @@
  * "which version" maintenance tax.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import type { ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
 import { execFile } from "node:child_process"
 import { mkdir, writeFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
 
+import { spawnCloudflaredUntil } from "./cloudflared-spawn.js"
 import type {
   ProviderStartOptions,
   ProviderStartResult,
@@ -70,6 +71,8 @@ export const QUICK_CAPABILITIES = {
 export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
   let child: ChildProcess | null = null
   let configPath: string | null = null
+  let logFilePath: string | null = null
+  let stopLogTail: (() => void) | null = null
 
   return {
     id: "quick",
@@ -110,90 +113,59 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
         ``,
       ].join("\n")
       await writeFile(configPath, configBody, "utf8")
-      const proc = spawn(
-        "cloudflared",
+
+      // cloudflared's stdout+stderr are redirected to this file rather than
+      // a pipe — see cloudflared-spawn.ts for why (stdio back-pressure
+      // wedges the tunnel when spawned under a busy host event loop).
+      const logPath = join(dir, `cloudflared-${id}.log`)
+      logFilePath = logPath
+
+      const { proc, match, stopTail } = await spawnCloudflaredUntil(
         ["tunnel", "--config", configPath, "--url", targetUrl],
-        { stdio: ["ignore", "pipe", "pipe"], shell: false },
+        {
+          logPath,
+          readyRegex: URL_REGEX,
+          timeoutMs: STARTUP_TIMEOUT_MS,
+          timeoutMessage: `cloudflared did not emit a public URL within ${STARTUP_TIMEOUT_MS / 1000}s`,
+          onLog: opts.onLog,
+        },
       )
       child = proc
+      stopLogTail = stopTail
 
-      const url = await new Promise<string>((resolve, reject) => {
-        let settled = false
-        const timer = setTimeout(() => {
-          if (settled) return
-          settled = true
-          try {
-            proc.kill("SIGTERM")
-          } catch {
-            /* noop */
-          }
-          reject(
-            new Error(
-              `cloudflared did not emit a public URL within ${STARTUP_TIMEOUT_MS / 1000}s`,
-            ),
-          )
-        }, STARTUP_TIMEOUT_MS)
-
-        const onData = (chunk: Buffer) => {
-          const text = chunk.toString("utf8")
-          for (const line of text.split(/\r?\n/)) {
-            if (line.length > 0) opts.onLog?.(`[cloudflared] ${line}`)
-          }
-          if (settled) return
-          const match = text.match(URL_REGEX)
-          if (match) {
-            settled = true
-            clearTimeout(timer)
-            resolve(match[0])
-          }
-        }
-        // cloudflared writes the URL to stderr (it reserves stdout for
-        // proxied traffic / structured output in some modes). Watch
-        // both for safety.
-        proc.stderr?.on("data", onData)
-        proc.stdout?.on("data", onData)
-
-        proc.once("error", err => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          reject(err)
-        })
-        proc.once("exit", (code, signal) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          reject(
-            new Error(
-              `cloudflared exited before emitting a URL (code=${code}, signal=${signal})`,
-            ),
-          )
-        })
-      })
-
-      // Detach the resolver listener (we already captured the URL); leave
-      // the log-forwarder attached so the gateway's RuntimeEvents stream
-      // sees ongoing tunnel chatter.
       proc.once("exit", (code, signal) => {
         opts.onLog?.(
           `[cloudflared] exited (code=${code ?? "?"} signal=${signal ?? "-"})`,
         )
       })
 
-      return { publicUrl: url, pid: proc.pid ?? null }
+      return { publicUrl: match, pid: proc.pid ?? null }
     },
 
     async stop(): Promise<void> {
       const proc = child
       const cfg = configPath
+      const log = logFilePath
+      const stopTail = stopLogTail
       child = null
       configPath = null
-      // Best-effort cleanup of the sentinel config — losing it means a
-      // stale `.agentproto/cloudflared-<id>.yml` file, no functional
-      // impact. We do this even if the proc never started.
+      logFilePath = null
+      stopLogTail = null
+      // Stop the background log-forwarder before killing cloudflared.
+      stopTail?.()
+      // Best-effort cleanup of the sentinel config + log file — losing them
+      // means stale `.agentproto/cloudflared-<id>.{yml,log}` files, no
+      // functional impact. We do this even if the proc never started.
       if (cfg) {
         try {
           await rm(cfg, { force: true })
+        } catch {
+          /* noop */
+        }
+      }
+      if (log) {
+        try {
+          await rm(log, { force: true })
         } catch {
           /* noop */
         }
