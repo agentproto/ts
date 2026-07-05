@@ -1183,7 +1183,9 @@ export function registerSessionTools(
         .optional()
         .describe(
           "Base64-encoded exact bytes to send instead of/around `text` (for " +
-            "control keys: CR, arrows, Esc, Ctrl-*). Decoded and written verbatim."
+            "control keys: CR, arrows, Esc, Ctrl-*). Decoded as latin1 (1-to-1 " +
+            "byte mapping) and written verbatim. Intended for ASCII control " +
+            "keys; binary bytes >0x7f may not transit unchanged."
         ),
     },
     async input => {
@@ -1200,11 +1202,6 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      let payload =
-        input.b64 !== undefined
-          ? Buffer.from(input.b64, "base64").toString("utf8")
-          : (input.text ?? "")
-      if (input.enter) payload += "\r"
       if (input.b64 === undefined && input.text === undefined && !input.enter) {
         return {
           content: [
@@ -1216,6 +1213,11 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      let payload =
+        input.b64 !== undefined
+          ? Buffer.from(input.b64, "base64").toString("latin1")
+          : (input.text ?? "")
+      if (input.enter) payload += "\r"
       const ok = registry.writeTerminalInput(desc.id, payload)
       return {
         content: [
