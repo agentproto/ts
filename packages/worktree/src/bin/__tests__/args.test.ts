@@ -36,6 +36,10 @@ describe("parseArgs", () => {
       "envs/**/.env.local",
       "--copy-glob",
       "secrets/*.json",
+      "--link",
+      "node_modules",
+      "--link",
+      "projects/agentproto/ts",
       "--no-cleanup",
       "--yes",
     ])
@@ -49,6 +53,7 @@ describe("parseArgs", () => {
       adapter: "hermes",
       depsCmd: "pnpm install --prefer-offline",
       copyGlobs: ["envs/**/.env.local", "secrets/*.json"],
+      linkPaths: ["node_modules", "projects/agentproto/ts"],
     })
     expect(yes).toBe(true)
   })
