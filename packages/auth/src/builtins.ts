@@ -19,6 +19,7 @@ export const guildeAuthProvider = defineAuthProvider({
   description:
     "Guilde AI company platform. Authenticate via a browser-approve flow — no key to paste.",
   apiBase: "https://api.guilde.work",
+  audience: "api",
   auth: {
     flow: "service-auth",
     clientId: "agentproto-cli",

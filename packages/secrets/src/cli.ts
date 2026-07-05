@@ -14,8 +14,13 @@
  *
  * Vendor-neutral: `provision` takes the server's URLs + auth headers as flags.
  * The plaintext credential is read, sealed, and sent — it is never printed.
+ * When `--header` is omitted and `--provider` names an auth provider
+ * registered in `@agentproto/auth`, the Authorization header is instead
+ * resolved via `CredentialBroker` (this is the only file in this package
+ * that imports `@agentproto/auth` — see `ProvisionAuthDeps` below).
  */
 
+import { CredentialBroker, KeychainStore, getAuthProvider } from "@agentproto/auth"
 import {
   generateSealKeyPair,
   sealKeyId,
@@ -138,6 +143,54 @@ function parseHeaders(raw: string[]): Record<string, string> {
   return out
 }
 
+/** Structural shape `CredentialBroker` satisfies — kept local (rather than
+ *  importing the class as a type) so tests can inject a fake without touching
+ *  Keychain or the network. */
+export interface AuthHeaderResolver {
+  resolveHeaders(o: {
+    path: string
+    audience?: string
+    server?: string
+    signal?: AbortSignal
+  }): Promise<Record<string, string>>
+}
+
+export interface ProvisionAuthDeps {
+  /** Whether `providerId` is a known `@agentproto/auth` auth provider. */
+  isRegistered(providerId: string): boolean
+  resolver: AuthHeaderResolver
+}
+
+function defaultProvisionAuthDeps(): ProvisionAuthDeps {
+  return {
+    isRegistered: id => getAuthProvider(id) !== undefined,
+    resolver: new CredentialBroker({
+      store: new KeychainStore(),
+      getProvider: getAuthProvider,
+    }),
+  }
+}
+
+/**
+ * Resolve the Authorization (etc.) headers a provision request carries.
+ * `--header` is an explicit override — when present, the broker is never
+ * consulted. Otherwise, a `--provider` registered in `@agentproto/auth`
+ * resolves its headers via the broker; an unregistered provider degrades to
+ * `explicitHeaders` (empty when none were passed) rather than failing.
+ */
+export async function resolveProvisionHeaders(
+  provider: string,
+  explicitHeaders: string[],
+  deps?: ProvisionAuthDeps,
+): Promise<Record<string, string>> {
+  const parsed = parseHeaders(explicitHeaders)
+  if (explicitHeaders.length > 0) return parsed
+  const { isRegistered, resolver } = deps ?? defaultProvisionAuthDeps()
+  if (!isRegistered(provider)) return parsed
+  const brokered = await resolver.resolveHeaders({ path: provider, audience: "api" })
+  return { ...brokered, ...parsed }
+}
+
 const USAGE = `agentproto-secrets — seal secrets and install them into a vault
 
   keygen                                   mint a sealing keypair (JSON to stdout)
@@ -154,7 +207,7 @@ const USAGE = `agentproto-secrets — seal secrets and install them into a vault
   src: --from-file <path> [--json-path a.b.c] | --from-env <VAR>
   builtin providers: ${listRecipeIds().join(", ")}`
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const [cmd, ...rest] = process.argv.slice(2)
   const args = parse(rest)
 
@@ -205,11 +258,14 @@ async function main(): Promise<number> {
         return fail(err instanceof Error ? err.message : String(err))
       }
 
-      const target = httpTarget({
-        sealKeyUrl,
-        installUrl,
-        headers: parseHeaders(args.headers),
-      })
+      let headers: Record<string, string>
+      try {
+        headers = await resolveProvisionHeaders(provider, args.headers)
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : String(err))
+      }
+
+      const target = httpTarget({ sealKeyUrl, installUrl, headers })
       try {
         const out = await provisionSealed({
           target,
@@ -246,14 +302,3 @@ function fail(message: string): number {
   process.stderr.write(`agentproto-secrets: ${message}\n`)
   return 1
 }
-
-main()
-  .then(code => {
-    process.exitCode = code
-  })
-  .catch(err => {
-    process.stderr.write(
-      `agentproto-secrets: ${err instanceof Error ? err.message : String(err)}\n`
-    )
-    process.exitCode = 1
-  })
