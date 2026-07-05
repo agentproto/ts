@@ -101,6 +101,12 @@ Each participant declares:
 - `meta` — adapter-specific config (e.g. db-operator reads
   `meta.operatorId`)
 
+A participant's `role` is a swarm-manifest concept — the system
+prompt text/file fed to that participant — distinct from
+`agent_start`'s spawn-time `role` (`executor`/`supervisor`/…), which
+gates whether a spawned agent may itself delegate. See
+[concepts/roles.md](./roles.md).
+
 ## Dispatchers
 
 The dispatcher decides who speaks next given the recent turns. The

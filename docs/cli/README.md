@@ -56,6 +56,7 @@ Pick whichever matches what you're trying to do:
 
 - [Adapters](./concepts/adapters.md) — what `@agentproto/adapter-*` packages are
 - [Plugins](./concepts/plugins.md) — extending the swarm kernel
+- [Roles](./concepts/roles.md) — spawn-time delegation gate, the privilege lattice, and role packs
 - [Runtime profiles](./concepts/runtime-profiles.md) — `runtime-profile/<name>` scaffolding
 - [Swarms](./concepts/swarms.md) — manifest + kernel cycle model
 - [Credentials](./concepts/credentials.md) — how host tokens are stored
