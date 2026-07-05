@@ -47,7 +47,8 @@ export interface SpawnDefaultsConfig {
    *  this is on. See `filterSessionObserver` / `SpawnAgentInput.trace`. */
   langfuseTracing?: boolean
   /** Redactor slug applied to traced session content before it's sent to
-   *  Langfuse (see `@agentproto/redaction`'s registry). Default "deny-list". */
+   *  Langfuse (see `@agentproto/redaction`'s registry). Default "secrets"
+   *  (deny-list by key + value-scan for secret shapes). */
   traceRedactor?: string
 }
 

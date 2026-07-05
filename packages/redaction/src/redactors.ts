@@ -136,6 +136,83 @@ export function truncateRedactor(opts: TruncateRedactorOptions = {}): Redactor {
   }
 }
 
+/**
+ * Well-known secret shapes, matched inside STRING VALUES regardless of the key
+ * they sit under. All patterns are prefix-anchored and linear (no nested
+ * quantifiers over overlapping classes) so they can't backtrack pathologically.
+ */
+const DEFAULT_SECRET_PATTERNS: readonly RegExp[] = [
+  // PEM private key block (masked whole).
+  /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
+  // JWT — header.payload.signature.
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  // OpenAI / Anthropic / Stripe-style prefixed keys: sk-, sk-ant-, sk_live_, …
+  /\bsk[-_](?:ant[-_]|proj[-_]|live[-_]|test[-_])?[A-Za-z0-9]{16,}\b/g,
+  // AWS access key id.
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  // GitHub token — ghp_/gho_/ghu_/ghs_/ghr_.
+  /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g,
+  // Slack token.
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+  // Google API key.
+  /\bAIza[0-9A-Za-z_-]{35}\b/g,
+]
+
+export interface ValueScanRedactorOptions {
+  readonly placeholder?: string
+  /** Extra whole-match secret patterns (use the `g` flag). */
+  readonly extraPatterns?: readonly RegExp[]
+}
+
+/**
+ * Deep, immutable walk that scans every STRING VALUE for well-known secret
+ * shapes and masks the matched substring — catching a credential leaked in a
+ * value whose key ISN'T denied (e.g. `{ note: "use sk-live-abc…" }`), which the
+ * key-based {@link denyListRedactor} cannot see. Surrounding text is preserved,
+ * and an `Authorization`-style `Bearer`/`Basic` scheme keeps the scheme word
+ * while masking only the token. Never mutates the input.
+ */
+export function valueScanRedactor(opts: ValueScanRedactorOptions = {}): Redactor {
+  const placeholder = opts.placeholder ?? "[redacted]"
+  const patterns: readonly RegExp[] = [...DEFAULT_SECRET_PATTERNS, ...(opts.extraPatterns ?? [])]
+
+  function scan(input: string): string {
+    // Scheme-preserving first: keep "Bearer"/"Basic", mask the token after it.
+    let out = input.replace(
+      /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
+      (_match: string, scheme: string) => `${scheme} ${placeholder}`,
+    )
+    for (const pattern of patterns) {
+      out = out.replace(pattern, placeholder)
+    }
+    return out
+  }
+
+  function walk(value: JsonValue): JsonValue {
+    if (typeof value === "string") {
+      return scan(value)
+    }
+    if (isJsonArray(value)) {
+      return value.map((element) => walk(element))
+    }
+    if (isJsonObject(value)) {
+      const result: { [key: string]: JsonValue } = {}
+      for (const [key, entryValue] of Object.entries(value)) {
+        result[key] = walk(entryValue)
+      }
+      return result
+    }
+    return value
+  }
+
+  return {
+    slug: "value-scan",
+    redact(value) {
+      return walk(value)
+    },
+  }
+}
+
 /** Applies each redactor in order — the output of one feeds the next. */
 export function chainRedactors(redactors: readonly Redactor[], slug?: string): Redactor {
   const chainSlug = slug ?? redactors.map((redactor) => redactor.slug).join("+")

@@ -464,7 +464,7 @@ export async function createGateway(
         secretKey: lfCreds.secretKey,
         baseUrl: lfCreds.baseUrl,
         ...(lfCreds.environment ? { environment: lfCreds.environment } : {}),
-        redactor: configDefaults?.traceRedactor ?? "deny-list",
+        redactor: configDefaults?.traceRedactor ?? "secrets",
       })
     : undefined
 
