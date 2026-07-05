@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi } from "vitest"
 import type { AcpMcpServer } from "@agentproto/acp"
-import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
@@ -426,5 +426,26 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     )
     expect(result.ok).toBe(true)
     expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("cleanAgentLines", () => {
+  it("strips ANSI + decorative framing and non-error tool chatter", () => {
+    const out = cleanAgentLines([
+      "\x1b[36m[tool] file_write(a.ts)\x1b[0m",
+      "\x1b[2m[tool-result] ok\x1b[0m",
+      "── framing ──",
+      "[thought] hmm",
+      "\x1b[32mreal assistant text\x1b[0m",
+    ])
+    expect(out).toEqual(["real assistant text"])
+  })
+
+  it("NEVER drops a tool error — a failing turn must stay visible", () => {
+    const out = cleanAgentLines([
+      "\x1b[36m[tool] run_tests()\x1b[0m",
+      "\x1b[31m[tool-error] exit 1: build failed\x1b[0m",
+    ])
+    expect(out).toEqual(["[tool-error] exit 1: build failed"])
   })
 })
