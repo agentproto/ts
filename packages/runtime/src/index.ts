@@ -121,6 +121,7 @@ import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
 } from "./tunnel-adapters.js"
+import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -796,6 +797,10 @@ export async function createGateway(
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})
+    // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
+    // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under
+    // ~/.agentproto and are never exposed by the list tool.
+    registerEvalReporterTools(server)
     return server
   }
 
