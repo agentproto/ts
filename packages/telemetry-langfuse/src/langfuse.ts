@@ -59,13 +59,16 @@ type ScoreCreateBody = {
 
 type BatchItem =
   | {
-      readonly id: number
+      // Langfuse's ingestion schema requires the batch-envelope `id` to be a
+      // string (it is the idempotency key it dedups on). We reuse the object's
+      // own already-unique body id so it is stable across flushes/restarts.
+      readonly id: string
       readonly type: "trace-create"
       readonly timestamp: string
       readonly body: TraceCreateBody
     }
   | {
-      readonly id: number
+      readonly id: string
       readonly type: "score-create"
       readonly timestamp: string
       readonly body: ScoreCreateBody
@@ -82,15 +85,14 @@ export function langfuseTelemetry(cfg: LangfuseTelemetryConfig): LangfuseTelemet
   const fetchImpl = cfg.fetchImpl ?? globalThis.fetch
   const auth = `Basic ${Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString("base64")}`
   const batch: BatchItem[] = []
-  let nextId = 1
   const tracedRuns = new Set<string>()
 
   function pushTrace(timestamp: string, body: TraceCreateBody): void {
-    batch.push({ id: nextId++, type: "trace-create", timestamp, body })
+    batch.push({ id: body.id, type: "trace-create", timestamp, body })
   }
 
   function pushScore(timestamp: string, body: ScoreCreateBody): void {
-    batch.push({ id: nextId++, type: "score-create", timestamp, body })
+    batch.push({ id: body.id, type: "score-create", timestamp, body })
   }
 
   function withEnvironment(body: TraceCreateBody): TraceCreateBody
