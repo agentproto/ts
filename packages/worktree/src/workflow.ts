@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { Bindings, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import { provisionWorktreeTool, cleanupWorktreeTool, runGateTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 
@@ -44,7 +44,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
       id: "provision",
       tool: provisionWorktreeTool,
       candidates,
-      input: (b) => {
+      input: (b: Bindings) => {
         const i = input(b)
         return {
           repoRoot: i.repoRoot,
@@ -58,16 +58,16 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
     {
       kind: "agent",
       id: "code",
-      adapter: (b) => input(b).adapter ?? "claude-code",
-      cwd: (b) => (b.steps.provision as { cwd: string }).cwd,
-      prompt: (b) => input(b).task,
+      adapter: (b: Bindings) => input(b).adapter ?? "claude-code",
+      cwd: (b: Bindings) => (b.steps.provision as { cwd: string }).cwd,
+      prompt: (b: Bindings) => input(b).task,
     },
     {
       kind: "tool",
       id: "gate",
       tool: runGateTool,
       candidates,
-      input: (b) => ({
+      input: (b: Bindings) => ({
         cwd: (b.steps.provision as { cwd: string }).cwd,
         cmd: input(b).gateCmd,
       }),
@@ -75,7 +75,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
     {
       kind: "branch",
       id: "route",
-      cond: (b) => (b.steps.gate as { passed: boolean }).passed,
+      cond: (b: Bindings) => (b.steps.gate as { passed: boolean }).passed,
       then: [
         {
           kind: "approval",
@@ -87,7 +87,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
               id: "cleanup",
               tool: cleanupWorktreeTool,
               candidates,
-              input: (b) => ({
+              input: (b: Bindings) => ({
                 repoRoot: input(b).repoRoot,
                 cwd: (b.steps.provision as { cwd: string }).cwd,
                 branch: (b.steps.provision as { branch: string }).branch,
@@ -113,7 +113,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
       ],
     },
   ],
-  output: (b) => ({
+  output: (b: Bindings) => ({
     cwd: (b.steps.provision as { cwd: string }).cwd,
     branch: (b.steps.provision as { branch: string }).branch,
     gate: b.steps.gate,
