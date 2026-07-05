@@ -28,6 +28,8 @@ import {
   isSymlink,
   freshCopyDir,
 } from "../commands/install-skill.js"
+import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
+import { isAdapterSkillsTarget } from "../commands/skill-install/types.js"
 
 // ── repo root + pack resolution (test helpers) ─────────────────────────
 
@@ -519,5 +521,200 @@ describe("isSymlink", () => {
     expect(await isSymlink(link)).toBe(true)
     expect(await isSymlink(realDir)).toBe(false)
     expect(await isSymlink(join(tmp, "nope"))).toBe(false)
+  })
+})
+
+// ── unit: --pack resolution ─────────────────────────────────────────────
+
+describe("resolveSkillPackDir (unit)", () => {
+  let tmp: string
+  let prevHome: string | undefined
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-resolve-"))
+    prevHome = process.env.HOME
+  })
+  afterEach(async () => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("omitted → resolves the legacy .skills/agentproto-plugin-v* pack", async () => {
+    const dir = await resolveSkillPackDir()
+    expect(dir).not.toBeNull()
+    expect(dir!).toContain(".skills")
+    expect(existsSync(join(dir!, "skills"))).toBe(true)
+  })
+
+  it("path containing '/' → used verbatim, even if it doesn't exist yet", async () => {
+    const fakePath = join(tmp, "some/nested/path")
+    const dir = await resolveSkillPackDir(fakePath)
+    expect(dir).toBe(fakePath)
+  })
+
+  it("existing absolute path with no '/' ambiguity → used verbatim", async () => {
+    const packDir = join(tmp, "my-pack")
+    await mkdir(join(packDir, "skills", "a-skill"), { recursive: true })
+    const dir = await resolveSkillPackDir(packDir)
+    expect(dir).toBe(packDir)
+  })
+
+  it("bare name → hits the central store ~/.agentproto/packs/<name>/", async () => {
+    process.env.HOME = tmp
+    const packDir = join(tmp, ".agentproto", "packs", "central-pack")
+    await mkdir(join(packDir, "skills", "a-skill"), { recursive: true })
+
+    const dir = await resolveSkillPackDir("central-pack")
+    expect(dir).toBe(packDir)
+  })
+
+  it("unknown bare pack name → null (caller produces the clear error message)", async () => {
+    process.env.HOME = tmp
+    const dir = await resolveSkillPackDir("totally-unknown-pack-name-xyz")
+    expect(dir).toBeNull()
+  })
+})
+
+describe("agentproto install skill --pack (dry-run via real CLI)", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-cli-"))
+  })
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("--pack <dir> resolves a skill from an arbitrary pack directory", async () => {
+    const skillDir = join(tmp, "skills", "my-custom-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: my-custom-skill\ndescription: a custom test skill\n---\nBody.\n",
+    )
+
+    const { stdout, code } = runCli([
+      "skill/my-custom-skill",
+      "--pack",
+      tmp,
+      "--target",
+      "hermes",
+      "--dry-run",
+    ])
+    expect(code).toBe(0)
+    expect(stdout).toContain("hermes")
+    expect(stdout).toContain("my-custom-skill")
+    expect(stdout).toContain("dry-run")
+  })
+
+  it("unknown --pack name produces a clear, actionable error", () => {
+    const { stderr, code } = runCli([
+      "skill/agent-session-orchestration-agentproto",
+      "--pack",
+      "totally-nonexistent-pack-xyz",
+      "--dry-run",
+    ])
+    expect(code).toBe(1)
+    expect(stderr).toContain("totally-nonexistent-pack-xyz")
+    expect(stderr).toContain("could not resolve pack")
+  })
+})
+
+// ── unit: isAdapterSkillsTarget shape guard ──────────────────────────────
+
+describe("isAdapterSkillsTarget (unit)", () => {
+  it("accepts a valid flat-dir target", () => {
+    expect(isAdapterSkillsTarget({ format: "flat-dir", dir: "~/.hermes/skills" })).toBe(true)
+  })
+
+  it("accepts a valid claude-plugin target with unit: whole-pack", () => {
+    expect(
+      isAdapterSkillsTarget({
+        format: "claude-plugin",
+        unit: "whole-pack",
+        outDir: "~/.claude/plugins/agentproto",
+      }),
+    ).toBe(true)
+  })
+
+  it("rejects undefined, null, and non-object values", () => {
+    expect(isAdapterSkillsTarget(undefined)).toBe(false)
+    expect(isAdapterSkillsTarget(null)).toBe(false)
+    expect(isAdapterSkillsTarget("flat-dir")).toBe(false)
+    expect(isAdapterSkillsTarget(42)).toBe(false)
+  })
+
+  it("rejects an unknown format", () => {
+    expect(isAdapterSkillsTarget({ format: "something-else" })).toBe(false)
+  })
+
+  it("rejects a target with a non-string dir", () => {
+    expect(isAdapterSkillsTarget({ format: "flat-dir", dir: 123 })).toBe(false)
+  })
+})
+
+// ── integration: fan-out (no --target) ───────────────────────────────────
+
+describe("agentproto install skill fan-out (no --target, dry-run via real CLI)", () => {
+  it("installs into every adapter declaring metadata.skills, skips the rest informationally", () => {
+    const { stdout, code } = runCli([
+      "skill/agent-session-orchestration-agentproto",
+      "--dry-run",
+    ])
+    expect(code).toBe(0)
+    // hermes (flat-dir) and claude-code (claude-plugin) both declare
+    // metadata.skills in adapters/{hermes,claude-code}/src/index.ts.
+    expect(stdout).toContain("hermes: agent-session-orchestration-agentproto")
+    expect(stdout).toContain("claude-code: agentproto plugin")
+    expect(stdout).toContain("dry-run")
+    // adapters with no metadata.skills block are skipped informationally,
+    // not as a failure.
+    expect(stdout).toContain("no skills metadata declared")
+  })
+
+  it("still short-circuits on --dry-run (no writes) in fan-out mode", () => {
+    const fakeHome = join(tmpdir(), `agentproto-fanout-dryrun-${Date.now()}`)
+    const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
+    const result = spawnSync(
+      "node",
+      [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--dry-run"],
+      { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
+    )
+    const stdout = result.stdout?.toString("utf8") ?? ""
+    expect(result.status).toBe(0)
+    expect(stdout).toContain("[dry-run]")
+    // A dry-run must never touch the (throwaway) hermes skills dir.
+    expect(existsSync(join(fakeHome, ".hermes", "skills"))).toBe(false)
+  })
+
+  it("preserves symlink-skip in fan-out mode (hermes flat-dir target)", async () => {
+    const fakeHome = join(tmpdir(), `agentproto-fanout-symlink-${Date.now()}`)
+    const hermesSkillsDir = join(fakeHome, ".hermes", "skills")
+    const linkTarget = join(fakeHome, "dev-skill-source")
+    const linkDest = join(hermesSkillsDir, "agent-session-orchestration-agentproto")
+
+    await mkdir(linkTarget, { recursive: true })
+    await mkdir(hermesSkillsDir, { recursive: true })
+    await symlink(linkTarget, linkDest)
+
+    try {
+      const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
+      const result = spawnSync(
+        "node",
+        [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--force"],
+        { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
+      )
+      const stdout = result.stdout?.toString("utf8") ?? ""
+      expect(result.status).toBe(0)
+      // the compact summary line reports the skip; the full "symlinked at
+      // ... left untouched" explanation lives in the action's `detail`
+      // field, which isn't printed in the one-line-per-action summary.
+      expect(stdout).toContain("hermes: agent-session-orchestration-agentproto — skipped")
+      // the symlink itself must survive (never clobbered)
+      expect(await isSymlink(linkDest)).toBe(true)
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true }).catch(() => {})
+    }
   })
 })

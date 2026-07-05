@@ -208,6 +208,19 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     },
   },
   tags: ["claude-code", "anthropic", "acp", "agent-runtime", "coding"],
+  metadata: {
+    // Opts claude-code into `agentproto install skill/<slug>` fan-out (no
+    // --target given). Claude Code skills install as a whole plugin
+    // bundle, not per-skill drops — `unit: "whole-pack"` tells the
+    // fan-out dispatcher to emit the pack once, not once per requested
+    // skill slug. See
+    // packages/cli/src/commands/skill-install/types.ts `AdapterSkillsTarget`.
+    skills: {
+      format: "claude-plugin",
+      unit: "whole-pack",
+      outDir: "~/.claude/plugins/agentproto",
+    },
+  },
 })
 
 export function claudeCodeRuntime(): AgentCliRuntime {
