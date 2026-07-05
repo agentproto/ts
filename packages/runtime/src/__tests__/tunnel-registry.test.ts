@@ -481,3 +481,67 @@ describe("TunnelRegistry", () => {
     expect(mock.startCalled).toBe(0)
   })
 })
+
+// ── credsForDescriptor: named-tunnel credentialsFile shadowing ────────────────
+
+/** Test subclass exposing the protected creds merge for direct assertion. */
+class CredsProbeRegistry extends TunnelRegistry {
+  async probe(desc: TunnelDescriptor): Promise<Record<string, string>> {
+    return this.credsForDescriptor(desc)
+  }
+}
+
+function namedDesc(
+  overrides: Partial<TunnelDescriptor>,
+): TunnelDescriptor {
+  return {
+    id: "tun_x",
+    provider: "cloudflare-named",
+    targetHost: "127.0.0.1",
+    targetPort: 18790,
+    publicUrl: "",
+    status: "starting",
+    pid: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  }
+}
+
+describe("TunnelRegistry.credsForDescriptor — named credentialsFile", () => {
+  // Provider-level default captured at setup_tunnel_provider time (e.g. a
+  // different service's named tunnel — the postiz-vs-agentproto trap).
+  const stored = {
+    hostname: "postiz.example.com",
+    tunnelId: "STORED-ID",
+    credentialsFile: "/creds/STORED-ID.json",
+  }
+  const reg = new CredsProbeRegistry({
+    readCreds: async () => stored,
+  })
+
+  it("drops the stored credentialsFile when the descriptor targets a different tunnelId with no explicit creds", async () => {
+    const creds = await reg.probe(
+      namedDesc({ hostname: "other.example.com", tunnelId: "OTHER-ID" }),
+    )
+    expect(creds.tunnelId).toBe("OTHER-ID")
+    // → provider falls back to ~/.cloudflared/OTHER-ID.json
+    expect(creds.credentialsFile).toBeUndefined()
+  })
+
+  it("keeps the stored credentialsFile when the descriptor targets the same tunnelId (single-tunnel BYO)", async () => {
+    const creds = await reg.probe(namedDesc({ tunnelId: "STORED-ID" }))
+    expect(creds.tunnelId).toBe("STORED-ID")
+    expect(creds.credentialsFile).toBe("/creds/STORED-ID.json")
+  })
+
+  it("honors an explicit descriptor credentialsFile even on a different tunnelId", async () => {
+    const creds = await reg.probe(
+      namedDesc({
+        tunnelId: "OTHER-ID",
+        credentialsFile: "/creds/OTHER-ID.json",
+      }),
+    )
+    expect(creds.tunnelId).toBe("OTHER-ID")
+    expect(creds.credentialsFile).toBe("/creds/OTHER-ID.json")
+  })
+})
