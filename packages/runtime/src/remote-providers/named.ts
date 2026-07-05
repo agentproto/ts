@@ -41,7 +41,7 @@
  * create` writes it. Pass an explicit path only if you relocated it.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import type { ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
 import { execFile } from "node:child_process"
 import { mkdir, writeFile, rm, access } from "node:fs/promises"
@@ -49,6 +49,7 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import { randomBytes } from "node:crypto"
 
+import { spawnCloudflaredUntil } from "./cloudflared-spawn.js"
 import type {
   ProviderStartOptions,
   ProviderStartResult,
@@ -115,6 +116,8 @@ export function namedTunnelProvider(
 ): RemoteProvider & TunnelProviderHandle {
   let child: ChildProcess | null = null
   let configPath: string | null = null
+  let logFilePath: string | null = null
+  let stopLogTail: (() => void) | null = null
 
   const credentialsFile =
     cfg.credentialsFile ??
@@ -173,62 +176,24 @@ export function namedTunnelProvider(
       ].join("\n")
       await writeFile(configPath, configBody, "utf8")
 
-      const proc = spawn(
-        "cloudflared",
+      // cloudflared's stdout+stderr are redirected to this file rather than
+      // a pipe — see cloudflared-spawn.ts for why (stdio back-pressure
+      // wedges the tunnel when spawned under a busy host event loop).
+      const logPath = join(dir, `cloudflared-named-${id}.log`)
+      logFilePath = logPath
+
+      const { proc, stopTail } = await spawnCloudflaredUntil(
         ["tunnel", "--config", configPath, "run", cfg.tunnelId],
-        { stdio: ["ignore", "pipe", "pipe"], shell: false },
+        {
+          logPath,
+          readyRegex: READY_REGEX,
+          timeoutMs: STARTUP_TIMEOUT_MS,
+          timeoutMessage: `cloudflared did not register a tunnel connection within ${STARTUP_TIMEOUT_MS / 1000}s`,
+          onLog: opts.onLog,
+        },
       )
       child = proc
-
-      await new Promise<void>((resolve, reject) => {
-        let settled = false
-        const timer = setTimeout(() => {
-          if (settled) return
-          settled = true
-          try {
-            proc.kill("SIGTERM")
-          } catch {
-            /* noop */
-          }
-          reject(
-            new Error(
-              `cloudflared did not register a tunnel connection within ${STARTUP_TIMEOUT_MS / 1000}s`,
-            ),
-          )
-        }, STARTUP_TIMEOUT_MS)
-
-        const onData = (chunk: Buffer) => {
-          const text = chunk.toString("utf8")
-          for (const line of text.split(/\r?\n/)) {
-            if (line.length > 0) opts.onLog?.(`[cloudflared] ${line}`)
-          }
-          if (settled) return
-          if (READY_REGEX.test(text)) {
-            settled = true
-            clearTimeout(timer)
-            resolve()
-          }
-        }
-        proc.stderr?.on("data", onData)
-        proc.stdout?.on("data", onData)
-
-        proc.once("error", err => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          reject(err)
-        })
-        proc.once("exit", (code, signal) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          reject(
-            new Error(
-              `cloudflared exited before connecting (code=${code}, signal=${signal})`,
-            ),
-          )
-        })
-      })
+      stopLogTail = stopTail
 
       proc.once("exit", (code, signal) => {
         opts.onLog?.(
@@ -242,11 +207,24 @@ export function namedTunnelProvider(
     async stop(): Promise<void> {
       const proc = child
       const cfg2 = configPath
+      const log = logFilePath
+      const stopTail = stopLogTail
       child = null
       configPath = null
+      logFilePath = null
+      stopLogTail = null
+      // Stop the background log-forwarder before killing cloudflared.
+      stopTail?.()
       if (cfg2) {
         try {
           await rm(cfg2, { force: true })
+        } catch {
+          /* noop */
+        }
+      }
+      if (log) {
+        try {
+          await rm(log, { force: true })
         } catch {
           /* noop */
         }
