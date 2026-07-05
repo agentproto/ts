@@ -98,6 +98,8 @@
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
+    "@agentproto/redaction": "workspace:*",
+    "@agentproto/telemetry-langfuse": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.18.0",

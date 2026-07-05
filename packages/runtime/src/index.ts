@@ -106,6 +106,15 @@ export type {
 } from "./sessions.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
+export {
+  composeSessionObservers,
+  type SessionObserver,
+} from "./session-observer.js"
+export {
+  langfuseSessionTracer,
+  type LangfuseSessionTracer,
+  type LangfuseSessionTracerConfig,
+} from "./langfuse-session-tracer.js"
 export type {
   UsageSource,
   SessionUsage,

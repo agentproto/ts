@@ -2200,6 +2200,12 @@ importers:
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
+      '@agentproto/redaction':
+        specifier: workspace:*
+        version: link:../redaction
+      '@agentproto/telemetry-langfuse':
+        specifier: workspace:*
+        version: link:../telemetry-langfuse
       '@agentproto/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime

@@ -8,6 +8,9 @@
 
 import type { EvalEvent } from "@agentproto/eval"
 import type { Telemetry } from "@agentproto/telemetry"
+import { createIngestionClient, type FlushResult } from "./ingestion.js"
+
+export type { FlushResult } from "./ingestion.js"
 
 /** Configuration for the Langfuse telemetry sink. */
 export interface LangfuseTelemetryConfig {
@@ -21,13 +24,6 @@ export interface LangfuseTelemetryConfig {
   readonly environment?: string
   /** Optional fetch implementation (defaults to `globalThis.fetch`). */
   readonly fetchImpl?: typeof fetch
-}
-
-/** Result returned by {@link LangfuseTelemetrySink.flush}. */
-export interface FlushResult {
-  readonly status: number
-  readonly sent: number
-  readonly body: unknown
 }
 
 /** Public type of the sink returned by {@link langfuseTelemetry}. */
@@ -89,39 +85,10 @@ type SpanUpdateBody = {
   readonly environment?: string
 }
 
-/**
- * Langfuse's ingestion schema requires each batch item's envelope `id` to be a
- * unique string — it is the idempotency key it dedups on. We derive it as
- * `${bodyId}#${operation}` so it is (a) a string, (b) stable across
- * flushes/restarts (so retries dedup correctly) and (c) distinct per operation,
- * so a create and a later upsert/update of the SAME object (same body id) are
- * not collapsed into one.
- */
-type BatchItem =
-  | {
-      readonly id: string
-      readonly type: "trace-create"
-      readonly timestamp: string
-      readonly body: TraceCreateBody
-    }
-  | {
-      readonly id: string
-      readonly type: "score-create"
-      readonly timestamp: string
-      readonly body: ScoreCreateBody
-    }
-  | {
-      readonly id: string
-      readonly type: "span-create"
-      readonly timestamp: string
-      readonly body: SpanCreateBody
-    }
-  | {
-      readonly id: string
-      readonly type: "span-update"
-      readonly timestamp: string
-      readonly body: SpanUpdateBody
-    }
+// Envelope ids are derived `${bodyId}#${operation}` (see the push helpers): a
+// unique string per operation so Langfuse's dedup doesn't collapse a create and
+// a later upsert/update of the same object. Items are transported by
+// `createIngestionClient` (see ./ingestion.ts).
 
 /**
  * Build a Langfuse ingestion sink for {@link EvalEvent}s.
@@ -131,9 +98,7 @@ type BatchItem =
  * HTTP status plus parsed response body.
  */
 export function langfuseTelemetry(cfg: LangfuseTelemetryConfig): LangfuseTelemetrySink {
-  const fetchImpl = cfg.fetchImpl ?? globalThis.fetch
-  const auth = `Basic ${Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString("base64")}`
-  const batch: BatchItem[] = []
+  const client = createIngestionClient(cfg)
   const tracedRuns = new Set<string>()
 
   /** Stable observation id for a case's span (scores nest under it). */
@@ -146,19 +111,19 @@ export function langfuseTelemetry(cfg: LangfuseTelemetryConfig): LangfuseTelemet
   }
 
   function pushTrace(op: string, timestamp: string, body: TraceCreateBody): void {
-    batch.push({ id: `${body.id}#${op}`, type: "trace-create", timestamp, body: withEnv(body) })
+    client.enqueue({ id: `${body.id}#${op}`, type: "trace-create", timestamp, body: withEnv(body) })
   }
 
   function pushScore(timestamp: string, body: ScoreCreateBody): void {
-    batch.push({ id: `${body.id}#score`, type: "score-create", timestamp, body: withEnv(body) })
+    client.enqueue({ id: `${body.id}#score`, type: "score-create", timestamp, body: withEnv(body) })
   }
 
   function pushSpanCreate(timestamp: string, body: SpanCreateBody): void {
-    batch.push({ id: `${body.id}#span-create`, type: "span-create", timestamp, body: withEnv(body) })
+    client.enqueue({ id: `${body.id}#span-create`, type: "span-create", timestamp, body: withEnv(body) })
   }
 
   function pushSpanUpdate(timestamp: string, body: SpanUpdateBody): void {
-    batch.push({ id: `${body.id}#span-update`, type: "span-update", timestamp, body: withEnv(body) })
+    client.enqueue({ id: `${body.id}#span-update`, type: "span-update", timestamp, body: withEnv(body) })
   }
 
   return {
@@ -256,29 +221,8 @@ export function langfuseTelemetry(cfg: LangfuseTelemetryConfig): LangfuseTelemet
       }
     },
 
-    async flush(): Promise<FlushResult> {
-      const sent = batch.length
-      const payload = { batch: batch.slice() }
-      const url = `${cfg.baseUrl}/api/public/ingestion`
-      const response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: auth,
-        },
-        body: JSON.stringify(payload),
-      })
-
-      const text = await response.text()
-      let body: unknown
-      try {
-        body = JSON.parse(text)
-      } catch {
-        body = text
-      }
-
-      batch.length = 0
-      return { status: response.status, sent, body }
+    flush(): Promise<FlushResult> {
+      return client.flush()
     },
   }
 }
