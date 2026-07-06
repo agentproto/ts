@@ -158,6 +158,56 @@ describe("claude-code fsProbe", () => {
     const found = await probe(cwd, "1970-01-01T00:00:00Z")
     expect(found).toBeNull()
   })
+
+  // ── expectedId binding (cross-session resume safety) ─────────────
+  //
+  // When the caller knows the session's own conversation id (agent-cli
+  // descriptors carry it as `adapterSessionId`; for claude-code it IS
+  // the .jsonl uuid), the probe must bind to THAT transcript exactly —
+  // never the most-recently modified one, which may belong to a
+  // concurrent, unrelated session sharing the same cwd. This is the
+  // root-cause regression: mtime-latest silently resumed the wrong
+  // conversation.
+
+  it("binds to <expectedId>.jsonl when the id is known, ignoring a NEWER sibling in the same cwd", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    const sibling = "bbbbbbbb-0000-0000-0000-000000000002"
+    // The session's own transcript is OLDER than the sibling's — under
+    // mtime-latest the sibling would win. expectedId must override that.
+    writeSession(sessionsDir, own, new Date("2026-05-13T10:00:00Z"))
+    writeSession(sessionsDir, sibling, new Date("2026-05-13T12:00:00Z"))
+    const probe = RESUME_STRATEGIES["claude-code"]!.fsProbe!
+    const found = await probe(cwd, "1970-01-01T00:00:00Z", own)
+    expect(found).toBe(own)
+  })
+
+  it("returns null when the known id's transcript is absent — never a sibling's", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const sibling = "bbbbbbbb-0000-0000-0000-000000000002"
+    writeSession(sessionsDir, sibling, new Date("2026-05-13T12:00:00Z"))
+    const probe = RESUME_STRATEGIES["claude-code"]!.fsProbe!
+    // Own transcript is gone: refuse to guess, even though a newer
+    // sibling exists. Caller falls back to ACP resume against the real
+    // id, which can 404 → fresh spawn — but never resumes the sibling.
+    const found = await probe(cwd, "1970-01-01T00:00:00Z", "cccccccc-0000-0000-0000-000000000009")
+    expect(found).toBeNull()
+  })
+
+  it("ignores the startedAt cutoff when binding to a known id (its own transcript is always eligible)", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    // Written BEFORE the session's own startedAt would be — the mtime
+    // filter is a heuristic to avoid unrelated priors; it's irrelevant
+    // once we're targeting the session's own file by id.
+    writeSession(sessionsDir, own, new Date("2026-05-13T08:00:00Z"))
+    const probe = RESUME_STRATEGIES["claude-code"]!.fsProbe!
+    const found = await probe(cwd, "2026-05-13T12:00:00Z", own)
+    expect(found).toBe(own)
+  })
 })
 
 /**
@@ -368,5 +418,48 @@ describe("augmentWithFsResume", () => {
       hermesResumeId: "unrelated",
       claudeResumeId: uuid,
     })
+  })
+
+  // The core bug: a killed agent-cli claude-code session (empty ring
+  // buffer → sniffer never captured claudeResumeId) is restarted while a
+  // concurrent, unrelated claude session is actively writing its own
+  // transcript in the SAME cwd. augment must bind to the dead session's
+  // own adapterSessionId — never the newer sibling.
+  it("binds resumeMetadata to adapterSessionId, not the newest sibling in the cwd", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    const sibling = "bbbbbbbb-0000-0000-0000-000000000002"
+    const ownFile = join(sessionsDir, `${own}.jsonl`)
+    const siblingFile = join(sessionsDir, `${sibling}.jsonl`)
+    writeFileSync(ownFile, "")
+    writeFileSync(siblingFile, "")
+    // Sibling is more recently modified — mtime-latest would pick it.
+    utimesSync(ownFile, new Date("2026-05-13T10:00:00Z"), new Date("2026-05-13T10:00:00Z"))
+    utimesSync(siblingFile, new Date("2026-05-13T12:00:00Z"), new Date("2026-05-13T12:00:00Z"))
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.resumeMetadata).toEqual({ claudeResumeId: own })
+  })
+
+  it("returns prev unchanged when adapterSessionId's transcript is gone (falls back to ACP resume, never a sibling)", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    // Only a sibling's transcript exists on disk.
+    writeFileSync(join(sessionsDir, "bbbbbbbb-0000-0000-0000-000000000002.jsonl"), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: "aaaaaaaa-0000-0000-0000-000000000001",
+    }
+    // No claudeResumeId attached → decideRestartStrategy takes the `agent`
+    // branch and resumes at the ACP level via the real adapterSessionId.
+    await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
   })
 })
