@@ -41,6 +41,18 @@ const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 const REFRESH_GRANT_TYPE = "refresh_token"
 const DEFAULT_POLL_INTERVAL_S = 5
 
+/** Thrown by the device-code engine when `opts.refreshOnly` is set and no
+ *  fresh or refreshable credential is available — the only remaining path
+ *  would be an interactive ceremony, which `refreshOnly` callers explicitly
+ *  opt out of. Callers (e.g. `serve` boot on a headless host) catch this to
+ *  fall back to their own non-interactive behavior instead of hanging. */
+export class CeremonyRequiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "CeremonyRequiredError"
+  }
+}
+
 // ── response schema ───────────────────────────────────────────────────────────
 //
 // JSON crosses a trust boundary here (the AS controls the bytes), so the
@@ -216,6 +228,50 @@ export const deviceCodeFlowEngine: FlowEngine = {
       provider.audience,
     )
 
+    // Shared by both the ordinary cached path and `refreshOnly`: exchange a
+    // stored refresh_token for a fresh access token, persisting the result.
+    // Returns null (never throws) on a missing refresh_token or any grant
+    // failure, so both callers can decide what to do next.
+    async function tryRefresh(stored: StoredCredential): Promise<FlowResult | null> {
+      const refreshToken = metaString(stored.metadata, "refreshToken")
+      if (!refreshToken) return null
+      const refreshed = await refreshAccessToken(
+        tokenEndpoint,
+        refreshToken,
+        clientId,
+        opts.signal,
+      )
+      if (!refreshed) return null
+      return persistAndResult(store, ref, {
+        accessToken: refreshed.access_token,
+        expiresIn: refreshed.expires_in,
+        refreshToken: refreshed.refresh_token ?? refreshToken,
+        scope: refreshed.scope ?? metaString(stored.metadata, "scope"),
+        subject: refreshed.subject ?? metaString(stored.metadata, "subject"),
+        deviceLabel:
+          config.deviceLabel ?? metaString(stored.metadata, "deviceLabel"),
+        revocationId:
+          refreshed.revocation_id ?? metaString(stored.metadata, "revocationId"),
+      })
+    }
+
+    // `refreshOnly` — attempt only the cached/refresh path, never the
+    // interactive ceremony. Distinct from the ordinary cached path below so
+    // a refresh failure here throws instead of falling through.
+    if (opts.refreshOnly) {
+      const stored = await readStoreRefWithFallback(store, ref, legacyRef)
+      if (stored) {
+        if (!isExpired(stored)) {
+          return resultFromStored(stored)
+        }
+        const refreshed = await tryRefresh(stored)
+        if (refreshed) return refreshed
+      }
+      throw new CeremonyRequiredError(
+        `${provider.id}: no fresh or refreshable device-code credential — an interactive ceremony would be required, but refreshOnly was set`,
+      )
+    }
+
     // Cached path — the stored credential IS the access token (pat-class
     // persistence). A fresh (or expiry-less) credential short-circuits the
     // ceremony entirely; an expired one with a refresh_token is renewed via
@@ -226,29 +282,9 @@ export const deviceCodeFlowEngine: FlowEngine = {
         if (!isExpired(stored)) {
           return resultFromStored(stored)
         }
-        const refreshToken = metaString(stored.metadata, "refreshToken")
-        if (refreshToken) {
-          const refreshed = await refreshAccessToken(
-            tokenEndpoint,
-            refreshToken,
-            clientId,
-            opts.signal,
-          )
-          if (refreshed) {
-            return persistAndResult(store, ref, {
-              accessToken: refreshed.access_token,
-              expiresIn: refreshed.expires_in,
-              refreshToken: refreshed.refresh_token ?? refreshToken,
-              scope: refreshed.scope ?? metaString(stored.metadata, "scope"),
-              subject: refreshed.subject ?? metaString(stored.metadata, "subject"),
-              deviceLabel:
-                config.deviceLabel ?? metaString(stored.metadata, "deviceLabel"),
-              revocationId:
-                refreshed.revocation_id ?? metaString(stored.metadata, "revocationId"),
-            })
-          }
-          // refresh failed (expired / invalid_grant) — fall through to a ceremony
-        }
+        const refreshed = await tryRefresh(stored)
+        if (refreshed) return refreshed
+        // refresh failed (expired / invalid_grant) — fall through to a ceremony
       }
     }
 

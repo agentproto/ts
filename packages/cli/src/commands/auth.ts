@@ -35,7 +35,8 @@ import {
   readHost,
 } from "../util/credentials.js"
 import { CredentialsJsonStore } from "../util/credentials-store.js"
-import { defineAuthProvider, runAuthFlow } from "@agentproto/auth"
+import { buildTunnelAuthProvider, toHttpHost } from "../util/tunnel-auth-provider.js"
+import { runAuthFlow } from "@agentproto/auth"
 import {
   loadProviders,
   setProviderKey,
@@ -298,35 +299,16 @@ async function runAuthLogin(args: readonly string[]): Promise<number> {
   const label = values.label ?? `${userInfo().username}@${hostname()}`
   const requestedScope = values.scope ?? "tunnel:connect agent-cli:dispatch"
   const normalizedHost = normaliseHost(host)
-  const httpHost = toHttp(host)
-
-  // NOTE: --no-browser is parsed for CLI-surface compatibility, but can't be
-  // threaded through today — the device-code flow engine (@agentproto/auth)
-  // always best-effort-opens the verification URL itself; neither
-  // `FlowRunOptions` nor `DeviceCodeAuthConfig` expose an opt-out. The open
-  // is best-effort/non-fatal (silently ignored on headless hosts), so this
-  // is a UX-only gap, not a functional one.
+  const httpHost = toHttpHost(host)
 
   // A transient, per-host auth-provider handle — built fresh on every login
   // rather than registered, since the host is whatever `--host`/the config
   // says today. `runAuthFlow` does discovery (PRM chain, then
   // agentproto-host.json) and dispatches to the device-code engine, which
   // prints the user code + verification URL and polls to completion.
-  const provider = defineAuthProvider({
-    id: providerIdForHost(normalizedHost),
-    description: `Transient device-code auth provider for agentproto tunnel host ${normalizedHost}.`,
-    apiBase: httpHost,
-    audience: "tunnel",
-    auth: {
-      flow: "device-code",
-      clientId: "agentproto-cli",
-      scope: requestedScope,
-      deviceLabel: label,
-      tokenStore: {
-        keychain: "agentproto-daemon",
-        account: normalizedHost,
-      },
-    },
+  const provider = buildTunnelAuthProvider(host, {
+    label,
+    scope: requestedScope,
   })
 
   process.stdout.write(`agentproto auth: logging in to ${normalizedHost}…\n`)
@@ -335,6 +317,7 @@ async function runAuthLogin(args: readonly string[]): Promise<number> {
       server: httpHost,
       store: new CredentialsJsonStore(),
       force: true,
+      openBrowser: !values["no-browser"],
     })
   } catch (err) {
     process.stderr.write(
@@ -356,20 +339,6 @@ async function runAuthLogin(args: readonly string[]): Promise<number> {
       `  ${formatExpiry(cred)}${cred.subject ? `, subject ${cred.subject}` : ""}\n`
   )
   return 0
-}
-
-/** Derive a valid AIP cross-id (`/^[a-z0-9][a-z0-9._-]{1,79}$/`) from a host
- *  URL for the transient provider — the id is only used for logging /
- *  `provider.id` interpolation in the engine's ceremony output, never
- *  persisted or looked up by name. */
-function providerIdForHost(host: string): string {
-  const slug = host
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[._-]+/, "")
-    .slice(0, 74)
-  return `tunnel-${slug || "host"}`
 }
 
 // ── status ───────────────────────────────────────────────────────────
@@ -461,7 +430,7 @@ async function runAuthLogout(args: readonly string[]): Promise<number> {
   // on this machine even if the host is unreachable.
   let serverRevoked: "ok" | "skipped" | "failed" = "skipped"
   try {
-    const httpHost = toHttp(host)
+    const httpHost = toHttpHost(host)
     const discovery = await fetchJson<HostDiscovery>(
       `${httpHost}/.well-known/agentproto-host.json`
     )
@@ -506,18 +475,6 @@ async function pickDefaultHost(): Promise<string | null> {
   return best?.host ?? keys[0] ?? null
 }
 
-/**
- * The host URL the user passes is typically a wss:// (tunnel) URL.
- * The OAuth metadata document lives at the http(s) origin of the same
- * host. This converter assumes wss → https, ws → http; everything
- * else passes through.
- */
-function toHttp(host: string): string {
-  const trimmed = host.replace(/\/+$/, "")
-  if (trimmed.startsWith("wss://")) return "https://" + trimmed.slice(6)
-  if (trimmed.startsWith("ws://")) return "http://" + trimmed.slice(5)
-  return trimmed
-}
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { Accept: "application/json" } })

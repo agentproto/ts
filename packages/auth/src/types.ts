@@ -176,6 +176,14 @@ export interface FlowRunOptions {
    *  URL and user code are still printed to stderr so the ceremony can be
    *  completed manually. */
   openBrowser?: boolean
+  /** device-code flow only: attempt only the cached/refresh path (fresh
+   *  credential, or `grant_type=refresh_token` on an expired one) and NEVER
+   *  fall through to an interactive device-authorization ceremony. Throws
+   *  `CeremonyRequiredError` when no fresh or refreshable credential is
+   *  available. For callers (e.g. a headless `serve` boot) that must not
+   *  block on user interaction. Default `false` (omitted = ceremony allowed,
+   *  today's behavior). Ignored by other flows. */
+  refreshOnly?: boolean
 }
 
 /** A flow engine implements one auth protocol. Dispatch by provider.auth.flow —
