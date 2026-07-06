@@ -101,11 +101,15 @@
     "@agentproto/mcp-server": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/redaction": "workspace:*",
+    "@agentproto/sandbox": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
     "ws": "^8.18.0",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@agentproto/sandbox-e2b": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/driver": "workspace:*",

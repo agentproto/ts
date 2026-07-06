@@ -97,6 +97,15 @@ export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo }
 export { makeBrowserAdapterLister } from "./browser-adapters.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"
 export type {
+  SandboxProviderResolver,
+  SandboxProviderLister,
+  SandboxAdapterInfo,
+} from "./sandbox-adapters.js"
+export type {
+  SandboxProviderHandle,
+  SandboxProviderCapabilities,
+} from "./sandbox-providers/types.js"
+export type {
   AgentSessionLike,
   AgentStreamEvent,
   SessionDescriptor,
@@ -134,6 +143,11 @@ import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
 } from "./tunnel-adapters.js"
+import {
+  registerSandboxAdapterTools,
+  type SandboxProviderResolver,
+  type SandboxProviderLister,
+} from "./sandbox-adapters.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
@@ -283,6 +297,17 @@ export interface CreateGatewayOptions {
    * curated allowlist (`DEFAULT_ORCHESTRATOR_TOOLS`).
    */
   deferredTools?: { alwaysOn?: readonly string[] }
+  /**
+   * Optional sandbox provider resolver — overrides the sandbox family's
+   * default resolver (built-ins + `@agentproto/sandbox-<slug>` dynamic
+   * import) used by `list_sandbox_providers` / `setup_sandbox_provider`.
+   * Mirrors `resolveAgentAdapter`'s injection shape. Not yet consumed by
+   * `agent_start` — that lands with the `sandbox` field in a follow-up PR.
+   */
+  resolveSandboxProvider?: SandboxProviderResolver
+  /** Optional sandbox provider lister — mirrors `listAgentAdapters`.
+   *  Overrides the default catalog-driven lister behind `list_sandbox_providers`. */
+  listSandboxProviders?: SandboxProviderLister
 }
 
 /**
@@ -836,6 +861,17 @@ export async function createGateway(
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})
+    // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
+    // (list_sandbox_providers + setup_sandbox_provider). Pure additive —
+    // agent_start doesn't consume a sandbox provider yet.
+    await registerSandboxAdapterTools(server, {
+      ...(opts.resolveSandboxProvider
+        ? { resolveSandboxProvider: opts.resolveSandboxProvider }
+        : {}),
+      ...(opts.listSandboxProviders
+        ? { listSandboxProviders: opts.listSandboxProviders }
+        : {}),
+    })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
     // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under
     // ~/.agentproto and are never exposed by the list tool.
