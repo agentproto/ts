@@ -86,7 +86,9 @@ export class HarnessClient {
   /**
    * Multiplexed long-poll via `session_monitor`. `timeoutMs` is clamped to the
    * tool's 1 000–49 000 window; a clean timeout surfaces as
-   * `{ event: "timeout" }`.
+   * `{ timedOut: true, sessionIds }` with no `event` field at all — `event`
+   * is only ever set (to `"turn-end"|"awaiting-input"|"exited"`) on a real
+   * match. Callers must check `timedOut`, not `event`, to detect a timeout.
    */
   async waitForAny(
     sessionIds: string[],

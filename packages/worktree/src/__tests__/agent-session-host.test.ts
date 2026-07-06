@@ -12,6 +12,11 @@ function fakeClient(overrides: Partial<DaemonClient> = {}): DaemonClient {
   }
 }
 
+/** Real daemon shape for a clean `session_monitor` timeout — no `event` field. */
+function timedOutResult(sessionId: string) {
+  return { timedOut: true as const, sessionIds: [sessionId] }
+}
+
 describe("makeDaemonAgentSessionHost", () => {
   it("spawn calls agent_start (client.start) with cwd/workspaceSlug/label, returns the session id", async () => {
     const client = fakeClient()
@@ -61,13 +66,27 @@ describe("makeDaemonAgentSessionHost", () => {
       waitForAny: vi.fn(async () => {
         calls++
         return calls < 3
-          ? { sessionId: "sess_1", event: "timeout" as const }
+          ? timedOutResult("sess_1")
           : { sessionId: "sess_1", event: "turn-end" as const }
       }),
     })
     const host = makeDaemonAgentSessionHost(client)
     await host.sendPromptAndWait("sess_1", "do the thing")
     expect(client.waitForAny).toHaveBeenCalledTimes(3)
+  })
+
+  it("does not resolve after a single timed-out poll — only after a real match (regression: a real daemon timeout carries no `event` field at all, so checking `event !== \"timeout\"` resolves immediately on the first poll instead of continuing to poll)", async () => {
+    const client = fakeClient({
+      waitForAny: vi
+        .fn()
+        .mockResolvedValueOnce(timedOutResult("sess_1"))
+        .mockResolvedValueOnce({ sessionId: "sess_1", event: "turn-end" as const }),
+    })
+    const host = makeDaemonAgentSessionHost(client)
+
+    await host.sendPromptAndWait("sess_1", "do the thing")
+
+    expect(client.waitForAny).toHaveBeenCalledTimes(2)
   })
 
   it("close closes the underlying client", async () => {

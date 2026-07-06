@@ -69,10 +69,16 @@ export function makeDaemonAgentSessionHost(client: DaemonClient): DaemonAgentSes
   }
 }
 
-/** `session_monitor` long-polls cap at 49s; loop past `timeout` events for longer turns. */
+/**
+ * `session_monitor` long-polls cap at 49s; loop past timeouts for longer
+ * turns. A clean timeout comes back as `{ timedOut: true, sessionIds }` —
+ * there is no `event: "timeout"` on the wire, `event` is only ever set on a
+ * real match. Keep polling while `timedOut` is true; stop once it's
+ * falsy/absent (a real turn-end/awaiting-input/exited match).
+ */
 async function waitForSettled(client: DaemonClient, sessionId: string): Promise<void> {
   for (;;) {
     const result = await client.waitForAny([sessionId], { event: "any", timeoutMs: MAX_POLL_MS })
-    if (result.event !== "timeout") return
+    if (!result.timedOut) return
   }
 }
