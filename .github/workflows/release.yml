@@ -76,3 +76,54 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Checks the hand-maintained docs (docs/**, README.md, per-package
+      # README.md) for drift against what this release actually shipped, and
+      # edits any stale ones directly. Runs on Moonshot's kimi-k2.7-code via
+      # the Claude Agent SDK's gateway mode (see scripts/docs-check.mjs) —
+      # cheap enough to run on every release. "Machine proposes, human
+      # merges": like catalog-sync.yml, edits land as a draft PR, never a
+      # direct commit to main.
+      - name: Check docs for release drift
+        if: steps.changesets.outputs.published == 'true'
+        run: node scripts/docs-check.mjs
+        env:
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+
+      - name: Detect docs drift
+        id: docs-drift
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No doc drift found — nothing to sync."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "### Doc drift detected" >> "$GITHUB_STEP_SUMMARY"
+            git diff --stat >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open docs PR
+        if: steps.changesets.outputs.published == 'true' && steps.docs-drift.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: docs-sync/auto
+          base: main
+          commit-message: "docs: sync stale docs with latest release"
+          title: "docs: sync stale docs with latest release"
+          draft: true
+          body: |
+            Automated doc-drift check after the latest release, via
+            `scripts/docs-check.mjs` (Claude Agent SDK on Moonshot's
+            `kimi-k2.7-code`).
+
+            The agent compared each published package's CHANGELOG entry
+            against `docs/**`, the root `README.md`, and per-package
+            `README.md` files, and edited whatever it found factually stale.
+
+            Opened as a **draft** — review before merging, same as any
+            LLM-authored doc change.
+          labels: |
+            docs-sync
+            automated
+          delete-branch: true
