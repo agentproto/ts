@@ -36,7 +36,21 @@ import {
 } from "../util/credentials.js"
 import { CredentialsJsonStore } from "../util/credentials-store.js"
 import { buildTunnelAuthProvider, toHttpHost } from "../util/tunnel-auth-provider.js"
-import { runAuthFlow } from "@agentproto/auth"
+import {
+  runAuthFlow,
+  KeychainStore,
+  resolveStoreRef,
+  type AuthProviderHandle,
+  type CredentialStore,
+} from "@agentproto/auth"
+import {
+  authProvidersPath,
+  buildBrokerProvider,
+  defaultTokenStore,
+  loadAuthProviders,
+  removeAuthProviderDef,
+  setAuthProviderDef,
+} from "../util/auth-providers-store.js"
 import {
   loadProviders,
   setProviderKey,
@@ -62,6 +76,8 @@ export async function runAuth(args: readonly string[]): Promise<number> {
       return runAuthLogout(rest)
     case "provider":
       return runAuthProvider(rest)
+    case "cred":
+      return runAuthCred(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -82,6 +98,7 @@ Usage:
   agentproto auth status  [--host <url>] [--json]
   agentproto auth logout  [--host <url>]
   agentproto auth provider <set|list|rm> …   — LLM provider API keys
+  agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
 
 The default host is the one most recently logged into; on first use,
 \`--host\` is required. Examples:
@@ -256,6 +273,202 @@ async function runProviderRm(args: readonly string[]): Promise<number> {
 function maskKey(key: string): string {
   if (key.length <= 10) return "••••"
   return `${key.slice(0, 6)}…${key.slice(-4)}`
+}
+
+// ── broker creds (child-MCP auth) ─────────────────────────────────────
+
+const CRED_USAGE = `agentproto auth cred — broker credentials for child-MCP auth
+
+A brokered credential lets a spawned agent mount a Bearer-gated MCP server
+without the secret ever touching its config: store the token here, then spawn
+with mcpServers:[{ …, credentialRef:"<id>" }] — the daemon's CredentialBroker
+resolves the Authorization header at spawn. The def is saved to
+~/.agentproto/auth-providers.json (0600) and re-registered at every serve boot;
+the token itself lives in the OS keychain.
+
+Usage:
+  agentproto auth cred set <id> <token> --api-base <url> [--audience <aud>] [--description <text>]
+  agentproto auth cred list [--json]
+  agentproto auth cred rm  <id>
+
+--audience defaults to "mcp" (what the daemon requests for child-MCP creds).
+Restart a running daemon after set/rm to pick up the change.
+`
+
+async function runAuthCred(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case "set":
+      return runCredSet(rest)
+    case "list":
+    case "ls":
+      return runCredList(rest)
+    case "rm":
+    case "remove":
+    case "delete":
+      return runCredRm(rest)
+    case undefined:
+    case "--help":
+    case "-h":
+      process.stdout.write(CRED_USAGE)
+      return 0
+    default:
+      process.stderr.write(
+        `agentproto auth cred: unknown subcommand '${sub}'.\n\n${CRED_USAGE}`,
+      )
+      return 2
+  }
+}
+
+async function runCredSet(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: {
+      "api-base": { type: "string" },
+      audience: { type: "string" },
+      description: { type: "string" },
+    },
+  })
+  const [id, token] = positionals
+  const apiBase = values["api-base"]
+  if (!id || !token || !apiBase) {
+    process.stderr.write(
+      `agentproto auth cred set: usage: set <id> <token> --api-base <url> ` +
+        `[--audience <aud>] [--description <text>]\n`,
+    )
+    return 2
+  }
+  const audience = values.audience ?? "mcp"
+  const tokenStore = defaultTokenStore(id)
+
+  // Build the handle up front: validates the def against the AIP-50 schema AND
+  // derives the exact store ref the broker reads at spawn — so the key we write
+  // here is, by construction, the key `resolveHeaders` looks up.
+  let provider: AuthProviderHandle
+  try {
+    provider = buildBrokerProvider(id, {
+      apiBase,
+      audience,
+      description: values.description,
+      tokenStore,
+    })
+  } catch (err) {
+    process.stderr.write(
+      `agentproto auth cred set: invalid def — ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    )
+    return 2
+  }
+
+  const ref = resolveStoreRef(
+    provider.auth.tokenStore,
+    provider.apiBase,
+    provider.audience,
+  )
+  await new KeychainStore().write(ref, { value: token, kind: "pat" })
+  const path = await setAuthProviderDef(
+    id,
+    { apiBase, audience, flow: "pat", description: values.description, tokenStore },
+    new Date().toISOString(),
+  )
+  process.stdout.write(
+    `agentproto auth: ✓ stored ${id} broker credential (audience "${audience}")\n` +
+      `  token → OS keychain (${ref.path})\n` +
+      `  def   → ${path} (mode 0600)\n` +
+      `  mount it: agent_start mcpServers:[{ …, credentialRef:"${id}" }] — ` +
+      `restart a running daemon first.\n`,
+  )
+  return 0
+}
+
+async function runCredList(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+  const file = await loadAuthProviders()
+  const entries = Object.entries(file.providers)
+  if (values.json) {
+    // Metadata only — the token never lives in this file, so nothing to redact.
+    process.stdout.write(
+      JSON.stringify(
+        {
+          providers: entries.map(([id, e]) => ({
+            id,
+            audience: e.audience,
+            apiBase: e.apiBase,
+            flow: e.flow,
+            updatedAt: e.updatedAt,
+          })),
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+    return 0
+  }
+  if (entries.length === 0) {
+    process.stdout.write(
+      `No broker credentials. Add one:\n` +
+        `  agentproto auth cred set <id> <token> --api-base <url>\n`,
+    )
+    return 0
+  }
+  process.stdout.write(`Broker credentials (${authProvidersPath()}):\n`)
+  for (const [id, e] of entries) {
+    process.stdout.write(
+      `  ${id}  audience=${e.audience}  ${e.apiBase}  (set ${e.updatedAt})\n`,
+    )
+  }
+  return 0
+}
+
+async function runCredRm(args: readonly string[]): Promise<number> {
+  const id = args[0]
+  if (!id) {
+    process.stderr.write(`agentproto auth cred rm: usage: rm <id>\n`)
+    return 2
+  }
+  const file = await loadAuthProviders()
+  const entry = file.providers[id]
+  // Best-effort keychain delete, using the SAME ref derivation as set/read so
+  // we target the exact stored key. The macOS KeychainStore has no delete
+  // backend — there the token is left, but it's inert once the def is removed
+  // (the broker throws on an unregistered id) and overwritten on re-add.
+  let tokenCleared = false
+  if (entry) {
+    try {
+      const provider = buildBrokerProvider(id, entry)
+      const ref = resolveStoreRef(
+        provider.auth.tokenStore,
+        provider.apiBase,
+        provider.audience,
+      )
+      const store: CredentialStore = new KeychainStore()
+      if (store.delete) {
+        await store.delete(ref)
+        tokenCleared = true
+      }
+    } catch {
+      /* keychain miss / no delete backend — fall through to def removal */
+    }
+  }
+  const existed = await removeAuthProviderDef(id)
+  process.stdout.write(
+    existed
+      ? `agentproto auth: ✓ removed ${id} broker credential ${
+          tokenCleared
+            ? "(def + keychain token)"
+            : "(def; keychain token left — inert once de-registered)"
+        }\n`
+      : `agentproto auth: no broker credential for ${id}\n`,
+  )
+  return 0
 }
 
 // ── login ────────────────────────────────────────────────────────────
