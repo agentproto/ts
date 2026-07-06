@@ -115,10 +115,10 @@ export {
   type SessionObserver,
 } from "./session-observer.js"
 export {
-  langfuseSessionTracer,
-  type LangfuseSessionTracer,
-  type LangfuseSessionTracerConfig,
-} from "./langfuse-session-tracer.js"
+  getMcpCredentialDeps,
+  setMcpCredentialDeps,
+  type McpCredentialDeps,
+} from "./mcp-credential-deps.js"
 export type {
   UsageSource,
   SessionUsage,

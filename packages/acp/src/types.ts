@@ -46,6 +46,16 @@ export interface AcpMcpServer {
   name: string
   transport: "stdio" | "http" | "sse"
   ref?: string
+  /** Static HTTP headers sent with every request to an `http` or `sse`
+   *  MCP server. Useful for fixed auth tokens or content-negotiation
+   *  headers that are safe to embed in config. */
+  headers?: Record<string, string>
+  /** Brokered credential path resolved at spawn time into additional
+   *  `headers` (typically an `Authorization` header). The path is passed
+   *  to the daemon's credential broker, so the actual secret never lives
+   *  in env or config. Mutually usable with `headers`; brokered headers
+   *  win on collision. */
+  credentialRef?: string
 }
 
 /** AIP-44 extensions on the agentskills.io baseline. Lives under `metadata.aip44`. */

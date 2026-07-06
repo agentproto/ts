@@ -63,9 +63,11 @@ import {
   sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
   injectProviderKeysIntoEnv,
+  setMcpCredentialDeps,
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
+import { CredentialBroker, KeychainStore, getAuthProvider } from "@agentproto/auth"
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
@@ -385,6 +387,25 @@ export async function runServe(args: readonly string[]): Promise<number> {
       install: a.install,
       config: a.config,
     }))
+
+  // ── MCP credential broker (dependency-injected into runtime) ──
+  // Runtime is intentionally auth-free; the CLI wires the broker here
+  // so `agent_start.mcpServers[].credentialRef` resolves to an
+  // Authorization header at spawn time. Failures (missing provider,
+  // no keychain on non-macOS, expired credential) are caught by the
+  // runtime overlay and logged as warnings — they never kill a spawn.
+  const credentialBroker = new CredentialBroker({
+    store: new KeychainStore(),
+    getProvider: getAuthProvider,
+  })
+  setMcpCredentialDeps({
+    resolveMcpCredentialHeaders: ({ credentialRef, signal }) =>
+      credentialBroker.resolveHeaders({
+        path: credentialRef,
+        audience: "mcp",
+        signal,
+      }),
+  })
 
   // ── boot the gateway ──
   // Empty specs + noop buildAgent. The playground gateway script

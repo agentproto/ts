@@ -19,14 +19,14 @@ import type { AcpMcpServer, StreamEvent } from "../types.js"
 const PROTOCOL_VERSION_DEFAULT = 1
 
 /**
- * Map our internal `AcpMcpServer` (`{ name, transport, ref }`) onto the
- * `@agentclientprotocol/sdk` wire shape expected by
+ * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef }`)
+ * onto the `@agentclientprotocol/sdk` wire shape expected by
  * `session/new.mcpServers` (and `session/load.mcpServers`).
  *
  * The ACP `McpServer` union is transport-tagged and field-named
  * differently from our compact internal form:
- *   - http → `{ type: "http", name, url, headers: [] }`
- *   - sse  → `{ type: "sse",  name, url, headers: [] }`
+ *   - http → `{ type: "http", name, url, headers: [{ name, value }, …] }`
+ *   - sse  → `{ type: "sse",  name, url, headers: [{ name, value }, …] }`
  *   - stdio → `{ name, command, args: [], env: [] }` (untagged variant)
  *
  * Without this mapping the raw `{ transport, ref }` entry reaches the
@@ -53,20 +53,28 @@ function toAcpMcpServer(server: unknown): unknown {
   // Not our `{ name, transport, ref }` shape → nothing to map.
   if (typeof transport !== "string") return entry
 
-  const { name, ref } = entry as Pick<AcpMcpServer, "name" | "ref"> & {
-    transport: string
-  }
+  const name = entry.name
+  const ref = entry.ref
+  const headers = entry.headers
 
   switch (transport) {
     case "http":
-      return { type: "http", name, url: ref ?? "", headers: [] }
+      return { type: "http", name, url: ref ?? "", headers: toAcpHeaders(headers) }
     case "sse":
-      return { type: "sse", name, url: ref ?? "", headers: [] }
+      return { type: "sse", name, url: ref ?? "", headers: toAcpHeaders(headers) }
     case "stdio":
       return { name, command: ref ?? "", args: [], env: [] }
     default:
       return entry
   }
+}
+
+function toAcpHeaders(headers: unknown): Array<{ name: string; value: string }> {
+  if (!headers || typeof headers !== "object") return []
+  return Object.entries(headers).map(([name, value]) => ({
+    name,
+    value: typeof value === "string" ? value : String(value),
+  }))
 }
 
 export interface AcpClientOptions {
