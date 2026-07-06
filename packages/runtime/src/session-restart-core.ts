@@ -59,7 +59,10 @@ export async function restartAgentSession(
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
 ): Promise<RestartAgentSessionResult> {
-  const augmented = await augmentWithFsResume(prev)
+  // `forceAgentResume` never consults `augmented` (see the `resumeVia`
+  // comment below) — skip the FS probe entirely rather than pay for I/O
+  // whose result is discarded.
+  const augmented = opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
   const strategy = opts.forceAgentResume
     ? ({ kind: "agent", resumeSessionId: prev.adapterSessionId } as const)
     : decideRestartStrategy(augmented)
@@ -83,13 +86,12 @@ export async function restartAgentSession(
     throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
   }
 
-  let cwd = prev.cwd
-  if (!cwd) {
-    cwd = process.cwd()
+  if (!prev.cwd) {
     console.warn(
-      `[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${cwd}`,
+      `[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${process.cwd()}`,
     )
   }
+  const cwd = prev.cwd ?? process.cwd()
 
   const spawnWithResume = async (
     resumeSessionId?: string,

@@ -293,16 +293,62 @@ describe("CronScheduler", () => {
 
   // ── prompt-session action ──────────────────────────────────────────
 
-  function makeMockRegistry(desc: { processAlive?: boolean } | undefined): {
+  interface MockDesc {
+    id?: string
+    processAlive?: boolean
+    busy?: boolean
+    adapterSlug?: string
+    adapterSessionId?: string
+    cwd?: string
+    workspaceSlug?: string
+  }
+
+  function makeMockRegistry(desc: MockDesc | undefined): {
     registry: SessionsRegistry
     sendPrompt: ReturnType<typeof vi.fn>
+    spawnAgent: ReturnType<typeof vi.fn>
+    pulseActivity: ReturnType<typeof vi.fn>
   } {
     const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const spawnAgent = vi.fn().mockImplementation(input => ({
+      id: "sess_resumed",
+      processAlive: true,
+      busy: false,
+      status: "running",
+      ...input,
+    }))
+    const pulseActivity = vi.fn()
     const registry = {
       get: vi.fn().mockReturnValue(desc),
       sendPrompt,
+      spawnAgent,
+      pulseActivity,
     } as unknown as SessionsRegistry
-    return { registry, sendPrompt }
+    return { registry, sendPrompt, spawnAgent, pulseActivity }
+  }
+
+  /** Fake `AgentAdapterResolver` for the auto-resume tests — no
+   *  RESUME_STRATEGIES entry for "hermes", so `augmentWithFsResume`
+   *  short-circuits without touching the filesystem. */
+  function makeMockAdapterResolver(): {
+    resolveAgentAdapter: (
+      slug: string,
+    ) => Promise<{ startSession: (opts: { cwd: string; resumeSessionId?: string }) => Promise<{ sessionId: string }> } | null>
+    calls: Array<{ adapter: string; resumeSessionId?: string }>
+  } {
+    const calls: Array<{ adapter: string; resumeSessionId?: string }> = []
+    return {
+      calls,
+      resolveAgentAdapter: async slug => ({
+        async startSession(opts) {
+          calls.push({
+            adapter: slug,
+            ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+          })
+          return { sessionId: `${slug}_resumed_${calls.length}` }
+        },
+      }),
+    }
   }
 
   it("create() — accepts a prompt-session action shape", () => {
@@ -371,7 +417,7 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("run() — prompt-session action fails cleanly when the session is dead", async () => {
+  it("run() — prompt-session action fails cleanly when the session is dead and no resolveAgentAdapter is wired", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { registry, sendPrompt } = makeMockRegistry({ processAlive: false })
@@ -387,7 +433,108 @@ describe("CronScheduler", () => {
       expect(result).toBeDefined()
       expect(result!.ok).toBe(false)
       expect(result!.summary).toMatch(/not alive/)
+      expect(result!.summary).toMatch(/not enabled/)
       expect(sendPrompt).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action skips cleanly when the session is busy (mid-turn)", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt } = makeMockRegistry({ processAlive: true, busy: true })
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_busy", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toMatch(/busy/)
+      expect(sendPrompt).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action auto-resumes a dead session via ACP and self-heals the job's sessionId", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt, spawnAgent } = makeMockRegistry({
+      id: "sess_dead",
+      processAlive: false,
+      adapterSlug: "hermes",
+      adapterSessionId: "hermes-conv-1",
+      cwd: process.cwd(),
+      workspaceSlug: "default",
+    })
+    const { resolveAgentAdapter, calls } = makeMockAdapterResolver()
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace, resolveAgentAdapter })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toMatch(/resumed as 'sess_resumed'/)
+      expect(result!.summary).toMatch(/resumed via ACP/)
+
+      // Resumed via ACP with the prior conversation's own session id —
+      // continuity intact, not a blank fresh spawn.
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.resumeSessionId).toBe("hermes-conv-1")
+      expect(spawnAgent).toHaveBeenCalledTimes(1)
+
+      // The new session got the follow-up prompt, not the dead one.
+      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "status?")
+
+      // Self-heal: the job's persisted action now targets the new id, so
+      // the NEXT tick doesn't retry a session that no longer exists.
+      expect(scheduler.get(job.id)?.action).toMatchObject({ sessionId: "sess_resumed" })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — auto-resume reports no continuity when the dead session never captured an adapterSessionId", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    // No `adapterSessionId` — simulates a session that died before its
+    // first turn, so there was never anything to resume from. The fix
+    // in fb652fa is what makes this honestly report "no continuity"
+    // instead of claiming a resume happened.
+    const { registry, sendPrompt } = makeMockRegistry({
+      id: "sess_dead",
+      processAlive: false,
+      adapterSlug: "hermes",
+      cwd: process.cwd(),
+      workspaceSlug: "default",
+    })
+    const { resolveAgentAdapter, calls } = makeMockAdapterResolver()
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace, resolveAgentAdapter })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toMatch(/fresh spawn, no continuity/)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.resumeSessionId).toBeUndefined()
+      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "status?")
     } finally {
       scheduler.shutdown()
     }
