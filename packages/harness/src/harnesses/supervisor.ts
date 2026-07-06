@@ -91,7 +91,7 @@ export async function createSupervisorHarness(
       if (childIds.length === 0) {
         return {
           sessionId: desc.id,
-          event: "timeout",
+          timedOut: true,
         }
       }
       // session_monitor accepts max 20 session IDs — chunk & race

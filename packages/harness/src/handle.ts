@@ -21,7 +21,7 @@ export interface MakeHandleMeta {
  *
  * WP2: implement `send` (→ client.prompt), `waitForTurn` (→ client.waitForAny
  * with `event: "any"` to catch `turn-end`, `awaiting-input`, and `exited`),
- * timeout → `{ event: "timeout" }`), `ask` (send + waitForTurn + output),
+ * timeout → `{ timedOut: true }`), `ask` (send + waitForTurn + output),
  * `output` (→ client.output), `kill` (→ client.kill).
  */
 export function makeHandle(
@@ -54,7 +54,7 @@ export function makeHandle(
       })
       await client.prompt(meta.sessionId, prompt)
       const result = await waitPromise
-      if (result.event === "timeout") return "[timeout]"
+      if (result.timedOut) return "[timeout]"
       return client.output(meta.sessionId)
     },
 

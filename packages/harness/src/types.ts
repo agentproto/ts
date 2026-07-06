@@ -8,20 +8,23 @@
  * `@agentproto/runtime` (`session-tools.ts`, `orchestration-tools.ts`).
  */
 
-/** Lifecycle event a turn can settle on. `timeout` is harness-side only. */
-export type TurnEvent =
-  | "turn-end"
-  | "awaiting-input"
-  | "exited"
-  | "any"
-  | "timeout"
+/** Lifecycle event a turn can settle on. */
+export type TurnEvent = "turn-end" | "awaiting-input" | "exited" | "any"
 
-/** Result of `AgentHandle.waitForTurn` / `session_monitor`. */
+/**
+ * Result of `AgentHandle.waitForTurn` / `session_monitor`. On a real match,
+ * `event` is one of `"turn-end"|"awaiting-input"|"exited"` and `timedOut` is
+ * absent/falsy. On a clean timeout, the daemon returns `{ timedOut: true,
+ * sessionIds }` with no `event` field at all — there is no `"timeout"`
+ * literal on the wire.
+ */
 export interface TurnResult {
-  sessionId: string
-  event: TurnEvent
+  sessionId?: string
+  event?: TurnEvent
   status?: string
   awaitingInput?: boolean
+  timedOut?: boolean
+  sessionIds?: string[]
 }
 
 /**
