@@ -9,7 +9,7 @@
  *   "description": "Operate and supervise a fleet ...",
  *   "version": "0.3.0",
  *   "skills": ["slug1", "slug2", ...],
- *   "sourceDir": "../../.claude/skills",   // optional; omit when source lives in a private/external repo
+ *   "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",  // optional; use env-var form when source lives in a private/external repo
  *   "author": { "name": "Name" },
  *   "keywords": ["kw1", "kw2", ...]
  * }
