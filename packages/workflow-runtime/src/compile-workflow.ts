@@ -288,6 +288,17 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
       return { kind: "subworkflow", id, workflow: compiledChild }
     }
 
+    case "agent": {
+      // `agent` is not a declarative manifest kind — it only reaches the
+      // compiler from an ENTRY-based handle, where it is already a runtime
+      // AgentStep (function-valued adapter/cwd/prompt selectors). There is
+      // nothing declarative to resolve, so pass it through unchanged. This is
+      // what lets a WORKFLOW.md whose entry.mjs is a chain of agent steps run
+      // via startFromFile. `step` is `any`, so no cast is needed.
+      const agent: RunStep = step
+      return agent
+    }
+
     case "branch":
       throw new WorkflowCompileError(
         `goto-style 'branch' (step '${id}') is unsupported in the structured ` +
