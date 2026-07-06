@@ -34,9 +34,6 @@ export interface GitRunOpts {
   env?: Record<string, string>
 }
 
-/** The env var git reads for the `http.https://github.com/.extraheader` URL. */
-export const GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
-
 /**
  * Build the env block that injects the GitHub token into git's HTTPS auth.
  * We set `GIT_HTTP_EXTRAHEADER` (a git-credential-env helper convention)

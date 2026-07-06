@@ -28,7 +28,9 @@ export type SandboxProviderFactory = (
 
 const LOCAL_SLUG = "local"
 
-const LOCAL_CAPABILITIES: SandboxProviderCapabilities = {
+/** Capabilities every provider exposes today — identical across the built-in
+ *  local passthrough and the third-party (e2b) wrapper until they diverge. */
+const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   networkEgress: true,
   mounts: false,
   lifecyclePause: false,
@@ -46,7 +48,7 @@ export const BUILTIN_SANDBOX_PROVIDERS: Record<string, SandboxProviderFactory> =
     description:
       "Boots a real agentproto daemon on 127.0.0.1 in a fresh temp workspace — no cloud credentials needed.",
     requiresSetup: false,
-    capabilities: LOCAL_CAPABILITIES,
+    capabilities: CAPABILITIES_TODAY,
     async check(): Promise<boolean> {
       return true
     },
@@ -63,13 +65,6 @@ interface ThirdPartySandboxDescriptor {
   description: string
   capabilities: SandboxProviderCapabilities
   setupFields: readonly SetupField[]
-}
-
-const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
-  networkEgress: true,
-  mounts: false,
-  lifecyclePause: false,
-  readOnly: false,
 }
 
 const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor> = {
