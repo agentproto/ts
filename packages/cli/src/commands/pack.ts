@@ -22,10 +22,15 @@
  * frontmatter, regenerates .claude-plugin/plugin.json and README.md, and
  * appends a changelog entry when the version is bumped.
  *
- * When the manifest's sourceDir is a relative path that lives in a
- * *different* git repo from the packager itself (e.g. agentik-studio/.claude/skills
- * vs agentproto/ts), relative resolution will fail. Pass --source <absolute>
- * to override the manifest value.
+ * When the manifest's sourceDir lives in a *different* git repo from the
+ * packager itself (e.g. agentik-studio/.claude/skills vs agentproto/ts),
+ * relative resolution will fail. Two portable options, in precedence order:
+ *   1. --source <absolute> — one-off override, wins over everything.
+ *   2. sourceDir: "${SOME_ENV_VAR}/.claude/skills" — the manifest expands
+ *      `${VAR}` against the environment before resolving, so the same
+ *      manifest works on any machine that sets that var (e.g.
+ *      AGENTIK_STUDIO_ROOT=/path/to/agentik-studio in your shell profile).
+ *      Referencing an unset var is a hard error, not a silent path.
  *
  * Relationship to install-skill.ts:
  *   pack skill (this)    → assembles a versioned pack directory from source
@@ -45,6 +50,23 @@ import { pathExists } from "./skill-install/shared.js"
 import type { SkillInfo } from "./skill-install/types.js"
 
 // ── types ────────────────────────────────────────────────────────────────
+
+/**
+ * Expands `${VAR}` references in a manifest sourceDir against process.env.
+ * An unset var is a hard error — a silently-empty substitution would turn
+ * into a confusing "SOURCE MISSING" for an unrelated-looking path.
+ */
+function expandEnvVars(input: string): string {
+  return input.replace(/\$\{(\w+)\}/g, (_match, name: string) => {
+    const value = process.env[name]
+    if (value === undefined) {
+      throw new Error(
+        `agentproto pack skill: manifest sourceDir references \${${name}}, but that environment variable is not set.`,
+      )
+    }
+    return value
+  })
+}
 
 interface PackManifest {
   name: string
@@ -146,7 +168,7 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
 
   const sourceDir = values.source
     ? resolve(process.cwd(), expandHome(values.source))
-    : resolve(manifestDir, manifest.sourceDir as string)
+    : resolve(manifestDir, expandEnvVars(manifest.sourceDir as string))
   const outDir = resolve(process.cwd(), values.out)
 
   // Determine the effective version
