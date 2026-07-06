@@ -86,12 +86,9 @@ export async function restartAgentSession(
     throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
   }
 
-  if (!prev.cwd) {
-    console.warn(
-      `[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${process.cwd()}`,
-    )
-  }
-  const cwd = prev.cwd ?? process.cwd()
+  let cwd = prev.cwd
+  if (!cwd) console.warn(`[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${process.cwd()}`)
+  cwd ??= process.cwd()
 
   const spawnWithResume = async (
     resumeSessionId?: string,
