@@ -252,7 +252,20 @@ jobs:
         run: |
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
-          if git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
+          #
+          # The reviewer's own changeset commit re-triggers CI (it can't use
+          # [skip ci] — that token rides into the squash-merge body and skips the
+          # Release workflow, see the "Commit changeset" step). That re-run would
+          # otherwise review byte-identical code a second time: the first run
+          # already reviewed it and mirrored the "Agentic review"/"Changeset
+          # present?" statuses onto this HEAD (see "Post explicit statuses"), and
+          # the gate below treats a bypass as success. So skip the redundant
+          # second review when HEAD is exactly that changeset commit. (Build+test
+          # / hygiene still re-run — cheap, and the code is unchanged anyway.)
+          if [ "$(git log -1 --format='%s')" = "chore: agentic reviewer — changeset" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "HEAD is the reviewer's changeset commit — skipping the re-review."
+          elif git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Local-review marker found — skipping the cloud reviewer."
           else
