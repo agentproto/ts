@@ -114,13 +114,8 @@ function resolveAuthors(
       "name" in e && "email" in e &&
       typeof e.name === "string" && typeof e.email === "string",
   )
-  if (named.length === 0) {
-    return {
-      name: "agentproto",
-      email: "agentproto@users.noreply.github.com",
-      trailers: [],
-    }
-  }
+  // `primary` is `undefined` when `named` is empty (noUncheckedIndexedAccess);
+  // this single guard covers the no-valid-identity case AND narrows the type.
   const [primary, ...rest] = named
   if (!primary) {
     return {
