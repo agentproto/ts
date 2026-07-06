@@ -119,7 +119,7 @@ export async function runTurn(
       // a malformed dispatcher shouldn't take down the loop.
       continue
     }
-    const executor = ports.executors.get(participant.executor)
+    const executor = ports.executors.get(participantId)
     if (!executor) {
       // Manifest declared a participant whose executor isn't registered.
       // Skip; misconfiguration shows up in logs but the loop survives.

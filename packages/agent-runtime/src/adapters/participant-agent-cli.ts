@@ -8,6 +8,7 @@
  */
 
 import { readFile } from "node:fs/promises"
+import { resolve as resolvePath } from "node:path"
 import matter from "gray-matter"
 import { spawnWithStdin } from "@agentproto/cli-exec"
 import type {
@@ -27,6 +28,8 @@ export type AgentCliParticipantOptions = {
   readonly args?: readonly string[]
   /** Working directory. Defaults to process.cwd(). */
   readonly cwd?: string
+  /** Manifest base directory; relative role paths resolve against this. */
+  readonly baseDir?: string
   /** Hard timeout in ms. Default 90000. */
   readonly timeoutMs?: number
   /** Optional output parser — if returns null, content falls back to raw stdout. */
@@ -41,7 +44,7 @@ export class AgentCliParticipant implements ParticipantExecutor {
   async executeTurn(
     input: ParticipantExecuteInput
   ): Promise<ParticipantExecuteOutput> {
-    const prompt = await assemblePrompt(input)
+    const prompt = await assemblePrompt(input, this.opts.baseDir)
     const stdout = await spawnWithStdin({
       command: this.opts.command,
       args: this.opts.args ?? [],
@@ -57,10 +60,11 @@ export class AgentCliParticipant implements ParticipantExecutor {
 }
 
 async function assemblePrompt(
-  input: ParticipantExecuteInput
+  input: ParticipantExecuteInput,
+  baseDir?: string
 ): Promise<string> {
   const roleText = input.participant.role
-    ? await loadRole(input.participant.role)
+    ? await loadRole(input.participant.role, baseDir)
     : ""
 
   const transcript = input.recentTurns
@@ -81,10 +85,11 @@ async function assemblePrompt(
 // in normal sentences ("I am an AI/ML reviewer").
 const ROLE_FILE_EXTENSIONS = [".md", ".markdown", ".txt"]
 
-async function loadRole(roleField: string): Promise<string> {
+async function loadRole(roleField: string, baseDir?: string): Promise<string> {
   if (!looksLikeRoleFile(roleField)) return roleField
+  const path = baseDir ? resolvePath(baseDir, roleField) : roleField
   try {
-    const raw = await readFile(roleField, "utf8")
+    const raw = await readFile(path, "utf8")
     // Strip optional YAML frontmatter — lets a Claude Code agent
     // definition file (.claude/agents/*.md) double as a swarm role
     // without ferrying the agent's metadata into the prompt.
@@ -97,7 +102,7 @@ async function loadRole(roleField: string): Promise<string> {
     // doesn't crash on a typo.
     const code = (err as NodeJS.ErrnoException).code
     process.stderr.write(
-      `agent-cli participant: role path '${roleField}' not readable (${code ?? "unknown"}); using the literal string as inline role text.\n`
+      `agent-cli participant: role path '${roleField}' (resolved to ${path}) not readable (${code ?? "unknown"}); using the literal string as inline role text.\n`
     )
     return roleField
   }

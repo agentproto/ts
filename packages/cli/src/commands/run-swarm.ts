@@ -210,6 +210,7 @@ function buildParticipants(
     displayName: p.displayName ?? p.id,
     executor: p.executor,
     role: p.role,
+    config: p.config,
     meta: p.meta,
   }))
 }
@@ -219,15 +220,18 @@ async function buildExecutors(
   ctx: AdapterContext
 ): Promise<ReadonlyMap<string, ParticipantExecutor>> {
   const map = new Map<string, ParticipantExecutor>()
-  const kinds = new Set(manifest.participants.map((p) => p.executor))
-  for (const kind of kinds) {
-    const factory = getExecutorFactory(kind)
+  for (const p of manifest.participants) {
+    const factory = getExecutorFactory(p.executor)
     if (!factory) {
       throw new Error(
-        `unknown executor kind '${kind}'. Registered kinds: [${listRegisteredKinds().executors.join(", ") || "(none)"}]. Pass --plugin <module-id> or add the executor's package to ~/.agentproto/config.json plugins[].`
+        `unknown executor kind '${p.executor}'. Registered kinds: [${listRegisteredKinds().executors.join(", ") || "(none)"}]. Pass --plugin <module-id> or add the executor's package to ~/.agentproto/config.json plugins[].`
       )
     }
-    map.set(kind, await factory({ kind }, ctx))
+    const config: AdapterConfig = {
+      kind: p.executor,
+      ...(p.config ?? {}),
+    }
+    map.set(p.id, await factory(config, ctx))
   }
   return map
 }

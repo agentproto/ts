@@ -36,20 +36,34 @@ export function registerBuiltins(): void {
     return new FileStateStore({ dir: resolvePath(ctx.baseDir, dir) })
   })
 
-  registerExecutor("agent-cli", (cfg) => buildAgentCli(cfg))
+  registerExecutor("agent-cli", (cfg, ctx) => buildAgentCli(cfg, ctx))
 }
 
-function buildAgentCli(cfg: AdapterConfig): AgentCliParticipant {
+function buildAgentCli(cfg: AdapterConfig, ctx: AdapterContext): AgentCliParticipant {
   const command = typeof cfg.command === "string" ? cfg.command : "claude"
+  const defaultArgs =
+    command === "claude"
+      ? ["--print", "--output-format=json", "--permission-mode", "bypassPermissions"]
+      : ["--print", "--output-format=json"]
   const args = Array.isArray(cfg.args)
     ? cfg.args.filter((a): a is string => typeof a === "string")
-    : ["--print", "--output-format=json"]
+    : defaultArgs
   const useClaudeJson = cfg.parseJson !== false && command === "claude"
+  const model = typeof cfg.model === "string" ? cfg.model : undefined
+  const finalArgs =
+    model && command === "claude" && !hasModelFlag(args)
+      ? [...args, "--model", model]
+      : args
   return new AgentCliParticipant({
     command,
-    args,
+    args: finalArgs,
     parseOutput: useClaudeJson ? parseClaudeJsonOutput : undefined,
+    baseDir: ctx.baseDir,
   })
+}
+
+function hasModelFlag(args: readonly string[]): boolean {
+  return args.some((a) => a === "--model" || a.startsWith("--model="))
 }
 
 // Suppress unused-context warning on registrations that don't read it.
