@@ -251,6 +251,11 @@ export const modeSchema = z.object({
   // Honest support status surfaced to clients. Absent ⇒ "active".
   status: z.enum(["active", "noop", "planned"]).optional(),
   status_note: z.string().optional(),
+  // How the host activates this mode: "bin_args" (default, argv/env
+  // composed at spawn) | "config" (no CLI surface — forwarded to the ACP
+  // arm's connect({mode}) and applied via session/set_config_option
+  // configId:"mode", e.g. opencode).
+  apply: z.enum(["bin_args", "config"]).optional(),
 }).strict()
 
 const optionSchema = z.object({

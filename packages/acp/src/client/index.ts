@@ -154,6 +154,15 @@ export interface AcpClient {
      * Omit to keep the model's own default.
      */
     effort?: string
+    /**
+     * Mode to select via `session/set_config_option` after `newSession`,
+     * for ACP servers that model mode selection as a session config
+     * option (`configId:"mode"`) instead of a CLI flag — e.g. opencode.
+     * Best-effort, same as `model`/`effort`: a rejection is warned about
+     * and dropped rather than failing the spawn. Omit to keep the
+     * agent's own default mode.
+     */
+    mode?: string
   }): Promise<AcpClientSession>
   /**
    * Reattach to an existing session by id. Available only when the
@@ -293,6 +302,25 @@ export async function createAcpClient(
           // must never kill the spawn — effort is silently ignored instead.
           console.warn(
             `[acp] set_config_option effort="${params.effort}" rejected by server ` +
+              `(best-effort): ${configOptionErrorDetail(err)}`,
+          )
+        }
+      }
+      if (params.mode) {
+        try {
+          await connection.setSessionConfigOption({
+            configId: "mode",
+            value: params.mode,
+            sessionId,
+          } as never)
+          options.onActivity?.()
+        } catch (err) {
+          // Best-effort: this ACP server does not support the "mode" config
+          // option, or doesn't recognize the requested mode id. A rejected
+          // set_config_option must never kill the spawn — mode is silently
+          // ignored (the session keeps whatever mode the agent defaults to).
+          console.warn(
+            `[acp] set_config_option mode="${params.mode}" rejected by server ` +
               `(best-effort): ${configOptionErrorDetail(err)}`,
           )
         }

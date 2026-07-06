@@ -244,6 +244,19 @@ export interface AgentCliMode {
   status?: AgentCliModeStatus
   /** Human-readable reason backing `status` (e.g. what was measured). */
   status_note?: string
+  /**
+   * How the host activates this mode at session start:
+   *   - "bin_args" (default) — apply via this mode's `bin_args_prepend` /
+   *     `bin_args_append` / `env`, composed into argv/env at spawn time.
+   *     Preserves every existing adapter's behavior unchanged.
+   *   - "config" — this CLI has no argv/env surface for mode selection;
+   *     instead the mode id is forwarded to the ACP arm's `connect({mode})`
+   *     and applied via `session/set_config_option` with `configId:"mode"`
+   *     after `newSession` (e.g. opencode). `bin_args_prepend` /
+   *     `bin_args_append` / `env` are ignored for a mode declaring this.
+   * Omit → "bin_args".
+   */
+  apply?: "bin_args" | "config"
 }
 
 export type AgentCliOptionType = "boolean" | "integer" | "string" | "enum"
@@ -497,6 +510,16 @@ export interface AgentCliConnectOptions {
    * `session/set_config_option` with `configId:"effort"` on ACP arms.
    */
   effort?: string
+  /**
+   * Mode to activate at session start, for ACP arms whose CLI models
+   * mode selection as a session config option rather than an argv/env
+   * surface (`AgentCliMode.apply === "config"`, e.g. opencode). Applied
+   * via `session/set_config_option` with `configId:"mode"` immediately
+   * after `newSession`, best-effort like `model`/`effort`. Adapters that
+   * apply mode via `bin_args`/`env` instead (claude-code) leave this
+   * unset and are unaffected.
+   */
+  mode?: string
   /**
    * Called on ANY adapter-process activity observed by the protocol
    * arm — incoming ACP `session/update` notifications (even ones that

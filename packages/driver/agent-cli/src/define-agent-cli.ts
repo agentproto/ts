@@ -189,6 +189,20 @@ export function createAgentCliRuntime(
       const modelApply = definition.models?.apply ?? "config"
       const configModel =
         optModel && modelApply === "config" ? String(optModel) : undefined
+      // Mode-selection strategy (AgentCliMode.apply, default "bin_args"):
+      //   "bin_args" → the mode's argv/env patch (already composed above)
+      //               is how the CLI picks the mode — no ACP config to send.
+      //   "config"   → the CLI has no argv/env surface for this mode (e.g.
+      //               opencode's plan/build); compose.ts already skipped its
+      //               bin_args/env, so forward the mode id to the ACP arm's
+      //               connect({mode}) instead, applied via
+      //               session/set_config_option(configId:"mode").
+      const requestedModeId = opts?.config?.mode
+      const requestedModeDecl = requestedModeId
+        ? (definition.modes ?? []).find(m => m.id === requestedModeId)
+        : undefined
+      const configMode =
+        requestedModeDecl?.apply === "config" ? requestedModeId : undefined
       // Caller-supplied override wins; otherwise fall back to the
       // manifest's declared default (if any) so an adapter known to drop
       // responses (e.g. hermes) gets watchdog protection without every
@@ -205,6 +219,7 @@ export function createAgentCliRuntime(
         ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
         ...(configModel ? { model: configModel } : {}),
         ...(optEffort ? { effort: String(optEffort) } : {}),
+        ...(configMode ? { mode: configMode } : {}),
         ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
         ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
       })

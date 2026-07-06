@@ -235,6 +235,7 @@ export function createAcpProtocolArm(
           mcpServers: opts.mcpServers,
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(opts.mode ? { mode: opts.mode } : {}),
         })
       }
     },

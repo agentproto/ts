@@ -103,9 +103,18 @@ export function composeSpawn(
         `Mode '${config.mode}' is not declared by manifest '${handle.id}'. Known modes: ${known}`
       )
     }
-    if (mode.bin_args_prepend) prepend.push(...mode.bin_args_prepend)
-    if (mode.bin_args_append) append.push(...mode.bin_args_append)
-    if (mode.env) Object.assign(env, mode.env)
+    // "config" modes have no argv/env surface — the CLI doesn't accept a
+    // flag for this mode at all (e.g. opencode's plan/build). The mode id
+    // is instead forwarded to the ACP arm's connect({mode}) by
+    // define-agent-cli.ts and applied via session/set_config_option. Skip
+    // bin_args_prepend/bin_args_append/env here even if an author declared
+    // them alongside apply:"config" — config wins, argv is never composed,
+    // so a typo'd flag can't crash the spawn the way this whole bug did.
+    if ((mode.apply ?? "bin_args") === "bin_args") {
+      if (mode.bin_args_prepend) prepend.push(...mode.bin_args_prepend)
+      if (mode.bin_args_append) append.push(...mode.bin_args_append)
+      if (mode.env) Object.assign(env, mode.env)
+    }
   }
 
   // ── Option patches (declaration order) ──────────────────────────
