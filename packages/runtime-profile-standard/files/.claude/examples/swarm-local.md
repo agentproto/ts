@@ -7,6 +7,14 @@ participants:
     executor: agent-cli
     displayName: Reviewer
     role: ../../.claude/agents/reviewer.md
+    config:
+      model: sonnet
+  - id: skeptic
+    executor: agent-cli
+    displayName: Skeptic
+    role: ../../.claude/agents/skeptic.md
+    config:
+      model: opus
 substrate:
   kind: file
   path: ./conversation.md
@@ -19,10 +27,10 @@ state:
 
 # Local swarm — file substrate
 
-One participant (Reviewer) coordinated through an append-only markdown
-journal at `.runtime/conversation.md`. No network, no remote services —
-useful as a starting template you copy and extend with your own
-participants.
+Two participants (Reviewer and Skeptic) coordinated through an
+append-only markdown journal at `.runtime/conversation.md`. No network,
+no remote services — useful as a starting template you copy and extend
+with your own participants.
 
 ## How to run
 
@@ -50,9 +58,9 @@ participants.
    ```
 
 4. The swarm process polls every 2s. Within one cycle it will detect the
-   @Reviewer mention, spawn `claude --print --output-format=json` with
-   Reviewer's role + the recent transcript, and append the reply as a
-   new turn in the journal.
+   @Reviewer mention, spawn `claude --print --output-format=json
+   --permission-mode bypassPermissions` with Reviewer's role + the
+   recent transcript, and append the reply as a new turn in the journal.
 
 ## Adding participants
 
@@ -64,6 +72,30 @@ The reference `agent-cli` executor spawns `claude` by default; the
 `role` content is fed to it on stdin along with the recent transcript.
 Drop in additional `.claude/agents/*.md` files and reference them
 under `role:` to add specialists.
+
+Use `config:` to override the executor for a single participant without
+changing the global default. For example:
+
+```yaml
+participants:
+  - id: strategist
+    executor: agent-cli
+    displayName: Strategist
+    role: ../../.claude/agents/strategist.md
+    config:
+      model: opus
+  - id: skeptic
+    executor: agent-cli
+    displayName: Skeptic
+    role: ../../.claude/agents/skeptic.md
+    config:
+      model: sonnet
+```
+
+`config.model` is only honoured when `command` is `claude` (the
+default); it appends `--model <model>` to the spawned argv. Use
+`config.command` and `config.args` to point a participant at a different
+CLI binary entirely.
 
 ## Other substrates
 
@@ -82,3 +114,12 @@ Paths in this manifest resolve relative to the manifest file itself.
 - `state.dir: ./state` resolves to `.runtime/state/`.
 
 If you put the manifest somewhere else, adjust the relative paths.
+
+## Permission mode
+
+The default `agent-cli` args for `claude` include
+`--permission-mode bypassPermissions`. Swarm participants run unattended
+over piped stdin/stdout, so an interactive permission prompt would hang
+forever rather than be answerable. Keep this in mind if you override
+`config.args`: you either need an equivalent non-interactive permission
+mode or must ensure the participant's role never triggers a tool request.

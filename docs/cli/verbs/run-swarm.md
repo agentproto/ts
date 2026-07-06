@@ -38,6 +38,14 @@ participants:
     executor: agent-cli
     displayName: Reviewer
     role: ../.claude/agents/reviewer.md
+    config:
+      model: sonnet
+  - id: skeptic
+    executor: agent-cli
+    displayName: Skeptic
+    role: ../.claude/agents/skeptic.md
+    config:
+      model: opus
 substrate:
   kind: file
   path: ./conversation.md
@@ -52,7 +60,15 @@ Free-form documentation of this swarm.
 ```
 
 All paths are resolved relative to the manifest's directory (the
-`baseDir` passed to every adapter factory).
+`baseDir` passed to every adapter factory). `role` may be an inline
+string or a relative path to a `.md`/`.txt` file; relative paths are
+resolved from the manifest's directory, not from the process cwd.
+
+Per-participant `config` is optional and overrides the executor-kind
+defaults only for that participant. For `agent-cli` the supported
+fields are `command`, `args`, and `model` (the latter only injects
+`--model <model>` when `command` is `claude`). Manifests without
+`config` behave exactly as before.
 
 ## Built-in `kind` strings
 
@@ -63,7 +79,7 @@ Registered by default — no plugin needed:
 | `substrate` | `file` | Append-only markdown journal at `path` (default `.runtime/conversation.md`). |
 | `dispatcher` | `mention` | Selects participants @-mentioned in the latest trigger turn. |
 | `state` | `fs` | One JSON file per participant under `dir` (default `.runtime/state`). |
-| `executor` | `agent-cli` | Spawns an agent-CLI binary; `command` + `args` come from the manifest config (defaults: `claude --print --output-format=json`). |
+| `executor` | `agent-cli` | Spawns an agent-CLI binary. Defaults for `claude` are `--print --output-format=json --permission-mode bypassPermissions` so unattended swarm participants don't hang waiting for interactive tool approval. Override any of this with `config.command` / `config.args`, or set `config.model` to pick a different Claude model for that participant. |
 
 Other `kind`s come from plugins. See
 [`../concepts/plugins.md`](../concepts/plugins.md) and

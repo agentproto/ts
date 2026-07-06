@@ -35,12 +35,19 @@ export interface Substrate {
 
 // ── Participant ──
 
+export type ParticipantConfig = {
+  readonly command?: string
+  readonly args?: readonly string[]
+  readonly model?: string
+}
+
 export type ParticipantDescriptor = {
   readonly id: ParticipantId
   readonly displayName: string
-  /** Executor kind — keys into RuntimePorts.executors. e.g. "agent-cli". */
+  /** Executor kind — e.g. "agent-cli". The runtime looks up the concrete executor per participant. */
   readonly executor: string
   readonly role?: string
+  readonly config?: ParticipantConfig
   readonly meta?: Readonly<Record<string, unknown>>
 }
 
@@ -112,5 +119,6 @@ export type RuntimePorts = {
    */
   readonly telemetry?: Telemetry
   readonly participants: readonly ParticipantDescriptor[]
-  readonly executors: ReadonlyMap<string, ParticipantExecutor>
+  /** One executor instance per participant (keyed by participant id), so per-participant overrides are honored. */
+  readonly executors: ReadonlyMap<ParticipantId, ParticipantExecutor>
 }

@@ -24,15 +24,26 @@ const AdapterConfigSchema = z
   })
   .loose()
 
+const ParticipantConfigSchema = z
+  .object({
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    model: z.string().min(1).optional(),
+  })
+  .loose()
+
 const ParticipantManifestSchema = z
   .object({
     id: z.string().min(1),
     executor: z.string().min(1),
     displayName: z.string().min(1).optional(),
     role: z.string().optional(),
+    config: ParticipantConfigSchema.optional(),
     meta: z.record(z.string(), z.unknown()).optional(),
   })
   .loose()
+
+export type ParticipantManifestConfig = z.infer<typeof ParticipantConfigSchema>
 
 export const MultiAgentRuntimeManifestSchema = z
   .object({
