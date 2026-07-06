@@ -9,7 +9,7 @@
  *   "description": "Operate and supervise a fleet ...",
  *   "version": "0.3.0",
  *   "skills": ["slug1", "slug2", ...],
- *   "sourceDir": "../../.claude/skills",
+ *   "sourceDir": "../../.claude/skills",   // optional; omit when source lives in a private/external repo
  *   "author": { "name": "Name" },
  *   "keywords": ["kw1", "kw2", ...]
  * }
@@ -51,7 +51,7 @@ interface PackManifest {
   description: string
   version: string
   skills: string[]
-  sourceDir: string
+  sourceDir?: string
   author: { name: string }
   keywords: string[]
 }
@@ -135,9 +135,18 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
 
   const manifest: PackManifest = await readManifest(manifestPath)
   const manifestDir = dirname(manifestPath)
+
+  if (!values.source && !manifest.sourceDir) {
+    process.stderr.write(
+      "agentproto pack skill: no source directory. " +
+        "Either add sourceDir to the manifest or pass --source <absolute-path>.\n",
+    )
+    return 2
+  }
+
   const sourceDir = values.source
     ? resolve(process.cwd(), expandHome(values.source))
-    : resolve(manifestDir, manifest.sourceDir)
+    : resolve(manifestDir, manifest.sourceDir as string)
   const outDir = resolve(process.cwd(), values.out)
 
   // Determine the effective version
@@ -207,13 +216,16 @@ async function readManifest(path: string): Promise<PackManifest> {
     typeof data.name !== "string" ||
     typeof data.description !== "string" ||
     typeof data.version !== "string" ||
-    !Array.isArray(data.skills) ||
-    typeof data.sourceDir !== "string"
+    !Array.isArray(data.skills)
   ) {
     throw new Error(
       `pack manifest: missing or invalid required fields. ` +
-        "Required: name (string), description (string), version (string), skills (array), sourceDir (string).",
+        "Required: name (string), description (string), version (string), skills (array).",
     )
+  }
+
+  if (data.sourceDir !== undefined && typeof data.sourceDir !== "string") {
+    throw new Error("pack manifest: sourceDir must be a string when present.")
   }
 
   if (!data.skills.every((s) => typeof s === "string")) {
@@ -237,7 +249,7 @@ async function readManifest(path: string): Promise<PackManifest> {
     description: data.description,
     version: data.version,
     skills: data.skills as string[],
-    sourceDir: data.sourceDir,
+    ...(typeof data.sourceDir === "string" ? { sourceDir: data.sourceDir } : {}),
     author,
     keywords,
   }

@@ -378,6 +378,48 @@ describe("agentproto pack skill --out override", () => {
   })
 })
 
+// ── integration: missing sourceDir with no --source → clear error ─────────
+
+describe("agentproto pack skill (missing sourceDir)", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-nosource-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("exits with code 2 and a helpful message when sourceDir is absent and --source is not passed", async () => {
+    const outDir = join(tmp, "out")
+    const manifestDir = join(tmp, "manifests")
+    await mkdir(outDir, { recursive: true })
+    await mkdir(manifestDir, { recursive: true })
+
+    // Manifest without sourceDir
+    const manifest = {
+      name: "test-pack",
+      description: "A test skill pack",
+      version: "1.0.0",
+      skills: ["skill-a"],
+      author: { name: "Test" },
+      keywords: [],
+    }
+    const manifestPath = join(manifestDir, "test-pack.json")
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8")
+
+    const { code, stderr } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir],
+      tmp,
+    )
+
+    expect(code).toBe(2)
+    expect(stderr).toContain("no source directory")
+    expect(stderr).toContain("--source")
+  })
+})
+
 // ── integration: --source override ────────────────────────────────────────
 
 describe("agentproto pack skill --source override", () => {
