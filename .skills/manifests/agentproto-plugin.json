@@ -10,7 +10,7 @@
     "durable-supervision",
     "adapter-setup-kit"
   ],
-  "sourceDir": "../../.claude/skills",
+  "sourceDir": "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/.claude/skills",
   "author": { "name": "Jeremy — fabrikapp" },
   "keywords": [
     "agentproto",
