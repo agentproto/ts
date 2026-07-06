@@ -1,5 +1,6 @@
 import type {
   SDKAssistantMessage,
+  SDKPartialAssistantMessage,
   SDKResultMessage,
   SDKSystemMessage,
   SDKUserMessage,
@@ -9,6 +10,7 @@ import {
   assistantMessageUpdates,
   resultUsageUpdate,
   sdkMessageToUpdates,
+  streamEventUpdates,
   systemInitSessionId,
   toolCallTitle,
   toolKindForClaudeTool,
@@ -21,10 +23,16 @@ import {
 function assistant(
   content: Array<
     | { type: "text"; text: string }
+    | { type: "thinking"; thinking: string; signature: string }
     | { type: "tool_use"; id: string; name: string; input: unknown }
   >,
 ): SDKAssistantMessage {
   return { type: "assistant", message: { content } } as unknown as SDKAssistantMessage
+}
+
+/** A `stream_event` partial-assistant message carrying one raw stream frame. */
+function streamEvent(event: unknown): SDKPartialAssistantMessage {
+  return { type: "stream_event", event } as unknown as SDKPartialAssistantMessage
 }
 
 function user(
@@ -105,6 +113,76 @@ describe("assistantMessageUpdates", () => {
   it("drops empty text blocks", () => {
     expect(assistantMessageUpdates(assistant([{ type: "text", text: "" }]))).toEqual([])
   })
+
+  it("does not surface a complete `thinking` block (thinking streams as deltas only)", () => {
+    expect(
+      assistantMessageUpdates(
+        assistant([{ type: "thinking", thinking: "reasoning…", signature: "" }]),
+      ),
+    ).toEqual([])
+  })
+
+  it("suppressText drops text but keeps tool_call — the streamed-prose dedup path", () => {
+    const updates = assistantMessageUpdates(
+      assistant([
+        { type: "text", text: "already streamed" },
+        { type: "tool_use", id: "tc1", name: "Bash", input: { command: "ls" } },
+      ]),
+      true,
+    )
+    expect(updates.map((u) => u.sessionUpdate)).toEqual(["tool_call"])
+  })
+})
+
+describe("streamEventUpdates", () => {
+  it("maps a text_delta to agent_message_chunk", () => {
+    expect(
+      streamEventUpdates(
+        streamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        }),
+      ),
+    ).toEqual([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hel" } },
+    ])
+  })
+
+  it("maps a thinking_delta to agent_thought_chunk", () => {
+    expect(
+      streamEventUpdates(
+        streamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "let me reason" },
+        }),
+      ),
+    ).toEqual([
+      { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "let me reason" } },
+    ])
+  })
+
+  it("ignores empty deltas and non-delta frames (starts/stops, message-level, input_json)", () => {
+    expect(
+      streamEventUpdates(
+        streamEvent({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } }),
+      ),
+    ).toEqual([])
+    expect(
+      streamEventUpdates(streamEvent({ type: "content_block_start", index: 0 })),
+    ).toEqual([])
+    expect(streamEventUpdates(streamEvent({ type: "message_stop" }))).toEqual([])
+    expect(
+      streamEventUpdates(
+        streamEvent({
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "input_json_delta", partial_json: '{"a":' },
+        }),
+      ),
+    ).toEqual([])
+  })
 })
 
 describe("userMessageUpdates", () => {
@@ -144,6 +222,32 @@ describe("sdkMessageToUpdates / systemInitSessionId", () => {
     expect(sdkMessageToUpdates(assistant([{ type: "text", text: "hi" }]))).toHaveLength(1)
     expect(sdkMessageToUpdates(result())).toHaveLength(1)
     expect(sdkMessageToUpdates(initMsg("s1"))).toEqual([])
+    expect(
+      sdkMessageToUpdates(
+        streamEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "hi" },
+        }),
+      ),
+    ).toEqual([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+    ])
+  })
+
+  it("forwards suppressAssistantText so a streamed turn's complete message drops its prose", () => {
+    const msg = assistant([
+      { type: "text", text: "streamed already" },
+      { type: "tool_use", id: "tc1", name: "Bash", input: { command: "ls" } },
+    ])
+    expect(sdkMessageToUpdates(msg, { suppressAssistantText: true }).map((u) => u.sessionUpdate)).toEqual([
+      "tool_call",
+    ])
+    // Default (no partials seen this turn) keeps the prose.
+    expect(sdkMessageToUpdates(msg).map((u) => u.sessionUpdate)).toEqual([
+      "agent_message_chunk",
+      "tool_call",
+    ])
   })
 
   it("extracts session_id only from system/init", () => {
