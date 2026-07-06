@@ -65,3 +65,13 @@ describe("buildQueryOptions — thinking", () => {
     expect(build({}).thinking).toBeUndefined()
   })
 })
+
+describe("buildQueryOptions — partial-message streaming", () => {
+  it("always enables includePartialMessages so long turns stream (ring liveness + watchdog resets)", () => {
+    // Unconditional: a long thinking / generation stretch must yield SDK
+    // messages continuously, both to keep the daemon output ring advancing and
+    // so the idle watchdog isn't tripped by a silent >90s thinking block.
+    expect(build({}).includePartialMessages).toBe(true)
+    expect(build({ thinking: true, baseUrl: "https://api.moonshot.ai/anthropic" }).includePartialMessages).toBe(true)
+  })
+})

@@ -44,6 +44,28 @@ function resultMsg(): SDKMessage {
     modelUsage: { "claude-haiku-4-5-20251001": { contextWindow: 200000 } },
   } as unknown as SDKMessage
 }
+/** A `stream_event` partial-assistant frame — one extended-thinking delta. */
+function thinkingDelta(text: string): SDKMessage {
+  return {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: text },
+    },
+  } as unknown as SDKMessage
+}
+/** A `stream_event` partial-assistant frame — one assistant-prose text delta. */
+function textDelta(text: string): SDKMessage {
+  return {
+    type: "stream_event",
+    event: {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "text_delta", text },
+    },
+  } as unknown as SDKMessage
+}
 
 describe("ClaudeSdkAcpAgent — smoke (faked SDK stream)", () => {
   it("streams a message + usage and ends the turn on a trivial prompt", async () => {
@@ -90,6 +112,80 @@ describe("ClaudeSdkAcpAgent — smoke (faked SDK stream)", () => {
     expect(calls[1]!.options?.resume).toBe("sdk-sess-2")
     expect(calls[1]!.options?.sessionId).toBeUndefined()
   })
+
+  it("streams thinking + text deltas live and does not double-emit the completed prose", async () => {
+    // Reproduces a long busy turn: the model streams extended-thinking deltas
+    // (which, with partials OFF, would surface NOTHING until the turn boundary
+    // and leave the daemon ring frozen), then a text delta, then the terminal
+    // complete `assistant` message repeating that prose.
+    const updates: Array<Record<string, unknown>> = []
+    const query = fakeQuery(
+      [
+        initMsg("sdk-stream-1"),
+        thinkingDelta("Answer "),
+        thinkingDelta("with PONG."),
+        textDelta("PONG"),
+        assistantMsg("PONG"), // complete copy of the already-streamed prose
+        resultMsg(),
+      ],
+      [],
+    )
+    const host = new ClaudeSdkAcpAgent(fakeConn(updates), {}, query)
+
+    const { sessionId } = await host.newSession({ cwd: "/tmp", mcpServers: [] } as never)
+    const res = await host.prompt({ sessionId, prompt: [{ type: "text", text: "reply PONG" }] } as never)
+
+    expect(res.stopReason).toBe("end_turn")
+    // Thinking surfaced LIVE (was previously dropped entirely) …
+    expect(updates.map((u) => u.sessionUpdate)).toEqual([
+      "agent_thought_chunk",
+      "agent_thought_chunk",
+      "agent_message_chunk",
+      "usage_update",
+    ])
+    // … and the prose appears exactly ONCE — streamed via the text delta, then
+    // suppressed on the completed assistant message (no double-feed).
+    const proseChunks = updates.filter((u) => u.sessionUpdate === "agent_message_chunk")
+    expect(proseChunks).toHaveLength(1)
+    expect((proseChunks[0]!.content as { text: string }).text).toBe("PONG")
+  })
+
+  it("a long thinking stretch keeps the turn alive: streamed deltas reset the idle watchdog", async () => {
+    // The reported failure, scaled down: kimi-k2.7-code `--thinking` reasons for
+    // longer than the idle window before emitting anything else. With partials
+    // OFF that whole span is ONE silent gap and the watchdog wrongly aborts a
+    // healthy turn (see the "wedged stream" test). With partials ON, each
+    // thinking delta is an SDK message that resets the watchdog, so a thinking
+    // span LONGER than idleTimeoutMs still completes.
+    const updates: Array<Record<string, unknown>> = []
+    const query: QueryFn = () =>
+      (async function* (): AsyncGenerator<SDKMessage> {
+        yield initMsg("sdk-think-long")
+        // 6 × ~15ms = ~90ms of thinking, each gap under the 40ms window but the
+        // total span well over it — the exact case that trips a no-partials turn.
+        for (let i = 0; i < 6; i++) {
+          await new Promise((r) => setTimeout(r, 15))
+          yield thinkingDelta(`reasoning step ${i} `)
+        }
+        yield resultMsg()
+      })()
+    const host = new ClaudeSdkAcpAgent(fakeConn(updates), { idleTimeoutMs: 40 }, query)
+
+    const { sessionId } = await host.newSession({ cwd: "/tmp", mcpServers: [] } as never)
+    const res = await host.prompt({ sessionId, prompt: [{ type: "text", text: "think hard" }] } as never)
+
+    // Completed rather than aborting as a stall …
+    expect(res.stopReason).toBe("end_turn")
+    // … and every thinking delta reached the ring (no stall error chunk).
+    expect(updates.filter((u) => u.sessionUpdate === "agent_thought_chunk")).toHaveLength(6)
+    const stall = updates.find(
+      (u) =>
+        u.sessionUpdate === "agent_message_chunk" &&
+        typeof (u.content as { text?: string }).text === "string" &&
+        (u.content as { text: string }).text.includes("stalled"),
+    )
+    expect(stall).toBeUndefined()
+  }, 5_000)
 
   it("surfaces an SDK error as a message chunk + refusal", async () => {
     const updates: Array<Record<string, unknown>> = []
