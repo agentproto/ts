@@ -120,12 +120,21 @@ export async function restartAgentSession(
 
   let desc: SessionDescriptor
   let resumeFallback = false
+  // Tracks whether the spawn that actually SUCCEEDED carried a resume
+  // id — distinct from `strategy.resumeSessionId`, which reflects only
+  // what we *attempted*. A session that died before its first ACP turn
+  // never got one (`prev.adapterSessionId` is undefined), so the very
+  // first `spawnWithResume` call below "succeeds" with no continuity at
+  // all — that must be reported the same as an explicit not-found
+  // fallback, or the caller is told a resume happened when it didn't.
+  let usedResumeSessionId = strategy.resumeSessionId
   try {
     desc = await spawnWithResume(strategy.resumeSessionId)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (strategy.resumeSessionId && /not found|Resource not found/i.test(msg)) {
       desc = await spawnWithResume(undefined)
+      usedResumeSessionId = undefined
       resumeFallback = true
     } else {
       throw err
@@ -136,7 +145,7 @@ export async function restartAgentSession(
   // naturally prefer (e.g. claude-code's native `claude --resume`, if a
   // resume id was found on disk) — misleading when `forceAgentResume`
   // skipped that preference and went straight to ACP resume instead.
-  const resumeVia = resumeFallback
+  const resumeVia = !usedResumeSessionId
     ? ""
     : opts.forceAgentResume
       ? "resumed via ACP"
