@@ -12,7 +12,10 @@
  *   - unsupported (generic `command` session)
  */
 
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync, utimesSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -310,5 +313,124 @@ describe("session_restart", () => {
     expect(String(body.error)).toMatch(/no session/)
 
     await close()
+  })
+})
+
+/**
+ * Regression for the cross-session resume bug: restarting a killed
+ * claude-code agent-cli session whose ring buffer was empty (so the
+ * output sniffer never captured `claudeResumeId`) used to run the
+ * fs-probe's mtime-latest fallback, which — when another, unrelated
+ * claude session was active in the SAME cwd — resolved to THAT sibling's
+ * transcript and silently resumed the wrong conversation.
+ *
+ * The fix binds the fs-probe to the dead session's own `adapterSessionId`
+ * (== its on-disk `.jsonl` uuid for claude-code). These tests drive the
+ * whole `session_restart` MCP tool against a fake HOME containing both
+ * the dead session's transcript and a newer sibling's, and assert we
+ * resume the former, never the latter.
+ */
+describe("session_restart — cross-session resume safety (regression)", () => {
+  let fakeHome: string
+  let originalHome: string | undefined
+
+  afterEach(() => {
+    if (fakeHome) rmSync(fakeHome, { recursive: true, force: true })
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  })
+
+  /** Fake `~/.claude/projects/<encoded-cwd>/` under a throwaway HOME. */
+  function setupClaudeStore(cwd: string): string {
+    originalHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), "session-restart-regression-"))
+    process.env.HOME = fakeHome
+    const dir = join(fakeHome, ".claude", "projects", cwd.replace(/\//g, "-"))
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  function writeTranscript(dir: string, uuid: string, mtime: Date): void {
+    const path = join(dir, `${uuid}.jsonl`)
+    writeFileSync(path, "")
+    utimesSync(path, mtime, mtime)
+  }
+
+  it("resumes the dead session's OWN transcript, not a newer sibling sharing the cwd", async () => {
+    const { client, registry, close } = await buildHarness()
+    const cwd = "/fake/shared-proj"
+    const dir = setupClaudeStore(cwd)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd,
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    const ownId = prev.adapterSessionId
+    expect(ownId).toBeTruthy()
+    // Dead session's own transcript is OLDER than the sibling's.
+    writeTranscript(dir, ownId!, new Date("2026-05-13T10:00:00Z"))
+    const siblingId = "8f536161-b989-4fa3-baf5-5c37d871d6ec"
+    writeTranscript(dir, siblingId, new Date("2026-05-13T12:00:00Z"))
+
+    registry.kill(prev.id)
+    // Precondition: sniffer never captured a resume id (empty ring buffer).
+    expect(prev.resumeMetadata?.claudeResumeId).toBeUndefined()
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    // The fix: resume binds to the dead session's own id, even though the
+    // sibling's transcript is the most-recently modified file in the cwd.
+    expect(desc.argv).toEqual(["claude", "--resume", ownId])
+    expect(JSON.stringify(desc.argv)).not.toContain(siblingId)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("falls back to ACP resume against the real id — never a sibling — when the dead session's transcript is gone", async () => {
+    const { client, registry, calls, close } = await buildHarness()
+    const cwd = "/fake/shared-proj-2"
+    const dir = setupClaudeStore(cwd)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd,
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    const ownId = prev.adapterSessionId
+    // Only a newer, unrelated sibling exists on disk — the dead session's
+    // own transcript was never persisted / already cleaned up. Date it in
+    // the future so it clears the fs-probe's `startedAt` mtime filter:
+    // without the fix, mtime-latest would resume THIS sibling (pty-native).
+    const siblingId = "8f536161-b989-4fa3-baf5-5c37d871d6ec"
+    writeTranscript(dir, siblingId, new Date("2099-01-01T00:00:00Z"))
+
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    // No pty-native resume (own transcript absent) → ACP-level resume via
+    // the real adapterSessionId. Crucially, the sibling's id never leaks
+    // into either the argv or the ACP resume call.
+    expect(desc.kind).toBe("agent-cli")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.resumeSessionId).toBe(ownId)
+    expect(calls[0]?.resumeSessionId).not.toBe(siblingId)
+
+    await close()
+    registry.shutdown()
   })
 })

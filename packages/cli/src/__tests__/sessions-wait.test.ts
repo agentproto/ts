@@ -89,3 +89,87 @@ describe("agentproto sessions wait — argument validation", () => {
     expect(calledUrl).toContain("/sessions/sess_1/wait")
   })
 })
+
+/**
+ * The point of `sessions wait`: block IN THE CLI PROCESS across the
+ * daemon's per-call ~55s ceiling, so an orchestrating agent can fire it
+ * once (via a background job) instead of re-polling `session_monitor`
+ * every 49s. These pin the long-poll loop (cursor advancing across
+ * daemon-side timeouts) and the exit codes callers branch on.
+ */
+describe("agentproto sessions wait — long-poll loop + exit codes", () => {
+  let stdoutChunks: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stderrSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any
+
+  beforeEach(() => {
+    stdoutChunks = []
+    stderrSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stderr as any, "write")
+      .mockImplementation(() => true)
+    stdoutSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stdout as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stdoutChunks.push(String(chunk))
+        return true
+      })
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    vi.resetAllMocks()
+  })
+
+  it("keeps polling with an advancing cursor across daemon-side timeouts, then exits 0 on a match", async () => {
+    // First daemon call hits its own ~55s ceiling with no event → the CLI
+    // must re-call with `since=<nextCursor>` rather than replay the window.
+    httpGetJson
+      .mockResolvedValueOnce({ timedOut: true, nextCursor: 42 })
+      .mockResolvedValueOnce({ event: "turn-end", sessionId: "sess_1", status: "running" })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end"])
+
+    expect(code).toBe(0)
+    expect(httpGetJson).toHaveBeenCalledTimes(2)
+    const firstUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    const secondUrl = (httpGetJson.mock.calls[1] as [string])[0]
+    expect(firstUrl).not.toContain("since=")
+    expect(secondUrl).toContain("since=42")
+    expect(secondUrl).toContain("event=turn-end")
+  })
+
+  it("exits 1 when the total --timeout budget is exhausted without a match", async () => {
+    // Every daemon call reports its own timeout; with a tiny total budget
+    // the CLI loop must give up and report the overall timeout as exit 1.
+    httpGetJson.mockResolvedValue({ timedOut: true, nextCursor: 1 })
+
+    const code = await runSessions(["wait", "sess_1", "--timeout", "5"])
+
+    expect(code).toBe(1)
+    expect(stdoutChunks.join("")).toContain("timed out")
+  })
+
+  it("exits 3 when the session is unknown (daemon 404)", async () => {
+    httpGetJson.mockRejectedValue(new Error("HTTP 404 Not Found"))
+
+    const code = await runSessions(["wait", "sess_missing"])
+
+    expect(code).toBe(3)
+  })
+
+  it("rejects an invalid --until value before touching the daemon (exit 2)", async () => {
+    const code = await runSessions(["wait", "sess_1", "--until", "bogus"])
+
+    expect(code).toBe(2)
+    expect(httpGetJson).not.toHaveBeenCalled()
+  })
+})
