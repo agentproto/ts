@@ -293,7 +293,7 @@ describe("CronScheduler", () => {
 
   // ── prompt-session action ──────────────────────────────────────────
 
-  function makeMockRegistry(desc: { processAlive?: boolean } | undefined): {
+  function makeMockRegistry(desc: { processAlive?: boolean; busy?: boolean } | undefined): {
     registry: SessionsRegistry
     sendPrompt: ReturnType<typeof vi.fn>
   } {
@@ -371,11 +371,12 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("run() — prompt-session action fails cleanly when the session is dead", async () => {
+  it("run() — prompt-session action fails cleanly when the session is dead and no resolveAgentAdapter", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { registry, sendPrompt } = makeMockRegistry({ processAlive: false })
     const sessionEvents = createSessionEventBus()
+    // No resolveAgentAdapter wired — degraded fallback path.
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
       const job = scheduler.create({
@@ -386,8 +387,116 @@ describe("CronScheduler", () => {
       const result = await scheduler.run(job.id)
       expect(result).toBeDefined()
       expect(result!.ok).toBe(false)
-      expect(result!.summary).toMatch(/not alive/)
+      // The message is "not alive and agent restart is not enabled (no resolveAgentAdapter)"
+      expect(result!.summary).toMatch(/not enabled/)
       expect(sendPrompt).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session action busy-skips a mid-turn session", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt } = makeMockRegistry({ processAlive: true, busy: true })
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_busy", prompt: "status?" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toMatch(/busy/)
+      // Must NOT re-prompt while the session is mid-turn.
+      expect(sendPrompt).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — prompt-session auto-resumes a dead session and self-heals action.sessionId", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const persistPath = join(workspace, "cron-jobs.json")
+
+    // Descriptor for the dead session returned by registry.get().
+    const deadDesc = {
+      id: "sess_dead",
+      processAlive: false,
+      adapterSlug: "mock-adapter",
+      cwd: workspace,
+      workspaceSlug: "default",
+    }
+    const resumedDesc = {
+      id: "sess_resumed",
+      processAlive: true,
+    }
+
+    const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const spawnAgent = vi.fn().mockReturnValue(resumedDesc)
+    const pulseActivity = vi.fn()
+    const mockRegistry = {
+      get: vi.fn().mockReturnValue(deadDesc),
+      sendPrompt,
+      spawnAgent,
+      pulseActivity,
+    } as unknown as SessionsRegistry
+
+    // resolveAgentAdapter returns a minimal adapter that can start a session.
+    const mockAgentSession = { id: "adapter_sess_1" }
+    const startSession = vi.fn().mockResolvedValue(mockAgentSession)
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+
+    const sessionEvents = createSessionEventBus()
+    const { mkdirSync, writeFileSync } = await import("node:fs")
+    mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands: [] }),
+    )
+    const scheduler = createCronScheduler({
+      sessionEvents,
+      registry: mockRegistry,
+      resolveAgentAdapter,
+      workspace,
+      persistPath,
+      persist: true,
+    })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "wake up!" },
+      })
+
+      const result = await scheduler.run(job.id)
+
+      // Auto-resume succeeded.
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(result!.summary).toMatch(/resumed/)
+
+      // The adapter was asked to start a session.
+      expect(startSession).toHaveBeenCalledOnce()
+
+      // sendPrompt was called on the NEW session id, not the dead one.
+      expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
+
+      // action.sessionId was self-healed in-place on the job object.
+      const updated = scheduler.get(job.id)!
+      expect((updated.action as { sessionId: string }).sessionId).toBe("sess_resumed")
+
+      // The mutation must be persisted to disk.
+      await new Promise(res => setTimeout(res, 20))
+      const { readFileSync } = await import("node:fs")
+      const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{
+        action: { sessionId: string }
+      }>
+      expect(persisted[0]!.action.sessionId).toBe("sess_resumed")
     } finally {
       scheduler.shutdown()
     }

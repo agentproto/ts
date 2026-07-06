@@ -59,7 +59,10 @@ export async function restartAgentSession(
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
 ): Promise<RestartAgentSessionResult> {
-  const augmented = await augmentWithFsResume(prev)
+  // Skip the FS read when the caller has already decided to force an ACP
+  // resume — `augmented` is only used by `decideRestartStrategy` and
+  // `describeResumePath`, both of which are bypassed in that path.
+  const augmented = opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
   const strategy = opts.forceAgentResume
     ? ({ kind: "agent", resumeSessionId: prev.adapterSessionId } as const)
     : decideRestartStrategy(augmented)
@@ -83,9 +86,8 @@ export async function restartAgentSession(
     throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
   }
 
-  let cwd = prev.cwd
-  if (!cwd) {
-    cwd = process.cwd()
+  let cwd = prev.cwd ?? process.cwd()
+  if (!prev.cwd) {
     console.warn(
       `[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${cwd}`,
     )
