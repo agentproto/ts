@@ -2237,6 +2237,9 @@ importers:
       '@agentproto/redaction':
         specifier: workspace:*
         version: link:../redaction
+      '@agentproto/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@agentproto/telemetry-langfuse':
         specifier: workspace:*
         version: link:../telemetry-langfuse
@@ -2289,6 +2292,10 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.8.4)
+    optionalDependencies:
+      '@agentproto/sandbox-e2b':
+        specifier: workspace:*
+        version: link:../sandbox-e2b
 
   packages/runtime-profile-standard:
     devDependencies:
