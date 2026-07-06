@@ -8,18 +8,29 @@
  * I/O stays 100% Anthropic-native: we read the SDK's real message shapes and
  * translate them to ACP updates — no format translation of the model I/O.
  *
- * The SDK emits a typed union on `query()`. We surface four kinds:
- *   - `assistant` text blocks   → ACP `agent_message_chunk` (assistant prose)
- *   - `assistant` tool_use      → ACP `tool_call`        (a tool started)
- *   - `user` tool_result        → ACP `tool_call_update` (that tool finished/failed)
- *   - `result`                  → ACP `usage_update`     (tokens + cost)
+ * The SDK emits a typed union on `query()`. We surface:
+ *   - `stream_event` text delta     → ACP `agent_message_chunk` (streamed prose)
+ *   - `stream_event` thinking delta  → ACP `agent_thought_chunk` (streamed reasoning)
+ *   - `assistant` text blocks        → ACP `agent_message_chunk` (assistant prose)
+ *   - `assistant` tool_use           → ACP `tool_call`        (a tool started)
+ *   - `user` tool_result             → ACP `tool_call_update` (that tool finished/failed)
+ *   - `result`                       → ACP `usage_update`     (tokens + cost)
  * The `system`/`init` message carries the SDK `session_id`, handled separately
  * by the host (see {@link systemInitSessionId}).
+ *
+ * With `includePartialMessages` on (see options.ts), assistant prose arrives
+ * TWICE: first as streamed `stream_event` text deltas, then again in the
+ * terminal complete `assistant` message. The host tracks whether it saw any
+ * partial and asks {@link sdkMessageToUpdates} to suppress the complete
+ * message's text so the ring isn't double-fed (see `suppressAssistantText`).
+ * `thinking` is only ever surfaced via the streamed deltas — the complete
+ * `assistant` message's thinking block is intentionally not mapped.
  */
 
 import type {
   SDKAssistantMessage,
   SDKMessage,
+  SDKPartialAssistantMessage,
   SDKResultMessage,
   SDKSystemMessage,
   SDKUserMessage,
@@ -91,15 +102,22 @@ export function toolCallTitle(name: string, input: unknown): string {
   return hint ? `${name}: ${hint}` : name
 }
 
-/** Translate one `assistant` message into ACP updates: one per text block
- *  (agent_message_chunk) and one per tool_use block (tool_call). */
+/** Translate one complete `assistant` message into ACP updates: one per text
+ *  block (agent_message_chunk) and one per tool_use block (tool_call).
+ *
+ *  `suppressText` drops the text blocks — set by the host once it has seen
+ *  `stream_event` deltas this turn, since the prose already streamed and
+ *  re-emitting the complete copy would double-feed the ring. tool_use blocks
+ *  are always emitted (they carry the full input the daemon needs and never
+ *  arrive as a usable partial). */
 export function assistantMessageUpdates(
   msg: SDKAssistantMessage,
+  suppressText = false,
 ): SessionUpdate[] {
   const updates: SessionUpdate[] = []
   for (const block of msg.message.content) {
     if (block.type === "text") {
-      if (!block.text) continue
+      if (suppressText || !block.text) continue
       updates.push({
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: block.text },
@@ -116,6 +134,57 @@ export function assistantMessageUpdates(
     }
   }
   return updates
+}
+
+/**
+ * Translate a `stream_event` (partial-assistant) message into ACP deltas.
+ * Only `content_block_delta` text / thinking deltas carry user-visible content:
+ *   - `text_delta`     → `agent_message_chunk` (streamed assistant prose)
+ *   - `thinking_delta` → `agent_thought_chunk` (streamed extended-thinking)
+ * Every other frame (block start/stop, `input_json_delta`, `signature_delta`,
+ * message-level `message_start`/`message_delta`/`message_stop`) produces
+ * nothing here — but still counts as an SDK message to the host's turn
+ * watchdog, which is exactly why partial streaming keeps a long thinking turn
+ * from being mistaken for a stall.
+ *
+ * Read structurally (via typed field guards) rather than importing the beta
+ * `RawContentBlockDelta` union — this file stays dependency-light per its
+ * header, and the two delta shapes we care about are tiny and stable
+ * (`{ type: "text_delta", text }` / `{ type: "thinking_delta", thinking }`).
+ */
+export function streamEventUpdates(
+  msg: SDKPartialAssistantMessage,
+): SessionUpdate[] {
+  const event: unknown = msg.event
+  if (stringField(event, "type") !== "content_block_delta") return []
+  const delta =
+    event && typeof event === "object" ? Reflect.get(event, "delta") : undefined
+  switch (stringField(delta, "type")) {
+    case "text_delta": {
+      const text = stringField(delta, "text")
+      return text
+        ? [
+            {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text },
+            },
+          ]
+        : []
+    }
+    case "thinking_delta": {
+      const thinking = stringField(delta, "thinking")
+      return thinking
+        ? [
+            {
+              sessionUpdate: "agent_thought_chunk",
+              content: { type: "text", text: thinking },
+            },
+          ]
+        : []
+    }
+    default:
+      return []
+  }
 }
 
 /** Translate a `user` message's tool_result blocks into ACP
@@ -170,11 +239,20 @@ export function resultUsageUpdate(msg: SDKResultMessage): UsageSessionUpdate {
  * Dispatch one SDK message to the ACP updates it produces (possibly none).
  * `system`/`init` is intentionally not mapped here — its `session_id` is read
  * by the host via {@link systemInitSessionId}, not surfaced as an update.
+ *
+ * `suppressAssistantText` is forwarded to {@link assistantMessageUpdates}: the
+ * host sets it once a `stream_event` has streamed this turn's prose, so the
+ * terminal complete `assistant` message doesn't re-emit the same text.
  */
-export function sdkMessageToUpdates(msg: SDKMessage): SessionUpdate[] {
+export function sdkMessageToUpdates(
+  msg: SDKMessage,
+  opts: { suppressAssistantText?: boolean } = {},
+): SessionUpdate[] {
   switch (msg.type) {
+    case "stream_event":
+      return streamEventUpdates(msg)
     case "assistant":
-      return assistantMessageUpdates(msg)
+      return assistantMessageUpdates(msg, opts.suppressAssistantText ?? false)
     case "user":
       return userMessageUpdates(msg)
     case "result":

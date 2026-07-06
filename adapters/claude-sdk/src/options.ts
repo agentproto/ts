@@ -228,6 +228,16 @@ export function buildQueryOptions(args: {
     // Hermetic embed: don't silently pull in filesystem settings / CLAUDE.md;
     // the daemon owns the configuration surface.
     settingSources: [],
+    // Stream partial (`stream_event`) messages so a long thinking / generation
+    // stretch is observable live instead of surfacing only at message
+    // boundaries. Two things depend on it: (1) the daemon's output ring — the
+    // mapped text/thinking deltas keep `lastOutputAt` advancing during a long
+    // busy turn instead of freezing until the next tool boundary; and (2) the
+    // turn watchdog (acp-host `#nextMessage`), which resets on every SDK
+    // message — without partials, a >90s thinking block (kimi-k2.7-code with
+    // `--thinking`) yields NO message and the idle watchdog wrongly aborts a
+    // healthy turn. See message-map's `streamEventUpdates`.
+    includePartialMessages: true,
     env,
     ...(config.cwd ? { cwd: config.cwd } : {}),
     ...(sessionId ? { sessionId } : {}),
