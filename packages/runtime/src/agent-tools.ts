@@ -241,6 +241,21 @@ export function registerAgentTools(
             name: z.string(),
             transport: z.enum(["stdio", "http", "sse"]),
             ref: z.string().optional(),
+            headers: z
+              .record(z.string(), z.string())
+              .optional()
+              .describe(
+                "Static HTTP headers sent with every request to an `http` or `sse` " +
+                  "MCP server (e.g. a fixed auth token). Ignored for `stdio` transports."
+              ),
+            credentialRef: z
+              .string()
+              .optional()
+              .describe(
+                "Brokered credential path resolved at spawn time into additional " +
+                  "`headers` (typically `Authorization`). The actual secret never lives " +
+                  "in env or config; brokered headers win on collision with `headers`."
+              ),
           })
         )
       )

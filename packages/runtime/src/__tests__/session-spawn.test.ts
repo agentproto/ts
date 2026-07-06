@@ -7,9 +7,10 @@
  * separately (agent-start-mode.test.ts, orchestrator-guardrails.test.ts).
  */
 
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { AcpMcpServer } from "@agentproto/acp"
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
@@ -543,6 +544,157 @@ describe("spawnAgentSession — privilege-lattice spawn gate (role-registry-exte
     })
     expect(result.ok).toBe(true)
     expect(registry.list()).toHaveLength(1)
+  })
+})
+
+describe("resolveMcpCredentialHeaders overlay", () => {
+  let originalDeps = getMcpCredentialDeps()
+
+  beforeEach(() => {
+    originalDeps = getMcpCredentialDeps()
+    setMcpCredentialDeps({})
+  })
+
+  afterEach(() => {
+    setMcpCredentialDeps(originalDeps)
+  })
+
+  function captureStartSession() {
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    return { captured, startSession }
+  }
+
+  it("merges brokered headers over static headers for an entry with credentialRef", async () => {
+    const { captured, startSession } = captureStartSession()
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    setMcpCredentialDeps({
+      resolveMcpCredentialHeaders: async ({ credentialRef }) => ({
+        Authorization: `Bearer ${credentialRef}`,
+        "X-Brokered": "yes",
+      }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [
+        {
+          name: "push",
+          transport: "http",
+          ref: "http://push/mcp",
+          headers: { Authorization: "Bearer old", "X-Static": "ok" },
+          credentialRef: "agentpush",
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([
+      {
+        name: "push",
+        transport: "http",
+        ref: "http://push/mcp",
+        headers: {
+          Authorization: "Bearer agentpush",
+          "X-Static": "ok",
+          "X-Brokered": "yes",
+        },
+        credentialRef: "agentpush",
+      },
+    ])
+  })
+
+  it("leaves an entry without credentialRef untouched", async () => {
+    const { captured, startSession } = captureStartSession()
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    setMcpCredentialDeps({
+      resolveMcpCredentialHeaders: async () => ({ Authorization: "Bearer unexpected" }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [{ name: "local", transport: "stdio", ref: "/usr/bin/mcp" }],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([
+      { name: "local", transport: "stdio", ref: "/usr/bin/mcp" },
+    ])
+  })
+
+  it("is non-fatal when the hook throws — the entry is unchanged and a warning is logged", async () => {
+    const { captured, startSession } = captureStartSession()
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    setMcpCredentialDeps({
+      resolveMcpCredentialHeaders: async ({ credentialRef }) => {
+        throw new Error(`no keychain for ${credentialRef}`)
+      },
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [
+        {
+          name: "push",
+          transport: "http",
+          ref: "http://push/mcp",
+          headers: { Authorization: "Bearer fallback" },
+          credentialRef: "agentpush",
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([
+      {
+        name: "push",
+        transport: "http",
+        ref: "http://push/mcp",
+        headers: { Authorization: "Bearer fallback" },
+        credentialRef: "agentpush",
+      },
+    ])
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("credentialRef resolution failed for \"push\""),
+    )
+    warn.mockRestore()
+  })
+
+  it("passes mcpServers through unchanged when no hook is set", async () => {
+    const { captured, startSession } = captureStartSession()
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [
+        {
+          name: "push",
+          transport: "http",
+          ref: "http://push/mcp",
+          headers: { Authorization: "Bearer static" },
+          credentialRef: "agentpush",
+        },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([
+      {
+        name: "push",
+        transport: "http",
+        ref: "http://push/mcp",
+        headers: { Authorization: "Bearer static" },
+        credentialRef: "agentpush",
+      },
+    ])
   })
 })
 

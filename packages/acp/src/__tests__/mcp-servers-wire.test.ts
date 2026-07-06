@@ -63,6 +63,43 @@ describe("toAcpMcpServers — AcpMcpServer → ACP session/new wire shape", () =
     expect(wire).toBe(native)
   })
 
+  it("carries static headers through to the http wire shape", () => {
+    const [wire] = toAcpMcpServers([
+      {
+        name: "push",
+        transport: "http",
+        ref: "http://push/mcp",
+        headers: { Authorization: "Bearer tok", "X-Custom": "v" },
+      },
+    ])
+    expect(wire).toEqual({
+      type: "http",
+      name: "push",
+      url: "http://push/mcp",
+      headers: [
+        { name: "Authorization", value: "Bearer tok" },
+        { name: "X-Custom", value: "v" },
+      ],
+    })
+  })
+
+  it("carries static headers through to the sse wire shape", () => {
+    const [wire] = toAcpMcpServers([
+      {
+        name: "events",
+        transport: "sse",
+        ref: "http://host/sse",
+        headers: { Authorization: "Bearer tok" },
+      },
+    ])
+    expect(wire).toEqual({
+      type: "sse",
+      name: "events",
+      url: "http://host/sse",
+      headers: [{ name: "Authorization", value: "Bearer tok" }],
+    })
+  })
+
   it("is a no-op on an empty list", () => {
     expect(toAcpMcpServers([])).toEqual([])
   })

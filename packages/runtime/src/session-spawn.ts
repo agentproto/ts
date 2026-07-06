@@ -25,6 +25,7 @@ import {
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -428,6 +429,7 @@ export async function spawnAgentSession(
     // returns below, but `onActivity` can start firing as soon as
     // `startSession` connects — this box lets the closure defer
     // pulsing until the id is known, dropping any pre-spawn activity.
+    const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
     let liveSessionId: string | undefined
     const agentSession = await resolved.startSession({
       cwd,
@@ -438,7 +440,7 @@ export async function spawnAgentSession(
         : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
-      ...(mcpServers ? { mcpServers } : {}),
+      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -451,7 +453,7 @@ export async function spawnAgentSession(
       ...(input.model ? { model: input.model } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
-      ...(mcpServers ? { mcpServers } : {}),
+      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       // Parent attribution + depth (WP4) — only set for spawns that
       // arrived via the scoped sub-gateway; root spawns stay
       // parentless at depth 0.
@@ -497,4 +499,45 @@ export async function spawnAgentSession(
       }`,
     }
   }
+}
+
+/**
+ * Resolve brokered auth headers for any `mcpServers` entry that names a
+ * `credentialRef`. The returned headers are merged ON TOP of the entry's
+ * static `headers` (brokered wins on collision). Hook errors are non-fatal:
+ * the entry is left unchanged and a warning is logged. Entries without a
+ * `credentialRef` pass through untouched.
+ */
+async function resolveMcpCredentialHeaders(
+  mcpServers: AcpMcpServer[] | undefined,
+): Promise<AcpMcpServer[] | undefined> {
+  if (!mcpServers || mcpServers.length === 0) return mcpServers
+
+  const { resolveMcpCredentialHeaders: resolve } = getMcpCredentialDeps()
+  if (!resolve) return mcpServers
+
+  return Promise.all(
+    mcpServers.map(async (entry) => {
+      const ref = entry.credentialRef
+      if (!ref) return entry
+
+      let brokered: Record<string, string> | undefined
+      try {
+        brokered = await resolve({ credentialRef: ref })
+      } catch (err) {
+        console.warn(
+          `[agent_start] credentialRef resolution failed for "${entry.name}" ` +
+            `(${ref}): ${err instanceof Error ? err.message : String(err)}`,
+        )
+        return entry
+      }
+
+      if (!brokered || Object.keys(brokered).length === 0) return entry
+
+      return {
+        ...entry,
+        headers: { ...entry.headers, ...brokered },
+      }
+    }),
+  )
 }
