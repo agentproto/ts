@@ -247,6 +247,10 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
     const iterator = this.#query({ prompt: text, options })[
       Symbol.asyncIterator
     ]()
+    // Once a `stream_event` has streamed this turn's prose, the terminal
+    // complete `assistant` message repeats it — suppress its text so the ring
+    // isn't fed the same prose twice (see message-map's suppressAssistantText).
+    let sawPartial = false
     try {
       while (!ac.signal.aborted) {
         const next = await this.#nextMessage(iterator, idleMs, ac)
@@ -254,7 +258,10 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
         const msg = next.value
         const sdkId = systemInitSessionId(msg)
         if (sdkId) session.sdkSessionId = sdkId
-        for (const update of sdkMessageToUpdates(msg)) {
+        if (msg.type === "stream_event") sawPartial = true
+        for (const update of sdkMessageToUpdates(msg, {
+          suppressAssistantText: sawPartial,
+        })) {
           await this.#conn.sessionUpdate({ sessionId: session.id, update })
         }
       }

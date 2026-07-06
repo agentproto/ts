@@ -561,6 +561,15 @@ export function registerAgentTools(
                 sessionId: input.sessionId,
                 status: desc.status,
                 lastOutputAt: desc.lastOutputAt,
+                // Distinct liveness heartbeat: advances on ANY adapter-process
+                // activity (streamed thinking/text deltas, tool traffic), even
+                // across a stretch where the coalesced ring emits no new LINE
+                // and `lastOutputAt` looks frozen. A monitor compares the two —
+                // `lastActivityAt` moving while `lastOutputAt` is stale means
+                // "alive and working", not "stalled". See SessionDescriptor.
+                ...(desc.lastActivityAt ? { lastActivityAt: desc.lastActivityAt } : {}),
+                // processAlive is a live OS query stamped by registry.get().
+                ...(desc.processAlive !== undefined ? { processAlive: desc.processAlive } : {}),
                 // Surfaced so a caller can distinguish "idle" from "mid tool
                 // call" without guessing from empty output.
                 ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),

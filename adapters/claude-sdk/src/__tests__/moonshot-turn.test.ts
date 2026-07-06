@@ -45,7 +45,18 @@ const MOONSHOT_MODEL = "kimi-k2.7-code"
 // Moonshot returns a non-Anthropic message id (`chatcmpl-…`, not `msg_…`).
 const MOONSHOT_MSG_ID = "chatcmpl-9f3a1b2c"
 
-// ---- Typed factories for a Moonshot-shaped SDK message stream ---------------
+// ---- Factories for a Moonshot-shaped SDK message stream ---------------------
+//
+// These build the SDK message shapes as literals, then cast at the boundary
+// (`as unknown as …`) — the same pattern message-map.test.ts / acp-host.test.ts
+// use. The cast is deliberate: the SDK types `usage` as `BetaUsage` (and, on
+// the result, `NonNullableUsage` — every BetaUsage key required non-null), and
+// that shape drifts across `@anthropic-ai/sdk` versions (it gains fields like
+// `server_tool_use` / `service_tier`). A fully-typed literal would compile
+// against one version and fail check-types under a newer resolution. These are
+// inert test fakes — the tests assert on turn flow (stopReason) and emitted
+// chunk text, never on usage numbers — so pinning the exact `Beta*` shape buys
+// nothing but version fragility.
 
 function moonshotInit(sessionId: string): SDKSystemMessage {
   return {
@@ -64,7 +75,7 @@ function moonshotInit(sessionId: string): SDKSystemMessage {
     plugins: [],
     uuid: crypto.randomUUID(),
     session_id: sessionId,
-  }
+  } as unknown as SDKSystemMessage
 }
 
 /** The suspected-but-benign shape: Moonshot ships `signature: ""`. */
@@ -89,7 +100,7 @@ function moonshotThinking(sessionId: string): SDKAssistantMessage {
         cache_read_input_tokens: 0,
       },
     },
-  }
+  } as unknown as SDKAssistantMessage
 }
 
 function moonshotText(sessionId: string, text: string): SDKAssistantMessage {
@@ -113,7 +124,7 @@ function moonshotText(sessionId: string, text: string): SDKAssistantMessage {
         cache_read_input_tokens: 0,
       },
     },
-  }
+  } as unknown as SDKAssistantMessage
 }
 
 function moonshotResult(sessionId: string, text: string): SDKResultSuccess {
@@ -148,7 +159,7 @@ function moonshotResult(sessionId: string, text: string): SDKResultSuccess {
     permission_denials: [],
     uuid: crypto.randomUUID(),
     session_id: sessionId,
-  }
+  } as unknown as SDKResultSuccess
 }
 
 // ---- Test harness: a real AgentSideConnection over in-memory streams --------

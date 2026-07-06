@@ -67,7 +67,16 @@ import {
   type AgentAdapterResolver,
   type GatewayHandle,
 } from "@agentproto/runtime"
-import { CredentialBroker, KeychainStore, getAuthProvider } from "@agentproto/auth"
+import {
+  CredentialBroker,
+  KeychainStore,
+  getAuthProvider,
+  registerAuthProvider,
+} from "@agentproto/auth"
+import {
+  buildBrokerProvider,
+  loadAuthProviders,
+} from "../util/auth-providers-store.js"
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
@@ -398,6 +407,30 @@ export async function runServe(args: readonly string[]): Promise<number> {
     store: new KeychainStore(),
     getProvider: getAuthProvider,
   })
+  // Re-register persisted broker auth-providers (`agentproto auth cred set …`)
+  // onto the module-level registry the broker looks up by id — an unregistered
+  // id throws, so without this every `credentialRef` would fail. Non-fatal: a
+  // malformed def is skipped with a warning, never blocking daemon boot.
+  try {
+    const { providers } = await loadAuthProviders()
+    for (const [id, def] of Object.entries(providers)) {
+      try {
+        registerAuthProvider(buildBrokerProvider(id, def))
+      } catch (err) {
+        console.warn(
+          `[serve] skipping broker auth-provider "${id}": ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[serve] could not load broker auth-providers: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
   setMcpCredentialDeps({
     resolveMcpCredentialHeaders: ({ credentialRef, signal }) =>
       credentialBroker.resolveHeaders({
