@@ -15,7 +15,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import type { SessionsRegistry } from "./sessions.js"
 import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
@@ -25,6 +25,7 @@ import {
   describeResumePath,
   tokenizeCommand,
 } from "./resume-strategies.js"
+import { restartAgentSession } from "./session-restart-core.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -946,8 +947,7 @@ export function registerSessionTools(
         // strategy.kind === "agent" — decideRestartStrategy only returns
         // this when `adapterSlug` is set, but TS can't see across the
         // two objects, so re-check at runtime rather than casting.
-        const adapterSlug = prev.adapterSlug
-        if (!adapterSlug) {
+        if (!prev.adapterSlug) {
           return {
             content: [
               {
@@ -971,69 +971,19 @@ export function registerSessionTools(
             isError: true,
           }
         }
-        const resolved = await resolveAgentAdapter(adapterSlug)
-        if (!resolved) {
-          return {
-            content: [
-              { type: "text", text: `session_restart: adapter "${adapterSlug}" not found.` },
-            ],
-            isError: true,
-          }
-        }
-        const spawnWithResume = async (
-          resumeSessionId?: string
-        ): Promise<SessionDescriptor> => {
-          let liveSessionId: string | undefined
-          const agentSession = await resolved.startSession({
-            cwd,
-            ...(resumeSessionId ? { resumeSessionId } : {}),
-            ...(prev.model ? { model: prev.model } : {}),
-            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
-            onActivity: () => {
-              if (liveSessionId) registry.pulseActivity(liveSessionId)
-            },
-          })
-          const desc = registry.spawnAgent({
-            workspaceSlug: prev.workspaceSlug,
-            cwd,
-            agentSession,
-            adapterSlug,
-            ...(prev.label ? { label: prev.label } : {}),
-            ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
-            ...(prev.model ? { model: prev.model } : {}),
-            ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
-          })
-          liveSessionId = desc.id
-          return desc
-        }
-
-        let desc: SessionDescriptor
-        let resumeFallback = false
-        try {
-          desc = await spawnWithResume(strategy.resumeSessionId)
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          // Adapter doesn't recognize the resume id — typically means the
-          // prior session never got past the spawn (no turn happened).
-          // Retry as a fresh spawn so the caller at least gets the agent
-          // back, same fallback the CLI's `sessions restart` applies.
-          if (strategy.resumeSessionId && /not found|Resource not found/i.test(msg)) {
-            desc = await spawnWithResume(undefined)
-            resumeFallback = true
-          } else {
-            throw err
-          }
-        }
+        // Shared with the cron scheduler's `prompt-session` action —
+        // see session-restart-core.ts.
+        const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev)
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
                 {
-                  ...desc,
-                  resumedFrom: prev.id,
-                  resumeVia: resumeFallback ? "" : describeResumePath(augmented),
-                  ...(resumeFallback ? { resumeFallback: true } : {}),
+                  ...restarted.desc,
+                  resumedFrom: restarted.resumedFrom,
+                  resumeVia: restarted.resumeVia,
+                  ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                 },
                 null,
                 2

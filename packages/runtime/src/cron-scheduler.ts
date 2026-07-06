@@ -43,6 +43,7 @@ import { loadAllowlist, runCommand } from "./command-tools.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import { restartAgentSession } from "./session-restart-core.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -297,15 +298,42 @@ export function createCronScheduler(opts: {
 
     if (action.kind === "prompt-session") {
       const desc = registry.get(action.sessionId)
-      if (!desc) {
-        throw new Error(
-          `cron job '${job.id}': session '${action.sessionId}' not found`,
+      if (!desc || desc.processAlive === false) {
+        if (!resolveAgentAdapter) {
+          throw new Error(
+            `cron job '${job.id}': session '${action.sessionId}' is gone and agent restart is not enabled (no resolveAgentAdapter)`,
+          )
+        }
+        const prevDesc = desc ?? registry.findByIdOrName(action.sessionId)
+        if (!prevDesc) {
+          throw new Error(
+            `cron job '${job.id}': session '${action.sessionId}' not found, cannot restart`,
+          )
+        }
+        const restarted = await restartAgentSession(
+          registry,
+          resolveAgentAdapter,
+          prevDesc,
+          // A cron `prompt-session` job needs `sendPrompt` on the
+          // result, which only an agent-cli session has — never let
+          // decideRestartStrategy hand back a PTY-native resume (e.g.
+          // claude-code's `claude --resume`) here.
+          { forceAgentResume: true },
         )
+        action.sessionId = restarted.desc.id
+        await registry.sendPrompt(restarted.desc.id, action.prompt)
+        return {
+          ok: true,
+          summary:
+            `session '${prevDesc.id}' was gone — resumed as '${restarted.desc.id}' ` +
+            `(${restarted.resumeVia || "fresh spawn, no continuity"}) and re-prompted`,
+        }
       }
-      if (desc.processAlive === false) {
-        throw new Error(
-          `cron job '${job.id}': session '${action.sessionId}' is not alive`,
-        )
+      if (desc.busy) {
+        return {
+          ok: true,
+          summary: `session ${action.sessionId} busy (mid-turn), tick skipped`,
+        }
       }
       // Same underlying call as the agent_prompt MCP tool / POST
       // /sessions/:id/prompt — re-prompts the existing session in place

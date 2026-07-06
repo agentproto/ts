@@ -1349,6 +1349,16 @@ export async function startHttpServer(
       // down its underlying TCP socket; live WS connections receive
       // a close frame from the kernel.
       wss.close()
+      // `server.close()`'s callback only fires once every existing
+      // connection has ended on its own — it does NOT sever them.
+      // This daemon's whole purpose is long-lived keep-alive/SSE
+      // connections (session_monitor long-polls, output streaming,
+      // WS PTYs), so under normal load at least one is always open
+      // and `close()` would hang forever, leaving SIGTERM/SIGINT
+      // looking "ignored". `closeAllConnections()` (Node 18.2+)
+      // forcibly destroys every open socket so shutdown actually
+      // completes.
+      server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }
