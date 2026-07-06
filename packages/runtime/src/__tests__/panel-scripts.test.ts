@@ -75,5 +75,14 @@ describe.each(Object.entries(PANELS))("panel %s", (_name, html) => {
       expect(js).toMatch(/'<div class="d-text">'\+renderMd\(it\.text\)\+'<\/div>'/)
       expect(js).not.toMatch(/'<div class="d-text">'\+esc\(it\.text\)/)
     })
+
+    it("wires the full-panel deep-link to the current session on open, opening in a new tab", () => {
+      expect(html).toContain('id="fullPanelLink"')
+      expect(html).toContain('target="_blank"')
+      expect(html).toContain('rel="noopener"')
+      expect(js).toContain(
+        "$('fullPanelLink').href='https://cli.agentproto.sh/panel?session='+encodeURIComponent(id);",
+      )
+    })
   }
 })

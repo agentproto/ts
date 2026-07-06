@@ -13,9 +13,15 @@
  * Protocol flow:
  *   1. Tool `agentproto_session_story` is called by the host, optionally
  *      with a `sessionId`.
- *   2. execute() returns a small sessions snapshot (same shape as the other
- *      panels) plus the requested `sessionId` so the panel can auto-open it.
- *      When no `sessionId` is given the panel shows a session picker.
+ *   2. execute() returns just enough for the panel to boot: when a
+ *      `sessionId` is given, it echoes that back and skips the sessions
+ *      list entirely — the panel's own JS never reads the initial snapshot,
+ *      it always re-fetches via `session_list` over the postMessage bridge
+ *      on boot (see session-story-panel.ts's `loadSessions()`/boot
+ *      sequence), so shipping the full list here would just be dead
+ *      payload. When no `sessionId` is given (the picker case) it still
+ *      returns the full sessions snapshot, since the model/host may surface
+ *      it before the panel's own bridge call lands.
  *   3. The HTML panel opens a JSON-RPC bridge (postMessage) and drives
  *      everything else live: `session_list` for status polling,
  *      `agent_export` for the transcript (folded into chapters/steps with a
@@ -40,7 +46,7 @@ export const sessionStoryInputSchema = z.object({
 })
 
 export type SessionStoryInput = z.infer<typeof sessionStoryInputSchema>
-export type SessionStoryOutput = { sessions: SessionDescriptor[]; sessionId?: string }
+export type SessionStoryOutput = { sessions: SessionDescriptor[]; sessionId?: string } | { sessionId: string }
 
 export interface SessionStoryOps {
   listSessions(filter?: "running" | "all"): SessionDescriptor[]
@@ -64,10 +70,10 @@ export function makeSessionStoryPanelApp(
       "chapters, a chapter-segmented feed, and a composer to keep driving " +
       "the session. Polls live data and lets you jump to any step.",
     inputSchema: sessionStoryInputSchema,
-    execute: async input => ({
-      sessions: ops.listSessions("all"),
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-    }),
+    execute: async input =>
+      input.sessionId
+        ? { sessionId: input.sessionId }
+        : { sessions: ops.listSessions("all") },
     html: SESSION_STORY_PANEL_HTML,
   }
 }
