@@ -298,22 +298,22 @@ export function createCronScheduler(opts: {
 
     if (action.kind === "prompt-session") {
       const desc = registry.get(action.sessionId)
-      if (!desc || desc.processAlive === false) {
+      if (!desc) {
+        throw new Error(
+          `cron job '${job.id}': session '${action.sessionId}' not found`,
+        )
+      }
+      if (desc.processAlive === false) {
         if (!resolveAgentAdapter) {
           throw new Error(
-            `cron job '${job.id}': session '${action.sessionId}' is gone and agent restart is not enabled (no resolveAgentAdapter)`,
-          )
-        }
-        const prevDesc = desc ?? registry.findByIdOrName(action.sessionId)
-        if (!prevDesc) {
-          throw new Error(
-            `cron job '${job.id}': session '${action.sessionId}' not found, cannot restart`,
+            `cron job '${job.id}': session '${action.sessionId}' is not alive and agent ` +
+              "restart is not enabled (no resolveAgentAdapter)",
           )
         }
         const restarted = await restartAgentSession(
           registry,
           resolveAgentAdapter,
-          prevDesc,
+          desc,
           // A cron `prompt-session` job needs `sendPrompt` on the
           // result, which only an agent-cli session has — never let
           // decideRestartStrategy hand back a PTY-native resume (e.g.
@@ -325,7 +325,7 @@ export function createCronScheduler(opts: {
         return {
           ok: true,
           summary:
-            `session '${prevDesc.id}' was gone — resumed as '${restarted.desc.id}' ` +
+            `session '${desc.id}' was gone — resumed as '${restarted.desc.id}' ` +
             `(${restarted.resumeVia || "fresh spawn, no continuity"}) and re-prompted`,
         }
       }
