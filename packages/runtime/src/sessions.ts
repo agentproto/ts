@@ -2067,7 +2067,9 @@ export function createSessionsRegistry(opts?: {
         thoughtBuf: "",
       }
       sessions.set(id, rt)
-      writeCommandLogEntry(
+      // Fire-and-forget: the write is best-effort and must never delay the
+      // session's own lifecycle (its internal `.catch` swallows failures).
+      void writeCommandLogEntry(
         id,
         {
           ts: now.toISOString(),

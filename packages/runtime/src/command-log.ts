@@ -45,9 +45,13 @@ export function writeCommandLogEntry(
   sessionId: string,
   entry: CommandLogEntry,
   baseDir?: string,
-): void {
+): Promise<void> {
   const path = sessionEventsPath(sessionId, baseDir)
-  void mkdir(dirname(path), { recursive: true })
+  // Returns the write promise so callers CAN await it (tests do, to avoid a
+  // flaky fixed-delay read); the daemon stays fire-and-forget by `void`-ing
+  // the result. The internal `.catch` keeps an un-awaited call from ever
+  // rejecting, so fire-and-forget is still safe.
+  return mkdir(dirname(path), { recursive: true })
     .then(() => appendFile(path, `${JSON.stringify(entry)}\n`, "utf8"))
     .catch(err => {
       console.warn(`[command-log] failed to write entry for session ${sessionId}:`, err)

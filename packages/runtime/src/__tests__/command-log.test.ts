@@ -34,8 +34,7 @@ describe("command-log", () => {
 
   describe("writeCommandLogEntry", () => {
     it("writes a single JSONL line to the session's events.jsonl", async () => {
-      writeCommandLogEntry("sess_abc123", fakeEntry({ stdout: "3 passed\n" }), baseDir)
-      await new Promise(res => setTimeout(res, 20)) // fire-and-forget — let it land
+      await writeCommandLogEntry("sess_abc123", fakeEntry({ stdout: "3 passed\n" }), baseDir)
 
       const raw = readFileSync(sessionEventsPath("sess_abc123", baseDir), "utf8").trim()
       const lines = raw.split("\n")
@@ -54,8 +53,7 @@ describe("command-log", () => {
     })
 
     it("carries the truncated flag only when set", async () => {
-      writeCommandLogEntry("sess_trunc", fakeEntry({ truncated: true }), baseDir)
-      await new Promise(res => setTimeout(res, 20))
+      await writeCommandLogEntry("sess_trunc", fakeEntry({ truncated: true }), baseDir)
       const entry = JSON.parse(readFileSync(sessionEventsPath("sess_trunc", baseDir), "utf8").trim())
       expect(entry.truncated).toBe(true)
     })
@@ -66,8 +64,7 @@ describe("command-log", () => {
       // mkdir(recursive) will fail underneath it.
       const blocker = join(baseDir, "not-a-dir")
       writeFileSync(blocker, "x")
-      writeCommandLogEntry("sess_blocked", fakeEntry(), join(blocker, "nested"))
-      await new Promise(res => setTimeout(res, 20))
+      await writeCommandLogEntry("sess_blocked", fakeEntry(), join(blocker, "nested"))
       expect(warnSpy).toHaveBeenCalled()
       warnSpy.mockRestore()
     })
@@ -79,8 +76,7 @@ describe("command-log", () => {
     })
 
     it("reads back the entry written by writeCommandLogEntry", async () => {
-      writeCommandLogEntry("sess_roundtrip", fakeEntry({ stdout: "hello\n" }), baseDir)
-      await new Promise(res => setTimeout(res, 20))
+      await writeCommandLogEntry("sess_roundtrip", fakeEntry({ stdout: "hello\n" }), baseDir)
       const entry = await readCommandLogEntry("sess_roundtrip", baseDir)
       expect(entry).toMatchObject({ command: "pnpm", stdout: "hello\n", exitCode: 0 })
     })
