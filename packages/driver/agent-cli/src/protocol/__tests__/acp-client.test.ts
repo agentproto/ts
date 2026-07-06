@@ -120,6 +120,21 @@ describe("AcpProtocolArm.connect — model + effort threading", () => {
     expect(newSessionCalls[0]).not.toHaveProperty("model")
     expect(newSessionCalls[0]).not.toHaveProperty("effort")
   })
+
+  it("forwards mode to client.newSession (opencode-style config-applied mode)", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work", mode: "plan" })
+
+    expect(newSessionCalls).toHaveLength(1)
+    expect(newSessionCalls[0]).toMatchObject({ cwd: "/work", mode: "plan" })
+  })
+
+  it("omits mode when not provided", async () => {
+    const arm = createAcpProtocolArm({ child: fakeChild(), cwd: "/work" })
+    await arm.connect({ ...baseConnect, cwd: "/work" })
+
+    expect(newSessionCalls[0]).not.toHaveProperty("mode")
+  })
 })
 
 describe("AcpProtocolArm.connect — onActivity threading", () => {

@@ -97,19 +97,28 @@ export const opencode: AgentCliHandle = defineAgentCli({
     resumable: true,
     bidirectional: true,
   },
+  // `opencode acp --help` (v1.17.13) has no `--mode` or `--model` flag —
+  // it's a yargs CLI that throws on any unrecognized flag, so either one
+  // used to crash the spawned subprocess before ACP even connected. Unlike
+  // claude-code's wrapper (which needs the CLAUDE_CONFIG_DIR trick for
+  // mode), opencode's own ACP server implements `session/set_config_option`
+  // with `configId` ∈ {"model", "effort", "mode"} directly on the wire —
+  // no CLI flags involved. Both are applied post-`session/new`, not argv.
   modes: [
     { id: "default", description: "Standard interactive mode." },
     {
       id: "plan",
       description:
         "Plan-only mode — reasoning + proposals, no edits or shell calls.",
-      bin_args_append: ["--mode", "plan"],
+      // No CLI flag exists for this — applied via ACP
+      // session/set_config_option(configId:"mode") after newSession.
+      apply: "config",
     },
     {
       id: "build",
       description:
         "Auto-execute mode — file edits and shell commands run without per-step prompts.",
-      bin_args_append: ["--mode", "build"],
+      apply: "config",
     },
   ],
   options: [
@@ -117,8 +126,11 @@ export const opencode: AgentCliHandle = defineAgentCli({
       id: "model",
       type: "string",
       description:
-        "Provider/model override for this operator binding (e.g. `openrouter/anthropic/claude-sonnet-4-6`).",
-      bin_args_template: ["--model", "{value}"],
+        "Provider/model override for this operator binding (e.g. `openrouter/anthropic/claude-sonnet-4-6`). Applied via ACP " +
+        "session/set_config_option after the session is created (see " +
+        "`models.apply`, default \"config\"); no CLI flag for this exists on " +
+        "`opencode acp`. An id the server can't resolve is warned about and " +
+        "ignored (the session keeps the server's default model).",
     },
   ],
   continuation: {

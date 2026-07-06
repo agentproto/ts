@@ -165,3 +165,40 @@ describe("createAgentCliRuntime(...).start() — requestedMode threading", () =>
     expect(capturedArmOptions?.requestedMode).toBeUndefined()
   })
 })
+
+describe("createAgentCliRuntime(...).start() — apply:'config' mode threading (opencode-style)", () => {
+  const defWithConfigMode: AgentCliDefinition = {
+    ...minimalDef,
+    modes: [
+      { id: "default", description: "Standard." },
+      { id: "plan", description: "Plan-only.", apply: "config" },
+      {
+        id: "build",
+        description: "Auto-execute.",
+        bin_args_append: ["--legacy-build-flag"],
+      },
+    ],
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    capturedConnectOpts = undefined
+  })
+
+  it("passes mode to connect() when the requested mode declares apply:'config'", async () => {
+    const runtime = createAgentCliRuntime(defWithConfigMode)
+    await runtime.start({ cwd: "/tmp", config: { mode: "plan" } })
+    expect(capturedConnectOpts?.mode).toBe("plan")
+  })
+
+  it("omits mode from connect() for a mode without apply:'config' (default 'bin_args')", async () => {
+    const runtime = createAgentCliRuntime(defWithConfigMode)
+    await runtime.start({ cwd: "/tmp", config: { mode: "build" } })
+    expect(capturedConnectOpts?.mode).toBeUndefined()
+  })
+
+  it("omits mode from connect() when no mode is requested", async () => {
+    const runtime = createAgentCliRuntime(defWithConfigMode)
+    await runtime.start({ cwd: "/tmp" })
+    expect(capturedConnectOpts?.mode).toBeUndefined()
+  })
+})

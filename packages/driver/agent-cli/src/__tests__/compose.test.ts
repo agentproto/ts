@@ -223,6 +223,39 @@ describe("composeSpawn (AIP-45)", () => {
     ).toThrow(/unsupported_continuation/)
   })
 
+  it("emits no argv/env patch for a mode declaring apply:'config'", () => {
+    const withConfigMode = handle({
+      modes: [
+        { id: "default" },
+        {
+          id: "plan",
+          apply: "config",
+          // Deliberately declared alongside apply:"config" to prove
+          // compose.ts ignores it rather than crashing a real CLI that
+          // has no such flag.
+          bin_args_append: ["--mode", "plan"],
+          env: { SHOULD_NOT_APPLY: "1" },
+        },
+      ],
+    })
+    const out = composeSpawn(withConfigMode, { mode: "plan" })
+    expect(out.binArgs).toEqual([
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+    ])
+    expect(out.env).toEqual({})
+  })
+
+  it("keeps composing argv for a mode without apply (default 'bin_args')", () => {
+    const out = composeSpawn(handle(), { mode: "plan" })
+    expect(out.binArgs).toEqual([
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+      "--permission-mode",
+      "plan",
+    ])
+  })
+
   it("composes mode + options together (declaration order honoured)", () => {
     const out = composeSpawn(handle(), {
       mode: "plan",
