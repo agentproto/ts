@@ -10,7 +10,7 @@
     "durable-supervision",
     "adapter-setup-kit"
   ],
-  "sourceDir": "../../.claude/skills",
+  "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",
   "author": { "name": "Jeremy — fabrikapp" },
   "keywords": [
     "agentproto",

@@ -90,15 +90,25 @@ description: "Description for ${slug}"
   return { manifestPath, sourceDir, outDir, packName }
 }
 
-function runPackCli(args: string[], cwd: string): {
+function runPackCli(
+  args: string[],
+  cwd: string,
+  envOverrides?: Record<string, string | undefined>,
+): {
   stdout: string
   stderr: string
   code: number | null
 } {
   const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
+  const env: Record<string, string> = { ...process.env } as Record<string, string>
+  for (const [key, value] of Object.entries(envOverrides ?? {})) {
+    if (value === undefined) delete env[key]
+    else env[key] = value
+  }
   const result = spawnSync("node", [cliEntry, "pack", ...args], {
     cwd,
     timeout: 15_000,
+    env,
   })
   return {
     stdout: result.stdout?.toString("utf8") ?? "",
@@ -378,6 +388,48 @@ describe("agentproto pack skill --out override", () => {
   })
 })
 
+// ── integration: missing sourceDir with no --source → clear error ─────────
+
+describe("agentproto pack skill (missing sourceDir)", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-nosource-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("exits with code 2 and a helpful message when sourceDir is absent and --source is not passed", async () => {
+    const outDir = join(tmp, "out")
+    const manifestDir = join(tmp, "manifests")
+    await mkdir(outDir, { recursive: true })
+    await mkdir(manifestDir, { recursive: true })
+
+    // Manifest without sourceDir
+    const manifest = {
+      name: "test-pack",
+      description: "A test skill pack",
+      version: "1.0.0",
+      skills: ["skill-a"],
+      author: { name: "Test" },
+      keywords: [],
+    }
+    const manifestPath = join(manifestDir, "test-pack.json")
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8")
+
+    const { code, stderr } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir],
+      tmp,
+    )
+
+    expect(code).toBe(2)
+    expect(stderr).toContain("no source directory")
+    expect(stderr).toContain("--source")
+  })
+})
+
 // ── integration: --source override ────────────────────────────────────────
 
 describe("agentproto pack skill --source override", () => {
@@ -443,5 +495,91 @@ description: "From real source"
 
     const readme = readFileSync(join(packDir, "README.md"), "utf8")
     expect(readme).toContain("From real source")
+  })
+})
+
+describe("agentproto pack skill — manifest sourceDir env-var expansion", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-envvar-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("expands ${VAR} in manifest.sourceDir when the var is set", async () => {
+    const realSourceDir = join(tmp, "real-skills")
+    const outDir = join(tmp, "out")
+    const manifestDir = join(tmp, "manifests")
+
+    await mkdir(join(realSourceDir, "skill-a"), { recursive: true })
+    await mkdir(outDir, { recursive: true })
+    await mkdir(manifestDir, { recursive: true })
+    await writeFile(
+      join(realSourceDir, "skill-a", "SKILL.md"),
+      `---
+name: skill-a
+description: "From env-var source"
+---
+# skill-a
+`,
+      "utf8",
+    )
+
+    const manifest = {
+      name: "test-pack",
+      description: "A test skill pack",
+      version: "1.0.0",
+      skills: ["skill-a"],
+      sourceDir: "${AGENTPROTO_TEST_SOURCE_ROOT}",
+      author: { name: "Test" },
+      keywords: [],
+    }
+    const manifestPath = join(manifestDir, "test-pack.json")
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8")
+
+    const { code, stdout } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir],
+      tmp,
+      { AGENTPROTO_TEST_SOURCE_ROOT: realSourceDir },
+    )
+
+    expect(code).toBe(0)
+    expect(stdout).toContain("pack written to")
+
+    const packDir = join(outDir, "test-pack-v1.0.0")
+    const readme = readFileSync(join(packDir, "README.md"), "utf8")
+    expect(readme).toContain("From env-var source")
+  })
+
+  it("fails with a clear error when the referenced env var is unset", async () => {
+    const outDir = join(tmp, "out")
+    const manifestDir = join(tmp, "manifests")
+
+    await mkdir(outDir, { recursive: true })
+    await mkdir(manifestDir, { recursive: true })
+
+    const manifest = {
+      name: "test-pack",
+      description: "A test skill pack",
+      version: "1.0.0",
+      skills: ["skill-a"],
+      sourceDir: "${AGENTPROTO_TEST_UNSET_VAR}",
+      author: { name: "Test" },
+      keywords: [],
+    }
+    const manifestPath = join(manifestDir, "test-pack.json")
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8")
+
+    const { code, stdout, stderr } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir],
+      tmp,
+      { AGENTPROTO_TEST_UNSET_VAR: undefined },
+    )
+
+    expect(code).not.toBe(0)
+    expect(stdout + stderr).toContain("AGENTPROTO_TEST_UNSET_VAR")
   })
 })

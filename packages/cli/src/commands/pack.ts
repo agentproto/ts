@@ -9,7 +9,7 @@
  *   "description": "Operate and supervise a fleet ...",
  *   "version": "0.3.0",
  *   "skills": ["slug1", "slug2", ...],
- *   "sourceDir": "../../.claude/skills",
+ *   "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",  // optional; use env-var form when source lives in a private/external repo
  *   "author": { "name": "Name" },
  *   "keywords": ["kw1", "kw2", ...]
  * }
@@ -22,10 +22,15 @@
  * frontmatter, regenerates .claude-plugin/plugin.json and README.md, and
  * appends a changelog entry when the version is bumped.
  *
- * When the manifest's sourceDir is a relative path that lives in a
- * *different* git repo from the packager itself (e.g. agentik-studio/.claude/skills
- * vs agentproto/ts), relative resolution will fail. Pass --source <absolute>
- * to override the manifest value.
+ * When the manifest's sourceDir lives in a *different* git repo from the
+ * packager itself (e.g. agentik-studio/.claude/skills vs agentproto/ts),
+ * relative resolution will fail. Two portable options, in precedence order:
+ *   1. --source <absolute> — one-off override, wins over everything.
+ *   2. sourceDir: "${SOME_ENV_VAR}/.claude/skills" — the manifest expands
+ *      `${VAR}` against the environment before resolving, so the same
+ *      manifest works on any machine that sets that var (e.g.
+ *      AGENTIK_STUDIO_ROOT=/path/to/agentik-studio in your shell profile).
+ *      Referencing an unset var is a hard error, not a silent path.
  *
  * Relationship to install-skill.ts:
  *   pack skill (this)    → assembles a versioned pack directory from source
@@ -46,12 +51,29 @@ import type { SkillInfo } from "./skill-install/types.js"
 
 // ── types ────────────────────────────────────────────────────────────────
 
+/**
+ * Expands `${VAR}` references in a manifest sourceDir against process.env.
+ * An unset var is a hard error — a silently-empty substitution would turn
+ * into a confusing "SOURCE MISSING" for an unrelated-looking path.
+ */
+function expandEnvVars(input: string): string {
+  return input.replace(/\$\{(\w+)\}/g, (_match, name: string) => {
+    const value = process.env[name]
+    if (value === undefined) {
+      throw new Error(
+        `agentproto pack skill: manifest sourceDir references \${${name}}, but that environment variable is not set.`,
+      )
+    }
+    return value
+  })
+}
+
 interface PackManifest {
   name: string
   description: string
   version: string
   skills: string[]
-  sourceDir: string
+  sourceDir?: string
   author: { name: string }
   keywords: string[]
 }
@@ -135,9 +157,18 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
 
   const manifest: PackManifest = await readManifest(manifestPath)
   const manifestDir = dirname(manifestPath)
+
+  if (!values.source && !manifest.sourceDir) {
+    process.stderr.write(
+      "agentproto pack skill: no source directory. " +
+        "Either add sourceDir to the manifest or pass --source <absolute-path>.\n",
+    )
+    return 2
+  }
+
   const sourceDir = values.source
     ? resolve(process.cwd(), expandHome(values.source))
-    : resolve(manifestDir, manifest.sourceDir)
+    : resolve(manifestDir, expandEnvVars(manifest.sourceDir as string))
   const outDir = resolve(process.cwd(), values.out)
 
   // Determine the effective version
@@ -207,13 +238,16 @@ async function readManifest(path: string): Promise<PackManifest> {
     typeof data.name !== "string" ||
     typeof data.description !== "string" ||
     typeof data.version !== "string" ||
-    !Array.isArray(data.skills) ||
-    typeof data.sourceDir !== "string"
+    !Array.isArray(data.skills)
   ) {
     throw new Error(
       `pack manifest: missing or invalid required fields. ` +
-        "Required: name (string), description (string), version (string), skills (array), sourceDir (string).",
+        "Required: name (string), description (string), version (string), skills (array).",
     )
+  }
+
+  if (data.sourceDir !== undefined && typeof data.sourceDir !== "string") {
+    throw new Error("pack manifest: sourceDir must be a string when present.")
   }
 
   if (!data.skills.every((s) => typeof s === "string")) {
@@ -237,7 +271,7 @@ async function readManifest(path: string): Promise<PackManifest> {
     description: data.description,
     version: data.version,
     skills: data.skills as string[],
-    sourceDir: data.sourceDir,
+    ...(typeof data.sourceDir === "string" ? { sourceDir: data.sourceDir } : {}),
     author,
     keywords,
   }
