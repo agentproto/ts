@@ -36,6 +36,7 @@ import { runMcpBridge } from "./commands/mcp-bridge.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
 import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
+import { runPack } from "./commands/pack.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -128,6 +129,7 @@ const VERBS = new Set([
   "install-mcp",
   "onboard",
   "cron",
+  "pack",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -200,6 +202,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runOnboard(rest)
     case "cron":
       return runCron(rest)
+    case "pack":
+      return runPack(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
