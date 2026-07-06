@@ -100,7 +100,7 @@ describe("session story panel McpApp — MCP protocol", () => {
     await client.close()
   })
 
-  it("tools/call agentproto_session_story echoes back the requested sessionId", async () => {
+  it("tools/call agentproto_session_story echoes back the requested sessionId without the full sessions list", async () => {
     const server = makeMockServer()
     const client = await makeClient(server)
 
@@ -111,8 +111,9 @@ describe("session story panel McpApp — MCP protocol", () => {
 
     expect(result.isError).toBeFalsy()
     const content0 = (result.content as Array<{ type: string; text: string }>)[0]!
-    const data = JSON.parse(content0.text) as { sessions: unknown[]; sessionId?: string }
+    const data = JSON.parse(content0.text) as { sessions?: unknown[]; sessionId?: string }
     expect(data.sessionId).toBe("sess-001")
+    expect(data.sessions).toBeUndefined()
 
     await client.close()
   })

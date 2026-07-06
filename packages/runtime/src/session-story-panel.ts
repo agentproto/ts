@@ -81,9 +81,11 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
   .modewrap { display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; flex:none; }
   .modewrap button { border:none; background:var(--panel); color:var(--ink-mute); font-size:11px; font-weight:700; padding:6px 11px; cursor:pointer; }
   .modewrap button.on { background:var(--ink); color:#fdf9f2; }
-  button.sim { border:1px solid var(--line); background:var(--panel); color:var(--ink-mute); font-weight:700;
+  button.sim, a.sim { border:1px solid var(--line); background:var(--panel); color:var(--ink-mute); font-weight:700;
                font-size:11.5px; border-radius:8px; padding:6px 12px; cursor:pointer; flex:none; }
   button.sim.on { background:var(--ink); border-color:var(--ink); color:#fdf9f2; }
+  a.sim { display:inline-flex; align-items:center; text-decoration:none; }
+  a.sim:hover { border-color:var(--ink-ghost); color:var(--ink); }
 
   /* plan strip : les sous-tâches, l'avancement d'un coup d'œil */
   .plan { display:flex; gap:6px; overflow-x:auto; padding:11px 0 12px; scrollbar-width:none; }
@@ -218,6 +220,7 @@ export const SESSION_STORY_PANEL_HTML = `<!doctype html>
         <div class="h2" id="heroSub"></div>
       </div>
       <div class="modewrap"><button id="modeSimple" class="on" type="button">Simple</button><button id="modeTech" type="button">Tech</button></div>
+      <a class="sim" id="fullPanelLink" href="#" target="_blank" rel="noopener" title="Ouvrir le panneau complet (Terminal/Chat/JSON/TTY)">&#8599; panneau complet</a>
       <button class="sim" id="switchBtn" type="button">&#8646; changer</button>
     </div>
     <div class="plan" id="plan"></div>
@@ -577,6 +580,7 @@ function openSession(id){
   lastSeenOutputAt=null;
   $('pickerScreen').classList.add('hidden');
   $('storyScreen').classList.remove('hidden');
+  $('fullPanelLink').href='https://cli.agentproto.sh/panel?session='+encodeURIComponent(id);
   closePanel();
   loadStory().then(renderAll);
 }
