@@ -1,0 +1,63 @@
+{
+  "name": "@agentproto/storage-github",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/storage-github — github `WorkspaceSync` provider for @agentproto/storage. Clones a repo on pull, commits with AIP-23 identity on push, and opens PRs per the sync.push.pr_policy. Host-side @octokit/rest for PR creation — no in-box gh dependency.",
+  "keywords": [
+    "agentproto",
+    "aip-35",
+    "storage",
+    "github",
+    "workspace-sync",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-35",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/storage-github"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/storage": "workspace:*",
+    "@octokit/rest": "^22.0.1"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
