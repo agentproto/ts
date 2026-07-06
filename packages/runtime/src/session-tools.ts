@@ -16,6 +16,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import type { SessionEventBus } from "./session-event-bus.js"
 import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
@@ -161,6 +162,9 @@ export interface RegisterSessionToolsOptions {
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
   webhookNotifier?: WebhookNotifier
+  /** Optional session event bus forwarded to `registerAgentTools` so
+   *  mcp-header proxies are torn down when a spawned session exits. */
+  sessionEvents?: SessionEventBus
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.loadRoleRegistry`. */
   loadRoleRegistry?: RegisterAgentToolsOptions["loadRoleRegistry"]

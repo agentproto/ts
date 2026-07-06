@@ -25,6 +25,14 @@ import {
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import {
+  buildSpawnCredentialBroker,
+  resolveSpawnExposures,
+  type ResolveEnvValue,
+  type SpawnMcpServerEntry,
+} from "./spawn-exposures.js"
+import type { SecretExposure } from "@agentproto/secrets/exposure"
+import type { SessionEventBus } from "./session-event-bus.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -91,6 +99,16 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** Optional hook to build the credential broker used for
+   *  `McpHeaderExposure` resolution. Defaults to
+   *  `buildSpawnCredentialBroker()`. Tests can inject a stub. */
+  buildCredentialBroker?: () => import("@agentproto/secrets/exposure").McpHeaderResolver
+  /** Optional resolver for `EnvExposure` values. Defaults to reading the
+   *  `field` from `process.env`. Tests can inject a stub. */
+  resolveSecretValue?: ResolveEnvValue
+  /** Optional session event bus used to tear down mcp-header proxies when
+   *  the spawned session exits. */
+  sessionEvents?: SessionEventBus
 }
 
 export interface SpawnAgentSessionInput {
@@ -120,11 +138,15 @@ export interface SpawnAgentSessionInput {
   skills?: string[]
   model?: string
   effort?: string
-  mcpServers?: AcpMcpServer[]
+  mcpServers?: SpawnMcpServerEntry[]
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
   wait?: boolean
   maxCostUsd?: number
+  /** Spawn-time secret exposures. `kind:"env"` values are resolved and
+   *  injected as scoped env vars; per-entry `credentialPath` on `mcpServers`
+   *  triggers a local auth-header proxy. Other kinds are ignored. */
+  exposures?: SecretExposure[]
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -172,6 +194,9 @@ export async function spawnAgentSession(
     callerScope,
     webhookNotifier,
     loadDefaultsConfig,
+    buildCredentialBroker,
+    resolveSecretValue,
+    sessionEvents,
   } = deps
 
   // cwd resolution mirrors the HTTP route: explicit cwd wins,
@@ -405,6 +430,32 @@ export async function spawnAgentSession(
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
   }
+  // Resolve spawn-level secret exposures and per-entry MCP auth proxies.
+  // This runs after orchestrator/hermes default merges so any entry with a
+  // credentialPath gets rewritten to a local proxy before reaching the child.
+  let resolvedEnv: Record<string, string> = {}
+  let resolvedMcpServers: AcpMcpServer[] | undefined
+  let closeMcpProxies: (() => Promise<void>) | undefined
+  const needsSecretResolution =
+    (input.exposures && input.exposures.length > 0) ||
+    (mcpServers && mcpServers.some(s => s.credentialPath))
+  if (needsSecretResolution) {
+    const broker = buildCredentialBroker
+      ? buildCredentialBroker()
+      : buildSpawnCredentialBroker()
+    const resolved = await resolveSpawnExposures({
+      exposures: input.exposures,
+      mcpServers,
+      broker,
+      resolveEnvValue: resolveSecretValue,
+    })
+    resolvedEnv = resolved.env
+    resolvedMcpServers = resolved.mcpServers
+    closeMcpProxies = resolved.closeProxies
+  } else {
+    resolvedMcpServers = mcpServers
+  }
+
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -438,7 +489,8 @@ export async function spawnAgentSession(
         : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
-      ...(mcpServers ? { mcpServers } : {}),
+      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+      ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -451,7 +503,7 @@ export async function spawnAgentSession(
       ...(input.model ? { model: input.model } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
-      ...(mcpServers ? { mcpServers } : {}),
+      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       // Parent attribution + depth (WP4) — only set for spawns that
       // arrived via the scoped sub-gateway; root spawns stay
       // parentless at depth 0.
@@ -465,6 +517,15 @@ export async function spawnAgentSession(
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
     })
     liveSessionId = desc.id
+    // Tear down any mcp-header proxies when the spawned session exits.
+    if (closeMcpProxies) {
+      const unsubscribe = sessionEvents?.on("session:exited", ev => {
+        if (ev.sessionId === desc.id) {
+          void closeMcpProxies?.()
+          unsubscribe?.()
+        }
+      })
+    }
     // Bind the scope-token's lifetime to the child session — once
     // it exits, the token is revoked so it can't outlive its child.
     bindOrchestratorLifecycle?.(desc.id)
@@ -489,6 +550,9 @@ export async function spawnAgentSession(
     }
     return { ok: true, descriptor: desc }
   } catch (err) {
+    if (closeMcpProxies) {
+      await closeMcpProxies().catch(() => {})
+    }
     return {
       ok: false,
       code: "agent_spawn_failed",

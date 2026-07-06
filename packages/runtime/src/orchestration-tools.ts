@@ -23,6 +23,7 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { collectSubtree } from "./session-tools.js"
+import { spawnMcpServerEntrySchema } from "./spawn-exposures.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { CronScheduler } from "./cron-scheduler.js"
@@ -1187,19 +1188,14 @@ export function registerOrchestrationTools(
           .optional()
           .describe("Optional label suffix on spawned session names."),
         mcpServersForChild: jsonTolerant(
-          z.array(
-            z.object({
-              name: z.string(),
-              transport: z.enum(["stdio", "http", "sse"]),
-              ref: z.string().optional(),
-            }),
-          ),
+          z.array(spawnMcpServerEntrySchema)
         )
           .optional()
           .describe(
             "MCP servers to mount in each spawned agent. Pass the agentpush entry " +
-              "here (e.g. [{name:'agentpush',transport:'http',ref:'http://localhost:8080/mcp'}]) " +
-              "so the agent can call dispatch_request to reply.",
+              "here (e.g. [{name:'agentpush',transport:'http',ref:'http://localhost:8080/mcp',credentialPath:'agentpush'}]) " +
+              "so the agent can call dispatch_request to reply. Entries with credentialPath " +
+              "are reached via a local daemon-side proxy that injects the broker-resolved Authorization header.",
           ),
       },
       async input => {

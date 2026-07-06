@@ -615,6 +615,7 @@ export async function createGateway(
           registry: sessions,
           resolveAgentAdapter: opts.resolveAgentAdapter,
           persist: true,
+          sessionEvents,
         })
       : undefined
 
@@ -722,6 +723,7 @@ export async function createGateway(
       buildOrchestratorMcp: orchestratorInjector,
       webhookNotifier,
       daemonMcpUrl,
+      sessionEvents,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),

@@ -30,7 +30,12 @@ import type {
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import type { SessionEventBus } from "./session-event-bus.js"
 import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
+import {
+  spawnMcpServerEntrySchema,
+  secretExposureSchema,
+} from "./spawn-exposures.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -120,6 +125,9 @@ export interface RegisterAgentToolsOptions {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** Optional session event bus used to tear down mcp-header proxies when
+   *  a spawned session exits. */
+  sessionEvents?: SessionEventBus
 }
 
 export function registerAgentTools(
@@ -135,6 +143,7 @@ export function registerAgentTools(
     webhookNotifier,
     daemonMcpUrl,
     loadRoleRegistry,
+    sessionEvents,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -236,21 +245,23 @@ export function registerAgentTools(
             "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
         ),
       mcpServers: jsonTolerant(
-        z.array(
-          z.object({
-            name: z.string(),
-            transport: z.enum(["stdio", "http", "sse"]),
-            ref: z.string().optional(),
-          })
-        )
+        z.array(spawnMcpServerEntrySchema)
       )
         .optional()
         .describe(
           "MCP servers to mount into the spawned agent's session at spawn time. " +
-            "Forwarded verbatim to `session/new.mcpServers` on the ACP arm — gives " +
-            "the child agent a host-chosen scoped toolset (e.g. the daemon's own " +
-            "orchestration gateway so it can spawn + supervise sub-agents). " +
-            "Adapters that don't model MCP mounting ignore it."
+            "Forwarded to `session/new.mcpServers` on the ACP arm after resolving any " +
+            "`credentialPath` into a local daemon-side proxy that injects the broker-resolved " +
+            "Authorization header upstream. Gives the child a host-chosen scoped toolset " +
+            "without ever exposing secrets in child-visible config."
+        ),
+      exposures: jsonTolerant(z.array(secretExposureSchema))
+        .optional()
+        .describe(
+          "Secret exposures to resolve and inject into this spawn. `kind:\"env\"` " +
+            "values are merged into the child process env only; `kind:\"mcp-header\"` " +
+            "should be set per-entry via `mcpServers[].credentialPath` instead. " +
+            "Scoped to this spawn — the daemon's global env is untouched."
         ),
       orchestrator: jsonTolerant(
         z.union([
@@ -381,6 +392,7 @@ export function registerAgentTools(
           callerScope,
           webhookNotifier,
           loadRoleRegistry,
+          sessionEvents,
         },
         input,
       )

@@ -75,6 +75,7 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import type { DeclaredAdapterOption } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import { tryParseJson } from "./json-tolerant.js"
+import type { SpawnMcpServerEntry } from "./spawn-exposures.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -142,6 +143,9 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      * validates against the manifest, same as an unknown `mode`).
      */
     options?: Record<string, boolean | number | string>
+    /** Extra env vars to inject into the spawned child process. Scaled to
+     *  this spawn only; the daemon's global env is never mutated. */
+    env?: Record<string, string>
     /** Model identifier forwarded from `agent_start`. For ACP
      *  adapters this is applied via session/set_config_option after
      *  newSession (the ACP wrapper does not forward CLI args to claude).
@@ -1586,22 +1590,28 @@ function parseOrchestratorField(
  *  the MCP tool accepts, tolerant of a JSON-stringified array (see
  *  `parseOrchestratorField`). Entries missing a valid `name`/`transport`
  *  are dropped rather than failing the whole array. */
-function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
+function parseMcpServersField(raw: unknown): SpawnMcpServerEntry[] | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!Array.isArray(value)) return undefined
-  const servers: AcpMcpServer[] = []
+  const servers: SpawnMcpServerEntry[] = []
   for (const item of value) {
     if (!item || typeof item !== "object") continue
-    const o = item as Record<string, unknown>
-    if (typeof o.name !== "string") continue
-    if (o.transport !== "stdio" && o.transport !== "http" && o.transport !== "sse") continue
-    servers.push({
-      name: o.name,
-      transport: o.transport,
-      ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
-    })
+    const name = readStringProp(item, "name")
+    const transport = readStringProp(item, "transport")
+    if (typeof name !== "string") continue
+    if (transport !== "stdio" && transport !== "http" && transport !== "sse") continue
+    const entry: SpawnMcpServerEntry = { name, transport }
+    const ref = readStringProp(item, "ref")
+    if (typeof ref === "string") entry.ref = ref
+    const credentialPath = readStringProp(item, "credentialPath")
+    if (typeof credentialPath === "string") entry.credentialPath = credentialPath
+    servers.push(entry)
   }
   return servers
+}
+
+function readStringProp(obj: object, key: string): unknown {
+  return Reflect.get(obj, key)
 }
 
 async function handleSessions(
@@ -1658,7 +1668,7 @@ async function handleSessions(
       return true
     }
     const result = await spawnAgentSession(
-      { registry, resolveAgentAdapter, buildOrchestratorMcp, daemonMcpUrl },
+      { registry, resolveAgentAdapter, buildOrchestratorMcp, daemonMcpUrl, sessionEvents },
       {
         adapter,
         ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),

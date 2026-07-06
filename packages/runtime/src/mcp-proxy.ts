@@ -30,6 +30,8 @@
  * before each call — cheap, avoids forcing the HTTP routes to push.
  */
 
+import { createServer, request as httpRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http"
+import { request as httpsRequest } from "node:https"
 import { promises as fs } from "node:fs"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -387,4 +389,128 @@ async function openClient(entry: ImportedMcpEntry): Promise<Client> {
   throw new Error(
     `import "${entry.alias}" has unsupported transport type "${snap.type}"`
   )
+}
+
+/** Local daemon-side proxy for an MCP server reached over HTTP/SSE.
+ *
+ *  The child connects to `url` (a localhost endpoint) with no credentials; the
+ *  proxy forwards every request to the upstream `upstreamUrl` with `headers`
+ *  injected. This keeps secrets out of the child-visible config while reusing
+ *  the existing transport-with-header machinery in `openClient`. */
+export interface AuthedMcpProxy {
+  url: string
+  close(): Promise<void>
+}
+
+interface CreateAuthedMcpProxyOptions {
+  upstreamUrl: string
+  headers: Record<string, string>
+}
+
+/** Start a localhost reverse proxy to `upstreamUrl` that injects `headers`. */
+export async function createAuthedMcpProxy(
+  opts: CreateAuthedMcpProxyOptions,
+): Promise<AuthedMcpProxy> {
+  const upstream = new URL(opts.upstreamUrl)
+  const upstreamBasePath = upstream.pathname.replace(/\/$/, "")
+
+  const server = createServer((req, res) => {
+    void forwardMcpProxyRequest(req, res, upstream, upstreamBasePath, opts.headers)
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => resolve())
+  })
+
+  const address = server.address()
+  const port =
+    address && typeof address === "object" && "port" in address
+      ? address.port
+      : 0
+  if (port === 0) {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    throw new Error("createAuthedMcpProxy: could not determine local proxy port")
+  }
+
+  return {
+    url: `http://127.0.0.1:${port}`,
+    async close() {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    },
+  }
+}
+
+async function forwardMcpProxyRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  upstream: URL,
+  upstreamBasePath: string,
+  extraHeaders: Record<string, string>,
+): Promise<void> {
+  const reqUrl = new URL(req.url ?? "/", "http://localhost")
+  const forwardPath = `${upstreamBasePath}${reqUrl.pathname}`
+  const forwardSearch = combineSearch(upstream.search, reqUrl.search)
+
+  const makeRequest = upstream.protocol === "https:" ? httpsRequest : httpRequest
+  const outgoingHeaders = buildProxyHeaders(req.headers, extraHeaders)
+
+  return new Promise((resolve, reject) => {
+    const upstreamReq = makeRequest(
+      {
+        hostname: upstream.hostname,
+        port: upstream.port || (upstream.protocol === "https:" ? 443 : 80),
+        path: `${forwardPath}${forwardSearch}`,
+        method: req.method,
+        headers: outgoingHeaders,
+      },
+      upstreamRes => {
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
+        upstreamRes.pipe(res)
+        upstreamRes.on("end", () => resolve())
+        upstreamRes.on("error", () => res.end())
+      },
+    )
+
+    upstreamReq.on("error", err => {
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": "application/json" })
+        res.end(
+          JSON.stringify({
+            error: "proxy_upstream_failed",
+            message: err.message,
+          }),
+        )
+      } else {
+        res.end()
+      }
+      resolve()
+    })
+
+    req.pipe(upstreamReq)
+  })
+}
+
+function combineSearch(left: string, right: string): string {
+  if (left === "") return right
+  if (right === "") return left
+  const leftParams = left.startsWith("?") ? left.slice(1) : left
+  const rightParams = right.startsWith("?") ? right.slice(1) : right
+  return `?${leftParams}&${rightParams}`
+}
+
+function buildProxyHeaders(
+  incoming: IncomingMessage["headers"],
+  extra: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(incoming)) {
+    if (value === undefined) continue
+    if (name.toLowerCase() === "host") continue
+    out[name] = Array.isArray(value) ? value.join(", ") : value
+  }
+  for (const [name, value] of Object.entries(extra)) {
+    out[name] = value
+  }
+  return out
 }

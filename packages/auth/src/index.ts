@@ -48,6 +48,7 @@ export {
 export { KeychainStore } from "./store/keychain-store.js"
 export { MemoryStore } from "./store/memory-store.js"
 export { FileStore } from "./store/file-store.js"
+export { CredentialsJsonStore } from "./store/credentials-json-store.js"
 export { resolveStoreRef } from "./store/resolve-ref.js"
 export type {
   CredentialStore,

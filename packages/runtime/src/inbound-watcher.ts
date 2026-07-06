@@ -23,12 +23,20 @@
  */
 
 import { randomUUID } from "node:crypto"
+import type { AcpMcpServer } from "@agentproto/acp"
 import { resolve, dirname } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, writeFileSync, readFileSync, promises as fsp } from "node:fs"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import type { SessionEventBus } from "./session-event-bus.js"
+import {
+  buildSpawnCredentialBroker,
+  resolveMcpServersWithSecrets,
+  type SpawnMcpServerEntry,
+} from "./spawn-exposures.js"
+import type { McpHeaderResolver } from "@agentproto/secrets/exposure"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -57,11 +65,7 @@ export interface WatcherStartInput {
    * MCP servers to mount in the child agent at spawn time.
    * Pass agentpush here so the child can call dispatch_request.
    */
-  mcpServersForChild?: Array<{
-    name: string
-    transport: "stdio" | "http" | "sse"
-    ref?: string
-  }>
+  mcpServersForChild?: SpawnMcpServerEntry[]
 }
 
 export interface WatcherDescriptor {
@@ -133,12 +137,20 @@ export function createInboundWatcher(opts: {
   persistPath?: string
   /** Disable disk persistence entirely (unit tests). Default false. */
   persist?: boolean
+  /** Optional credential broker builder for `credentialPath` resolution. */
+  buildCredentialBroker?: () => McpHeaderResolver
+  /** Optional session event bus used to tear down mcp-header proxies when a
+   *  watcher-spawned session exits. */
+  sessionEvents?: SessionEventBus
 }): InboundWatcher {
   const { mcpProxy, registry, resolveAgentAdapter } = opts
   const persistPath = opts.persistPath ?? CURSORS_FILE_PATH()
   const persist = opts.persist ?? opts.persistPath !== undefined
   const watchers = new Map<string, WatcherState>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
+  const broker = opts.buildCredentialBroker
+    ? opts.buildCredentialBroker()
+    : buildSpawnCredentialBroker()
 
   // ── Cursor persistence (mirrors supervisor.ts pattern) ────────────
 
@@ -230,9 +242,22 @@ export function createInboundWatcher(opts: {
       count: events.length,
     })
 
-    const mcpServers = state.input.mcpServersForChild
+    const rawMcpServers = state.input.mcpServersForChild
+    let mcpServers: AcpMcpServer[] | undefined
+    let closeProxies: (() => Promise<void>) | undefined
 
     try {
+      if (rawMcpServers && rawMcpServers.some(s => s.credentialPath)) {
+        const resolvedMcp = await resolveMcpServersWithSecrets({
+          entries: rawMcpServers,
+          broker,
+        })
+        mcpServers = resolvedMcp.entries
+        closeProxies = resolvedMcp.close
+      } else {
+        mcpServers = rawMcpServers
+      }
+
       const agentSession = await resolved.startSession({
         cwd: state.input.cwd,
         ...(mcpServers ? { mcpServers } : {}),
@@ -241,7 +266,7 @@ export function createInboundWatcher(opts: {
       const labelParts = ["inbound", state.watcherId, contactRef]
       if (state.input.label) labelParts.push(state.input.label)
 
-      registry.spawnAgent({
+      const desc = registry.spawnAgent({
         workspaceSlug: "default",
         cwd: state.input.cwd,
         agentSession,
@@ -254,9 +279,21 @@ export function createInboundWatcher(opts: {
           : {}),
       })
 
+      if (closeProxies) {
+        const unsubscribe = opts.sessionEvents?.on("session:exited", ev => {
+          if (ev.sessionId === desc.id) {
+            void closeProxies?.()
+            unsubscribe?.()
+          }
+        })
+      }
+
       state.spawned++
       state.lastFireAt = new Date().toISOString()
     } catch (err) {
+      if (closeProxies) {
+        await closeProxies().catch(() => {})
+      }
       console.warn(
         `[inbound-watcher:${state.watcherId}] spawn failed: ${err instanceof Error ? err.message : String(err)}`,
       )

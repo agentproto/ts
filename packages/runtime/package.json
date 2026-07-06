@@ -90,6 +90,8 @@
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
+    "@agentproto/auth": "workspace:*",
+    "@agentproto/secrets": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
