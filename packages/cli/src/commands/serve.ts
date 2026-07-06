@@ -45,6 +45,7 @@ import {
   isExpired,
   formatExpiry,
 } from "../util/credentials.js"
+import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
@@ -213,34 +214,38 @@ export async function runServe(args: readonly string[]): Promise<number> {
   //      its host without the credentials.json host-key footgun.
   //   4. ~/.agentproto/credentials.json[host] — `agentproto auth login`
   //
-  // Step 4 only applies when --connect is set (we have a host to look
-  // up) and the credential isn't expired. Expiry is non-fatal: we log
-  // a warning and let the host reject the connect; that surfaces a
-  // clearer error than a silent 401 mid-tunnel.
+  // Step 4 only applies when --connect is set (we have a host to look up).
+  // An expired credential is renewed via a silent, ceremony-free refresh
+  // (`refreshTunnelToken` → device-code engine's `refreshOnly` mode) when a
+  // cached `refresh_token` makes that possible; otherwise we warn and fall
+  // back to the stale token, letting the host reject the connect — a
+  // clearer failure than a daemon that silently blocks on an interactive
+  // ceremony (print code, open a browser, poll) it'll never get a response to.
   let token: string | undefined =
     values.token ?? process.env.AGENTPROTO_TOKEN ?? cfgTunnel.token
   if (!token && connectFlag) {
     const cred = await readHost(connectFlag)
     if (cred) {
+      let refreshed: string | null = null
       if (isExpired(cred)) {
-        // TODO(auth-wp5): an expired-but-refreshable credential could be
-        // renewed here via `runAuthFlow`/`CredentialBroker` (the device-code
-        // engine already knows how to exchange a stored `refreshToken`) —
-        // but calling it without `force` falls through to a full interactive
-        // ceremony (print code, open a browser, poll) on ANY refresh failure,
-        // which would hang `serve` boot on a headless/unattended host. There's
-        // no engine-level "refresh-only, no ceremony fallback" primitive
-        // today. Warn and let the host 401 the connect instead — a clearer
-        // failure than a daemon that silently blocks on stdin it'll never get.
-        process.stderr.write(
-          `agentproto serve: ⚠ credentials for ${connectFlag} are expired (${formatExpiry(cred)}). ` +
-            `Re-run \`agentproto auth login --host ${connectFlag}\`.\n`
+        refreshed = await refreshTunnelToken(connectFlag, cred)
+        if (refreshed) {
+          process.stdout.write(
+            `agentproto serve: silently refreshed expired credentials for ${connectFlag}\n`
+          )
+        } else {
+          process.stderr.write(
+            `agentproto serve: ⚠ credentials for ${connectFlag} are expired (${formatExpiry(cred)}) and could not be silently refreshed. ` +
+              `Re-run \`agentproto auth login --host ${connectFlag}\`.\n`
+          )
+        }
+      }
+      token = refreshed ?? cred.token
+      if (!refreshed) {
+        process.stdout.write(
+          `agentproto serve: using token from credentials.json (${formatExpiry(cred)})\n`
         )
       }
-      token = cred.token
-      process.stdout.write(
-        `agentproto serve: using token from credentials.json (${formatExpiry(cred)})\n`
-      )
     }
   }
 

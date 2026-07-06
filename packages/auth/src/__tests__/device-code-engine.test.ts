@@ -15,7 +15,10 @@ const execFileMock = vi.hoisted(() =>
 )
 vi.mock("node:child_process", () => ({ execFile: execFileMock }))
 
-import { deviceCodeFlowEngine } from "../flow-engines/device-code.js"
+import {
+  deviceCodeFlowEngine,
+  CeremonyRequiredError,
+} from "../flow-engines/device-code.js"
 
 const API = "https://api.example"
 const AS = "https://auth.example"
@@ -406,5 +409,116 @@ describe("deviceCodeFlowEngine", () => {
     const out = writes.join("")
     expect(out).toContain("NOBROWSER-1")
     expect(out).toContain("https://approve.example/c")
+  })
+
+  describe("refreshOnly", () => {
+    it("returns a fresh cached credential without hitting the network", async () => {
+      await store.write(ref, {
+        value: "gdt_cached",
+        kind: "daemon",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        metadata: { refreshToken: "gdr_cached" },
+      })
+      const fetchMock = vi.fn()
+      vi.stubGlobal("fetch", fetchMock)
+
+      const r = await deviceCodeFlowEngine.run(
+        provider,
+        discovered,
+        opts({ refreshOnly: true }),
+      )
+
+      expect(r.accessToken).toBe("gdt_cached")
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("silently refreshes an expired credential via grant_type=refresh_token", async () => {
+      await store.write(ref, {
+        value: "gdt_old",
+        kind: "daemon",
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+        metadata: { refreshToken: "gdr_old" },
+      })
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          expect(url).toBe(TOKEN)
+          expect(grantOf(init)).toBe("refresh_token")
+          return jsonRes({ access_token: "gdt_refreshed", expires_in: 3600 })
+        }),
+      )
+
+      const r = await deviceCodeFlowEngine.run(
+        provider,
+        discovered,
+        opts({ refreshOnly: true }),
+      )
+
+      expect(r.accessToken).toBe("gdt_refreshed")
+      expect(r.tokenKind).toBe("daemon")
+      const stored = await store.read(ref)
+      expect(stored?.value).toBe("gdt_refreshed")
+      expect(execFileMock).not.toHaveBeenCalled()
+    })
+
+    it("throws CeremonyRequiredError (never starts a ceremony) when there's no stored credential", async () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal("fetch", fetchMock)
+
+      await expect(
+        deviceCodeFlowEngine.run(provider, discovered, opts({ refreshOnly: true })),
+      ).rejects.toBeInstanceOf(CeremonyRequiredError)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(execFileMock).not.toHaveBeenCalled()
+    })
+
+    it("throws CeremonyRequiredError when expired with no stored refresh_token", async () => {
+      await store.write(ref, {
+        value: "gdt_old",
+        kind: "daemon",
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      })
+      const fetchMock = vi.fn()
+      vi.stubGlobal("fetch", fetchMock)
+
+      await expect(
+        deviceCodeFlowEngine.run(provider, discovered, opts({ refreshOnly: true })),
+      ).rejects.toThrow(CeremonyRequiredError)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("throws CeremonyRequiredError (no ceremony fallback) when the refresh grant itself fails", async () => {
+      await store.write(ref, {
+        value: "gdt_old",
+        kind: "daemon",
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+        metadata: { refreshToken: "gdr_old" },
+      })
+      const deviceAuthCalls: string[] = []
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          if (grantOf(init) === "refresh_token") {
+            return jsonRes({ error: "invalid_grant" })
+          }
+          deviceAuthCalls.push(url)
+          return jsonRes({
+            device_code: "dc-never",
+            user_code: "NEVER",
+            verification_uri: "https://approve.example/never",
+            expires_in: 60,
+            interval: 0,
+          })
+        }),
+      )
+
+      await expect(
+        deviceCodeFlowEngine.run(provider, discovered, opts({ refreshOnly: true })),
+      ).rejects.toBeInstanceOf(CeremonyRequiredError)
+      // Only the refresh_token grant was attempted — never the
+      // device-authorization endpoint (no ceremony was started).
+      expect(deviceAuthCalls).toEqual([])
+      expect(execFileMock).not.toHaveBeenCalled()
+    })
   })
 })

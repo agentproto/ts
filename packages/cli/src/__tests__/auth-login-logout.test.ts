@@ -16,11 +16,15 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // device-grant.ts (inside @agentproto/auth) shells out to open a browser via
-// `node:child_process` execFile — no-op it so tests never spawn one.
-vi.mock("node:child_process", () => ({
-  execFile: (_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
+// `node:child_process` execFile — no-op it so tests never spawn one. A spy
+// (not a plain function) so tests can assert whether it was invoked, e.g. to
+// confirm `--no-browser` suppresses it.
+const execFileMock = vi.hoisted(() =>
+  vi.fn((_c: string, _a: string[], cb: (e: unknown, r: unknown) => void) =>
     cb(null, { stdout: "" }),
-}))
+  ),
+)
+vi.mock("node:child_process", () => ({ execFile: execFileMock }))
 
 import { runAuth } from "../commands/auth.js"
 import { readHost } from "../util/credentials.js"
@@ -101,6 +105,7 @@ function silence(): { restore: () => void } {
 beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), "agp-auth-login-"))
   process.env["AGENTPROTO_HOME"] = fakeHome
+  execFileMock.mockClear()
 })
 
 afterEach(() => {

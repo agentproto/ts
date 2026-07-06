@@ -10,6 +10,9 @@
  *   discoverEndpoints(apiBase)        — two-hop PRM → AS metadata discovery
  *   runAuthFlow(provider, opts)       — resolve + discover + dispatch to engine
  *   FLOW_ENGINES                      — registered flow engines (pat, …)
+ *   CeremonyRequiredError             — thrown by device-code's refreshOnly
+ *                                        mode when only an interactive
+ *                                        ceremony would satisfy the request
  *   writeKeychainToken(svc, acct, t)  — persist a credential to Keychain
  *   readKeychainToken(svc, acct)      — read a credential from Keychain
  *   resolveAccount(acct, server)      — expand {server} template
@@ -36,6 +39,7 @@ export {
 } from "./discover.js"
 export { runAuthFlow, type RunFlowOptions } from "./run-flow.js"
 export { FLOW_ENGINES } from "./flow-engines/index.js"
+export { CeremonyRequiredError } from "./flow-engines/device-code.js"
 export {
   readKeychainToken,
   writeKeychainToken,
