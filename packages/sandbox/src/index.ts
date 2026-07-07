@@ -36,3 +36,5 @@ export {
   type CreateSandboxAgentSessionHostOpts,
   type SandboxAgentSessionHost,
 } from "./agent-session-host.js"
+
+export { resolveLifecyclePolicy, type SandboxLifecyclePolicy } from "./lifecycle.js"

@@ -79,7 +79,69 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
   }
 }
 
-/** `e2bSandboxProvider.boot` — see module docs. */
+/**
+ * Probe health, and — if the daemon isn't already up — update the (possibly
+ * stale) baked CLI and start it, then re-probe. Shared by `boot` (a fresh
+ * template's autostart may not have fired yet) and `connect` (a resumed box
+ * may wake with a dead daemon process — see PR3 risk "stale daemon on
+ * reconnect"). Throws (after killing the sandbox) if the daemon never comes
+ * up.
+ */
+async function ensureDaemonHealthy(
+  sandbox: Sandbox,
+  host: string,
+  port: number,
+  workspace: string,
+  config: E2bSandboxConfig,
+  env: Record<string, string>,
+): Promise<void> {
+  const healthUrl = `https://${host}/health`
+  const healthProbeTimeoutMs = config.healthProbeTimeoutMs ?? HEALTH_PROBE_TIMEOUT_MS
+  const daemonReadyTimeoutMs = config.daemonReadyTimeoutMs ?? DAEMON_READY_TIMEOUT_MS
+  const pollIntervalMs = config.pollIntervalMs ?? POLL_INTERVAL_MS
+
+  const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
+  if (alreadyUp) return
+
+  if (config.updateCliOnBoot ?? true) {
+    await sandbox.commands.run("sudo npm i -g @agentproto/cli@latest", {
+      envs: env,
+      timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
+    })
+  }
+  await sandbox.commands.run(
+    `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
+    { background: true, envs: env },
+  )
+  const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
+  if (!ready) {
+    await sandbox.kill()
+    throw new Error(
+      `@agentproto/sandbox-e2b: agentproto daemon did not become healthy at ${healthUrl} ` +
+        `within ${daemonReadyTimeoutMs}ms (sandbox ${sandbox.sandboxId}).`,
+    )
+  }
+}
+
+/** Wrap a healthy sandbox handle into the `BootedSandbox` shape common to
+ *  `boot` and `connect`. `pause()` always keeps the full memory snapshot
+ *  (`keepMemory: true`, the SDK default) — a filesystem-only pause would
+ *  cold-boot the box on resume, dropping the running agentproto daemon and
+ *  any open connections (PR3 risk "e2b pause loses in-memory state"). */
+function toBootedSandbox(sandbox: Awaited<ReturnType<typeof Sandbox.create>>, host: string): BootedSandbox {
+  return {
+    mcpUrl: `https://${host}/mcp`,
+    sandboxId: sandbox.sandboxId,
+    async stop(): Promise<void> {
+      await sandbox.kill()
+    },
+    async pause(): Promise<void> {
+      await sandbox.pause({ keepMemory: true })
+    },
+  }
+}
+
+/** `e2bSandboxProvider.boot`/`.connect` — see module docs. */
 export const e2bSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
     const config = readE2bConfig(spec)
@@ -94,41 +156,20 @@ export const e2bSandboxProvider: SandboxProvider = {
     })
 
     const host = sandbox.getHost(port)
-    const mcpUrl = `https://${host}/mcp`
-    const healthUrl = `https://${host}/health`
-    const healthProbeTimeoutMs = config.healthProbeTimeoutMs ?? HEALTH_PROBE_TIMEOUT_MS
-    const daemonReadyTimeoutMs = config.daemonReadyTimeoutMs ?? DAEMON_READY_TIMEOUT_MS
-    const pollIntervalMs = config.pollIntervalMs ?? POLL_INTERVAL_MS
+    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)
+    return toBootedSandbox(sandbox, host)
+  },
 
-    const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
-    if (!alreadyUp) {
-      if (config.updateCliOnBoot ?? true) {
-        await sandbox.commands.run("sudo npm i -g @agentproto/cli@latest", {
-          envs: opts.env,
-          timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
-        })
-      }
-      await sandbox.commands.run(
-        `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
-        { background: true, envs: opts.env },
-      )
-      const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
-      if (!ready) {
-        await sandbox.kill()
-        throw new Error(
-          `@agentproto/sandbox-e2b: agentproto daemon did not become healthy at ${healthUrl} ` +
-            `within ${daemonReadyTimeoutMs}ms (sandbox ${sandbox.sandboxId}).`,
-        )
-      }
-    }
+  async connect(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
+    const config = readE2bConfig(spec)
+    const port = config.port ?? DEFAULT_PORT
+    const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
-    return {
-      mcpUrl,
-      sandboxId: sandbox.sandboxId,
-      async stop(): Promise<void> {
-        await sandbox.kill()
-      },
-    }
+    const sandbox = await Sandbox.connect(sandboxId, { apiKey: process.env.E2B_API_KEY })
+
+    const host = sandbox.getHost(port)
+    await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)
+    return toBootedSandbox(sandbox, host)
   },
 }
 

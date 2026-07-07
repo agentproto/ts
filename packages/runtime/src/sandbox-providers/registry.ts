@@ -37,6 +37,14 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   readOnly: false,
 }
 
+/** e2b alone can pause/reconnect (`Sandbox.pause()` + `Sandbox.connect()`) —
+ *  the `local` passthrough tears down its temp workspace on `stop()`, and
+ *  `modal`/`daytona` are unpublished catalog placeholders. */
+const E2B_CAPABILITIES: SandboxProviderCapabilities = {
+  ...CAPABILITIES_TODAY,
+  lifecyclePause: true,
+}
+
 /** Built-in sandbox providers keyed by canonical slug — resolve without any import. */
 export const BUILTIN_SANDBOX_PROVIDERS: Record<string, SandboxProviderFactory> = {
   [LOCAL_SLUG]: () => ({
@@ -74,7 +82,7 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
     name: "e2b",
     description:
       "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template).",
-    capabilities: CAPABILITIES_TODAY,
+    capabilities: E2B_CAPABILITIES,
     setupFields: [
       {
         name: "apiKey",
