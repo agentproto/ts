@@ -117,6 +117,7 @@ export type {
   AgentCliMode,
   AgentCliOption,
   AgentCliOptionType,
+  AgentCliPresetDeclaration,
   AgentCliContinuation,
   AgentCliPinnedSessionTuning,
   AgentCliPrintConfig,
