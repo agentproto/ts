@@ -50,7 +50,7 @@ arm.
 `base_url` + `auth_token` point one spawn at an Anthropic-compatible gateway
 with a per-spawn Bearer key (the ambient `ANTHROPIC_API_KEY` is for real
 Anthropic). `auth_token` becomes `ANTHROPIC_AUTH_TOKEN`, which the SDK sends as
-`Authorization: Bearer <token>` — accepted by both Moonshot and OpenRouter.
+`Authorization: Bearer <token>` — accepted by Moonshot, OpenRouter, and DeepSeek.
 The token value is never logged.
 
 When `base_url` is set the adapter enters **gateway mode**: it pins every model
@@ -67,7 +67,7 @@ return valid Anthropic Messages format under `Authorization: Bearer`.
 
 ### Gateway presets (modes)
 
-So you don't hand-type the base URL each spawn, two modes pre-wire the gateway
+So you don't hand-type the base URL each spawn, three modes pre-wire the gateway
 endpoint (`base_url`/`auth_token`/`thinking` still work manually for anything
 else):
 
@@ -76,11 +76,14 @@ else):
 | `default`   | nothing — native Anthropic                                       | `ANTHROPIC_API_KEY`                 |
 | `moonshot`  | `ANTHROPIC_BASE_URL` + `model=kimi-k2.7-code` + `--thinking`     | `auth_token` (Moonshot key)         |
 | `openrouter`| `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
+| `deepseek`  | `ANTHROPIC_BASE_URL` + `model=deepseek-v4-pro`                   | `auth_token` (DeepSeek key)         |
 
 `mode: moonshot` is a one-pick Kimi run; override `model` for another Moonshot
 model. `mode: openrouter` still needs a `model` (e.g. `z-ai/glm-5.2`,
-`deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2`). The `auth_token` is the
-gateway key — the ambient `ANTHROPIC_API_KEY` stays for real Anthropic.
+`deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2`). `mode: deepseek` defaults to
+`deepseek-v4-pro`; override `model` for `deepseek-v4-flash`. The `auth_token`
+is the gateway key — the ambient `ANTHROPIC_API_KEY` stays for real Anthropic.
+DeepSeek isn't thinking-gated, so unlike `moonshot` no `--thinking` is forced.
 
 ### Extended thinking
 

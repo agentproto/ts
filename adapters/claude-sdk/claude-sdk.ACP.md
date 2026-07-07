@@ -69,7 +69,7 @@ Anthropic-compatible gateway), or the cloud-provider toggles above. No ACP-level
 auth handshake. The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` in the child
 env (manifest `auth_token` option's `env` template) — the SDK sends it as
 `Authorization: Bearer <token>`, letting one spawn target a gateway (Moonshot,
-OpenRouter) with a per-spawn Bearer key. The token value is never logged.
+OpenRouter, DeepSeek) with a per-spawn Bearer key. The token value is never logged.
 
 ## Thinking
 
