@@ -248,6 +248,10 @@ export const modeSchema = z.object({
   bin_args_prepend: z.array(z.string()).optional(),
   bin_args_append: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  // Env keys to DELETE from the spawn env (auth hygiene for gateway
+  // modes — see AgentCliMode.env_unset). Applied at the runtime merge
+  // point, not as a static set.
+  env_unset: z.array(z.string()).optional(),
   // Honest support status surfaced to clients. Absent ⇒ "active".
   status: z.enum(["active", "noop", "planned"]).optional(),
   status_note: z.string().optional(),
@@ -270,6 +274,10 @@ const optionSchema = z.object({
   bin_args_template: z.array(z.string()).optional(),
   bin_args_append_when_true: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  // Env keys to DELETE from the spawn env when this option is active
+  // (auth hygiene for value-bearing gateway options — see
+  // AgentCliOption.env_unset). Symmetric with modeSchema.env_unset.
+  env_unset: z.array(z.string()).optional(),
 }).strict().refine(
   // type === "enum" REQUIRES an `enum` array. The JSON Schema enforces
   // this via `if/then`; the zod side mirrors with a refine so both

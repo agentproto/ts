@@ -274,6 +274,11 @@
           "additionalProperties": { "type": "string" },
           "description": "Extra env vars merged into the spawn env when this mode is active."
         },
+        "env_unset": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Env keys to DELETE from the spawn env when this mode is active. Applied at the runtime's env-merge point after ambient process.env + mode/option env are combined, so a mode can scrub a credential that must never reach a non-native endpoint (e.g. a gateway mode scrubbing ANTHROPIC_API_KEY so it can't leak to a third-party Anthropic-compatible host). Unlike `env`, deletion is the only safe semantics for scrubbing."
+        },
         "status": {
           "enum": ["active", "noop", "planned"],
           "description": "Honest support status surfaced to clients. active = does what its description claims; noop = declared and accepted but measured to have no effect; planned = declared surface not wired yet. Absent ⇒ treated as active."
@@ -335,6 +340,11 @@
           "type": "object",
           "additionalProperties": { "type": "string" },
           "description": "Env vars to merge when the option has a non-default value. Values may contain `{value}` for templating."
+        },
+        "env_unset": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Env keys to DELETE from the spawn env when the option has a non-default value. Symmetric with mode.env_unset and applied at the same runtime env-merge point. Lets a value-bearing option (e.g. base_url pointing at a third-party Anthropic-compatible gateway) scrub the ambient credential (ANTHROPIC_API_KEY) it must displace, without forcing the operator to also pick a preset mode."
         }
       },
       "allOf": [

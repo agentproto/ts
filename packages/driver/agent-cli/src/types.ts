@@ -237,6 +237,20 @@ export interface AgentCliMode {
   bin_args_append?: string[]
   env?: Record<string, string>
   /**
+   * Env keys to DELETE from the spawn env when this mode is active.
+   * Applied at the runtime's env-merge point (after the ambient
+   * process.env + mode/option env are combined), so a mode can scrub a
+   * credential that must never reach a non-native endpoint — e.g. a
+   * gateway mode scrubbing `ANTHROPIC_API_KEY` so it can't leak to a
+   * third-party Anthropic-compatible host (it would both 401 and expose
+   * the real key). Unlike `env`, this can't be expressed as a static
+   * set (a key set to "" is still present); deletion is the only safe
+   * semantics. Mirrors the in-code scrub `claude-sdk` does in
+   * `buildQueryOptions`; surfaced here so CLI-adapter gateway modes
+   * get the same auth hygiene without per-adapter code.
+   */
+  env_unset?: string[]
+  /**
    * Honest support status surfaced to clients (e.g. via `adapter_list`).
    * Lets an adapter admit that a declared mode is a measured no-op or
    * not-yet-wired instead of silently accepting it. Absent ⇒ `"active"`.
@@ -301,6 +315,19 @@ export interface AgentCliOption {
    * may contain `{value}` for templating.
    */
   env?: Record<string, string>
+  /**
+   * Env keys to DELETE from the spawn env when the option has a
+   * non-default value. Symmetric with `AgentCliMode.env_unset` and
+   * applied at the same runtime env-merge point. Lets a single option
+   * carry both the value it sets AND the credential it must displace —
+   * e.g. a `base_url` option pointing at a third-party Anthropic-
+   * compatible gateway should scrub the ambient `ANTHROPIC_API_KEY`
+   * so it can't leak, without forcing the operator to also pick a
+   * preset mode. The deletion runs before operator-supplied `opts.env`
+   * is merged, so a caller can still re-inject a specific key if they
+   * truly intend to.
+   */
+  env_unset?: string[]
 }
 
 /**

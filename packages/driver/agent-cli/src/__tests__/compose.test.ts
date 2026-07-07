@@ -40,6 +40,11 @@ const handle = (
         env: { CLAUDE_BYPASS_PERMS: "1" },
       },
       {
+        id: "gateway",
+        env: { ANTHROPIC_BASE_URL: "https://gw.example/anthropic" },
+        env_unset: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+      },
+      {
         id: "lean",
         bin_args_prepend: ["--ignore-user-config"],
       },
@@ -67,6 +72,12 @@ const handle = (
         id: "skills",
         type: "string" as const,
         bin_args_prepend: ["--skills", "{value}"],
+      },
+      {
+        id: "base_url",
+        type: "string" as const,
+        env: { ANTHROPIC_BASE_URL: "{value}" },
+        env_unset: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK"],
       },
     ],
     continuation: {
@@ -139,6 +150,65 @@ describe("composeSpawn (AIP-45)", () => {
   it("merges mode env", () => {
     const out = composeSpawn(handle(), { mode: "bypass-permissions" })
     expect(out.env).toEqual({ CLAUDE_BYPASS_PERMS: "1" })
+  })
+
+  it("surfaces mode env_unset for the runtime to scrub", () => {
+    // compose is pure — it can't delete from process.env, so it surfaces
+    // the declared keys; the runtime's start() applies the deletions at
+    // the env-merge point (see define-agent-cli.ts).
+    const out = composeSpawn(handle(), { mode: "gateway" })
+    expect(out.env).toEqual({
+      ANTHROPIC_BASE_URL: "https://gw.example/anthropic",
+    })
+    expect(out.envUnset).toEqual([
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+    ])
+  })
+
+  it("returns empty envUnset when no mode is active", () => {
+    expect(composeSpawn(handle()).envUnset).toEqual([])
+    expect(composeSpawn(handle(), { mode: "default" }).envUnset).toEqual([])
+  })
+
+  it("surfaces option env_unset when the option has a non-default value", () => {
+    // A value-bearing option (e.g. base_url) carrying env_unset scrubs the
+    // ambient credential the moment it's set — symmetric with mode env_unset,
+    // so a bare base_url auto-scrubs ANTHROPIC_API_KEY without a preset mode.
+    const out = composeSpawn(handle(), { options: { base_url: "https://gw.example/anthropic" } })
+    expect(out.env).toEqual({ ANTHROPIC_BASE_URL: "https://gw.example/anthropic" })
+    expect(out.envUnset).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK"])
+  })
+
+  it("does NOT surface option env_unset when the option is absent", () => {
+    // env_unset only applies when the option is active (non-default value),
+    // same condition under which `env` merges — absent option ⇒ no scrub.
+    const out = composeSpawn(handle(), { options: { model: "claude-sonnet-4-6" } })
+    expect(out.envUnset).toEqual([])
+  })
+
+  it("merges mode + option env_unset (both contribute)", () => {
+    // Mode and option env_unset stack — a gateway mode AND a base_url option
+    // each declare scrubs; the runtime applies the union. Dedup is the
+    // runtime's job (delete is idempotent); compose surfaces them in order.
+    const out = composeSpawn(handle(), {
+      mode: "gateway",
+      options: { base_url: "https://other.example/anthropic" },
+    })
+    expect(out.env).toEqual({ ANTHROPIC_BASE_URL: "https://other.example/anthropic" })
+    expect(out.envUnset).toEqual([
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_USE_BEDROCK",
+    ])
+  })
+
+  it("does not surface option env_unset for a boolean option at value false", () => {
+    // boolean options only patch when value === true; env_unset follows the
+    // same gate so a disabled flag doesn't scrub anything.
+    const out = composeSpawn(handle(), { options: { auto: false } })
+    expect(out.envUnset).toEqual([])
   })
 
   it("rejects unknown mode with stable error code", () => {
