@@ -1,21 +1,22 @@
 {
-  "name": "@agentproto/adapter-claude-code",
-  "version": "0.1.1",
-  "description": "@agentproto/adapter-claude-code — AIP-45 AGENT-CLI adapter for Anthropic's Claude Code via @agentclientprotocol/claude-agent-acp. Spawns the ACP wrapper and drives Claude Code as an agentproto agent CLI.",
+  "name": "@agentproto/provider-presets",
+  "version": "0.1.0",
+  "description": "@agentproto/provider-presets — concrete provider/backend preset registry (baseUrl, keyEnv, scrubEnv, defaultModel) shared by Anthropic/OpenAI-compatible adapters and the user-facing presets catalog. Pure TS data; projection stays in the consumer.",
   "keywords": [
     "agentproto",
-    "aip-45",
-    "claude-code",
-    "anthropic",
-    "acp",
-    "agent-cli",
-    "adapter"
+    "presets",
+    "providers",
+    "catalog",
+    "aip-45"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-45",
+  "homepage": "https://agentproto.sh/docs/presets",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "adapters/claude-code"
+    "directory": "packages/provider-presets"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
   },
   "license": "MIT",
   "type": "module",
@@ -28,29 +29,23 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
-    "./CLAUDE-CODE.md": "./CLAUDE-CODE.md",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "CLAUDE-CODE.md",
     "README.md",
     "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
   },
+  "sideEffects": false,
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*",
-    "@agentproto/provider-presets": "workspace:*"
+    "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

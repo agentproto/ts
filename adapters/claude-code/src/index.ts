@@ -9,6 +9,28 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import {
+  ANTHROPIC_CORE_SCRUB_ENV,
+  ANTHROPIC_GATEWAY_PRESETS,
+} from "@agentproto/provider-presets"
+
+// Cloud-provider redirect toggles that must be scrubbed alongside the core
+// ANTHROPIC_API_KEY whenever the claude binary is pointed at a non-Anthropic
+// gateway — a leftover toggle would override ANTHROPIC_BASE_URL and silently
+// route back to Bedrock/Vertex/etc. The core ANTHROPIC_API_KEY scrub itself
+// is sourced from @agentproto/provider-presets (the single source of truth for
+// gateway facts), so a new native-Anthropic credential env var added there is
+// picked up here automatically. Shared by the moonshot/openrouter modes and
+// the base_url option.
+const CLAUDE_CODE_GATEWAY_ENV_UNSET: string[] = [
+  ...ANTHROPIC_CORE_SCRUB_ENV,
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+]
 
 export const claudeCode: AgentCliHandle = defineAgentCli({
   name: "claude-code",
@@ -145,6 +167,46 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "Skip all permission prompts. Use only in trusted automation contexts.",
       bin_args_append: ["--permission-mode", "bypassPermissions"],
     },
+    // ── Gateway modes ───────────────────────────────────────────────
+    // The claude binary honors ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN,
+    // so it can front any Anthropic-compatible gateway (Moonshot, OpenRouter,
+    // LiteLLM, claude-code-router) the same way @agentproto/adapter-claude-sdk
+    // does. These modes pre-wire the endpoint and — critically — scrub the
+    // ambient ANTHROPIC_API_KEY plus the cloud-provider redirect toggles
+    // (CLAUDE_CODE_USE_BEDROCK/_VERTEX/…) via env_unset so the real Anthropic
+    // credential can neither leak to nor 401 against a third-party host, and
+    // a leftover cloud toggle can't override the gateway base_url. The
+    // operator supplies the gateway key via the `auth_token` option (injected
+    // as ANTHROPIC_AUTH_TOKEN, sent as `Authorization: Bearer`) and picks a
+    // model via `model` (e.g. 'kimi-k2.7-code', 'z-ai/glm-5.2') — the ACP
+    // wrapper applies it via session/set_config_option after newSession.
+    {
+      id: ANTHROPIC_GATEWAY_PRESETS.moonshot.id,
+      description:
+        "Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's " +
+        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
+        "so it can't leak to the third-party host. Supply the Moonshot key via " +
+        "the `auth_token` option and pick a model via `model` (conventional: " +
+        "'kimi-k2.7-code'). Without auth_token the spawn has no credentials and " +
+        "fails cleanly — the real Anthropic key is never sent.",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.moonshot.baseUrl,
+      },
+      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+    },
+    {
+      id: ANTHROPIC_GATEWAY_PRESETS.openrouter.id,
+      description:
+        "OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's " +
+        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
+        "(same auth-hygiene rationale as `moonshot`). Pick a model via `model` " +
+        "(e.g. 'z-ai/glm-5.2', 'deepseek/deepseek-v4-pro', 'moonshotai/kimi-k2') " +
+        "and supply the OpenRouter key via `auth_token`.",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.openrouter.baseUrl,
+      },
+      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+    },
   ],
   options: [
     {
@@ -187,6 +249,47 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       description:
         "Hard cap on tool-use turns within a single send. Claude Code stops after this many cycles.",
       bin_args_template: ["--max-turns", "{value}"],
+    },
+    {
+      id: "base_url",
+      // Injected into the child env as ANTHROPIC_BASE_URL — the claude binary
+      // honors it, so this fronts real Anthropic, Bedrock/Vertex/Azure, or an
+      // Anthropic-compatible gateway (LiteLLM / claude-code-router / Moonshot
+      // / OpenRouter). Auto-scrubs the ambient ANTHROPIC_API_KEY + cloud
+      // redirect toggles the moment it's set (symmetric with the moonshot/
+      // openrouter modes and with claude-sdk's buildQueryOptions scrub) so the
+      // real Anthropic credential can never leak to a third-party host — pair
+      // with `auth_token` to supply the gateway key. A base_url pointed at a
+      // real-Anthropic mirror that still wants the ambient key is the one
+      // shape this breaks; that's an acceptable trade for the default being
+      // leak-safe (matches claude-sdk).
+      type: "string" as const,
+      description:
+        "Custom Anthropic base URL. Injected as ANTHROPIC_BASE_URL in the " +
+        "child env — front real Anthropic, Bedrock/Vertex/Azure, or an " +
+        "Anthropic-compatible gateway. Auto-scrubs the ambient " +
+        "ANTHROPIC_API_KEY + cloud redirect toggles when set (so the real " +
+        "key can't leak to a third-party host) — pair with `auth_token` to " +
+        "supply the gateway credential. For Moonshot/OpenRouter the dedicated " +
+        "modes pre-wire the URL too. Omit to use the default endpoint.",
+      env: { ANTHROPIC_BASE_URL: "{value}" },
+      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+    },
+    {
+      id: "auth_token",
+      // Injected into the child env as ANTHROPIC_AUTH_TOKEN — the claude
+      // binary sends it as `Authorization: Bearer <token>`, which
+      // Anthropic-compatible gateways (Moonshot, OpenRouter) accept. Pair
+      // with base_url (or a gateway mode) for a per-spawn key instead of the
+      // ambient ANTHROPIC_API_KEY.
+      type: "string" as const,
+      description:
+        "Bearer token for the Anthropic API or a compatible gateway. Injected " +
+        "as ANTHROPIC_AUTH_TOKEN in the child env (sent as `Authorization: " +
+        "Bearer`). Pair with `base_url` (or a `moonshot`/`openrouter` mode) " +
+        "to target a gateway with a per-spawn key instead of the ambient " +
+        "ANTHROPIC_API_KEY. Omit to use ANTHROPIC_API_KEY from the environment.",
+      env: { ANTHROPIC_AUTH_TOKEN: "{value}" },
     },
   ],
   continuation: {

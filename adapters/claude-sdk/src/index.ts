@@ -24,6 +24,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { ANTHROPIC_GATEWAY_PRESETS } from "@agentproto/provider-presets"
 import { DEFAULT_MODEL } from "./options.js"
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
@@ -140,7 +141,7 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         "Uses the native Claude models in `allowed`.",
     },
     {
-      id: "moonshot",
+      id: ANTHROPIC_GATEWAY_PRESETS.moonshot.id,
       description:
         "Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's " +
         "Anthropic-compatible endpoint, defaults the model to kimi-k2.7-code, " +
@@ -148,29 +149,29 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         "Moonshot key via the `auth_token` option (or ANTHROPIC_AUTH_TOKEN); " +
         "override `model` for another Moonshot model.",
       env: {
-        ANTHROPIC_BASE_URL: "https://api.moonshot.ai/anthropic",
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.moonshot.baseUrl,
         // cli.ts reads CLAUDE_SDK_MODEL as the model fallback (a `--model`
         // option still wins), so the mode ships a working default model.
-        CLAUDE_SDK_MODEL: "kimi-k2.7-code",
+        CLAUDE_SDK_MODEL: ANTHROPIC_GATEWAY_PRESETS.moonshot.defaultModel,
         // Declares this gateway's conventional credential source.
         // buildQueryOptions resolves the bearer from this env when no explicit
         // auth_token / ANTHROPIC_AUTH_TOKEN is set, and always scrubs the
         // ambient ANTHROPIC_API_KEY so it never reaches a non-Anthropic host.
-        CLAUDE_SDK_GATEWAY_KEY_ENV: "MOONSHOT_API_KEY",
+        CLAUDE_SDK_GATEWAY_KEY_ENV: ANTHROPIC_GATEWAY_PRESETS.moonshot.keyEnv,
       },
       bin_args_append: ["--thinking"],
     },
     {
-      id: "openrouter",
+      id: ANTHROPIC_GATEWAY_PRESETS.openrouter.id,
       description:
         "OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's " +
         "Anthropic-compatible endpoint. Pick a model via the `model` option " +
         "(e.g. 'z-ai/glm-5.2', 'deepseek/deepseek-v4-pro', 'moonshotai/kimi-k2') " +
         "and supply the OpenRouter key via `auth_token` (or ANTHROPIC_AUTH_TOKEN).",
       env: {
-        ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1",
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.openrouter.baseUrl,
         // Conventional credential source for this gateway (see moonshot above).
-        CLAUDE_SDK_GATEWAY_KEY_ENV: "OPENROUTER_API_KEY",
+        CLAUDE_SDK_GATEWAY_KEY_ENV: ANTHROPIC_GATEWAY_PRESETS.openrouter.keyEnv,
       },
     },
   ],

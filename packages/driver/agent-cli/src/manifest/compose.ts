@@ -67,6 +67,15 @@ export class RuntimeConfigError extends Error {
 export interface ComposedSpawn {
   binArgs: string[]
   env: Record<string, string>
+  /**
+   * Env keys the active mode AND active options declared for deletion
+   * (AgentCliMode.env_unset / AgentCliOption.env_unset). Surfaced
+   * pure-side so the runtime's `start()` — which owns the process.env
+   * merge — can apply the deletions at the one point where the ambient
+   * env is actually present (compose starts from `{}` and can't delete
+   * what isn't there yet). Empty when nothing declares any.
+   */
+  envUnset: string[]
 }
 
 /**
@@ -86,11 +95,12 @@ export function composeSpawn(
   handle: AgentCliHandle,
   config?: RuntimeConfig
 ): ComposedSpawn {
-  if (!config) return { binArgs: [...(handle.bin_args ?? [])], env: {} }
+  if (!config) return { binArgs: [...(handle.bin_args ?? [])], env: {}, envUnset: [] }
 
   const prepend: string[] = []
   const append: string[] = []
   const env: Record<string, string> = {}
+  const envUnset: string[] = []
 
   // ── Mode patch ──────────────────────────────────────────────────
   if (config.mode !== undefined) {
@@ -114,6 +124,7 @@ export function composeSpawn(
       if (mode.bin_args_prepend) prepend.push(...mode.bin_args_prepend)
       if (mode.bin_args_append) append.push(...mode.bin_args_append)
       if (mode.env) Object.assign(env, mode.env)
+      if (mode.env_unset) envUnset.push(...mode.env_unset)
     }
   }
 
@@ -143,6 +154,7 @@ export function composeSpawn(
       prepend.push(...patch.prepend)
       append.push(...patch.append)
       Object.assign(env, patch.env)
+      if (patch.envUnset.length) envUnset.push(...patch.envUnset)
     }
   }
 
@@ -181,6 +193,7 @@ export function composeSpawn(
   return {
     binArgs: [...prepend, ...(handle.bin_args ?? []), ...append],
     env,
+    envUnset,
   }
 }
 
@@ -276,7 +289,7 @@ function validateOptionValue(
 function renderOptionPatch(
   option: AgentCliOption,
   value: boolean | number | string
-): { prepend: string[]; append: string[]; env: Record<string, string> } {
+): { prepend: string[]; append: string[]; env: Record<string, string>; envUnset: string[] } {
   const stringValue = String(value)
 
   // boolean type: only emit the bare flag when value === true and the
@@ -285,18 +298,22 @@ function renderOptionPatch(
   // have no prepend counterpart — `bin_args_append_when_true` is for
   // bare flags, which never need to precede a baked-in subcommand.
   if (option.type === "boolean") {
-    if (value !== true) return { prepend: [], append: [], env: {} }
+    if (value !== true) return { prepend: [], append: [], env: {}, envUnset: [] }
     return {
       prepend: [],
       append: option.bin_args_append_when_true
         ? [...option.bin_args_append_when_true]
         : [],
       env: option.env ? interpolateEnv(option.env, stringValue) : {},
+      envUnset: option.env_unset ? [...option.env_unset] : [],
     }
   }
 
   // value-bearing types — apply `bin_args_prepend` / `bin_args_template`
-  // (with `{value}` interpolation) and merge `env`.
+  // (with `{value}` interpolation) and merge `env`. `env_unset` applies
+  // whenever the option is active with a non-default value (the same
+  // condition under which `env` merges) — so a `base_url` option, e.g.,
+  // scrubs the ambient ANTHROPIC_API_KEY the moment it's set.
   return {
     prepend: option.bin_args_prepend
       ? option.bin_args_prepend.map(token =>
@@ -309,6 +326,7 @@ function renderOptionPatch(
         )
       : [],
     env: option.env ? interpolateEnv(option.env, stringValue) : {},
+    envUnset: option.env_unset ? [...option.env_unset] : [],
   }
 }
 

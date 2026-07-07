@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PassThrough } from "node:stream"
+import { spawn } from "node:child_process"
 import type { AgentCliClient, AgentCliConnectOptions, AgentCliDefinition } from "../types.js"
 
 // ---------------------------------------------------------------------------
@@ -99,6 +100,126 @@ describe("createAgentCliRuntime(...).start() — pid + onActivity threading", ()
     const runtime = createAgentCliRuntime(minimalDef)
     await runtime.start({ cwd: "/tmp" })
     expect(capturedConnectOpts?.onActivity).toBeUndefined()
+  })
+})
+
+describe("createAgentCliRuntime(...).start() — mode env_unset scrub", () => {
+  // A gateway mode must scrub the real ANTHROPIC_API_KEY so it can't leak
+  // to a third-party Anthropic-compatible host. The scrub happens at the
+  // env-merge point in start(), AFTER ambient process.env is folded in but
+  // BEFORE operator-supplied opts.env (operator intent wins).
+  const gatewayDef: AgentCliDefinition = {
+    ...minimalDef,
+    modes: [
+      {
+        id: "gateway",
+        env: { ANTHROPIC_BASE_URL: "https://gw.example/anthropic" },
+        env_unset: ["ANTHROPIC_API_KEY"],
+      },
+    ],
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    capturedConnectOpts = undefined
+  })
+
+  it("deletes ambient env keys declared by the active mode's env_unset", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = "real-secret-must-not-leak"
+    try {
+      const runtime = createAgentCliRuntime(gatewayDef)
+      await runtime.start({ cwd: "/tmp", config: { mode: "gateway" } })
+      const spawnOpts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as
+        | { env?: Record<string, string> }
+        | undefined
+      expect(spawnOpts?.env?.ANTHROPIC_API_KEY).toBeUndefined()
+      expect(spawnOpts?.env?.ANTHROPIC_BASE_URL).toBe(
+        "https://gw.example/anthropic"
+      )
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = prev
+    }
+  })
+
+  it("lets operator-supplied opts.env survive the scrub (operator intent wins)", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = "ambient-secret"
+    try {
+      const runtime = createAgentCliRuntime(gatewayDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { mode: "gateway" },
+        env: { ANTHROPIC_API_KEY: "operator-forwarded" },
+      })
+      const spawnOpts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as
+        | { env?: Record<string, string> }
+        | undefined
+      expect(spawnOpts?.env?.ANTHROPIC_API_KEY).toBe("operator-forwarded")
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = prev
+    }
+  })
+})
+
+describe("createAgentCliRuntime(...).start() — option env_unset scrub", () => {
+  // A value-bearing option (e.g. base_url) carrying env_unset must scrub the
+  // ambient credential the moment it's set — same merge point as mode
+  // env_unset, so a bare base_url auto-scrubs ANTHROPIC_API_KEY without the
+  // operator having to also pick a preset mode.
+  const baseUrlDef: AgentCliDefinition = {
+    ...minimalDef,
+    options: [
+      {
+        id: "base_url",
+        type: "string",
+        env: { ANTHROPIC_BASE_URL: "{value}" },
+        env_unset: ["ANTHROPIC_API_KEY"],
+      },
+    ],
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    capturedConnectOpts = undefined
+  })
+
+  it("deletes ambient env keys declared by the active option's env_unset", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = "real-secret-must-not-leak"
+    try {
+      const runtime = createAgentCliRuntime(baseUrlDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { options: { base_url: "https://gw.example/anthropic" } },
+      })
+      const spawnOpts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as
+        | { env?: Record<string, string> }
+        | undefined
+      expect(spawnOpts?.env?.ANTHROPIC_API_KEY).toBeUndefined()
+      expect(spawnOpts?.env?.ANTHROPIC_BASE_URL).toBe(
+        "https://gw.example/anthropic"
+      )
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = prev
+    }
+  })
+
+  it("does NOT scrub when the option is absent (no scrub without an active value)", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_API_KEY = "should-stay"
+    try {
+      const runtime = createAgentCliRuntime(baseUrlDef)
+      await runtime.start({ cwd: "/tmp" })
+      const spawnOpts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as
+        | { env?: Record<string, string> }
+        | undefined
+      expect(spawnOpts?.env?.ANTHROPIC_API_KEY).toBe("should-stay")
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = prev
+    }
   })
 })
 

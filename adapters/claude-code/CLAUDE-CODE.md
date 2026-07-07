@@ -73,6 +73,41 @@ modes:
   - id: bypass-permissions
     description: Skip all permission prompts. Use only in trusted automation contexts.
     bin_args_append: ["--permission-mode", "bypassPermissions"]
+  - id: moonshot
+    description: >-
+      Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's
+      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
+      (via env_unset) so it can't leak to the third-party host. Supply the
+      Moonshot key via the `auth_token` option and pick a model via `model`
+      (conventional: 'kimi-k2.7-code'). Without auth_token the spawn has no
+      credentials and fails cleanly.
+    env:
+      ANTHROPIC_BASE_URL: https://api.moonshot.ai/anthropic
+    env_unset:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - CLAUDE_CODE_USE_ANTHROPIC_AWS
+      - CLAUDE_CODE_USE_MANTLE
+      - CLAUDE_CODE_USE_GATEWAY
+  - id: openrouter
+    description: >-
+      OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's
+      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
+      (same auth-hygiene rationale as `moonshot`). Pick a model via `model`
+      (e.g. 'z-ai/glm-5.2', 'moonshotai/kimi-k2') and supply the OpenRouter
+      key via `auth_token`.
+    env:
+      ANTHROPIC_BASE_URL: https://openrouter.ai/api/v1
+    env_unset:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - CLAUDE_CODE_USE_ANTHROPIC_AWS
+      - CLAUDE_CODE_USE_MANTLE
+      - CLAUDE_CODE_USE_GATEWAY
 options:
   - id: model
     type: enum
@@ -85,6 +120,34 @@ options:
     max: 200
     description: Hard cap on tool-use turns within a single send. Claude Code stops after this many cycles.
     bin_args_template: ["--max-turns", "{value}"]
+  - id: base_url
+    type: string
+    description: >-
+      Custom Anthropic base URL, injected as ANTHROPIC_BASE_URL. Front real
+      Anthropic, Bedrock/Vertex/Azure, or an Anthropic-compatible gateway.
+      Setting it auto-scrubs the ambient ANTHROPIC_API_KEY and all cloud-provider
+      toggles (Bedrock/Vertex/Foundry/Mantle) so it can't leak to a third-party
+      host — pair with `auth_token` to supply a per-spawn gateway key. The
+      `moonshot`/`openrouter` modes are pre-wired presets over this same shape.
+    env:
+      ANTHROPIC_BASE_URL: "{value}"
+    env_unset:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - CLAUDE_CODE_USE_ANTHROPIC_AWS
+      - CLAUDE_CODE_USE_MANTLE
+      - CLAUDE_CODE_USE_GATEWAY
+  - id: auth_token
+    type: string
+    description: >-
+      Bearer token for the Anthropic API or a compatible gateway, injected as
+      ANTHROPIC_AUTH_TOKEN (sent as `Authorization: Bearer`). Pair with
+      `base_url` (or a `moonshot`/`openrouter` mode) to target a gateway with
+      a per-spawn key instead of the ambient ANTHROPIC_API_KEY.
+    env:
+      ANTHROPIC_AUTH_TOKEN: "{value}"
 continuation:
   # `native-resume` is the right default now that the wrapper supports
   # `loadSession`: each turn cold-spawns claude with no overhead, then

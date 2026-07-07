@@ -84,8 +84,17 @@ export function createAgentCliRuntime(
       const env: Record<string, string> = {
         ...filterStringEnv(process.env),
         ...composed.env,
-        ...(opts?.env ?? {}),
       }
+      // Mode-declared env scrub (AgentCliMode.env_unset): delete AFTER the
+      // ambient + mode/option env are merged but BEFORE the host-provided
+      // opts.env. A gateway mode (e.g. claude-code's `moonshot`) declares
+      // keys that must never reach a non-native Anthropic-compatible endpoint
+      // — scrubbing here is the only point where the real key is actually
+      // present (compose starts from `{}` and can't delete what isn't there).
+      // opts.env is applied after so an operator who explicitly forwards a
+      // scrubbed key takes responsibility for it (operator intent wins).
+      for (const k of composed.envUnset) delete env[k]
+      Object.assign(env, opts?.env ?? {})
 
       // claude-code's ACP wrapper never reads `--permission-mode` from argv
       // (the `bin_args_append` above is a no-op against it) — it resolves

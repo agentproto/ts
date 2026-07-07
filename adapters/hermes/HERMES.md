@@ -28,16 +28,25 @@ session:
   idle_timeout_ms: 1800000
   context_carryover: true
 models:
-  default: anthropic/claude-sonnet-4-6
+  default: z-ai/glm-5.2
   allowed:
-    - anthropic/claude-sonnet-4-6
-    - anthropic/claude-opus-4-7
-    - openai/gpt-4
+    - z-ai/glm-5.2
+    - deepseek/deepseek-v4-pro
     - meta-llama/llama-3.3-70b
+    - openai/gpt-4
+  # Anthropic models are reserved for the dedicated claude-code adapter —
+  # hermes must NEVER route to them, even if a caller passes the id
+  # explicitly. Enforced at compose time (RuntimeConfigError).
+  deny:
+    - anthropic/*
+    - claude-*
   env:
-    anthropic: ANTHROPIC_API_KEY
     openrouter: OPENROUTER_API_KEY
     openai: OPENAI_API_KEY
+  # hermes keeps its own configured default when given a model via the ACP
+  # session config — selection must go through a `/model <id>` control turn
+  # instead. See the "Model selection" section below.
+  apply: command
 capabilities:
   streaming: true
   tool_calls: true
@@ -65,6 +74,22 @@ options:
       (comma-separate for multiple), via hermes' `--skills` global flag.
       Same prepend-before-`acp` constraint as the `lean` mode.
     bin_args_prepend: ["--skills", "{value}"]
+  - id: model
+    type: string
+    description: >-
+      Model ID routed through OpenRouter/OpenAI (e.g.
+      'deepseek/deepseek-v4-pro', 'z-ai/glm-5.2', 'moonshotai/kimi-k2').
+      Free-form: any valid OpenRouter/OpenAI id is accepted even when not
+      in `allowed`. Anthropic models are denied (see `models.deny`) — use
+      the claude-code adapter for those. Applied via a `/model <id>`
+      control turn after the session is created (hermes ignores the ACP
+      session model config). Omit to use the hermes default.
+  - id: effort
+    type: enum
+    enum: [low, medium, high, xhigh, max]
+    description: >-
+      Reasoning effort level passed to hermes via ACP newSession. Omit to
+      use the hermes default.
 tags: [hermes, nous, acp, agent-runtime]
 ---
 
@@ -92,6 +117,34 @@ resolved from the operator's secret store and passed via
 `sandbox.env.set` (never argv). At minimum one of
 `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` MUST
 be present at boot.
+
+## Model selection
+
+Hermes does **not** read the model from its ACP session config — it keeps
+whatever its own `~/.hermes/config.yaml` resolves as default. So unlike the
+claude-code / claude-sdk adapters (which pin the model at spawn via a CLI
+flag), the `model` option here is applied as a **`/model <id>` control turn
+sent after the session is created** (`models.apply: command`).
+
+Two consequences an operator should know:
+
+- **Provider is whatever hermes resolves at session start.** The `/model`
+  turn only switches the model id; it does not re-resolve the provider. If
+  `~/.hermes/config.yaml`'s default provider is `moa` (Mixture of Agents),
+  a `/model moonshotai/kimi-k2` turn targets a model moa can't serve and
+  fails. Point hermes at the right provider (e.g. set
+  `model.default.provider: openrouter`, or a direct `moonshot` provider
+  block) before relying on the `model` option. The interactive CLI
+  `hermes --model <id>` resolves the provider at launch and does not have
+  this constraint.
+- **No `provider` option is exposed.** Agentproto can only set the model
+  id, not force OpenRouter/Moonshot routing. To run Kimi through a
+  provider-pinned path, prefer the `claude-sdk` adapter with
+  `mode: moonshot` (or `mode: openrouter` + a model slug).
+
+`models.deny` (`anthropic/*`, `claude-*`) is enforced at compose time — a
+RuntimeConfigError — so the budget arm can never silently burn premium
+Anthropic spend.
 
 ## Protocol
 
