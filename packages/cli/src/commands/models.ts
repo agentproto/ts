@@ -81,6 +81,15 @@ export async function runModels(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  if (!wanted && adapters.length === 0) {
+    // No adapter with a model list is installed. Emit a one-line hint
+    // instead of empty output — a blank terminal is the worst UX on a
+    // fresh machine because the user can't tell whether the verb worked.
+    process.stdout.write(
+      `no adapters installed — try: agentproto install claude-code\n`
+    )
+    return 0
+  }
 
   // A provider has a key if it's in this env OR the stored providers file.
   const store = await loadProviders()

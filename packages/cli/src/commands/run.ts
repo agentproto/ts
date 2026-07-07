@@ -9,8 +9,8 @@
  * Long-lived multiplexing belongs to `agentproto serve`, not here.
  */
 
-import { resolve as resolvePath } from "node:path"
 import { parseArgs } from "node:util"
+import { resolve as resolvePath } from "node:path"
 import {
   createAgentCliRuntime,
   type AgentCliRuntimeSession,
@@ -20,7 +20,24 @@ import { formatToolCall, formatToolResult } from "@agentproto/runtime"
 import { resolveAdapter } from "../registry/resolve.js"
 import { readStdinIfPiped } from "../util/stdin.js"
 
+const USAGE = `agentproto run — spawn an adapter, dispatch one turn, stream events, exit
+
+Usage:
+  agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>] [--json]
+
+  agentproto run claude-code --prompt "summarise this repo"
+  echo "fix the bug" | agentproto run hermes --cwd .
+  agentproto run claude-code --resume <session-id> --prompt "continue"
+
+One-shot scripting / smoke-test verb. Long-lived multiplexing belongs to
+\`agentproto serve\`.
+`
+
 export async function runRun(args: readonly string[]): Promise<number> {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
   const { values, positionals } = parseArgs({
     args: [...args],
     allowPositionals: true,

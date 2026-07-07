@@ -113,7 +113,38 @@ interface ServeOpts {
   strictOrigins?: boolean
 }
 
+const SERVE_USAGE = `agentproto serve — run the local agentproto daemon
+
+Usage:
+  agentproto serve [options]
+
+Options:
+  --profile <name>            bundle from ~/.agentproto/config.json profiles[]
+  --workspace <dir>           workspace root (default: cwd)
+  --port <n>                  local HTTP port (default: 18790)
+  --bind <ip>                 bind address (default: 127.0.0.1)
+  --connect <url>             cloud WS URL to relay spawns to (default: off)
+  --token <jwt>               tunnel auth token (or $AGENTPROTO_TOKEN, or config)
+  --label <name>              host label shown in the cloud UI
+  --allow-origin <url>        trusted Origin (repeatable; localhost always trusted)
+  --interactive, -i           interactive mode
+  --help, -h                  print this usage and exit
+
+Boots the local gateway (HTTP + MCP server + sessions registry) on --port.
+With --connect, also opens an outbound WS tunnel to the host so cloud-driven
+spawns land in the same /sessions list as local ones.
+
+Examples:
+  agentproto serve                                   # local-only daemon on :18790
+  agentproto serve --connect wss://guilde.work/api/v1/agentproto/tunnel
+  agentproto serve --profile prod --workspace ~/code/my-app
+`
+
 export async function runServe(args: readonly string[]): Promise<number> {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(SERVE_USAGE)
+    return 0
+  }
   const { values } = parseArgs({
     args: [...args],
     allowPositionals: false,
