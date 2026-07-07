@@ -37,6 +37,26 @@ import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 
+/** `SandboxSpecSchema` plus the PR3 reuse field — `{ provider, reuse: "<sandboxId>" }`
+ *  reconnects to an existing box (via `SandboxProvider.connect`) instead of
+ *  booting a fresh one. Built from the same shape (rather than `.extend()`)
+ *  so it stays a plain `.strict()` object independent of that schema's own
+ *  extend semantics. */
+const sandboxSpecWithReuseSchema = z
+  .object({
+    ...SandboxSpecSchema.shape,
+    reuse: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Existing sandbox id (a prior session's `sandboxId`) to reconnect to instead of " +
+          "booting a new box. Requires the provider to support reconnect (e.g. e2b); " +
+          "omit to boot fresh (default)."
+      ),
+  })
+  .strict()
+
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
@@ -385,8 +405,9 @@ export function registerAgentTools(
             .string()
             .min(1)
             .describe("Sandbox provider slug from `list_sandbox_providers` (e.g. 'local', 'e2b')."),
-          SandboxSpecSchema.describe(
-            "Inline AIP-36 SandboxDefinition — boots this exact spec instead of a catalog slug."
+          sandboxSpecWithReuseSchema.describe(
+            "Inline AIP-36 SandboxDefinition — boots this exact spec instead of a catalog slug. " +
+              "Set `reuse` to reconnect to an existing sandbox id instead of booting fresh."
           ),
         ])
       )
@@ -398,7 +419,10 @@ export function registerAgentTools(
             "agentproto daemon, and proxies the conversation back onto this session — " +
             "`agent_prompt`/`agent_output`/`agent_kill` behave exactly as they do for a " +
             "local spawn, and the transcript stays readable here even after the box is " +
-            "torn down. Omit to run locally (default)."
+            "torn down. Omit to run locally (default). Pass an inline spec with `reuse: " +
+            "\"<sandboxId>\"` (from a prior session's `sandboxId`) to reconnect to an " +
+            "existing box instead — by default such a box is PAUSED (not killed) on " +
+            "session close so it stays reusable; set `lifecycle.destroy_on` to always kill it."
         ),
     },
     async input => {

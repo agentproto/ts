@@ -26,9 +26,19 @@ import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
-import { createSandboxAgentSessionHost, type SandboxAgentSessionHost, type SandboxSpec } from "@agentproto/sandbox"
+import {
+  createSandboxAgentSessionHost,
+  resolveLifecyclePolicy,
+  type SandboxAgentSessionHost,
+  type SandboxLifecyclePolicy,
+  type SandboxSpec,
+} from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+
+/** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
+ *  `SpawnAgentSessionInput.sandbox`. */
+export type SandboxSpecInput = SandboxSpec & { reuse?: string }
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -151,11 +161,13 @@ export interface SpawnAgentSessionInput {
   trace?: boolean
   /** Run this session inside a sandbox instead of on the host — a provider
    *  slug from `list_sandbox_providers` (e.g. `"local"`, `"e2b"`), or an
-   *  inline AIP-36 `SandboxSpec`. When set, this branch resolves the
-   *  provider, boots the box, spawns `adapter` on the BOX's own
-   *  `agent_start`, and wires a `SandboxAgentSessionProxy` in place of the
-   *  local `resolveAgentAdapter` path — see `sandbox-agent-session-proxy.ts`. */
-  sandbox?: string | SandboxSpec
+   *  inline AIP-36 `SandboxSpec`, optionally carrying `reuse: "<sandboxId>"`
+   *  to reconnect to an existing box instead of booting fresh. When set,
+   *  this branch resolves the provider, boots (or reconnects) the box,
+   *  spawns `adapter` on the BOX's own `agent_start`, and wires a
+   *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
+   *  path — see `sandbox-agent-session-proxy.ts`. */
+  sandbox?: string | SandboxSpecInput
 }
 
 export type SpawnAgentSessionResult =
@@ -173,6 +185,7 @@ export type SpawnAgentSessionResult =
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
+        | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
       message: string
       details?: Record<string, unknown>
@@ -460,6 +473,7 @@ export async function spawnAgentSession(
     let commandPreview: string | undefined
     let readUsage: (() => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
     let sandboxId: string | undefined
+    let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -484,6 +498,7 @@ export async function spawnAgentSession(
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
+      sandboxTeardown = booted.sandboxTeardown
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
@@ -528,6 +543,7 @@ export async function spawnAgentSession(
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
+      ...(sandboxTeardown ? { sandboxTeardown } : {}),
     })
     liveSessionId = desc.id
     // Bind the scope-token's lifetime to the child session — once
@@ -606,10 +622,16 @@ async function resolveMcpCredentialHeaders(
 }
 
 type SandboxBootResult =
-  | { ok: true; agentSession: AgentSessionLike; commandPreview: string; sandboxId: string }
+  | {
+      ok: true
+      agentSession: AgentSessionLike
+      commandPreview: string
+      sandboxId: string
+      sandboxTeardown: SandboxLifecyclePolicy["teardown"]
+    }
   | {
       ok: false
-      code: "sandbox_provider_not_found" | "sandbox_boot_failed" | "sandbox_proxy_failed"
+      code: "sandbox_provider_not_found" | "sandbox_boot_failed" | "sandbox_reconnect_failed" | "sandbox_proxy_failed"
       message: string
     }
 
@@ -649,7 +671,7 @@ function toMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
  * box's own agent_start rejected the adapter".
  */
 async function bootSandboxAgentSession(opts: {
-  sandbox: string | SandboxSpec
+  sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
   cwd: string
@@ -680,6 +702,12 @@ async function bootSandboxAgentSession(opts: {
   }
   const spec: SandboxSpec =
     typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox
+  // Reuse target (PR3) — `agent_start.sandbox.reuse`. Undefined ⇒ boot a
+  // fresh box, exactly as PR2. Also feeds `resolveLifecyclePolicy` below:
+  // a reused box defaults to PAUSE (not kill) on close, since it would be
+  // pointless to reconnect to a box that's about to be killed anyway.
+  const reuseSandboxId = typeof opts.sandbox === "object" ? opts.sandbox.reuse : undefined
+  const lifecyclePolicy = resolveLifecyclePolicy(spec, reuseSandboxId !== undefined)
 
   // AIP-36 `env.passthrough` / `env.auth.state.env` — the only env-var
   // slugs a spec actually declares today (see PLAN §4 AMENDMENT: no
@@ -694,6 +722,7 @@ async function bootSandboxAgentSession(opts: {
     host = await createSandboxAgentSessionHost({
       provider: handle.provider,
       spec,
+      ...(reuseSandboxId !== undefined ? { sandboxId: reuseSandboxId } : {}),
       // AMENDMENT — do NOT default to `process.env`: always pass an
       // explicit resolver backed by the host's own secrets broker
       // (`mcp-credential-deps.ts`'s `resolveSandboxSecret`, the same DI
@@ -703,13 +732,21 @@ async function bootSandboxAgentSession(opts: {
       secrets: { slugs, resolver: resolveSandboxSecret },
     })
   } catch (err) {
-    return {
-      ok: false,
-      code: "sandbox_boot_failed",
-      message:
-        `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
-        `${err instanceof Error ? err.message : String(err)}`,
-    }
+    return reuseSandboxId !== undefined
+      ? {
+          ok: false,
+          code: "sandbox_reconnect_failed",
+          message:
+            `agent_start: sandbox reconnect failed (provider "${providerSlug}", sandbox ` +
+            `"${reuseSandboxId}") — ${err instanceof Error ? err.message : String(err)}`,
+        }
+      : {
+          ok: false,
+          code: "sandbox_boot_failed",
+          message:
+            `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        }
   }
 
   let remoteSessionId: string
@@ -736,9 +773,10 @@ async function bootSandboxAgentSession(opts: {
 
   return {
     ok: true,
-    agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId }),
+    agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId, lifecyclePolicy }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
+    sandboxTeardown: lifecyclePolicy.teardown,
   }
 }
 

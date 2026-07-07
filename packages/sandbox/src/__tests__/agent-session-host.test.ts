@@ -141,4 +141,76 @@ describe("createSandboxAgentSessionHost", () => {
     await host.spawn("hermes", {})
     expect(inner.spawn).toHaveBeenCalledWith("hermes", {})
   })
+
+  it("opts.sandboxId calls provider.connect instead of boot", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const boot = vi.fn(async () => {
+      throw new Error("boot should not be called for a reuse request")
+    })
+    const connect = vi.fn(async (sandboxId: string) => ({
+      mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+      sandboxId,
+      stop: vi.fn(async () => {}),
+    }))
+    const provider = fakeProvider({ boot, connect })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      sandboxId: "sbx_reuse",
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(connect).toHaveBeenCalledWith("sbx_reuse", spec, { env: { [FAKE_SLUG]: "or-key-123" } })
+    expect(boot).not.toHaveBeenCalled()
+    expect(host.sandboxId).toBe("sbx_reuse")
+  })
+
+  it("throws a clear error when reuse is requested against a provider with no connect()", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider()
+    await expect(
+      createSandboxAgentSessionHost({
+        provider,
+        spec,
+        sandboxId: "sbx_reuse",
+        secrets: { slugs: [FAKE_SLUG] },
+      }),
+    ).rejects.toThrow(/no connect\(\)/)
+  })
+
+  it("pause() closes the daemon host AND pauses (not kills) the sandbox", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const close = vi.fn(async () => {})
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => fakeHost({ close }))
+    const stopBox = vi.fn(async () => {})
+    const pauseBox = vi.fn(async () => {})
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: stopBox,
+        pause: pauseBox,
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.pause).toBeDefined()
+    await host.pause!()
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(pauseBox).toHaveBeenCalledTimes(1)
+    expect(stopBox).not.toHaveBeenCalled()
+  })
+
+  it("omits pause() entirely when the booted sandbox doesn't support it", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider()
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.pause).toBeUndefined()
+  })
 })

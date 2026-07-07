@@ -27,6 +27,11 @@ export interface BootedSandbox {
   sandboxId: string
   /** Tear down the sandbox. */
   stop(): Promise<void>
+  /** Pause the sandbox instead of killing it — keeps it reconnectable via
+   *  `SandboxProvider.connect(sandboxId, ...)` later. Optional: providers
+   *  that can't pause (or don't support reconnect at all) omit it; callers
+   *  that want to pause fall back to `stop()` when it's absent. */
+  pause?(): Promise<void>
 }
 
 /** Env resolved from secrets, handed to `provider.boot`. */
@@ -41,6 +46,12 @@ export interface SandboxBootOpts {
  */
 export interface SandboxProvider {
   boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
+  /** Reconnect to an already-booted (possibly paused) sandbox instead of
+   *  booting a fresh one — the reuse path (`agent_start.sandbox.reuse`).
+   *  Optional: providers that can't reconnect (e.g. the `local` passthrough,
+   *  which tears down its temp workspace on `stop()`) omit it; the runtime
+   *  errors clearly when reuse is requested against such a provider. */
+  connect?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */
@@ -55,6 +66,9 @@ export interface CreateSandboxAgentSessionHostOpts {
   provider: SandboxProvider
   spec: SandboxSpec
   secrets: SandboxSecretsConfig
+  /** Reconnect to this existing sandbox id instead of booting a fresh box —
+   *  requires `provider.connect`; throws a clear error otherwise. */
+  sandboxId?: string
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -63,19 +77,34 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   sandboxId: string
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
+  /** Close the daemon connection and PAUSE the sandbox instead of killing
+   *  it — only present when the booted sandbox supports `pause()`. */
+  pause?(): Promise<void>
 }
 
 /**
- * Resolve `secrets` into an env map, boot the sandbox with it, then connect
- * the #202 daemon host to the sandbox's exposed MCP URL. `stop()` closes the
- * daemon connection before tearing down the sandbox (never leaks the box on
- * a client-side error).
+ * Resolve `secrets` into an env map, boot (or, when `opts.sandboxId` is set,
+ * reconnect to) the sandbox with it, then connect the #202 daemon host to
+ * the sandbox's exposed MCP URL. `stop()` closes the daemon connection
+ * before tearing down the sandbox (never leaks the box on a client-side
+ * error); `pause()` does the same but pauses rather than kills.
  */
 export async function createSandboxAgentSessionHost(
   opts: CreateSandboxAgentSessionHostOpts,
 ): Promise<SandboxAgentSessionHost> {
   const env = await resolveSandboxSecretsEnv(opts.secrets)
-  const booted = await opts.provider.boot(opts.spec, { env })
+  let booted: BootedSandbox
+  if (opts.sandboxId !== undefined) {
+    if (!opts.provider.connect) {
+      throw new Error(
+        `createSandboxAgentSessionHost: reuse requested for sandbox "${opts.sandboxId}", ` +
+          "but this provider has no connect() — it can only boot fresh sandboxes.",
+      )
+    }
+    booted = await opts.provider.connect(opts.sandboxId, opts.spec, { env })
+  } else {
+    booted = await opts.provider.boot(opts.spec, { env })
+  }
   let host: DaemonAgentSessionHost
   try {
     host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
@@ -90,6 +119,14 @@ export async function createSandboxAgentSessionHost(
       await host.close()
       await booted.stop()
     },
+    ...(booted.pause
+      ? {
+          async pause(): Promise<void> {
+            await host.close()
+            await booted.pause!()
+          },
+        }
+      : {}),
   }
 }
 

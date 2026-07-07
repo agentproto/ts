@@ -23,7 +23,7 @@
  * `/sessions/:id/stream` instead of polling `agent_output`.
  */
 
-import type { SandboxAgentSessionHost } from "@agentproto/sandbox"
+import type { SandboxAgentSessionHost, SandboxLifecyclePolicy } from "@agentproto/sandbox"
 import type { AgentSessionLike, AgentStreamEvent } from "./sessions.js"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
@@ -35,12 +35,18 @@ const MAX_OUTPUT_LINES = 500
 
 export interface SandboxAgentSessionProxyOpts {
   /** The booted sandbox's daemon host. `prompt`/`output`/`kill`/`waitForAny`
-   *  drive the box's OWN `agent_start` session; `stop()` tears the whole
-   *  box down (closes the daemon connection, then stops the sandbox). */
-  host: Pick<SandboxAgentSessionHost, "prompt" | "output" | "kill" | "waitForAny" | "stop">
+   *  drive the box's OWN `agent_start` session; `stop()`/`pause()` tear the
+   *  box down (closes the daemon connection, then stops/pauses the
+   *  sandbox) — `pause` is only present when the booted sandbox supports
+   *  it (see `BootedSandbox.pause`). */
+  host: Pick<SandboxAgentSessionHost, "prompt" | "output" | "kill" | "waitForAny" | "stop" | "pause">
   /** Session id on the BOX's own daemon (from `host.start(...)`) — NOT this
    *  proxy's local session id (the registry mints its own on `spawnAgent`). */
   remoteSessionId: string
+  /** PR3 AIP-36 lifecycle policy (`resolveLifecyclePolicy`) — decides
+   *  whether `close()` pauses the box (reuse-friendly) or kills it
+   *  (ephemeral, the default). Omitted ⇒ always kill, matching PR2. */
+  lifecyclePolicy?: SandboxLifecyclePolicy
 }
 
 /**
@@ -66,7 +72,7 @@ function extractPromptText(message: unknown): string {
 export function createSandboxAgentSessionProxy(
   opts: SandboxAgentSessionProxyOpts,
 ): AgentSessionLike {
-  const { host, remoteSessionId } = opts
+  const { host, remoteSessionId, lifecyclePolicy } = opts
   let lastPrompt: string | undefined
   let closed = false
 
@@ -146,7 +152,16 @@ export function createSandboxAgentSessionProxy(
       try {
         await host.kill(remoteSessionId)
       } finally {
-        await host.stop()
+        // PAUSE (not kill) when the lifecycle policy says this box is
+        // meant to be reused later — falls back to `stop()` when the
+        // provider never exposed a `pause()` (e.g. `local`, or a policy
+        // that resolved to "pause" against a non-pausable provider): a
+        // teardown must never silently no-op and leak the box.
+        if (lifecyclePolicy?.teardown === "pause" && host.pause) {
+          await host.pause()
+        } else {
+          await host.stop()
+        }
       }
     },
   }

@@ -384,6 +384,10 @@ export interface SessionDescriptor {
   remote?: boolean
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`), when `remote` is true. */
   sandboxId?: string
+  /** What session close does to the box (PR3 lifecycle) — `"kill"` (the
+   *  default, ephemeral) or `"pause"` (keeps `sandboxId` reconnectable via
+   *  `agent_start.sandbox.reuse`). Only set when `remote` is true. */
+  sandboxTeardown?: "kill" | "pause"
 }
 
 interface SessionRuntime {
@@ -774,6 +778,9 @@ export interface SpawnAgentInput {
   remote?: boolean
   /** Provider-assigned sandbox id, when `remote` is true. */
   sandboxId?: string
+  /** What session close does to the box, when `remote` is true — see
+   *  `SessionDescriptor.sandboxTeardown`. */
+  sandboxTeardown?: "kill" | "pause"
 }
 
 export interface SpawnSessionInput {
@@ -1915,6 +1922,7 @@ export function createSessionsRegistry(opts?: {
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
