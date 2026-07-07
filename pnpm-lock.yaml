@@ -94,6 +94,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
+      '@agentproto/provider-presets':
+        specifier: workspace:*
+        version: link:../../packages/provider-presets
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -119,6 +122,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
+      '@agentproto/provider-presets':
+        specifier: workspace:*
+        version: link:../../packages/provider-presets
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.200(@anthropic-ai/sdk@0.39.0)(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
@@ -2012,6 +2018,24 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/provider-presets:
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.8.4)
 
   packages/redaction:
     devDependencies:
