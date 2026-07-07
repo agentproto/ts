@@ -35,6 +35,7 @@ import { resolveAdapter } from "../registry/resolve.js"
 import { runSetup } from "./setup.js"
 import { runInstallProfile } from "./install-profile.js"
 import { runInstallSkill } from "./install-skill.js"
+import { CATALOG } from "../registry/catalog.js"
 
 export async function runInstall(args: readonly string[]): Promise<number> {
   // Peek at the slug before parseArgs — it influences which option set is
@@ -73,7 +74,63 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  const adapter = await resolveAdapter(slug)
+  // Bootstrap the adapter package itself. `resolveAdapter` requires the
+  // `@agentproto/adapter-<slug>` package to be importable from this
+  // process's module graph; on a fresh machine it isn't, so the verb used
+  // to die with "could not load adapter … Install it with: npm i -g …" —
+  // pushing the user out of the verb's purpose. When the slug maps to a
+  // known catalog entry (so we're confident the npm package exists), run
+  // `npm i -g` ourselves first, then re-resolve. A --dry-run only prints
+  // what would run; an npm failure surfaces the manual path.
+  let adapter: Awaited<ReturnType<typeof resolveAdapter>>
+  try {
+    adapter = await resolveAdapter(slug)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const isMissingPackage =
+      /could not load adapter|Cannot find package|ERR_MODULE_NOT_FOUND/i.test(
+        msg
+      ) && msg.includes(`@agentproto/adapter-${slug}`)
+    const catalogEntry = CATALOG.find((e) => e.slug === slug)
+    if (!isMissingPackage || !catalogEntry?.packageName) throw err
+
+    const pkg = catalogEntry.packageName
+    if (values["dry-run"]) {
+      process.stdout.write(
+        `agentproto install: [bootstrap] would run: npm i -g ${pkg}\n` +
+          `  (then read ${pkg}'s manifest and run its install[] steps)\n`
+      )
+      return 0
+    }
+    process.stdout.write(
+      `agentproto install: [bootstrap] installing ${pkg}…\n`
+    )
+    const code = await spawnInherit("npm", ["install", "-g", pkg])
+    if (code !== 0) {
+      process.stderr.write(
+        `agentproto install: npm i -g ${pkg} failed (exit ${code}). ` +
+          `Install it manually: npm i -g ${pkg}\n`
+      )
+      return code
+    }
+    // Re-resolve. A failed dynamic `import()` is not cached by Node, so
+    // the second call re-resolves from disk and picks up the freshly-
+    // installed global package (the global node_modules is an ancestor of
+    // a globally-installed CLI's location). Falling through to the
+    // original `resolveAdapter` keeps the proprietary-adapter path-rewrite
+    // and every other resolution nicety in one place.
+    try {
+      adapter = await resolveAdapter(slug)
+    } catch (retryErr) {
+      const cause =
+        retryErr instanceof Error ? retryErr.message : String(retryErr)
+      process.stderr.write(
+        `agentproto install: ${pkg} installed but could not be loaded: ${cause}\n` +
+          `Re-run \`agentproto install ${slug}\` from a fresh shell, or install manually: npm i -g ${pkg}\n`
+      )
+      return 1
+    }
+  }
   const installSteps: AgentCliInstallMethod[] = adapter.handle.install ?? []
   if (installSteps.length === 0) {
     process.stderr.write(
