@@ -386,6 +386,8 @@ export interface RuntimeHttpServerOptions {
   meta: {
     workspace: string
     registered: readonly string[]
+    /** Daemon start timestamp. Defaults to `Date.now()` at server start. */
+    startedAt?: number
   }
 }
 
@@ -397,7 +399,7 @@ export interface RuntimeHttpServerHandle {
 export async function startHttpServer(
   opts: RuntimeHttpServerOptions,
 ): Promise<RuntimeHttpServerHandle> {
-  const startedAt = Date.now()
+  const startedAt = opts.meta.startedAt ?? Date.now()
   const authSource: AuthSource = opts.auth ?? { mode: "none" }
   const readAuth = (): AuthOptions =>
     typeof authSource === "function" ? authSource() : authSource

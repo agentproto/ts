@@ -137,6 +137,7 @@ export type {
 } from "./usage.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
+import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import {
@@ -321,6 +322,7 @@ export interface CreateGatewayOptions {
  * adapter_list, ...) starts deferred.
  */
 const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
+  "daemon_health",
   "agent_start",
   "agent_prompt",
   "agent_output",
@@ -374,6 +376,7 @@ export interface GatewayHandle {
 export async function createGateway(
   opts: CreateGatewayOptions,
 ): Promise<GatewayHandle> {
+  const startedAt = Date.now()
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -738,6 +741,9 @@ export async function createGateway(
     // workspace without each implementing AIP-aware glue. Names match
     // `@modelcontextprotocol/server-filesystem` for drop-in compat.
     registerFsTools(server, { workspace })
+    // Cheap, read-only liveness probe. Registered early so it is available
+    // even when deferred tools hide the rest of the surface.
+    registerDaemonHealthTools(server, { workspace, registered, startedAt })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
@@ -959,7 +965,7 @@ export async function createGateway(
     ...(opts.listBrowserAdapters
       ? { listBrowserAdapters: opts.listBrowserAdapters }
       : {}),
-    meta: { workspace, registered },
+    meta: { workspace, registered, startedAt },
     cronScheduler,
   })
 
