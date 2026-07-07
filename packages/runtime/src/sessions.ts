@@ -378,6 +378,12 @@ export interface SessionDescriptor {
   browserBaseUrl?: string
   /** Execution location — "local" (default) or "cloud". */
   browserLocation?: "local" | "cloud"
+  /** True when this agent-cli session is running inside a sandbox (`agent_start.sandbox`)
+   *  rather than as a local subprocess — there's no local PID to check, so
+   *  `processAlive` never applies (it's already absent whenever `pid` is null). */
+  remote?: boolean
+  /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`), when `remote` is true. */
+  sandboxId?: string
 }
 
 interface SessionRuntime {
@@ -762,6 +768,12 @@ export interface SpawnAgentInput {
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? opts.langfuseTracingDefault ?? false`. */
   trace?: boolean
+  /** True when `agentSession` is a `SandboxAgentSessionProxy` (`agent_start.sandbox`)
+   *  rather than a local subprocess-backed session — stamped onto the descriptor
+   *  as `remote` since there's no local PID to report. */
+  remote?: boolean
+  /** Provider-assigned sandbox id, when `remote` is true. */
+  sandboxId?: string
 }
 
 export interface SpawnSessionInput {
@@ -1901,6 +1913,8 @@ export function createSessionsRegistry(opts?: {
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
+        ...(input.remote ? { remote: true } : {}),
+        ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)

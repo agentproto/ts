@@ -16,6 +16,17 @@ export interface McpCredentialDeps {
     credentialRef: string
     signal?: AbortSignal
   }) => Promise<Record<string, string> | undefined>
+  /** Resolve a single named secret (an env-var-shaped slug — e.g. a sandbox
+   *  spec's `env.passthrough` / `env.auth.state.env` entries) to its raw
+   *  value. Distinct from `resolveMcpCredentialHeaders` above (which
+   *  resolves an MCP `credentialRef` PATH into Authorization-style
+   *  headers): this is the `SecretResolver` shape `agent_start`'s sandbox
+   *  branch (`session-spawn.ts`) passes to `@agentproto/sandbox`'s
+   *  `SandboxSecretsConfig.resolver` — so a booted sandbox's env is filled
+   *  from the same host-injected broker as every other secret, never a
+   *  bare `process.env` read at the call site. Returns null when the slug
+   *  can't be resolved (missing/unconfigured). */
+  resolveSandboxSecret?: (slug: string) => Promise<string | null>
 }
 
 let deps: McpCredentialDeps = {}

@@ -64,9 +64,15 @@ export class HarnessClient {
     return this.#call("agent_start", args as unknown as Record<string, unknown>)
   }
 
-  /** Send a follow-up turn via `agent_prompt` (fire-and-forget). */
-  async prompt(sessionId: string, prompt: string): Promise<void> {
-    await this.#call("agent_prompt", { sessionId, prompt })
+  /** Send a follow-up turn via `agent_prompt` (fire-and-forget). `opts.interrupt`
+   *  cancels an in-flight turn and redirects the session onto this prompt instead
+   *  of rejecting (see `agent_prompt`'s `interrupt` field). */
+  async prompt(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): Promise<void> {
+    await this.#call("agent_prompt", {
+      sessionId,
+      prompt,
+      ...(opts?.interrupt !== undefined ? { interrupt: opts.interrupt } : {}),
+    })
   }
 
   /** Tail the ring buffer via `agent_output`. */

@@ -34,6 +34,8 @@ import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import { SandboxSpecSchema } from "@agentproto/sandbox"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 
 /** Strip CSI/SGR ANSI escape sequences. Exported for test access. */
 export function stripAnsi(s: string): string {
@@ -120,6 +122,11 @@ export interface RegisterAgentToolsOptions {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** Resolves an `agent_start.sandbox` slug (or an inline spec's own
+   *  `.provider`) to a concrete sandbox provider handle — forwarded to
+   *  `spawnAgentSession`. Omitted → `sandbox` is rejected with
+   *  `sandbox_provider_not_found`. */
+  resolveSandboxProvider?: SandboxProviderResolver
 }
 
 export function registerAgentTools(
@@ -135,6 +142,7 @@ export function registerAgentTools(
     webhookNotifier,
     daemonMcpUrl,
     loadRoleRegistry,
+    resolveSandboxProvider,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -371,6 +379,27 @@ export function registerAgentTools(
             "tool spans + tokens/cost). Off by default; requires langfuse eval-reporter " +
             "creds configured."
         ),
+      sandbox: jsonTolerant(
+        z.union([
+          z
+            .string()
+            .min(1)
+            .describe("Sandbox provider slug from `list_sandbox_providers` (e.g. 'local', 'e2b')."),
+          SandboxSpecSchema.describe(
+            "Inline AIP-36 SandboxDefinition — boots this exact spec instead of a catalog slug."
+          ),
+        ])
+      )
+        .optional()
+        .describe(
+          "Run this session inside a sandbox instead of on the host — pass a provider " +
+            "slug (see `list_sandbox_providers`) or an inline AIP-36 SandboxDefinition " +
+            "object. The daemon boots the sandbox, spawns `adapter` on the box's OWN " +
+            "agentproto daemon, and proxies the conversation back onto this session — " +
+            "`agent_prompt`/`agent_output`/`agent_kill` behave exactly as they do for a " +
+            "local spawn, and the transcript stays readable here even after the box is " +
+            "torn down. Omit to run locally (default)."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -396,6 +425,7 @@ export function registerAgentTools(
           callerScope,
           webhookNotifier,
           loadRoleRegistry,
+          resolveSandboxProvider,
         },
         input,
       )
