@@ -8,7 +8,7 @@ optional default model. **Pure TS data; projection stays in the consumer.**
 ## Why
 
 `@agentproto/adapter-claude-code` and `@agentproto/adapter-claude-sdk` both front
-Anthropic-compatible gateways (Moonshot, OpenRouter, …). The `claude` binary and
+Anthropic-compatible gateways (Moonshot, OpenRouter, DeepSeek, …). The `claude` binary and
 the Claude Agent SDK both honor `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, so
 the *facts* about a gateway — its URL, its key env, its default model — are
 identical across both. Those facts used to be inlined (and copy-pasted) in each

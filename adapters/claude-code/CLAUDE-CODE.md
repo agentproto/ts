@@ -108,12 +108,33 @@ modes:
       - CLAUDE_CODE_USE_ANTHROPIC_AWS
       - CLAUDE_CODE_USE_MANTLE
       - CLAUDE_CODE_USE_GATEWAY
+  - id: deepseek
+    description: >-
+      DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's
+      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
+      (same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model
+      via `model` (conventional: 'deepseek-v4-pro', 'deepseek-v4-flash') and
+      supply the DeepSeek key via `auth_token`.
+    env:
+      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+    env_unset:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - CLAUDE_CODE_USE_ANTHROPIC_AWS
+      - CLAUDE_CODE_USE_MANTLE
+      - CLAUDE_CODE_USE_GATEWAY
 options:
   - id: model
-    type: enum
-    enum: [claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5]
-    description: Override the default model for this operator binding.
-    bin_args_template: ["--model", "{value}"]
+    type: string
+    description: >-
+      Anthropic model ID or wrapper alias (e.g. 'claude-sonnet-5', 'sonnet',
+      'opus'), applied via ACP session/set_config_option after the session is
+      created. An id the wrapper can't resolve is warned about and ignored
+      (the session keeps the claude-code default). Omit to use the default.
+      Required for non-Claude models reached through a gateway mode
+      (e.g. 'deepseek-v4-pro' under `deepseek`, 'kimi-k2.7-code' under `moonshot`).
   - id: max_turns
     type: integer
     min: 1
@@ -128,7 +149,8 @@ options:
       Setting it auto-scrubs the ambient ANTHROPIC_API_KEY and all cloud-provider
       toggles (Bedrock/Vertex/Foundry/Mantle) so it can't leak to a third-party
       host — pair with `auth_token` to supply a per-spawn gateway key. The
-      `moonshot`/`openrouter` modes are pre-wired presets over this same shape.
+      `moonshot`/`openrouter`/`deepseek` modes are pre-wired presets over this
+      same shape.
     env:
       ANTHROPIC_BASE_URL: "{value}"
     env_unset:
@@ -144,8 +166,8 @@ options:
     description: >-
       Bearer token for the Anthropic API or a compatible gateway, injected as
       ANTHROPIC_AUTH_TOKEN (sent as `Authorization: Bearer`). Pair with
-      `base_url` (or a `moonshot`/`openrouter` mode) to target a gateway with
-      a per-spawn key instead of the ambient ANTHROPIC_API_KEY.
+      `base_url` (or a `moonshot`/`openrouter`/`deepseek` mode) to target a
+      gateway with a per-spawn key instead of the ambient ANTHROPIC_API_KEY.
     env:
       ANTHROPIC_AUTH_TOKEN: "{value}"
 continuation:
