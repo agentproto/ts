@@ -41,17 +41,57 @@ down, projection stays in the consumer.
 | `ANTHROPIC_GATEWAY_PRESETS` | `Record<id, ProviderPreset>` — the registry |
 | `anthropicGatewayPresetList` | flat `ProviderPreset[]` for catalog UIs |
 | `getAnthropicGatewayPreset(id)` | lookup; throws on unknown id (loud at load, not a silent no-baseUrl mode) |
-| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter"` |
+| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter" \| "deepseek"` |
 | `ProviderPreset` | the data shape |
 
 ## Stage
 
-- **Stage 1 (this package):** the registry data; adapters consume it. No
-  user-facing surface yet.
-- **Stage 2 (planned):** `agentproto presets list` CLI + daemon endpoint,
-  composing `@agentproto/provider-kit`'s lister/wizard over this data.
-- **Stage 3 (planned):** an AIP-45 `presets` manifest field so external adapters
-  declare their own; resolution semantics.
+- **Stage 1 (this package):** the registry data; `claude-code` / `claude-sdk`
+  consume it. ✅
+- **Stage 2:** `agentproto presets list` CLI + `list_provider_presets` MCP tool +
+  daemon `GET /presets`, with `ready`/`available` status from key presence. ✅
+- **Stage 3:** an AIP-45 `presets` manifest field so external adapters declare
+  their own gateway presets, merged into the listing at runtime. ✅
+
+## Built-in vs adapter-declared presets
+
+Built-in presets (this registry) are for **public, fixed-endpoint** gateways —
+Moonshot, OpenRouter, DeepSeek all expose one canonical Anthropic-compatible URL.
+That fixed `baseUrl` is exactly what makes them safe to ship as a preset: it's
+the source of truth, no operator input needed.
+
+A **self-hosted** gateway — e.g. a LiteLLM proxy at `<your-host>/anthropic`
+(default `http://localhost:4000`) — has no canonical URL, so it does *not* belong
+in this registry (a hardcoded `baseUrl` would silently hit localhost for anyone
+not running it there). It's the canonical use case for the **Stage 3
+adapter-declared `presets`** field: an adapter author (or operator) declares
+their own preset with their real proxy URL.
+
+```ts
+// In an adapter's AgentCliDefinition — a self-hosted LiteLLM preset
+import type { AgentCliDefinition } from "@agentproto/driver-agent-cli"
+
+export const definition: AgentCliDefinition = {
+  // …adapter fields…
+  presets: [
+    {
+      id: "litellm",
+      label: "LiteLLM proxy (self-hosted)",
+      description:
+        "A self-hosted LiteLLM proxy speaking the Anthropic Messages API. " +
+        "Set baseUrl to <your-proxy>/anthropic.",
+      schemaFlavor: "anthropic",
+      baseUrl: "http://localhost:4000/anthropic", // ← override per deployment
+      keyEnv: "LITELLM_API_KEY",
+      scrubEnv: ["ANTHROPIC_API_KEY"],
+      homepage: "https://docs.litellm.ai",
+    },
+  ],
+}
+```
+
+Declared presets are merged into `agentproto presets list` alongside the
+built-ins, keyed by `id` (adapter-declared entries do not shadow built-ins).
 
 ## Adding a gateway
 
@@ -59,3 +99,7 @@ Add an entry to `ANTHROPIC_GATEWAY_PRESETS` in `src/anthropic-gateways.ts`. The
 `satisfies Record<string, ProviderPreset>` guard checks the shape; the test suite
 checks `id` matches the key, the URL/keyEnv shapes, and that the ambient
 `ANTHROPIC_API_KEY` is scrubbed. Then project it into each adapter's mode table.
+
+A gateway belongs here only if it has a **fixed public endpoint**. If the base
+URL is operator-defined (self-hosted proxy, on-prem gateway), declare it as an
+adapter preset instead — see above.

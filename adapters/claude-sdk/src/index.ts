@@ -174,6 +174,23 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
         CLAUDE_SDK_GATEWAY_KEY_ENV: ANTHROPIC_GATEWAY_PRESETS.openrouter.keyEnv,
       },
     },
+    {
+      id: ANTHROPIC_GATEWAY_PRESETS.deepseek.id,
+      description:
+        "DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's " +
+        "Anthropic-compatible endpoint and defaults the model to " +
+        "deepseek-v4-pro. Supply the DeepSeek key via the `auth_token` option " +
+        "(or ANTHROPIC_AUTH_TOKEN); override `model` for deepseek-v4-flash. " +
+        "Thinking is opt-in (DeepSeek accepts requests without it, unlike Kimi).",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.deepseek.baseUrl,
+        // cli.ts reads CLAUDE_SDK_MODEL as the model fallback (a `--model`
+        // option still wins), so the mode ships a working default model.
+        CLAUDE_SDK_MODEL: ANTHROPIC_GATEWAY_PRESETS.deepseek.defaultModel,
+        // Conventional credential source for this gateway (see moonshot above).
+        CLAUDE_SDK_GATEWAY_KEY_ENV: ANTHROPIC_GATEWAY_PRESETS.deepseek.keyEnv,
+      },
+    },
   ],
   options: [
     {
