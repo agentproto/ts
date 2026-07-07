@@ -207,6 +207,19 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
     },
+    {
+      id: ANTHROPIC_GATEWAY_PRESETS.deepseek.id,
+      description:
+        "DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's " +
+        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
+        "(same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model " +
+        "via `model` (conventional: 'deepseek-v4-pro', 'deepseek-v4-flash') and " +
+        "supply the DeepSeek key via `auth_token`.",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.deepseek.baseUrl,
+      },
+      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+    },
   ],
   options: [
     {

@@ -7,8 +7,9 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot and openrouter", () => {
+  it("exposes moonshot, openrouter and deepseek", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
+      "deepseek",
       "moonshot",
       "openrouter",
     ])
@@ -43,6 +44,12 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
   it("moonshot pins the conventional default model", () => {
     expect(getAnthropicGatewayPreset("moonshot").defaultModel).toBe(
       "kimi-k2.7-code"
+    )
+  })
+
+  it("deepseek pins the conventional default model", () => {
+    expect(getAnthropicGatewayPreset("deepseek").defaultModel).toBe(
+      "deepseek-v4-pro"
     )
   })
 

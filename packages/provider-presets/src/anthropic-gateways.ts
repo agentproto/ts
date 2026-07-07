@@ -50,6 +50,21 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
     homepage: "https://openrouter.ai",
   },
+  deepseek: {
+    id: "deepseek",
+    label: "DeepSeek",
+    description:
+      "DeepSeek Anthropic-compatible gateway. DeepSeek V4 models " +
+      "(deepseek-v4-pro, deepseek-v4-flash) support thinking mode; pick via " +
+      "the model option. Auth is Bearer (set via the auth_token option or " +
+      "ANTHROPIC_AUTH_TOKEN), matching the moonshot/openrouter shape.",
+    schemaFlavor: "anthropic",
+    baseUrl: "https://api.deepseek.com/anthropic",
+    keyEnv: "DEEPSEEK_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "deepseek-v4-pro",
+    homepage: "https://api-docs.deepseek.com",
+  },
 } as const satisfies Record<string, ProviderPreset>
 
 export type AnthropicGatewayPresetId = keyof typeof ANTHROPIC_GATEWAY_PRESETS
