@@ -286,6 +286,24 @@ const optionSchema = z.object({
   { message: "option.type === 'enum' requires a non-empty `enum` array" }
 )
 
+// AIP-45 gateway-preset declaration (see AgentCliPresetDeclaration). A
+// backend an Anthropic/OpenAI-compatible adapter can front, declared in
+// the manifest so the catalog can surface adapter-contributed presets
+// alongside the built-in registry. `scrubEnv` is optional here — an
+// adapter that scrubs in code may omit it.
+const presetSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  schemaFlavor: z.enum(["anthropic", "openai"]),
+  baseUrl: z.string().min(1),
+  keyEnv: z.string().min(1),
+  scrubEnv: z.array(z.string()).optional(),
+  defaultModel: z.string().optional(),
+  homepage: z.string().optional(),
+}).strict()
+
+
 const continuationStrategyIdSchema = z.enum(CONTINUATION_STRATEGY_IDS)
 
 const continuationSchema = z.object({
@@ -349,6 +367,9 @@ export const agentCliFrontmatterSchema = z
     capabilities: capabilitiesSchema.optional(),
     modes: z.array(modeSchema).optional(),
     options: z.array(optionSchema).optional(),
+    // AIP-45 gateway presets this adapter can drive (merged into the
+    // provider-preset catalog; built-in wins on id collision).
+    presets: z.array(presetSchema).optional(),
     continuation: continuationSchema.optional(),
     requires: z.object({
       os: z.array(z.enum(["darwin", "linux", "windows"])).optional(),

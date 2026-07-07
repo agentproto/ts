@@ -331,6 +331,51 @@ export interface AgentCliOption {
 }
 
 /**
+ * AIP-45 gateway-preset declaration — a backend an Anthropic/OpenAI-
+ * compatible client can front, declared by the adapter that knows how to
+ * drive it. The manifest authoring shape; the runtime normalizes it to a
+ * `ProviderPreset` (via the catalog's merge seam) so adapter-declared
+ * presets appear in `agentproto presets list` / `list_provider_presets`
+ * alongside the built-in registry. Data-only — no adapter projection
+ * (`env`/`env_unset`/`bin_args`) here; that stays in the adapter's modes
+ * and options, same as the built-in presets are projected today.
+ */
+export interface AgentCliPresetDeclaration {
+  /**
+   * Stable preset id. SHOULD equal the mode id if the adapter projects
+   * this preset as a mode (e.g. `moonshot`, `openrouter`). Catalog
+   * dedupes built-in vs adapter-declared by id; an adapter-declared id
+   * that collides with a built-in is ignored in favor of the built-in
+   * (the registry is the source of truth for canonical providers).
+   */
+  id: string
+  /** Human label for the catalog UI ("Moonshot (Kimi)"). */
+  label: string
+  /** Short description; surfaced in the catalog. */
+  description?: string
+  /** API schema flavor — selects which adapter family can consume it. */
+  schemaFlavor: "anthropic" | "openai"
+  /** Base URL the client hits. */
+  baseUrl: string
+  /**
+   * Conventional env var holding this provider's API key
+   * (e.g. MOONSHOT_API_KEY). Catalog status is derived from its presence
+   * in the daemon's environment ("ready" vs "available").
+   */
+  keyEnv: string
+  /**
+   * Env vars to scrub when this preset is active. Optional at the
+   * manifest level — an adapter that scrubs in code (like claude-sdk)
+   * may omit it. The catalog does not surface `scrubEnv` to clients.
+   */
+  scrubEnv?: string[]
+  /** Conventional default model id for this provider, if any. */
+  defaultModel?: string
+  /** Optional homepage/docs URL for the catalog UI. */
+  homepage?: string
+}
+
+/**
  * Built-in continuation strategy ids. Future custom strategies require
  * a follow-up AIP that opens this enum. Keep this in lockstep with
  * `continuationStrategyId` in `AGENT-CLI.schema.json`.
@@ -479,6 +524,15 @@ export interface AgentCliDefinition {
   modes?: AgentCliMode[]
   /** AIP-45 options (independent typed knobs). */
   options?: AgentCliOption[]
+  /**
+   * AIP-45 gateway presets this adapter can drive. Adapter-declared
+   * presets are merged into the provider-preset catalog
+   * (`agentproto presets list` / `list_provider_presets`) alongside the
+   * built-in registry, deduped by id (built-in wins on collision). Lets
+   * an external adapter surface a gateway the built-in registry doesn't
+   * know about without patching `@agentproto/provider-presets`.
+   */
+  presets?: AgentCliPresetDeclaration[]
   /** AIP-45 continuation policy (how prior turns reach the CLI). */
   continuation?: AgentCliContinuation
   requires?: AgentCliRequires

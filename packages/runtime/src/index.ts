@@ -152,6 +152,7 @@ import {
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
+import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
@@ -159,6 +160,8 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
+export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export { createFileStepCache } from "./workflow-step-cache.js"
@@ -893,6 +896,13 @@ export async function createGateway(
     // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under
     // ~/.agentproto and are never exposed by the list tool.
     registerEvalReporterTools(server)
+    // Provider-gateway preset introspection (list_provider_presets), riding on
+    // @agentproto/provider-presets via the thin honest lister. Static data —
+    // no install/setup/creds; status is key-env presence in this process.
+    // Stage 4: thread loaded adapters' manifest-declared `presets` (AIP-45)
+    // into `adapterPresets` here so adapter-contributed gateways surface in
+    // the catalog. Today the seam exists and is tested but is passed none.
+    registerPresetTools(server)
     return server
   }
 

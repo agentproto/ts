@@ -75,6 +75,7 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import type { DeclaredAdapterOption } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import { tryParseJson } from "./json-tolerant.js"
+import { listPresets } from "./preset-tools.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -1189,6 +1190,13 @@ export async function startHttpServer(
             )
           }
           return
+        }
+
+        // Preset routes — static data, always available (no registry opt-in).
+        // GET /presets → { presets: AdapterEntry<PresetInfo>[] }
+        if (path === "/presets" && req.method === "GET") {
+          const handled = await handlePresets(req, res, path)
+          if (handled) return
         }
 
         // Tunnel routes — only registered when the gateway was built with
@@ -2332,6 +2340,34 @@ async function handleSessions(
     return true
   }
 
+  return false
+}
+
+/**
+ * /presets route — list built-in provider gateway presets with live key-env
+ * status. Static data (no registry), so this route is registered
+ * unconditionally — no opt-in flag like /tunnels's TunnelRegistry.
+ *
+ *   GET /presets → { presets: AdapterEntry<PresetInfo>[] }
+ *
+ * Status reflects THIS process's environment (the daemon's — i.e. where agents
+ * spawn), not the CLI caller's: "ready" when the provider's key env var is set,
+ * "available" otherwise.
+ */
+async function handlePresets(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/presets" && req.method === "GET") {
+    json(200, { presets: listPresets() })
+    return true
+  }
   return false
 }
 
