@@ -38,6 +38,7 @@ import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { AgentAdapterResolver, AgentAdapterLister } from "./http-server.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -165,6 +166,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.loadRoleRegistry`. */
   loadRoleRegistry?: RegisterAgentToolsOptions["loadRoleRegistry"]
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.resolveSandboxProvider`. */
+  resolveSandboxProvider?: SandboxProviderResolver
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").

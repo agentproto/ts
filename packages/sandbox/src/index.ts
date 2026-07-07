@@ -21,6 +21,11 @@ export type {
   SandboxRuntimeHandle,
 } from "./types.js"
 
+/** The AIP-36 frontmatter zod schema, under the name consumers that accept
+ *  an inline `SandboxSpec` (e.g. `@agentproto/runtime`'s `agent_start.sandbox`)
+ *  validate against. Same schema `define-sandbox.ts`/`manifest/index.ts` use. */
+export { sandboxFrontmatterSchema as SandboxSpecSchema } from "./schema.js"
+
 export {
   createSandboxAgentSessionHost,
   type SandboxSpec,

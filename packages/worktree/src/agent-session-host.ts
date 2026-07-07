@@ -1,14 +1,43 @@
-import { HarnessClient, resolveMcpUrl, type ConnectHarnessOptions } from "@agentproto/harness"
+import {
+  HarnessClient,
+  resolveMcpUrl,
+  type ConnectHarnessOptions,
+  type SessionDescriptor,
+  type StartAgentArgs,
+  type TurnEvent,
+  type TurnResult,
+} from "@agentproto/harness"
 import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */
 const MAX_POLL_MS = 49_000
 
 /** The subset of `HarnessClient` the host drives — narrowed for fake-client tests. */
-export type DaemonClient = Pick<HarnessClient, "start" | "prompt" | "waitForAny" | "close">
+export type DaemonClient = Pick<
+  HarnessClient,
+  "start" | "prompt" | "output" | "kill" | "waitForAny" | "close"
+>
 
 export interface DaemonAgentSessionHost extends AgentSessionHost {
   close(): Promise<void>
+  /** Full `agent_start`, returning the raw descriptor and forwarding every
+   *  `StartAgentArgs` field (`mcpServers`, `model`, `effort`, `label`, …) —
+   *  unlike `spawn()` above (the narrow AgentStep-shaped convenience
+   *  wrapper), which only takes `cwd`/`workspaceSlug`/`stepId`. Consumers
+   *  that need finer per-turn control than the AgentStep contract provides
+   *  (e.g. `@agentproto/sandbox`'s sandbox agent-session proxy) use this
+   *  plus `prompt`/`output`/`kill`/`waitForAny` directly instead of
+   *  `spawn`/`sendPromptAndWait`. */
+  start(args: StartAgentArgs): Promise<SessionDescriptor>
+  /** Send a follow-up turn — `opts.interrupt` cancels an in-flight turn and
+   *  redirects the session onto this prompt (mirrors `agent_prompt`). */
+  prompt(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): Promise<void>
+  /** Tail the ring buffer (`agent_output`). */
+  output(sessionId: string, lastN?: number): Promise<string>
+  /** SIGTERM the session (`agent_kill`). */
+  kill(sessionId: string): Promise<void>
+  /** Multiplexed long-poll (`session_monitor`) — see `HarnessClient.waitForAny`. */
+  waitForAny(sessionIds: string[], opts?: { timeoutMs?: number; event?: TurnEvent }): Promise<TurnResult>
 }
 
 /**
@@ -61,6 +90,26 @@ export function makeDaemonAgentSessionHost(client: DaemonClient): DaemonAgentSes
 
     resolveByLabel(stepId): string | undefined {
       return sessionByStepId.get(stepId)
+    },
+
+    async start(args): Promise<SessionDescriptor> {
+      return client.start(args)
+    },
+
+    async prompt(sessionId, prompt, opts): Promise<void> {
+      await client.prompt(sessionId, prompt, opts)
+    },
+
+    async output(sessionId, lastN): Promise<string> {
+      return client.output(sessionId, lastN)
+    },
+
+    async kill(sessionId): Promise<void> {
+      await client.kill(sessionId)
+    },
+
+    async waitForAny(sessionIds, opts): Promise<TurnResult> {
+      return client.waitForAny(sessionIds, opts)
     },
 
     async close(): Promise<void> {

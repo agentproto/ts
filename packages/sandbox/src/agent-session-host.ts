@@ -58,6 +58,9 @@ export interface CreateSandboxAgentSessionHostOpts {
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
+  /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
+   *  caller can record it (there's no local PID for a sandboxed session). */
+  sandboxId: string
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
 }
@@ -82,6 +85,7 @@ export async function createSandboxAgentSessionHost(
   }
   return {
     ...host,
+    sandboxId: booted.sandboxId,
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()

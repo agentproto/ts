@@ -7,7 +7,7 @@
  */
 
 import type { AcpMcpServer } from "@agentproto/acp"
-import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
+import type { AgentSessionLike, SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -26,6 +26,9 @@ import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { createSandboxAgentSessionHost, type SandboxAgentSessionHost, type SandboxSpec } from "@agentproto/sandbox"
+import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
@@ -92,6 +95,10 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** Resolves an `agent_start.sandbox` slug (or an inline spec's own
+   *  `.provider`) to a concrete sandbox provider handle. Required for
+   *  `input.sandbox` — omitted ⇒ `sandbox_provider_not_found`. */
+  resolveSandboxProvider?: SandboxProviderResolver
 }
 
 export interface SpawnAgentSessionInput {
@@ -142,6 +149,13 @@ export interface SpawnAgentSessionInput {
    *  tokens/cost). Effective opt-in is `trace ?? langfuseTracingDefault ?? false`
    *  — see `SpawnAgentInput.trace` in sessions.ts. */
   trace?: boolean
+  /** Run this session inside a sandbox instead of on the host — a provider
+   *  slug from `list_sandbox_providers` (e.g. `"local"`, `"e2b"`), or an
+   *  inline AIP-36 `SandboxSpec`. When set, this branch resolves the
+   *  provider, boots the box, spawns `adapter` on the BOX's own
+   *  `agent_start`, and wires a `SandboxAgentSessionProxy` in place of the
+   *  local `resolveAgentAdapter` path — see `sandbox-agent-session-proxy.ts`. */
+  sandbox?: string | SandboxSpec
 }
 
 export type SpawnAgentSessionResult =
@@ -157,6 +171,9 @@ export type SpawnAgentSessionResult =
         | "invalid_role"
         | "role_spawn_denied"
         | "agent_spawn_failed"
+        | "sandbox_provider_not_found"
+        | "sandbox_boot_failed"
+        | "sandbox_proxy_failed"
       message: string
       details?: Record<string, unknown>
     }
@@ -173,6 +190,7 @@ export async function spawnAgentSession(
     callerScope,
     webhookNotifier,
     loadDefaultsConfig,
+    resolveSandboxProvider,
   } = deps
 
   // cwd resolution mirrors the HTTP route: explicit cwd wins,
@@ -204,8 +222,14 @@ export async function spawnAgentSession(
         "or set an active workspace via `agentproto workspace use <slug>`.",
     }
   }
-  const resolved = await resolveAgentAdapter(input.adapter)
-  if (!resolved) {
+  // A sandboxed spawn runs `adapter` on the BOX's own `agent_start` — the
+  // host's local adapter registry has no bearing on it (the box resolves
+  // `adapter` itself), so the local resolution + not-found gate are
+  // skipped entirely for `input.sandbox`. See the sandbox branch below,
+  // which short-circuits BEFORE `resolved.startSession(...)` is ever
+  // reached.
+  const resolved = input.sandbox === undefined ? await resolveAgentAdapter(input.adapter) : null
+  if (input.sandbox === undefined && !resolved) {
     return {
       ok: false,
       code: "adapter_not_found",
@@ -413,7 +437,7 @@ export async function spawnAgentSession(
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
     spawnDefaults.options,
-    resolved.declaredOptions,
+    resolved?.declaredOptions,
   )
   // Compose the role's disposition (+ optional promptAppend, layered on
   // top, never replacing it) into the initial prompt — the only text
@@ -431,20 +455,60 @@ export async function spawnAgentSession(
     // pulsing until the id is known, dropping any pre-spawn activity.
     const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
     let liveSessionId: string | undefined
-    const agentSession = await resolved.startSession({
-      cwd,
-      ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
-      ...(input.mode ? { mode: input.mode } : {}),
-      ...(Object.keys(effectiveOptions).length > 0
-        ? { options: effectiveOptions }
-        : {}),
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.effort ? { effort: input.effort } : {}),
-      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
-      onActivity: () => {
-        if (liveSessionId) registry.pulseActivity(liveSessionId)
-      },
-    })
+
+    let agentSession: AgentSessionLike
+    let commandPreview: string | undefined
+    let readUsage: (() => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
+    let sandboxId: string | undefined
+
+    if (input.sandbox !== undefined) {
+      const booted = await bootSandboxAgentSession({
+        sandbox: input.sandbox,
+        resolveSandboxProvider,
+        adapter: input.adapter,
+        // The host's own resolved `cwd` — valid as-is for a same-machine
+        // provider (`local`); a genuinely remote box (e2b) needs its own
+        // filesystem story (AIP-36 `mounts`, out of scope here — see the
+        // plan's "local MCP servers unreachable from sandbox" risk, which
+        // applies equally to bare filesystem paths). Forwarding it is
+        // still strictly better than omitting it: the box's OWN
+        // `agent_start` needs SOME cwd to resolve, and a bad path fails
+        // no worse than no path at all.
+        cwd,
+        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.label ? { label: input.label } : {}),
+      })
+      if (!booted.ok) return booted
+      agentSession = booted.agentSession
+      commandPreview = booted.commandPreview
+      sandboxId = booted.sandboxId
+    } else {
+      // `resolved` is guaranteed non-null here — the `input.sandbox ===
+      // undefined` branch above already returned `adapter_not_found`
+      // otherwise.
+      agentSession = await resolved!.startSession({
+        cwd,
+        ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(Object.keys(effectiveOptions).length > 0
+          ? { options: effectiveOptions }
+          : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        onActivity: () => {
+          if (liveSessionId) registry.pulseActivity(liveSessionId)
+        },
+      })
+      commandPreview = resolved!.commandPreview
+      if (resolved!.readUsage) {
+        const startedSession = agentSession
+        readUsage = () => resolved!.readUsage!(startedSession.sessionId)
+      }
+    }
+
     const desc = registry.spawnAgent({
       workspaceSlug: resolvedSlug,
       cwd,
@@ -459,12 +523,11 @@ export async function spawnAgentSession(
       // parentless at depth 0.
       ...(parentSessionId ? { parentSessionId } : {}),
       depth: childDepth,
-      ...(resolved.commandPreview
-        ? { commandPreview: resolved.commandPreview }
-        : {}),
+      ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
-      ...(resolved.readUsage ? { readUsage: () => resolved.readUsage!(agentSession.sessionId) } : {}),
+      ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
+      ...(sandboxId ? { remote: true, sandboxId } : {}),
     })
     liveSessionId = desc.id
     // Bind the scope-token's lifetime to the child session — once
@@ -540,4 +603,164 @@ async function resolveMcpCredentialHeaders(
       }
     }),
   )
+}
+
+type SandboxBootResult =
+  | { ok: true; agentSession: AgentSessionLike; commandPreview: string; sandboxId: string }
+  | {
+      ok: false
+      code: "sandbox_provider_not_found" | "sandbox_boot_failed" | "sandbox_proxy_failed"
+      message: string
+    }
+
+/**
+ * Rebuild `mcpServers` entries as the box daemon's own `agent_start` expects
+ * them (`StartAgentArgs.mcpServers: McpServerMount[]`). A plain field-by-
+ * field object literal (rather than forwarding `AcpMcpServer` values as-is)
+ * because `McpServerMount` carries an index signature `AcpMcpServer` lacks —
+ * and deliberately drops `credentialRef`: by the time a spawn reaches here,
+ * `resolveMcpCredentialHeaders` has already resolved it into `headers` on
+ * the HOST side, so the box would only re-attempt (and fail/warn on) a
+ * broker it doesn't have.
+ */
+function toMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
+  name: string
+  transport: "stdio" | "http" | "sse"
+  ref?: string
+  headers?: Record<string, string>
+}> {
+  return entries.map(e => ({
+    name: e.name,
+    transport: e.transport,
+    ...(e.ref !== undefined ? { ref: e.ref } : {}),
+    ...(e.headers !== undefined ? { headers: e.headers } : {}),
+  }))
+}
+
+/**
+ * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
+ * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
+ * from inside `spawnAgentSession`'s try block, AFTER the role/depth/quota
+ * gates above have already run — a rejected spawn never boots a box.
+ *
+ * Every failure mode returns its own discriminated `code` rather than
+ * throwing into the generic `agent_spawn_failed` catch, so callers can
+ * distinguish "no such provider" from "the box never came up" from "the
+ * box's own agent_start rejected the adapter".
+ */
+async function bootSandboxAgentSession(opts: {
+  sandbox: string | SandboxSpec
+  resolveSandboxProvider?: SandboxProviderResolver
+  adapter: string
+  cwd: string
+  mcpServers?: AcpMcpServer[]
+  model?: string
+  effort?: string
+  label?: string
+}): Promise<SandboxBootResult> {
+  const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
+  if (!opts.resolveSandboxProvider) {
+    return {
+      ok: false,
+      code: "sandbox_provider_not_found",
+      message:
+        `agent_start: sandbox provider "${providerSlug}" not found — the daemon has no ` +
+        "sandbox provider resolver wired (createGateway needs `resolveSandboxProvider`).",
+    }
+  }
+  const handle = await opts.resolveSandboxProvider(providerSlug)
+  if (!handle) {
+    return {
+      ok: false,
+      code: "sandbox_provider_not_found",
+      message:
+        `agent_start: sandbox provider "${providerSlug}" not found. Check ` +
+        "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
+    }
+  }
+  const spec: SandboxSpec =
+    typeof opts.sandbox === "string" ? { provider: opts.sandbox, config: {} } : opts.sandbox
+
+  // AIP-36 `env.passthrough` / `env.auth.state.env` — the only env-var
+  // slugs a spec actually declares today (see PLAN §4 AMENDMENT: no
+  // provider-required-secrets surface exists on `SandboxProviderHandle`
+  // yet, so this is the full slug set).
+  const passthrough = spec.env?.passthrough ?? []
+  const authEnv = spec.env?.auth?.state?.env ?? []
+  const slugs = Array.from(new Set([...passthrough, ...authEnv]))
+
+  let host: SandboxAgentSessionHost
+  try {
+    host = await createSandboxAgentSessionHost({
+      provider: handle.provider,
+      spec,
+      // AMENDMENT — do NOT default to `process.env`: always pass an
+      // explicit resolver backed by the host's own secrets broker
+      // (`mcp-credential-deps.ts`'s `resolveSandboxSecret`, the same DI
+      // seam `resolveMcpCredentialHeaders` above uses), never the bare
+      // `defaultProcessEnvResolver` fallback `@agentproto/sandbox` would
+      // otherwise apply when `resolver` is omitted.
+      secrets: { slugs, resolver: resolveSandboxSecret },
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      code: "sandbox_boot_failed",
+      message:
+        `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+
+  let remoteSessionId: string
+  try {
+    const remoteDesc = await host.start({
+      adapter: opts.adapter,
+      cwd: opts.cwd,
+      ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { effort: opts.effort } : {}),
+      ...(opts.label ? { label: opts.label } : {}),
+    })
+    remoteSessionId = remoteDesc.id
+  } catch (err) {
+    await host.stop().catch(() => undefined)
+    return {
+      ok: false,
+      code: "sandbox_proxy_failed",
+      message:
+        `agent_start: the sandbox's own agent_start failed for adapter "${opts.adapter}" — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+
+  return {
+    ok: true,
+    agentSession: createSandboxAgentSessionProxy({ host, remoteSessionId }),
+    commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
+    sandboxId: host.sandboxId,
+  }
+}
+
+/**
+ * `SandboxSecretsConfig.resolver` — resolves an AIP-36 env slug through the
+ * host's secrets broker (`mcp-credential-deps.ts`), never `process.env`
+ * directly. Returns null (not a thrown error) on any failure or when no
+ * broker is wired — `@agentproto/sandbox`'s own `resolveSandboxSecretsEnv`
+ * is what turns a null into the loud "missing secret" failure, so a
+ * provider that genuinely needs the slug still fails the boot instead of
+ * silently running with an empty value.
+ */
+async function resolveSandboxSecret(slug: string): Promise<string | null> {
+  const { resolveSandboxSecret: resolve } = getMcpCredentialDeps()
+  if (!resolve) return null
+  try {
+    return await resolve(slug)
+  } catch (err) {
+    console.warn(
+      `[agent_start] sandbox secret resolution failed for "${slug}": ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+    return null
+  }
 }

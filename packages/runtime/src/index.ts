@@ -145,6 +145,8 @@ import {
 } from "./tunnel-adapters.js"
 import {
   registerSandboxAdapterTools,
+  makeSandboxResolver,
+  makeSandboxCredsStore,
   type SandboxProviderResolver,
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
@@ -300,9 +302,9 @@ export interface CreateGatewayOptions {
   /**
    * Optional sandbox provider resolver — overrides the sandbox family's
    * default resolver (built-ins + `@agentproto/sandbox-<slug>` dynamic
-   * import) used by `list_sandbox_providers` / `setup_sandbox_provider`.
-   * Mirrors `resolveAgentAdapter`'s injection shape. Not yet consumed by
-   * `agent_start` — that lands with the `sandbox` field in a follow-up PR.
+   * import) used by `list_sandbox_providers` / `setup_sandbox_provider`
+   * AND `agent_start.sandbox`. Mirrors `resolveAgentAdapter`'s injection
+   * shape.
    */
   resolveSandboxProvider?: SandboxProviderResolver
   /** Optional sandbox provider lister — mirrors `listAgentAdapters`.
@@ -383,6 +385,16 @@ export async function createGateway(
   // spawned child is co-located on the same host and reaches the
   // daemon over loopback, never the LAN-bind address.
   const daemonMcpUrl = `http://127.0.0.1:${port}/mcp`
+  // Sandbox provider resolver — powers both `list_sandbox_providers` /
+  // `setup_sandbox_provider` (registerSandboxAdapterTools below) AND
+  // `agent_start.sandbox` (registerSessionTools → spawnAgentSession). Built
+  // once here (rather than each call defaulting separately) so both surfaces
+  // resolve the exact same provider set for the exact same slug. Falls back
+  // to the family's own built-in resolver (built-ins + `@agentproto/sandbox-
+  // <slug>` dynamic import) when the host doesn't inject an override —
+  // mirrors `resolveAgentAdapter`'s optional-injection shape.
+  const resolveSandboxProviderResolved: SandboxProviderResolver =
+    opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
   // Same loopback reasoning as `daemonMcpUrl` above, for the terminal MCP
   // app's PTY WebSocket: this process already knows its own bind/port, so
   // there's no need to shell out to `.agentproto/runtime.json` (the CLI's
@@ -747,6 +759,7 @@ export async function createGateway(
       buildOrchestratorMcp: orchestratorInjector,
       webhookNotifier,
       daemonMcpUrl,
+      resolveSandboxProvider: resolveSandboxProviderResolved,
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -862,12 +875,10 @@ export async function createGateway(
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
-    // (list_sandbox_providers + setup_sandbox_provider). Pure additive —
-    // agent_start doesn't consume a sandbox provider yet.
+    // (list_sandbox_providers + setup_sandbox_provider) — same resolver
+    // `agent_start.sandbox` resolves slugs through above.
     await registerSandboxAdapterTools(server, {
-      ...(opts.resolveSandboxProvider
-        ? { resolveSandboxProvider: opts.resolveSandboxProvider }
-        : {}),
+      resolveSandboxProvider: resolveSandboxProviderResolved,
       ...(opts.listSandboxProviders
         ? { listSandboxProviders: opts.listSandboxProviders }
         : {}),
