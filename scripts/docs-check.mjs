@@ -23,8 +23,20 @@
  * makes edits (or, in --dry-run, only reports what it would edit).
  *
  * Usage:
- *   node scripts/docs-check.mjs               # edits docs in place
+ *   node scripts/docs-check.mjs               # edits docs in place (release-triggered)
  *   node scripts/docs-check.mjs --dry-run     # read-only, reports findings
+ *   node scripts/docs-check.mjs --path 'docs/agents.md'            # on-demand, scoped to one doc
+ *   node scripts/docs-check.mjs --path 'docs/**' --base origin/main # on-demand, scoped area, custom diff base
+ *
+ * Modes:
+ *   release (default) — reads the latest `chore(release): version packages`
+ *                       commit's CHANGELOGs and checks all hand-maintained docs
+ *                       for drift against what just shipped. CI-triggered.
+ *   path-scoped        --path <glob> skips the release requirement and constrains
+ *                       edits to files matching the glob. Grounded in the recent
+ *                       code diff vs --base (default origin/main) so the agent
+ *                       knows what to verify. Use between releases or to audit a
+ *                       single doc against the current code.
  *
  * Env:
  *   MOONSHOT_API_KEY   — required (the gateway bearer)
@@ -60,6 +72,22 @@ const ROOT =
 
 const args = process.argv.slice(2)
 const DRY_RUN = args.includes('--dry-run')
+
+function readValue(flag) {
+  const i = args.indexOf(flag)
+  if (i === -1 || i === args.length - 1) return null
+  return args[i + 1]
+}
+
+// --path <glob>: switch from release-triggered to on-demand, path-scoped mode.
+// --base <ref>: diff base for the path-scoped "what changed" signal (default
+//               origin/main). Ignored in release mode.
+const PATH_GLOB = readValue('--path')
+const BASE_REF = readValue('--base') || 'origin/main'
+if (args.includes('--path') && !PATH_GLOB) {
+  console.error('Error: --path requires a glob argument (e.g. --path "docs/agents.md").')
+  process.exit(1)
+}
 
 function run(cmd) {
   try {
@@ -105,19 +133,77 @@ function readLatestChangelogEntry(changelogPath, maxChars = 4_000) {
   return content.length > maxChars ? content.slice(0, maxChars) + '\n... (truncated)' : content
 }
 
-// ── prompt ──────────────────────────────────────────────────────────────────
+// ── recent changes (path-scoped mode only) ──────────────────────────────────
+//
+// In path-scoped mode there's no release to anchor on, so ground the agent in
+// the recent code diff vs BASE_REF instead: the commits and changed-file list
+// since the base. Compact on purpose — the agent reads the actual code, this
+// just tells it what to verify. Resolves to a merge-base so a divergent branch
+// only reports its own new commits, not everything since the branch point.
 
-const published = listPublishedPackages()
-if (published.length === 0) {
-  console.log('docs-check: no packages published in the latest release commit — nothing to check.')
-  process.exit(0)
+function collectRecentChanges(baseRef, maxChars = 6_000) {
+  const base = run(`git merge-base ${baseRef} HEAD`) || baseRef
+  const log = run(`git log --oneline ${base}..HEAD -n 30`)
+  const stat = run(`git diff --stat ${base}..HEAD`)
+  if (!log && !stat) return `(no recent changes detected vs ${baseRef})`
+  const summary = `Recent commits (since ${baseRef}):\n${log || '(none)'}\n\nChanged files:\n${stat || '(none)'}`
+  return summary.length > maxChars ? summary.slice(0, maxChars) + '\n... (truncated)' : summary
 }
 
-const releaseSummary = published
-  .map(({ name, version, changelogPath }) => `### ${name}@${version}\n\n${readLatestChangelogEntry(changelogPath)}`)
-  .join('\n\n---\n\n')
+// ── prompt ──────────────────────────────────────────────────────────────────
 
-const prompt = `A release of @agentproto packages just published. Here is what changed, per package, from each CHANGELOG's latest entry:
+let prompt
+let scopeLabel
+
+if (PATH_GLOB) {
+  // On-demand, path-scoped run: no release required. Ground the agent in the
+  // recent code diff vs BASE_REF (so it knows what to verify) and constrain
+  // edits to the glob. This is the "run docs-check locally on one feature"
+  // path — useful between releases, or to audit a single doc against code.
+  const changes = collectRecentChanges(BASE_REF)
+  scopeLabel = `path-scoped: ${PATH_GLOB}`
+  prompt = `You are running docs-check on demand, scoped to a specific area of the agentproto docs.
+
+Scope: only check and edit doc files matching this glob (relative to the repo root):
+  ${PATH_GLOB}
+
+Recent changes in the repo (vs ${BASE_REF}), for context — verify the scoped docs against these AND the current code:
+${changes}
+
+Your job: read the doc file(s) in scope, read the code they reference (via Grep/Glob/Read), and fix any drift — a doc describing behavior that no longer matches the code.
+
+What counts as drift:
+- A new CLI verb, flag, or option shipped but no doc mentions it.
+- A doc describes behavior that the code changed (renamed flag, changed default, removed feature) and still shows the old behavior.
+- A doc references something the code removed or renamed.
+
+What does NOT count as drift — leave these alone:
+- Internal refactors, test changes, or anything with no user-facing surface.
+- Prose style, wording preferences, or anything that isn't factually wrong.
+- Missing docs for something that ALREADY existed (that's backlog, not drift).
+
+Rules:
+- Only edit docs that are factually stale against the current code. Don't invent new sections or speculate about intent beyond what the code shows you.
+- Only edit existing files. Never create a new doc file.
+- Read the actual code (via Grep/Glob/Read) behind a doc claim before editing it — don't guess, verify it.
+- Only edit files matching the scope glob above. Never edit or create files outside it.
+- If you find nothing stale, do nothing and say so — don't manufacture a change to justify the run.
+${DRY_RUN ? '- This is a DRY RUN: do not edit any files. Instead, report exactly which doc(s) you would change and why.' : ''}
+
+When you're done, summarize what you changed (or confirm nothing needed changing).`
+} else {
+  const published = listPublishedPackages()
+  if (published.length === 0) {
+    console.log('docs-check: no packages published in the latest release commit — nothing to check.')
+    process.exit(0)
+  }
+
+  const releaseSummary = published
+    .map(({ name, version, changelogPath }) => `### ${name}@${version}\n\n${readLatestChangelogEntry(changelogPath)}`)
+    .join('\n\n---\n\n')
+  scopeLabel = `release: ${published.length} package(s)`
+
+  prompt = `A release of @agentproto packages just published. Here is what changed, per package, from each CHANGELOG's latest entry:
 
 ${releaseSummary}
 
@@ -146,6 +232,7 @@ Rules:
 ${DRY_RUN ? '- This is a DRY RUN: do not edit any files. Instead, report exactly which doc(s) you would change and why.' : ''}
 
 When you're done, summarize what you changed (or confirm nothing needed changing).`
+}
 
 // ── auth / env hygiene ───────────────────────────────────────────────────────
 //
@@ -197,7 +284,7 @@ function buildEnv() {
 // new files.
 
 async function main() {
-  console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${published.length} package(s) published, model ${MODEL}…`)
+  console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${scopeLabel}, model ${MODEL}…`)
 
   const abortController = new AbortController()
   const result = query({
