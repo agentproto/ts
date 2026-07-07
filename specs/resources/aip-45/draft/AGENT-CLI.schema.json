@@ -104,6 +104,11 @@
       "items": { "$ref": "#/$defs/option" },
       "description": "Independent typed knobs the CLI accepts. The host picks any subset per turn via OPERATOR.runtime.config.options. Patches apply in declaration order, AFTER mode patches."
     },
+    "presets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/preset" },
+      "description": "AIP-45 gateway presets this adapter can drive (Anthropic/OpenAI-compatible backends). Merged into the provider-preset catalog (agentproto presets list / list_provider_presets) alongside the built-in registry, deduped by id (built-in wins on collision). Lets an external adapter surface a gateway the built-in registry doesn't know about."
+    },
     "continuation": { "$ref": "#/$defs/continuation" },
     "requires": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/properties/requires" },
     "examples": {
@@ -353,6 +358,35 @@
           "then": { "required": ["enum"] }
         }
       ]
+    },
+    "preset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "schemaFlavor", "baseUrl", "keyEnv"],
+      "description": "A gateway preset this adapter can drive — a backend an Anthropic/OpenAI-compatible client can front. Declared in the manifest so the catalog surfaces adapter-contributed presets alongside the built-in registry. No adapter projection (env/env_unset/bin_args) here; that stays in modes/options.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable preset id. SHOULD equal the mode id if the adapter projects this preset as a mode. Catalog dedupes built-in vs adapter-declared by id; an adapter-declared id colliding with a built-in is ignored in favor of the built-in (registry is source of truth for canonical providers)."
+        },
+        "label": { "type": "string", "minLength": 1, "description": "Human label for the catalog UI." },
+        "description": { "type": "string" },
+        "schemaFlavor": { "enum": ["anthropic", "openai"], "description": "API schema flavor — selects which adapter family can consume the preset." },
+        "baseUrl": { "type": "string", "minLength": 1, "description": "Base URL the client hits." },
+        "keyEnv": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Conventional env var holding this provider's API key. Catalog status is derived from its presence in the daemon's environment (ready vs available)."
+        },
+        "scrubEnv": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Env vars to scrub when this preset is active. Optional — an adapter that scrubs in code may omit it. Not surfaced to catalog clients."
+        },
+        "defaultModel": { "type": "string", "description": "Conventional default model id for this provider, if any." },
+        "homepage": { "type": "string", "description": "Optional homepage/docs URL for the catalog UI." }
+      }
     },
     "continuation": {
       "type": "object",

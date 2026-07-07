@@ -31,6 +31,7 @@ import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runTunnel } from "./commands/tunnel.js"
+import { runPresets } from "./commands/presets.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
@@ -76,6 +77,7 @@ Usage:
   agentproto tunnel    list   [--active] [--json]
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
+  agentproto presets  list [--json]          provider gateway presets + key-env status
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
@@ -124,6 +126,7 @@ const VERBS = new Set([
   "workspace",
   "sessions",
   "tunnel",
+  "presets",
   "browser",
   "mcp-bridge",
   "install-mcp",
@@ -192,6 +195,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSessions(rest)
     case "tunnel":
       return runTunnel(rest)
+    case "presets":
+      return runPresets(rest)
     case "browser":
       return runBrowser(rest)
     case "mcp-bridge":

@@ -2258,6 +2258,9 @@ importers:
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../provider-kit
+      '@agentproto/provider-presets':
+        specifier: workspace:*
+        version: link:../provider-presets
       '@agentproto/redaction':
         specifier: workspace:*
         version: link:../redaction
