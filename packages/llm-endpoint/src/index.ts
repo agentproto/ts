@@ -52,6 +52,10 @@ const PROVIDER_MAX_TOOLS: Record<string, number> = {
   groq: 128
 };
 
+// Providers routables — sert d'allow-list pour l'override `?p=`. Un `?p=<inconnu>`
+// laisserait sinon hostname vide et échouerait plus loin avec une erreur opaque.
+const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq']);
+
 // Trimme/strip les outils du payload selon :
 //  - queryTools ("a,b,c") : allow-list explicite (garde uniquement ces outils, par nom).
 //  - queryNoTools ("1") : strip TOUS les outils (+ tool_choice) → mode "lean".
@@ -717,6 +721,11 @@ const server = createServer((req, res) => {
 
       // S'il y a une demande de changement de provider explicite via "?p=..."
       if (queryProvider) {
+        if (!KNOWN_PROVIDERS.has(queryProvider)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown provider "${queryProvider}" in ?p= (allowed: ${[...KNOWN_PROVIDERS].join(', ')})` } }));
+          return;
+        }
         resolvedTarget.provider = queryProvider;
         console.log(`[Proxy] Explicit URL provider parameter override -> ${queryProvider}`);
       }
