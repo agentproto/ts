@@ -15,11 +15,13 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: false,
   dts: { entry: { index: "src/index.ts" } },
+  // Source imports use bare specifiers ('http', 'https', etc.) — keep the
+  // external list in sync so tsup does not inline Node built-ins into the bundle.
   external: [
-    "node:http",
-    "node:https",
-    "node:fs",
-    "node:url",
+    "http",
+    "https",
+    "fs",
+    "url",
   ],
   noExternal: [],
 })

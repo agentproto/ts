@@ -1,8 +1,10 @@
 import { createServer } from 'http';
 import { request, RequestOptions } from 'https';
-import { readFileSync, existsSync } from 'fs';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
+// NOTE: evaluated once at module-load time. Set the env variable *before*
+// importing this module if you need a non-default port without passing it
+// explicitly to start(port).
 const PORT = Number(process.env.LLM_ENDPOINT_PORT ?? process.env.PORT ?? 18090);
 
 interface SecretTarget {
@@ -99,49 +101,16 @@ interface ProviderKeys {
   groq: string;
 }
 
-// Résolution intelligente des clés API d'hôtes depuis le monorepo
+// Résolution des clés API d'hôtes depuis les variables d'environnement.
+// Place un fichier .env à la racine du workspace ou exporte les variables
+// d'environnement avant de démarrer le serveur.
 function resolveSecretKeys(): ProviderKeys {
-  const keys: ProviderKeys = {
+  return {
     moonshot: process.env.MOONSHOT_API_KEY || '',
     openrouter: process.env.OPENROUTER_API_KEY || '',
     zai: process.env.ZHIPUAI_API_KEY || process.env.ZAI_API_KEY || '',
     groq: process.env.GROQ_API_KEY || ''
   };
-
-  const envPaths = [
-    '/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/envs/.env.local',
-    '/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/envs/simone-api/.env.local',
-    '/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/simone/packages/core/.env.local'
-  ];
-
-  for (const p of envPaths) {
-    if (existsSync(p)) {
-      try {
-        const content = readFileSync(p, 'utf-8');
-        const moonshotMatch = content.match(/^MOONSHOT_API_KEY=(.+)$/m);
-        const openrouterMatch = content.match(/^OPENROUTER_API_KEY=(.+)$/m);
-        const zaiMatch = content.match(/^(ZHIPUAI_API_KEY|ZAI_API_KEY|ZHIPU_API_KEY)=(.+)$/m);
-        const groqMatch = content.match(/^(GROQ_API_KEY)=(.+)$/m);
-
-        if (moonshotMatch && moonshotMatch[1]) {
-          keys.moonshot = moonshotMatch[1].trim().replace(/["']/g, '');
-        }
-        if (openrouterMatch && openrouterMatch[1]) {
-          keys.openrouter = openrouterMatch[1].trim().replace(/["']/g, '');
-        }
-        if (zaiMatch && zaiMatch[2]) {
-          keys.zai = zaiMatch[2].trim().replace(/["']/g, '');
-        }
-        if (groqMatch && groqMatch[2]) {
-          keys.groq = groqMatch[2].trim().replace(/["']/g, '');
-        }
-      } catch (err) {
-        // Silencieux
-      }
-    }
-  }
-
-  return keys;
 }
 
 const resolvedKeys = resolveSecretKeys();
