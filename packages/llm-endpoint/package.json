@@ -1,0 +1,64 @@
+{
+  "name": "@agentproto/llm-endpoint",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "description": "@agentproto/llm-endpoint — a lightweight Anthropic-Messages-compatible proxy gateway. Presents a single Anthropic (Claude) API surface and fans requests out to multiple upstream providers (Moonshot, OpenRouter, ZAI/Zhipu, Groq) behind stable alias codenames. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
+  "keywords": [
+    "agentproto",
+    "llm",
+    "proxy",
+    "anthropic",
+    "openai-compat",
+    "gateway",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/llm-endpoint"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "llm-endpoint": "./dist/cli.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsup --watch",
+    "serve": "tsx watch src/cli.ts",
+    "start": "node dist/cli.mjs",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "test:e2e": "tsx src/__tests__/e2e.live.ts"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
