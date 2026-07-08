@@ -167,16 +167,22 @@ interface AuthProviderDefEntry {
 
 ```jsonc
 {
-  "my-api": {
-    "apiBase": "https://api.example.com",
-    "audience": "mcp",
-    "flow": "pat",
-    "description": "Example API for agent MCP servers",
-    "tokenStore": { "keychain": "agentproto-broker", "path": "my-api" },
-    "updatedAt": "2026-07-08T15:00:00.000Z"
+  "version": 1,
+  "providers": {
+    "my-api": {
+      "apiBase": "https://api.example.com",
+      "audience": "mcp",
+      "flow": "pat",
+      "description": "Example API for agent MCP servers",
+      "tokenStore": { "keychain": "agentproto-my-api", "path": "my-api" },
+      "updatedAt": "2026-07-08T15:00:00.000Z"
+    }
   }
 }
 ```
+
+`tokenStore.keychain` defaults to `agentproto-<id>` (`defaultTokenStore()`
+in `auth-providers-store.ts`) — one keychain service per provider id.
 
 `agentproto auth cred rm <id>` removes the entry here and attempts a
 best-effort keychain delete when the store backend supports it.
