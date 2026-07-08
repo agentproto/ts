@@ -174,6 +174,22 @@ fail fast with exit `2`. `--orchestrator` requires a daemon started with the
 scoped orchestrator sub-gateway wired (the default for `agentproto serve`);
 otherwise the route returns `501`.
 
+#### Sandbox (MCP/HTTP only — no CLI flag yet)
+
+`agent_start` accepts a `sandbox` field that boots the session inside an
+isolated cloud sandbox instead of the local machine, via a pluggable
+`SandboxProvider` (e2b's Firecracker microVMs ship today —
+`@agentproto/sandbox-e2b`). The daemon boots the box, starts its own
+sub-daemon inside it, and proxies the session's turns back over that box's
+MCP endpoint (`SandboxAgentSessionProxy`) — from the outside it behaves like
+any other session. Supports reconnecting to an existing sandbox id and
+pausing it on close (AIP-36 lifecycle) instead of tearing it down.
+
+Only reachable today via the MCP `start_agent_session` tool or
+`POST /sessions/agent`, not a `sessions start` CLI flag. Companion MCP tools:
+`list_sandbox_providers` (see what's configured) and
+`setup_sandbox_provider` (register credentials for one).
+
 ### `terminal -- <argv...>`
 
 ```bash

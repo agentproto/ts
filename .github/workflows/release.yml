@@ -18,7 +18,7 @@ jobs:
   release:
     name: Version or publish
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout (full history for changesets)
         uses: actions/checkout@v5

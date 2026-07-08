@@ -227,6 +227,12 @@ coding-CLI orchestration:
 | `create_tunnel` / `list_tunnels` | Manage reverse tunnels |
 | `read_file` / `write_file` / `list_directory` | Workspace filesystem |
 | `start_browser` / `stop_browser` | Browser session lifecycle |
+| `session_usage` | Per-session cost + token usage, live |
+| `list_sandbox_providers` | List configured sandbox providers (e.g. e2b) |
+| `setup_sandbox_provider` | Configure a sandbox provider's credentials |
+| `agentproto_terminal` | MCP App: live PTY over WebSocket for a session |
+| `agentproto_session_story` | MCP App: per-session story/timeline panel |
+| `role_list` | List role profiles and their spawn/delegation policy |
 
 For the live tool catalog, call `tools/list` via curl (see verify step above)
 or check `GET /health` → `registered[]`.

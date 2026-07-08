@@ -55,6 +55,14 @@ Any event kind the writer doesn't recognize is dropped silently, the
 same way the ring-buffer projector ignores kinds it doesn't switch on
 — a forward-compatible default rather than a hard failure.
 
+### Pulling usage on demand: `session_usage`
+
+`usage_update` above is passive — it only shows up in the transcript when
+the adapter emits one. To pull a session's current cost/token usage on
+demand instead, call the `session_usage` MCP tool with a `sessionId`; it
+returns the same `{size, used, cost?}` shape live, without waiting for the
+next `usage_update` event.
+
 ### Text fidelity
 
 `text-delta` and `thought` records are byte-for-byte reconstructable:

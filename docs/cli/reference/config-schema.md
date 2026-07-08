@@ -49,6 +49,20 @@ agentproto config set daemon.port 18791
     "allowedOrigins": [
       "https://guilde.work"
     ]
+  },
+
+  // Global and per-adapter defaults auto-applied to every `agent_start`
+  // spawn (CLI, MCP, or HTTP). See "defaults" below.
+  "defaults": {
+    "skills": ["review-checklist"],
+    "options": { "verbose": true },
+    "adapters": {
+      "hermes": { "skills": ["hermes-only-skill"], "options": { "model": "z-ai/glm-5.2" } }
+    },
+    "defaultRoleDepthCutoff": 1,
+    "maxGrantableDelegation": 2,
+    "langfuseTracing": false,
+    "traceRedactor": "secrets"
   }
 }
 ```
@@ -100,6 +114,28 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
 
 Verb flags override config; config overrides hard-coded defaults.
+
+### `defaults: object`
+
+Global and per-adapter defaults auto-applied to every `agent_start` spawn
+(CLI `sessions start`/`run`, MCP `start_agent_session`, or the HTTP API) —
+introduced in 0.5.0.
+
+| Field                     | Type                                      | Meaning                                                              |
+| ------------------------- | ------------------------------------------ | --------------------------------------------------------------------- |
+| `skills`                  | `string[]`                                  | Global skills folded into every spawn's `options.skills`.             |
+| `options`                 | `Record<string, boolean\|number\|string>`   | Global options merged into every spawn.                                |
+| `adapters`                | `Record<string, { skills?, options? }>`     | Per-adapter overrides, keyed by adapter slug (e.g. `"hermes"`).        |
+| `defaultRoleDepthCutoff`  | `number`                                    | Spawn depth at/above which a session defaults to `executor` instead of `supervisor` (default `1`). |
+| `maxGrantableDelegation`  | `number`                                    | Trust-boundary cap on how much delegation a supervisor can grant a child. |
+| `langfuseTracing`         | `boolean`                                   | Opt in to per-session Langfuse tracing by default.                     |
+| `traceRedactor`           | `string`                                    | Redactor slug (e.g. `"secrets"`) applied to traced session content.    |
+
+Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.options`
+< the explicit `options` passed at spawn time. For `skills`, an explicit
+`skills` array at spawn time *replaces* the union of `defaults.skills` and
+`defaults.adapters.<slug>.skills` rather than merging with it. Adapters with
+no declared `skills` option treat the resolved skills list as a no-op.
 
 ## Permissions
 

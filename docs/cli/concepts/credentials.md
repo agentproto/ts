@@ -1,5 +1,17 @@
 # Credentials
 
+Two unrelated credential stores live under `~/.agentproto/`, covering two
+different problems:
+
+1. **Host bearer tokens** (`credentials.json`) — this daemon authenticating
+   *to its tunnel host* (`agentproto auth login`). Covered below.
+2. **Broker credentials** (`auth-providers.json` + OS keychain) — secrets a
+   *spawned agent's* MCP servers need, resolved at spawn time via
+   `credentialRef`. See "Broker credentials" further down and
+   [`verbs/auth.md`](../verbs/auth.md#cred--broker-credentials-for-child-mcp-auth-050).
+
+## Host bearer tokens
+
 The CLI stores host bearer tokens in `~/.agentproto/credentials.json`,
 mode `0600`, one file per OS user with many hosts inside. Tokens come
 from `agentproto auth login` (RFC 8628 device flow) — see
@@ -93,3 +105,16 @@ agentproto auth logout --host <url>
 Removes the host from the file. If the host exposed a `revocationId`,
 the CLI sends it back so the server-side row gets revoked, not just
 the local copy.
+
+## Broker credentials
+
+Separate from everything above: `agentproto auth cred set|list|rm` manages
+credentials for MCP servers a *spawned agent* mounts, not this daemon's own
+host auth. The secret itself goes to the OS keychain; only the non-secret
+provider definition (`apiBase`, `audience`, `description`) is persisted to
+`~/.agentproto/auth-providers.json`. A session's
+`mcpServers[].credentialRef` (`"<id>"` or `"<id>/<account>"`) resolves
+through the daemon's `CredentialBroker` at spawn time, and the resulting
+header is merged on top of any static `headers` already on that entry.
+Full command reference:
+[`verbs/auth.md#cred`](../verbs/auth.md#cred--broker-credentials-for-child-mcp-auth-050).

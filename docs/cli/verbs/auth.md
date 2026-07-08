@@ -4,6 +4,9 @@
 agentproto auth login   [--host <url>] [--label <name>] [--no-browser] [--scope <s>]
 agentproto auth status  [--host <url>] [--json]
 agentproto auth logout  [--host <url>]
+agentproto auth cred set <id> <token> --api-base <url> [--audience <aud>] [--description <text>]
+agentproto auth cred list [--json]
+agentproto auth cred rm  <id>
 ```
 
 Manages host-binding tokens — the JWT `agentproto serve --connect <host>`
@@ -117,3 +120,35 @@ agentproto serve --connect wss://guilde.work   # picks up the token automaticall
 An expired credential is still used — `serve` logs a warning so the
 host's 401 surfaces a clearer error than a silent disconnect. Re-run
 `agentproto auth login` to refresh.
+
+## `cred` — broker credentials for child-MCP auth (0.5.0+)
+
+`login`/`status`/`logout` above manage **host-binding** tokens (this daemon
+↔ its tunnel host). `auth cred` is a separate, unrelated credential type:
+tokens the daemon's **`CredentialBroker`** resolves into headers for MCP
+servers a *spawned agent* mounts at start time (`credentialRef` on an
+`agent_start`/`sessions start --mcp-servers-json` entry) — see
+[`../concepts/credentials.md`](../concepts/credentials.md) for the broker
+model and [`../reference/credentials-format.md`](../reference/credentials-format.md)
+for both on-disk formats.
+
+```bash
+# Register a broker credential under id "my-api"
+agentproto auth cred set my-api sk-xxxxx --api-base https://api.example.com --audience mcp
+
+# List registered broker credentials (never prints the secret back)
+agentproto auth cred list
+agentproto auth cred list --json
+
+# Remove one
+agentproto auth cred rm my-api
+```
+
+`set` writes the secret to the OS keychain (not `credentials.json`) and
+persists the non-secret provider definition (`apiBase`, `audience`,
+`description`) to `~/.agentproto/auth-providers.json`. `--audience` defaults
+to `"mcp"`. `list`/`rm` also accept `ls` / `remove`|`delete` as aliases.
+A spawned agent's `mcpServers[].credentialRef` (matching the registered
+`id`, optionally `"<id>/<account>"`) resolves through this broker at spawn
+time — the resolved header is merged **on top of** any static `headers` on
+that entry.

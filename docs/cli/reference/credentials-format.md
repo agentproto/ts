@@ -143,3 +143,40 @@ the CLI bumps to `version: 2`, older binaries refuse the file with
 guidance to re-login. This file format is independent of the npm
 package version. See [`../../VERSIONING.md`](../../VERSIONING.md) for
 the multi-axis version story.
+
+## Broker provider format — `~/.agentproto/auth-providers.json` (0.5.0+)
+
+A separate, unrelated file from `credentials.json` above: definitions for
+`agentproto auth cred` broker credentials (see
+[`concepts/credentials.md`](../concepts/credentials.md#broker-credentials)
+and [`verbs/auth.md#cred`](../verbs/auth.md#cred--broker-credentials-for-child-mcp-auth-050)).
+The secret itself never lands in this file — it's written to the OS
+keychain; this file only holds the non-secret provider definition, keyed by
+the id passed to `agentproto auth cred set <id> ...`.
+
+```ts
+interface AuthProviderDefEntry {
+  apiBase: string
+  audience: string
+  flow: "pat"
+  description?: string
+  tokenStore: { keychain: string; path: string }
+  updatedAt: string
+}
+```
+
+```jsonc
+{
+  "my-api": {
+    "apiBase": "https://api.example.com",
+    "audience": "mcp",
+    "flow": "pat",
+    "description": "Example API for agent MCP servers",
+    "tokenStore": { "keychain": "agentproto-broker", "path": "my-api" },
+    "updatedAt": "2026-07-08T15:00:00.000Z"
+  }
+}
+```
+
+`agentproto auth cred rm <id>` removes the entry here and attempts a
+best-effort keychain delete when the store backend supports it.
