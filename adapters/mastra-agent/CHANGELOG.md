@@ -1,5 +1,21 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.1.2
+
+### Patch Changes
+
+- 4c88fe1: Stop advertising Anthropic models in adapter model menus
+- Updated dependencies [6b8b023]
+- Updated dependencies [7142f1c]
+- Updated dependencies [6f867e1]
+- Updated dependencies [6c83622]
+- Updated dependencies [3a76562]
+- Updated dependencies [b65ca15]
+- Updated dependencies [a28bebc]
+- Updated dependencies [7f8b45a]
+  - @agentproto/driver-agent-cli@0.4.0
+  - @agentproto/mastra@0.2.1
+
 ## 0.1.1
 
 ### Patch Changes

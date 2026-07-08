@@ -1,5 +1,15 @@
 # @agentproto/provider-kit
 
+## 0.2.0
+
+### Minor Changes
+
+- b77a552: Rename adapter-kit → provider-kit; add adapter-kit@0.2.0 compatibility shim
+
+### Patch Changes
+
+- 6a0d8fe: Fix stale adapter-kit references in docs, README, and CHANGELOG header
+
 ## 0.1.0
 
 ### Minor Changes

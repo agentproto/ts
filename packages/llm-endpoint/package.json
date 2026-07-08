@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/llm-endpoint",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "private": true,
   "description": "@agentproto/llm-endpoint — a lightweight Anthropic-Messages-compatible proxy gateway. Presents a single Anthropic (Claude) API surface and fans requests out to multiple upstream providers (Moonshot, OpenRouter, ZAI/Zhipu, Groq) behind stable alias codenames. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
   "keywords": [

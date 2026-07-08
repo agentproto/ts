@@ -1,5 +1,26 @@
 # @agentproto/driver-agent-cli
 
+## 0.4.0
+
+### Minor Changes
+
+- 6b8b023: Add bin_args_prepend, plumb options map, and declare lean modes on agent-CLI adapters
+- 7142f1c: Add per-mode support status (active|noop|planned) to AIP-45 agent-CLI manifest
+- 3a76562: Add models.deny to agent-CLI manifest; reserve Anthropic for claude-code
+- a28bebc: Add provider-presets catalog listing and AIP-45 presets manifest field
+
+### Patch Changes
+
+- 6f867e1: Fix print-arm ENOBUFS crash by draining stdout independently of downstream
+- 6c83622: Emit usage_update transcript events for hermes and mastracode adapters
+- b65ca15: Fix opencode adapter crash when mode/model set via ACP config, not CLI flags
+- 7f8b45a: Export missing AgentCliPresetDeclaration type from package index
+- Updated dependencies [80ca385]
+- Updated dependencies [6a5c41c]
+- Updated dependencies [fdb8ea1]
+- Updated dependencies [b65ca15]
+  - @agentproto/acp@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

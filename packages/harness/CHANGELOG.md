@@ -1,10 +1,20 @@
 # @agentproto/harness
 
+## 0.2.0
+
+### Minor Changes
+
+- e029a35: Wire agent_start.sandbox: boot box + proxy session via SandboxAgentSessionProxy
+
+### Patch Changes
+
+- 5988bf4: Fix waitForSettled to poll past daemon timeouts via timedOut flag
+
 ## 0.1.1
 
 ### Patch Changes
 
-- 8d1191e: Rename all MCP tool verbs to family-first taxonomy (agent*\*, session*_, terminal\__, command*\*, file*_, directory\__, browser*\*, policy*_, routine\__, tunnel\_\*), split agent tools into a dedicated `agent-tools.ts` module, and fix harness call-sites.
+- 8d1191e: Rename all MCP tool verbs to family-first taxonomy (agent*\*, session*\_, terminal\__, command*\*, file*_, directory\__, browser*\*, policy*_, routine\_\_, tunnel\_\*), split agent tools into a dedicated `agent-tools.ts` module, and fix harness call-sites.
 
 ## 0.1.0
 
