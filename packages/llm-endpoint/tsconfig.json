@@ -1,0 +1,5 @@
+{
+  "extends": "@agentproto/tooling/typescript/node-library.json",
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}
