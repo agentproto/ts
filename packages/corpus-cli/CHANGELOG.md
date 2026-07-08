@@ -1,5 +1,17 @@
 # @agentproto/corpus-cli
 
+## 0.3.0
+
+### Minor Changes
+
+- 9ab5473: Add YtDlpCaptionsFetcher caption-first video ingestion to import-web
+
+### Patch Changes
+
+- Updated dependencies [9ab5473]
+  - @agentproto/corpus@0.2.1
+  - @agentproto/corpus-presets@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes

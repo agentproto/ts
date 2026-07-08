@@ -1,5 +1,32 @@
 # @agentproto/adapter-claude-code
 
+## 0.2.0
+
+### Minor Changes
+
+- 6b8b023: Add bin_args_prepend, plumb options map, and declare lean modes on agent-CLI adapters
+- abb49cf: add DeepSeek gateway preset to provider-presets and adapters
+- 2adc163: add shared Anthropic gateway presets and claude-code gateway modes
+
+### Patch Changes
+
+- 6a5c41c: Make model set_config_option non-fatal; fix claude-code stale model list
+- 0ba77de: Add --pack fan-out install for skill CLI
+- 34cfcb5: Document DeepSeek gateway mode across claude-code/claude-sdk adapters
+- Updated dependencies [6b8b023]
+- Updated dependencies [7142f1c]
+- Updated dependencies [6f867e1]
+- Updated dependencies [6c83622]
+- Updated dependencies [3a76562]
+- Updated dependencies [b65ca15]
+- Updated dependencies [a28bebc]
+- Updated dependencies [7f8b45a]
+- Updated dependencies [abb49cf]
+- Updated dependencies [34cfcb5]
+- Updated dependencies [2adc163]
+  - @agentproto/driver-agent-cli@0.4.0
+  - @agentproto/provider-presets@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes

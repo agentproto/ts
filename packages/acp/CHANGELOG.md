@@ -1,5 +1,17 @@
 # @agentproto/acp
 
+## 0.4.0
+
+### Minor Changes
+
+- 80ca385: Add per-session usage observability: cost + tokens, live via MCP + durable
+- fdb8ea1: Add credentialRef + headers to AcpMcpServer for brokered child-MCP auth at spawn time
+
+### Patch Changes
+
+- 6a5c41c: Make model set_config_option non-fatal; fix claude-code stale model list
+- b65ca15: Fix opencode adapter crash when mode/model set via ACP config, not CLI flags
+
 ## 0.3.0
 
 ### Minor Changes

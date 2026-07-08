@@ -1,5 +1,58 @@
 # @agentproto/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- 7142f1c: Add per-mode support status (active|noop|planned) to AIP-45 agent-CLI manifest
+- 0ba77de: Add --pack fan-out install for skill CLI
+- 0205f6c: Rewrite auth login onto the @agentproto/auth device-code engine (WP-5)
+- 9fe8586: Add refreshOnly mode + CeremonyRequiredError; honor --no-browser; silent serve refresh
+- 2f380c8: Add `agentproto auth cred set|list|rm` to seed broker credentials for child-MCP auth
+- 13e118d: Add --source flag to 'pack skill' for cross-repo sourceDir override
+- a28bebc: Add provider-presets catalog listing and AIP-45 presets manifest field
+- b588e36: Add a `defaults` block to `~/.agentproto/config.json` — global and per-adapter `skills`/`options` auto-applied to every `agent_start` spawn. A normalized `skills: string[]` is folded into the resolved adapter's native option shape (e.g. hermes' comma-joined `--skills a,b`); adapters with no declared `skills` option are a no-op.
+
+### Patch Changes
+
+- 6b8b023: Add bin_args_prepend, plumb options map, and declare lean modes on agent-CLI adapters
+- 81e0292: Add first-party claude-sdk adapter (headless query() over ACP, model + base_url)
+- c4873a2: fix MCP Apps panels: forward resources/\* through mcp-bridge + spec-correct ui/initialize handshake
+- b77a552: Rename adapter-kit → provider-kit; add adapter-kit@0.2.0 compatibility shim
+- fdb8ea1: Add credentialRef + headers to AcpMcpServer for brokered child-MCP auth at spawn time
+- 8a08ed6: Make manifest sourceDir optional and expand ${ENV_VAR} references before resolving
+- 2d3038c: Fix run-swarm role paths, claude permission hang, and per-participant model config
+- 2d6aead: Fix session_restart resuming wrong conversation via fs-probe sibling leak
+- 12b9ed5: Fix install bootstrap, serve/run --help crash, and models empty-state hint
+- Updated dependencies [6b8b023]
+- Updated dependencies [80ca385]
+- Updated dependencies [7142f1c]
+- Updated dependencies [6f867e1]
+- Updated dependencies [6a5c41c]
+- Updated dependencies [6c83622]
+- Updated dependencies [3a76562]
+- Updated dependencies [c359894]
+- Updated dependencies [829a6c0]
+- Updated dependencies [547c796]
+- Updated dependencies [b77a552]
+- Updated dependencies [83ce80f]
+- Updated dependencies [c69d424]
+- Updated dependencies [6a0d8fe]
+- Updated dependencies [e94757d]
+- Updated dependencies [d993560]
+- Updated dependencies [9fe8586]
+- Updated dependencies [da9f77a]
+- Updated dependencies [fdb8ea1]
+- Updated dependencies [b65ca15]
+- Updated dependencies [2d3038c]
+- Updated dependencies [a28bebc]
+- Updated dependencies [7f8b45a]
+  - @agentproto/driver-agent-cli@0.4.0
+  - @agentproto/acp@0.4.0
+  - @agentproto/auth@0.1.0
+  - @agentproto/provider-kit@0.2.0
+  - @agentproto/runtime-profile-standard@0.1.1
+
 ## 0.4.0
 
 ### Minor Changes

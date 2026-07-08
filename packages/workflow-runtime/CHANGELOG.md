@@ -1,5 +1,16 @@
 # @agentproto/workflow-runtime
 
+## 0.3.0
+
+### Minor Changes
+
+- 7aaf24a: Add AgentStep.cwd selector and new worktree provision/gate/cleanup tools
+
+### Patch Changes
+
+- f8ebe41: Pass agent steps through the compiler unchanged
+- 2154ed5: Pass agent steps through the compiler unchanged
+
 ## 0.2.0
 
 ### Minor Changes

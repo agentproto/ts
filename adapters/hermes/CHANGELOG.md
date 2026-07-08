@@ -1,5 +1,27 @@
 # @agentproto/adapter-hermes
 
+## 0.2.0
+
+### Minor Changes
+
+- 6b8b023: Add bin_args_prepend, plumb options map, and declare lean modes on agent-CLI adapters
+- 3a76562: Add models.deny to agent-CLI manifest; reserve Anthropic for claude-code
+
+### Patch Changes
+
+- 7142f1c: Add per-mode support status (active|noop|planned) to AIP-45 agent-CLI manifest
+- 0ba77de: Add --pack fan-out install for skill CLI
+- 2adc163: add shared Anthropic gateway presets and claude-code gateway modes
+- Updated dependencies [6b8b023]
+- Updated dependencies [7142f1c]
+- Updated dependencies [6f867e1]
+- Updated dependencies [6c83622]
+- Updated dependencies [3a76562]
+- Updated dependencies [b65ca15]
+- Updated dependencies [a28bebc]
+- Updated dependencies [7f8b45a]
+  - @agentproto/driver-agent-cli@0.4.0
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agent-runtime",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/agent-runtime — MultiAgentRuntime kernel: swappable ports (substrate, dispatcher, participant executors, state, lifecycle, effectors) plus reference adapters (file journal substrate, mention dispatcher, fs state store, agent-cli participant). Transport-specific adapters (chat servers, MCP bridges, etc.) ship in separate packages and register through the agentproto CLI's plugin API.",
   "keywords": [
     "agentproto",
