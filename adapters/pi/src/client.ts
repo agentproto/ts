@@ -8,26 +8,32 @@
  * the child's stdin and reads pi's response + `AgentSessionEvent` stream from
  * stdout, translating the events into agentproto `StreamEvent`s.
  *
- * ## The key limitation — pi has NO MCP support
+ * ## MCP support — bridged via a generated pi extension
  *
- * Pi ships neither ACP nor MCP. The proprietary arm's `connect()` still
- * receives `mcpServers` (the host may try to inject the daemon's own
- * orchestration gateway or any scoped toolset), but **pi cannot mount them**.
- * This arm does not silently drop the request: it logs a one-time warning so
- * the operator knows the agentproto substrate toolset is unavailable and pi is
- * running only its own built-in file/shell tools. See ../README.md and
- * ../SANDBOX.md.
+ * Pi ships neither ACP nor MCP. The proprietary arm's `connect()` receives
+ * `mcpServers` (the host may inject the daemon's own orchestration gateway or
+ * any scoped toolset). Pi cannot mount MCP natively, so this arm bridges them:
+ * it enumerates each server's tools up-front, writes a per-session config JSON,
+ * and spawns pi with `-e <mcp-bridge-extension.mjs>` + `PI_MCP_BRIDGE_CONFIG`.
+ * The extension registers one pi tool per MCP tool and proxies calls over
+ * `@modelcontextprotocol/sdk`. See ../MCP-BRIDGE.md. When no MCP servers are
+ * injected, behavior is unchanged (pi runs only its own file/shell tools).
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
+import { fileURLToPath } from "node:url"
 import type {
   AgentCliClient,
   AgentCliConnectOptions,
   AgentCliHandle,
   StreamEvent,
 } from "@agentproto/driver-agent-cli"
+import { enumerateMcpTools } from "./mcp-bridge/enumerate.js"
 import {
   classifyPiLine,
   createPiMapperState,
@@ -37,6 +43,14 @@ import {
   type PiResponse,
   type PiSessionEvent,
 } from "./pi-events.js"
+
+/** Env var the bridge extension reads to find its per-session config JSON. */
+const BRIDGE_CONFIG_ENV = "PI_MCP_BRIDGE_CONFIG"
+
+/** Resolve the built bridge extension next to this module (dist/…). */
+function bridgeExtensionPath(): string {
+  return fileURLToPath(new URL("./mcp-bridge-extension.mjs", import.meta.url))
+}
 
 /** Env override for the pi binary path — lets a smoke test point at an
  *  `npx`/local install without a global `pi` on PATH. Falls back to the
@@ -135,7 +149,8 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
   let piSessionId: string | undefined
   let connectEffort: string | undefined
   let onActivity: (() => void) | undefined
-  let warnedNoMcp = false
+  /** Session temp dir holding the bridge config JSON; removed on close(). */
+  let bridgeTempDir: string | undefined
 
   const pending = new Map<string, PendingCommand>()
   const stderrLines: string[] = []
@@ -260,25 +275,44 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
 
     async connect(opts: AgentCliConnectOptions): Promise<void> {
       onActivity = opts.onActivity
-
-      if (opts.mcpServers?.length && !warnedNoMcp) {
-        warnedNoMcp = true
-        console.warn(
-          `[adapter-pi] pi has no MCP support — ignoring ${opts.mcpServers.length} injected ` +
-            `MCP server(s). The agentproto substrate toolset is unavailable; pi runs only its ` +
-            `own built-in file/shell tools. See @agentproto/adapter-pi README / SANDBOX.md.`,
-        )
-      }
-
       connectEffort = opts.effort
 
       const args = ["--mode", "rpc"]
       if (opts.model) args.push("--model", opts.model)
       if (opts.resumeSessionId) args.push("--session", opts.resumeSessionId)
 
+      // Bridge any injected MCP servers into pi via a generated extension:
+      // enumerate their tools now, write a per-session config, and spawn pi with
+      // `-e <extension>` + PI_MCP_BRIDGE_CONFIG so the extension registers one
+      // pi tool per MCP tool. See ./mcp-bridge/ and ../MCP-BRIDGE.md.
+      const childEnv: Record<string, string> = { ...opts.env }
+      if (opts.mcpServers?.length) {
+        const { config, errors } = await enumerateMcpTools(opts.mcpServers)
+        for (const e of errors) {
+          console.warn(`[adapter-pi] mcp-bridge: server "${e.server}" unavailable — ${e.message}`)
+        }
+        if (config.tools.length > 0) {
+          const dir = mkdtempSync(join(tmpdir(), "pi-mcp-bridge-"))
+          const configPath = join(dir, "config.json")
+          writeFileSync(configPath, JSON.stringify(config), "utf8")
+          bridgeTempDir = dir
+          childEnv[BRIDGE_CONFIG_ENV] = configPath
+          args.push("-e", bridgeExtensionPath())
+          console.info(
+            `[adapter-pi] mcp-bridge: bridged ${config.tools.length} tool(s) across ` +
+              `${config.servers.length} MCP server(s) into pi.`,
+          )
+        } else {
+          console.warn(
+            `[adapter-pi] mcp-bridge: ${opts.mcpServers.length} MCP server(s) injected but no ` +
+              `tools enumerated — pi runs only its own built-in tools.`,
+          )
+        }
+      }
+
       const proc = spawn(resolveBin(opts.env), args, {
         cwd: opts.cwd,
-        env: opts.env,
+        env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
       })
       child = proc
@@ -363,6 +397,16 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
     },
 
     async close(): Promise<void> {
+      const dir = bridgeTempDir
+      if (dir) {
+        bridgeTempDir = undefined
+        try {
+          rmSync(dir, { recursive: true, force: true })
+        } catch {
+          // Best effort — the OS reaps the temp dir eventually. The MCP clients
+          // live inside pi and die with the child.
+        }
+      }
       const proc = child
       if (!proc) return
       child = undefined
