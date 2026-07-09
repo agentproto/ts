@@ -30,13 +30,12 @@ own TypeScript **extension** system:
    server over `@modelcontextprotocol/sdk`.
 
 Net result: pi gains agentproto's full injected toolset, **including
-`agent_start`** when the daemon injects its gateway. When no MCP servers are
-injected, behavior is unchanged (pi runs only its own built-in file/shell
-tools). Full mechanism + limitations: [`MCP-BRIDGE.md`](./MCP-BRIDGE.md).
-
-`capabilities.sub_agents` stays `false` because orchestration isn't
-*intrinsic* to pi — it's conditional on the host injecting the gateway. See
-MCP-BRIDGE.md for the image/binary-content and cancellation caveats.
+`agent_start`** when the daemon injects its gateway (`--orchestrator` flag),
+enabling sub-agent orchestration (`capabilities.sub_agents: true`). When no
+MCP servers are injected, behavior is unchanged (pi runs only its own
+built-in file/shell tools). Full mechanism + limitations:
+[`MCP-BRIDGE.md`](./MCP-BRIDGE.md); caveats (image/binary-content, cancellation):
+[`MCP-BRIDGE.md`](./MCP-BRIDGE.md).
 
 ## What it is
 
