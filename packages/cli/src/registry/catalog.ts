@@ -67,6 +67,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "pi",
+    name: "Pi",
+    description:
+      "earendil-works/pi — MIT headless TypeScript coding agent, driven over pi's " +
+      "persistent JSON-over-stdio RPC mode (`pi --mode rpc`). No ACP, no MCP: pi runs " +
+      "only its own built-in file/shell tools.",
+    packageName: "@agentproto/adapter-pi",
+    hint: "multi-provider · rpc · no-mcp",
+  },
+  {
+    type: "agent-cli",
     slug: "codex",
     name: "Codex",
     description:

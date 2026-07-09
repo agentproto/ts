@@ -108,6 +108,7 @@
     "@agentproto/adapter-mastracode-inprocess": "workspace:*",
     "@agentproto/adapter-openclaw": "workspace:*",
     "@agentproto/adapter-opencode": "workspace:*",
+    "@agentproto/adapter-pi": "workspace:*",
     "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
