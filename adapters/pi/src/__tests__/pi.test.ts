@@ -18,7 +18,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(typeof pi.version).toBe("string")
   })
 
-  it("declares RPC-appropriate capabilities incl. no MCP/sub-agents", () => {
+  it("declares RPC-appropriate capabilities incl. MCP-bridged sub-agents", () => {
     expect(pi.capabilities?.streaming).toBe(true)
     expect(pi.capabilities?.tool_calls).toBe(true)
     expect(pi.capabilities?.bidirectional).toBe(true)
