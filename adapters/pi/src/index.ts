@@ -19,13 +19,16 @@
  *   }
  *   await session.close()
  *
- * ## KEY LIMITATION — pi has no MCP support
+ * ## MCP support — bridged via a generated pi extension
  *
- * The proprietary arm's `connect()` receives `mcpServers`, but pi cannot
- * mount them. `client.ts` logs a one-time warning rather than silently
- * dropping them: the agentproto substrate toolset is unavailable and pi runs
- * only its own built-in file/shell tools. This is the single most important
- * caveat for anyone choosing this adapter — see README.md and SANDBOX.md.
+ * Pi has no native MCP client, but the proprietary arm's `connect()` receives
+ * `mcpServers` and now bridges them: it enumerates each server's tools, writes a
+ * per-session config, and spawns pi with `-e <mcp-bridge-extension.mjs>` so the
+ * extension registers one pi tool per MCP tool (proxying calls over
+ * `@modelcontextprotocol/sdk`). Injected toolsets — including the daemon's
+ * `agent_start` orchestration gateway — become callable from pi. When no MCP
+ * servers are injected, pi runs only its own built-in file/shell tools. See
+ * MCP-BRIDGE.md, README.md, and SANDBOX.md.
  */
 
 import {
@@ -42,8 +45,9 @@ export const pi: AgentCliHandle = defineAgentCli({
     "earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's " +
     "persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. " +
     "Multi-provider (Anthropic/OpenAI/Google), streaming, live-duplex " +
-    "(steer/follow-up/abort mid-turn). No ACP, NO MCP — pi runs only its own " +
-    "built-in file/shell tools; injected MCP servers are ignored (see SANDBOX.md).",
+    "(steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP " +
+    "servers are BRIDGED into pi tools via a generated pi extension (see " +
+    "MCP-BRIDGE.md); otherwise pi runs only its own built-in file/shell tools.",
   version: "0.1.0",
   // Real binary. The proprietary arm never spawns it for you (that's
   // client.ts's job) but the AIP-45 schema requires the field, and client.ts
@@ -96,8 +100,11 @@ export const pi: AgentCliHandle = defineAgentCli({
   capabilities: {
     streaming: true,
     tool_calls: true,
-    // Pi has no sub-agent spawn surface, and (critically) no MCP — the
-    // orchestration gateway can't be mounted into a pi session.
+    // Pi has no NATIVE sub-agent spawn surface. It becomes an orchestrator
+    // CONDITIONALLY: when the host injects the daemon's orchestration gateway
+    // via `mcpServers`, the MCP bridge (see MCP-BRIDGE.md) exposes `agent_start`
+    // as a pi tool. Kept `false` because the capability isn't intrinsic — it
+    // depends on what the host injects.
     sub_agents: false,
     file_io: true,
     // Pi accepts image content on a prompt; the current client extracts text
@@ -153,7 +160,7 @@ export const pi: AgentCliHandle = defineAgentCli({
         "(pi does not stream `agent_settled`). See PI-RPC.md.",
     },
   },
-  tags: ["pi", "earendil", "proprietary", "rpc", "agent-runtime", "coding", "no-mcp"],
+  tags: ["pi", "earendil", "proprietary", "rpc", "agent-runtime", "coding", "mcp-bridge"],
 })
 
 export function piRuntime(): AgentCliRuntime {

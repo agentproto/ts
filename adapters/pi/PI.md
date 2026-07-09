@@ -1,7 +1,7 @@
 ---
 name: pi
 id: pi
-description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google), streaming, live-duplex (steer/follow-up/abort mid-turn). No ACP, NO MCP — pi runs only its own built-in file/shell tools; injected MCP servers are ignored.
+description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google), streaming, live-duplex (steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP servers are bridged into pi tools via a generated pi extension (see MCP-BRIDGE.md).
 version: 0.1.0
 bin: pi
 install:
@@ -38,7 +38,7 @@ capabilities:
 continuation:
   default: native-resume
   supported: [native-resume, pinned-session, transcript, none]
-tags: [pi, earendil, proprietary, rpc, agent-runtime, coding, no-mcp]
+tags: [pi, earendil, proprietary, rpc, agent-runtime, coding, mcp-bridge]
 ---
 
 # Pi — AIP-45 manifest overview
@@ -91,8 +91,13 @@ switch, so none is invented — the manifest stays honest.
 `get_state` response after connect; the host persists it and, on a cold start,
 `connect({ resumeSessionId })` re-spawns pi with `--session <id>`.
 
-## Capabilities & the no-MCP caveat
+## Capabilities & MCP bridging
 
-`sub_agents: false` because pi cannot mount the orchestration gateway (no MCP).
-`connect({ mcpServers })` is accepted but **ignored**, with a one-time warning
-— see [`README.md`](./README.md) and [`SANDBOX.md`](./SANDBOX.md).
+Pi has no native MCP client, but `connect({ mcpServers })` is **bridged**: the
+adapter enumerates the servers' tools and spawns pi with a generated extension
+(`-e <mcp-bridge-extension.mjs>` + `PI_MCP_BRIDGE_CONFIG`) that registers one pi
+tool per MCP tool (`mcp__<server>__<tool>`), proxying calls over
+`@modelcontextprotocol/sdk`. So injected toolsets — including the daemon's
+`agent_start` gateway — are callable from pi. `sub_agents: false` is kept only
+because orchestration is *conditional* on injection, not intrinsic. Mechanism +
+limitations: [`MCP-BRIDGE.md`](./MCP-BRIDGE.md); sandbox: [`SANDBOX.md`](./SANDBOX.md).

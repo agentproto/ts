@@ -31,6 +31,7 @@
     },
     "./PI.md": "./PI.md",
     "./PI-RPC.md": "./PI-RPC.md",
+    "./MCP-BRIDGE.md": "./MCP-BRIDGE.md",
     "./SECRETS.md": "./SECRETS.md",
     "./SANDBOX.md": "./SANDBOX.md",
     "./package.json": "./package.json"
@@ -39,6 +40,7 @@
     "dist",
     "PI.md",
     "PI-RPC.md",
+    "MCP-BRIDGE.md",
     "SECRETS.md",
     "SANDBOX.md",
     "README.md",
@@ -56,7 +58,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*"
+    "@agentproto/driver-agent-cli": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
