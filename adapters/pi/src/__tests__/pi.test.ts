@@ -23,8 +23,9 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(pi.capabilities?.tool_calls).toBe(true)
     expect(pi.capabilities?.bidirectional).toBe(true)
     expect(pi.capabilities?.resumable).toBe(true)
-    // Pi has no MCP mounting and no sub-agent spawn surface.
-    expect(pi.capabilities?.sub_agents).toBe(false)
+    // Pi orchestrates via the MCP bridge: with the daemon's gateway injected,
+    // `agent_start` becomes a pi tool (verified end-to-end).
+    expect(pi.capabilities?.sub_agents).toBe(true)
   })
 
   it("declares the 3 provider env slots and a native-resume continuation", () => {
