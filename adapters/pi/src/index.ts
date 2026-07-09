@@ -100,12 +100,17 @@ export const pi: AgentCliHandle = defineAgentCli({
   capabilities: {
     streaming: true,
     tool_calls: true,
-    // Pi has no NATIVE sub-agent spawn surface. It becomes an orchestrator
-    // CONDITIONALLY: when the host injects the daemon's orchestration gateway
-    // via `mcpServers`, the MCP bridge (see MCP-BRIDGE.md) exposes `agent_start`
-    // as a pi tool. Kept `false` because the capability isn't intrinsic — it
-    // depends on what the host injects.
-    sub_agents: false,
+    // Pi has no NATIVE sub-agent spawn surface, but the MCP bridge (see
+    // MCP-BRIDGE.md) makes it a real orchestrator: when the host injects the
+    // daemon's orchestration gateway via `mcpServers` (e.g. `sessions start pi
+    // --orchestrator`), the bridge exposes `mcp__agentproto__agent_start` as a
+    // pi tool. Verified end-to-end — a pi session spawned a depth-1 executor
+    // sub-agent and collected its result. Advertised `true` so orchestrators/UIs
+    // know pi CAN drive sub-agents; the gateway injection stays opt-in per
+    // session, and depth/fan-out are bounded via `--orchestrator-json`
+    // ({ maxDepth, maxChildren }). Without an injected gateway pi has no
+    // agent_start tool and behaves as a leaf executor.
+    sub_agents: true,
     file_io: true,
     // Pi accepts image content on a prompt; the current client extracts text
     // only (image passthrough is a documented gap in PI-RPC.md).

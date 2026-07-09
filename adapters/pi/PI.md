@@ -30,7 +30,7 @@ session:
 capabilities:
   streaming: true
   tool_calls: true
-  sub_agents: false
+  sub_agents: true
   file_io: true
   multimodal: true
   resumable: true
@@ -98,6 +98,6 @@ adapter enumerates the servers' tools and spawns pi with a generated extension
 (`-e <mcp-bridge-extension.mjs>` + `PI_MCP_BRIDGE_CONFIG`) that registers one pi
 tool per MCP tool (`mcp__<server>__<tool>`), proxying calls over
 `@modelcontextprotocol/sdk`. So injected toolsets — including the daemon's
-`agent_start` gateway — are callable from pi. `sub_agents: false` is kept only
-because orchestration is *conditional* on injection, not intrinsic. Mechanism +
+`agent_start` gateway — are callable from pi, enabling sub-agent orchestration
+when the daemon injects its gateway (`--orchestrator` flag). Mechanism +
 limitations: [`MCP-BRIDGE.md`](./MCP-BRIDGE.md); sandbox: [`SANDBOX.md`](./SANDBOX.md).
