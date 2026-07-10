@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { runSessions } from "../commands/sessions.js"
+import { runSessions, resolveWaitDefaultTimeout } from "../commands/sessions.js"
 
 vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
   const orig = await importOriginal<typeof import("../commands/_daemon-helpers.js")>()
@@ -23,6 +23,16 @@ vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
 const helpers = await import("../commands/_daemon-helpers.js")
 const discoverDaemon = vi.mocked(helpers.discoverDaemon)
 const httpGetJson = vi.mocked(helpers.httpGetJson)
+
+describe("resolveWaitDefaultTimeout — default --timeout selection", () => {
+  it("defaults to 15m (900000ms) when --until is explicit — a real agent turn runs 5-20m", () => {
+    expect(resolveWaitDefaultTimeout(true)).toBe(900_000)
+  })
+
+  it("defaults to the original 60s (60000ms) for a bare `sessions wait` (no --until)", () => {
+    expect(resolveWaitDefaultTimeout(false)).toBe(60_000)
+  })
+})
 
 describe("agentproto sessions wait — argument validation", () => {
   let stderrChunks: string[]
@@ -147,15 +157,18 @@ describe("agentproto sessions wait — long-poll loop + exit codes", () => {
     expect(secondUrl).toContain("event=turn-end")
   })
 
-  it("exits 1 when the total --timeout budget is exhausted without a match", async () => {
+  it("exits 2 when the total --timeout budget is exhausted without a match, suggesting --timeout", async () => {
     // Every daemon call reports its own timeout; with a tiny total budget
-    // the CLI loop must give up and report the overall timeout as exit 1.
+    // the CLI loop must give up and report the overall timeout as exit 2 —
+    // distinct from a hard CLI failure (which stays at 1) — and point the
+    // caller at --timeout.
     httpGetJson.mockResolvedValue({ timedOut: true, nextCursor: 1 })
 
     const code = await runSessions(["wait", "sess_1", "--timeout", "5"])
 
-    expect(code).toBe(1)
+    expect(code).toBe(2)
     expect(stdoutChunks.join("")).toContain("timed out")
+    expect(stdoutChunks.join("")).toContain("--timeout")
   })
 
   it("exits 3 when the session is unknown (daemon 404)", async () => {

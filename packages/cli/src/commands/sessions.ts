@@ -67,6 +67,8 @@ Usage:
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
                               [--timeout <ms>] [--json]
+                              (default timeout: 900000ms/15m with --until,
+                               60000ms/60s bare — --timeout always wins)
 
 Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
 is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
@@ -368,15 +370,36 @@ async function runStop(args: readonly string[]): Promise<number> {
  * (done/blocked/awaiting-ack/cancelled). Then exits with a code the caller
  * can branch on:
  *   0  condition met (session event) / policy `done`
- *   1  timeout — no resolution within `--timeout`
- *   2  policy `blocked` or gate failed
+ *   1  reserved for hard/unexpected CLI failures (the top-level catch in
+ *      cli.ts) — this command's own code paths never return 1
+ *   2  timeout (no resolution within `--timeout`) OR a usage error (bad
+ *      arguments) OR policy `blocked`/`cancelled`
  *   3  session/policy not found or daemon unreachable
+ *
+ * Timeout used to share exit code 1 with hard CLI failures, so a caller
+ * couldn't tell "just needs a bigger --timeout" from "something broke" —
+ * it now gets its own code (2) and a message pointing at `--timeout`.
+ *
+ * Default `--timeout`: an explicit lifecycle wait (`--until <event>`) gets
+ * 900000ms/15m, since a real agent turn commonly runs 5-20 minutes; a bare
+ * `sessions wait` (no `--until`) keeps the original 60000ms/60s default.
+ * An explicit `--timeout` always wins over either default.
  *
  * The daemon-side single-call timeout is capped (~55s, under typical HTTP
  * client timeouts). When the user's `--timeout` exceeds that, the CLI
  * loops, calling the endpoint again with an advancing `since` cursor until
  * the total budget is exhausted or the condition matches.
  */
+/**
+ * Default `--timeout` (ms) for `sessions wait` when the caller doesn't pass
+ * one explicitly. An explicit `--until <event>` is a real lifecycle wait —
+ * a single agent turn commonly runs 5-20 minutes — so it defaults to 15
+ * minutes; a bare `sessions wait` keeps the original 60s default.
+ */
+export function resolveWaitDefaultTimeout(hasExplicitUntil: boolean): number {
+  return hasExplicitUntil ? 900_000 : 60_000
+}
+
 async function runWait(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -427,9 +450,10 @@ async function runWait(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  const defaultTimeout = resolveWaitDefaultTimeout(rawUntil !== undefined)
   const totalTimeout = (() => {
     const raw = values.timeout
-    if (!raw) return 60_000
+    if (!raw) return defaultTimeout
     const n = Number.parseInt(raw, 10)
     if (!Number.isFinite(n) || n <= 0) {
       process.stderr.write(
@@ -620,9 +644,12 @@ function emitWaitTimeout(
     )
   } else {
     const label = ctx.kind === "session" ? `session "${ctx.idOrName}"` : `policy "${ctx.policyId}"`
-    process.stdout.write(`agentproto sessions wait: ${label} timed out.\n`)
+    process.stdout.write(
+      `agentproto sessions wait: ${label} timed out. ` +
+        `Pass --timeout <ms> for a longer budget if the task is still running.\n`,
+    )
   }
-  return 1
+  return 2
 }
 
 /**
