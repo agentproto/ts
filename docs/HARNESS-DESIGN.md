@@ -21,26 +21,26 @@ daemon's `/mcp` endpoint:
 
 | Tool | Purpose | Key params (verified) |
 | --- | --- | --- |
-| `start_agent_session` | spawn a long-running agent CLI | `adapter` (req), `cwd?` / `workspaceSlug?`, `prompt?`, `label?`, `model?`, `effort?`, `mcpServers?`, `orchestrator?` (`true` \| `{tools?, maxDepth?, maxChildren?}`), `notifyUrl?` — `session-tools.ts:241-374` |
-| `prompt_agent_session` | follow-up turn, no respawn | `sessionId` (req), `prompt` (req); returns immediately `{ ok, sessionId, queued:true }` — `session-tools.ts:602-646` |
-| `get_agent_session_output` | tail ring buffer | `sessionId` (req), `lastN?` (default 80, max 500) — `session-tools.ts:736-` |
-| `kill_agent_session` | SIGTERM the session | `sessionId` — `session-tools.ts:1204-` |
-| `list_sessions` / `list_agent_sessions` | enumerate (scoped on sub-gateway) | `kind?`, `onlyAlive?`, `status?` — `session-tools.ts:649-733` |
-| `wait_for_any` | multiplexed long-poll, block until ANY session fires a lifecycle event | `sessionIds[]` (1–20), `timeoutMs?` (default 25 000, max 49 000), `event?` (`turn-end`\|`awaiting-input`\|`exited`\|`any`) — `orchestration-tools.ts:612-700` |
-| `poll_events` | cheap cursor pull of events since last call | `orchestration-tools.ts:98-` |
+| `agent_start` | spawn a long-running agent CLI | `adapter` (req), `cwd?` / `workspaceSlug?`, `prompt?`, `label?`, `model?`, `effort?`, `mcpServers?`, `orchestrator?` (`true` \| `{tools?, maxDepth?, maxChildren?}`), `notifyUrl?`; returns the session as `{ id }` — `agent-tools.ts` |
+| `agent_prompt` | follow-up turn, no respawn | `sessionId` \| `id` (req, aliases), `prompt` (req); returns immediately `{ ok, sessionId, queued:true }` — `agent-tools.ts` |
+| `agent_output` | tail ring buffer | `sessionId` \| `id` (req, aliases), `lastN?` (default 80, max 500) — `agent-tools.ts` |
+| `agent_kill` | SIGTERM the session | `sessionId` \| `id` (aliases) — `agent-tools.ts` |
+| `session_list` / `agent_sessions_list` | enumerate (scoped on sub-gateway) | `kind?`, `onlyAlive?`, `status?` — `session-tools.ts` / `agent-tools.ts` |
+| `session_monitor` | multiplexed long-poll, block until ANY session fires a lifecycle event | `sessionIds` (array or single id, 1–20) \| `sessionId` \| `id`, `timeoutMs?` (default 25 000, max 49 000), `event?` (`turn-end`\|`awaiting-input`\|`exited`\|`any`) — `orchestration-tools.ts` |
+| `session_events_poll` | cheap cursor pull of events since last call | `orchestration-tools.ts` |
 | `session_tree` | nested subtree view | `session-tools.ts:1164-` |
 
-**Turn semantics (important):** `prompt_agent_session` is **fire-and-forget** —
+**Turn semantics (important):** `agent_prompt` is **fire-and-forget** —
 it kicks `registry.sendPrompt(...)` without awaiting and returns
 `{ queued: true }`. Completion is detected out-of-band: a session sets
 `awaitingInput=true` and the daemon emits `session:turn-end` /
 `session:awaiting-input` on its event bus. So a harness's `waitForTurn()` is a
-**`wait_for_any` long-poll** (or `/events` SSE), not a return value.
+**`session_monitor` long-poll** (or `/events` SSE), not a return value.
 
 ### 1.2 Adapter slugs + model routing
 
 Adapters live in top-level `adapters/`. The `adapter` field of
-`start_agent_session` is the adapter **slug**:
+`agent_start` is the adapter **slug**:
 
 | Slug | Package | Kind | Default model | `model` handling |
 | --- | --- | --- | --- | --- |
@@ -89,7 +89,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const client = new Client({ name: "harness", version: "0.1.0" }, { capabilities: {} })
 await client.connect(new StreamableHTTPClientTransport(new URL("http://127.0.0.1:18790/mcp")))
-const res = await client.callTool({ name: "start_agent_session", arguments: { adapter: "claude-code", cwd, prompt } })
+const res = await client.callTool({ name: "agent_start", arguments: { adapter: "claude-code", cwd, prompt } })
 ```
 
 Default daemon endpoint: `http://127.0.0.1:18790/mcp` (port 18790, overridable
@@ -122,22 +122,22 @@ interface AgentHandle {
   readonly model?: string
   /** Send a follow-up turn (fire-and-forget at the daemon). */
   send(prompt: string): Promise<void>
-  /** Block until this session ends its current turn (wait_for_any). */
+  /** Block until this session ends its current turn (session_monitor). */
   waitForTurn(opts?: { timeoutMs?: number }): Promise<TurnResult>
   /** Convenience: send + waitForTurn + return the new tail. */
   ask(prompt: string, opts?: { timeoutMs?: number }): Promise<string>
-  /** Tail the ring buffer (get_agent_session_output). */
+  /** Tail the ring buffer (agent_output). */
   output(opts?: { lastN?: number }): Promise<string>
-  /** SIGTERM the session (kill_agent_session). */
+  /** SIGTERM the session (agent_kill). */
   kill(): Promise<void>
 }
 ```
 
 `TurnResult = { sessionId, event: "turn-end"|"awaiting-input"|"exited"|"timeout", status, awaitingInput }`.
 
-### 2.2 The three harnesses (presets over `start_agent_session`)
+### 2.2 The three harnesses (presets over `agent_start`)
 
-Each `createXxxHarness` = compose a preset → call `start_agent_session` →
+Each `createXxxHarness` = compose a preset → call `agent_start` →
 return an `AgentHandle`. Defaults are overridable per call.
 
 **`createCoderHarness(dx, opts)`**
@@ -167,7 +167,7 @@ return an `AgentHandle`. Defaults are overridable per call.
   the spawn prompt as an orchestration brief (assign each WP to a sub-agent,
   gate, report).
 - Adds helpers: `handle.subtree()` (→ `session_tree`) and
-  `handle.waitForAnyChild()` (→ `wait_for_any` over child ids) for fan-in.
+  `handle.waitForAnyChild()` (→ `session_monitor` over child ids) for fan-in.
 - `opts`: `{ workspace?, workspaceSlug?, model?, effort?, orchestrator?, workPackages?: WorkPackage[], label? }`.
 
 ### 2.3 Internal layering
@@ -192,14 +192,14 @@ Each WP is scoped to a few files with an explicit gate. Order is dependency-froz
 | WP | Scope | Files | Gate |
 | --- | --- | --- | --- |
 | **WP1 — transport client** | Implement `HarnessClient`: connect over `StreamableHTTPClientTransport`, `callTool` helper that unwraps `content[0].text` → JSON, typed `start/prompt/output/kill/waitForAny`. Mirror `mcp-bridge.ts:30-58`. | `src/client.ts`, `src/types.ts` | `pnpm --filter @agentproto/harness check-types` |
-| **WP2 — AgentHandle + connect** | `connectHarness()` factory; `makeHandle(client, sessionId, meta)` implementing `send/waitForTurn/ask/output/kill` over WP1. `waitForTurn` = `wait_for_any` with timeout→`{event:"timeout"}`. | `src/handle.ts`, `src/index.ts` | `pnpm --filter @agentproto/harness check-types` |
+| **WP2 — AgentHandle + connect** | `connectHarness()` factory; `makeHandle(client, sessionId, meta)` implementing `send/waitForTurn/ask/output/kill` over WP1. `waitForTurn` = `session_monitor` with timeout→`{event:"timeout"}`. | `src/handle.ts`, `src/index.ts` | `pnpm --filter @agentproto/harness check-types` |
 | **WP3 — coder harness** | `createCoderHarness`: claude-code/hermes branch, model/effort defaults, render `CoderContext` (stack/conventions/gate cmds) into spawn prompt. | `src/harnesses/coder.ts`, `src/context.ts` | unit test: args snapshot for both engines (`vitest run`) |
 | **WP4 — researcher harness** | `createResearcherHarness`: hermes + GLM default, attach `searchMcp` to `mcpServers`, inject structured-output instruction + default schema. | `src/harnesses/researcher.ts` | unit test: `mcpServers` + schema present in args |
 | **WP5 — supervisor harness** | `createSupervisorHarness`: `orchestrator` wiring, render `WorkPackage[]` brief, `subtree()` + `waitForAnyChild()` helpers. | `src/harnesses/supervisor.ts`, `src/wp.ts` | unit test: `orchestrator` set + WP brief rendered |
 | **WP6 — model-routing verify + README** | Verify the real OpenRouter slugs for deepseek-v4-pro / glm-5.2 against a live hermes; lock preset defaults; write `README.md` with the three quick-starts. | `src/harnesses/*.ts` (defaults), `README.md` | `pnpm --filter @agentproto/harness build` green + README quick-starts run |
 
 > Tests use `vitest` with a **mocked `HarnessClient`** (assert the args handed to
-> `start_agent_session`) — no live daemon required for WP3–WP5. WP6 is the only
+> `agent_start`) — no live daemon required for WP3–WP5. WP6 is the only
 > one needing a running daemon/hermes.
 
 ---
