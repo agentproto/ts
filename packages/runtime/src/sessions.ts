@@ -1528,6 +1528,12 @@ export function createSessionsRegistry(opts?: {
     // `session:turn-end` bus event below — otherwise it's dropped after
     // `projectEvent` renders it into the ring buffer.
     let turnEndReason: string | undefined
+    // Productivity signals for empty-turn detection: a turn that produces
+    // ZERO assistant text AND zero tool calls is a silent no-op (a bad /
+    // unrecognized model id, or a provider that returned an empty
+    // completion) and must be flagged, not reported as a green turn-end.
+    let sawAssistantText = false
+    let sawToolCall = false
     try {
       appendLine(
         rt,
@@ -1548,6 +1554,10 @@ export function createSessionsRegistry(opts?: {
         // shape (tool arguments, plan entries, ...) still exists.
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
+        // `text-delta` is the sole assistant-text channel (see projectEvent);
+        // a whitespace-only delta doesn't count as real output.
+        if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
+        else if (evt.kind === "tool-call") sawToolCall = true
         if (evt.kind === "turn-end") {
           sawTurnEnd = true
           turnEndReason = evt.reason
@@ -1688,6 +1698,27 @@ export function createSessionsRegistry(opts?: {
           tracedSessions.delete(rt.desc.id)
         }
 
+        // ── Empty-turn detection (#1/#2) ─────────────────────────────
+        // A turn that completed the normal way (stream ended, no error/
+        // abort) yet produced NO assistant text, NO tool call, and isn't
+        // awaiting input is a silent no-op — the usual cause is a bad or
+        // unrecognized model id, or a provider that returned an empty
+        // completion at $0. Flag it loudly (a warning line + `empty` on
+        // the bus event) so an orchestrator doesn't mistake a green
+        // turn-end for real progress.
+        const emptyTurn =
+          !sawAssistantText && !sawToolCall && !(rt.desc.awaitingInput ?? false)
+        if (emptyTurn) {
+          appendLine(
+            rt,
+            `\x1b[33m[warning] empty turn — no assistant output, no tool call, ` +
+              `cost ${rt.desc.costUsd !== undefined ? `$${rt.desc.costUsd}` : "unknown"}. ` +
+              `Likely an invalid model id or a provider that returned nothing; ` +
+              `verify the model slug (agentproto models <adapter>).\x1b[0m`,
+            "stderr",
+          )
+        }
+
         if (sessionEvents) {
           // No driver reports a structured "agent-prompt" today (every
           // currently-supported adapter auto-answers ACP permission
@@ -1707,6 +1738,7 @@ export function createSessionsRegistry(opts?: {
             ts,
             ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
+            ...(emptyTurn ? { empty: true } : {}),
           })
           if (rt.desc.awaitingInput) {
             sessionEvents.emit({
