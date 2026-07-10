@@ -111,6 +111,12 @@ interface ServeOpts {
   /** When true, drop the localhost-wildcard default. Only `allowedOrigins`
    *  is honoured. Useful for hardened / shared-host setups. */
   strictOrigins?: boolean
+  /** Bearer token gating the gateway at boot. When set, the daemon
+   *  starts already gated (mode "bearer") instead of the default
+   *  open (mode "none") — no `remote_enable` call needed, and the
+   *  token is stable across restarts. See `daemon.authToken` in
+   *  config.json. */
+  authToken?: string
 }
 
 const SERVE_USAGE = `agentproto serve — run the local agentproto daemon
@@ -127,6 +133,7 @@ Options:
   --token <jwt>               tunnel auth token (or $AGENTPROTO_TOKEN, or config)
   --label <name>              host label shown in the cloud UI
   --allow-origin <url>        trusted Origin (repeatable; localhost always trusted)
+  --auth-token <token>        bearer token gating the gateway (or config daemon.authToken)
   --interactive, -i           interactive mode
   --help, -h                  print this usage and exit
 
@@ -157,6 +164,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       port: { type: "string", short: "p" },
       bind: { type: "string", short: "b" },
       "allow-origin": { type: "string", multiple: true },
+      "auth-token": { type: "string" },
       interactive: { type: "boolean", short: "i" },
       profile: { type: "string" },
     },
@@ -302,6 +310,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const merged = [...new Set([...cfgOrigins, ...cliOrigins])]
   const allowedOrigins = merged.length > 0 ? merged : undefined
 
+  // Auth token: --auth-token > config.json daemon.authToken. Unset ⇒
+  // no `authToken` in ServeOpts ⇒ gateway boots with auth mode "none",
+  // identical to today's behaviour. This is independent of `remote_enable`
+  // (RemoteController's ephemeral quick-tunnel token), which still wins
+  // when active — see the `auth` getter passed to `createGateway` in
+  // `@agentproto/runtime`.
+  const authToken = values["auth-token"] ?? cfgDaemon.authToken
+
   const opts: ServeOpts = {
     workspace,
     port,
@@ -311,6 +327,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     label,
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
+    ...(authToken ? { authToken } : {}),
   }
 
   // ── provider keys ──
@@ -496,6 +513,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ? { allowedOrigins: opts.allowedOrigins }
         : {}),
       ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+      ...(opts.authToken
+        ? { auth: { mode: "bearer" as const, token: opts.authToken } }
+        : {}),
     })
   } catch (err) {
     process.stderr.write(
@@ -525,6 +545,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     allowedOrigins: opts.allowedOrigins,
     strictOrigins: opts.strictOrigins === true,
     connect: opts.connect,
+    authGated: opts.authToken != null,
   })
 
   // ── stale runtime.json sweep ──
@@ -1002,6 +1023,7 @@ function printBootBanner(opts: {
   allowedOrigins?: readonly string[]
   strictOrigins?: boolean
   connect?: string
+  authGated?: boolean
 }): void {
   const c = color
   const home = process.env.HOME ?? ""
@@ -1028,12 +1050,16 @@ function printBootBanner(opts: {
   const mode = opts.connect
     ? `${c.cyan}tunnel${c.reset} ${c.dim}→ ${opts.connect}${c.reset}`
     : `${c.dim}local-only${c.reset}`
+  const auth = opts.authGated
+    ? `${c.amber}bearer${c.reset} ${c.dim}(daemon.authToken)${c.reset}`
+    : `${c.dim}open (no token set)${c.reset}`
   const line = `${c.dim}─${c.reset}`
   process.stderr.write(
     `\n${line} ${c.bold}agentproto${c.reset} ${c.dim}·${c.reset} gateway up ${c.dim}·${c.reset} ${c.cyan}${opts.url}${c.reset} ${line}\n` +
       `  ${c.dim}workspace${c.reset}    ${workspace}\n` +
       `  ${c.dim}pty${c.reset}          ${ptyState}\n` +
       `  ${c.dim}origins${c.reset}      ${origins}\n` +
+      `  ${c.dim}auth${c.reset}         ${auth}\n` +
       `  ${c.dim}endpoints${c.reset}    /mcp · /sessions · /events · /sessions/:id/pty ${c.dim}(WS)${c.reset}\n` +
       `  ${c.dim}mode${c.reset}         ${mode}\n` +
       `\n`,
