@@ -38,12 +38,29 @@ interface PricingEntry {
   provider?: string
 }
 
-/** The provider that gates a model id's key. `anthropic/claude-…` → anthropic;
- *  a bare `claude-…` falls back to the catalog entry's provider. */
+/** Infer the gating provider from a bare model-id family prefix, so
+ *  `runnable` reflects adapter auth rather than pricing-catalog membership.
+ *  Without this a brand-new id (e.g. `claude-opus-4-8` before it lands in the
+ *  pricing catalog) resolves to `unknown` → runnable:false even though the
+ *  ANTHROPIC_API_KEY that spawns it is present. Returns undefined for an
+ *  unrecognized family so the caller can fall back to the catalog. */
+function providerFromIdPrefix(bareId: string): string | undefined {
+  if (/^claude[-/]/.test(bareId)) return "anthropic"
+  if (/^(gpt[-/]|o[1-9](-|$)|chatgpt)/.test(bareId)) return "openai"
+  if (/^gemini[-/]/.test(bareId)) return "google"
+  if (/^grok[-/]/.test(bareId)) return "x-ai"
+  if (/^(deepseek)[-/]/.test(bareId)) return "deepseek"
+  return undefined
+}
+
+/** The provider that gates a model id's key. `anthropic/claude-…` → anthropic
+ *  (the slash prefix is authoritative); otherwise prefer the pricing entry's
+ *  provider, then fall back to the id-family prefix so `runnable` tracks
+ *  adapter auth, not pricing presence. */
 function providerOf(modelId: string, pricing: PricingEntry | undefined): string {
   const slash = modelId.indexOf("/")
   if (slash > 0) return modelId.slice(0, slash)
-  return pricing?.provider ?? "unknown"
+  return pricing?.provider ?? providerFromIdPrefix(modelId) ?? "unknown"
 }
 
 /** Best-effort lookup into the bare-id-keyed pricing catalog: try the full id,
