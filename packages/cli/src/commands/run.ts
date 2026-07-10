@@ -23,11 +23,18 @@ import { readStdinIfPiped } from "../util/stdin.js"
 const USAGE = `agentproto run — spawn an adapter, dispatch one turn, stream events, exit
 
 Usage:
-  agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>] [--json]
+  agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--model <id>]
+                        [--effort <level>] [--resume <session-id>] [--json]
 
   agentproto run claude-code --prompt "summarise this repo"
+  agentproto run claude-code --model claude-opus-4-8 --prompt "review this"
   echo "fix the bug" | agentproto run hermes --cwd .
   agentproto run claude-code --resume <session-id> --prompt "continue"
+
+\`--model\` / \`--effort\` are applied the same way \`agentproto sessions start\`
+and the MCP \`agent_start\` tool apply them (via the adapter's manifest
+\`model\`/\`effort\` options). Adapters that don't declare them reject the
+value with a clear error rather than silently ignoring it.
 
 One-shot scripting / smoke-test verb. Long-lived multiplexing belongs to
 \`agentproto serve\`.
@@ -38,17 +45,38 @@ export async function runRun(args: readonly string[]): Promise<number> {
     process.stdout.write(USAGE)
     return 0
   }
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      cwd: { type: "string" },
-      prompt: { type: "string", short: "p" },
-      resume: { type: "string" },
-      json: { type: "boolean" },
-    },
-  })
+  let values: {
+    cwd?: string
+    prompt?: string
+    model?: string
+    effort?: string
+    resume?: string
+    json?: boolean
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        cwd: { type: "string" },
+        prompt: { type: "string", short: "p" },
+        model: { type: "string" },
+        effort: { type: "string" },
+        resume: { type: "string" },
+        json: { type: "boolean" },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto run: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto run --help\n",
+    )
+    return 2
+  }
 
   const slug = positionals[0]
   if (!slug) {
@@ -70,6 +98,17 @@ export async function runRun(args: readonly string[]): Promise<number> {
   const adapter = await resolveAdapter(slug)
   const runtime = createAgentCliRuntime(adapter.handle)
 
+  // Mirror serve.ts / agent_start: `model` and `effort` are manifest-declared
+  // options, applied via the adapter's own model/effort handling (ACP
+  // set_config_option for claude-code, a `/model` control turn for hermes).
+  // Build config.options only when something is set — an empty options map
+  // trips composeSpawn's "no declared options" early-return.
+  const options: Record<string, string> = {}
+  if (values.model) options.model = values.model
+  if (values.effort) options.effort = values.effort
+  const config =
+    Object.keys(options).length > 0 ? { options } : undefined
+
   const controller = new AbortController()
   const onSignal = (sig: NodeJS.Signals) => {
     process.stderr.write(`\nagentproto: received ${sig}, cancelling…\n`)
@@ -84,6 +123,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
       cwd,
       signal: controller.signal,
       resumeSessionId: values.resume,
+      ...(config ? { config } : {}),
     })
 
     const printer = values.json ? printJson : printPretty
