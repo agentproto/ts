@@ -107,6 +107,35 @@ export const LLM_PRICING_CATALOG = {
     vendor: "anthropic",
     provider: "anthropic",
   },
+  // Latest-generation Anthropic ids the claude-code / claude-sdk adapters
+  // advertise. Registered so `agentproto models` reports a $/Mtok figure and
+  // a concrete provider — before these rows they resolved to provider
+  // `unknown` (no pricing entry) and showed as runnable:false. Prices per 1M
+  // tokens from platform.claude.com/docs/en/pricing.
+  "claude-opus-4-8": {
+    inputPer1M: 5.0,
+    outputPer1M: 25.0,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    vendor: "anthropic",
+    provider: "anthropic",
+  },
+  "claude-sonnet-5": {
+    inputPer1M: 3.0,
+    outputPer1M: 15.0,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    vendor: "anthropic",
+    provider: "anthropic",
+  },
+  "claude-fable-5": {
+    inputPer1M: 10.0,
+    outputPer1M: 50.0,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    vendor: "anthropic",
+    provider: "anthropic",
+  },
 
   // ── Google ─────────────────────────────────────────────────────────────
   // Source: https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-05-29)
