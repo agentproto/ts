@@ -54,6 +54,16 @@ export interface SessionTurnEndEvent {
    * Absent for drivers that don't report a reason.
    */
   reason?: string
+  /**
+   * True when the turn completed normally but produced ZERO assistant
+   * output AND zero tool calls (and wasn't awaiting input) — a silent
+   * no-op. Grok via hermes/OpenRouter, and any invalid/rejected model id,
+   * complete a turn this way: `turnsCompleted` bumps, `$0` cost, empty
+   * transcript. Surfaced so an orchestrator can flag it instead of
+   * treating a green turn-end as real progress. Absent (not `false`) on
+   * a normal, productive turn.
+   */
+  empty?: boolean
 }
 
 export interface SessionAwaitingInputEvent {
