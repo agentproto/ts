@@ -227,6 +227,25 @@ At boot the daemon writes `<workspace>/.agentproto/runtime.json` (mode `0600`) w
 - Override via env: `AGENTPROTO_DAEMON_URL=http://… AGENTPROTO_DAEMON_TOKEN=…`.
 - Read routes (`GET /sessions`, SSE `/stream`) stay open so existing read-only tooling keeps working.
 
+### Gateway auth (persistent bearer token)
+
+By default the gateway itself is open on loopback (`mode: "none"`) — the `runtime.json` token above only gates the CLI's own discovery flow. The `remote_enable` MCP tool can flip the whole gateway into `mode: "bearer"`, but it always mints a fresh random token and opens a Cloudflare quick tunnel; the token lives in memory and is lost on every restart.
+
+For a **stable** token that survives restarts and doesn't require a tunnel, set `daemon.authToken` before booting:
+
+```bash
+agentproto config set daemon.authToken $(openssl rand -hex 32)
+agentproto serve
+```
+
+or pass it inline for a one-off run:
+
+```bash
+agentproto serve --auth-token <token>
+```
+
+`--auth-token` overrides `daemon.authToken` when both are set. This is a separate gate from the per-boot `runtime.json` token above: it covers `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route, and (unlike the `/sessions/*` gate) it DOES exempt loopback callers with no `X-Forwarded-For` header — a tunnel in front of the daemon always sets that header, so a request that truly never left the machine still gets through unauthenticated. Unset, behavior is unchanged: fully open. If `remote_enable` is later called on top, its ephemeral token takes precedence over `daemon.authToken` for as long as the remote tunnel is up.
+
 ## `sessions` — browse + control the daemon
 
 ```bash

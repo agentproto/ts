@@ -49,6 +49,13 @@ export interface DaemonConfig {
   strictOrigins?: boolean
   /** Server label sent in tunnel hello frames. */
   label?: string
+  /** Bearer token gating the gateway at boot (`AuthOptions` with
+   *  `mode: "bearer"`). Unlike `remote_enable`'s ephemeral quick-tunnel
+   *  token, this one lives in config.json and survives daemon restarts.
+   *  Set via `agentproto config set daemon.authToken <token>` (e.g.
+   *  `$(openssl rand -hex 32)`). Unset ⇒ the gateway boots with
+   *  `mode: "none"` — fully open on loopback, same as today. */
+  authToken?: string
 }
 
 export interface TunnelConfig {
