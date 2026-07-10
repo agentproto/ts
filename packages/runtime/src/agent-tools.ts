@@ -75,6 +75,50 @@ const mcpPositiveNumber = z.preprocess(
   z.number().positive(),
 )
 
+// ── session-id argument aliasing ──────────────────────────────────────────
+// `agent_start` returns the session as `{ "id": "sess_…" }`, but the drive
+// tools (`agent_prompt` / `agent_output` / `agent_kill`) historically took
+// `sessionId`. Passing the natural `{ id }` shape back therefore failed with a
+// Zod error, forcing a failed call per tool to learn the field name. These
+// tools now accept EITHER field (additive, back-compat): `sessionId` stays the
+// documented primary; `id` is a first-class alias so an agent can pipe
+// `agent_start`'s return straight through.
+const sessionIdField = z
+  .string()
+  .optional()
+  .describe(
+    "Session id (as returned by agent_start). Accepts either `sessionId` or " +
+      "its alias `id` — pass whichever you have.",
+  )
+const sessionIdAliasField = z
+  .string()
+  .optional()
+  .describe("Alias for `sessionId` — the `id` field returned by agent_start.")
+
+/** Coalesce the `sessionId` / `id` alias pair. */
+function resolveSessionIdArg(input: {
+  sessionId?: string
+  id?: string
+}): string | undefined {
+  return input.sessionId ?? input.id
+}
+
+/** Uniform error when neither `sessionId` nor `id` was supplied. */
+function missingSessionIdError(tool: string): {
+  content: { type: "text"; text: string }[]
+  isError: true
+} {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `${tool}: missing session id — pass \`sessionId\` (or its alias \`id\`).`,
+      },
+    ],
+    isError: true,
+  }
+}
+
 export interface RegisterAgentToolsOptions {
   registry: SessionsRegistry
   /** Optional adapter resolver — required for `agent_start`
@@ -496,7 +540,8 @@ export function registerAgentTools(
       "which ends the session entirely). `interrupt` is a no-op on an " +
       "already-idle session.",
     {
-      sessionId: z.string().describe("Session id returned by agent_start."),
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
       prompt: z.string().min(1).describe("The next user turn (plain text)."),
       interrupt: z
         .boolean()
@@ -509,6 +554,8 @@ export function registerAgentTools(
         ),
     },
     async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_prompt")
       try {
         // enqueuePrompt awaits admission (resume attempt + the dead/
         // wrong-kind/busy checks) before resolving, then fires the
@@ -520,7 +567,7 @@ export function registerAgentTools(
         // instead of a lying `{queued: true}` for a prompt that goes
         // nowhere. The caller polls agent_output for the turn's actual
         // progress/completion.
-        await registry.enqueuePrompt(input.sessionId, input.prompt, {
+        await registry.enqueuePrompt(sessionId, input.prompt, {
           interrupt: input.interrupt,
         })
         return {
@@ -528,7 +575,7 @@ export function registerAgentTools(
             {
               type: "text",
               text: JSON.stringify(
-                { ok: true, sessionId: input.sessionId, queued: true },
+                { ok: true, sessionId, queued: true },
                 null,
                 2
               ),
@@ -556,7 +603,8 @@ export function registerAgentTools(
       "ring buffer (stdout + stderr inter-leaved, newest last). Use this to read " +
       "an agent's reply after `agent_prompt`.",
     {
-      sessionId: z.string().describe("Session id."),
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
       lastN: z
         .number()
         .int()
@@ -571,11 +619,13 @@ export function registerAgentTools(
         ),
     },
     async input => {
-      const desc = registry.get(input.sessionId)
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_output")
+      const desc = registry.get(sessionId)
       if (!desc) {
         return {
           content: [
-            { type: "text", text: `agent_output: no session "${input.sessionId}"` },
+            { type: "text", text: `agent_output: no session "${sessionId}"` },
           ],
           isError: true,
         }
@@ -584,7 +634,7 @@ export function registerAgentTools(
       // backfill (which is the recent ring buffer), unsubscribe.
       const limit = input.lastN ?? 80
       const lines: string[] = []
-      const unsub = registry.attach(input.sessionId, (line, _stream) => {
+      const unsub = registry.attach(sessionId, (line, _stream) => {
         lines.push(line)
       })
       if (unsub) unsub()
@@ -612,7 +662,7 @@ export function registerAgentTools(
             type: "text",
             text: JSON.stringify(
               {
-                sessionId: input.sessionId,
+                sessionId,
                 status: desc.status,
                 lastOutputAt: desc.lastOutputAt,
                 // Distinct liveness heartbeat: advances on ANY adapter-process
@@ -646,9 +696,12 @@ export function registerAgentTools(
       "session. Use to free resources after the operator is done, or when a " +
       "session is wedged.",
     {
-      sessionId: z.string().describe("Session id."),
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
     },
     async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_kill")
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator may only kill sessions in its own subtree — never
       // an arbitrary id (e.g. a sibling's, or the root operator's).
@@ -657,7 +710,7 @@ export function registerAgentTools(
           callerScope.ownerSessionId,
           registry.list(),
         )
-        if (!subtree.has(input.sessionId)) {
+        if (!subtree.has(sessionId)) {
           return {
             content: [
               {
@@ -666,11 +719,11 @@ export function registerAgentTools(
                   {
                     error: "orchestrator_session_out_of_scope",
                     message:
-                      `agent_kill: session "${input.sessionId}" is not in ` +
+                      `agent_kill: session "${sessionId}" is not in ` +
                       `your subtree — a scoped orchestrator can only kill sessions ` +
                       `it (transitively) spawned. No action taken.`,
                     ok: false,
-                    sessionId: input.sessionId,
+                    sessionId,
                   },
                   null,
                   2,
@@ -681,12 +734,12 @@ export function registerAgentTools(
           }
         }
       }
-      const ok = registry.kill(input.sessionId)
+      const ok = registry.kill(sessionId)
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
+            text: JSON.stringify({ ok, sessionId }, null, 2),
           },
         ],
       }
@@ -851,9 +904,14 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
       "agent run to review the full conversation without the ANSI noise of the " +
       "ring buffer.",
     {
-      sessionId: z.string().describe(
-        "agentproto session id (sess_xxx), adapter-native id, or session name."
-      ),
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "agentproto session id (sess_xxx), adapter-native id, or session name. " +
+            "Accepts either `sessionId` or its alias `id`.",
+        ),
+      id: sessionIdAliasField,
       adapter: z.string().optional().describe(
         "Override adapter slug (e.g. 'claude-code', 'hermes') when the session " +
           "is not in the registry. Required when passing a raw adapter-native id."
@@ -875,8 +933,10 @@ export function registerExportSessionTool(server: McpServer, ops: ExportSessionO
       ),
     },
     async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_export")
       const result = await doExport({
-        sessionId: input.sessionId,
+        sessionId,
         registry: ops.registry,
         ...(input.adapter ? { adapter: input.adapter } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),

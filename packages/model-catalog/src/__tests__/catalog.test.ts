@@ -30,6 +30,7 @@ import {
 import { getModel } from "../registry/index.js"
 import { shouldDebit } from "../byok/index.js"
 import type { ResolvedModel } from "../registry/index.js"
+import { resolvePricing, resolveModelRoute } from "../llm/catalog.js"
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -631,5 +632,26 @@ describe("shouldDebit", () => {
     expect(result.debit).toBe(true)
     expect(result.shadow).toBe(false)
     expect(result.reason).toBe("non-byok")
+  })
+})
+
+describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
+  // These ids are advertised by the claude-code / claude-sdk adapters; they
+  // must resolve to a concrete anthropic-priced route so `agentproto models`
+  // reports a price and marks them runnable.
+  it.each([
+    ["claude-opus-4-8", 5.0, 25.0],
+    ["claude-sonnet-5", 3.0, 15.0],
+    ["claude-fable-5", 10.0, 50.0],
+  ])("%s resolves to anthropic pricing", (id, input, output) => {
+    const pricing = resolvePricing(id)
+    expect(pricing).toBeDefined()
+    expect(pricing?.provider).toBe("anthropic")
+    expect(pricing?.vendor).toBe("anthropic")
+    expect(pricing?.inputPer1M).toBe(input)
+    expect(pricing?.outputPer1M).toBe(output)
+
+    const route = resolveModelRoute(id)
+    expect(route?.provider).toBe("anthropic")
   })
 })

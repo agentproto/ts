@@ -1076,11 +1076,25 @@ export function registerOrchestrationTools(
       "target state. Eliminates polling in multi-session fan-in orchestration — " +
       "one call replaces N concurrent waitForTurnEnd calls.",
     {
-      sessionIds: z
-        .array(z.string())
-        .min(1)
-        .max(20)
-        .describe("Session ids (or names) to watch. Returns on the first hit."),
+      // Accept the natural shapes an agent already has on hand: a single id
+      // (the `id` agent_start returns, or `sessionId` from the drive tools),
+      // or the fan-in array. `sessionIds` additionally tolerates a bare
+      // string (not just an array) so a one-session monitor doesn't force
+      // array-wrapping. All three coalesce into the watched-id list below.
+      sessionIds: jsonTolerant(z.union([z.string(), z.array(z.string())]))
+        .optional()
+        .describe(
+          "Session ids (or names) to watch — an array for fan-in, or a single " +
+            "id. Returns on the first hit. Provide this OR `sessionId`/`id`.",
+        ),
+      sessionId: z
+        .string()
+        .optional()
+        .describe("Single session id/name — singular alias for `sessionIds`."),
+      id: z
+        .string()
+        .optional()
+        .describe("Alias for `sessionId` — the `id` returned by agent_start."),
       timeoutMs: z
         .number()
         .int()
@@ -1108,11 +1122,48 @@ export function registerOrchestrationTools(
       const timeout = input.timeoutMs ?? 25_000
       const targetEvent = input.event ?? "any"
 
+      // Coalesce the accepted arg shapes into the watched-id list.
+      const fromSessionIds =
+        input.sessionIds === undefined
+          ? []
+          : Array.isArray(input.sessionIds)
+            ? input.sessionIds
+            : [input.sessionIds]
+      const singular = input.sessionId ?? input.id
+      const sessionIds = [...fromSessionIds, ...(singular ? [singular] : [])]
+      if (sessionIds.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error:
+                  "session_monitor: no sessions to watch — pass `sessionIds` (array or single id) or `sessionId`/`id`.",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (sessionIds.length > 20) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `session_monitor: too many sessions (${sessionIds.length}); max 20 per call.`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+
       const result = await monitorSessionWait({
         registry,
         sessionEvents,
         eventRing,
-        sessionIds: input.sessionIds,
+        sessionIds,
         event: targetEvent,
         timeoutMs: timeout,
         ...(input.since !== undefined ? { since: input.since } : {}),
