@@ -951,21 +951,37 @@ export function isStaleRunning(
 }
 
 /** Single-character badge for the session's live activity — busy
- *  processing a turn, awaiting input, or (the important case) claiming to
- *  run with no process behind it. Empty string for the common idle case. */
+ *  processing a turn, awaiting input, idle after completing at least one
+ *  turn, or (the important case) claiming to run with no process behind
+ *  it. Empty string for a freshly-spawned session that hasn't run a turn
+ *  yet.
+ *
+ *  Agent-cli sessions are long-lived: they stay `status: "running"` after
+ *  a turn ends, so `status` alone can't distinguish "still working" from
+ *  "finished its turn and sitting idle" — and without `turnsCompleted`,
+ *  "idle, finished a turn" was indistinguishable from "idle, never
+ *  started one" (both fell through to the same blank badge). The `○`
+ *  case below closes that gap. */
 export function statusBadge(
-  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+  s: Pick<
+    SessionDescriptor,
+    "status" | "processAlive" | "busy" | "awaitingInput" | "turnsCompleted"
+  >,
 ): string {
   if (isStaleRunning(s)) return "⚠" // ⚠
   if (s.status !== "running") return ""
-  if (s.busy) return "●" // ●
-  if (s.awaitingInput) return "?"
-  return ""
+  if (s.busy) return "●" // ● — mid-turn
+  if (s.awaitingInput) return "?" // ? — blocked on the user
+  if ((s.turnsCompleted ?? 0) > 0) return "○" // ○ — idle, has completed ≥1 turn
+  return "" // never run a turn yet
 }
 
 /** STATUS column/field text — status plus its badge, when any. */
 export function statusLabel(
-  s: Pick<SessionDescriptor, "status" | "processAlive" | "busy" | "awaitingInput">,
+  s: Pick<
+    SessionDescriptor,
+    "status" | "processAlive" | "busy" | "awaitingInput" | "turnsCompleted"
+  >,
 ): string {
   const badge = statusBadge(s)
   return badge ? `${s.status} ${badge}` : s.status
@@ -1879,15 +1895,36 @@ function renderDetail(
         stale ? ` ⚠ dead pid${c.reset}` : ""
       }`,
     )
+    const turnsDone = s.turnsCompleted ?? 0
     out.push(
       `  ${kw("activity")} ${
         s.busy
           ? `${c.green}● busy${c.reset}`
           : s.awaitingInput
             ? `${c.amber}? awaiting input${c.reset}`
-            : `${c.dim}idle${c.reset}`
+            : turnsDone > 0
+              ? `${c.dim}○ idle (${turnsDone} turn${turnsDone === 1 ? "" : "s"} done)${c.reset}`
+              : `${c.dim}idle${c.reset}`
       }`,
     )
+    // Usage line — same cost/token/context data MCP's session_usage and
+    // agent_sessions_list already expose over JSON, surfaced here so the
+    // interactive dashboard doesn't force a drop to --json for it.
+    // Omitted entirely (not zeroed) when the adapter hasn't reported any
+    // usage yet — see SessionDescriptor.costUsd's doc comment.
+    const usageParts: string[] = []
+    if (s.costUsd !== undefined) usageParts.push(`$${s.costUsd.toFixed(4)}`)
+    if (s.tokensIn !== undefined || s.tokensOut !== undefined) {
+      usageParts.push(`${s.tokensIn ?? 0} in / ${s.tokensOut ?? 0} out tok`)
+    }
+    if (s.contextUsed !== undefined && s.contextSize !== undefined && s.contextSize > 0) {
+      usageParts.push(
+        `ctx ${Math.round((s.contextUsed / s.contextSize) * 100)}%`,
+      )
+    }
+    if (usageParts.length > 0) {
+      out.push(`  ${kw("usage")} ${c.dim}${usageParts.join(" · ")}${c.reset}`)
+    }
     out.push(`  ${kw("workspace")} ${s.workspaceSlug}`)
     out.push(`  ${kw("command")} ${c.dim}${truncate(s.command, width - 14)}${c.reset}`)
     out.push(`  ${kw("pid")} ${s.pid ?? "—"}`)
