@@ -2,7 +2,9 @@
  * Unit tests for the pure status-rendering helpers in `commands/sessions.ts`
  * (`isStaleRunning` / `statusBadge` / `statusLabel` / `statusColour`) — the
  * bits that decide how the dashboard shows busy/idle and a `running` status
- * whose process has actually died.
+ * whose process has actually died. Also covers the `turnsCompleted`-derived
+ * "○" badge, which distinguishes "idle, finished a turn" from "idle, never
+ * ran one" — both fell through to the same blank badge before.
  */
 
 import { describe, it, expect } from "vitest"
@@ -61,10 +63,61 @@ describe("statusBadge", () => {
     ).toBe("?")
   })
 
-  it("is empty for a healthy idle running session", () => {
+  it("is empty for a healthy idle running session that never ran a turn", () => {
     expect(
       statusBadge({ status: "running", processAlive: true, busy: false, awaitingInput: false }),
     ).toBe("")
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 0,
+      }),
+    ).toBe("")
+  })
+
+  it("shows a distinct badge when idle after completing a turn — the working-vs-done signal", () => {
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 1,
+      }),
+    ).toBe("○")
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 3,
+      }),
+    ).toBe("○")
+  })
+
+  it("prioritises busy and awaitingInput over the turnsCompleted badge", () => {
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: true,
+        awaitingInput: false,
+        turnsCompleted: 5,
+      }),
+    ).toBe("●")
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: true,
+        turnsCompleted: 5,
+      }),
+    ).toBe("?")
   })
 
   it("is empty for non-running statuses", () => {
@@ -88,6 +141,18 @@ describe("statusLabel", () => {
     expect(
       statusLabel({ status: "exited", processAlive: false, busy: false, awaitingInput: false }),
     ).toBe("exited")
+  })
+
+  it("appends the idle-after-turn badge so a finished agent-cli session reads distinctly from a fresh one", () => {
+    expect(
+      statusLabel({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 2,
+      }),
+    ).toBe("running ○")
   })
 })
 
