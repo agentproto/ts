@@ -9,7 +9,7 @@
     "url": "https://github.com/agentproto/ts",
     "directory": "packages/agentproto-placeholder"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "agentproto contributors",
   "files": ["README.md"]
 }
