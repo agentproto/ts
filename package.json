@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" build",

@@ -10,7 +10,7 @@
     "subprocess"
   ],
   "homepage": "https://agentproto.sh/docs/aip-29",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",

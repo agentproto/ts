@@ -20,7 +20,7 @@
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
