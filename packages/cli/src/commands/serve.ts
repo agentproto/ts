@@ -49,16 +49,15 @@ import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
-import { loadImportedMcps } from "@agentproto/runtime/mcp-imports"
 import {
   createTunnelServer,
   wrapWebSocket,
-  DEFAULT_WS_DIAL_TIMEOUT_MS,
-  DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
   type FrameSink,
+  type E2eFrameSink,
 } from "@agentproto/acp/tunnel"
 import {
   createGateway,
+  createPairingRegistry,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
@@ -66,7 +65,13 @@ import {
   setMcpCredentialDeps,
   type AgentAdapterResolver,
   type GatewayHandle,
+  type PairingRegistry,
+  type PairingChannelHandle,
 } from "@agentproto/runtime"
+import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
+import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
+import { homedir } from "node:os"
+import { join as joinPath } from "node:path"
 import {
   CredentialBroker,
   KeychainStore,
@@ -491,12 +496,49 @@ export async function runServe(args: readonly string[]): Promise<number> {
       }),
   })
 
+  // ── E2E pairing registry ──
+  // Built BEFORE createGateway (so it can wire the /pairings REST routes + the
+  // pair_* MCP tools) but its `serve` callback captures `gateway` by reference
+  // — invoked only at splice time, well after boot, so the binding is set. The
+  // registry owns the crypto (offer store, handshake, pairings.json); the CLI
+  // injects the ws `dial` and a `serve` that reuses the SAME createTunnelServer
+  // config as `--connect` (buildDaemonTunnelServerOptions), plus the daemon's
+  // own bearer so a peer-authenticated pairing passes mutating-route gates.
+  // Identity is loaded lazily — a daemon that never pairs writes no identity file.
+  const agentprotoHome =
+    process.env.AGENTPROTO_HOME ?? joinPath(homedir(), ".agentproto")
+  const cfgPairing = cfg.pairing ?? {}
+  let gateway: GatewayHandle
+  const servePairedChannel = (sink: E2eFrameSink): PairingChannelHandle => {
+    const server = createTunnelServer({
+      sink,
+      ...buildDaemonTunnelServerOptions({
+        gateway,
+        label: opts.label,
+        spawnPty,
+        announcedTools,
+        // Inject the gateway's per-boot bearer so mutating /sessions routes
+        // (no loopback bypass) work over the peer-authenticated pairing.
+        injectAuthToken: gateway.token,
+      }),
+    })
+    return { close: () => server.close() }
+  }
+  const pairingRegistry: PairingRegistry = createPairingRegistry({
+    loadIdentity: () => loadOrCreateIdentity(joinPath(agentprotoHome, "identity.json")),
+    pairingsPath: joinPath(agentprotoHome, "pairings.json"),
+    ...(cfgPairing.rendezvous ? { defaultRendezvousUrl: cfgPairing.rendezvous } : {}),
+    dial: daemonDialRendezvous,
+    serve: servePairedChannel,
+    log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  })
+
   // ── boot the gateway ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
-  let gateway: GatewayHandle
   try {
     gateway = await createGateway({
+      pairingRegistry,
       workspace: opts.workspace,
       port: opts.port,
       bind: opts.bind,
@@ -585,6 +627,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
     }
   } catch {
     // best-effort
+  }
+
+  // ── pairing autoconnect ──
+  // Open standing rendezvous connections for every persisted pairing so a
+  // paired client can reconnect anytime (same pattern as tunnel.autoconnect).
+  // Non-blocking + best-effort — a broker being down must never gate boot.
+  if (cfgPairing.autoconnect !== false) {
+    void pairingRegistry.startAutoconnect().catch(err =>
+      process.stderr.write(
+        `agentproto serve: pairing autoconnect failed — ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      ),
+    )
   }
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
@@ -788,176 +844,21 @@ async function runOneTunnel(
 
   const server = createTunnelServer({
     sink,
-    label: opts.label,
-    pty: spawnPty !== null,
-    ...(spawnPty ? { spawnPty } : {}),
-    // Announce what this daemon serves (doctypes + installed agent adapters)
-    // so a multi-daemon host can enumerate + route by capability.
-    ...(announcedTools.length ? { tools: announcedTools } : {}),
-    // Generic HTTP-relay upstream for tunnel `http_request` frames.
-    // Cloud-side callers (e.g. the API's local-daemon filesystem
-    // provider) can now route MCP JSON-RPC + any other HTTP through
-    // the daemon without needing a public URL. We point at the local
-    // gateway since that's where `/mcp`, `/sessions`, `/events` live.
-    httpUpstream: gateway.url,
-    // Forward bounds, stated explicitly so they're visible and tunable here
-    // (the local gateway is fast, so the package defaults fit; bump these if
-    // this daemon ever fronts a slower upstream):
-    //  - connect + buffered-body / connect + stream-headers ceiling
-    httpForwardTimeoutMs: DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
-    //  - WS upgrade dial ceiling
-    wsDialTimeoutMs: DEFAULT_WS_DIAL_TIMEOUT_MS,
-    // Bound a streaming forward against a silent upstream: if an SSE/ndjson
-    // stream sends headers then stalls with no bytes for 2 min, end it instead
-    // of holding the reqId open forever. The window resets per chunk, so a
-    // well-behaved stream (events or heartbeat comments) is never cut — only a
-    // genuinely dead upstream trips it.
-    httpStreamIdleTimeoutMs: 120_000,
-    // WS forwarding upstream — daemon dials the local gateway's WS
-    // endpoints (/sessions/:id/pty, etc) and pipes frames to the host.
-    // Used by the cloud tunnel pod so browsers on mobile can attach to
-    // interactive PTY sessions even though the daemon is only reachable
-    // through the host (not directly).
-    dialUpstreamWs: async ({ url, protocols, headers, signal }) => {
-      // Dial with the same `ws` lib already used for the host tunnel.
-      // Resolve once we receive `open`; reject on `error` / `unexpected-response`.
-      //
-      // Origin gotcha: the daemon's own HTTP gateway requires Origin in
-      // its allowlist for mutating + WS routes. When we self-dial here
-      // (no browser in the path), `ws` doesn't set Origin and the
-      // request gets 401'd by the daemon's own auth. Inject a loopback
-      // Origin matching the URL — `http://127.0.0.1:*` is always in the
-      // default allowlist.
-      const upstreamHeaders: Record<string, string> = {
-        ...(headers as Record<string, string> | undefined),
-      }
-      if (!upstreamHeaders["origin"] && !upstreamHeaders["Origin"]) {
-        try {
-          const u = new URL(url)
-          const httpScheme = u.protocol === "wss:" ? "https:" : "http:"
-          upstreamHeaders["Origin"] = `${httpScheme}//${u.host}`
-        } catch {
-          /* malformed url — daemon will reject with a clear error */
-        }
-      }
-      return await new Promise((resolve, reject) => {
-        const sock = new WebSocket(url, protocols ? [...protocols] : undefined, {
-          headers: upstreamHeaders,
-        })
-        // The server bounds the dial and aborts via `signal` on timeout/teardown.
-        // Honour it: tear down the half-open socket and reject promptly so we
-        // don't leak a connecting socket.
-        const onAbort = () => {
-          sock.off("open", onceOpen)
-          sock.off("error", onceError)
-          sock.off("unexpected-response", onceUnexpected)
-          try {
-            sock.terminate()
-          } catch {
-            /* defensive — socket may already be closing */
-          }
-          reject(
-            signal?.reason instanceof Error
-              ? signal.reason
-              : new Error("ws dial aborted"),
-          )
-        }
-        const detachAbort = () => signal?.removeEventListener("abort", onAbort)
-        const onceOpen = () => {
-          detachAbort()
-          sock.off("error", onceError)
-          sock.off("unexpected-response", onceUnexpected)
-          resolve({
-            protocol: sock.protocol ?? "",
-            send: (data, sendOpts) => {
-              sock.send(data, { binary: sendOpts.binary })
-            },
-            close: (code, reason) => {
-              try {
-                sock.close(code, reason)
-              } catch {
-                /* defensive — socket may already be closed */
-              }
-            },
-            onMessage: handler => {
-              sock.on("message", (raw: Buffer, isBinary: boolean) => {
-                handler(raw, isBinary)
-              })
-            },
-            onClose: handler => {
-              sock.on("close", (code: number, reason: Buffer) => {
-                handler(code, reason.toString("utf8"))
-              })
-            },
-            onError: handler => {
-              sock.on("error", (err: Error) => handler(err))
-            },
-          })
-        }
-        const onceError = (err: Error) => {
-          detachAbort()
-          sock.off("open", onceOpen)
-          reject(err)
-        }
-        const onceUnexpected = (
-          _req: unknown,
-          res: { statusCode?: number }
-        ) => {
-          detachAbort()
-          sock.off("open", onceOpen)
-          reject(new Error(`Unexpected server response: ${res.statusCode ?? 0}`))
-        }
-        if (signal) {
-          if (signal.aborted) {
-            onAbort()
-            return
-          }
-          signal.addEventListener("abort", onAbort, { once: true })
-        }
-        sock.once("open", onceOpen)
-        sock.once("error", onceError)
-        sock.once("unexpected-response", onceUnexpected)
-      })
-    },
-    // Resolve a named WS upstream to a registered import's origin. A host
-    // can watch a tab on an imported capability server (e.g. a browser
-    // daemon) by aliasing the import instead of the default gateway — the
-    // path rides the import's own origin (`http://127.0.0.1:<port>`), the
-    // daemon never accepts a raw origin from the host.
-    resolveWsUpstream: async alias => {
-      const cfg = await loadImportedMcps()
-      const entry = cfg.imports.find(e => e.alias === alias)
-      const url = entry?.snapshot.url
-      if (!url) return undefined
-      try {
-        return new URL(url).origin
-      } catch {
-        return undefined
-      }
-    },
-    // v0 authorize hook: trust the bearer-authenticated host completely.
-    // Token possession proves the host was provisioned for this daemon.
-    // Per-spawn policy filtering will land alongside the policy.toml.
-    authorize: req => req,
-    // ── AIP-46 bridge: tunnel spawns land in the gateway registry ──
-    // Every cloud-driven spawn shows up in `gateway.url/sessions`
-    // and the LocalDaemonSessionsCard, alongside spawns originated
-    // through MCP tools or POST /sessions/agent. The execId is the
-    // host's stable id — keep it so cloud cli_sessions rows can
-    // cross-ref the daemon-side descriptor.
-    onChildSpawned: ({ execId, child, request }) => {
-      gateway.sessions.register({
-        id: execId,
-        child,
-        workspaceSlug: opts.label,
-        command: [request.command, ...request.args].join(" "),
-        kind: "agent-cli",
-        label: `tunnel: ${request.command.split("/").pop() ?? request.command}`,
-      })
-    },
-    // Graceful drain hook — flip the outer loop's "reconnect immediately"
-    // flag and close the WS so the supervisor reconnects without backoff.
-    // Host will follow up with close(1012) ~2s later as a hard backstop.
+    // The daemon-side serving config (HTTP/WS forwarding to the local gateway,
+    // spawn authorize, PTY, sessions-registry adoption) is shared verbatim with
+    // the E2E pairing serve path — see util/tunnel-serve.ts. `serve --connect`
+    // trusts its bearer-authenticated host, so it injects no token (unlike a
+    // pairing) and labels adopted spawns "tunnel:".
+    ...buildDaemonTunnelServerOptions({
+      gateway,
+      label: opts.label,
+      spawnPty,
+      announcedTools,
+      childLabelPrefix: "tunnel",
+    }),
+    // Graceful drain hook — connect-only. Flip the outer loop's "reconnect
+    // immediately" flag and close the WS so the supervisor reconnects without
+    // backoff. Host follows up with close(1012) ~2s later as a hard backstop.
     onReconnectSoon: ({ reasonMs }) => {
       process.stderr.write(
         `agentproto serve: host signaled drain (reasonMs=${reasonMs ?? "?"}) — reconnecting immediately\n`
@@ -1000,6 +901,50 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve()
     })
   })
+}
+
+/**
+ * Dial a rendezvous broker outbound (daemon side) and adapt the socket to a
+ * `FrameSink`. Injected into the pairing registry. Honours the registry's abort
+ * signal so shutdown tears down an in-flight dial promptly.
+ */
+async function daemonDialRendezvous(
+  url: string,
+  signal: AbortSignal,
+): Promise<FrameSink> {
+  const ws = new WebSocket(url)
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      ws.off("open", onOpen)
+      ws.off("error", onError)
+      signal.removeEventListener("abort", onAbort)
+    }
+    const onOpen = (): void => {
+      cleanup()
+      resolve()
+    }
+    const onError = (err: Error): void => {
+      cleanup()
+      reject(err)
+    }
+    const onAbort = (): void => {
+      cleanup()
+      try {
+        ws.close()
+      } catch {
+        /* ignore */
+      }
+      reject(new Error("dial aborted"))
+    }
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    ws.once("open", onOpen)
+    ws.once("error", onError)
+    signal.addEventListener("abort", onAbort)
+  })
+  return wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
 }
 
 /**

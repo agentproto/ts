@@ -825,9 +825,15 @@ importers:
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../provider-kit
+      '@agentproto/rendezvous':
+        specifier: workspace:*
+        version: link:../rendezvous
       '@agentproto/runtime-profile-standard':
         specifier: workspace:*
         version: link:../runtime-profile-standard
+      '@agentproto/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@agentproto/worktree':
         specifier: workspace:*
         version: link:../worktree
@@ -852,6 +858,9 @@ importers:
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
+      qrcode-terminal:
+        specifier: ^0.12.0
+        version: 0.12.0
       ws:
         specifier: ^8.20.0
         version: 8.20.0(bufferutil@4.1.0)
@@ -7250,6 +7259,10 @@ packages:
   pump@3.0.4:
     resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
 
+  qrcode-terminal@0.12.0:
+    resolution: {integrity: sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==}
+    hasBin: true
+
   qs@6.15.1:
     resolution: {integrity: sha512-6YHEFRL9mfgcAvql/XhwTvf5jKcOiiupt2FiJxHkiX1z4j7WL8J/jRHYLluORvc1XxB5rV20KoeK00gVJamspg==}
     engines: {node: '>=0.6'}
@@ -13038,6 +13051,8 @@ snapshots:
     dependencies:
       end-of-stream: 1.4.5
       once: 1.4.0
+
+  qrcode-terminal@0.12.0: {}
 
   qs@6.15.1:
     dependencies:

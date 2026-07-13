@@ -41,6 +41,8 @@ import { runPack } from "./commands/pack.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
+import { runPair } from "./commands/pair.js"
+import { runRendezvous } from "./commands/rendezvous.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -98,6 +100,12 @@ Usage:
   agentproto acp       ls      [--json]
   agentproto acp       add <slug> --bin <bin> [--args <arg>…] [--env <K=V>…] [--resumable]
   agentproto acp       rm  <slug>
+  agentproto pair      offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr]
+  agentproto pair      accept "<offer-url>" [--name <label>]
+  agentproto pair      ls     [--json]
+  agentproto pair      revoke <fingerprint|name>
+  agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
+  agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto --help
   agentproto --version
 
@@ -147,6 +155,8 @@ const VERBS = new Set([
   "worktree",
   "permissions",
   "acp",
+  "pair",
+  "rendezvous",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -229,6 +239,10 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPermissions(rest)
     case "acp":
       return runAcp(rest)
+    case "pair":
+      return runPair(rest)
+    case "rendezvous":
+      return runRendezvous(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
