@@ -41,6 +41,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/acp",
     "@agentproto/driver",
     "@agentproto/driver-agent-cli",
+    // Independently-published workspace packages consumed both directly by the
+    // pairing CLI (`pair`, `rendezvous`) and transitively by the bundled runtime
+    // dist. Externalised (like @agentproto/acp) so the published cli installs
+    // them via npm; declared under `dependencies` in package.json.
+    "@agentproto/secrets",
+    "@agentproto/secrets/*",
+    "@agentproto/rendezvous",
+    "@agentproto/rendezvous/*",
     // Third-party deps — externalised so the published cli installs
     // them via npm at runtime. `gray-matter` is CJS + does dynamic
     // require("fs"), which esbuild can't safely inline into an ESM

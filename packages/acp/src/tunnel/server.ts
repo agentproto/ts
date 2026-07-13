@@ -72,6 +72,16 @@ export interface TunnelServerOptions {
    */
   httpUpstream?: string
   /**
+   * Headers merged into EVERY forwarded `http_request` before it hits the
+   * upstream, overriding any same-named header from the frame. Used by the E2E
+   * pairing serve path to inject the daemon's own bearer token so a
+   * peer-authenticated pairing passes the gateway's mutating-route token gate
+   * (`checkSessionsToken` has no loopback bypass) — see DESIGN §5. Omitted for
+   * the trusted `serve --connect` host, which needs no injection. The pairing
+   * layer never learns or transports the user's daemon bearer beyond this hop.
+   */
+  httpInjectHeaders?: Readonly<Record<string, string>>
+  /**
    * Default ceiling for an `http_request` forward (connect + buffered body, or
    * connect + headers for a stream) when the frame carries no `timeoutMs`.
    * Defaults to DEFAULT_HTTP_FORWARD_TIMEOUT_MS. Disarmed once a streaming
@@ -822,6 +832,18 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     for (const [k, v] of Object.entries(req.headers ?? {})) {
       if (HOP_BY_HOP.has(k.toLowerCase())) continue
       headers[k] = v
+    }
+    // Daemon-injected headers (e.g. an internal bearer so a peer-authenticated
+    // pairing passes the gateway's mutating-route token gate — DESIGN §5). These
+    // win over any forwarded header of the same (case-insensitive) name.
+    if (opts.httpInjectHeaders) {
+      for (const [k, v] of Object.entries(opts.httpInjectHeaders)) {
+        const lower = k.toLowerCase()
+        for (const existing of Object.keys(headers)) {
+          if (existing.toLowerCase() === lower) delete headers[existing]
+        }
+        headers[k] = v
+      }
     }
 
     const url = `${opts.httpUpstream.replace(/\/$/, "")}${req.path}`

@@ -7,9 +7,14 @@ through a broker that **cannot read or forge the traffic** — bootstrapped by a
 single offer URL / QR code, with no accounts, no DNS, no inbound ports, and no
 trusted middlebox.
 
-This page describes what exists **after Phase 1**: the cryptographic library
-layer. The `pair` CLI verbs, the rendezvous broker, and on-disk persistence of
-pairings land in Phase 2 — see *Status* at the bottom.
+This page describes what exists **after Phase 2**: the cryptographic library
+layer (Phase 1), plus the rendezvous broker, the `pair` CLI/MCP verbs, on-disk
+persistence, reconnect epochs, and autoconnect on boot. The hosted broker, the
+mobile deep-link page, and the AIP-53 spec remain Phase 3 — see *Status* at the
+bottom.
+
+Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
+exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
 
 ## Why
 
@@ -118,14 +123,53 @@ Bearer interaction is unchanged: pairing authenticates the *peer*; spawn
 authorization (`authorize(spawn)`) stays a separate decision, and the pairing
 layer never learns or transports the user's daemon bearer.
 
+## What Phase 2 adds (broker, ceremony, persistence)
+
+### The rendezvous broker — `@agentproto/rendezvous`
+
+A deliberately dumb WebSocket server: it matches two sockets sharing a one-time
+token and splices them byte-for-byte, never parsing payloads. Hygiene only —
+park timeout, post-splice idle timeout, max message size, per-IP token-attempt
+rate limiting, single-use tokens, constant-time token compare. Self-hostable via
+[`agentproto rendezvous serve`](../verbs/rendezvous.md).
+
+### The ceremony — [`agentproto pair`](../verbs/pair.md)
+
+- `pair offer` (daemon) mints a single-use offer URL + QR, dials the broker
+  outbound, and parks. `pair accept` (client) validates the URL, runs the client
+  handshake, pins the daemon's keys, and persists the pairing.
+- `pair ls` lists pairings (daemon REST, or the client store when offline);
+  `pair revoke` drops one so its client can no longer reconnect.
+- `pair exec <name> -- <verb>` routes any verb over the pairing (the P2 client
+  routing seam — a loopback bridge that a child `agentproto <verb>` drives via
+  `AGENTPROTO_DAEMON_URL`).
+
+MCP tools mirror the daemon-side verbs: `pair_offer`, `pair_list`, `pair_revoke`.
+REST routes: `POST /pairings/offer`, `GET /pairings`, `DELETE /pairings/:fp`.
+
+### Persistence, reconnect epochs, autoconnect
+
+- Daemon pairings live in `~/.agentproto/pairings.json` (`0600`); the client
+  half (pinned daemon keys + the `pairRoot` secret) in
+  `~/.agentproto/pair-credentials.json` (`0600`).
+- After the first pairing there is no live offer, so reconnects route on a
+  **pairing-derived epoch token** `t' = HKDF(pairRoot, "rv-route" ‖ epoch)`
+  (epoch = UTC day number). Both sides derive it; the daemon accepts the current
+  and previous epoch to bridge clock skew, and rotating it per day keeps the
+  broker from linking sessions across days.
+- With `pairing.autoconnect` on (default when a rendezvous is set), the daemon
+  opens a standing rendezvous connection for every persisted pairing on boot —
+  the same pattern as `tunnel.autoconnect` — so a paired client can reconnect
+  anytime. Config keys: `pairing.rendezvous`, `pairing.autoconnect` (see
+  [config-schema.md](../reference/config-schema.md)).
+
 ## Status
 
-- **Phase 1 (this):** identity module, `pair/v1` handshake, `wrapE2E` channel,
-  and the adversarial test suite (tampered-broker vectors: flip / drop / reorder
-  / replay / downgrade). Proven end-to-end over an in-process socket pair — no
-  broker yet.
-- **Phase 2:** the `@agentproto/rendezvous` broker package, the `pair`
-  CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke`), pairing persistence,
-  reconnect epochs, and autoconnect on boot.
+- **Phase 1:** identity module, `pair/v1` handshake, `wrapE2E` channel, and the
+  adversarial test suite (tampered-broker vectors: flip / drop / reorder /
+  replay / downgrade). Proven end-to-end over an in-process socket pair.
+- **Phase 2 (this):** the `@agentproto/rendezvous` broker package, the `pair`
+  CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke` / `exec`), pairing
+  persistence, reconnect epochs, and autoconnect on boot.
 - **Phase 3:** hosted broker deploy, mobile deep-link page, and the AIP-53
   `PAIRING.md` spec.

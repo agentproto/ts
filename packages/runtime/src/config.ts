@@ -79,6 +79,17 @@ export interface FeaturesConfig {
   pty?: boolean
 }
 
+export interface PairingConfig {
+  /** Rendezvous broker WS URL (ws:// or wss://) used by `pair offer` and by
+   *  autoconnect on boot. When unset, `pair offer` requires an explicit
+   *  `--rendezvous`. Mirrors `tunnel.host`. */
+  rendezvous?: string
+  /** Whether the daemon opens standing rendezvous connections for every
+   *  persisted pairing on boot (so a paired client can reconnect anytime).
+   *  Mirrors `tunnel.autoconnect`. Default true when a rendezvous is set. */
+  autoconnect?: boolean
+}
+
 /**
  * A user-defined generic ACP agent — the config-file half of
  * `AcpAgentSpec` (the slug is the record key in `acpAgents`, so it's
@@ -149,6 +160,8 @@ export interface AgentprotoConfig {
   daemon?: DaemonConfig
   tunnel?: TunnelConfig
   features?: FeaturesConfig
+  /** E2E daemon-pairing defaults (rendezvous URL + autoconnect). */
+  pairing?: PairingConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */

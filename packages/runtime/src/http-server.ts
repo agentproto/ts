@@ -34,6 +34,7 @@ import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike } from "./sessions.js"
 import { SessionNotAliveError } from "./sessions.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { PairingRegistry } from "./pairing-registry.js"
 import type { RoutineRunner, RoutineStep } from "./routine-runner.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
@@ -368,6 +369,11 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired, exposes /pairings/* routes for minting offers,
+   *  listing pairings, and revoking them (E2E daemon pairing). Same service the
+   *  MCP `pair_offer` / `pair_list` / `pair_revoke` tools call. Without it the
+   *  routes 404. */
+  pairings?: PairingRegistry
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -1278,6 +1284,23 @@ export async function startHttpServer(
             }
           }
           const handled = await handlePermissions(req, res, path, opts.sessions)
+          if (handled) return
+        }
+
+        // Pairing routes — E2E daemon pairing. POST /pairings/offer,
+        // GET /pairings, DELETE /pairings/:fingerprint. All mutating routes
+        // (and the offer route, which starts an outbound rendezvous dial) take
+        // the per-boot token gate; GET is read-only. Only mounted when a
+        // registry is wired.
+        if (opts.pairings && path.startsWith("/pairings")) {
+          if ((req.method ?? "GET") !== "GET") {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
+          const handled = await handlePairings(req, res, path, opts.pairings)
           if (handled) return
         }
 
@@ -3076,6 +3099,86 @@ function enrichPermission(
     ...(desc?.command ? { sessionTitle: desc.command } : {}),
     ageMs: ageMs >= 0 ? ageMs : 0,
   }
+}
+
+/**
+ * /pairings routes — E2E daemon pairing (design: DESIGN §6):
+ *   POST   /pairings/offer         → { ttlMinutes?, rendezvous? } mint offer
+ *                                    → { url, fingerprint, rendezvous, expiresAt }
+ *   GET    /pairings               → { pairings: [...] }
+ *   DELETE /pairings/:fingerprint  → revoke by fingerprint (or name)
+ *
+ * Mirrors the MCP `pair_offer` / `pair_list` / `pair_revoke` tools over the same
+ * registry. Imitates the /permissions surface from #308.
+ */
+async function handlePairings(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: PairingRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/pairings/offer" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const ttlMinutes = typeof b.ttlMinutes === "number" ? b.ttlMinutes : undefined
+    const rendezvous = typeof b.rendezvous === "string" ? b.rendezvous : undefined
+    try {
+      const offer = await registry.createOffer({
+        ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
+        ...(rendezvous ? { rendezvousUrl: rendezvous } : {}),
+      })
+      json(200, {
+        url: offer.url,
+        fingerprint: offer.fingerprint,
+        rendezvous: offer.rendezvousUrl,
+        expiresAt: new Date(offer.exp * 1000).toISOString(),
+      })
+    } catch (err) {
+      json(400, {
+        error: "offer_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  if (path === "/pairings" && req.method === "GET") {
+    const pairings = (await registry.list()).map(p => ({
+      name: p.name,
+      fingerprint: p.fingerprint,
+      createdAt: p.createdAt,
+      lastSeen: p.lastSeen,
+      rendezvous: p.rendezvousUrl,
+    }))
+    json(200, { pairings })
+    return true
+  }
+
+  const fpMatch = path.match(/^\/pairings\/([^/]+)$/)
+  if (fpMatch && req.method === "DELETE") {
+    const target = decodeURIComponent(fpMatch[1] ?? "")
+    const revoked = await registry.revoke(target)
+    if (!revoked) {
+      json(404, { error: "not_found", message: `no pairing matched "${target}"` })
+      return true
+    }
+    json(200, { ok: true, revoked: target })
+    return true
+  }
+
+  if (path === "/pairings" || path === "/pairings/offer" || fpMatch) {
+    json(405, {
+      error: "method_not_allowed",
+      message: "POST /pairings/offer · GET /pairings · DELETE /pairings/:fingerprint",
+    })
+    return true
+  }
+  return false
 }
 
 /**
