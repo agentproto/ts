@@ -1,8 +1,8 @@
 # `agentproto` CLI
 
 The `agentproto` binary is the reference host for AgentProto agent-CLI
-adapters. It installs adapter packages (`claude-code`, `hermes`,
-`opencode`, `codex`, `mastra-agent`, `openclaw`, …), runs them locally
+adapters. It installs adapter packages (`claude-code`, `claude-sdk`,
+`hermes`, `opencode`, `codex`, `mastra-agent`, `openclaw`, …), runs them locally
 for a single turn or a long-lived session, exposes them as a daemon over
 an outbound WebSocket tunnel, and orchestrates multi-agent swarms
 through the runtime kernel.
@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.1.0-alpha.x`). See
+> **Status:** alpha. The package is pre-1.0 (`0.5.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 
@@ -44,8 +44,10 @@ Pick whichever matches what you're trying to do:
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
+- [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — approve/deny held tool-permission requests (permission-hold inbox)
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
+- [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)

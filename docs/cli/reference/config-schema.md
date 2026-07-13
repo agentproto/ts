@@ -51,6 +51,19 @@ agentproto config set daemon.port 18791
     ]
   },
 
+  // End-to-end pairing over an untrusted rendezvous broker. Read by
+  // `agentproto serve` / `pair offer`. See concepts/pairing.md.
+  "pairing": {
+    // Rendezvous broker WS URL used by `pair offer` and by autoconnect on
+    // boot. When unset, `pair offer` requires an explicit --rendezvous.
+    // Mirrors tunnel.host.
+    "rendezvous": "wss://rendezvous.example/v1",
+    // Whether the daemon opens standing rendezvous connections for every
+    // persisted pairing on boot (so a paired client can reconnect anytime).
+    // Mirrors tunnel.autoconnect. Default true when a rendezvous is set.
+    "autoconnect": true
+  },
+
   // Global and per-adapter defaults auto-applied to every `agent_start`
   // spawn (CLI, MCP, or HTTP). See "defaults" below.
   "defaults": {
