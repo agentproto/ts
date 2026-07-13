@@ -288,8 +288,11 @@ export async function createAcpClient(
   // Resolve every request parked for a session as `cancelled` — used when a
   // session (or the whole client) tears down so no held RPC dangles.
   const cancelPermissionsForSession = (sessionId: string): void => {
-    for (const [id, held] of pendingPermissions) {
-      if (held.sessionId !== sessionId) continue
+    const toCancel = Array.from(pendingPermissions.keys()).filter(
+      id => pendingPermissions.get(id)!.sessionId === sessionId,
+    )
+    for (const id of toCancel) {
+      const held = pendingPermissions.get(id)!
       pendingPermissions.delete(id)
       held.resolve({ outcome: { outcome: "cancelled" } })
     }
@@ -718,6 +721,12 @@ function holdPermissionRequest(
       text,
       ...(toolName ? { toolName } : {}),
     })
+  } else {
+    console.warn(
+      `[acp] holdPermissionRequest: no session found for sessionId="${sessionId}" ` +
+        `(requestId="${requestId}") — the agent-prompt event will be dropped. ` +
+        `The RPC is still held and will park until respondPermission or close.`,
+    )
   }
 
   return new Promise<RequestPermissionResponse>(resolve => {
@@ -732,6 +741,11 @@ function buildClientHandlers(
   hold: PermissionHoldContext,
 ): AcpClientHandlers {
   return {
+    // Spread partial FIRST so that the explicitly-defined methods below always
+    // win. In particular, `requestPermission` must not be overwritten by a
+    // caller-supplied handler when `hold.permissionHold` is set — the whole
+    // point of hold mode is to intercept before any auto-answer handler.
+    ...(partial as object),
     async sessionUpdate(params) {
       // Every notification is a liveness signal, even ones that don't
       // translate into a StreamEvent below (e.g. an in-progress
@@ -775,7 +789,6 @@ function buildClientHandlers(
       if (partial.writeTextFile) return partial.writeTextFile(params)
       throw new Error("AcpClient.writeTextFile: capability not advertised")
     },
-    ...(partial as object),
   } as AcpClientHandlers
 }
 
