@@ -52,3 +52,32 @@ await server.close()
 
 Self-host your own instance so no third party sits between your client and
 daemon — defence in depth, since the broker only ever sees ciphertext.
+
+## Hosting
+
+See [DEPLOY.md](./DEPLOY.md) for:
+
+- Docker deployment (multi-stage, non-root)
+- Kubernetes manifests
+- TLS/HTTPS configuration (reverse proxy)
+- Environment variables
+- Health checks (`GET /healthz`)
+- Scaling considerations
+
+Quick Docker run:
+
+```sh
+# build the bundle first (standalone package, only dep is ws):
+pnpm --filter @agentproto/rendezvous build
+docker build -t agentproto-rendezvous packages/rendezvous
+docker run -p 8788:8788 agentproto-rendezvous
+```
+
+Environment variables (all optional, see DEPLOY.md for defaults):
+
+```sh
+RENDEZVOUS_PORT=8788
+RENDEZVOUS_HOST=0.0.0.0
+RENDEZVOUS_IDLE_TIMEOUT_MS=900000
+RENDEZVOUS_DEBUG=false
+```

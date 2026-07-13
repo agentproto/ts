@@ -16,6 +16,7 @@
 import { realpathSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { createRendezvousServer, type RendezvousServerOptions } from "./server.js"
+import { loadEnvConfig, type RendezvousEnvConfig } from "./env.js"
 
 interface ServeArgs {
   port: number
@@ -27,6 +28,17 @@ interface ServeArgs {
 
 const DEFAULT_PORT = 8788
 const DEFAULT_HOST = "0.0.0.0"
+
+function mergeConfigWithEnv(cliArgs: Partial<ServeArgs>): ServeArgs {
+  const env = loadEnvConfig()
+  return {
+    port: cliArgs.port ?? env.port,
+    host: cliArgs.host ?? env.host,
+    parkTimeoutMs: cliArgs.parkTimeoutMs ?? env.parkTimeoutMs,
+    idleTimeoutMs: cliArgs.idleTimeoutMs ?? env.idleTimeoutMs,
+    maxMessageBytes: cliArgs.maxMessageBytes ?? env.maxMessageBytes,
+  }
+}
 
 export async function runRendezvousCli(argv: readonly string[]): Promise<number> {
   const sub = argv[0]
@@ -40,7 +52,7 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
     return 2
   }
 
-  let args: ServeArgs
+  let args: Partial<ServeArgs>
   try {
     args = parseServeArgs(argv.slice(1))
   } catch (err) {
@@ -50,14 +62,17 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
     return 2
   }
 
+  // CLI args take precedence over env vars
+  const merged = mergeConfigWithEnv(args)
+
   const opts: RendezvousServerOptions = {
     onLog: line => process.stderr.write(line + "\n"),
-    ...(args.parkTimeoutMs !== undefined ? { parkTimeoutMs: args.parkTimeoutMs } : {}),
-    ...(args.idleTimeoutMs !== undefined ? { idleTimeoutMs: args.idleTimeoutMs } : {}),
-    ...(args.maxMessageBytes !== undefined ? { maxMessageBytes: args.maxMessageBytes } : {}),
+    ...(merged.parkTimeoutMs !== undefined ? { parkTimeoutMs: merged.parkTimeoutMs } : {}),
+    ...(merged.idleTimeoutMs !== undefined ? { idleTimeoutMs: merged.idleTimeoutMs } : {}),
+    ...(merged.maxMessageBytes !== undefined ? { maxMessageBytes: merged.maxMessageBytes } : {}),
   }
   const server = createRendezvousServer(opts)
-  const { port, host } = await server.listen(args.port, args.host)
+  const { port, host } = await server.listen(merged.port, merged.host)
 
   process.stdout.write(
     `agentproto-rendezvous listening on ws://${host}:${port}/v1\n` +
@@ -77,9 +92,9 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
   return 0
 }
 
-function parseServeArgs(argv: readonly string[]): ServeArgs {
-  let port = DEFAULT_PORT
-  let host = DEFAULT_HOST
+function parseServeArgs(argv: readonly string[]): Partial<ServeArgs> {
+  let port: number | undefined
+  let host: string | undefined
   let parkTimeoutMs: number | undefined
   let idleTimeoutMs: number | undefined
   let maxMessageBytes: number | undefined
@@ -111,12 +126,12 @@ function parseServeArgs(argv: readonly string[]): ServeArgs {
     }
   }
 
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
     throw new Error(`invalid --port — expected an integer 0-65535`)
   }
   return {
-    port,
-    host,
+    ...(port !== undefined ? { port } : {}),
+    ...(host !== undefined ? { host } : {}),
     ...(parkTimeoutMs !== undefined ? { parkTimeoutMs } : {}),
     ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
     ...(maxMessageBytes !== undefined ? { maxMessageBytes } : {}),
@@ -131,13 +146,19 @@ function printHelp(): void {
       "Usage:",
       "  agentproto-rendezvous serve [options]",
       "",
-      "Options:",
-      `  --port <n>              Port to bind (default ${DEFAULT_PORT}).`,
-      `  --host <ip>             Bind address (default ${DEFAULT_HOST}).`,
-      "  --park-timeout-ms <n>   How long a lone socket waits for its peer (default 120000).",
-      "  --idle-timeout-ms <n>   Idle teardown after splice (default 900000).",
-      "  --max-message-bytes <n> Max WS message size (default 1048576).",
+      "Options (CLI args take precedence over environment variables):",
+      `  --port <n>              Port to bind (default ${DEFAULT_PORT}, env: RENDEZVOUS_PORT).`,
+      `  --host <ip>             Bind address (default ${DEFAULT_HOST}, env: RENDEZVOUS_HOST).`,
+      "  --park-timeout-ms <n>   How long a lone socket waits for its peer (default 120000, env: RENDEZVOUS_PARK_TIMEOUT_MS).",
+      "  --idle-timeout-ms <n>   Idle teardown after splice (default 900000, env: RENDEZVOUS_IDLE_TIMEOUT_MS).",
+      "  --max-message-bytes <n> Max WS message size (default 1048576, env: RENDEZVOUS_MAX_MESSAGE_BYTES).",
       "  --help                  Show this message.",
+      "",
+      "Environment variables:",
+      "  RENDEZVOUS_PORT, RENDEZVOUS_HOST, RENDEZVOUS_PATH",
+      "  RENDEZVOUS_PARK_TIMEOUT_MS, RENDEZVOUS_IDLE_TIMEOUT_MS",
+      "  RENDEZVOUS_MAX_MESSAGE_BYTES, RENDEZVOUS_RATE_LIMIT_MAX",
+      "  RENDEZVOUS_RATE_LIMIT_WINDOW_MS, RENDEZVOUS_DEBUG",
       "",
       "The broker matches two sockets sharing a token and pipes their bytes",
       "verbatim. It never parses payloads and cannot read or forge traffic.",
