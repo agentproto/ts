@@ -171,7 +171,13 @@ export function createAgentCliRuntime(
         })
       }
 
-      const arm = await buildProtocolArm(definition, child, cwd, opts?.config?.mode)
+      const arm = await buildProtocolArm(
+        definition,
+        child,
+        cwd,
+        opts?.config?.mode,
+        opts?.permissionHold ?? false,
+      )
       arm._stderrTail = () => stderrBuf.join("\n")
 
       const abortController = new AbortController()
@@ -231,6 +237,7 @@ export function createAgentCliRuntime(
         ...(configMode ? { mode: configMode } : {}),
         ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
         ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
+        ...(opts?.permissionHold ? { permissionHold: true } : {}),
       })
 
       // "command" model strategy: switch the model via a drained `/model
@@ -256,6 +263,13 @@ export function createAgentCliRuntime(
         async cancel() {
           abortController.abort()
         },
+        ...(arm.respondPermission
+          ? {
+              respondPermission(requestId, resolution) {
+                return arm.respondPermission!(requestId, resolution)
+              },
+            }
+          : {}),
         async close() {
           await arm.close()
           if (child && !child.killed) child.kill("SIGTERM")
@@ -332,6 +346,7 @@ async function buildProtocolArm(
   child: ChildProcess | undefined,
   cwd: string,
   requestedMode?: string,
+  permissionHold?: boolean,
 ): Promise<AgentCliClient> {
   switch (def.protocol) {
     case "acp":
@@ -343,6 +358,7 @@ async function buildProtocolArm(
         cwd,
         clientInfo: { name: def.id, version: def.version },
         requestedMode,
+        ...(permissionHold ? { permissionHold: true } : {}),
       })
     case "mcp":
       throw new Error("createAgentCliRuntime: mcp protocol arm not yet implemented")

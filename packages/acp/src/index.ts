@@ -32,6 +32,7 @@ export type {
   AcpCapabilities,
   AcpAuditConfig,
   AcpMcpServer,
+  AcpPermissionResolution,
   Aip44Extensions,
   StreamEvent,
 } from "./types.js"

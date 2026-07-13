@@ -14,9 +14,31 @@ import {
   type Client as AcpClientHandlers,
   type Stream,
 } from "@agentclientprotocol/sdk"
-import type { AcpMcpServer, StreamEvent } from "../types.js"
+import type {
+  AcpMcpServer,
+  AcpPermissionResolution,
+  StreamEvent,
+} from "../types.js"
+
+export type { AcpPermissionResolution }
 
 const PROTOCOL_VERSION_DEFAULT = 1
+
+/**
+ * The doubly-nested `RequestPermissionResponse` shape the ACP SDK expects
+ * back from a `session/request_permission` handler — see
+ * `@agentproto/driver-agent-cli`'s `AcpPermissionOutcome` for the full
+ * rationale on why the `outcome` field is nested.
+ */
+type RequestPermissionResponse =
+  | { outcome: { outcome: "selected"; optionId: string } }
+  | { outcome: { outcome: "cancelled" } }
+
+/** A `session/request_permission` RPC parked by permission-hold mode. */
+interface HeldPermission {
+  sessionId: string
+  resolve: (response: RequestPermissionResponse) => void
+}
 
 /**
  * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef }`)
@@ -95,6 +117,16 @@ export interface AcpClientOptions {
   }
   /** Optional handlers for agent-initiated requests beyond fs / terminal. */
   handlers?: Partial<AcpClientHandlers>
+  /**
+   * When true, every `session/request_permission` the agent raises is
+   * SURFACED (emitted as an `agent-prompt` StreamEvent on the session's
+   * stream) and HELD — the RPC does not resolve until the host calls
+   * `respondPermission(requestId, ...)`. `handlers.requestPermission` is
+   * bypassed while this is set. Undefined/false (the default) is unchanged:
+   * requests go straight to `handlers.requestPermission`. Used by the
+   * daemon's cross-session permission inbox.
+   */
+  permissionHold?: boolean
   /** Protocol version to negotiate. Defaults to the SDK's current. */
   protocolVersion?: number
   /**
@@ -181,6 +213,18 @@ export interface AcpClient {
     cwd: string
     mcpServers?: unknown[]
   }): Promise<AcpClientSession>
+  /**
+   * Resolve a permission request parked by permission-hold mode. `requestId`
+   * is the `toolCallId` carried on the `agent-prompt` StreamEvent that
+   * surfaced the request. Returns true when a matching parked request was
+   * found and resolved, false when the id is unknown or already resolved
+   * (idempotent — a duplicate response is a no-op). No-op returning false
+   * when `permissionHold` was never enabled.
+   */
+  respondPermission(
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean
   close(): Promise<void>
 }
 
@@ -191,6 +235,12 @@ export interface AcpClientSession {
     signal?: AbortSignal
   }): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
+  /** Resolve a permission request parked (in permission-hold mode) for THIS
+   *  session — see `AcpClient.respondPermission`. */
+  respondPermission(
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean
   close(): Promise<void>
 }
 
@@ -214,10 +264,46 @@ export async function createAcpClient(
 ): Promise<AcpClient> {
   const sessions = new Map<string, SessionState>()
 
+  // Permission-hold state: parked `session/request_permission` RPCs keyed by
+  // the stable request id we mint per request (and emit on the `agent-prompt`
+  // StreamEvent). Empty and untouched unless `permissionHold` is set.
+  const pendingPermissions = new Map<string, HeldPermission>()
+  let permissionSeq = 0
+
+  const respondPermission = (
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean => {
+    const held = pendingPermissions.get(requestId)
+    if (!held) return false
+    pendingPermissions.delete(requestId)
+    held.resolve(
+      "cancelled" in resolution
+        ? { outcome: { outcome: "cancelled" } }
+        : { outcome: { outcome: "selected", optionId: resolution.optionId } },
+    )
+    return true
+  }
+
+  // Resolve every request parked for a session as `cancelled` — used when a
+  // session (or the whole client) tears down so no held RPC dangles.
+  const cancelPermissionsForSession = (sessionId: string): void => {
+    for (const [id, held] of pendingPermissions) {
+      if (held.sessionId !== sessionId) continue
+      pendingPermissions.delete(id)
+      held.resolve({ outcome: { outcome: "cancelled" } })
+    }
+  }
+
   const stream: Stream = ndJsonStream(options.output, options.input)
 
   const connection: ClientSideConnection = new ClientSideConnection(
-    () => buildClientHandlers(options.handlers ?? {}, sessions, options.onActivity),
+    () =>
+      buildClientHandlers(options.handlers ?? {}, sessions, options.onActivity, {
+        permissionHold: options.permissionHold ?? false,
+        pendingPermissions,
+        nextRequestId: () => `perm_${++permissionSeq}`,
+      }),
     stream,
   )
 
@@ -332,6 +418,8 @@ export async function createAcpClient(
         sessions,
         options.onActivity,
         options.turnIdleTimeoutMs,
+        respondPermission,
+        cancelPermissionsForSession,
       )
     },
     async loadSession(params) {
@@ -360,9 +448,17 @@ export async function createAcpClient(
         sessions,
         options.onActivity,
         options.turnIdleTimeoutMs,
+        respondPermission,
+        cancelPermissionsForSession,
       )
     },
+    respondPermission,
     async close() {
+      // Never leave a held permission RPC dangling — resolve all as cancelled.
+      for (const [, held] of pendingPermissions) {
+        held.resolve({ outcome: { outcome: "cancelled" } })
+      }
+      pendingPermissions.clear()
       sessions.clear()
     },
   }
@@ -386,8 +482,13 @@ function buildSession(
   sessionId: string,
   state: SessionState,
   sessions: Map<string, SessionState>,
-  onActivity?: () => void,
-  turnIdleTimeoutMs?: number,
+  onActivity: (() => void) | undefined,
+  turnIdleTimeoutMs: number | undefined,
+  respondPermission: (
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ) => boolean,
+  cancelPermissionsForSession: (sessionId: string) => void,
 ): AcpClientSession {
   return {
     sessionId,
@@ -501,7 +602,13 @@ function buildSession(
       await connection.cancel({ sessionId } as never)
       onActivity?.()
     },
+    respondPermission(requestId, resolution) {
+      return respondPermission(requestId, resolution)
+    },
     async close() {
+      // Cancel any permission requests this session parked before dropping it,
+      // so the agent's held RPCs settle rather than hang.
+      cancelPermissionsForSession(sessionId)
       sessions.delete(sessionId)
     },
   }
@@ -548,10 +655,81 @@ function flush(state: SessionState) {
   }
 }
 
+interface PermissionHoldContext {
+  permissionHold: boolean
+  pendingPermissions: Map<string, HeldPermission>
+  nextRequestId: () => string
+}
+
+/**
+ * Shape of an ACP `session/request_permission` params object — only the
+ * fields we read. Narrowed defensively (all optional) since it arrives as
+ * `unknown` from the SDK handler boundary.
+ */
+interface RequestPermissionParams {
+  sessionId?: string
+  toolCall?: {
+    toolCallId?: string
+    title?: string
+    kind?: string
+  }
+  options?: Array<{ optionId?: string; name?: string; kind?: string }>
+}
+
+/**
+ * Permission-hold path: surface the request as an `agent-prompt` StreamEvent
+ * on the owning session's stream and park the RPC in `pendingPermissions`,
+ * returning a promise that resolves only when the host calls
+ * `respondPermission` (or the session/client tears down). The `agent-prompt`
+ * event carries the minted request id as `toolCallId` so the host has the
+ * exact key to respond with.
+ */
+function holdPermissionRequest(
+  rawParams: unknown,
+  sessions: Map<string, SessionState>,
+  ctx: PermissionHoldContext,
+): Promise<RequestPermissionResponse> {
+  const params = (rawParams ?? {}) as RequestPermissionParams
+  const sessionId = params.sessionId ?? ""
+  const requestId = ctx.nextRequestId()
+  const options = Array.isArray(params.options)
+    ? params.options
+        .filter((o): o is { optionId: string; name?: string; kind?: string } =>
+          typeof o?.optionId === "string",
+        )
+        .map(o => ({
+          optionId: o.optionId,
+          ...(typeof o.name === "string" ? { name: o.name } : {}),
+          ...(typeof o.kind === "string" ? { kind: o.kind } : {}),
+        }))
+    : []
+  const toolName = params.toolCall?.title ?? params.toolCall?.kind
+  const text = toolName
+    ? `Allow "${toolName}"?`
+    : "The agent is requesting permission to run a tool."
+
+  const state = sessions.get(sessionId)
+  if (state) {
+    enqueue(state, {
+      kind: "agent-prompt",
+      sessionId,
+      toolCallId: requestId,
+      options,
+      text,
+      ...(toolName ? { toolName } : {}),
+    })
+  }
+
+  return new Promise<RequestPermissionResponse>(resolve => {
+    ctx.pendingPermissions.set(requestId, { sessionId, resolve })
+  })
+}
+
 function buildClientHandlers(
   partial: Partial<AcpClientHandlers>,
   sessions: Map<string, SessionState>,
-  onActivity?: () => void,
+  onActivity: (() => void) | undefined,
+  hold: PermissionHoldContext,
 ): AcpClientHandlers {
   return {
     async sessionUpdate(params) {
@@ -579,6 +757,13 @@ function buildClientHandlers(
       if (partial.sessionUpdate) await partial.sessionUpdate(params)
     },
     async requestPermission(params) {
+      // Every incoming request is a liveness signal.
+      onActivity?.()
+      // Permission-hold mode intercepts BEFORE any auto-answer handler: the
+      // request is surfaced + parked instead of resolved in-arm.
+      if (hold.permissionHold) {
+        return holdPermissionRequest(params, sessions, hold) as never
+      }
       if (partial.requestPermission) return partial.requestPermission(params)
       throw new Error("AcpClient.requestPermission: no handler configured")
     },

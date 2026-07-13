@@ -13,6 +13,7 @@ import {
   createAcpClient,
   type AcpClient,
   type AcpClientSession,
+  type AcpPermissionResolution,
 } from "@agentproto/acp/client"
 import type {
   AgentCliClient,
@@ -166,6 +167,14 @@ export interface AcpProtocolOptions {
    * `defaultPermissionHandlerForMode`.
    */
   requestedMode?: string
+  /**
+   * When true, permission requests are surfaced as `agent-prompt` StreamEvents
+   * and HELD in the daemon's permission inbox rather than auto-answered —
+   * forwarded verbatim to `createAcpClient({ permissionHold })`. The
+   * `onPermissionRequest` / `requestedMode` handler is bypassed while this is
+   * set. Default false (unchanged: requests are auto-answered in-arm).
+   */
+  permissionHold?: boolean
 }
 
 export function createAcpProtocolArm(
@@ -203,6 +212,9 @@ export function createAcpProtocolArm(
         },
         onActivity: opts.onActivity,
         turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
+        // Permission-hold mode: surface + park requests for the daemon inbox
+        // instead of auto-answering them in-arm (see AcpProtocolOptions).
+        ...(options.permissionHold ? { permissionHold: true } : {}),
         // Wire the permission handler so the agent's `session/request_permission`
         // callbacks get a real answer instead of bubbling up as
         // "AcpClient.requestPermission: no handler configured" → which
@@ -260,6 +272,14 @@ export function createAcpProtocolArm(
     async cancel(_turnId) {
       if (!session) return
       await session.cancel()
+    },
+    respondPermission(
+      requestId: string,
+      resolution: AcpPermissionResolution,
+    ): boolean {
+      // Resolve a permission request parked by permission-hold mode. Routed
+      // through the client (its pending map is keyed globally by request id).
+      return client?.respondPermission(requestId, resolution) ?? false
     },
     async close() {
       if (session) await session.close()
