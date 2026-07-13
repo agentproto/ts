@@ -179,6 +179,58 @@ describe("runDiscover — multi-channel dedup", () => {
   })
 })
 
+describe("runDiscover — merge across runs", () => {
+  it("unions + dedups with a previous run instead of overwriting", async () => {
+    process.env.SERPER_API_KEY = "test-key"
+
+    // Round 1
+    mockFetch.mockResolvedValue(serperResponse(["https://round1.com/a", "https://round1.com/b"]))
+    expect(await runDiscover(["topic", tmp, "--channels", "web", "--max", "5"])).toBe(0)
+
+    // Round 2 — disjoint results; file must contain BOTH rounds
+    mockFetch.mockResolvedValue(serperResponse(["https://round2.com/c", "https://round2.com/d"]))
+    expect(await runDiscover(["topic", tmp, "--channels", "web", "--max", "5"])).toBe(0)
+
+    const written = await readFile(join(tmp, "urls.discovered.txt"), "utf-8")
+    const urls = written.trim().split("\n")
+    expect(urls).toContain("https://round1.com/a")
+    expect(urls).toContain("https://round1.com/b")
+    expect(urls).toContain("https://round2.com/c")
+    expect(urls).toContain("https://round2.com/d")
+    // Prior order preserved: round-1 URLs come first
+    expect(urls.indexOf("https://round1.com/a")).toBeLessThan(urls.indexOf("https://round2.com/c"))
+  })
+
+  it("does not duplicate URLs already present in the file", async () => {
+    process.env.SERPER_API_KEY = "test-key"
+    const shared = "https://shared.com/x"
+
+    mockFetch.mockResolvedValue(serperResponse([shared, "https://only1.com/a"]))
+    await runDiscover(["topic", tmp, "--channels", "web", "--max", "5"])
+    mockFetch.mockResolvedValue(serperResponse([shared, "https://only2.com/b"]))
+    await runDiscover(["topic", tmp, "--channels", "web", "--max", "5"])
+
+    const written = await readFile(join(tmp, "urls.discovered.txt"), "utf-8")
+    const urls = written.trim().split("\n")
+    expect(urls.filter(u => u === shared)).toHaveLength(1)
+    expect(urls).toContain("https://only1.com/a")
+    expect(urls).toContain("https://only2.com/b")
+  })
+
+  it("--fresh opts into the old overwrite behavior", async () => {
+    process.env.SERPER_API_KEY = "test-key"
+
+    mockFetch.mockResolvedValue(serperResponse(["https://round1.com/a"]))
+    await runDiscover(["topic", tmp, "--channels", "web", "--max", "5"])
+    mockFetch.mockResolvedValue(serperResponse(["https://round2.com/b"]))
+    await runDiscover(["topic", tmp, "--channels", "web", "--max", "5", "--fresh"])
+
+    const written = await readFile(join(tmp, "urls.discovered.txt"), "utf-8")
+    const urls = written.trim().split("\n")
+    expect(urls).toEqual(["https://round2.com/b"])
+  })
+})
+
 describe("runDiscover — output file", () => {
   it("creates the output directory if it does not exist", async () => {
     process.env.SERPER_API_KEY = "test-key"

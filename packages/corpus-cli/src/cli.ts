@@ -40,9 +40,10 @@ Commands:
   events:emit <kind> --payload <json> [path]
                                          Append an event to _log.md
   events:tail [path]                     Print _log.md
-  discover <topic> [path] [--max N --channels web,youtube,social --lang l --tags t --import]
+  discover <topic> [path] [--max N --channels web,youtube,social --lang l --tags t --import --fresh]
                                          Fan out across channels (web search + YouTube +
-                                         social), dedup, write urls.discovered.txt.
+                                         social), dedup, merge into urls.discovered.txt
+                                         (union with previous runs; --fresh overwrites).
                                          Web: auto-picks first available key (SERPER /
                                          EXA / TAVILY / GOOGLE_SEARCH). YouTube: yt-dlp
                                          flat-playlist. --import chains import-web.
