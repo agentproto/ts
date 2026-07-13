@@ -71,6 +71,16 @@ export interface TunnelConfig {
   /** Whether `agentproto daemon start` connects the tunnel by
    *  default. v0 only — implementer can ignore until daemon needs it. */
   autoconnect?: boolean
+  /**
+   * Opt into end-to-end encryption of the outbound `serve --connect` tunnel
+   * (design: tunnel-e2e/v1). When true, the daemon negotiates a
+   * token-authenticated ephemeral handshake with the host and wraps the tunnel
+   * frames in an AEAD box, so even the trusted host loses plaintext visibility.
+   * The handshake authenticates both ends against the shared `tunnel.token`, so
+   * `token` MUST also be set. Fully backward-compatible: if the host doesn't
+   * advertise e2e (an older host), the daemon falls back to today's plaintext
+   * tunnel. Unset/false ⇒ plaintext, byte-identical to today. */
+  e2e?: boolean
 }
 
 export interface FeaturesConfig {
