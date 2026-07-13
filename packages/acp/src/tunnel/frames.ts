@@ -413,6 +413,49 @@ export interface WsCloseFrame {
   reason?: string
 }
 
+// ─── E2E pairing envelopes ──────────────────────────────────────
+//
+// When a tunnel runs over an end-to-end pairing (design: DESIGN §5), the
+// real tunnel/v1 frames above are AEAD-encrypted and carried inside these
+// two envelope frames — the rendezvous relaying the bytes sees only opaque
+// ciphertext. `wrapE2E` in ./e2e.ts produces and consumes them; the tunnel
+// client/server never see them, they only ever see decrypted inner frames.
+//
+// These are added to the frame union (and KNOWN_TYPES) so the transport
+// adapter — which drops any frame `parseFrame` doesn't recognise — forwards
+// them intact to the E2E layer. A tunnel peer that is NOT E2E-wrapped will
+// parse them (they're known types) but has no handler for them, so it ignores
+// them cleanly rather than misinterpreting the bytes as a real frame. The
+// wrapped side is the strict one: it rejects any inbound frame that is not an
+// `e2e` envelope (see `wrapE2E`), which is what prevents a downgrade to
+// plaintext.
+
+/**
+ * Either direction. One AEAD-encrypted inner tunnel frame. `n` is the
+ * sender's per-direction, strictly-monotonic frame counter — it is the basis
+ * of the GCM nonce and lets the receiver detect replay (a repeated/older `n`),
+ * reorder, or drops (a gap in `n`). `d` is base64(ciphertext ‖ 16-byte GCM
+ * tag). The plaintext, once decrypted, is itself an `encodeFrame`'d
+ * `TunnelFrame`.
+ */
+export interface E2eFrame {
+  t: "e2e"
+  n: number
+  d: string
+}
+
+/**
+ * Either direction. An opaque handshake message exchanged BEFORE the channel
+ * is wrapped. `d` is base64 of a transport-agnostic handshake message (the
+ * `pair/v1` hello or reply, produced by `@agentproto/secrets/pairing`). The
+ * E2E layer here treats it as opaque bytes handed to an injected driver, so
+ * this package never depends on the crypto package.
+ */
+export interface E2eHandshakeFrame {
+  t: "e2e_handshake"
+  d: string
+}
+
 // ─── union + guards ─────────────────────────────────────────────
 
 export type HostToDaemonFrame =
@@ -428,6 +471,8 @@ export type HostToDaemonFrame =
   | PongFrame
   | ErrorFrame
   | ReconnectSoonFrame
+  | E2eFrame
+  | E2eHandshakeFrame
 
 export type DaemonToHostFrame =
   | HelloFrame
@@ -444,6 +489,8 @@ export type DaemonToHostFrame =
   | PingFrame
   | PongFrame
   | ErrorFrame
+  | E2eFrame
+  | E2eHandshakeFrame
 
 export type TunnelFrame = HostToDaemonFrame | DaemonToHostFrame
 
@@ -469,6 +516,8 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "stderr",
   "exit",
   "reconnect_soon",
+  "e2e",
+  "e2e_handshake",
 ])
 
 /**
