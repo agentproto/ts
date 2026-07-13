@@ -13,7 +13,7 @@ import type { ReportChapter } from "./types.js"
 import { type ReportModelPort, type ReportModelInput, runModel } from "./model.js"
 
 export interface ChapterWriteContext {
-  readonly chapter: Pick<ReportChapter, "id" | "title" | "words">
+  readonly chapter: Pick<ReportChapter, "id" | "title" | "words" | "cover">
   /** Report/document title for framing. */
   readonly title: string
   /** The chapter's view content (distilled claims with [n]). */
@@ -22,6 +22,8 @@ export interface ChapterWriteContext {
   readonly analysisContext?: string
   /** The global bibliography markdown (for citation verification). */
   readonly bibliography?: string
+  /** Global rules block (`ReportConfig.rulesText`) — appended verbatim. */
+  readonly rules?: string
 }
 
 export function buildChapterWritePrompt(
@@ -33,9 +35,13 @@ export function buildChapterWritePrompt(
       "You are an expert research writer. Write in clear, dense, well-structured prose. " +
       "Every non-obvious claim must be cited inline as [n] from the Bibliography. " +
       "Use Markdown H2 and H3 subheaders within the chapter. No meta-commentary or filler. " +
-      `Aim for ${words} words.`,
+      `Aim for ${words} words.` +
+      (ctx.rules ? `\n\n${ctx.rules}` : ""),
     prompt:
       `Write the chapter "${ctx.chapter.title}" for the research document "${ctx.title}".\n\n` +
+      (ctx.chapter.cover
+        ? `## Chapter brief (what this chapter must cover)\n\n${ctx.chapter.cover}\n\n`
+        : "") +
       `## Distilled claims for this chapter (with citation numbers):\n\n${ctx.packContent}\n\n` +
       (ctx.analysisContext
         ? `## Per-facet analysis (for deeper context):\n\n${ctx.analysisContext}\n\n`

@@ -18,6 +18,24 @@ describe("buildReviewPrompt", () => {
     expect(p.prompt).toContain("Per-facet analysis")
     expect(p.system).toContain("exact-match")
   })
+
+  it("without rules, the system prompt is unchanged (backward compatible)", () => {
+    const p = buildReviewPrompt(ctx)
+    expect(p.system).not.toContain("GLOBAL RULES")
+  })
+
+  it("appends rules to the system prompt verbatim — the same contract given to the writer", () => {
+    const base = buildReviewPrompt(ctx)
+    const withRules = buildReviewPrompt({
+      ...ctx,
+      rules: "GLOBAL RULES:\n- Use en-dashes.\n- Every figure must carry its source date.",
+    })
+    // Additive: the base system prompt survives byte-for-byte as a prefix.
+    expect(withRules.system!.startsWith(base.system!)).toBe(true)
+    expect(withRules.system).toContain(
+      "GLOBAL RULES:\n- Use en-dashes.\n- Every figure must carry its source date."
+    )
+  })
 })
 
 describe("reviewChapter", () => {
