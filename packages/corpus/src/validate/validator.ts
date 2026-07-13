@@ -69,6 +69,19 @@ export interface CorpusValidatorOptions {
 
 export class CorpusValidator {
   private readonly validators: Readonly<Record<AipSchemaKey, ValidateFunction>>
+  /**
+   * Per-doctype map of `schema:` discriminator value → validator for
+   * that single oneOf branch (e.g. "knowledge.source/v1" → the AIP-10
+   * source branch). Built from each schema's `oneOf` of local `$refs`
+   * whose target declares `properties.schema.const`. Used to report
+   * the RIGHT branch's errors when a file declares its doctype
+   * explicitly, instead of ajv's full oneOf fan-out (which buries the
+   * one real error under every other branch's missing-property noise).
+   */
+  private readonly branchValidators: ReadonlyMap<
+    AipSchemaKey,
+    ReadonlyMap<string, ValidateFunction>
+  >
 
   constructor(opts: CorpusValidatorOptions) {
     const ajv = new Ajv2020({
@@ -88,10 +101,13 @@ export class CorpusValidator {
       AipSchemaKey,
       ValidateFunction
     >
+    const branches = new Map<AipSchemaKey, ReadonlyMap<string, ValidateFunction>>()
     for (const key of Object.keys(opts.bundle.schemas) as AipSchemaKey[]) {
       validators[key] = ajv.compile(opts.bundle.schemas[key] as object)
+      branches.set(key, compileBranchValidators(ajv, opts.bundle.schemas[key]))
     }
     this.validators = validators
+    this.branchValidators = branches
   }
 
   /**
@@ -124,7 +140,21 @@ export class CorpusValidator {
       }
     }
 
-    const validator = this.validators[schemaKey]
+    // When the frontmatter declares its doctype explicitly (an AIP-10
+    // `schema:` discriminator like "knowledge.source/v1"), validate
+    // against THAT oneOf branch only, so the reported errors are the
+    // declared doctype's (e.g. "authority must be one of
+    // primary|secondary|rumour") — not the sibling branches' missing
+    // slug/kind/additionalProperties noise. Falls back to the full
+    // doctype schema when `schema:` is absent or names no branch of
+    // the location-selected doctype.
+    const declared = file.frontmatter["schema"]
+    const branchValidator =
+      typeof declared === "string"
+        ? this.branchValidators.get(schemaKey)?.get(declared)
+        : undefined
+
+    const validator = branchValidator ?? this.validators[schemaKey]
     const ok = validator(file.frontmatter)
     if (ok) return { valid: true, issues: [] }
 
@@ -170,4 +200,68 @@ export class CorpusValidator {
       issues: Object.freeze(all),
     }
   }
+}
+
+// ── Branch-validator compilation ─────────────────────────────────────
+
+interface OneOfSchemaDoc {
+  readonly oneOf?: readonly unknown[]
+  readonly $defs?: Readonly<Record<string, unknown>>
+}
+
+/**
+ * For a doctype schema shaped as `oneOf: [{$ref: "#/$defs/…"}, …]` where
+ * each branch declares a `properties.schema.const` discriminator (the
+ * AIP-10 / AIP-18 pattern), compile each branch standalone — the parent's
+ * `$defs` carried along so internal `#/$defs/…` refs keep resolving, no
+ * `$id` so it never collides with the registered full schema — and key it
+ * by its discriminator value. Schemas without such a oneOf yield an
+ * empty map (their full-document validator already reports crisply).
+ */
+function compileBranchValidators(
+  ajv: Ajv2020,
+  schemaDoc: unknown
+): ReadonlyMap<string, ValidateFunction> {
+  const out = new Map<string, ValidateFunction>()
+  if (typeof schemaDoc !== "object" || schemaDoc === null) return out
+  const doc = schemaDoc as OneOfSchemaDoc
+  if (!Array.isArray(doc.oneOf)) return out
+
+  for (const branch of doc.oneOf) {
+    const resolved = resolveLocalRef(doc, branch)
+    const discriminator = discriminatorOf(resolved)
+    if (!discriminator || out.has(discriminator)) continue
+    const standalone: Record<string, unknown> = {
+      $defs: doc.$defs ?? {},
+      ...(branch as Record<string, unknown>),
+    }
+    out.set(discriminator, ajv.compile(standalone))
+  }
+  return out
+}
+
+/** Resolve a local `{$ref: "#/$defs/x"}` branch against its own document. */
+function resolveLocalRef(doc: OneOfSchemaDoc, branch: unknown): unknown {
+  if (typeof branch !== "object" || branch === null) return branch
+  const ref = (branch as { $ref?: unknown }).$ref
+  if (typeof ref !== "string" || !ref.startsWith("#/")) return branch
+  let node: unknown = doc
+  for (const seg of ref.slice(2).split("/")) {
+    if (typeof node !== "object" || node === null) return undefined
+    node = (node as Record<string, unknown>)[
+      seg.replace(/~1/g, "/").replace(/~0/g, "~")
+    ]
+  }
+  return node
+}
+
+/** Read a branch's `properties.schema.const` discriminator, if any. */
+function discriminatorOf(branchDef: unknown): string | undefined {
+  if (typeof branchDef !== "object" || branchDef === null) return undefined
+  const props = (branchDef as { properties?: unknown }).properties
+  if (typeof props !== "object" || props === null) return undefined
+  const schemaProp = (props as { schema?: unknown }).schema
+  if (typeof schemaProp !== "object" || schemaProp === null) return undefined
+  const c = (schemaProp as { const?: unknown }).const
+  return typeof c === "string" ? c : undefined
 }
