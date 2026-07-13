@@ -124,6 +124,77 @@ export const myAgent = defineAgentCli({
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.
 
+## Generic ACP agents (zero-code)
+
+Not every ACP agent needs its own npm adapter package. AgentProto's ACP
+protocol arm is fully adapter-agnostic — it performs the standard
+[Agent Client Protocol](https://agentclientprotocol.com) `initialize` /
+`session/new` handshake over stdio JSON-RPC regardless of which binary is
+on the other end. So **any CLI that already speaks ACP is connectable with
+zero code**, from a plain spawn recipe rather than a published package.
+
+Two sources feed generic ACP agents:
+
+- **Curated catalog** (`ACP_CATALOG`) — a conservative, built-in list of
+  known, publicly-documented ACP CLIs (e.g. Gemini CLI via
+  `gemini --experimental-acp`). Every entry ships with an install hint.
+- **Config-defined agents** — your own entries under `acpAgents` in
+  `~/.agentproto/config.json`. A config entry **shadows** a catalog entry
+  of the same slug.
+
+### Config format
+
+```jsonc
+{
+  "acpAgents": {
+    "my-agent": {
+      "bin": "my-agent",              // executable to spawn (required)
+      "bin_args": ["acp"],            // extra argv, e.g. the ACP flag
+      "name": "My Agent",             // display name (default: the slug)
+      "description": "…",             // one-line summary
+      "env": { "MY_FLAG": "1" },      // always-on spawn env
+      "resumable": true,              // advertise native-resume continuation
+      "models": { "default": "m", "allowed": ["m"] },
+      "install_hint": "npm i -g my-agent"
+    }
+  }
+}
+```
+
+The working directory is passed to the agent over ACP (`session/new` `cwd`),
+so most agents need nothing beyond `bin` + `bin_args`.
+
+### The `acp` verb
+
+Manage generic agents without hand-editing the config:
+
+```bash
+agentproto acp ls                                        # catalog + config, with status
+agentproto acp add my-agent --bin my-agent --args acp    # writes config.acpAgents
+agentproto acp rm my-agent                               # removes a config entry
+```
+
+See [`verbs/acp.md`](../verbs/acp.md).
+
+### Resolution precedence
+
+`agentproto run <slug>` (and every other path through `resolveAdapter`)
+resolves a slug in this order:
+
+1. **npm** — `@agentproto/adapter-<slug>` (a real adapter package always
+   wins).
+2. **config** — `config.acpAgents[<slug>]`.
+3. **catalog** — `ACP_CATALOG`.
+
+So a published adapter is never shadowed by a generic spec, and your config
+overrides the built-in catalog. In `adapter_list` / `GET /adapters`, generic
+agents appear with status `available` (bin found on `PATH`) or `supported`
+(not installed — shows the install hint).
+
+Reach for a real adapter package (not a generic spec) when the agent needs
+bespoke env scrubbing, gateway modes, permission handling, or a non-stdio
+transport.
+
 ## Adapter vs plugin
 
 These are different things:

@@ -80,6 +80,40 @@ export interface FeaturesConfig {
 }
 
 /**
+ * A user-defined generic ACP agent — the config-file half of
+ * `AcpAgentSpec` (the slug is the record key in `acpAgents`, so it's
+ * omitted here). Any CLI that already speaks the Agent Client Protocol
+ * can be wired with zero code by declaring one of these under
+ * `acpAgents.<slug>` in `~/.agentproto/config.json`; the CLI's
+ * `acpHandleFromSpec` mints a runnable `AgentCliHandle` from it at
+ * resolve time (see `packages/cli/src/registry/acp-generic.ts`). Kept
+ * in this package (not the CLI's) so `config.ts` stays the single
+ * source of truth for the config surface without a cli→runtime→cli
+ * import cycle — the CLI's `AcpAgentSpec` extends this shape.
+ */
+export interface AcpAgentConfigEntry {
+  /** Display name. Defaults to the slug when omitted. */
+  name?: string
+  /** One-line description surfaced in `agentproto acp ls`. */
+  description?: string
+  /** Executable to spawn, e.g. "gemini". */
+  bin: string
+  /** Extra argv appended after `bin`, e.g. ["--experimental-acp"]. */
+  bin_args?: string[]
+  /** Extra environment variables for the spawned process. */
+  env?: Record<string, string>
+  /** Flag the CLI uses to receive the working directory, if it needs
+   *  one passed explicitly (most ACP agents take cwd over the wire). */
+  cwd_flag?: string
+  /** When true, advertise resumable + native-resume continuation. */
+  resumable?: boolean
+  /** Known model ids for the agent (informational + validation hints). */
+  models?: { default?: string; allowed?: string[] }
+  /** Shown when `bin` is missing from PATH (how to install the CLI). */
+  install_hint?: string
+}
+
+/**
  * Per-environment connection bundle. A profile overrides specific
  * fields of the top-level `daemon` / `tunnel` / `features` blocks
  * when selected via `--profile <name>` (or the top-level
@@ -127,12 +161,55 @@ export interface AgentprotoConfig {
    *  `spawn-defaults.ts` for the merge precedence with an explicit call.
    *  Absent ⇒ current behaviour exactly (no regression). */
   defaults?: SpawnDefaultsConfig
+  /** User-defined generic ACP agents, keyed by adapter slug. Each entry
+   *  is minted into a runnable handle by the CLI's `acpHandleFromSpec`
+   *  when `resolveAdapter(slug)` finds no npm adapter package. User
+   *  entries shadow the curated `ACP_CATALOG` on slug collision. */
+  acpAgents?: Record<string, AcpAgentConfigEntry>
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }
 
 export const CONFIG_FILE_PATH = (): string =>
   join(homedir(), ".agentproto", "config.json")
+
+/**
+ * Drop any `acpAgents` entries that aren't a shape we can turn into a
+ * handle. The one hard requirement is a non-empty string `bin` (the
+ * executable to spawn); everything else is optional and defaulted
+ * downstream. Invalid entries are removed rather than throwing so the
+ * daemon still boots — one warning names the offending slug so the
+ * user can fix their config. Returns `undefined` when nothing valid
+ * remains, keeping the key absent (== "no generic agents").
+ */
+function sanitizeAcpAgents(
+  raw: unknown,
+  target: string,
+): Record<string, AcpAgentConfigEntry> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[runtime/config] ${target}: 'acpAgents' is not an object — ignoring`,
+    )
+    return undefined
+  }
+  const out: Record<string, AcpAgentConfigEntry> = {}
+  for (const [slug, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      typeof (value as { bin?: unknown }).bin === "string" &&
+      (value as { bin: string }).bin.length > 0
+    ) {
+      out[slug] = value as AcpAgentConfigEntry
+    } else {
+      console.warn(
+        `[runtime/config] ${target}: acpAgents.${slug} is missing a string 'bin' — ignoring`,
+      )
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
 
 /**
  * Load config.json. Returns an empty object (NOT null) when the file
@@ -147,7 +224,16 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
     const raw = await fs.readFile(target, "utf8")
     const parsed = JSON.parse(raw) as unknown
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as AgentprotoConfig
+      const cfg = parsed as AgentprotoConfig
+      // Sanitize `acpAgents` in the same tolerant spirit as the rest of
+      // this loader: a malformed entry is dropped (with one warning) so a
+      // single bad hand-edit can't make every generic ACP agent
+      // unresolvable. Full AIP-45 validation happens later, at
+      // `acpHandleFromSpec` time, with precise field-level messages.
+      if (cfg.acpAgents !== undefined) {
+        cfg.acpAgents = sanitizeAcpAgents(cfg.acpAgents, target)
+      }
+      return cfg
     }
     console.warn(
       `[runtime/config] ${target}: top-level value is not an object — ignoring`,

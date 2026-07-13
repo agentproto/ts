@@ -86,6 +86,7 @@ import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
   listAdaptersWithCatalog,
+  listAdaptersWithAcp,
 } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 import WebSocket from "ws"
@@ -504,8 +505,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
       resolveAgentAdapter,
       // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
-      // appear (with status "supported") even when not yet installed.
-      listAgentAdapters: () => listAdaptersWithCatalog(CATALOG),
+      // appear (with status "supported") even when not yet installed, and
+      // appends the generic ACP agents (curated ACP_CATALOG + a user's
+      // config.acpAgents) so a zero-code ACP CLI is discoverable too.
+      listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
       resolveBrowserAdapter,
       listBrowserAdapters,
       ...(spawnPty ? { spawnPty } : {}),

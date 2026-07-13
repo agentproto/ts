@@ -36,6 +36,11 @@
       "items": { "type": "string" },
       "description": "Default argv prefix (e.g. ['acp'] for `hermes acp`)."
     },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Static environment variables always merged into the spawn env, before any mode/option env patch (so those can override). Always-on counterpart to modes[].env / options[].env. Primary user is a generic ACP agent whose whole config surface is bin + args + env."
+    },
     "install": {
       "type": "array",
       "minItems": 1,
