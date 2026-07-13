@@ -143,9 +143,15 @@ export function createRendezvousServer(
   let totalSplices = 0
   let refused = 0
 
-  const httpServer = createServer((_req, res) => {
-    // The broker speaks only WebSocket. A plain HTTP GET (health probe,
-    // curiosity) gets a terse 426 rather than hanging.
+  const httpServer = createServer((req, res) => {
+    // Health probe endpoint — used by load balancers and orchestrators.
+    if (req.method === "GET" && req.url === "/healthz") {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ status: "ok", parked: waiting.size, active: active.size }))
+      return
+    }
+    // The broker speaks only WebSocket. A plain HTTP GET (curiosity)
+    // gets a terse 426 rather than hanging.
     res.writeHead(426, { "content-type": "text/plain" })
     res.end("Upgrade Required — this is a WebSocket rendezvous endpoint.\n")
   })

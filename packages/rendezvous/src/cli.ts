@@ -16,17 +16,37 @@
 import { realpathSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { createRendezvousServer, type RendezvousServerOptions } from "./server.js"
+import { loadEnvConfig, type RendezvousEnvConfig } from "./env.js"
 
 interface ServeArgs {
   port: number
   host: string
+  path: string
   parkTimeoutMs?: number
   idleTimeoutMs?: number
   maxMessageBytes?: number
+  rateLimitMax: number
+  rateLimitWindowMs: number
+  debug: boolean
 }
 
 const DEFAULT_PORT = 8788
 const DEFAULT_HOST = "0.0.0.0"
+
+function mergeConfigWithEnv(cliArgs: Partial<ServeArgs>): ServeArgs {
+  const env = loadEnvConfig()
+  return {
+    port: cliArgs.port ?? env.port,
+    host: cliArgs.host ?? env.host,
+    path: cliArgs.path ?? env.path,
+    parkTimeoutMs: cliArgs.parkTimeoutMs ?? env.parkTimeoutMs,
+    idleTimeoutMs: cliArgs.idleTimeoutMs ?? env.idleTimeoutMs,
+    maxMessageBytes: cliArgs.maxMessageBytes ?? env.maxMessageBytes,
+    rateLimitMax: cliArgs.rateLimitMax ?? env.rateLimitMax,
+    rateLimitWindowMs: cliArgs.rateLimitWindowMs ?? env.rateLimitWindowMs,
+    debug: cliArgs.debug ?? env.debug,
+  }
+}
 
 export async function runRendezvousCli(argv: readonly string[]): Promise<number> {
   const sub = argv[0]
@@ -40,7 +60,7 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
     return 2
   }
 
-  let args: ServeArgs
+  let args: Partial<ServeArgs>
   try {
     args = parseServeArgs(argv.slice(1))
   } catch (err) {
@@ -50,19 +70,41 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
     return 2
   }
 
+  // CLI args take precedence over env vars
+  const merged = mergeConfigWithEnv(args)
+
   const opts: RendezvousServerOptions = {
     onLog: line => process.stderr.write(line + "\n"),
-    ...(args.parkTimeoutMs !== undefined ? { parkTimeoutMs: args.parkTimeoutMs } : {}),
-    ...(args.idleTimeoutMs !== undefined ? { idleTimeoutMs: args.idleTimeoutMs } : {}),
-    ...(args.maxMessageBytes !== undefined ? { maxMessageBytes: args.maxMessageBytes } : {}),
+    path: merged.path,
+    ...(merged.parkTimeoutMs !== undefined ? { parkTimeoutMs: merged.parkTimeoutMs } : {}),
+    ...(merged.idleTimeoutMs !== undefined ? { idleTimeoutMs: merged.idleTimeoutMs } : {}),
+    ...(merged.maxMessageBytes !== undefined ? { maxMessageBytes: merged.maxMessageBytes } : {}),
+    rateLimit: { max: merged.rateLimitMax, windowMs: merged.rateLimitWindowMs },
   }
   const server = createRendezvousServer(opts)
-  const { port, host } = await server.listen(args.port, args.host)
+  const { port, host } = await server.listen(merged.port, merged.host)
+
+  if (merged.debug) {
+    process.stderr.write(
+      "[debug] effective config: " +
+        JSON.stringify({
+          port,
+          host,
+          path: merged.path,
+          parkTimeoutMs: merged.parkTimeoutMs,
+          idleTimeoutMs: merged.idleTimeoutMs,
+          maxMessageBytes: merged.maxMessageBytes,
+          rateLimitMax: merged.rateLimitMax,
+          rateLimitWindowMs: merged.rateLimitWindowMs,
+        }) +
+        "\n",
+    )
+  }
 
   process.stdout.write(
-    `agentproto-rendezvous listening on ws://${host}:${port}/v1\n` +
-      `  clients dial:  ws://<this-host>:${port}/v1?side=client&t=<token>\n` +
-      `  daemons dial:  ws://<this-host>:${port}/v1?side=daemon&t=<token>\n` +
+    `agentproto-rendezvous listening on ws://${host}:${port}${merged.path}\n` +
+      `  clients dial:  ws://<this-host>:${port}${merged.path}?side=client&t=<token>\n` +
+      `  daemons dial:  ws://<this-host>:${port}${merged.path}?side=daemon&t=<token>\n` +
       `  the broker only ever sees ciphertext — token, IPs, sizes, timing.\n`,
   )
 
@@ -77,12 +119,16 @@ export async function runRendezvousCli(argv: readonly string[]): Promise<number>
   return 0
 }
 
-function parseServeArgs(argv: readonly string[]): ServeArgs {
-  let port = DEFAULT_PORT
-  let host = DEFAULT_HOST
+function parseServeArgs(argv: readonly string[]): Partial<ServeArgs> {
+  let port: number | undefined
+  let host: string | undefined
+  let path: string | undefined
   let parkTimeoutMs: number | undefined
   let idleTimeoutMs: number | undefined
   let maxMessageBytes: number | undefined
+  let rateLimitMax: number | undefined
+  let rateLimitWindowMs: number | undefined
+  let debug: boolean | undefined
 
   const takeNum = (raw: string | undefined, flag: string): number => {
     const n = Number(raw)
@@ -100,26 +146,40 @@ function parseServeArgs(argv: readonly string[]): ServeArgs {
       host = argv[++i] ?? host
     } else if (arg?.startsWith("--host=")) {
       host = arg.slice("--host=".length)
+    } else if (arg === "--path") {
+      path = argv[++i] ?? path
+    } else if (arg?.startsWith("--path=")) {
+      path = arg.slice("--path=".length)
     } else if (arg === "--park-timeout-ms") {
       parkTimeoutMs = takeNum(argv[++i], "--park-timeout-ms")
     } else if (arg === "--idle-timeout-ms") {
       idleTimeoutMs = takeNum(argv[++i], "--idle-timeout-ms")
     } else if (arg === "--max-message-bytes") {
       maxMessageBytes = takeNum(argv[++i], "--max-message-bytes")
+    } else if (arg === "--rate-limit-max") {
+      rateLimitMax = takeNum(argv[++i], "--rate-limit-max")
+    } else if (arg === "--rate-limit-window-ms") {
+      rateLimitWindowMs = takeNum(argv[++i], "--rate-limit-window-ms")
+    } else if (arg === "--debug") {
+      debug = true
     } else {
       throw new Error(`unrecognised argument "${arg}"`)
     }
   }
 
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
     throw new Error(`invalid --port — expected an integer 0-65535`)
   }
   return {
-    port,
-    host,
+    ...(port !== undefined ? { port } : {}),
+    ...(host !== undefined ? { host } : {}),
+    ...(path !== undefined ? { path } : {}),
     ...(parkTimeoutMs !== undefined ? { parkTimeoutMs } : {}),
     ...(idleTimeoutMs !== undefined ? { idleTimeoutMs } : {}),
     ...(maxMessageBytes !== undefined ? { maxMessageBytes } : {}),
+    ...(rateLimitMax !== undefined ? { rateLimitMax } : {}),
+    ...(rateLimitWindowMs !== undefined ? { rateLimitWindowMs } : {}),
+    ...(debug !== undefined ? { debug } : {}),
   }
 }
 
@@ -131,13 +191,23 @@ function printHelp(): void {
       "Usage:",
       "  agentproto-rendezvous serve [options]",
       "",
-      "Options:",
-      `  --port <n>              Port to bind (default ${DEFAULT_PORT}).`,
-      `  --host <ip>             Bind address (default ${DEFAULT_HOST}).`,
-      "  --park-timeout-ms <n>   How long a lone socket waits for its peer (default 120000).",
-      "  --idle-timeout-ms <n>   Idle teardown after splice (default 900000).",
-      "  --max-message-bytes <n> Max WS message size (default 1048576).",
+      "Options (CLI args take precedence over environment variables):",
+      `  --port <n>              Port to bind (default ${DEFAULT_PORT}, env: RENDEZVOUS_PORT).`,
+      `  --host <ip>             Bind address (default ${DEFAULT_HOST}, env: RENDEZVOUS_HOST).`,
+      "  --path <p>              Upgrade path the broker listens on (default /v1, env: RENDEZVOUS_PATH).",
+      "  --park-timeout-ms <n>   How long a lone socket waits for its peer (default 120000, env: RENDEZVOUS_PARK_TIMEOUT_MS).",
+      "  --idle-timeout-ms <n>   Idle teardown after splice (default 900000, env: RENDEZVOUS_IDLE_TIMEOUT_MS).",
+      "  --max-message-bytes <n> Max WS message size (default 1048576, env: RENDEZVOUS_MAX_MESSAGE_BYTES).",
+      "  --rate-limit-max <n>    Max upgrade attempts per IP per window (default 120, env: RENDEZVOUS_RATE_LIMIT_MAX).",
+      "  --rate-limit-window-ms <n>  Rate-limit window (default 60000, env: RENDEZVOUS_RATE_LIMIT_WINDOW_MS).",
+      "  --debug                 Print the effective config at startup (env: RENDEZVOUS_DEBUG).",
       "  --help                  Show this message.",
+      "",
+      "Environment variables:",
+      "  RENDEZVOUS_PORT, RENDEZVOUS_HOST, RENDEZVOUS_PATH",
+      "  RENDEZVOUS_PARK_TIMEOUT_MS, RENDEZVOUS_IDLE_TIMEOUT_MS",
+      "  RENDEZVOUS_MAX_MESSAGE_BYTES, RENDEZVOUS_RATE_LIMIT_MAX",
+      "  RENDEZVOUS_RATE_LIMIT_WINDOW_MS, RENDEZVOUS_DEBUG",
       "",
       "The broker matches two sockets sharing a token and pipes their bytes",
       "verbatim. It never parses payloads and cannot read or forge traffic.",

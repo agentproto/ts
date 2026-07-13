@@ -1,0 +1,40 @@
+# Build artifacts — dist/ is the prebuilt bundle the Dockerfile COPIES in
+# (build it first with `pnpm --filter @agentproto/rendezvous build`), so it must
+# stay in the build context. Only the incremental tsc metadata is excluded.
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Source control
+.git/
+.gitignore
+.gitattributes
+
+# Development files
+*.test.ts
+*.spec.ts
+coverage/
+.vscode/
+.idea/
+
+# CI/CD
+.github/
+*.yml
+*.yaml
+!.dockerignore
+
+# Documentation (keep README.md and LICENSE)
+*.md
+!README.md
+!LICENSE
+!DEPLOY.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

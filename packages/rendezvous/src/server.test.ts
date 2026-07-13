@@ -245,3 +245,59 @@ describe("rendezvous server — malformed upgrades", () => {
     await expect(opened(ws)).rejects.toBeTruthy()
   })
 })
+
+describe("rendezvous server — healthz endpoint", () => {
+  it("returns healthy status with parked and active counts", async () => {
+    const { server, url } = await start()
+    const addr = server.httpServer.address()
+    const port = addr && typeof addr === "object" ? addr.port : 0
+
+    // Health endpoint should be available
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`)
+    expect(response.status).toBe(200)
+
+    const body = await response.json() as { status: string; parked: number; active: number }
+    expect(body.status).toBe("ok")
+    expect(body.parked).toBe(0)
+    expect(body.active).toBe(0)
+  })
+
+  it("reflects parked sockets in health status", async () => {
+    const { server, url } = await start()
+    const addr = server.httpServer.address()
+    const port = addr && typeof addr === "object" ? addr.port : 0
+
+    // Park a daemon socket
+    const daemon = dial(url, "daemon", "tok-health-parked")
+    await opened(daemon)
+
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`)
+    const body = await response.json() as { status: string; parked: number; active: number }
+    expect(body.status).toBe("ok")
+    expect(body.parked).toBe(1)
+    expect(body.active).toBe(0)
+
+    daemon.close()
+  })
+
+  it("reflects active splices in health status", async () => {
+    const { server, url } = await start()
+    const addr = server.httpServer.address()
+    const port = addr && typeof addr === "object" ? addr.port : 0
+
+    // Create an active splice
+    const daemon = dial(url, "daemon", "tok-health-active")
+    await opened(daemon)
+    const client = dial(url, "client", "tok-health-active")
+    await opened(client)
+
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`)
+    const body = await response.json() as { status: string; parked: number; active: number }
+    expect(body.status).toBe("ok")
+    expect(body.parked).toBe(0)
+    expect(body.active).toBe(1)
+
+    daemon.close()
+    client.close()
+  })
+})
