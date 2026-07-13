@@ -40,6 +40,7 @@ import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runWorktree } from "./commands/worktree.js"
 import { runPermissions } from "./commands/permissions.js"
+import { runAcp } from "./commands/acp.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -94,6 +95,9 @@ Usage:
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
   agentproto permissions ls    [--json]                   held tool-permission requests
   agentproto permissions <approve|deny> <id> [--always]   resolve a held request
+  agentproto acp       ls      [--json]
+  agentproto acp       add <slug> --bin <bin> [--args <arg>…] [--env <K=V>…] [--resumable]
+  agentproto acp       rm  <slug>
   agentproto --help
   agentproto --version
 
@@ -142,6 +146,7 @@ const VERBS = new Set([
   "pack",
   "worktree",
   "permissions",
+  "acp",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -222,6 +227,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runWorktree(rest)
     case "permissions":
       return runPermissions(rest)
+    case "acp":
+      return runAcp(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)

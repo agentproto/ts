@@ -26,6 +26,11 @@ import {
   type AdapterHandle,
   type AdapterCatalogEntry,
 } from "@agentproto/provider-kit"
+import {
+  acpHandleFromSpec,
+  resolveAcpSpec,
+  listAcpGenericAdapters,
+} from "./acp-generic.js"
 
 /** Slash-command declared in an adapter manifest (AIP-45 `commands[]`). */
 export interface AgentCliCommand {
@@ -36,7 +41,7 @@ export interface AgentCliCommand {
 export interface ResolvedAdapter {
   readonly slug: string
   readonly handle: AgentCliHandle
-  readonly source: "npm" | "file" | "bundled"
+  readonly source: "npm" | "file" | "bundled" | "acp-config" | "acp-catalog"
   readonly packageName?: string
 }
 
@@ -176,6 +181,20 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
         }
       } catch {
         /* parent also missing — fall through to original error */
+      }
+    }
+
+    // npm (and the parent-package fallback) both missed. Before failing,
+    // try the generic ACP paths — a user-defined `config.acpAgents` entry,
+    // then the curated `ACP_CATALOG`. npm stays first so a real adapter
+    // package always wins; these are the zero-code fallback for any CLI
+    // that already speaks ACP.
+    const generic = await resolveAcpSpec(slug)
+    if (generic) {
+      return {
+        slug,
+        handle: acpHandleFromSpec(generic.spec),
+        source: generic.source,
       }
     }
 
@@ -442,4 +461,30 @@ export async function listAdaptersWithCatalog(
     status: e.status,
     ...(e.hint !== undefined ? { hint: e.hint } : {}),
   }))
+}
+
+/** A single row of the merged adapter listing — npm/native catalog
+ *  entries and generic ACP entries share this shape (the latter also
+ *  carry a `source`). */
+export type AdapterListing = AdapterInfo & {
+  status: "supported" | "available" | "ready"
+  hint?: string
+  source?: "acp-config" | "acp-catalog"
+}
+
+/**
+ * The full adapter listing surfaced by `adapter_list` / `GET /adapters`:
+ * every npm/native catalog adapter PLUS the generic ACP agents (curated
+ * `ACP_CATALOG` + user `config.acpAgents`). Generic entries whose slug is
+ * already covered by a native adapter are dropped, so a slug never appears
+ * twice. Native adapters keep their richer status (`ready` after setup);
+ * generic entries are `available` (bin on PATH) or `supported` (not yet).
+ */
+export async function listAdaptersWithAcp(
+  catalog: readonly AdapterCatalogEntry[]
+): Promise<AdapterListing[]> {
+  const native = await listAdaptersWithCatalog(catalog)
+  const nativeSlugs = new Set(native.map((e) => e.slug))
+  const generic = await listAcpGenericAdapters({ excludeSlugs: nativeSlugs })
+  return [...native, ...generic]
 }

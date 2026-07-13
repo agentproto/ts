@@ -351,6 +351,9 @@ export const agentCliFrontmatterSchema = z
     version: z.string().regex(SEMVER_PATTERN),
     bin: z.string().regex(BIN_PATTERN),
     bin_args: z.array(z.string()).optional(),
+    // Always-on spawn env (merged before mode/option env, which can
+    // override). See AgentCliDefinition.env — used by generic ACP agents.
+    env: z.record(z.string(), z.string()).optional(),
     install: z.array(installMethodSchema).min(1),
     version_check: versionCheckSchema,
     setup: z.array(setupStepSchema).optional(),
