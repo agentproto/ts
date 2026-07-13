@@ -1,0 +1,10 @@
+{
+  "worktree": {
+    "setup": "pnpm install --prefer-offline"
+  },
+  "scripts": {
+    "build": { "command": "pnpm build" },
+    "test": { "command": "pnpm test" },
+    "check-types": { "command": "pnpm check-types" }
+  }
+}
