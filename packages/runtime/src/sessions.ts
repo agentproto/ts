@@ -20,7 +20,7 @@
  *   - guilde-web Active tab (session cards + terminal viewer)
  */
 
-import type { AcpMcpServer } from "@agentproto/acp"
+import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
@@ -56,6 +56,16 @@ export interface AgentSessionLike {
   pid?: number
   send(message: unknown): AsyncIterable<AgentStreamEvent>
   cancel(): Promise<void>
+  /** Resolve a permission request the driver parked in permission-hold mode
+   *  (see the pending-permissions inbox below). `requestId` is the driver's
+   *  own stable id, surfaced on the `agent-prompt` event's `toolCallId`.
+   *  Returns true when a matching parked request was resolved. Absent for
+   *  drivers that don't model held permissions (sandbox proxy, future
+   *  transports). */
+  respondPermission?(
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean | Promise<boolean>
   close(): Promise<void>
 }
 
@@ -146,6 +156,66 @@ function normalizeAgentPromptOptions(raw: unknown): string[] | undefined {
     })
     .filter((s): s is string => typeof s === "string")
   return labels.length > 0 ? labels : undefined
+}
+
+/**
+ * Narrow an `agent-prompt` event's `options` (typed `unknown`) into the ACP
+ * `{ optionId, name?, kind? }` permission-option shape for the pending inbox.
+ * Drops entries without a string `optionId` — those can't be responded to.
+ */
+function normalizePermissionOptions(
+  raw: unknown,
+): Array<{ optionId: string; name?: string; kind?: string }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ optionId: string; name?: string; kind?: string }> = []
+  for (const o of raw) {
+    if (!o || typeof o !== "object") continue
+    const r = o as Record<string, unknown>
+    if (typeof r.optionId !== "string") continue
+    out.push({
+      optionId: r.optionId,
+      ...(typeof r.name === "string" ? { name: r.name } : {}),
+      ...(typeof r.kind === "string" ? { kind: r.kind } : {}),
+    })
+  }
+  return out
+}
+
+/**
+ * Map an inbox decision onto one of the offered permission options.
+ *   - explicit `optionId` wins (must be one of the offered options)
+ *   - approve → an `allow_*` option (allow-always when `scope: "always"` and
+ *     one is offered, otherwise allow-once, otherwise any allow-flavored)
+ *   - deny → a `reject_*` option (undefined when none is offered → the caller
+ *     resolves the request as `cancelled`)
+ * Returns `null` only for an approve with no allow-flavored option — a hard
+ * error (the request can't be granted through any offered option).
+ */
+function selectPermissionOptionId(
+  options: ReadonlyArray<{ optionId: string; kind?: string }>,
+  input: { decision: "approve" | "deny"; optionId?: string; scope?: "once" | "always" },
+): { optionId: string } | { cancelled: true } | null {
+  if (input.optionId) {
+    return options.some(o => o.optionId === input.optionId)
+      ? { optionId: input.optionId }
+      : null
+  }
+  const kindStarts = (prefix: string) =>
+    options.find(o => typeof o.kind === "string" && o.kind.startsWith(prefix))
+  if (input.decision === "approve") {
+    const chosen =
+      (input.scope === "always"
+        ? options.find(o => o.kind === "allow_always")
+        : options.find(o => o.kind === "allow_once")) ??
+      kindStarts("allow") ??
+      // Some agents label the grant "proceed"/"yes" without an `allow_` kind —
+      // fall back to the first non-reject option before giving up.
+      options.find(o => !(typeof o.kind === "string" && o.kind.startsWith("reject")))
+    return chosen ? { optionId: chosen.optionId } : null
+  }
+  // deny — prefer an explicit reject option; else cancel the request outright.
+  const reject = options.find(o => o.kind === "reject_once") ?? kindStarts("reject") ?? kindStarts("deny")
+  return reject ? { optionId: reject.optionId } : { cancelled: true }
 }
 
 /**
@@ -322,6 +392,14 @@ export interface SessionDescriptor {
    * drivers that don't report structured prompts. Cleared alongside
    * `awaitingInput` on the next turn start. */
   awaitingQuestion?: SessionAwaitingQuestion
+  /** True while this session (spawned in permission-hold mode) has at least
+   *  one permission request parked in the inbox awaiting a human/orchestrator
+   *  decision. Distinct from `awaitingInput` (a conversational question) — a
+   *  held permission is resolved via `permissions_respond` / `agentproto
+   *  permissions approve|deny`, not a normal prompt. Set when a request is
+   *  registered, cleared when the last pending one for this session resolves.
+   *  Absent (never `false`) for sessions with no held permissions. */
+  awaitingPermission?: boolean
   /** Count of turns that have fully completed (turn-end emitted) on this
    *  session. Lets `session_monitor` fast-return for a session that already
    *  finished its turn before the wait subscribed — a fast turn that ends
@@ -454,6 +532,10 @@ interface SessionRuntime {
    *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
    *  turn-end. */
   adapterReportedCost?: boolean
+  /** True when the session was spawned in permission-hold mode — its
+   *  `agent-prompt` events carry respondable permission requests that get
+   *  registered in the pending-permissions inbox. Default false. */
+  permissionHold?: boolean
 }
 
 const RECENT_LINES_CAP = 500
@@ -561,6 +643,48 @@ function deriveHeuristicQuestion(
   if (!candidate.endsWith("?")) return undefined
   return { text: candidate, ...(options.length > 0 ? { options } : {}), source: "heuristic" }
 }
+
+/**
+ * A `session/request_permission` request parked by a permission-hold session,
+ * awaiting a human/orchestrator decision through the cross-session inbox
+ * (`permissions_list` / `permissions_respond`, `GET /permissions` /
+ * `POST /permissions/:id`, `agentproto permissions ls|approve|deny`).
+ */
+export interface PendingPermission {
+  /** Stable id — the driver's own request id, unique across sessions. Pass to
+   *  `respondPermission`. */
+  id: string
+  sessionId: string
+  /** ACP tool-call id the request was raised for (== `id` today; kept distinct
+   *  so a future driver can surface a separate correlation id). */
+  toolCallId: string
+  /** Tool title/kind the agent is asking permission for, when known. */
+  toolName?: string
+  /** Human-readable "Allow X?" line. */
+  text: string
+  /** Options the agent offered (ACP `requestPermission` shape). */
+  options: Array<{ optionId: string; name?: string; kind?: string }>
+  /** ISO timestamp the request was parked. */
+  requestedAt: string
+}
+
+/** How a caller resolves a pending permission — an explicit `optionId` wins
+ *  over the `decision`→option mapping (approve → an allow-flavored option,
+ *  deny → a reject-flavored option). `scope: "always"` prefers an
+ *  allow-always option when the request offers one. */
+export interface PermissionRespondInput {
+  decision: "approve" | "deny"
+  optionId?: string
+  scope?: "once" | "always"
+}
+
+export type PermissionRespondResult =
+  | { ok: true; permission: PendingPermission; decision: "approve" | "deny"; optionId?: string }
+  | {
+      ok: false
+      error: "not_found" | "session_gone" | "no_matching_option" | "unsupported"
+      message: string
+    }
 
 export interface SessionsRegistry {
   spawn(input: SpawnSessionInput): SessionDescriptor
@@ -684,6 +808,18 @@ export interface SessionsRegistry {
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
   kill(id: string, signal?: NodeJS.Signals): boolean
+  /** List permission requests currently parked in the pending-permissions
+   *  inbox across all permission-hold sessions, newest last. Optionally
+   *  filtered to one session. */
+  listPendingPermissions(filter?: { sessionId?: string }): PendingPermission[]
+  /** Resolve a parked permission by id — maps the decision (or explicit
+   *  optionId) to one of the offered options, resolves the held driver RPC,
+   *  clears the session's awaiting-permission state, and emits
+   *  `session:permission-resolved`. */
+  respondPermission(
+    id: string,
+    input: PermissionRespondInput,
+  ): Promise<PermissionRespondResult>
   /** Stop tracking a session (after it exited and the user clicked
    *  "clear"). Doesn't kill — use `kill` first. */
   forget(id: string): boolean
@@ -781,6 +917,11 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** True when the driver session was started in permission-hold mode
+   *  (`AgentCliStartOptions.permissionHold`) — its `agent-prompt` events carry
+   *  respondable permission requests. Gates whether the registry registers
+   *  them in the pending-permissions inbox. Default false. */
+  permissionHold?: boolean
 }
 
 export interface SpawnSessionInput {
@@ -932,6 +1073,11 @@ export function createSessionsRegistry(opts?: {
   const resumeAgent = opts?.resumeAgent
   const sessionEvents = opts?.sessionEvents
   const sessions = new Map<string, SessionRuntime>()
+  // Cross-session pending-permissions inbox: every request parked by a
+  // permission-hold session, keyed by the driver's stable request id.
+  // Insertion order is preserved so `listPendingPermissions` reads oldest→
+  // newest without a sort.
+  const pendingPermissions = new Map<string, PendingPermission>()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonically-growing PTY-subscriber id. Detach is O(1) on
   // Map.delete(subId), so we never reuse — overflow at Number.MAX_-
@@ -976,7 +1122,12 @@ export function createSessionsRegistry(opts?: {
 
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
-    if (!sessionEvents || rt.exitedEmitted) return
+    if (rt.exitedEmitted) return
+    // A dying session must never leave a held permission RPC dangling — cancel
+    // its parked requests (resolves them as `cancelled`) before anything else.
+    // Runs even when no bus is wired, so the driver RPC always settles.
+    cancelPendingPermissionsForSession(rt)
+    if (!sessionEvents) return
     rt.exitedEmitted = true
     sessionEvents.emit({
       type: "session:exited",
@@ -986,6 +1137,92 @@ export function createSessionsRegistry(opts?: {
       label: rt.desc.label,
       ts: new Date().toISOString(),
     })
+  }
+
+  // ── Pending-permissions inbox helpers ────────────────────────────────
+  //
+  // A permission-hold session surfaces each `session/request_permission` as an
+  // `agent-prompt` StreamEvent (see the driver's ACP arm). `projectEvent`
+  // routes that here to register a PendingPermission and emit
+  // `session:permission-request`; `respondPermission` resolves it back through
+  // the held driver RPC.
+
+  /** Recompute `desc.awaitingPermission` from the live pending set — true iff
+   *  the session still has at least one parked request. */
+  const refreshAwaitingPermission = (rt: SessionRuntime): void => {
+    let has = false
+    for (const p of pendingPermissions.values()) {
+      if (p.sessionId === rt.desc.id) {
+        has = true
+        break
+      }
+    }
+    if (has) rt.desc.awaitingPermission = true
+    else delete rt.desc.awaitingPermission
+  }
+
+  /** Register a permission request surfaced by an `agent-prompt` event on a
+   *  permission-hold session, and announce it on the bus. */
+  const registerPendingPermission = (
+    rt: SessionRuntime,
+    evt: AgentStreamEvent,
+  ): void => {
+    const id = evt.toolCallId
+    if (!id) return // nothing to respond to — treat as a plain awaiting-input
+    const options = normalizePermissionOptions(evt.options)
+    const toolName = evt.toolName
+    const text =
+      evt.text ?? (toolName ? `Allow "${toolName}"?` : "The agent is requesting permission.")
+    const pending: PendingPermission = {
+      id,
+      sessionId: rt.desc.id,
+      toolCallId: id,
+      ...(toolName ? { toolName } : {}),
+      text,
+      options,
+      requestedAt: new Date().toISOString(),
+    }
+    pendingPermissions.set(id, pending)
+    rt.desc.awaitingPermission = true
+    schedulePersist()
+    if (sessionEvents) {
+      sessionEvents.emit({
+        type: "session:permission-request",
+        sessionId: rt.desc.id,
+        permissionId: id,
+        ...(toolName ? { toolName } : {}),
+        text,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: pending.requestedAt,
+      })
+    }
+  }
+
+  /** Cancel (resolve as `cancelled`) every request parked for a dying session
+   *  so no held driver RPC dangles. Emits `session:permission-resolved` with
+   *  `decision: "cancelled"` for each. Best-effort — the driver session may
+   *  already be closing. */
+  const cancelPendingPermissionsForSession = (rt: SessionRuntime): void => {
+    for (const [id, pending] of pendingPermissions) {
+      if (pending.sessionId !== rt.desc.id) continue
+      pendingPermissions.delete(id)
+      try {
+        void rt.agentSession?.respondPermission?.(id, { cancelled: true })
+      } catch {
+        // driver already gone — the RPC is moot
+      }
+      if (sessionEvents) {
+        sessionEvents.emit({
+          type: "session:permission-resolved",
+          sessionId: rt.desc.id,
+          permissionId: id,
+          decision: "cancelled",
+          ...(rt.desc.label ? { label: rt.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
+    }
+    delete rt.desc.awaitingPermission
   }
 
   const schedulePersist = (): void => {
@@ -1189,7 +1426,15 @@ export function createSessionsRegistry(opts?: {
             source: "structured",
           }
         }
-        appendLine(rt, `\x1b[33m[awaiting input]\x1b[0m`, "stdout")
+        // Permission-hold sessions park the request in the cross-session inbox
+        // so a human/orchestrator can approve/deny it out-of-band. The RPC is
+        // held open by the driver until `respondPermission` resolves it.
+        if (rt.permissionHold) {
+          registerPendingPermission(rt, evt)
+          appendLine(rt, `\x1b[33m[permission] ${evt.text ?? evt.toolName ?? "requesting permission"}\x1b[0m`, "stdout")
+        } else {
+          appendLine(rt, `\x1b[33m[awaiting input]\x1b[0m`, "stdout")
+        }
         break
       }
       case "turn-end": {
@@ -1972,6 +2217,7 @@ export function createSessionsRegistry(opts?: {
         thoughtBuf: "",
         maxCostUsd: input.maxCostUsd,
         readUsage: input.readUsage,
+        ...(input.permissionHold ? { permissionHold: true } : {}),
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
@@ -2392,6 +2638,91 @@ export function createSessionsRegistry(opts?: {
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
       emitExited(rt)
       return true
+    },
+    listPendingPermissions(filter) {
+      const all = Array.from(pendingPermissions.values())
+      const scoped = filter?.sessionId
+        ? all.filter(p => p.sessionId === filter.sessionId)
+        : all
+      // Defensive copies — callers must not mutate the live inbox records.
+      return scoped.map(p => ({ ...p, options: p.options.map(o => ({ ...o })) }))
+    },
+    async respondPermission(id, input) {
+      const pending = pendingPermissions.get(id)
+      if (!pending) {
+        return {
+          ok: false,
+          error: "not_found",
+          message: `no pending permission "${id}" (unknown or already resolved)`,
+        }
+      }
+      const rt = sessions.get(pending.sessionId)
+      if (!rt || !rt.agentSession) {
+        // Session vanished between registration and response — drop the stale
+        // entry so it stops showing up in the inbox.
+        pendingPermissions.delete(id)
+        if (rt) refreshAwaitingPermission(rt)
+        return {
+          ok: false,
+          error: "session_gone",
+          message: `session "${pending.sessionId}" for permission "${id}" is no longer alive`,
+        }
+      }
+      const respond = rt.agentSession.respondPermission
+      if (!respond) {
+        return {
+          ok: false,
+          error: "unsupported",
+          message: `session "${pending.sessionId}" driver does not support held permissions`,
+        }
+      }
+      const selected = selectPermissionOptionId(pending.options, input)
+      if (selected === null) {
+        return {
+          ok: false,
+          error: "no_matching_option",
+          message:
+            `permission "${id}" offers no ${input.decision === "approve" ? "allow" : "reject"}` +
+            `-flavored option; pass an explicit optionId (one of: ${pending.options
+              .map(o => o.optionId)
+              .join(", ")})`,
+        }
+      }
+      // Resolve the held driver RPC — the agent's turn unblocks with the chosen
+      // outcome. Clear inbox state BEFORE awaiting so a slow driver can't leave
+      // a resolved request visible.
+      pendingPermissions.delete(id)
+      const chosenOptionId = "optionId" in selected ? selected.optionId : undefined
+      // The request is resolved either way — the agent's turn resumes, so it is
+      // no longer awaiting a human. Mirrors how a new turn clears these.
+      delete rt.desc.awaitingInput
+      rt.desc.awaitingQuestion = undefined
+      refreshAwaitingPermission(rt)
+      const okResolved = await respond(id, selected)
+      if (sessionEvents) {
+        sessionEvents.emit({
+          type: "session:permission-resolved",
+          sessionId: pending.sessionId,
+          permissionId: id,
+          decision: input.decision,
+          ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
+          ...(rt.desc.label ? { label: rt.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
+      schedulePersist()
+      if (!okResolved) {
+        // The driver had already resolved this request (race with a
+        // session-death cancel). Report success anyway — the inbox entry is
+        // gone and the caller's intent is moot.
+        return { ok: true, permission: pending, decision: input.decision, ...(chosenOptionId ? { optionId: chosenOptionId } : {}) }
+      }
+      return {
+        ok: true,
+        permission: pending,
+        decision: input.decision,
+        ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
+      }
     },
     forget(id) {
       const rt = sessions.get(id)

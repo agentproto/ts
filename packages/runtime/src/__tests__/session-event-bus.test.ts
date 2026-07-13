@@ -28,6 +28,42 @@ describe("SessionEventBus", () => {
     expect(handler).toHaveBeenCalledTimes(3)
   })
 
+  it("delivers the permission-request / -resolved events by type", () => {
+    const bus = createSessionEventBus()
+    const onRequest = vi.fn()
+    const onResolved = vi.fn()
+    bus.on("session:permission-request", onRequest)
+    bus.on("session:permission-resolved", onResolved)
+
+    bus.emit({
+      type: "session:permission-request",
+      sessionId: "s1",
+      permissionId: "perm-1",
+      toolName: "Write",
+      text: 'Allow "Write"?',
+      ts: "t",
+    })
+    bus.emit({
+      type: "session:permission-resolved",
+      sessionId: "s1",
+      permissionId: "perm-1",
+      decision: "approve",
+      optionId: "opt-once",
+      ts: "t",
+    })
+    // A sibling type must not leak into either handler.
+    bus.emit({ type: "session:turn-end", sessionId: "s1", awaitingInput: false, ts: "t" })
+
+    expect(onRequest).toHaveBeenCalledTimes(1)
+    expect(onRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session:permission-request", permissionId: "perm-1" }),
+    )
+    expect(onResolved).toHaveBeenCalledTimes(1)
+    expect(onResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "approve", optionId: "opt-once" }),
+    )
+  })
+
   it("unsubscribe stops receiving events", () => {
     const bus = createSessionEventBus()
     const handler = vi.fn()

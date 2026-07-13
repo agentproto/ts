@@ -116,6 +116,9 @@ export type {
   SessionsRegistry,
   RegisterBrowserInput,
   RegisterSessionInput,
+  PendingPermission,
+  PermissionRespondInput,
+  PermissionRespondResult,
 } from "./sessions.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
@@ -333,6 +336,8 @@ const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "session_list",
   "session_monitor",
   "session_events_poll",
+  "permissions_list",
+  "permissions_respond",
 ]
 
 export interface GatewayHandle {

@@ -265,6 +265,16 @@ export function registerAgentTools(
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
         ),
+      permissionHold: mcpBool
+        .optional()
+        .describe(
+          "Start the session in permission-hold mode: every ACP permission " +
+            "request the agent raises (Write, Bash, …) is SURFACED and HELD in " +
+            "the cross-session inbox (`permissions_list` / `permissions_respond`) " +
+            "instead of auto-answered, and the agent blocks until a human/" +
+            "orchestrator approves or denies it. Default false = today's " +
+            "auto-answer behaviour. ACP adapters only; others ignore it."
+        ),
       options: jsonTolerant(
         z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
       )

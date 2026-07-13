@@ -13,6 +13,8 @@ import { EventEmitter } from "node:events"
 export type SessionEventType =
   | "session:turn-end"
   | "session:awaiting-input"
+  | "session:permission-request"
+  | "session:permission-resolved"
   | "session:exited"
   | "session:command-done"
   | "policy:passed"
@@ -72,6 +74,36 @@ export interface SessionAwaitingInputEvent {
   label?: string
   ts: string
   question?: SessionAwaitingQuestion
+}
+
+/**
+ * Emitted when a permission-hold session parks a `session/request_permission`
+ * (see the pending-permissions inbox in sessions.ts). `permissionId` is the
+ * stable id `permissions_respond` / `POST /permissions/:id` resolve it with.
+ */
+export interface SessionPermissionRequestEvent {
+  type: "session:permission-request"
+  sessionId: string
+  permissionId: string
+  toolName?: string
+  text: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a parked permission is resolved — by an inbox
+ * approve/deny, or auto-`cancelled` when the session is torn down while the
+ * request is still pending.
+ */
+export interface SessionPermissionResolvedEvent {
+  type: "session:permission-resolved"
+  sessionId: string
+  permissionId: string
+  decision: "approve" | "deny" | "cancelled"
+  optionId?: string
+  label?: string
+  ts: string
 }
 
 export interface SessionExitedEvent {
@@ -167,6 +199,8 @@ export interface CronFailedEvent {
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
+  | SessionPermissionRequestEvent
+  | SessionPermissionResolvedEvent
   | SessionExitedEvent
   | SessionCommandDoneEvent
   | PolicyPassedEvent

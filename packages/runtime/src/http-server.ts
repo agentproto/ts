@@ -165,6 +165,11 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  handler, POST /sessions/agent) wires this to pulse
      *  `SessionDescriptor.lastActivityAt` via `registry.pulseActivity(id)`. */
     onActivity?: () => void
+    /** Start the session in permission-hold mode — forwarded to the driver's
+     *  `runtime.start({ permissionHold })` so each ACP permission request is
+     *  surfaced + parked in the daemon's inbox instead of auto-answered.
+     *  Adapters/arms with no permission surface ignore it. Default false. */
+    permissionHold?: boolean
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -1251,6 +1256,24 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Permission inbox routes — GET /permissions (list pending across all
+        // permission-hold sessions), POST /permissions/:id (approve/deny).
+        // Mirrors the MCP `permissions_list` / `permissions_respond` tools —
+        // same SessionsRegistry inbox. Only mounted when a registry is wired.
+        if (opts.sessions && path.startsWith("/permissions")) {
+          // Non-GET (approve/deny) is a mutating action — same per-boot token
+          // gate as the mutating /sessions/* routes. GET is read-only, ungated.
+          if ((req.method ?? "GET") !== "GET") {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
+          const handled = await handlePermissions(req, res, path, opts.sessions)
+          if (handled) return
+        }
+
         // Cron routes — only registered when the gateway was built with
         // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
         if (opts.cronScheduler && path.startsWith("/cron")) {
@@ -1722,6 +1745,22 @@ async function handleSessions(
                       ? false
                       : undefined
               return t !== undefined ? { trace: t } : {}
+            })()
+          : {}),
+        // Permission-hold mode — the HTTP twin of the MCP `agent_start` tool's
+        // `permissionHold` field (and `agentproto sessions start
+        // --hold-permissions`). Tolerate a stringified boolean like `trace`.
+        ...(b.permissionHold !== undefined
+          ? (() => {
+              const h =
+                typeof b.permissionHold === "boolean"
+                  ? b.permissionHold
+                  : b.permissionHold === "true"
+                    ? true
+                    : b.permissionHold === "false"
+                      ? false
+                      : undefined
+              return h ? { permissionHold: true } : {}
             })()
           : {}),
       },
@@ -2911,6 +2950,99 @@ async function handlePolicies(
   }
   json(200, state)
   return true
+}
+
+/**
+ * /permissions routes — the cross-session permission inbox:
+ *   GET  /permissions            → { permissions: [...] } across all sessions
+ *                                  (optional ?sessionId=<id> filter)
+ *   POST /permissions/:id        → { decision, optionId?, scope? } approve/deny
+ *
+ * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
+ * same SessionsRegistry inbox. Each list entry is enriched with the owning
+ * session's adapter/title for a self-contained render.
+ */
+async function handlePermissions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: SessionsRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/permissions" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const sessionId = qs.get("sessionId") ?? undefined
+    const permissions = registry
+      .listPendingPermissions(sessionId ? { sessionId } : undefined)
+      .map(p => enrichPermission(p, registry))
+    json(200, { permissions })
+    return true
+  }
+
+  const idMatch = path.match(/^\/permissions\/([^/]+)$/)
+  if (idMatch && req.method === "POST") {
+    const id = decodeURIComponent(idMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const decision = b.decision
+    if (decision !== "approve" && decision !== "deny") {
+      json(400, {
+        error: "invalid_decision",
+        message: 'body.decision must be "approve" or "deny"',
+      })
+      return true
+    }
+    const optionId = typeof b.optionId === "string" ? b.optionId : undefined
+    const scope = b.scope === "always" || b.scope === "once" ? b.scope : undefined
+    const result = await registry.respondPermission(id, {
+      decision,
+      ...(optionId ? { optionId } : {}),
+      ...(scope ? { scope } : {}),
+    })
+    if (!result.ok) {
+      const status = result.error === "not_found" || result.error === "session_gone" ? 404 : 409
+      json(status, { error: result.error, message: result.message })
+      return true
+    }
+    json(200, {
+      ok: true,
+      id,
+      sessionId: result.permission.sessionId,
+      decision: result.decision,
+      ...(result.optionId ? { optionId: result.optionId } : {}),
+    })
+    return true
+  }
+
+  if (path === "/permissions" || idMatch) {
+    json(405, { error: "method_not_allowed", message: "GET /permissions or POST /permissions/:id" })
+    return true
+  }
+  return false
+}
+
+/** Enrich a raw PendingPermission with the owning session's adapter/title/age
+ *  so a REST/MCP list entry is self-contained. */
+function enrichPermission(
+  p: import("./sessions.js").PendingPermission,
+  registry: SessionsRegistry,
+): Record<string, unknown> {
+  const desc = registry.get(p.sessionId)
+  const ageMs = Date.now() - new Date(p.requestedAt).getTime()
+  return {
+    ...p,
+    ...(desc?.adapterSlug ? { adapter: desc.adapterSlug } : {}),
+    ...(desc?.label ? { sessionLabel: desc.label } : {}),
+    ...(desc?.command ? { sessionTitle: desc.command } : {}),
+    ageMs: ageMs >= 0 ? ageMs : 0,
+  }
 }
 
 /**
