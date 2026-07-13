@@ -63,6 +63,19 @@ agentproto config set daemon.port 18791
     "maxGrantableDelegation": 2,
     "langfuseTracing": false,
     "traceRedactor": "secrets"
+  },
+
+  // Generic ACP agents — any CLI that speaks the Agent Client Protocol,
+  // connectable with zero adapter code. Keyed by adapter slug; shadows a
+  // curated ACP_CATALOG entry of the same slug. Managed via
+  // `agentproto acp add|ls|rm`. See "acpAgents" below.
+  "acpAgents": {
+    "my-agent": {
+      "bin": "my-agent",
+      "bin_args": ["acp"],
+      "resumable": true,
+      "install_hint": "npm i -g my-agent"
+    }
   }
 }
 ```
@@ -136,6 +149,30 @@ Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.
 `skills` array at spawn time *replaces* the union of `defaults.skills` and
 `defaults.adapters.<slug>.skills` rather than merging with it. Adapters with
 no declared `skills` option treat the resolved skills list as a no-op.
+
+### `acpAgents: Record<string, object>`
+
+Generic ACP agents — any CLI that already speaks the Agent Client Protocol,
+connectable with zero adapter code. Keyed by adapter slug; each value is a
+spawn recipe. A config entry **shadows** a curated `ACP_CATALOG` entry of the
+same slug, and both lose to a real `@agentproto/adapter-<slug>` npm package
+(resolution order: npm → config → catalog). Managed via
+[`agentproto acp`](../verbs/acp.md); direct edit is fine.
+
+| Field          | Type                                  | Meaning                                                        |
+| -------------- | ------------------------------------- | -------------------------------------------------------------- |
+| `bin`          | `string` (**required**)               | Executable to spawn (e.g. `"gemini"`).                         |
+| `bin_args`     | `string[]`                            | Extra argv, e.g. `["--experimental-acp"]`.                     |
+| `name`         | `string`                              | Display name. Default: the slug.                               |
+| `description`  | `string`                              | One-line summary shown in `acp ls`.                            |
+| `env`          | `Record<string, string>`              | Always-on environment variables for the spawn.                 |
+| `resumable`    | `boolean`                             | Advertise `resumable` + native-resume continuation.           |
+| `models`       | `{ default?, allowed? }`              | Known model ids (informational hint).                          |
+| `install_hint` | `string`                              | Shown by `acp ls` when the bin is missing from `PATH`.        |
+
+A malformed entry (no string `bin`) is dropped on load with a warning rather
+than failing the whole config. See
+[`concepts/adapters.md`](../concepts/adapters.md#generic-acp-agents-zero-code).
 
 ## Permissions
 
