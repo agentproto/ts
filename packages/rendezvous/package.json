@@ -33,6 +33,11 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.mjs",
+      "default": "./dist/cli.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

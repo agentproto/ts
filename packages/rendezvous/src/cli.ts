@@ -13,6 +13,8 @@
  * re-export), so users don't need this bin on their PATH.
  */
 
+import { realpathSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import { createRendezvousServer, type RendezvousServerOptions } from "./server.js"
 
 interface ServeArgs {
@@ -143,13 +145,23 @@ function printHelp(): void {
   )
 }
 
-// Direct-exec entry (when run as the `agentproto-rendezvous` bin).
-const isMain =
-  process.argv[1] !== undefined &&
-  (import.meta.url === `file://${process.argv[1]}` ||
-    import.meta.url.endsWith("/cli.mjs") ||
-    import.meta.url.endsWith("/cli.js"))
-if (isMain) {
+// Direct-exec entry (only when run AS the `agentproto-rendezvous` bin, never
+// when imported as a library — e.g. the main CLI's `rendezvous serve`
+// re-export imports `@agentproto/rendezvous/cli`, and must NOT trigger a run).
+// Compare this module against argv[1]'s realpath: a bin symlink still resolves
+// to this file, while any library import resolves to a different entrypoint.
+// (A plain `endsWith("/cli.mjs")` check matched every imported copy of this
+// module, printing the broker help onto the importer's stdout.)
+function invokedAsMain(): boolean {
+  const entry = process.argv[1]
+  if (entry === undefined) return false
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href
+  } catch {
+    return false
+  }
+}
+if (invokedAsMain()) {
   runRendezvousCli(process.argv.slice(2)).then(
     code => {
       process.exitCode = code
