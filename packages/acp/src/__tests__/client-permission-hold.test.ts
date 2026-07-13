@@ -94,6 +94,45 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(client.respondPermission(evt.toolCallId, { optionId: "a" })).toBe(false)
   })
 
+  it("holds even when a handlers.requestPermission is ALSO supplied (guard not clobbered)", async () => {
+    // Regression: the arm always passes a `requestPermission` handler. If that
+    // handler reached the SDK it would auto-answer, silently defeating hold
+    // mode. The hold guard must win and park the request instead.
+    const autoAnswer = vi.fn(async () => ({
+      outcome: { outcome: "selected", optionId: "a" },
+    }))
+    const client = await createAcpClient({
+      ...fakeStreams(),
+      permissionHold: true,
+      handlers: { requestPermission: autoAnswer } as never,
+    })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    let resolved: unknown
+    const rpc = handlers.requestPermission(PERM_PARAMS).then(r => {
+      resolved = r
+    })
+
+    // Surfaced as agent-prompt — NOT auto-answered by the supplied handler.
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+    expect(evt.kind).toBe("agent-prompt")
+    expect(autoAnswer).not.toHaveBeenCalled()
+    await Promise.resolve()
+    expect(resolved).toBeUndefined()
+
+    // Only an explicit inbox response resolves it — with OUR chosen option,
+    // not the handler's.
+    expect(client.respondPermission(evt.toolCallId, { optionId: "r" })).toBe(true)
+    await rpc
+    expect(resolved).toEqual({ outcome: { outcome: "selected", optionId: "r" } })
+    expect(autoAnswer).not.toHaveBeenCalled()
+  })
+
   it("maps a cancelled resolution to ACP's cancelled outcome", async () => {
     const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
     const session = await client.newSession({ cwd: "/tmp" })
@@ -130,47 +169,19 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(resolved).toEqual({ outcome: { outcome: "cancelled" } })
   })
 
-  it("hold guard wins even when a handlers.requestPermission is supplied alongside permissionHold: true", async () => {
-    // Regression for the ...(partial as object) spread-order bug: when the
-    // spread landed AFTER the named methods, a caller-supplied
-    // handlers.requestPermission would silently overwrite the hold guard and
-    // auto-answer instead of parking. Now that the spread is first the named
-    // method always wins — this test proves it.
+  it("with permissionHold OFF, the guard falls through to the supplied handler", async () => {
     const autoAnswer = vi.fn(async () => ({
-      outcome: { outcome: "selected" as const, optionId: "a" },
+      outcome: { outcome: "selected", optionId: "a" },
     }))
     const client = await createAcpClient({
       ...fakeStreams(),
-      permissionHold: true,
-      handlers: {
-        requestPermission: autoAnswer as never,
-      },
+      handlers: { requestPermission: autoAnswer } as never,
     })
-    const session = await client.newSession({ cwd: "/tmp" })
-    const iter = session
-      .prompt({ messages: [{ type: "text", text: "go" }] })
-      [Symbol.asyncIterator]()
-
+    await client.newSession({ cwd: "/tmp" })
     const handlers = capturedHandlersFactory!()
-    let resolved: unknown
-    const rpc = handlers.requestPermission(PERM_PARAMS).then(r => {
-      resolved = r
-    })
-
-    // The agent-prompt event should appear (hold path taken), not the auto-answer.
-    const { value } = await iter.next()
-    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
-    expect(evt.kind).toBe("agent-prompt")
-    // The auto-answer handler must NOT have been called.
-    expect(autoAnswer).not.toHaveBeenCalled()
-    // The RPC is still parked.
-    await Promise.resolve()
-    expect(resolved).toBeUndefined()
-
-    // Resolve via respondPermission to prove the hold path owns the RPC.
-    client.respondPermission(evt.toolCallId, { cancelled: true })
-    await rpc
-    expect(resolved).toEqual({ outcome: { outcome: "cancelled" } })
+    const result = await handlers.requestPermission(PERM_PARAMS)
+    expect(autoAnswer).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ outcome: { outcome: "selected", optionId: "a" } })
   })
 
   it("without permissionHold the request path is unchanged (throws with no handler)", async () => {

@@ -40,10 +40,15 @@ export type AcpPermissionOutcome =
 
 export interface AcpPermissionRequestParams {
   sessionId?: string
+  // `title`/`kind` allow `null` (not just `undefined`) so the upstream ACP
+  // `RequestPermissionRequest` — whose `toolCall` is a `ToolCallUpdate` with
+  // `title: string | null` / `kind: ToolKind | null` — is structurally
+  // assignable to this shape. That lets the arm's handler take the SDK type
+  // directly, with no `as` cast at the `createAcpClient` call site.
   toolCall?: {
     toolCallId?: string
-    title?: string
-    kind?: string
+    title?: string | null
+    kind?: string | null
     rawInput?: unknown
   }
   options?: Array<{ optionId: string; name?: string; kind?: string }>
@@ -214,25 +219,18 @@ export function createAcpProtocolArm(
         turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
         // Permission-hold mode: surface + park requests for the daemon inbox
         // instead of auto-answering them in-arm (see AcpProtocolOptions).
-        // When hold is active we do NOT wire handlers.requestPermission —
-        // buildClientHandlers's hold guard intercepts every
-        // session/request_permission call before the partial handlers are
-        // consulted, so supplying one here would be dead code and would
-        // previously have clobbered the guard when the spread landed last.
-        ...(options.permissionHold
-          ? { permissionHold: true }
-          : {
-              // Wire the permission handler so the agent's
-              // `session/request_permission` callbacks get a real answer
-              // instead of bubbling up as "AcpClient.requestPermission: no
-              // handler configured" → which surfaces in the chat as an opaque
-              // "Internal error" when the agent tries to Write / Bash anything
-              // gated.
-              handlers: {
-                requestPermission: (params: unknown) =>
-                  permissionHandler(params as AcpPermissionRequestParams),
-              },
-            }),
+        ...(options.permissionHold ? { permissionHold: true } : {}),
+        // Wire the permission handler so the agent's `session/request_permission`
+        // callbacks get a real answer instead of bubbling up as
+        // "AcpClient.requestPermission: no handler configured" → which
+        // surfaces in the chat as an opaque "Internal error" when the
+        // agent tries to Write / Bash anything gated.
+        // `params` is contextually typed as the SDK's `RequestPermissionRequest`
+        // (via `AcpClientOptions.handlers`), which is assignable to
+        // `AcpPermissionRequestParams` — so no cast is needed on either side.
+        handlers: {
+          requestPermission: async params => permissionHandler(params),
+        },
       })
       // When the host hands us a `resumeSessionId`, reattach to the
       // agent's existing session via `loadSession` so the conversation

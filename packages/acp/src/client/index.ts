@@ -235,18 +235,6 @@ export interface AcpClientSession {
     signal?: AbortSignal
   }): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
-  /**
-   * Resolve a permission request parked (in permission-hold mode) for THIS
-   * session — delegates to `AcpClient.respondPermission` on the underlying
-   * client. Provided as a convenience for callers that hold a session
-   * reference rather than the top-level client; the pending map is shared so
-   * either call site works. The runtime uses the client-level method via
-   * `arm.respondPermission`, which in turn calls `client.respondPermission`.
-   */
-  respondPermission(
-    requestId: string,
-    resolution: AcpPermissionResolution,
-  ): boolean
   close(): Promise<void>
 }
 
@@ -294,11 +282,15 @@ export async function createAcpClient(
   // Resolve every request parked for a session as `cancelled` — used when a
   // session (or the whole client) tears down so no held RPC dangles.
   const cancelPermissionsForSession = (sessionId: string): void => {
-    const toCancel = Array.from(pendingPermissions.keys()).filter(
-      id => pendingPermissions.get(id)!.sessionId === sessionId,
-    )
-    for (const id of toCancel) {
-      const held = pendingPermissions.get(id)!
+    // Collect the matching keys first, THEN delete + resolve — never mutate the
+    // map while iterating its entries.
+    const ids: string[] = []
+    for (const [id, held] of pendingPermissions) {
+      if (held.sessionId === sessionId) ids.push(id)
+    }
+    for (const id of ids) {
+      const held = pendingPermissions.get(id)
+      if (!held) continue
       pendingPermissions.delete(id)
       held.resolve({ outcome: { outcome: "cancelled" } })
     }
@@ -427,7 +419,6 @@ export async function createAcpClient(
         sessions,
         options.onActivity,
         options.turnIdleTimeoutMs,
-        respondPermission,
         cancelPermissionsForSession,
       )
     },
@@ -457,7 +448,6 @@ export async function createAcpClient(
         sessions,
         options.onActivity,
         options.turnIdleTimeoutMs,
-        respondPermission,
         cancelPermissionsForSession,
       )
     },
@@ -493,10 +483,6 @@ function buildSession(
   sessions: Map<string, SessionState>,
   onActivity: (() => void) | undefined,
   turnIdleTimeoutMs: number | undefined,
-  respondPermission: (
-    requestId: string,
-    resolution: AcpPermissionResolution,
-  ) => boolean,
   cancelPermissionsForSession: (sessionId: string) => void,
 ): AcpClientSession {
   return {
@@ -610,9 +596,6 @@ function buildSession(
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
       onActivity?.()
-    },
-    respondPermission(requestId, resolution) {
-      return respondPermission(requestId, resolution)
     },
     async close() {
       // Cancel any permission requests this session parked before dropping it,
@@ -728,10 +711,14 @@ function holdPermissionRequest(
       ...(toolName ? { toolName } : {}),
     })
   } else {
+    // No session slot for this id — the agent-prompt event can't be surfaced,
+    // so the host won't see the request in its stream. We still park the RPC
+    // below (so the agent doesn't hang), but log it: a missing state here means
+    // the request arrived for an unknown/torn-down session and would otherwise
+    // vanish silently.
     console.warn(
-      `[acp] holdPermissionRequest: no session found for sessionId="${sessionId}" ` +
-        `(requestId="${requestId}") — the agent-prompt event will be dropped. ` +
-        `The RPC is still held and will park until respondPermission or close.`,
+      `[acp] permission-hold: no session state for sessionId="${sessionId}" ` +
+        `(request ${requestId}) — parking the RPC but not surfacing an agent-prompt event.`,
     )
   }
 
@@ -747,10 +734,12 @@ function buildClientHandlers(
   hold: PermissionHoldContext,
 ): AcpClientHandlers {
   return {
-    // Spread partial FIRST so that the explicitly-defined methods below always
-    // win. In particular, `requestPermission` must not be overwritten by a
-    // caller-supplied handler when `hold.permissionHold` is set — the whole
-    // point of hold mode is to intercept before any auto-answer handler.
+    // Spread the caller-supplied handlers FIRST so the named methods defined
+    // below always win. This matters for `requestPermission`: the arm always
+    // passes a `requestPermission` handler, and if that spread came last it
+    // would clobber the permission-hold guard below — silently bypassing hold
+    // mode. With the spread first, our guard stays in control and still falls
+    // through to `partial.requestPermission` when hold mode is OFF.
     ...(partial as object),
     async sessionUpdate(params) {
       // Every notification is a liveness signal, even ones that don't
