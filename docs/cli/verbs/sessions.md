@@ -9,6 +9,7 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--prompt <text>] [--label <text>]
                                        [--orchestrator | --orchestrator-json <json>]
                                        [--mcp-servers-json <json|@file>]
+                                       [--hold-permissions]
                                        [--attach] [--json] [--no-color]
 agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                           [--name <slug>] [--label <text>]
@@ -139,6 +140,7 @@ reattached later.
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
+| `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
@@ -173,6 +175,30 @@ malformed JSON, a non-array `--mcp-servers-json`, or an unreadable `@file`
 fail fast with exit `2`. `--orchestrator` requires a daemon started with the
 scoped orchestrator sub-gateway wired (the default for `agentproto serve`);
 otherwise the route returns `501`.
+
+#### Permission hold mode (`--hold-permissions`)
+
+By default a spawned agent's tool-permission requests (Write, Bash, …) are
+auto-answered in the driver so the turn never blocks. With
+`--hold-permissions` each request is instead **surfaced and parked** in the
+daemon's cross-session inbox — the agent's turn blocks until a human or
+orchestrator approves or denies it:
+
+```bash
+agentproto sessions start claude-code --workspace my-app --hold-permissions
+# … the agent tries to Write a file …
+agentproto permissions ls                 # see what's held, across every session
+agentproto permissions approve <id>       # unblock (allow-once)
+agentproto permissions approve <id> --always   # allow-always, if offered
+agentproto permissions deny <id>          # reject
+```
+
+Same capability over MCP (`agent_start { permissionHold: true }` +
+`permissions_list` / `permissions_respond`) and HTTP (`POST /sessions/agent
+{ permissionHold: true }`, `GET /permissions`, `POST /permissions/:id`). A
+held session renders with a `!` badge in `--watch`. See
+[`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
+only (e.g. claude-code); adapters with no permission surface ignore the flag.
 
 #### Sandbox (MCP/HTTP only — no CLI flag yet)
 

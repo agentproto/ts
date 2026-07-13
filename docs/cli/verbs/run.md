@@ -2,7 +2,7 @@
 
 ```text
 agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>] [--json]
-                      [--output-schema <path-or-inline-json>]
+                      [--output-schema <path-or-inline-json>] [--hold-permissions]
 ```
 
 Spawns the adapter named by `<slug>`, dispatches a single user turn,
@@ -24,6 +24,7 @@ loops, use [`run-swarm.md`](./run-swarm.md).
 | `--resume <session-id>` | Resume an existing adapter session by id. Adapter-specific — Claude Code's session ids, for example. |
 | `--json` | Emit one JSON event per line instead of pretty stream. |
 | `--output-schema <path-or-inline-json>` | Validate the agent's final answer against a JSON Schema and print ONLY the matching JSON. Inline when the first non-space char is `{`, otherwise a path to a `.json` file. Cannot be combined with `--json`. |
+| `--hold-permissions` | Start in permission-hold mode: each tool-permission request is surfaced (as an `agent-prompt` event) and **held** instead of auto-answered. Since one-shot `run` has no inbox of its own, the turn **blocks** on the first gated tool call until you Ctrl-C — it's a way to *see* what an agent would ask for. For the approvable flow, use a daemon-backed session ([`sessions.md`](./sessions.md) `--hold-permissions`) plus [`permissions.md`](./permissions.md). |
 
 If `--prompt` is omitted, stdin is read when piped:
 
