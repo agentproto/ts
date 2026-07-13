@@ -27,6 +27,9 @@ export default createTsupConfig({
     "node:path",
     "node:readline",
     "node:process",
+    "node:net",
+    "node:http",
+    "node:os",
   ],
   noExternal: [],
 })

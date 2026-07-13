@@ -6,14 +6,25 @@ export interface ExecResult {
   stderr: string
 }
 
+/** Extra `AGENTPROTO_*` (or any) vars, merged onto `process.env` for the child. */
+export interface ExecOptions {
+  env?: Record<string, string>
+}
+
+/** Merge caller-supplied vars onto the inherited env (caller wins). */
+function mergedEnv(extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  return extra ? { ...process.env, ...extra } : process.env
+}
+
 /** Run an argv (no shell — args pass through verbatim, no injection risk). */
 export function execArgv(
   command: string,
   args: readonly string[],
   cwd: string,
+  opts: ExecOptions = {},
 ): Promise<ExecResult> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { cwd, shell: false, env: process.env })
+    const child = spawn(command, args, { cwd, shell: false, env: mergedEnv(opts.env) })
     let stdout = ""
     let stderr = ""
     child.stdout?.on("data", (d) => (stdout += d.toString("utf8")))
@@ -25,12 +36,13 @@ export function execArgv(
 
 /**
  * Run a single command string through a shell. Callers pass `depsCmd` /
- * `gateCmd` as a trusted, developer-authored config value (the same trust
- * model as a CI job's `script:` line) — not untrusted end-user input.
+ * `gateCmd` / a config `setup` line as a trusted, developer-authored value
+ * (the same trust model as a CI job's `script:` line) — not untrusted
+ * end-user input. `opts.env` layers `AGENTPROTO_*` vars onto the child.
  */
-export function execShell(cmd: string, cwd: string): Promise<ExecResult> {
+export function execShell(cmd: string, cwd: string, opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd, { cwd, shell: true, env: process.env })
+    const child = spawn(cmd, { cwd, shell: true, env: mergedEnv(opts.env) })
     let stdout = ""
     let stderr = ""
     child.stdout?.on("data", (d) => (stdout += d.toString("utf8")))

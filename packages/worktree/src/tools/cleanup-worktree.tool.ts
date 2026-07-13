@@ -15,6 +15,8 @@ export const cleanupWorktreeTool = defineTool({
     cwd: z.string().describe("Absolute path to the worktree to remove."),
     branch: z.string().optional().describe("The worktree's branch, for deleteBranch."),
     deleteBranch: z.boolean().optional().describe("Also force-delete `branch` after removing the worktree."),
+    base: z.string().optional().describe("Ref whose committed agentproto.json supplies teardown hooks. Default 'origin/main'."),
+    runTeardown: z.boolean().optional().describe("Run the `worktree.teardown` hooks before removal. Default true; teardown failures are logged, never blocking."),
   }),
   outputSchema: z.object({
     removed: z.literal(true),

@@ -38,6 +38,7 @@ import { runInstallMcp } from "./commands/install-mcp.js"
 import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
+import { runWorktree } from "./commands/worktree.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
 
@@ -87,6 +88,8 @@ Usage:
   agentproto cron      list [--json]
   agentproto cron      remove <id>
   agentproto cron      run    <id>
+  agentproto worktree  ls      [--repo <dir>] [--json]
+  agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
   agentproto --help
   agentproto --version
 
@@ -133,6 +136,7 @@ const VERBS = new Set([
   "onboard",
   "cron",
   "pack",
+  "worktree",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -209,6 +213,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runCron(rest)
     case "pack":
       return runPack(rest)
+    case "worktree":
+      return runWorktree(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
