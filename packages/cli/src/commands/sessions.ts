@@ -53,7 +53,8 @@ Usage:
   agentproto sessions [--watch] [--json]
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
-                                      [--model <id>] [--prompt <text>]
+                                      [--model <id>] [--auth subscription|api-key]
+                                      [--prompt <text>]
                                       [--label <text>] [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
@@ -75,6 +76,11 @@ is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
 AGENTPROTO_DAEMON_TOKEN to override.
 
 sessions start flags:
+  --auth subscription|api-key   deterministic billing-auth mode for adapters that
+                                 declare it (today: claude-code). subscription
+                                 (default) scrubs API-key/gateway env vars so the
+                                 child uses its stored OAuth login; api-key requires
+                                 ANTHROPIC_API_KEY and fails the spawn without it.
   --orchestrator                shorthand for orchestrator: true
   --orchestrator-json <json>    object form: {"tools":[...],"maxDepth":N,"maxChildren":N}
                                  (wins over --orchestrator when both are given)
@@ -167,6 +173,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       cwd: { type: "string" },
       workspace: { type: "string" },
       model: { type: "string" },
+      auth: { type: "string" },
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
       attach: { type: "boolean" },
@@ -251,10 +258,18 @@ async function runStart(args: readonly string[]): Promise<number> {
   }
   const endpoint = report.found
 
+  if (values.auth !== undefined && values.auth !== "subscription" && values.auth !== "api-key") {
+    process.stderr.write(
+      `agentproto sessions start: invalid --auth "${values.auth}" (expected subscription|api-key).\n`
+    )
+    return 2
+  }
+
   const body: Record<string, unknown> = { adapter: slug }
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
   if (values.model) body.model = values.model
+  if (values.auth) body.auth = values.auth
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
   if (orchestrator !== undefined) body.orchestrator = orchestrator

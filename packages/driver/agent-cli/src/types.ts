@@ -56,6 +56,29 @@ export interface AgentCliAuth {
   login?: { cmd: string; interactive?: boolean; requires_callback_url?: boolean }
   refresh?: { cmd: string; interval_s?: number }
   expiry?: { parse?: string; grace_s?: number }
+  /**
+   * Env-var vocabulary for the deterministic `auth` spawn mode (see
+   * {@link AgentCliStartOptions.auth}) — "subscription" (default) vs
+   * "api-key" billing. Declared once here so the generic runtime doesn't
+   * hardcode provider-specific env var names; mirrors how the claude-code
+   * permission-mode override reads its vocabulary from `modes[].
+   * bin_args_append` instead of duplicating it (see `define-agent-cli.ts`'s
+   * `resolveClaudeCodePermissionMode`). Adapters that omit this ignore the
+   * `auth` field entirely — today only claude-code declares it.
+   */
+  modes?: {
+    /** Env var required in the resolved child env under `auth: "api-key"`.
+     *  Absent ⇒ the spawn fails with `RuntimeConfigError` (code
+     *  `missing_api_key`) before the child is exec'd. */
+    api_key_env: string
+    /**
+     * Env vars deleted from the resolved child env under `auth:
+     * "subscription"` — UNLESS this spawn's own mode/option patch
+     * explicitly set that key (an explicit gateway config wins over the
+     * blanket scrub; see `composeSpawn`'s `ComposedSpawn.env`).
+     */
+    subscription_unset_env: string[]
+  }
 }
 
 /**
@@ -758,6 +781,22 @@ export interface AgentCliStartOptions {
    * auto-answer behaviour for every existing caller).
    */
   permissionHold?: boolean
+  /**
+   * Deterministic billing-auth mode for adapters that declare
+   * {@link AgentCliAuth.modes} (today: claude-code).
+   *
+   * - `"subscription"` (default when omitted): deletes the declared billing
+   *   env vars from the resolved child env — unless this spawn's own mode/
+   *   option patch explicitly set one — so the child falls back to its
+   *   stored OAuth/subscription login instead of silently billing a leaked
+   *   ambient API key.
+   * - `"api-key"`: requires the declared env var present in the resolved
+   *   child env and fails the spawn (`RuntimeConfigError`, code
+   *   `missing_api_key`) rather than silently falling back to subscription.
+   *
+   * Adapters that don't declare `auth.modes` ignore this field entirely.
+   */
+  auth?: "subscription" | "api-key"
 }
 
 /**
