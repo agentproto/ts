@@ -45,9 +45,18 @@ agentproto config set daemon.port 18791
 agentproto config set daemon.allowedOrigins https://guilde.work
 agentproto config set tunnel.host wss://guilde.work/api/v1/agentproto/tunnel
 agentproto config set tunnel.autoconnect true
+# Optional: end-to-end encrypt the tunnel (needs tunnel.token; the host
+# must also support it, else the daemon falls back to plaintext).
+agentproto config set tunnel.e2e true
 
 agentproto daemon install
 ```
+
+> **`tunnel.e2e`** wraps the outbound tunnel in an AEAD box negotiated
+> from the shared `tunnel.token`, so even the host can't read the
+> frames. It is opt-in and negotiated — an older host that doesn't
+> advertise E2E keeps working over the plaintext tunnel. See
+> [`serve` → End-to-end encryption](./serve.md#end-to-end-encryption-tunnele2e-opt-in).
 
 Writes the plist, runs `launchctl bootout` on any prior version, then
 `launchctl bootstrap gui/<uid>`. Service starts immediately because
