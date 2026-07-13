@@ -67,6 +67,68 @@ describe("writeChapter", () => {
     const out = await writeChapter(ctx, model)
     expect(out).toEqual({ ch: "ch01", draft: "## 1. Thesis\n\nProse [1]." })
   })
+
+  it("without chapter.cover/rules, the prompt is unchanged (backward compatible)", () => {
+    const ctx = {
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+    }
+    const prompt = buildChapterWritePrompt(ctx)
+    expect(prompt.system).not.toContain("GLOBAL RULES")
+    expect(prompt.prompt).not.toContain("Chapter brief")
+  })
+
+  it("injects chapter.cover as a Chapter brief section before the distilled claims", () => {
+    const withoutCover = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+    })
+    const withCover = buildChapterWritePrompt({
+      chapter: {
+        id: "ch01",
+        title: "1. Thesis",
+        words: "700-900",
+        cover: "Cover the 2026 funding landscape; place figures near their claims.",
+      },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+    })
+    expect(withCover.prompt).toContain("## Chapter brief (what this chapter must cover)")
+    expect(withCover.prompt).toContain(
+      "Cover the 2026 funding landscape; place figures near their claims."
+    )
+    expect(withCover.prompt.indexOf("Chapter brief")).toBeLessThan(
+      withCover.prompt.indexOf("Distilled claims")
+    )
+    // No cover → unchanged from the no-brief prompt.
+    expect(withoutCover.prompt).not.toContain("Chapter brief")
+  })
+
+  it("appends rulesText to the system prompt verbatim, after the base instructions", () => {
+    const base = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+    })
+    const withRules = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+      rules: "GLOBAL RULES:\n- Use en-dashes.\n- Every figure must carry its source date.",
+    })
+    // Additive: the base prompt survives byte-for-byte as a prefix.
+    expect(withRules.system!.startsWith(base.system!)).toBe(true)
+    expect(withRules.system).toContain(
+      "GLOBAL RULES:\n- Use en-dashes.\n- Every figure must carry its source date."
+    )
+  })
 })
 
 describe("planOutline", () => {

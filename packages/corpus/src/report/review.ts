@@ -23,6 +23,11 @@ export interface ChapterReviewContext {
   readonly bibliography?: string
   /** Highest valid citation [n] — replacements must not exceed it. */
   readonly bibMax: number
+  /**
+   * Global rules block (`ReportConfig.rulesText`) — the same contract the
+   * writer was given, appended verbatim so review enforces it too.
+   */
+  readonly rules?: string
 }
 
 export function buildReviewPrompt(ctx: ChapterReviewContext): ReportModelInput {
@@ -33,7 +38,8 @@ export function buildReviewPrompt(ctx: ChapterReviewContext): ReportModelInput {
       "MUST be a verbatim substring of the chapter that occurs EXACTLY ONCE, and " +
       "`replace` must keep every citation [n] within the valid range. Fix wrong/missing " +
       "citations, unsupported or overstated claims, and factual errors against the " +
-      "analysis + bibliography. Output ONLY a JSON object — no prose, no fences.",
+      "analysis + bibliography. Output ONLY a JSON object — no prose, no fences." +
+      (ctx.rules ? `\n\n${ctx.rules}` : ""),
     prompt:
       `Review the chapter "${ctx.chapter.title}". Valid citations are [1]..[${ctx.bibMax}].\n\n` +
       `## Chapter (current text):\n\n${ctx.chapterText}\n\n` +
