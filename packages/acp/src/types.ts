@@ -10,6 +10,18 @@
  * hand for fields that get defaults applied in build().
  */
 
+/**
+ * How a host resolves a `session/request_permission` request that was parked
+ * by permission-hold mode. `{ optionId }` selects one of the offered options
+ * (the allow- or reject-flavored one, chosen by the host); `{ cancelled: true }`
+ * maps to ACP's `cancelled` outcome (used when the request offers no matching
+ * option or the session is being torn down). Consumed by
+ * `AcpClient.respondPermission` and the daemon's permission inbox.
+ */
+export type AcpPermissionResolution =
+  | { optionId: string }
+  | { cancelled: true }
+
 export type AcpRole = "client" | "server" | "bridge"
 export type AcpTransport = "stdio" | "websocket"
 export type AcpTier = "basic" | "governance-aware" | "sandboxed"
@@ -122,7 +134,23 @@ export type StreamEvent =
   | { kind: "tool-call"; sessionId: string; toolCallId: string; toolName: string; arguments: unknown }
   | { kind: "tool-result"; sessionId: string; toolCallId: string; result: unknown; isError?: boolean }
   | { kind: "thought"; sessionId: string; text: string }
-  | { kind: "agent-prompt"; sessionId: string; toolCallId: string; options: unknown }
+  | {
+      kind: "agent-prompt"
+      sessionId: string
+      /**
+       * Correlation id for this prompt. In permission-hold mode this is the
+       * stable request id the host passes back to `respondPermission` to
+       * resolve the parked `session/request_permission` RPC — derived from the
+       * ACP `toolCall.toolCallId` plus a per-client counter so it stays unique
+       * even when an agent re-requests permission for the same tool call.
+       */
+      toolCallId: string
+      options: unknown
+      /** Human-readable "Allow X?" line, when derivable from the request. */
+      text?: string
+      /** Tool title/kind the agent is asking permission for, when present. */
+      toolName?: string
+    }
   | {
       kind: "turn-end"
       sessionId: string

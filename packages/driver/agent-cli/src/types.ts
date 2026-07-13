@@ -7,9 +7,13 @@
  * proprietary adapter arms.
  */
 
-import type { AcpMcpServer, StreamEvent } from "@agentproto/acp"
+import type {
+  AcpMcpServer,
+  AcpPermissionResolution,
+  StreamEvent,
+} from "@agentproto/acp"
 
-export type { AcpMcpServer, StreamEvent }
+export type { AcpMcpServer, AcpPermissionResolution, StreamEvent }
 
 export type AgentCliProtocol = "acp" | "mcp" | "proprietary" | "print"
 export type AgentCliSessionMode = "ephemeral" | "persistent" | "resumable"
@@ -624,6 +628,14 @@ export interface AgentCliConnectOptions {
    */
   onActivity?: () => void
   /**
+   * When true, the ACP arm surfaces each `session/request_permission` as an
+   * `agent-prompt` StreamEvent and HOLDS the RPC until the host calls
+   * `respondPermission` — forwarded to the arm's
+   * `createAcpProtocolArm({ permissionHold })`. Arms with no permission
+   * surface (non-ACP) ignore it. Default false (auto-answer, unchanged).
+   */
+  permissionHold?: boolean
+  /**
    * Turn-idle watchdog, forwarded verbatim to the ACP arm's
    * `createAcpClient({ turnIdleTimeoutMs })` (see
    * `@agentproto/acp/client`'s `AcpClientOptions.turnIdleTimeoutMs` for
@@ -646,6 +658,16 @@ export interface AgentCliClient {
   send(turnId: string, message: unknown): Promise<void>
   events(): AsyncIterable<StreamEvent>
   cancel(turnId: string): Promise<void>
+  /**
+   * Resolve a permission request parked by permission-hold mode — `requestId`
+   * is the `toolCallId` carried on the `agent-prompt` StreamEvent that
+   * surfaced it. Returns true when a matching parked request was found and
+   * resolved. Only the ACP arm implements this; other arms omit it.
+   */
+  respondPermission?(
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean
   close(): Promise<void>
   /**
    * The session id the protocol arm holds. Populated after `connect()`
@@ -728,6 +750,14 @@ export interface AgentCliStartOptions {
    * wants this protection.
    */
   turnIdleTimeoutMs?: number
+  /**
+   * When true, the spawned session runs in permission-hold mode: the ACP arm
+   * surfaces each permission request as an `agent-prompt` StreamEvent and
+   * HOLDS the RPC until the host calls `respondPermission`. Forwarded to
+   * `protocolArm.connect({ permissionHold })`. Default false (unchanged
+   * auto-answer behaviour for every existing caller).
+   */
+  permissionHold?: boolean
 }
 
 /**
@@ -772,5 +802,15 @@ export interface AgentCliRuntimeSession {
   readonly pid?: number
   send(message: unknown): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
+  /**
+   * Resolve a permission request parked by permission-hold mode (see
+   * `AgentCliStartOptions.permissionHold`). Delegates to the protocol arm's
+   * `respondPermission`; returns true when a matching parked request was
+   * resolved. Absent for arms that don't model held permissions.
+   */
+  respondPermission?(
+    requestId: string,
+    resolution: AcpPermissionResolution,
+  ): boolean
   close(): Promise<void>
 }

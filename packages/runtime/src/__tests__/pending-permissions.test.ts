@@ -1,0 +1,427 @@
+/**
+ * Cross-session pending-permissions inbox — permission-hold mode end-to-end.
+ *
+ * A session spawned with `permissionHold` surfaces each ACP
+ * `session/request_permission` as an `agent-prompt` StreamEvent and PARKS the
+ * driver RPC. This exercises the full daemon-side loop over a scripted fake
+ * driver session:
+ *   - registry.listPendingPermissions reflects the parked request
+ *   - registry.respondPermission maps approve/deny (+ scope + explicit
+ *     optionId) onto the offered option, resolves the held RPC, clears state
+ *   - session death auto-cancels pending requests (no dangling RPC)
+ *   - session:permission-request / -resolved fire on the bus
+ *   - the MCP tools (permissions_list / permissions_respond) and REST routes
+ *     (GET /permissions, POST /permissions/:id) drive the same inbox
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { createMcpServer } from "@agentproto/mcp-server"
+
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type SessionsRegistry,
+} from "../sessions.js"
+import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
+import { createEventRing } from "../event-ring.js"
+import { registerOrchestrationTools } from "../orchestration-tools.js"
+import { startHttpServer } from "../http-server.js"
+import { createRuntimeEvents } from "../events.js"
+import type { ConversationStore } from "../conversations.js"
+import type { HeartbeatRunner } from "../heartbeat.js"
+
+const OPTIONS = [
+  { optionId: "opt-once", name: "Allow once", kind: "allow_once" },
+  { optionId: "opt-always", name: "Allow always", kind: "allow_always" },
+  { optionId: "opt-reject", name: "Reject", kind: "reject_once" },
+]
+
+/** Fake driver session that surfaces one held permission, then blocks until
+ *  the registry resolves it (records the resolution), then ends the turn. */
+function holdSession(acpId = "acp-hold", requestId = "perm-1"): {
+  session: AgentSessionLike
+  responded: Array<{ requestId: string; resolution: unknown }>
+} {
+  const responded: Array<{ requestId: string; resolution: unknown }> = []
+  let release: (() => void) | null = null
+  const session: AgentSessionLike = {
+    sessionId: acpId,
+    pid: 4242,
+    async *send() {
+      yield {
+        kind: "agent-prompt",
+        toolCallId: requestId,
+        toolName: "Write",
+        text: 'Allow "Write"?',
+        options: OPTIONS,
+      }
+      await new Promise<void>(r => {
+        release = r
+      })
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    respondPermission(id, resolution) {
+      responded.push({ requestId: id, resolution })
+      release?.()
+      return true
+    },
+    async cancel() {},
+    async close() {
+      // Unblock the generator so a kill()-driven close doesn't hang the turn.
+      release?.()
+    },
+  }
+  return { session, responded }
+}
+
+/** Spawn a permission-hold session, kick the turn (do NOT await — it blocks on
+ *  the permission), and wait until the request is parked. */
+async function spawnAndPark(
+  registry: SessionsRegistry,
+  fake: { session: AgentSessionLike },
+): Promise<string> {
+  const desc = registry.spawnAgent({
+    workspaceSlug: "default",
+    cwd: "/tmp",
+    agentSession: fake.session,
+    adapterSlug: "claude-code",
+    permissionHold: true,
+    label: "held-session",
+  })
+  void registry.sendPrompt(desc.id, "go").catch(() => {})
+  // Poll until the agent-prompt has been projected + registered.
+  for (let i = 0; i < 100; i++) {
+    if (registry.listPendingPermissions({ sessionId: desc.id }).length > 0) break
+    await new Promise(r => setTimeout(r, 5))
+  }
+  return desc.id
+}
+
+describe("pending-permissions inbox — registry", () => {
+  let tmp: string
+  let transcriptDir: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pending-perms-"))
+    transcriptDir = join(tmp, "sessions")
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it("registers a held permission and lists it with the offered options", async () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession()
+    const id = await spawnAndPark(registry, fake)
+
+    const pending = registry.listPendingPermissions()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({
+      id: "perm-1",
+      sessionId: id,
+      toolName: "Write",
+      text: 'Allow "Write"?',
+    })
+    expect(pending[0]!.options.map(o => o.optionId)).toEqual([
+      "opt-once",
+      "opt-always",
+      "opt-reject",
+    ])
+    // The session descriptor flags the held state for the CLI badge.
+    expect(registry.get(id)?.awaitingPermission).toBe(true)
+    // Bus announced the request.
+    const req = events.find(e => e.type === "session:permission-request")
+    expect(req).toMatchObject({ sessionId: id, permissionId: "perm-1", toolName: "Write" })
+
+    registry.shutdown()
+  })
+
+  it("approve → allow_once, scope:always → allow_always, deny → reject_once", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+
+    // approve (default scope) → allow_once
+    const a = holdSession("acp-a", "perm-a")
+    const idA = await spawnAndPark(registry, a)
+    const rA = await registry.respondPermission("perm-a", { decision: "approve" })
+    expect(rA.ok).toBe(true)
+    expect(a.responded).toEqual([{ requestId: "perm-a", resolution: { optionId: "opt-once" } }])
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    expect(registry.get(idA)?.awaitingPermission).toBeUndefined()
+
+    // approve scope:always → allow_always
+    const b = holdSession("acp-b", "perm-b")
+    await spawnAndPark(registry, b)
+    await registry.respondPermission("perm-b", { decision: "approve", scope: "always" })
+    expect(b.responded).toEqual([{ requestId: "perm-b", resolution: { optionId: "opt-always" } }])
+
+    // deny → reject_once
+    const c = holdSession("acp-c", "perm-c")
+    await spawnAndPark(registry, c)
+    await registry.respondPermission("perm-c", { decision: "deny" })
+    expect(c.responded).toEqual([{ requestId: "perm-c", resolution: { optionId: "opt-reject" } }])
+
+    registry.shutdown()
+  })
+
+  it("an explicit optionId overrides the decision→option mapping", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-x", "perm-x")
+    await spawnAndPark(registry, fake)
+    const r = await registry.respondPermission("perm-x", { decision: "deny", optionId: "opt-always" })
+    expect(r.ok).toBe(true)
+    expect(fake.responded).toEqual([{ requestId: "perm-x", resolution: { optionId: "opt-always" } }])
+    registry.shutdown()
+  })
+
+  it("emits session:permission-resolved on a successful response", async () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession("acp-r", "perm-r")
+    const id = await spawnAndPark(registry, fake)
+    await registry.respondPermission("perm-r", { decision: "approve" })
+    const resolved = events.find(e => e.type === "session:permission-resolved")
+    expect(resolved).toMatchObject({
+      sessionId: id,
+      permissionId: "perm-r",
+      decision: "approve",
+      optionId: "opt-once",
+    })
+    registry.shutdown()
+  })
+
+  it("errors clearly on an unknown / already-resolved id", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const r1 = await registry.respondPermission("nope", { decision: "approve" })
+    expect(r1).toMatchObject({ ok: false, error: "not_found" })
+
+    const fake = holdSession("acp-d", "perm-d")
+    await spawnAndPark(registry, fake)
+    await registry.respondPermission("perm-d", { decision: "approve" })
+    const r2 = await registry.respondPermission("perm-d", { decision: "approve" })
+    expect(r2).toMatchObject({ ok: false, error: "not_found" })
+    registry.shutdown()
+  })
+
+  it("session death auto-cancels every parked request (no dangling RPC)", async () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession("acp-k", "perm-k")
+    const id = await spawnAndPark(registry, fake)
+    expect(registry.listPendingPermissions()).toHaveLength(1)
+
+    registry.kill(id)
+
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    expect(fake.responded).toEqual([{ requestId: "perm-k", resolution: { cancelled: true } }])
+    const resolved = events.find(
+      e => e.type === "session:permission-resolved" && e.permissionId === "perm-k",
+    )
+    expect(resolved).toMatchObject({ decision: "cancelled" })
+    registry.shutdown()
+  })
+})
+
+// ── MCP transport ─────────────────────────────────────────────────────
+
+describe("pending-permissions inbox — MCP tools", () => {
+  let tmp: string
+  let transcriptDir: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pending-perms-mcp-"))
+    transcriptDir = join(tmp, "sessions")
+  })
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }))
+
+  function parse(result: unknown): any {
+    const content = (result as { content?: Array<{ type: string; text?: string }> }).content
+    const text = content?.find(c => c.type === "text")?.text
+    if (!text) throw new Error("tool returned no text content")
+    return JSON.parse(text)
+  }
+
+  it("permissions_list shows the request and permissions_respond resolves it", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession("acp-mcp", "perm-mcp")
+    const id = await spawnAndPark(registry, fake)
+
+    const server = new McpServer({ name: "perms-mcp", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const listed = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(listed.permissions).toHaveLength(1)
+    expect(listed.permissions[0]).toMatchObject({
+      id: "perm-mcp",
+      sessionId: id,
+      adapter: "claude-code",
+      toolName: "Write",
+    })
+
+    const responded = parse(
+      await client.callTool({
+        name: "permissions_respond",
+        arguments: { id: "perm-mcp", decision: "approve" },
+      }),
+    )
+    expect(responded).toMatchObject({ ok: true, id: "perm-mcp", decision: "approve", optionId: "opt-once" })
+    expect(fake.responded).toEqual([{ requestId: "perm-mcp", resolution: { optionId: "opt-once" } }])
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+
+    registry.shutdown()
+  })
+
+  it("permissions_respond errors on an unknown id", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const server = new McpServer({ name: "perms-mcp2", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp2-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const res = await client.callTool({
+      name: "permissions_respond",
+      arguments: { id: "ghost", decision: "deny" },
+    })
+    expect((res as { isError?: boolean }).isError).toBe(true)
+    expect(parse(res)).toMatchObject({ error: "not_found" })
+    registry.shutdown()
+  })
+})
+
+// ── REST transport ────────────────────────────────────────────────────
+
+describe("pending-permissions inbox — REST routes", () => {
+  let tmp: string
+  let transcriptDir: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pending-perms-http-"))
+    transcriptDir = join(tmp, "sessions")
+  })
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }))
+
+  async function withServer(
+    registry: SessionsRegistry,
+    fn: (base: string) => Promise<void>,
+  ): Promise<void> {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () =>
+        (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      await fn(`http://127.0.0.1:${port}`)
+    } finally {
+      await http.stop()
+    }
+  }
+
+  it("GET /permissions lists and POST /permissions/:id resolves", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-http", "perm-http")
+    const id = await spawnAndPark(registry, fake)
+
+    await withServer(registry, async base => {
+      const listRes = await fetch(`${base}/permissions`)
+      expect(listRes.status).toBe(200)
+      const list = (await listRes.json()) as { permissions: Array<Record<string, unknown>> }
+      expect(list.permissions).toHaveLength(1)
+      expect(list.permissions[0]).toMatchObject({ id: "perm-http", sessionId: id, adapter: "claude-code" })
+
+      const postRes = await fetch(`${base}/permissions/perm-http`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve", scope: "always" }),
+      })
+      expect(postRes.status).toBe(200)
+      const body = (await postRes.json()) as Record<string, unknown>
+      expect(body).toMatchObject({ ok: true, id: "perm-http", decision: "approve", optionId: "opt-always" })
+      expect(fake.responded).toEqual([{ requestId: "perm-http", resolution: { optionId: "opt-always" } }])
+    })
+    registry.shutdown()
+  })
+
+  it("POST /permissions/:id 404s on an unknown id and 400s on a bad decision", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    await withServer(registry, async base => {
+      const notFound = await fetch(`${base}/permissions/ghost`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      })
+      expect(notFound.status).toBe(404)
+
+      const badDecision = await fetch(`${base}/permissions/ghost`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "maybe" }),
+      })
+      expect(badDecision.status).toBe(400)
+    })
+    registry.shutdown()
+  })
+})
+
+// ── tiny stubs (mirror awaiting-question-mcp-e2e.test.ts) ──
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function noopConversations(): ConversationStore {
+  return {
+    async open() {},
+    async appendTurn() {},
+    async read() {
+      return { meta: {} as never, turns: [] }
+    },
+    async list() {
+      return []
+    },
+    pathFor: (id: string) => id,
+  }
+}
+
+function noopHeartbeat(): HeartbeatRunner {
+  return {
+    start() {},
+    stop() {},
+    async fireNow() {},
+  }
+}

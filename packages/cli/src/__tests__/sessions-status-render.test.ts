@@ -125,6 +125,28 @@ describe("statusBadge", () => {
       statusBadge({ status: "exited", processAlive: false, busy: false, awaitingInput: false }),
     ).toBe("")
   })
+
+  it("shows the '!' held-permission badge and prioritises it over busy/awaitingInput", () => {
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: false,
+        awaitingInput: false,
+        awaitingPermission: true,
+      }),
+    ).toBe("!")
+    // A held permission is the strongest live signal — even mid-turn/awaiting.
+    expect(
+      statusBadge({
+        status: "running",
+        processAlive: true,
+        busy: true,
+        awaitingInput: true,
+        awaitingPermission: true,
+      }),
+    ).toBe("!")
+  })
 })
 
 describe("statusLabel", () => {

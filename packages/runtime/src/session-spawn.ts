@@ -168,6 +168,13 @@ export interface SpawnAgentSessionInput {
    *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
    *  path — see `sandbox-agent-session-proxy.ts`. */
   sandbox?: string | SandboxSpecInput
+  /** Start this session in permission-hold mode: every ACP permission request
+   *  is surfaced + parked in the cross-session inbox (`permissions_list` /
+   *  `permissions_respond`) instead of auto-answered. Threaded to the driver's
+   *  `startSession({ permissionHold })` and recorded on the descriptor. Ignored
+   *  for sandbox spawns (the box's own daemon owns permission handling).
+   *  Default false — unchanged auto-answer behaviour. */
+  permissionHold?: boolean
 }
 
 export type SpawnAgentSessionResult =
@@ -513,6 +520,7 @@ export async function spawnAgentSession(
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(input.permissionHold ? { permissionHold: true } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
@@ -544,6 +552,9 @@ export async function spawnAgentSession(
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
+      // Hold mode is a local-driver capability; a sandbox spawn proxies to the
+      // box's own daemon, which handles permissions there.
+      ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
     })
     liveSessionId = desc.id
     // Bind the scope-token's lifetime to the child session — once

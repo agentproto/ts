@@ -395,7 +395,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -416,6 +416,130 @@ export function registerOrchestrationTools(
       return {
         content: [
           { type: "text", text: JSON.stringify({ events, nextCursor }, null, 2) },
+        ],
+      }
+    },
+  )
+
+  // ── Permission inbox tools ─────────────────────────────────────────
+  //
+  // Cross-session inbox for permission-hold sessions: each ACP permission
+  // request is surfaced + parked (see the pending-permissions registry in
+  // sessions.ts) rather than auto-answered, so a human/orchestrator can
+  // approve/deny it from one place. Mirrors `policy_ack`'s approve/deny shape.
+
+  /** True when a session is inside the caller's subtree (WP6 scoping). Root/
+   *  operator callers (no scope) see every session. */
+  const isSessionInScope = (sessionId: string): boolean => {
+    if (!callerScope) return true
+    if (!callerScope.ownerSessionId) return false
+    return collectSubtree(callerScope.ownerSessionId, registry.list()).has(sessionId)
+  }
+
+  const enrichPermission = (
+    p: ReturnType<SessionsRegistry["listPendingPermissions"]>[number],
+  ): Record<string, unknown> => {
+    const desc = registry.get(p.sessionId)
+    const ageMs = Date.now() - new Date(p.requestedAt).getTime()
+    return {
+      ...p,
+      ...(desc?.adapterSlug ? { adapter: desc.adapterSlug } : {}),
+      ...(desc?.label ? { sessionLabel: desc.label } : {}),
+      ...(desc?.command ? { sessionTitle: desc.command } : {}),
+      ageMs: ageMs >= 0 ? ageMs : 0,
+    }
+  }
+
+  server.tool(
+    "permissions_list",
+    "List permission requests currently HELD across all permission-hold " +
+      "sessions (spawned with `permissionHold`). Each entry: id, sessionId, " +
+      "session adapter/title, the tool being requested, the offered options, " +
+      "and age. Resolve one with `permissions_respond`. Optionally filter by " +
+      "`sessionId`. Empty list = nothing is waiting on a decision.",
+    {
+      sessionId: z
+        .string()
+        .optional()
+        .describe("Filter to one session's pending permissions. Omit → all sessions."),
+    },
+    async input => {
+      const pending = registry
+        .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
+        .filter(p => isSessionInScope(p.sessionId))
+        .map(enrichPermission)
+      return {
+        content: [{ type: "text", text: JSON.stringify({ permissions: pending }, null, 2) }],
+      }
+    },
+  )
+
+  server.tool(
+    "permissions_respond",
+    "Resolve a permission request parked by a permission-hold session " +
+      "(see `permissions_list`). `decision:\"approve\"` selects an allow " +
+      "option (allow-always when `scope:\"always\"` is offered, else " +
+      "allow-once); `decision:\"deny\"` selects a reject option (or cancels " +
+      "the request when none is offered). An explicit `optionId` overrides " +
+      "the decision→option mapping. Errors clearly on an unknown/already-" +
+      "resolved id. The agent's turn unblocks with the chosen outcome.",
+    {
+      id: z.string().describe("Pending permission id from `permissions_list`."),
+      decision: z
+        .enum(["approve", "deny"])
+        .describe("approve → an allow option; deny → a reject option / cancel."),
+      optionId: z
+        .string()
+        .optional()
+        .describe("Explicit offered optionId — wins over `decision` mapping."),
+      scope: z
+        .enum(["once", "always"])
+        .optional()
+        .describe("For approve: prefer allow-always when the request offers it."),
+    },
+    async input => {
+      // WP6 scoping: a scoped child may only resolve permissions for sessions
+      // in its own subtree. Report "not found" for anything out of scope (no
+      // information leak about a sibling's pending requests).
+      const pending = registry.listPendingPermissions().find(p => p.id === input.id)
+      if (!pending || !isSessionInScope(pending.sessionId)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "not_found", message: `no pending permission "${input.id}"` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const result = await registry.respondPermission(input.id, {
+        decision: input.decision,
+        ...(input.optionId ? { optionId: input.optionId } : {}),
+        ...(input.scope ? { scope: input.scope } : {}),
+      })
+      if (!result.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ok: true,
+                id: input.id,
+                sessionId: result.permission.sessionId,
+                decision: result.decision,
+                ...(result.optionId ? { optionId: result.optionId } : {}),
+              },
+              null,
+              2,
+            ),
+          },
         ],
       }
     },

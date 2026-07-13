@@ -13,6 +13,7 @@ import {
   createAcpClient,
   type AcpClient,
   type AcpClientSession,
+  type AcpPermissionResolution,
 } from "@agentproto/acp/client"
 import type {
   AgentCliClient,
@@ -39,10 +40,15 @@ export type AcpPermissionOutcome =
 
 export interface AcpPermissionRequestParams {
   sessionId?: string
+  // `title`/`kind` allow `null` (not just `undefined`) so the upstream ACP
+  // `RequestPermissionRequest` — whose `toolCall` is a `ToolCallUpdate` with
+  // `title: string | null` / `kind: ToolKind | null` — is structurally
+  // assignable to this shape. That lets the arm's handler take the SDK type
+  // directly, with no `as` cast at the `createAcpClient` call site.
   toolCall?: {
     toolCallId?: string
-    title?: string
-    kind?: string
+    title?: string | null
+    kind?: string | null
     rawInput?: unknown
   }
   options?: Array<{ optionId: string; name?: string; kind?: string }>
@@ -166,6 +172,14 @@ export interface AcpProtocolOptions {
    * `defaultPermissionHandlerForMode`.
    */
   requestedMode?: string
+  /**
+   * When true, permission requests are surfaced as `agent-prompt` StreamEvents
+   * and HELD in the daemon's permission inbox rather than auto-answered —
+   * forwarded verbatim to `createAcpClient({ permissionHold })`. The
+   * `onPermissionRequest` / `requestedMode` handler is bypassed while this is
+   * set. Default false (unchanged: requests are auto-answered in-arm).
+   */
+  permissionHold?: boolean
 }
 
 export function createAcpProtocolArm(
@@ -203,15 +217,20 @@ export function createAcpProtocolArm(
         },
         onActivity: opts.onActivity,
         turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
+        // Permission-hold mode: surface + park requests for the daemon inbox
+        // instead of auto-answering them in-arm (see AcpProtocolOptions).
+        ...(options.permissionHold ? { permissionHold: true } : {}),
         // Wire the permission handler so the agent's `session/request_permission`
         // callbacks get a real answer instead of bubbling up as
         // "AcpClient.requestPermission: no handler configured" → which
         // surfaces in the chat as an opaque "Internal error" when the
         // agent tries to Write / Bash anything gated.
+        // `params` is contextually typed as the SDK's `RequestPermissionRequest`
+        // (via `AcpClientOptions.handlers`), which is assignable to
+        // `AcpPermissionRequestParams` — so no cast is needed on either side.
         handlers: {
-          requestPermission: async (params: unknown) =>
-            permissionHandler(params as AcpPermissionRequestParams),
-        } as never,
+          requestPermission: async params => permissionHandler(params),
+        },
       })
       // When the host hands us a `resumeSessionId`, reattach to the
       // agent's existing session via `loadSession` so the conversation
@@ -260,6 +279,14 @@ export function createAcpProtocolArm(
     async cancel(_turnId) {
       if (!session) return
       await session.cancel()
+    },
+    respondPermission(
+      requestId: string,
+      resolution: AcpPermissionResolution,
+    ): boolean {
+      // Resolve a permission request parked by permission-hold mode. Routed
+      // through the client (its pending map is keyed globally by request id).
+      return client?.respondPermission(requestId, resolution) ?? false
     },
     async close() {
       if (session) await session.close()

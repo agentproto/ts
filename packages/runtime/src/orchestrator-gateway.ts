@@ -70,6 +70,8 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "policy_status",
   "policy_list",
   "policy_cancel",
+  "permissions_list",
+  "permissions_respond",
 ]
 
 /**

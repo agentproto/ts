@@ -39,6 +39,7 @@ import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runWorktree } from "./commands/worktree.js"
+import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
@@ -64,6 +65,7 @@ Usage:
   agentproto sessions  [--watch] [--attach <id-or-name>] [--json]
   agentproto sessions  start <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--prompt <text>] [--label <text>] [--attach]
+                                       [--hold-permissions]
   agentproto sessions  terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                              [--name <slug>] [--label <text>]
                                              [--cols <n>] [--rows <n>] [--attach]
@@ -91,6 +93,8 @@ Usage:
   agentproto cron      run    <id>
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
+  agentproto permissions ls    [--json]                   held tool-permission requests
+  agentproto permissions <approve|deny> <id> [--always]   resolve a held request
   agentproto acp       ls      [--json]
   agentproto acp       add <slug> --bin <bin> [--args <arg>…] [--env <K=V>…] [--resumable]
   agentproto acp       rm  <slug>
@@ -141,6 +145,7 @@ const VERBS = new Set([
   "cron",
   "pack",
   "worktree",
+  "permissions",
   "acp",
 ])
 
@@ -220,6 +225,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPack(rest)
     case "worktree":
       return runWorktree(rest)
+    case "permissions":
+      return runPermissions(rest)
     case "acp":
       return runAcp(rest)
     default:
