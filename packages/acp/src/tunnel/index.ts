@@ -51,6 +51,14 @@ export {
 } from "./e2e.js"
 
 export {
+  connectSinkE2E,
+  acceptSinkE2E,
+  DEFAULT_TUNNEL_E2E_TIMEOUT_MS,
+  type TunnelE2EOptions,
+  type AcceptSinkE2EResult,
+} from "./tunnel-e2e.js"
+
+export {
   createTunnelServer,
   DEFAULT_WS_DIAL_TIMEOUT_MS,
   DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
