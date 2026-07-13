@@ -42,3 +42,21 @@ export {
   deriveEpochRoutingToken,
   epochRoutingTokens,
 } from "./derive.js"
+
+// tunnel-e2e — token-authenticated handshake for `serve --connect` (no PKI;
+// both ends share the pre-provisioned tunnel token).
+export {
+  TUNNEL_E2E_VERSION,
+  TunnelHandshakeError,
+  startTunnelHandshake,
+  respondToTunnelHandshake,
+  encodeTunnelMessage,
+  decodeTunnelOffer,
+  decodeTunnelAccept,
+  type TunnelHandshakeErrorCode,
+  type TunnelOffer,
+  type TunnelAccept,
+  type TunnelE2ESession,
+  type StartedTunnelHandshake,
+  type TunnelHandshakeResult,
+} from "./tunnel-handshake.js"
