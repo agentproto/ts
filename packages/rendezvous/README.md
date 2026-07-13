@@ -57,7 +57,7 @@ daemon — defence in depth, since the broker only ever sees ciphertext.
 
 See [DEPLOY.md](./DEPLOY.md) for:
 
-- Docker deployment (multi-stage, non-root)
+- Docker deployment (prebuilt-dist, non-root)
 - Kubernetes manifests
 - TLS/HTTPS configuration (reverse proxy)
 - Environment variables
