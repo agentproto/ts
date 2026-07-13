@@ -303,7 +303,10 @@ async function forward(
 function toOutHeaders(h: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(h)) {
-    // Drop hop-by-hop headers the daemon may echo; Node manages framing.
+    // Drop hop-by-hop / framing headers the daemon may echo: we re-emit the
+    // body via res.write/res.end, so Node re-derives content-length (buffered)
+    // or transfer-encoding (chunked) itself — forwarding the originals would
+    // double up or mismatch the length.
     const lk = k.toLowerCase()
     if (lk === "connection" || lk === "transfer-encoding" || lk === "content-length") continue
     out[k] = v

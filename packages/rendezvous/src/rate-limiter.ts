@@ -66,14 +66,10 @@ export function createRateLimiter(opts: RateLimiterOptions): RateLimiter {
         timestamps = []
         buckets.set(key, timestamps)
       } else {
+        // prune() empties the array in place; an idle key's empty array is
+        // reclaimed by the maxKeys sweep above on the next new-key insert, so
+        // there's no need to churn the map here.
         prune(timestamps, cutoff)
-        if (timestamps.length === 0) {
-          // Keep the map tidy: an idle key holds an empty array; drop it and
-          // re-create so long-lived idle keys don't accumulate.
-          buckets.delete(key)
-          timestamps = []
-          buckets.set(key, timestamps)
-        }
       }
 
       if (timestamps.length >= max) return false
