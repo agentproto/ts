@@ -1,9 +1,9 @@
 /**
  * Pure resolver for `~/.agentproto/config.json`'s `defaults` block —
- * computes the effective `skills` + `options` for an `agent_start` spawn
- * before adapter-specific normalization. No fs, no adapter I/O, so it's
- * unit-testable in isolation from `session-spawn.ts` (which owns the fs
- * read + the adapter-manifest lookup).
+ * computes the effective `skills` + `options` + `auth` for an `agent_start`
+ * spawn before adapter-specific normalization. No fs, no adapter I/O, so
+ * it's unit-testable in isolation from `session-spawn.ts` (which owns the
+ * fs read + the adapter-manifest lookup).
  *
  * Precedence (lowest → highest): global `defaults` < `defaults.adapters.
  * <slug>` < the explicit `agent_start` call.
@@ -13,22 +13,37 @@
  *     than merging into it — a deliberate exact set, mirroring how an
  *     explicit `mcpServers: []` opts out of the hermes default in
  *     `session-spawn.ts`.
+ *   - `auth`: `mode` resolves per-spawn > per-adapter config > `"subscription"`
+ *     (always resolved — never undefined); the CREDENTIAL for that mode
+ *     resolves per-spawn > per-adapter config, and is deliberately NOT
+ *     unioned across modes (a `subscription` spawn never sees a configured
+ *     `apiKey`). Named in config — never read from the ambient shell env.
  */
+
+/**
+ * Deterministic billing-auth config for one adapter slug (today, only
+ * claude-code interprets it — see `AgentCliStartOptions.auth` in
+ * `@agentproto/driver-agent-cli`). EXPLICIT credential selection, not
+ * scrub-by-absence: `token`/`apiKey` are the actual secret values, named
+ * here (or supplied per-spawn) rather than inherited from the launching
+ * shell. Never logged; only a fingerprint (see {@link credentialFingerprint})
+ * is ever surfaced back to a caller.
+ */
+export interface DefaultsAdapterAuthConfig {
+  /** `"subscription"` (default) or `"api-key"`. */
+  mode?: "subscription" | "api-key"
+  /** `ANTHROPIC_AUTH_TOKEN` value for `"subscription"` mode — a bearer
+   *  token minted via `claude setup-token` (bills the Max/Pro subscription,
+   *  not API credits). */
+  token?: string
+  /** `ANTHROPIC_API_KEY` value for `"api-key"` mode. */
+  apiKey?: string
+}
 
 export interface DefaultsAdapterConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
-  /**
-   * Deterministic billing-auth mode default for this adapter (today, only
-   * claude-code interprets it — see `AgentCliStartOptions.auth` in
-   * `@agentproto/driver-agent-cli`). "subscription" scrubs the billing env
-   * vars so the child falls back to its stored OAuth/subscription login;
-   * "api-key" requires the declared API key env var present and fails the
-   * spawn rather than falling back silently. No global `defaults.auth`
-   * counterpart — this is deliberately per-adapter only, since the env-var
-   * vocabulary it governs is itself adapter-specific.
-   */
-  auth?: "subscription" | "api-key"
+  auth?: DefaultsAdapterAuthConfig
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -70,19 +85,25 @@ export interface ResolveSpawnDefaultsInput {
   /** Explicit-call AIP-45 `options` map — wins per-key over both the
    *  global and per-adapter config defaults. */
   options?: Record<string, boolean | number | string>
-  /** Explicit-call `agent_start.auth` override — wins over
-   *  `defaults.adapters.<slug>.auth`. Undefined ⇒ falls through to the
-   *  per-adapter config default (itself undefined ⇒ the driver's own
-   *  "subscription" default applies at spawn time). */
-  auth?: "subscription" | "api-key"
+  /** Explicit-call `agent_start.auth` override. `mode` wins over
+   *  `defaults.adapters.<slug>.auth.mode`; the credential field matching the
+   *  RESOLVED mode wins over the matching config field. Undefined ⇒ falls
+   *  through entirely to the per-adapter config default. */
+  auth?: DefaultsAdapterAuthConfig
 }
 
 export interface ResolvedSpawnDefaults {
   skills: string[]
   options: Record<string, boolean | number | string>
-  /** Resolved per {@link ResolveSpawnDefaultsInput.auth} — undefined when
-   *  neither the explicit call nor `defaults.adapters.<slug>.auth` set one. */
-  auth?: "subscription" | "api-key"
+  /** Always resolved — `mode` defaults to `"subscription"` even when
+   *  neither the explicit call nor config set one. `credential` is the
+   *  secret value for the RESOLVED mode only (a `subscription` spawn never
+   *  sees a configured `apiKey`, and vice versa); absent when no ref
+   *  resolved for that mode — callers must fail-fast rather than fall back. */
+  auth: {
+    mode: "subscription" | "api-key"
+    credential?: string
+  }
 }
 
 export function resolveSpawnDefaults(
@@ -105,9 +126,47 @@ export function resolveSpawnDefaults(
           new Set([...(defaults?.skills ?? []), ...(adapterDefaults?.skills ?? [])]),
         )
 
-  const auth = input.auth ?? adapterDefaults?.auth
+  const authMode = input.auth?.mode ?? adapterDefaults?.auth?.mode ?? "subscription"
+  const authCredential =
+    authMode === "subscription"
+      ? input.auth?.token ?? adapterDefaults?.auth?.token
+      : input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
 
-  return { skills, options, auth }
+  return {
+    skills,
+    options,
+    auth: {
+      mode: authMode,
+      ...(authCredential !== undefined ? { credential: authCredential } : {}),
+    },
+  }
+}
+
+/**
+ * Derive a SAFE, non-secret fingerprint for a resolved auth credential —
+ * NEVER the raw value — for recording on the session descriptor / surfacing
+ * in `agentproto sessions --watch` and `agent_sessions_list` (the
+ * "verifiability" requirement: answer "what was used" without ever
+ * exposing the secret). Format: `<mode> · <type-prefix>…<last4>`, e.g.
+ * `subscription · sk-ant-oat…3f9c`.
+ *
+ * The type marker is derived from `mode`, not parsed out of the credential
+ * string: `"subscription"` always sets `ANTHROPIC_AUTH_TOKEN` (an
+ * `sk-ant-oat…` bearer token from `claude setup-token`), `"api-key"` always
+ * sets `ANTHROPIC_API_KEY` (an `sk-ant-api…` key) — mode and credential type
+ * are one-to-one, so deriving from mode is both simpler and safer than
+ * pattern-matching the secret itself. The first 6 characters of every
+ * Anthropic credential are identically `sk-ant-`, so a literal prefix slice
+ * would distinguish nothing; only the type marker + last 4 characters are
+ * ever surfaced, never the middle (mirrors GitHub's `ghp_…abcd` style).
+ */
+export function credentialFingerprint(
+  mode: "subscription" | "api-key",
+  credential: string,
+): string {
+  const typePrefix = mode === "subscription" ? "sk-ant-oat" : "sk-ant-api"
+  const last4 = credential.slice(-4)
+  return `${mode} · ${typePrefix}…${last4}`
 }
 
 /** Manifest-declared AIP-45 option id + type, the minimum an adapter

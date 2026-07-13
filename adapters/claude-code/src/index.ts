@@ -56,22 +56,34 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: { env: ["ANTHROPIC_API_KEY"] },
-    // Deterministic `auth` spawn mode (subscription vs api-key billing —
-    // see AgentCliStartOptions.auth). "subscription" (the default) scrubs
-    // these vars from the child env so Claude Code falls back to its stored
-    // OAuth/Keychain login instead of silently billing a leaked ambient
-    // ANTHROPIC_API_KEY (the outage this whole surface exists to prevent).
-    // Reuses CLAUDE_CODE_GATEWAY_ENV_UNSET (already the source of truth for
-    // this adapter's leak set) plus ANTHROPIC_AUTH_TOKEN/_BASE_URL, which
-    // that list omits deliberately — a gateway mode SETS those two rather
-    // than unsetting them, so they can't be unset unconditionally there.
+    // Deterministic `auth` spawn mode (subscription vs api-key billing — see
+    // AgentCliStartOptions.auth). EXPLICIT credential selection, not
+    // scrub-by-absence: each mode POSITIVELY sets exactly one credential env
+    // var from the resolved `auth.credential` (never read ambiently) and
+    // deletes the conflicting one(s), so which credential — and thus which
+    // billing — a spawn uses is *stated*, never inferred from whatever the
+    // daemon's launching shell happened to export (the outage this whole
+    // surface exists to prevent).
+    //
+    // "subscription" sets ANTHROPIC_AUTH_TOKEN to a bearer token minted via
+    // `claude setup-token` (bills the Max/Pro subscription, not API
+    // credits) and deletes ANTHROPIC_API_KEY + the cloud-provider redirect
+    // toggles + ANTHROPIC_BASE_URL — reusing CLAUDE_CODE_GATEWAY_ENV_UNSET
+    // (already the source of truth for this adapter's leak set) plus
+    // ANTHROPIC_BASE_URL, which that list omits deliberately (a gateway
+    // mode SETS it, so it can't be unset unconditionally there).
+    //
+    // "api_key" sets ANTHROPIC_API_KEY to an explicit key and deletes
+    // ANTHROPIC_AUTH_TOKEN — the deliberate "bill the API" choice.
     modes: {
-      api_key_env: "ANTHROPIC_API_KEY",
-      subscription_unset_env: [
-        ...CLAUDE_CODE_GATEWAY_ENV_UNSET,
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-      ],
+      subscription: {
+        set_env: "ANTHROPIC_AUTH_TOKEN",
+        unset_env: [...CLAUDE_CODE_GATEWAY_ENV_UNSET, "ANTHROPIC_BASE_URL"],
+      },
+      api_key: {
+        set_env: "ANTHROPIC_API_KEY",
+        unset_env: ["ANTHROPIC_AUTH_TOKEN"],
+      },
     },
   },
   sandbox: "./SANDBOX.md",

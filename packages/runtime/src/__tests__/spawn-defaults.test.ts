@@ -1,7 +1,7 @@
 /**
  * Unit coverage for the pure `defaults` resolver (spawn-defaults.ts) —
- * config.json's global/per-adapter `skills`+`options` merged against an
- * explicit `agent_start` call, and the adapter-shape folding of `skills`
+ * config.json's global/per-adapter `skills`+`options`+`auth` merged against
+ * an explicit `agent_start` call, and the adapter-shape folding of `skills`
  * into `options.skills`. No fs, no adapters — see session-spawn.test.ts
  * for the wiring into `spawnAgentSession`.
  */
@@ -10,13 +10,16 @@ import { describe, it, expect } from "vitest"
 import {
   resolveSpawnDefaults,
   normalizeSkillsOption,
+  credentialFingerprint,
   type SpawnDefaultsConfig,
 } from "../spawn-defaults.js"
+
+const NO_AUTH = { auth: { mode: "subscription" as const } }
 
 describe("resolveSpawnDefaults", () => {
   it("passes through with no defaults and no explicit call", () => {
     const result = resolveSpawnDefaults(undefined, "hermes", {})
-    expect(result).toEqual({ skills: [], options: {} })
+    expect(result).toEqual({ skills: [], options: {}, ...NO_AUTH })
   })
 
   it("applies global defaults when no per-adapter block matches", () => {
@@ -25,7 +28,11 @@ describe("resolveSpawnDefaults", () => {
       options: { verbose: true },
     }
     const result = resolveSpawnDefaults(defaults, "hermes", {})
-    expect(result).toEqual({ skills: ["agentproto"], options: { verbose: true } })
+    expect(result).toEqual({
+      skills: ["agentproto"],
+      options: { verbose: true },
+      ...NO_AUTH,
+    })
   })
 
   it("unions global + per-adapter skills, and per-adapter options win on collision", () => {
@@ -86,38 +93,89 @@ describe("resolveSpawnDefaults", () => {
   })
 })
 
-describe("resolveSpawnDefaults auth precedence", () => {
-  it("is undefined with no config default and no explicit call", () => {
+describe("resolveSpawnDefaults auth — mode + credential precedence", () => {
+  it("defaults to subscription with no credential when nothing is configured", () => {
     const result = resolveSpawnDefaults(undefined, "claude-code", {})
-    expect(result.auth).toBeUndefined()
+    expect(result.auth).toEqual({ mode: "subscription" })
   })
 
-  it("falls through to defaults.adapters.<slug>.auth when the call omits it", () => {
+  it("falls through to defaults.adapters.<slug>.auth.mode when the call omits it", () => {
     const defaults: SpawnDefaultsConfig = {
-      adapters: { "claude-code": { auth: "api-key" } },
+      adapters: { "claude-code": { auth: { mode: "api-key", apiKey: "sk-ant-api03-cfg" } } },
     }
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
-    expect(result.auth).toBe("api-key")
+    expect(result.auth).toEqual({ mode: "api-key", credential: "sk-ant-api03-cfg" })
   })
 
-  it("an explicit-call auth wins over the per-adapter config default", () => {
+  it("an explicit-call auth.mode wins over the per-adapter config default", () => {
     const defaults: SpawnDefaultsConfig = {
-      adapters: { "claude-code": { auth: "api-key" } },
+      adapters: {
+        "claude-code": {
+          auth: { mode: "api-key", apiKey: "sk-ant-api03-cfg", token: "sk-ant-oat01-cfg" },
+        },
+      },
     }
     const result = resolveSpawnDefaults(defaults, "claude-code", {
-      auth: "subscription",
+      auth: { mode: "subscription" },
     })
-    expect(result.auth).toBe("subscription")
+    // Mode flips to subscription, and the CREDENTIAL follows the resolved
+    // mode — it falls back to the config's token (not apiKey), proving
+    // credential resolution isn't unioned across modes.
+    expect(result.auth).toEqual({ mode: "subscription", credential: "sk-ant-oat01-cfg" })
+  })
+
+  it("an explicit-call credential wins over the config credential for the same mode", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: { mode: "subscription", token: "sk-ant-oat01-cfg" } } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {
+      auth: { token: "sk-ant-oat01-explicit" },
+    })
+    expect(result.auth).toEqual({ mode: "subscription", credential: "sk-ant-oat01-explicit" })
   })
 
   it("does not apply another adapter's per-adapter auth default", () => {
     const defaults: SpawnDefaultsConfig = {
-      adapters: { "claude-code": { auth: "api-key" } },
+      adapters: { "claude-code": { auth: { mode: "api-key", apiKey: "sk-ant-api03-cfg" } } },
     }
     const result = resolveSpawnDefaults(defaults, "hermes", {})
-    expect(result.auth).toBeUndefined()
+    expect(result.auth).toEqual({ mode: "subscription" })
   })
 
+  it("a subscription-mode spawn never sees a configured apiKey as its credential", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: { apiKey: "sk-ant-api03-cfg" } } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {})
+    expect(result.auth).toEqual({ mode: "subscription" })
+  })
+})
+
+describe("credentialFingerprint", () => {
+  it("never includes the raw credential", () => {
+    const secret = "sk-ant-oat01-VERY-SECRET-TOKEN-DO-NOT-LEAK-3f9c"
+    const fp = credentialFingerprint("subscription", secret)
+    expect(fp).not.toContain(secret)
+    expect(fp).not.toContain("VERY-SECRET-TOKEN-DO-NOT-LEAK")
+  })
+
+  it("formats subscription as '<mode> · sk-ant-oat…<last4>'", () => {
+    expect(credentialFingerprint("subscription", "sk-ant-oat01-abcdef3f9c")).toBe(
+      "subscription · sk-ant-oat…3f9c",
+    )
+  })
+
+  it("formats api-key as '<mode> · sk-ant-api…<last4>'", () => {
+    expect(credentialFingerprint("api-key", "sk-ant-api03-abcdef7b21")).toBe(
+      "api-key · sk-ant-api…7b21",
+    )
+  })
+
+  it("only ever surfaces the last 4 characters — never the middle", () => {
+    const fp = credentialFingerprint("api-key", "sk-ant-api03-MIDDLE-SECRET-abcd")
+    expect(fp).not.toContain("MIDDLE-SECRET")
+    expect(fp.endsWith("abcd")).toBe(true)
+  })
 })
 
 describe("normalizeSkillsOption", () => {

@@ -317,20 +317,31 @@ export function registerAgentTools(
             "(Sonnet 4.6 / Opus 4.8 default 'high'; Opus 4.7 default 'xhigh'). " +
             "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
         ),
-      auth: z
-        .enum(["subscription", "api-key"])
+      auth: jsonTolerant(
+        z.object({
+          mode: z.enum(["subscription", "api-key"]).optional(),
+          token: z.string().optional(),
+          apiKey: z.string().optional(),
+        })
+      )
         .optional()
         .describe(
-          "Deterministic billing-auth mode for adapters that declare it (today: " +
-            "claude-code). 'subscription' (the default, whether omitted here or in " +
-            "`~/.agentproto/config.json`'s `defaults.adapters.claude-code.auth`) deletes " +
-            "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL and the cloud-" +
-            "provider redirect toggles from the child env, so Claude Code falls back to " +
-            "its stored OAuth/subscription login instead of silently billing a leaked " +
-            "ambient API key. 'api-key' requires ANTHROPIC_API_KEY present in the " +
-            "resolved child env and fails the spawn with a clear error when it's absent, " +
-            "rather than silently falling back to subscription — the deliberate " +
-            "'bill the API' choice. Adapters that don't declare this vocabulary ignore it."
+          "Deterministic billing-auth mode + EXPLICIT credential for adapters that " +
+            "declare it (today: claude-code). EXPLICIT credential selection, not " +
+            "scrub-by-absence: `mode` picks 'subscription' (default) or 'api-key'; " +
+            "`token`/`apiKey` (matching the resolved mode) is the secret VALUE, merged " +
+            "against `~/.agentproto/config.json`'s `defaults.adapters.claude-code.auth` " +
+            "(this field's `mode` wins; the credential for the resolved mode wins over " +
+            "the matching config field). 'subscription' SETS ANTHROPIC_AUTH_TOKEN to " +
+            "`token` (a bearer token minted via `claude setup-token` — bills the Max/Pro " +
+            "subscription, not API credits) and DELETES ANTHROPIC_API_KEY + the cloud-" +
+            "provider redirect toggles + ANTHROPIC_BASE_URL. 'api-key' SETS " +
+            "ANTHROPIC_API_KEY to `apiKey` and DELETES ANTHROPIC_AUTH_TOKEN — the " +
+            "deliberate 'bill the API' choice. FAILS FAST (refuses the spawn, no " +
+            "fallback) when the resolved mode has no credential configured anywhere. " +
+            "The secret is never logged or echoed back — only a fingerprint appears on " +
+            "the session descriptor / `agent_sessions_list`. Adapters that don't declare " +
+            "this vocabulary ignore this field entirely."
         ),
       mcpServers: jsonTolerant(
         z.array(

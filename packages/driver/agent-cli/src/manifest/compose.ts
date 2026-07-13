@@ -47,7 +47,7 @@ export class RuntimeConfigError extends Error {
     | "option_bounds_violation"
     | "unsupported_continuation"
     | "model_denied"
-    | "missing_api_key"
+    | "missing_auth_credential"
   readonly path: string
   constructor(
     code: RuntimeConfigError["code"],

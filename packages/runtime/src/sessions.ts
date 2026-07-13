@@ -335,6 +335,20 @@ export interface SessionDescriptor {
   adapterSlug?: string
   /** The model the session was requested to run (echoed back at spawn). */
   model?: string
+  /**
+   * Deterministic billing-auth mode + a non-secret credential fingerprint,
+   * recorded at spawn time for adapters that resolved an explicit
+   * credential (today: claude-code — see `AgentCliAuth.modes` in
+   * `@agentproto/driver-agent-cli`). The "verifiability" answer to "what
+   * was used": `mode` is the resolved `"subscription" | "api-key"`;
+   * `fingerprint` is `credentialFingerprint(mode, credential)` — e.g.
+   * `"subscription · sk-ant-oat…3f9c"` — NEVER the raw credential. Absent
+   * when no credential resolved (every adapter besides claude-code, in
+   * practice) or for a sandboxed spawn (the box's own daemon resolves its
+   * own credential independently). Surfaced in `agentproto sessions
+   * --watch`'s DETAIL pane and `agent_sessions_list`.
+   */
+  auth?: { mode: "subscription" | "api-key"; fingerprint: string }
   /** Cumulative estimated USD cost of the session — best-effort, refreshed
    *  on each turn-end from the adapter's usage reader (e.g. hermes reads its
    *  state.db). Absent for adapters with no usage source. */
@@ -895,6 +909,11 @@ export interface SpawnAgentInput {
   depth?: number
   /** Requested model id — recorded on the descriptor for display + echo. */
   model?: string
+  /** Resolved auth mode + non-secret credential fingerprint — recorded
+   *  verbatim onto {@link SessionDescriptor.auth}. See that field's doc for
+   *  the full contract; the caller (`session-spawn.ts`) computes this via
+   *  `credentialFingerprint`, never passing the raw credential here. */
+  auth?: { mode: "subscription" | "api-key"; fingerprint: string }
   /** Hard ceiling on cumulative session cost (USD). When set and the
    *  adapter's usage reader reports a higher cost at a turn-end, the session
    *  is stopped (best-effort, turn-granular — caps continuation, can't abort
@@ -2196,6 +2215,7 @@ export function createSessionsRegistry(opts?: {
           : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
+        ...(input.auth ? { auth: input.auth } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
