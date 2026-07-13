@@ -130,6 +130,49 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(resolved).toEqual({ outcome: { outcome: "cancelled" } })
   })
 
+  it("hold guard wins even when a handlers.requestPermission is supplied alongside permissionHold: true", async () => {
+    // Regression for the ...(partial as object) spread-order bug: when the
+    // spread landed AFTER the named methods, a caller-supplied
+    // handlers.requestPermission would silently overwrite the hold guard and
+    // auto-answer instead of parking. Now that the spread is first the named
+    // method always wins — this test proves it.
+    const autoAnswer = vi.fn(async () => ({
+      outcome: { outcome: "selected" as const, optionId: "a" },
+    }))
+    const client = await createAcpClient({
+      ...fakeStreams(),
+      permissionHold: true,
+      handlers: {
+        requestPermission: autoAnswer as never,
+      },
+    })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    let resolved: unknown
+    const rpc = handlers.requestPermission(PERM_PARAMS).then(r => {
+      resolved = r
+    })
+
+    // The agent-prompt event should appear (hold path taken), not the auto-answer.
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+    expect(evt.kind).toBe("agent-prompt")
+    // The auto-answer handler must NOT have been called.
+    expect(autoAnswer).not.toHaveBeenCalled()
+    // The RPC is still parked.
+    await Promise.resolve()
+    expect(resolved).toBeUndefined()
+
+    // Resolve via respondPermission to prove the hold path owns the RPC.
+    client.respondPermission(evt.toolCallId, { cancelled: true })
+    await rpc
+    expect(resolved).toEqual({ outcome: { outcome: "cancelled" } })
+  })
+
   it("without permissionHold the request path is unchanged (throws with no handler)", async () => {
     const client = await createAcpClient({ ...fakeStreams() })
     await client.newSession({ cwd: "/tmp" })

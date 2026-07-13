@@ -235,8 +235,14 @@ export interface AcpClientSession {
     signal?: AbortSignal
   }): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
-  /** Resolve a permission request parked (in permission-hold mode) for THIS
-   *  session — see `AcpClient.respondPermission`. */
+  /**
+   * Resolve a permission request parked (in permission-hold mode) for THIS
+   * session — delegates to `AcpClient.respondPermission` on the underlying
+   * client. Provided as a convenience for callers that hold a session
+   * reference rather than the top-level client; the pending map is shared so
+   * either call site works. The runtime uses the client-level method via
+   * `arm.respondPermission`, which in turn calls `client.respondPermission`.
+   */
   respondPermission(
     requestId: string,
     resolution: AcpPermissionResolution,
