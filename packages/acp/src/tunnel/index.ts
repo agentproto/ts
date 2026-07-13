@@ -28,12 +28,27 @@ export {
   type WsMessageFrame,
   type WsCloseFrame,
   type ReconnectSoonFrame,
+  type E2eFrame,
+  type E2eHandshakeFrame,
   type TunnelFrame,
   type HostToDaemonFrame,
   type DaemonToHostFrame,
 } from "./frames.js"
 
 export type { FrameSink } from "./transport.js"
+
+export {
+  wrapE2E,
+  E2eError,
+  DEFAULT_E2E_MAX_FRAMES,
+  clientHandshakeOverSink,
+  daemonHandshakeOverSink,
+  type E2eKeys,
+  type E2eErrorCode,
+  type E2eFrameSink,
+  type WrapE2EOptions,
+  type HandshakeOverSinkOptions,
+} from "./e2e.js"
 
 export {
   createTunnelServer,

@@ -10,6 +10,8 @@ export default createTsupConfig({
     "manifest/index": "src/manifest/index.ts",
     "exposure/index": "src/exposure/index.ts",
     "seal/index": "src/seal/index.ts",
+    "identity/index": "src/identity/index.ts",
+    "pairing/index": "src/pairing/index.ts",
     "provision/index": "src/provision/index.ts",
     "provision/recipe/index": "src/provision/recipe/index.ts",
     cli: "src/cli.ts",
