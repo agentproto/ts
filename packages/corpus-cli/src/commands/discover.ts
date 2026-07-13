@@ -2,8 +2,10 @@
  * `corpus discover <topic> [path]` — multi-channel source discovery.
  *
  * Fans out across web + youtube (+ social best-effort), deduplicates URLs,
- * writes `<path>/urls.discovered.txt`, prints a per-channel summary, and
- * optionally chains import-web via --import.
+ * MERGES into `<path>/urls.discovered.txt` (union with any URLs already in
+ * the file, deduped by exact URL — so multi-round discovery sessions
+ * accumulate instead of last-run-wins; pass --fresh to overwrite), prints a
+ * per-channel summary, and optionally chains import-web via --import.
  *
  * Web search: inline minimal HTTP fetcher — @agstudio/integration-search is
  * not available in this workspace (cross-boundary package). Provider priority:
@@ -16,7 +18,7 @@
  */
 
 import { execFile } from "node:child_process"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 import { runImportWeb } from "./import-web.js"
@@ -33,6 +35,7 @@ interface ParsedArgs {
   lang: string | undefined
   tags: string[]
   doImport: boolean
+  fresh: boolean
 }
 
 function parse(args: readonly string[]): ParsedArgs {
@@ -44,6 +47,7 @@ function parse(args: readonly string[]): ParsedArgs {
     lang: undefined,
     tags: [],
     doImport: false,
+    fresh: false,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -62,6 +66,7 @@ function parse(args: readonly string[]): ParsedArgs {
         break
       }
       case "--import": out.doImport = true; break
+      case "--fresh": out.fresh = true; break
       default:
         if (!a.startsWith("-")) {
           if (out.topic === undefined) out.topic = a
@@ -224,6 +229,23 @@ async function discoverSocial(_topic: string, _lang: string | undefined, _max: n
 }
 
 // ---------------------------------------------------------------------------
+// Output-file merge
+// ---------------------------------------------------------------------------
+
+/** Read the existing urls.discovered.txt, one URL per line. Missing file ⇒ []. */
+async function readExistingUrls(outFile: string): Promise<string[]> {
+  try {
+    const prior = await readFile(outFile, "utf-8")
+    return prior
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+  } catch {
+    return [] // first run — nothing to merge
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
 
@@ -231,7 +253,7 @@ export async function runDiscover(args: readonly string[]): Promise<ExitCode> {
   const parsed = parse(args)
 
   if (!parsed.topic) {
-    return fail("discover requires a <topic> argument. Usage: corpus discover <topic> [path] [--max N] [--channels web,youtube,social] [--lang fr] [--tags t] [--import]", 2)
+    return fail("discover requires a <topic> argument. Usage: corpus discover <topic> [path] [--max N] [--channels web,youtube,social] [--lang fr] [--tags t] [--import] [--fresh]", 2)
   }
 
   const outputPath = parsed.outputPath
@@ -282,11 +304,29 @@ export async function runDiscover(args: readonly string[]): Promise<ExitCode> {
     return 1
   }
 
-  // Write urls.discovered.txt
+  // Merge into urls.discovered.txt: union with any previously-discovered
+  // URLs (exact-URL dedup, prior order preserved) so multi-round discovery
+  // sessions accumulate. --fresh opts into the old overwrite behavior.
   await mkdir(outputPath, { recursive: true })
   const outFile = join(outputPath, "urls.discovered.txt")
-  await writeFile(outFile, allUrls.join("\n") + "\n", "utf-8")
-  process.stdout.write(`\n  written → ${outFile}\n`)
+  const existing: string[] = parsed.fresh ? [] : await readExistingUrls(outFile)
+  const merged = [...existing]
+  const known = new Set(existing)
+  for (const url of allUrls) {
+    if (!known.has(url)) {
+      known.add(url)
+      merged.push(url)
+    }
+  }
+  const added = merged.length - existing.length
+  await writeFile(outFile, merged.join("\n") + "\n", "utf-8")
+  process.stdout.write(
+    `\n  written → ${outFile} (${merged.length} URLs` +
+      (parsed.fresh
+        ? ", --fresh overwrite"
+        : `, ${added} new, ${existing.length} kept from previous runs`) +
+      `)\n`
+  )
 
   // Chain import-web if requested
   if (parsed.doImport) {

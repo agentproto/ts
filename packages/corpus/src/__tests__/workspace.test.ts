@@ -125,6 +125,91 @@ describe("CorpusValidator", () => {
     expect(out.issues.length).toBeGreaterThan(0)
   })
 
+  // Regression (2026-07-13 ingestion run): a source declaring
+  // `schema: knowledge.source/v1` with `authority: tertiary` used to
+  // surface ajv's FULL oneOf fan-out — entry-branch errors (missing
+  // slug/kind/updated_at, additionalProperties id/captured_at/…) that
+  // sent the user debugging the wrong schema. With an explicit
+  // `schema:` discriminator, only THAT branch's errors must be
+  // reported.
+  it("reports only the declared-schema branch's errors on oneOf failure", async () => {
+    const fs = new MemoryFs({
+      "sources/social/2026-07-13/reddit-post.md": [
+        "---",
+        "schema: knowledge.source/v1",
+        "id: 2026-07-13-reddit-post",
+        "path: sources/social/2026-07-13/reddit-post.md",
+        "title: Reddit post",
+        'captured_at: "2026-07-13T10:00:00Z"',
+        'content_hash: "sha256:abcd1234"',
+        "authority: tertiary",
+        "---",
+        "body",
+      ].join("\n"),
+    })
+    const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
+    const validator = new CorpusValidator({ bundle: loadAipSchemaBundle() })
+    const out = validator.validateFile(snapshot.sources[0]!)
+
+    expect(out.valid).toBe(false)
+    // The one real error: the SOURCE branch's authority enum.
+    expect(out.issues).toHaveLength(1)
+    expect(out.issues[0]?.instancePath).toBe("/authority")
+    expect(out.issues[0]?.message).toContain("primary")
+    expect(out.issues[0]?.message).toContain("rumour")
+    // None of the entry/workspace-branch noise.
+    const all = out.issues.map((i) => i.message).join("\n")
+    expect(all).not.toContain("slug")
+    expect(all).not.toContain("oneOf")
+  })
+
+  it("falls back to full oneOf dispatch when schema: is absent or unknown", async () => {
+    const fs = new MemoryFs({
+      "sources/web/no-discriminator.md":
+        "---\ntitle: No discriminator\n---\nbody",
+      "sources/web/unknown-discriminator.md":
+        "---\nschema: knowledge.bogus/v9\ntitle: Bogus\n---\nbody",
+    })
+    const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
+    const validator = new CorpusValidator({ bundle: loadAipSchemaBundle() })
+    for (const source of snapshot.sources) {
+      const out = validator.validateFile(source)
+      expect(out.valid).toBe(false)
+      // Full-document dispatch: the oneOf summary error is present.
+      expect(out.issues.some((i) => i.message.includes("oneOf"))).toBe(true)
+    }
+  })
+
+  // Regression: `sources/social/<date>/…` is the lane the canonical
+  // social importer (bureau capture/search --land) writes to. It must
+  // classify as a knowledge-source and validate cleanly — never fall
+  // into the "unknown location" info bucket.
+  it("accepts sources/social/ as a valid source lane", async () => {
+    const fs = new MemoryFs({
+      "sources/social/2026-07-13/valid-post.md": [
+        "---",
+        "schema: knowledge.source/v1",
+        "id: 2026-07-13-valid-post",
+        "path: sources/social/2026-07-13/valid-post.md",
+        "title: Valid social post",
+        'captured_at: "2026-07-13T10:00:00Z"',
+        'content_hash: "sha256:abcd1234"',
+        "authority: rumour",
+        "---",
+        "body",
+      ].join("\n"),
+    })
+    const snapshot = await new CorpusWorkspaceReader({ fs }).read("")
+    expect(snapshot.sources).toHaveLength(1)
+    expect(snapshot.unknown).toHaveLength(0)
+    expect(snapshot.sources[0]?.kind).toBe("knowledge-source")
+
+    const validator = new CorpusValidator({ bundle: loadAipSchemaBundle() })
+    const out = validator.validateFile(snapshot.sources[0]!)
+    expect(out.issues).toEqual([])
+    expect(out.valid).toBe(true)
+  })
+
   it("flags unknown files with an info-severity issue", async () => {
     const fs = new MemoryFs({
       "weird/place.md": "---\nfoo: bar\n---\nbody",
