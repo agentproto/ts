@@ -234,6 +234,18 @@ export interface HelloFrame {
      * daemon's live `tools/list` over the HTTP relay.
      */
     tools?: ReadonlyArray<string>
+    /**
+     * Set when this daemon's tunnel channel is E2E-encrypted (design:
+     * tunnel-e2e/v1). Informational confirmation only — this `hello` is
+     * itself carried INSIDE the already-established encrypted channel (the
+     * `wrapE2E` box), so a host that decrypts it has, by definition, already
+     * completed the token-authenticated handshake. The negotiation that turns
+     * a channel encrypted happens BEFORE this frame, over `e2e_handshake`
+     * frames on the raw sink — not by advertising a capability here. A host
+     * may surface this flag in its UI ("this daemon is end-to-end encrypted").
+     * Absent ⇒ plaintext tunnel (today's behaviour). See ./tunnel-e2e.ts.
+     */
+    e2e?: boolean
     /** Future: file-transfer, port-forward, etc. */
   }>
   /** User-friendly daemon label, surfaced in host UIs. */

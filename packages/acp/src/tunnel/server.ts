@@ -107,6 +107,14 @@ export interface TunnelServerOptions {
    */
   tools?: ReadonlyArray<string>
   /**
+   * Set when the `sink` is an E2E-encrypted channel (a `wrapE2E` box). Purely
+   * informational — surfaced to the host as `hello.capabilities.e2e` so it can
+   * confirm/display that the tunnel is end-to-end encrypted. The encryption
+   * itself is established by the handshake BEFORE this server is constructed
+   * (see ./tunnel-e2e.ts); this flag does not turn anything on. Default false.
+   */
+  e2e?: boolean
+  /**
    * Whether this daemon advertises PTY support. Set to true only when
    * `spawnPty` is also provided.
    */
@@ -249,6 +257,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       pty: opts.pty === true,
       wsForward: opts.dialUpstreamWs !== undefined && !!opts.httpUpstream,
       ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
+      ...(opts.e2e === true ? { e2e: true } : {}),
     },
     label: opts.label,
     daemon: {

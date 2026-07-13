@@ -106,4 +106,5 @@ Creates the file if missing before launching the editor.
 | `daemon.label` | `string` | Server label sent in tunnel hello frames. |
 | `tunnel.host` | `string` | Default tunnel URL for `serve` and `daemon install`. |
 | `tunnel.autoconnect` | `boolean` | When true, `daemon install` bakes `--connect tunnel.host` into the plist; `serve` falls back to it when `--connect` is omitted. |
+| `tunnel.e2e` | `boolean` | Opt into end-to-end encrypting the outbound tunnel (needs `tunnel.token`; the host must also support it, else it falls back to plaintext). See [`serve`](./serve.md#end-to-end-encryption-tunnele2e-opt-in). |
 | `features.pty` | `boolean` | Informational hint; the daemon detects `node-pty` at runtime regardless. |

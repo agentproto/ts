@@ -82,6 +82,48 @@ gateway stays up across reconnects; only the WS cycles. Keep-alive
 pings every 30s prevent reverse-proxies (Cloud Run, …) from closing
 idle sockets.
 
+#### End-to-end encryption (`tunnel.e2e`, opt-in)
+
+By default the tunnel carries `agentproto/tunnel/v1` frames in
+**plaintext** — the host terminates the WS and sees every spawn,
+stdout byte, and HTTP relay. Set `tunnel.e2e = true` in
+[`config`](./config.md) (per-profile) to encrypt the tunnel
+end-to-end, so even the trusted host loses plaintext visibility:
+
+```jsonc
+// ~/.agentproto/config.json
+{
+  "tunnel": {
+    "host": "wss://guilde.work/api/v1/agentproto/tunnel",
+    "token": "apt_…",   // REQUIRED — the E2E handshake authenticates on it
+    "e2e": true
+  }
+}
+```
+
+How it works: right after the WS opens — before any tunnel/v1 frame —
+the daemon and host run a short **token-authenticated ephemeral
+handshake** (X25519 + HKDF-SHA256, keyed by `sha256(tunnel.token)`),
+then wrap every frame in an AES-256-GCM box. The ephemeral exchange
+gives forward secrecy; binding the key schedule to the pre-shared
+`tunnel.token` authenticates both ends (a middle without the token
+derives different keys and is rejected **at handshake time**, not
+mid-stream). The `hello`, spawns, stdout, and HTTP relay all travel
+as ciphertext; a WS terminator sees only opaque envelopes, their
+sizes, and their timing.
+
+**The host must also support it.** E2E is negotiated: the daemon
+offers it only when `tunnel.e2e` is set, and encrypts only if the host
+answers the handshake. Against a host that doesn't (an older host),
+the daemon transparently **falls back to the plaintext tunnel** after a
+brief negotiation timeout — nothing breaks. With `tunnel.e2e` unset,
+the behaviour is byte-identical to today. A wrong `tunnel.token` on
+either side (or a tampered handshake) fails **closed** — the daemon
+never downgrades to plaintext, it errors and reconnects.
+
+Requires a `tunnel.token` (the shared secret the handshake binds to);
+if e2e is set without one, the daemon warns and stays plaintext.
+
 ### Interactive (`--interactive` / `-i`)
 
 ```bash
@@ -111,7 +153,9 @@ Each line is a quick sanity check:
 - `origins` — `STRICT` when `daemon.strictOrigins=true`. Empty
   strict allowlist is highlighted red (everything 401s except
   Bearer-token requests).
-- `mode` — `local-only` or `tunnel → <url>`.
+- `mode` — `local-only` or `tunnel → <url>`. When `tunnel.e2e` is
+  set, a `· e2e` tag is appended (the encryption is negotiated per
+  reconnect; see [End-to-end encryption](#end-to-end-encryption-tunnele2e-opt-in)).
 
 ## When to use `serve` vs `daemon install`
 

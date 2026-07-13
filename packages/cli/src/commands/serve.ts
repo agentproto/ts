@@ -52,9 +52,15 @@ import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import {
   createTunnelServer,
   wrapWebSocket,
+  connectSinkE2E,
   type FrameSink,
   type E2eFrameSink,
 } from "@agentproto/acp/tunnel"
+import {
+  startTunnelHandshake,
+  encodeTunnelMessage,
+  decodeTunnelAccept,
+} from "@agentproto/secrets/pairing"
 import {
   createGateway,
   createPairingRegistry,
@@ -123,6 +129,11 @@ interface ServeOpts {
    *  token is stable across restarts. See `daemon.authToken` in
    *  config.json. */
   authToken?: string
+  /** Opt into E2E-encrypting the outbound tunnel (config `tunnel.e2e`). When
+   *  set (and a `token` is present), the daemon negotiates a token-authenticated
+   *  handshake with the host and wraps the tunnel in an AEAD box. Falls back to
+   *  plaintext against a host that doesn't advertise e2e. */
+  e2e?: boolean
 }
 
 const SERVE_USAGE = `agentproto serve — run the local agentproto daemon
@@ -334,6 +345,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
     ...(authToken ? { authToken } : {}),
+    ...(cfgTunnel.e2e === true ? { e2e: true } : {}),
+  }
+
+  // E2E requested but no token to authenticate the handshake against — the
+  // whole scheme binds to the shared `tunnel.token`, so without one we cannot
+  // encrypt. Warn and stay plaintext (the connect itself needs a bearer anyway,
+  // so this is a misconfiguration guard, not a normal path).
+  if (opts.e2e && !opts.token) {
+    process.stderr.write(
+      `agentproto serve: ⚠ tunnel.e2e is set but no tunnel token is available — ` +
+        `E2E needs the shared token to authenticate. Continuing without encryption.\n`,
+    )
+    delete opts.e2e
   }
 
   // ── provider keys ──
@@ -593,6 +617,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     strictOrigins: opts.strictOrigins === true,
     connect: opts.connect,
     authGated: opts.authToken != null,
+    e2e: opts.e2e === true,
   })
 
   // ── stale runtime.json sweep ──
@@ -829,7 +854,41 @@ async function runOneTunnel(
 
   process.stderr.write(`agentproto serve: tunnel up.\n`)
 
-  const sink: FrameSink = wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
+  const rawSink: FrameSink = wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
+
+  // ── opt-in E2E upgrade (tunnel-e2e/v1) ──
+  // Before any tunnel/v1 traffic, run a token-authenticated ephemeral handshake
+  // over the raw sink and wrap it in the AEAD box, so even the trusted host
+  // loses plaintext visibility. Fully backward-compatible:
+  //   - host doesn't advertise e2e (old host) → `connectSinkE2E` times out and
+  //     returns null → we keep the raw sink and behave exactly as today.
+  //   - wrong token / tampered handshake → `connectSinkE2E` throws (fail closed);
+  //     it bubbles to the reconnect loop, never downgrading to plaintext.
+  // With `tunnel.e2e` unset, this block is skipped entirely — byte-identical.
+  let sink: FrameSink = rawSink
+  let e2eActive = false
+  if (opts.e2e && opts.token) {
+    const started = startTunnelHandshake(opts.token)
+    const wrapped = await connectSinkE2E(
+      rawSink,
+      encodeTunnelMessage(started.offer),
+      reply => {
+        const session = started.complete(decodeTunnelAccept(reply))
+        return { sendKey: session.sendKey, recvKey: session.recvKey }
+      },
+    )
+    if (wrapped) {
+      sink = wrapped
+      e2eActive = true
+      process.stderr.write(
+        `agentproto serve: tunnel · e2e ↑ encrypted (token-authenticated).\n`,
+      )
+    } else {
+      process.stderr.write(
+        `agentproto serve: tunnel · host did not negotiate e2e — continuing plaintext.\n`,
+      )
+    }
+  }
 
   // Keep-alive: Cloud Run (and most reverse-proxies) close idle WebSocket
   // connections after ~5 minutes. Send a ping every 30s so the connection
@@ -856,6 +915,9 @@ async function runOneTunnel(
       announcedTools,
       childLabelPrefix: "tunnel",
     }),
+    // Advertise the encrypted channel in the (now in-box) hello so the host can
+    // confirm/display it. Purely informational — the encryption is already live.
+    ...(e2eActive ? { e2e: true } : {}),
     // Graceful drain hook — connect-only. Flip the outer loop's "reconnect
     // immediately" flag and close the WS so the supervisor reconnects without
     // backoff. Host follows up with close(1012) ~2s later as a hard backstop.
@@ -974,6 +1036,7 @@ function printBootBanner(opts: {
   strictOrigins?: boolean
   connect?: string
   authGated?: boolean
+  e2e?: boolean
 }): void {
   const c = color
   const home = process.env.HOME ?? ""
@@ -997,8 +1060,12 @@ function printBootBanner(opts: {
           ` ${c.dim}+ localhost (default)${c.reset}`
         : `${c.dim}localhost:* only (default)${c.reset}`
   }
+  const e2eTag =
+    opts.connect && opts.e2e
+      ? ` ${c.green}· e2e${c.reset} ${c.dim}(negotiated per-connect)${c.reset}`
+      : ""
   const mode = opts.connect
-    ? `${c.cyan}tunnel${c.reset} ${c.dim}→ ${opts.connect}${c.reset}`
+    ? `${c.cyan}tunnel${c.reset} ${c.dim}→ ${opts.connect}${c.reset}${e2eTag}`
     : `${c.dim}local-only${c.reset}`
   const auth = opts.authGated
     ? `${c.amber}bearer${c.reset} ${c.dim}(daemon.authToken)${c.reset}`

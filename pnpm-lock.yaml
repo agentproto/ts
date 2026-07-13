@@ -397,6 +397,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@agentproto/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
