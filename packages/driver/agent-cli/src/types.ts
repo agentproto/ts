@@ -59,26 +59,38 @@ export interface AgentCliAuth {
   /**
    * Env-var vocabulary for the deterministic `auth` spawn mode (see
    * {@link AgentCliStartOptions.auth}) — "subscription" (default) vs
-   * "api-key" billing. Declared once here so the generic runtime doesn't
-   * hardcode provider-specific env var names; mirrors how the claude-code
-   * permission-mode override reads its vocabulary from `modes[].
-   * bin_args_append` instead of duplicating it (see `define-agent-cli.ts`'s
-   * `resolveClaudeCodePermissionMode`). Adapters that omit this ignore the
-   * `auth` field entirely — today only claude-code declares it.
+   * "api-key" billing. EXPLICIT credential selection, not scrub-by-absence:
+   * each mode POSITIVELY sets exactly one credential env var (from the
+   * resolved `auth.credential`) and deletes the conflicting one(s), so which
+   * credential a spawn uses is *stated*, never inferred from whatever
+   * happened to be ambient. Declared once here so the generic runtime
+   * doesn't hardcode provider-specific env var names; mirrors how the
+   * claude-code permission-mode override reads its vocabulary from
+   * `modes[].bin_args_append` instead of duplicating it (see
+   * `define-agent-cli.ts`'s `resolveClaudeCodePermissionMode`). Adapters
+   * that omit this ignore the `auth` field entirely — today only
+   * claude-code declares it.
    */
   modes?: {
-    /** Env var required in the resolved child env under `auth: "api-key"`.
-     *  Absent ⇒ the spawn fails with `RuntimeConfigError` (code
-     *  `missing_api_key`) before the child is exec'd. */
-    api_key_env: string
-    /**
-     * Env vars deleted from the resolved child env under `auth:
-     * "subscription"` — UNLESS this spawn's own mode/option patch
-     * explicitly set that key (an explicit gateway config wins over the
-     * blanket scrub; see `composeSpawn`'s `ComposedSpawn.env`).
-     */
-    subscription_unset_env: string[]
+    subscription: AgentCliAuthModeVocab
+    api_key: AgentCliAuthModeVocab
   }
+}
+
+/**
+ * Per-mode env-var vocabulary for {@link AgentCliAuth.modes}. The runtime
+ * SETS `set_env` to the resolved `auth.credential` and DELETES every key in
+ * `unset_env` — unless this spawn's own mode/option patch explicitly set
+ * that key (an explicit gateway config wins over the blanket scrub; see
+ * `composeSpawn`'s `ComposedSpawn.env`). `set_env` and `unset_env` must be
+ * disjoint (a mode never scrubs the credential it just set).
+ */
+export interface AgentCliAuthModeVocab {
+  /** Env var SET to the resolved `auth.credential` under this mode. */
+  set_env: string
+  /** Env vars DELETED from the child env under this mode (the OTHER mode's
+   *  credential env var, plus any provider toggles that would override it). */
+  unset_env: string[]
 }
 
 /**
@@ -783,20 +795,27 @@ export interface AgentCliStartOptions {
   permissionHold?: boolean
   /**
    * Deterministic billing-auth mode for adapters that declare
-   * {@link AgentCliAuth.modes} (today: claude-code).
+   * {@link AgentCliAuth.modes} (today: claude-code). EXPLICIT credential
+   * selection, not scrub-by-absence: `mode` picks which vocabulary entry
+   * applies, and `credential` is the resolved secret value (a subscription
+   * bearer token minted via `claude setup-token`, or a raw API key) — the
+   * host resolves this from a NAMED config/broker ref, never reads it
+   * ambiently from `process.env`.
    *
-   * - `"subscription"` (default when omitted): deletes the declared billing
-   *   env vars from the resolved child env — unless this spawn's own mode/
-   *   option patch explicitly set one — so the child falls back to its
-   *   stored OAuth/subscription login instead of silently billing a leaked
-   *   ambient API key.
-   * - `"api-key"`: requires the declared env var present in the resolved
-   *   child env and fails the spawn (`RuntimeConfigError`, code
-   *   `missing_api_key`) rather than silently falling back to subscription.
-   *
-   * Adapters that don't declare `auth.modes` ignore this field entirely.
+   * `createAgentCliRuntime(...).start()` SETS `auth.modes[mode].set_env` to
+   * `credential` and DELETES every key in `auth.modes[mode].unset_env`
+   * (unless this spawn's own mode/option patch explicitly set that key).
+   * When the adapter declares `auth.modes` but `credential` is absent, the
+   * spawn FAILS FAST with `RuntimeConfigError` (code
+   * `missing_auth_credential`) — it never falls back to another credential
+   * or an ambient one. Adapters that don't declare `auth.modes` ignore this
+   * field entirely. `mode` defaults to `"subscription"` when this whole
+   * field is omitted.
    */
-  auth?: "subscription" | "api-key"
+  auth?: {
+    mode: "subscription" | "api-key"
+    credential?: string
+  }
 }
 
 /**

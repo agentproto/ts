@@ -269,7 +269,12 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
   if (values.model) body.model = values.model
-  if (values.auth) body.auth = values.auth
+  // Mode selection only — no --auth-token/--auth-api-key flag. Passing a
+  // secret as a bare CLI arg would land in shell history + process listing
+  // (ps); the credential itself must come from
+  // ~/.agentproto/config.json's defaults.adapters.<slug>.auth.{token,apiKey}
+  // (never inherited from the shell, per the auth-mode design).
+  if (values.auth) body.auth = { mode: values.auth }
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
   if (orchestrator !== undefined) body.orchestrator = orchestrator
@@ -1890,7 +1895,7 @@ function renderSidebar(
   return out.slice(0, height)
 }
 
-function renderDetail(
+export function renderDetail(
   s: SessionDescriptor | undefined,
   width: number,
   height: number,
@@ -1965,6 +1970,13 @@ function renderDetail(
     // fallback. Both displayed when present.
     if (s.adapterSlug) {
       out.push(`  ${kw("adapter")} ${s.adapterSlug}`)
+    }
+    // Verifiability: the resolved billing-auth mode + a non-secret
+    // credential fingerprint (never the raw secret) — see
+    // `credentialFingerprint` in @agentproto/runtime's spawn-defaults.ts.
+    // Absent for adapters that don't resolve an explicit credential.
+    if (s.auth) {
+      out.push(`  ${kw("auth")} ${c.dim}${s.auth.fingerprint}${c.reset}`)
     }
     if (s.adapterSessionId) {
       out.push(

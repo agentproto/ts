@@ -197,8 +197,14 @@ const authSchema = z.object({
     grace_s: z.number().int().nonnegative().optional(),
   }).strict().optional(),
   modes: z.object({
-    api_key_env: z.string(),
-    subscription_unset_env: z.array(z.string()),
+    subscription: z.object({
+      set_env: z.string(),
+      unset_env: z.array(z.string()),
+    }).strict(),
+    api_key: z.object({
+      set_env: z.string(),
+      unset_env: z.array(z.string()),
+    }).strict(),
   }).strict().optional(),
 }).strict()
 

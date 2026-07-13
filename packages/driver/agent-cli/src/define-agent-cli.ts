@@ -99,44 +99,54 @@ export function createAgentCliRuntime(
       // to adapters that actually declare the env-var vocabulary
       // (auth.modes) — everything else silently ignores `opts.auth`, same
       // as an adapter that declares no `skills` option ignores a skills
-      // default. Applied AFTER the mode/option env_unset scrub above but
-      // BEFORE opts.env, so an operator who explicitly forwards a scrubbed
-      // key via opts.env still takes responsibility for it (same precedent
-      // as the env_unset comment above).
+      // default. EXPLICIT credential selection, not scrub-by-absence: the
+      // resolved credential is SET, never inferred from what's ambient —
+      // so a leaked ambient ANTHROPIC_API_KEY can't silently win even if
+      // `opts.auth` is entirely omitted (mode still defaults to
+      // "subscription", which still requires — and sets — its own
+      // credential below).
       const authVocabulary = definition.auth?.modes
-      const authMode = opts?.auth ?? "subscription"
-      if (authVocabulary && authMode === "subscription") {
-        for (const key of authVocabulary.subscription_unset_env) {
-          // A key this spawn's own mode/option patch explicitly SET (e.g. a
-          // gateway preset's ANTHROPIC_BASE_URL) wins over the blanket
-          // scrub — composed.env is the record of keys this spawn's own
-          // config explicitly assigned.
+      const authMode = opts?.auth?.mode ?? "subscription"
+      if (authVocabulary) {
+        const vocab =
+          authMode === "subscription"
+            ? authVocabulary.subscription
+            : authVocabulary.api_key
+        // Delete the conflicting credential/toggles BEFORE setting this
+        // mode's own credential (order doesn't matter — set_env is never a
+        // member of its own unset_env — but scrub-then-set reads cleanest).
+        // A key this spawn's own mode/option patch explicitly SET (e.g. a
+        // gateway preset's ANTHROPIC_BASE_URL) wins over the blanket scrub
+        // — composed.env is the record of keys this spawn's own config
+        // explicitly assigned.
+        for (const key of vocab.unset_env) {
           if (!(key in composed.env)) delete env[key]
         }
+        // Fail-fast: the credential is resolved by the HOST from a named
+        // secret ref (config or per-spawn), never read ambiently — if it
+        // didn't resolve to anything, refuse the spawn outright rather than
+        // silently falling back to another credential or an ambient one.
+        // Checked against the RESOLVED `opts.auth.credential` input, not the
+        // merged env, so an unrelated `opts.env` key can't paper over a
+        // genuinely missing credential.
+        if (!opts?.auth?.credential) {
+          throw new RuntimeConfigError(
+            "missing_auth_credential",
+            "opts.auth.credential",
+            `agent-cli '${definition.id}': auth mode "${authMode}" requires ` +
+              `an explicit credential (resolved from a named secret ref), but ` +
+              `none was provided.` +
+              (authMode === "subscription"
+                ? ` Mint one via \`claude setup-token\` (bills the Max/Pro ` +
+                  `subscription, not API credits) and configure it — never ` +
+                  `inherited from the shell.`
+                : ` Configure an API key — never inherited from the shell.`),
+          )
+        }
+        env[vocab.set_env] = opts.auth.credential
       }
 
       Object.assign(env, opts?.env ?? {})
-
-      // "api-key" mode is the deliberate "bill the API" choice — it must
-      // never silently fall back to subscription when the key is missing,
-      // so a misconfigured spawn fails loudly here, before anything is
-      // exec'd, instead of quietly authenticating a different way than
-      // requested.
-      if (
-        authVocabulary &&
-        authMode === "api-key" &&
-        !env[authVocabulary.api_key_env]
-      ) {
-        throw new RuntimeConfigError(
-          "missing_api_key",
-          "opts.auth",
-          `agent-cli '${definition.id}': auth mode "api-key" requires ` +
-            `${authVocabulary.api_key_env} in the resolved child env, but it ` +
-            `is absent. Set it explicitly, or omit \`auth\` (or pass ` +
-            `"subscription") to use the stored OAuth/subscription login ` +
-            `instead.`,
-        )
-      }
 
       // claude-code's ACP wrapper never reads `--permission-mode` from argv
       // (the `bin_args_append` above is a no-op against it) — it resolves

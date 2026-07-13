@@ -20,7 +20,9 @@ import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
   resolveSpawnDefaults,
   normalizeSkillsOption,
+  credentialFingerprint,
   type SpawnDefaultsConfig,
+  type DefaultsAdapterAuthConfig,
 } from "./spawn-defaults.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
@@ -139,15 +141,18 @@ export interface SpawnAgentSessionInput {
   model?: string
   effort?: string
   /**
-   * Deterministic billing-auth mode for adapters that declare an env-var
-   * vocabulary for it (today: claude-code — see `AgentCliAuth.modes` in
-   * `@agentproto/driver-agent-cli`). Merged against `~/.agentproto/
-   * config.json`'s `defaults.adapters.<slug>.auth` (this field wins on
-   * collision) via `resolveSpawnDefaults`; the driver itself defaults to
-   * `"subscription"` when neither is set. Adapters that don't declare the
-   * vocabulary ignore this field entirely.
+   * Deterministic billing-auth mode + EXPLICIT credential for adapters that
+   * declare an env-var vocabulary for it (today: claude-code — see
+   * `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`). `mode` wins over
+   * `~/.agentproto/config.json`'s `defaults.adapters.<slug>.auth.mode`
+   * (default `"subscription"`); the credential (`token` for `"subscription"`,
+   * `apiKey` for `"api-key"`) wins over the config field matching the
+   * RESOLVED mode — see `resolveSpawnDefaults`. Never read from the ambient
+   * shell env; never logged (only a fingerprint is recorded on the session
+   * descriptor — see `credentialFingerprint`). Adapters that don't declare
+   * the vocabulary ignore this field entirely.
    */
-  auth?: "subscription" | "api-key"
+  auth?: DefaultsAdapterAuthConfig
   mcpServers?: AcpMcpServer[]
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
@@ -465,6 +470,15 @@ export async function spawnAgentSession(
     options: input.options,
     auth: input.auth,
   })
+  // Verifiability: a non-secret fingerprint of the resolved credential,
+  // recorded on the session descriptor below (never the raw value). Absent
+  // when no credential resolved for the mode (e.g. every adapter besides
+  // claude-code, or claude-code with nothing configured — the latter fails
+  // fast inside the driver's `start()` before a descriptor is ever created).
+  const authFingerprint =
+    spawnDefaults.auth.credential !== undefined
+      ? credentialFingerprint(spawnDefaults.auth.mode, spawnDefaults.auth.credential)
+      : undefined
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
     spawnDefaults.options,
@@ -530,7 +544,7 @@ export async function spawnAgentSession(
           : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
-        ...(spawnDefaults.auth ? { auth: spawnDefaults.auth } : {}),
+        auth: spawnDefaults.auth,
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         onActivity: () => {
@@ -562,6 +576,15 @@ export async function spawnAgentSession(
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
+      // Verifiability: record the resolved auth mode + a non-secret
+      // fingerprint (never the credential) — see `credentialFingerprint`.
+      // Absent when no credential resolved (every adapter besides
+      // claude-code, in practice), and for a sandboxed spawn: the box's own
+      // daemon resolves its own credential independently, so a fingerprint
+      // computed host-side would misrepresent what the box actually used.
+      ...(authFingerprint && input.sandbox === undefined
+        ? { auth: { mode: spawnDefaults.auth.mode, fingerprint: authFingerprint } }
+        : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the

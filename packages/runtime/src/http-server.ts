@@ -170,11 +170,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  surfaced + parked in the daemon's inbox instead of auto-answered.
      *  Adapters/arms with no permission surface ignore it. Default false. */
     permissionHold?: boolean
-    /** Deterministic billing-auth mode forwarded from `agent_start` to the
-     *  driver's `runtime.start({ auth })` — see `AgentCliAuth.modes` in
-     *  `@agentproto/driver-agent-cli`. Adapters that don't declare the
-     *  env-var vocabulary (everything except claude-code today) ignore it. */
-    auth?: "subscription" | "api-key"
+    /** Deterministic billing-auth mode + EXPLICIT credential forwarded from
+     *  `agent_start` to the driver's `runtime.start({ auth })` — see
+     *  `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`. `credential`
+     *  is the resolved secret value (never read ambiently); adapters that
+     *  don't declare the env-var vocabulary (everything except claude-code
+     *  today) ignore this field entirely. */
+    auth?: { mode: "subscription" | "api-key"; credential?: string }
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -1652,6 +1654,26 @@ function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
   return servers
 }
 
+/** Parse the `auth` body field — `{ mode?, token?, apiKey? }`, tolerant of a
+ *  JSON-stringified object (see `parseOrchestratorField`). Deliberately
+ *  narrow: only the known keys survive, so an unrelated stray field can't
+ *  smuggle anything unexpected into the resolved spawn config. */
+function parseAuthField(
+  raw: unknown,
+): { mode?: "subscription" | "api-key"; token?: string; apiKey?: string } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const mode = obj.mode === "subscription" || obj.mode === "api-key" ? obj.mode : undefined
+  const token = typeof obj.token === "string" ? obj.token : undefined
+  const apiKey = typeof obj.apiKey === "string" ? obj.apiKey : undefined
+  return {
+    ...(mode ? { mode } : {}),
+    ...(token !== undefined ? { token } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
+  }
+}
+
 async function handleSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1719,7 +1741,12 @@ async function handleSessions(
         ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
         ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
         ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
-        ...(b.auth === "subscription" || b.auth === "api-key" ? { auth: b.auth } : {}),
+        ...(b.auth !== undefined
+          ? (() => {
+              const parsed = parseAuthField(b.auth)
+              return parsed !== undefined ? { auth: parsed } : {}
+            })()
+          : {}),
         ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
         ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
