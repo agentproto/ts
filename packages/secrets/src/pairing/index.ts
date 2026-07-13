@@ -23,3 +23,22 @@ export {
   type DaemonHandshakeParams,
   type DaemonHandshakeResult,
 } from "./handshake.js"
+
+// P2 — offer-URL codec (shared by daemon `pair offer` + client `pair accept`).
+export {
+  OFFER_URL_SCHEME,
+  OFFER_URL_HOST,
+  OFFER_VERSION,
+  encodeOfferUrl,
+  parseOfferUrl,
+  type PairingOffer,
+  type ParseOfferOptions,
+} from "./offer-url.js"
+
+// P2 — pairing-derived key material (pair root + epoch routing tokens).
+export {
+  derivePairRoot,
+  currentEpoch,
+  deriveEpochRoutingToken,
+  epochRoutingTokens,
+} from "./derive.js"

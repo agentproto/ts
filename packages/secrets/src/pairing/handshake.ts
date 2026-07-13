@@ -76,6 +76,9 @@ export type PairingErrorCode =
   | "ephemeral_mismatch"
   | "offer_rejected"
   | "bad_signature"
+  // P2: offer-URL codec (offer-url.ts) rejection vectors.
+  | "malformed_offer"
+  | "offer_expired"
 
 /** Raised for every handshake failure. Never carries key material or
  *  plaintext; the `code` is the contract, the message is for humans. */
@@ -133,6 +136,15 @@ export interface PairingSession {
   /** `sha256(e_pub ‖ ct₀ ‖ d_e_pub)` — the exact transcript both sides bound
    *  to. A later phase channel-binds reconnect tokens to this. */
   transcriptHash: Uint8Array
+  /**
+   * The human-facing client label carried in the sealed hello. On the daemon
+   * side this is the name the peer chose (surfaced in `pairings.json` and on
+   * `pair accept`); on the client side it echoes the name this side supplied.
+   * Optional so pre-P2 callers constructing a session literal are unaffected —
+   * P2 (pairing-registry) reads it to name a persisted pairing without opening
+   * the seal a second time. Populated by both handshake entry points below.
+   */
+  clientName?: string
 }
 
 // ─── key helpers ────────────────────────────────────────────────
@@ -263,6 +275,7 @@ export function startClientHandshake(
       recvKey: kd2c,
       peerFingerprint: identityFingerprint(params.daemonX25519Pub),
       transcriptHash: transcript,
+      clientName: params.clientName,
     }
   }
 
@@ -357,6 +370,7 @@ export function respondToHandshake(
       recvKey: kc2d,
       peerFingerprint: identityFingerprint(payload.clientPub),
       transcriptHash: transcript,
+      clientName: payload.clientName,
     },
   }
 }
