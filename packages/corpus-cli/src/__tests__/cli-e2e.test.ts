@@ -2,7 +2,7 @@
  * Local-runtime `corpus` binary end-to-end test.
  *
  * Spawns the built `corpus` binary against a tmpdir workspace and
- * walks the full flow: init → validate → lint → events:emit →
+ * walks the full flow: init → validate → lint → verify → events:emit →
  * events:tail. Asserts the binary's exit codes + stdout patterns
  * match the same kit behavior exercised by @agentproto/corpus's
  * workspace unit tests, so the local and cloud topologies stay in
@@ -145,6 +145,22 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(/INFO\s+\[orphan-all\]/)
     // exit 0 because no errors — orphans are info-level by KNOWLEDGE.md design
+  })
+
+  it("verify prints coverage + self-flagged sections on the freshly-init'd workspace (exit 0)", async () => {
+    const ws = path.join(tmp, "ws")
+    const r = await runCli(["verify", ws, "--facets", "no-such-facet", "--thin", "1"])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toMatch(/== coverage \(\d+ entries\) ==/)
+    expect(r.stdout).toMatch(/no-such-facet\s+0\s+THIN/)
+    expect(r.stdout).toMatch(/== self-flagged entries \(0\) ==/)
+  })
+
+  it("verify with no --facets exits 2", async () => {
+    const ws = path.join(tmp, "ws")
+    const r = await runCli(["verify", ws])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toMatch(/--facets/)
   })
 
   it("events:emit on a workspace appends to _log.md (exit 0)", async () => {

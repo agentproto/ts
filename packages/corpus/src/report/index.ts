@@ -92,3 +92,5 @@ export type {
   ReportCoverFact,
   ReportPart,
 } from "./types.js"
+
+export { lintReportConfig } from "./lint.js"
