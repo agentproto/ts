@@ -53,6 +53,9 @@ export function execShell(cmd: string, cwd: string, opts: ExecOptions = {}): Pro
 }
 
 export async function execGit(repoRoot: string, args: readonly string[]): Promise<ExecResult> {
+  // `repoRoot` is the main repo root (resolved via --git-common-dir upstream),
+  // which always exists — so it's a safe spawn cwd even mid-archive, when the
+  // worktree being torn down has already been removed.
   const result = await execArgv("git", ["-C", repoRoot, ...args], repoRoot)
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`)
