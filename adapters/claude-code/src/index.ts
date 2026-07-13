@@ -65,24 +65,34 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // daemon's launching shell happened to export (the outage this whole
     // surface exists to prevent).
     //
-    // "subscription" sets ANTHROPIC_AUTH_TOKEN to a bearer token minted via
-    // `claude setup-token` (bills the Max/Pro subscription, not API
-    // credits) and deletes ANTHROPIC_API_KEY + the cloud-provider redirect
+    // "subscription" sets CLAUDE_CODE_OAUTH_TOKEN to a bearer token minted via
+    // `claude setup-token` (bills the Max/Pro subscription, not API credits) —
+    // this is the var Claude Code documents for that token and the ONLY one
+    // that yields the clean native claude.ai-login path. (Injecting the same
+    // token as ANTHROPIC_AUTH_TOKEN authenticates but is treated as a generic
+    // override that "takes precedence over your claude.ai login" and disables
+    // connectors — the degraded path, so we don't use it here.) It also deletes
+    // ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN + the cloud-provider redirect
     // toggles + ANTHROPIC_BASE_URL — reusing CLAUDE_CODE_GATEWAY_ENV_UNSET
     // (already the source of truth for this adapter's leak set) plus
     // ANTHROPIC_BASE_URL, which that list omits deliberately (a gateway
     // mode SETS it, so it can't be unset unconditionally there).
     //
     // "api_key" sets ANTHROPIC_API_KEY to an explicit key and deletes
-    // ANTHROPIC_AUTH_TOKEN — the deliberate "bill the API" choice.
+    // ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_OAUTH_TOKEN — the deliberate "bill the
+    // API" choice, with both subscription-style credentials scrubbed.
     modes: {
       subscription: {
-        set_env: "ANTHROPIC_AUTH_TOKEN",
-        unset_env: [...CLAUDE_CODE_GATEWAY_ENV_UNSET, "ANTHROPIC_BASE_URL"],
+        set_env: "CLAUDE_CODE_OAUTH_TOKEN",
+        unset_env: [
+          ...CLAUDE_CODE_GATEWAY_ENV_UNSET,
+          "ANTHROPIC_BASE_URL",
+          "ANTHROPIC_AUTH_TOKEN",
+        ],
       },
       api_key: {
         set_env: "ANTHROPIC_API_KEY",
-        unset_env: ["ANTHROPIC_AUTH_TOKEN"],
+        unset_env: ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
       },
     },
   },

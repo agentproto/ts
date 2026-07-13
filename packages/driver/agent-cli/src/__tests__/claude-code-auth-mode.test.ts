@@ -58,6 +58,7 @@ import type { AgentCliDefinition } from "../types.js"
 
 const SUBSCRIPTION_UNSET = [
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "ANTHROPIC_BASE_URL",
@@ -80,12 +81,12 @@ const claudeCodeLike = (): AgentCliDefinition => ({
     state: { env: ["ANTHROPIC_API_KEY"] },
     modes: {
       subscription: {
-        set_env: "ANTHROPIC_AUTH_TOKEN",
+        set_env: "CLAUDE_CODE_OAUTH_TOKEN",
         unset_env: SUBSCRIPTION_UNSET,
       },
       api_key: {
         set_env: "ANTHROPIC_API_KEY",
-        unset_env: ["ANTHROPIC_AUTH_TOKEN"],
+        unset_env: ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
       },
     },
   },
@@ -103,11 +104,13 @@ describe("claude-code auth mode — explicit credential selection", () => {
     spawnCalls.length = 0
   })
 
-  it("subscription (default): SETS ANTHROPIC_AUTH_TOKEN and DELETES ANTHROPIC_API_KEY, even when a stray key is present in the parent env", async () => {
+  it("subscription (default): SETS CLAUDE_CODE_OAUTH_TOKEN and DELETES ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN, even when stray creds are present in the parent env", async () => {
     const handle = defineAgentCli(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
+    const prevToken = process.env.ANTHROPIC_AUTH_TOKEN
     process.env.ANTHROPIC_API_KEY = "sk-ant-api03-LEAKED"
+    process.env.ANTHROPIC_AUTH_TOKEN = "sk-ant-oat01-STALE"
     try {
       await runtime.start({
         cwd: "/scratch",
@@ -116,9 +119,12 @@ describe("claude-code auth mode — explicit credential selection", () => {
     } finally {
       if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY
       else process.env.ANTHROPIC_API_KEY = prevKey
+      if (prevToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = prevToken
     }
-    expect(spawnCalls[0]!.env.ANTHROPIC_AUTH_TOKEN).toBe("sk-ant-oat01-real-token")
+    expect(spawnCalls[0]!.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-real-token")
     expect(spawnCalls[0]!.env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(spawnCalls[0]!.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
   })
 
   it("subscription also deletes the cloud-provider toggles and ANTHROPIC_BASE_URL", async () => {
@@ -143,11 +149,13 @@ describe("claude-code auth mode — explicit credential selection", () => {
     expect(spawnCalls[0]!.env.ANTHROPIC_BASE_URL).toBeUndefined()
   })
 
-  it("api-key: SETS ANTHROPIC_API_KEY and DELETES ANTHROPIC_AUTH_TOKEN", async () => {
+  it("api-key: SETS ANTHROPIC_API_KEY and DELETES ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_OAUTH_TOKEN", async () => {
     const handle = defineAgentCli(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevToken = process.env.ANTHROPIC_AUTH_TOKEN
+    const prevOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
     process.env.ANTHROPIC_AUTH_TOKEN = "sk-ant-oat01-LEAKED"
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-LEAKED-OAUTH"
     try {
       await runtime.start({
         cwd: "/scratch",
@@ -156,9 +164,12 @@ describe("claude-code auth mode — explicit credential selection", () => {
     } finally {
       if (prevToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
       else process.env.ANTHROPIC_AUTH_TOKEN = prevToken
+      if (prevOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prevOauth
     }
     expect(spawnCalls[0]!.env.ANTHROPIC_API_KEY).toBe("sk-ant-api03-real-key")
     expect(spawnCalls[0]!.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(spawnCalls[0]!.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
   })
 
   it("fail-fast: subscription mode with no credential refuses the spawn — no fallback, no exec", async () => {
