@@ -828,6 +828,9 @@ importers:
       '@agentproto/runtime-profile-standard':
         specifier: workspace:*
         version: link:../runtime-profile-standard
+      '@agentproto/worktree':
+        specifier: workspace:*
+        version: link:../worktree
       '@clack/prompts':
         specifier: ^1.5.0
         version: 1.6.0
