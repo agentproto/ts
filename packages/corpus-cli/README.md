@@ -10,6 +10,7 @@ pnpm add -g @agentproto/corpus-cli
 corpus init marketing ./my-corpus      # scaffold a starter workspace
 corpus validate ./my-corpus             # validate every AIP file
 corpus lint ./my-corpus                 # run KNOWLEDGE.md-declared lints
+corpus verify ./my-corpus --facets landscape,daemons  # coverage + self-flag scan
 corpus events:emit corpus.entry.promoted --payload '{"slug":"foo"}' ./my-corpus
 corpus events:tail ./my-corpus          # tail _log.md
 ```
@@ -21,6 +22,7 @@ Minimum-viable local host:
 - `corpus init <vertical> [path]` — seed a starter workspace
 - `corpus validate [path]` — JSON Schema check across every AIP file
 - `corpus lint [path]` — run the lints declared in KNOWLEDGE.md
+- `corpus verify [path] --facets a,b,... [--thin 8] [--apply] [--contaminated]` — SOP ⑤b VERIFY pass: active-entry coverage per facet tag (facets below `--thin` are reported `THIN`) plus a self-flag scan for entries whose own text signals a bad scrape. `--apply` moves flagged entries to `demoted/` (a sibling of `entries/`, non-destructive); `--contaminated` also demotes every entry sharing a source with a flagged entry.
 - `corpus events:emit <kind> --payload <json> [path]` — append an event to `_log.md`
 - `corpus events:tail [path]` — print `_log.md`
 

@@ -18,6 +18,7 @@
 import { runInit } from "./commands/init.js"
 import { runValidate } from "./commands/validate.js"
 import { runLint } from "./commands/lint.js"
+import { runVerify } from "./commands/verify.js"
 import { runEventsEmit, runEventsTail } from "./commands/events.js"
 import { runImportWeb } from "./commands/import-web.js"
 import { runDiscover } from "./commands/discover.js"
@@ -37,6 +38,13 @@ Commands:
                                          (--preset seeds a full vertical; --list shows them)
   validate [path]                        JSON Schema check across every AIP file
   lint [path]                            Run lints declared in KNOWLEDGE.md
+  verify [path] --facets a,b,... [--thin 8] [--apply] [--contaminated]
+                                         SOP ⑤b: coverage per facet tag +
+                                         quarantine of self-flagged bad scrapes.
+                                         --apply moves flagged entries to
+                                         demoted/ (reversible); --contaminated
+                                         (with --apply) also demotes siblings
+                                         sharing a poisoned source.
   events:emit <kind> --payload <json> [path]
                                          Append an event to _log.md
   events:tail [path]                     Print _log.md
@@ -107,6 +115,8 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runValidate(rest)
     case "lint":
       return await runLint(rest)
+    case "verify":
+      return await runVerify(rest)
     case "events:emit":
       return await runEventsEmit(rest)
     case "events:tail":

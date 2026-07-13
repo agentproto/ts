@@ -18,6 +18,7 @@ import {
   buildPacks,
   stitchReport,
   reportConfigSchema,
+  lintReportConfig,
 } from "@agentproto/corpus/report"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
@@ -36,10 +37,19 @@ export async function runReport(args: readonly string[]): Promise<ExitCode> {
   }
 }
 
-/** Load + zod-validate a report config from a path (cwd-relative). */
+/**
+ * Load + zod-validate a report config from a path (cwd-relative). Lints
+ * for mis-named/dead keys first — `.passthrough()` means a typo like
+ * `chapters[].brief` parses fine and simply never reaches the engine, so
+ * this is the only chance to warn before that happens silently.
+ */
 function loadReportConfig(configPath: string) {
   const raw = readFileSync(path.resolve(process.cwd(), configPath), "utf8")
-  return reportConfigSchema.parse(JSON.parse(raw))
+  const parsed = JSON.parse(raw)
+  for (const warning of lintReportConfig(parsed)) {
+    process.stderr.write(`corpus report: ${warning}\n`)
+  }
+  return reportConfigSchema.parse(parsed)
 }
 
 async function runReportPacks(args: readonly string[]): Promise<ExitCode> {
