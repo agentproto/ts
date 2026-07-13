@@ -14,6 +14,17 @@ committed. No more babysitting terminal windows.
   Commits wait for the check and your OK, even after you close your laptop.
 - **Keep the tools you have.** It drives the agent CLIs you already use —
   nothing to rewrite. Agents can even run and check other agents.
+- **And a full toolbox around them.** Author tools as files and serve them,
+  import any MCP server and hand it to any agent, open tunnels, drive
+  browsers, schedule workflows and cron runs.
+
+The daemon is the flagship surface of something bigger: **agentproto is an
+open agentic framework** — the [AIP specs](https://agentproto.sh/docs) define
+every agent component (tools, skills, agents, knowledge, workflows, policies)
+as a plain file with a declared contract, and this repo is the TypeScript
+runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
+Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
+them — and lets agents read, write, and improve their own components.
 
 > **Status: 0.5.0-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
