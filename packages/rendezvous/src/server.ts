@@ -54,8 +54,9 @@ export const RV_CLOSE = {
   rateLimited: 4429,
   /** The spliced counterpart went away. */
   peerClosed: 4410,
-  /** Idle timeout after splice. */
-  idleTimeout: 4408,
+  /** Idle timeout after splice — distinct from parkTimeout so a client can
+   *  tell "no counterpart ever arrived" from "the pair went quiet". */
+  idleTimeout: 4411,
 } as const
 
 export interface RendezvousServerOptions {

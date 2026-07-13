@@ -353,8 +353,16 @@ async function runExec(args: readonly string[]): Promise<number> {
 /** Spawn `agentproto <childArgs>` with the daemon URL pointed at the loopback
  *  bridge, so the child discovers + drives the paired daemon transparently. */
 function runChild(childArgs: readonly string[], daemonUrl: string): Promise<number> {
+  const selfScript = process.argv[1]
+  if (!selfScript) {
+    // Without our own entry path we'd spawn Node with an empty script arg,
+    // which resolves to the CWD and fails opaquely — surface it instead.
+    return Promise.reject(
+      new Error("cannot re-invoke the CLI: process.argv[1] is empty"),
+    )
+  }
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [process.argv[1] ?? "", ...childArgs], {
+    const child = spawn(process.execPath, [selfScript, ...childArgs], {
       stdio: "inherit",
       env: {
         ...process.env,
