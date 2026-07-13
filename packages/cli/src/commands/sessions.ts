@@ -57,7 +57,7 @@ Usage:
                                       [--label <text>] [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
-                                      [--no-color]
+                                      [--hold-permissions] [--no-color]
   agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                             [--name <slug>] [--label <text>]
                                             [--cols <n>] [--rows <n>]
@@ -80,6 +80,9 @@ sessions start flags:
                                  (wins over --orchestrator when both are given)
   --mcp-servers-json <json>     JSON array of {name, transport, ref?} servers
   --mcp-servers-json @<file>    same, read from a file instead of inline JSON
+  --hold-permissions            park each tool-permission request in the inbox
+                                 (approve/deny with \`agentproto permissions\`)
+                                 instead of auto-answering it
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -172,6 +175,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       orchestrator: { type: "boolean" },
       "orchestrator-json": { type: "string" },
       "mcp-servers-json": { type: "string" },
+      "hold-permissions": { type: "boolean" },
     },
   })
   const slug = positionals[0]
@@ -255,6 +259,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (values.label) body.label = values.label
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
+  if (values["hold-permissions"]) body.permissionHold = true
 
   let desc: SessionDescriptor
   try {
@@ -965,11 +970,12 @@ export function isStaleRunning(
 export function statusBadge(
   s: Pick<
     SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "turnsCompleted"
+    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
   >,
 ): string {
   if (isStaleRunning(s)) return "⚠" // ⚠
   if (s.status !== "running") return ""
+  if (s.awaitingPermission) return "!" // ! — held permission awaiting approve/deny
   if (s.busy) return "●" // ● — mid-turn
   if (s.awaitingInput) return "?" // ? — blocked on the user
   if ((s.turnsCompleted ?? 0) > 0) return "○" // ○ — idle, has completed ≥1 turn
@@ -980,7 +986,7 @@ export function statusBadge(
 export function statusLabel(
   s: Pick<
     SessionDescriptor,
-    "status" | "processAlive" | "busy" | "awaitingInput" | "turnsCompleted"
+    "status" | "processAlive" | "busy" | "awaitingInput" | "awaitingPermission" | "turnsCompleted"
   >,
 ): string {
   const badge = statusBadge(s)
@@ -1898,7 +1904,9 @@ function renderDetail(
     const turnsDone = s.turnsCompleted ?? 0
     out.push(
       `  ${kw("activity")} ${
-        s.busy
+        s.awaitingPermission
+          ? `${c.amber}! permission held${c.reset}`
+          : s.busy
           ? `${c.green}● busy${c.reset}`
           : s.awaitingInput
             ? `${c.amber}? awaiting input${c.reset}`

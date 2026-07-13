@@ -36,6 +36,7 @@ Usage:
   agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--model <id>]
                         [--effort <level>] [--resume <session-id>] [--json]
                         [--output-schema <path-or-inline-json>]
+                        [--hold-permissions]
 
   agentproto run claude-code --prompt "summarise this repo"
   agentproto run claude-code --model claude-opus-4-8 --prompt "review this"
@@ -76,6 +77,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
     resume?: string
     json?: boolean
     "output-schema"?: string
+    "hold-permissions"?: boolean
   }
   let positionals: string[]
   try {
@@ -91,6 +93,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
         resume: { type: "string" },
         json: { type: "boolean" },
         "output-schema": { type: "string" },
+        "hold-permissions": { type: "boolean" },
       },
     }))
   } catch (err) {
@@ -172,11 +175,25 @@ export async function runRun(args: readonly string[]): Promise<number> {
 
   let session: AgentCliRuntimeSession | null = null
   try {
+    if (values["hold-permissions"]) {
+      // One-shot `run` has no permission inbox of its own — surface the note so
+      // the user understands the turn will BLOCK on the first gated tool call
+      // (there's no responder here). The daemon-backed surfaces
+      // (`agentproto sessions start --hold-permissions` + `agentproto
+      // permissions`) are where a held request can actually be approved/denied.
+      process.stderr.write(
+        "\x1b[2magentproto run: --hold-permissions surfaces each permission " +
+          "request; with no inbox attached the turn blocks until you Ctrl-C. " +
+          "Use `agentproto sessions start --hold-permissions` for the approvable " +
+          "daemon-backed flow.\x1b[0m\n",
+      )
+    }
     session = await runtime.start({
       cwd,
       signal: controller.signal,
       resumeSessionId: values.resume,
       ...(config ? { config } : {}),
+      ...(values["hold-permissions"] ? { permissionHold: true } : {}),
     })
 
     if (schema && validator) {

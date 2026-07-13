@@ -372,7 +372,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
       return {
-        async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity }) {
+        async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity, permissionHold }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -402,6 +402,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
             ...(onActivity ? { onActivity } : {}),
+            ...(permissionHold ? { permissionHold: true } : {}),
           })
         },
         commandPreview:
