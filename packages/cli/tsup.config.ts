@@ -54,6 +54,10 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // pi-tui is externalised — it's pure ESM with no monorepo react conflict.
     // Chalk is also externalised (it's widely available and ESM-safe).
     "@earendil-works/pi-tui",
+    // ajv is CJS with a dynamic require of its runtime codegen — externalise
+    // it (like the other CJS deps) so the published cli resolves it from
+    // node_modules instead of an unsafe inlined bundle.
+    "ajv",
     "chalk",
     "cli-highlight",
     "zod",

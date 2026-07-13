@@ -19,26 +19,49 @@ import {
 import { formatToolCall, formatToolResult } from "@agentproto/runtime"
 import { resolveAdapter } from "../registry/resolve.js"
 import { readStdinIfPiped } from "../util/stdin.js"
+import {
+  buildRetryInstruction,
+  buildSchemaInstruction,
+  compileValidator,
+  type OutputSchema,
+  OutputSchemaError,
+  parseFinalJson,
+  resolveOutputSchema,
+  type SchemaValidator,
+} from "../util/output-schema.js"
 
 const USAGE = `agentproto run — spawn an adapter, dispatch one turn, stream events, exit
 
 Usage:
   agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--model <id>]
                         [--effort <level>] [--resume <session-id>] [--json]
+                        [--output-schema <path-or-inline-json>]
 
   agentproto run claude-code --prompt "summarise this repo"
   agentproto run claude-code --model claude-opus-4-8 --prompt "review this"
   echo "fix the bug" | agentproto run hermes --cwd .
   agentproto run claude-code --resume <session-id> --prompt "continue"
+  agentproto run claude-code -p "did the tests pass?" \\
+    --output-schema '{"type":"object","required":["passed"],"properties":{"passed":{"type":"boolean"}}}'
 
 \`--model\` / \`--effort\` are applied the same way \`agentproto sessions start\`
 and the MCP \`agent_start\` tool apply them (via the adapter's manifest
 \`model\`/\`effort\` options). Adapters that don't declare them reject the
 value with a clear error rather than silently ignoring it.
 
+\`--output-schema\` takes a JSON Schema (inline JSON when the first non-space
+char is \`{\`, otherwise a path to a \`.json\` file). The agent's final answer is
+validated against it; on success stdout is EXACTLY the matching JSON (compact,
+one line) and every log goes to stderr. On a mismatch the turn is re-prompted
+up to twice before exiting non-zero with the validation errors on stderr.
+Cannot be combined with \`--json\`.
+
 One-shot scripting / smoke-test verb. Long-lived multiplexing belongs to
 \`agentproto serve\`.
 `
+
+/** Initial attempt + this many schema-mismatch re-prompts before failing. */
+const SCHEMA_MAX_RETRIES = 2
 
 export async function runRun(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
@@ -52,6 +75,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
     effort?: string
     resume?: string
     json?: boolean
+    "output-schema"?: string
   }
   let positionals: string[]
   try {
@@ -66,6 +90,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
         effort: { type: "string" },
         resume: { type: "string" },
         json: { type: "boolean" },
+        "output-schema": { type: "string" },
       },
     }))
   } catch (err) {
@@ -93,6 +118,34 @@ export async function runRun(args: readonly string[]): Promise<number> {
       "agentproto run: no prompt provided. Pass --prompt or pipe one over stdin.\n"
     )
     return 2
+  }
+
+  // --output-schema: validate-and-emit-JSON mode. `--json` streams raw events
+  // to stdout, which is exactly what schema mode must keep clean — they can't
+  // both own stdout, so reject the combination up front.
+  const schemaArg = values["output-schema"]
+  if (schemaArg !== undefined && values.json) {
+    process.stderr.write(
+      "agentproto run: --output-schema cannot be combined with --json " +
+        "(both control stdout).\n",
+    )
+    return 2
+  }
+  let schema: OutputSchema | undefined
+  let validator: SchemaValidator | undefined
+  if (schemaArg !== undefined) {
+    try {
+      schema = resolveOutputSchema(schemaArg)
+      // Compile eagerly so an unusable schema fails before we spawn anything,
+      // and keep the result so runSchemaMode can reuse it without recompiling.
+      validator = compileValidator(schema)
+    } catch (err) {
+      if (err instanceof OutputSchemaError) {
+        process.stderr.write(`agentproto run: --output-schema: ${err.message}\n`)
+        return 2
+      }
+      throw err
+    }
   }
 
   const adapter = await resolveAdapter(slug)
@@ -126,6 +179,10 @@ export async function runRun(args: readonly string[]): Promise<number> {
       ...(config ? { config } : {}),
     })
 
+    if (schema && validator) {
+      return await runSchemaMode(session, promptArg, schema, validator)
+    }
+
     const printer = values.json ? printJson : printPretty
     let exit = 0
     for await (const ev of session.send(promptArg)) {
@@ -138,6 +195,105 @@ export async function runRun(args: readonly string[]): Promise<number> {
     process.off("SIGINT", onSignal)
     process.off("SIGTERM", onSignal)
     if (session) await session.close().catch(() => {})
+  }
+}
+
+/**
+ * Structured-output loop for `--output-schema`. Runs the turn, accumulates the
+ * agent's final text, parses + validates it against `schema`, and re-prompts up
+ * to {@link SCHEMA_MAX_RETRIES} times on a mismatch. On success, stdout is
+ * EXACTLY the validated JSON (compact); every diagnostic goes to stderr.
+ */
+async function runSchemaMode(
+  session: AgentCliRuntimeSession,
+  firstPrompt: string,
+  schema: OutputSchema,
+  validator: SchemaValidator,
+): Promise<number> {
+  let prompt = `${firstPrompt}${buildSchemaInstruction(schema)}`
+
+  for (let attempt = 0; attempt <= SCHEMA_MAX_RETRIES; attempt++) {
+    let finalText = ""
+    let turnBroke = false
+    for await (const ev of session.send(prompt)) {
+      // Never touch stdout here — it's reserved for the validated JSON.
+      logToStderr(ev)
+      if (ev.kind === "text-delta") finalText += ev.text
+      if (ev.kind === "turn-end" && ev.reason !== "completed") turnBroke = true
+      if (ev.kind === "error") turnBroke = true
+    }
+    if (turnBroke) {
+      process.stderr.write(
+        "agentproto run: turn did not complete cleanly; cannot validate output.\n",
+      )
+      return 1
+    }
+
+    let errors: string
+    const parsed = parseFinalJson(finalText)
+    if (parsed.ok) {
+      const result = validator.validate(parsed.value)
+      if (result.ok) {
+        // The one and only thing on stdout: the validated JSON, compact.
+        process.stdout.write(`${JSON.stringify(parsed.value)}\n`)
+        return 0
+      }
+      errors = result.errors
+    } else {
+      errors = parsed.error
+    }
+
+    if (attempt < SCHEMA_MAX_RETRIES) {
+      process.stderr.write(
+        `\x1b[33magentproto run: output did not match schema ` +
+          `(attempt ${attempt + 1}/${SCHEMA_MAX_RETRIES + 1}): ${errors}\x1b[0m\n`,
+      )
+      prompt = buildRetryInstruction(errors)
+    } else {
+      process.stderr.write(
+        `\x1b[31magentproto run: output did not match schema after ` +
+          `${SCHEMA_MAX_RETRIES + 1} attempts: ${errors}\x1b[0m\n`,
+      )
+      return 1
+    }
+  }
+  // Unreachable — the loop always returns — but keeps the type checker happy.
+  return 1
+}
+
+/** Log a stream event to stderr (schema mode keeps stdout clean). */
+function logToStderr(ev: StreamEvent): void {
+  switch (ev.kind) {
+    case "text-delta":
+      process.stderr.write(`\x1b[2m${ev.text}\x1b[0m`)
+      break
+    case "tool-call":
+      process.stderr.write(
+        `\x1b[36m[tool] ${formatToolCall(ev.toolName, ev.arguments)}\x1b[0m\n`,
+      )
+      break
+    case "tool-result": {
+      const summary = formatToolResult(undefined, ev.result, ev.isError ?? false)
+      if (summary) {
+        process.stderr.write(
+          ev.isError
+            ? `\x1b[31m[tool-error] ${summary}\x1b[0m\n`
+            : `\x1b[2m[tool-result] ${summary}\x1b[0m\n`,
+        )
+      }
+      break
+    }
+    case "thought":
+      process.stderr.write(`\x1b[2m[thought] ${ev.text}\x1b[0m\n`)
+      break
+    case "turn-end":
+      process.stderr.write(`\x1b[2m[turn-end: ${ev.reason}]\x1b[0m\n`)
+      break
+    case "error":
+      process.stderr.write(`\x1b[31m[error] ${ev.error.message}\x1b[0m\n`)
+      break
+    default:
+      break
   }
 }
 

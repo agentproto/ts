@@ -2,6 +2,7 @@
 
 ```text
 agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>] [--json]
+                      [--output-schema <path-or-inline-json>]
 ```
 
 Spawns the adapter named by `<slug>`, dispatches a single user turn,
@@ -22,6 +23,7 @@ loops, use [`run-swarm.md`](./run-swarm.md).
 | `--prompt <text>`, `-p <text>` | The user turn. Required if stdin isn't piped. |
 | `--resume <session-id>` | Resume an existing adapter session by id. Adapter-specific — Claude Code's session ids, for example. |
 | `--json` | Emit one JSON event per line instead of pretty stream. |
+| `--output-schema <path-or-inline-json>` | Validate the agent's final answer against a JSON Schema and print ONLY the matching JSON. Inline when the first non-space char is `{`, otherwise a path to a `.json` file. Cannot be combined with `--json`. |
 
 If `--prompt` is omitted, stdin is read when piped:
 
@@ -61,6 +63,43 @@ agentproto run claude-code -p "hello" --json
 One JSON object per line. Useful for piping into `jq` or wiring into
 non-CLI tooling.
 
+## Output (schema mode)
+
+`--output-schema` turns `run` into a structured-output verb: the agent is
+told its final answer MUST be a single JSON object matching the supplied
+[JSON Schema](https://json-schema.org/), and stdout becomes EXACTLY that
+JSON (compact, one line, trailing newline). Every log — streamed text,
+tool calls, turn-end, validation notes — goes to stderr, so the stdout of a
+successful run is safe to pipe straight into `jq`.
+
+```bash
+agentproto run claude-code -p "did the tests pass?" \
+  --output-schema '{"type":"object","required":["passed"],
+                    "properties":{"passed":{"type":"boolean"}}}' \
+  | jq -e '.passed'
+```
+
+The schema argument is inline JSON when its first non-whitespace character
+is `{`; otherwise it's read as a path to a `.json` file:
+
+```bash
+agentproto run claude-code -p "grade this PR" --output-schema ./verdict.schema.json
+```
+
+Behaviour:
+
+- On a match, stdout is the validated JSON and the exit code is `0`.
+- On a mismatch (unparseable, or fails validation), the turn is re-prompted
+  with the validation errors up to **twice** before giving up. On final
+  failure stdout stays empty, the errors print on stderr, and the exit code
+  is `1`.
+- Validation is a full JSON Schema check (via `ajv`), so `required`,
+  nested `properties`, `items`, `enum`, `additionalProperties`, and the
+  rest of the draft are all enforced.
+- `--output-schema` cannot be combined with `--json` (both own stdout); the
+  combination exits `2`. An unreadable file or unparseable/uncompilable
+  schema also exits `2` before any adapter is spawned.
+
 ## Examples
 
 ```bash
@@ -78,6 +117,11 @@ agentproto run claude-code --cwd ~/code/widgets -p "What does this repo do?"
 
 # Machine-readable
 agentproto run claude-code -p "hello" --json | jq -r 'select(.kind=="text-delta") | .text'
+
+# Schema-validated final answer — stdout is exactly the JSON
+agentproto run claude-code -p "did the tests pass?" \
+  --output-schema '{"type":"object","required":["passed"],"properties":{"passed":{"type":"boolean"}}}' \
+  | jq -e '.passed'
 ```
 
 ## Cancellation
