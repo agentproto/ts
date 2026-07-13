@@ -56,6 +56,23 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: { env: ["ANTHROPIC_API_KEY"] },
+    // Deterministic `auth` spawn mode (subscription vs api-key billing —
+    // see AgentCliStartOptions.auth). "subscription" (the default) scrubs
+    // these vars from the child env so Claude Code falls back to its stored
+    // OAuth/Keychain login instead of silently billing a leaked ambient
+    // ANTHROPIC_API_KEY (the outage this whole surface exists to prevent).
+    // Reuses CLAUDE_CODE_GATEWAY_ENV_UNSET (already the source of truth for
+    // this adapter's leak set) plus ANTHROPIC_AUTH_TOKEN/_BASE_URL, which
+    // that list omits deliberately — a gateway mode SETS those two rather
+    // than unsetting them, so they can't be unset unconditionally there.
+    modes: {
+      api_key_env: "ANTHROPIC_API_KEY",
+      subscription_unset_env: [
+        ...CLAUDE_CODE_GATEWAY_ENV_UNSET,
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+      ],
+    },
   },
   sandbox: "./SANDBOX.md",
   protocol: "acp",

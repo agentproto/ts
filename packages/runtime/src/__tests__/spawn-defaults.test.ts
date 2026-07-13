@@ -86,6 +86,40 @@ describe("resolveSpawnDefaults", () => {
   })
 })
 
+describe("resolveSpawnDefaults auth precedence", () => {
+  it("is undefined with no config default and no explicit call", () => {
+    const result = resolveSpawnDefaults(undefined, "claude-code", {})
+    expect(result.auth).toBeUndefined()
+  })
+
+  it("falls through to defaults.adapters.<slug>.auth when the call omits it", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: "api-key" } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {})
+    expect(result.auth).toBe("api-key")
+  })
+
+  it("an explicit-call auth wins over the per-adapter config default", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: "api-key" } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {
+      auth: "subscription",
+    })
+    expect(result.auth).toBe("subscription")
+  })
+
+  it("does not apply another adapter's per-adapter auth default", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: "api-key" } },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {})
+    expect(result.auth).toBeUndefined()
+  })
+
+})
+
 describe("normalizeSkillsOption", () => {
   it("joins skills into options.skills when the adapter declares a string-typed option", () => {
     const result = normalizeSkillsOption(

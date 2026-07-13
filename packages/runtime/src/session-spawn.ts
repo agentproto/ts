@@ -138,6 +138,16 @@ export interface SpawnAgentSessionInput {
   skills?: string[]
   model?: string
   effort?: string
+  /**
+   * Deterministic billing-auth mode for adapters that declare an env-var
+   * vocabulary for it (today: claude-code — see `AgentCliAuth.modes` in
+   * `@agentproto/driver-agent-cli`). Merged against `~/.agentproto/
+   * config.json`'s `defaults.adapters.<slug>.auth` (this field wins on
+   * collision) via `resolveSpawnDefaults`; the driver itself defaults to
+   * `"subscription"` when neither is set. Adapters that don't declare the
+   * vocabulary ignore this field entirely.
+   */
+  auth?: "subscription" | "api-key"
   mcpServers?: AcpMcpServer[]
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
   notifyUrl?: string
@@ -453,6 +463,7 @@ export async function spawnAgentSession(
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
+    auth: input.auth,
   })
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
@@ -519,6 +530,7 @@ export async function spawnAgentSession(
           : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
+        ...(spawnDefaults.auth ? { auth: spawnDefaults.auth } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         onActivity: () => {

@@ -18,6 +18,17 @@
 export interface DefaultsAdapterConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
+  /**
+   * Deterministic billing-auth mode default for this adapter (today, only
+   * claude-code interprets it — see `AgentCliStartOptions.auth` in
+   * `@agentproto/driver-agent-cli`). "subscription" scrubs the billing env
+   * vars so the child falls back to its stored OAuth/subscription login;
+   * "api-key" requires the declared API key env var present and fails the
+   * spawn rather than falling back silently. No global `defaults.auth`
+   * counterpart — this is deliberately per-adapter only, since the env-var
+   * vocabulary it governs is itself adapter-specific.
+   */
+  auth?: "subscription" | "api-key"
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -59,11 +70,19 @@ export interface ResolveSpawnDefaultsInput {
   /** Explicit-call AIP-45 `options` map — wins per-key over both the
    *  global and per-adapter config defaults. */
   options?: Record<string, boolean | number | string>
+  /** Explicit-call `agent_start.auth` override — wins over
+   *  `defaults.adapters.<slug>.auth`. Undefined ⇒ falls through to the
+   *  per-adapter config default (itself undefined ⇒ the driver's own
+   *  "subscription" default applies at spawn time). */
+  auth?: "subscription" | "api-key"
 }
 
 export interface ResolvedSpawnDefaults {
   skills: string[]
   options: Record<string, boolean | number | string>
+  /** Resolved per {@link ResolveSpawnDefaultsInput.auth} — undefined when
+   *  neither the explicit call nor `defaults.adapters.<slug>.auth` set one. */
+  auth?: "subscription" | "api-key"
 }
 
 export function resolveSpawnDefaults(
@@ -86,7 +105,9 @@ export function resolveSpawnDefaults(
           new Set([...(defaults?.skills ?? []), ...(adapterDefaults?.skills ?? [])]),
         )
 
-  return { skills, options }
+  const auth = input.auth ?? adapterDefaults?.auth
+
+  return { skills, options, auth }
 }
 
 /** Manifest-declared AIP-45 option id + type, the minimum an adapter

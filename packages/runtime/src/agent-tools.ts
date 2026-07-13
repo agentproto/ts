@@ -317,6 +317,21 @@ export function registerAgentTools(
             "(Sonnet 4.6 / Opus 4.8 default 'high'; Opus 4.7 default 'xhigh'). " +
             "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
         ),
+      auth: z
+        .enum(["subscription", "api-key"])
+        .optional()
+        .describe(
+          "Deterministic billing-auth mode for adapters that declare it (today: " +
+            "claude-code). 'subscription' (the default, whether omitted here or in " +
+            "`~/.agentproto/config.json`'s `defaults.adapters.claude-code.auth`) deletes " +
+            "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL and the cloud-" +
+            "provider redirect toggles from the child env, so Claude Code falls back to " +
+            "its stored OAuth/subscription login instead of silently billing a leaked " +
+            "ambient API key. 'api-key' requires ANTHROPIC_API_KEY present in the " +
+            "resolved child env and fails the spawn with a clear error when it's absent, " +
+            "rather than silently falling back to subscription — the deliberate " +
+            "'bill the API' choice. Adapters that don't declare this vocabulary ignore it."
+        ),
       mcpServers: jsonTolerant(
         z.array(
           z.object({
