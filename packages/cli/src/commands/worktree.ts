@@ -12,7 +12,7 @@
  * `agentproto.json` teardown hooks, then removes the worktree.
  */
 import { parseArgs } from "node:util"
-import { resolve } from "node:path"
+import { resolve, dirname } from "node:path"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
 import { cleanupWorktreeTool, worktreeProvider } from "@agentproto/worktree"
@@ -53,13 +53,23 @@ export async function runWorktree(args: readonly string[]): Promise<number> {
   return 2
 }
 
-/** Resolve the git repo root that contains `dir` (top-level of the worktree). */
-function repoRootOf(dir: string): string | null {
-  const res = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-  })
+/** Resolve the git MAIN repo root that contains `dir`. Uses `--git-common-dir`
+ * so it returns the true base repo even from a linked worktree — unlike
+ * `--show-toplevel`, which would return the worktree path itself in that case. */
+export function repoRootOf(dir: string): string | null {
+  // `--path-format=absolute` is required: without it `--git-common-dir` returns
+  // a RELATIVE ".git" from the main worktree, and `resolve(dirname("."))` would
+  // then resolve against process.cwd() instead of `dir`. Forcing absolute makes
+  // the parent-of-.git the true main repo root regardless of where we're run.
+  const res = spawnSync(
+    "git",
+    ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { encoding: "utf8" },
+  )
   if (res.status !== 0) return null
-  return res.stdout.trim() || null
+  const gitDir = res.stdout.trim()
+  if (!gitDir) return null
+  return resolve(dirname(gitDir))
 }
 
 interface WorktreeEntry {

@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { runTool } from "@agentproto/driver"
 import { provisionWorktreeTool, cleanupWorktreeTool, runGateTool } from "../tools/index.js"
 import { worktreeProvider } from "../provider/worktree-provider.js"
-import { execGit } from "../exec.js"
+import { execGit, execArgv } from "../exec.js"
 
 const candidates = [worktreeProvider]
 
@@ -169,6 +169,32 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
       candidates,
       input: { repoRoot, cwd: provisioned.cwd },
     })
+  })
+
+  it("archives a real linked git worktree — dir removed, branch deleted, worktree list clean", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    const wtDir = join(repoRoot, "_worktrees", "archive-test")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/archive-test"])
+
+    const resolved = await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: wtDir, branch: "wt/archive-test", deleteBranch: true },
+    })
+    expect(resolved).toEqual({ removed: true })
+
+    // Worktree directory is gone.
+    await expect(rm(wtDir)).rejects.toThrow()
+
+    // Branch was deleted.
+    const branches = await execGit(repoRoot, ["branch", "--list", "wt/archive-test"])
+    expect(branches.stdout.trim()).toBe("")
+
+    // git worktree list no longer knows about it.
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).not.toContain("archive-test")
   })
 })
 
