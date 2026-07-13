@@ -140,6 +140,8 @@ export type {
 } from "./usage.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
+import { registerPairingTools } from "./pairing-tools.js"
+import type { PairingRegistry } from "./pairing-registry.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -163,6 +165,19 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export {
+  createPairingRegistry,
+  PAIRINGS_VERSION,
+  type PairingRegistry,
+  type PairingRegistryDeps,
+  type PairingRecord,
+  type PairingChannelContext,
+  type PairingChannelHandle,
+  type PairingChannelMode,
+  type CreatedOffer,
+  type CreateOfferInput,
+} from "./pairing-registry.js"
+export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { parseDuration } from "./heartbeat.js"
@@ -317,6 +332,16 @@ export interface CreateGatewayOptions {
   /** Optional sandbox provider lister — mirrors `listAgentAdapters`.
    *  Overrides the default catalog-driven lister behind `list_sandbox_providers`. */
   listSandboxProviders?: SandboxProviderLister
+  /**
+   * Optional E2E pairing registry (see `createPairingRegistry`). When wired,
+   * the gateway mounts the `/pairings/*` REST routes and the `pair_*` MCP
+   * tools, and exposes the registry on the handle. The CLI builds it (injecting
+   * the ws `dial` + a `createTunnelServer`-backed `serve`) and passes it here so
+   * the runtime stays free of pty/adapter concerns while the pairing surface is
+   * reachable over MCP + HTTP. Autoconnect is the caller's to start (after this
+   * returns) so the injected `serve` can capture the finished gateway.
+   */
+  pairingRegistry?: PairingRegistry
 }
 
 /**
@@ -353,6 +378,10 @@ export interface GatewayHandle {
    *  local port. Exposed so embedding hosts can open tunnels
    *  programmatically without going through the HTTP/MCP surface. */
   tunnels: TunnelRegistry
+  /** E2E pairing registry, when one was wired via
+   *  `CreateGatewayOptions.pairingRegistry`. Undefined otherwise. Exposed so
+   *  the CLI can `startAutoconnect()` after boot and `shutdown()` it. */
+  pairing?: PairingRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -761,6 +790,12 @@ export async function createGateway(
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
     registerRemoteTools(server, { controller: remote })
+    // E2E daemon-pairing tools (pair_offer / pair_list / pair_revoke) — only
+    // when a pairing registry was wired. Same closure-rebind pattern as the
+    // remote tools above; the registry singleton lives on the gateway.
+    if (opts.pairingRegistry) {
+      registerPairingTools(server, { registry: opts.pairingRegistry })
+    }
     // Agent-session orchestration — operators (Mastra agents in
     // cloud Guilde, Claude Code as a sub-agent, …) drive long-running
     // claude/hermes/aider sessions on the user's machine through
@@ -955,6 +990,7 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     sessionEvents,
     eventRing,
     supervisor,
@@ -1014,6 +1050,7 @@ export async function createGateway(
     registered,
     sessions,
     tunnels,
+    ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
     async stop() {
@@ -1030,6 +1067,11 @@ export async function createGateway(
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.
       sessions.shutdown()
+      // Tear down pairing rendezvous connections + served channels before HTTP
+      // so no half-open E2E channel outlives the gateway it forwards to.
+      if (opts.pairingRegistry) {
+        await opts.pairingRegistry.shutdown().catch(() => {})
+      }
       // Close upstream MCP clients (their stdio children would
       // otherwise leak the same way).
       await mcpProxy.closeAll()

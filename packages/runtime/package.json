@@ -103,6 +103,7 @@
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/redaction": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
+    "@agentproto/secrets": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
@@ -114,6 +115,7 @@
   },
   "devDependencies": {
     "@agentproto/driver": "workspace:*",
+    "@agentproto/rendezvous": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",

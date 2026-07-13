@@ -2347,6 +2347,9 @@ importers:
       '@agentproto/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@agentproto/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@agentproto/telemetry-langfuse':
         specifier: workspace:*
         version: link:../telemetry-langfuse
@@ -2378,6 +2381,9 @@ importers:
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
+      '@agentproto/rendezvous':
+        specifier: workspace:*
+        version: link:../rendezvous
       '@agentproto/tool':
         specifier: workspace:*
         version: link:../tool
