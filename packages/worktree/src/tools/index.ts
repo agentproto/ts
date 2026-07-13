@@ -1,3 +1,8 @@
 export { provisionWorktreeTool } from "./provision-worktree.tool.js"
 export { cleanupWorktreeTool } from "./cleanup-worktree.tool.js"
 export { runGateTool } from "./run-gate.tool.js"
+export { runScriptTool } from "./run-script.tool.js"
+export { startServiceTool } from "./start-service.tool.js"
+export { stopServiceTool } from "./stop-service.tool.js"
+export { listServicesTool } from "./list-services.tool.js"
+export { serviceStatusSchema, type ServiceStatusOutput } from "./service.schema.js"

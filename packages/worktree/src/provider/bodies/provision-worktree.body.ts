@@ -5,6 +5,8 @@ import { ToolError } from "@agentproto/tool"
 import { provisionWorktreeTool } from "../../tools/provision-worktree.tool.js"
 import { execGit, execShell } from "../../exec.js"
 import { expandGlob } from "../../glob.js"
+import { loadConfigFromBase } from "../../config.js"
+import { runSetup, HookError } from "../../lifecycle.js"
 
 export const provisionWorktreeBuiltin = implementTool(
   provisionWorktreeTool,
@@ -45,6 +47,28 @@ export const provisionWorktreeBuiltin = implementTool(
         const dest = join(cwd, rel)
         await mkdir(dirname(dest), { recursive: true })
         await copyFile(join(input.repoRoot, rel), dest)
+      }
+    }
+
+    // Declarative lifecycle: run the repo's committed `agentproto.json` setup
+    // hooks in the fresh worktree. Read from the base tree (never the working
+    // tree) so a branch/agent can't inject host-side commands. A failing setup
+    // hook fails provisioning, carrying the captured output.
+    if (input.runSetup !== false) {
+      const config = await loadConfigFromBase(input.repoRoot, base)
+      if (config) {
+        try {
+          await runSetup(config, {
+            sourceCheckoutPath: input.repoRoot,
+            worktreePath: cwd,
+            branchName: branch,
+          })
+        } catch (err) {
+          if (err instanceof HookError) {
+            throw new ToolError({ code: "execution_failed", message: err.message })
+          }
+          throw err
+        }
       }
     }
 

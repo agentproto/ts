@@ -2,6 +2,10 @@ import { defineDriver } from "@agentproto/driver"
 import { provisionWorktreeBuiltin } from "./bodies/provision-worktree.body.js"
 import { cleanupWorktreeBuiltin } from "./bodies/cleanup-worktree.body.js"
 import { runGateBuiltin } from "./bodies/run-gate.body.js"
+import { runScriptBuiltin } from "./bodies/run-script.body.js"
+import { startServiceBuiltin } from "./bodies/start-service.body.js"
+import { stopServiceBuiltin } from "./bodies/stop-service.body.js"
+import { listServicesBuiltin } from "./bodies/list-services.body.js"
 
 /**
  * AIP-30 PROVIDER for the three `worktree.*` TOOL contracts. `kind: "builtin"`
@@ -21,6 +25,18 @@ export const worktreeProvider = defineDriver({
     { tool: "worktree.provision", version: "0.1.0" },
     { tool: "worktree.cleanup", version: "0.1.0" },
     { tool: "worktree.run-gate", version: "0.1.0" },
+    { tool: "worktree.run-script", version: "0.1.0" },
+    { tool: "worktree.start-service", version: "0.1.0" },
+    { tool: "worktree.stop-service", version: "0.1.0" },
+    { tool: "worktree.list-services", version: "0.1.0" },
   ],
-  implementations: [provisionWorktreeBuiltin, cleanupWorktreeBuiltin, runGateBuiltin],
+  implementations: [
+    provisionWorktreeBuiltin,
+    cleanupWorktreeBuiltin,
+    runGateBuiltin,
+    runScriptBuiltin,
+    startServiceBuiltin,
+    stopServiceBuiltin,
+    listServicesBuiltin,
+  ],
 })

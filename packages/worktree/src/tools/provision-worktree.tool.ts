@@ -42,6 +42,10 @@ export const provisionWorktreeTool = defineTool({
       .array(z.string())
       .optional()
       .describe("Relative paths (dirs or files) symlinked from repoRoot into the worktree before depsCmd, e.g. 'node_modules' or a gitignored sibling workspace repo. Lets the workspace graph resolve without a full reinstall."),
+    runSetup: z
+      .boolean()
+      .optional()
+      .describe("Run the `worktree.setup` hooks from the base tree's agentproto.json after creation. Default true; a failing setup hook fails provisioning."),
   }),
   outputSchema: z.object({
     cwd: z.string().describe("Absolute path to the created worktree."),
