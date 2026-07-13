@@ -27,6 +27,7 @@ import {
   OutputSchemaError,
   parseFinalJson,
   resolveOutputSchema,
+  type SchemaValidator,
 } from "../util/output-schema.js"
 
 const USAGE = `agentproto run — spawn an adapter, dispatch one turn, stream events, exit
@@ -130,12 +131,14 @@ export async function runRun(args: readonly string[]): Promise<number> {
     )
     return 2
   }
-  let schema: ReturnType<typeof resolveOutputSchema> | undefined
+  let schema: OutputSchema | undefined
+  let validator: SchemaValidator | undefined
   if (schemaArg !== undefined) {
     try {
       schema = resolveOutputSchema(schemaArg)
-      // Compile eagerly so an unusable schema fails before we spawn anything.
-      compileValidator(schema)
+      // Compile eagerly so an unusable schema fails before we spawn anything,
+      // and keep the result so runSchemaMode can reuse it without recompiling.
+      validator = compileValidator(schema)
     } catch (err) {
       if (err instanceof OutputSchemaError) {
         process.stderr.write(`agentproto run: --output-schema: ${err.message}\n`)
@@ -176,8 +179,8 @@ export async function runRun(args: readonly string[]): Promise<number> {
       ...(config ? { config } : {}),
     })
 
-    if (schema) {
-      return await runSchemaMode(session, promptArg, schema)
+    if (schema && validator) {
+      return await runSchemaMode(session, promptArg, schema, validator)
     }
 
     const printer = values.json ? printJson : printPretty
@@ -205,8 +208,8 @@ async function runSchemaMode(
   session: AgentCliRuntimeSession,
   firstPrompt: string,
   schema: OutputSchema,
+  validator: SchemaValidator,
 ): Promise<number> {
-  const validator = compileValidator(schema)
   let prompt = `${firstPrompt}${buildSchemaInstruction(schema)}`
 
   for (let attempt = 0; attempt <= SCHEMA_MAX_RETRIES; attempt++) {
