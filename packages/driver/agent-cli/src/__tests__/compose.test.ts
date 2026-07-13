@@ -406,6 +406,33 @@ describe("composeSpawn model deny-list (AIP-45)", () => {
   })
 })
 
+describe("composeSpawn always-on env (AIP-45 top-level `env`)", () => {
+  it("merges manifest-level env when there is no config", () => {
+    const h = handle({ env: { STATIC: "1" } })
+    expect(composeSpawn(h).env).toEqual({ STATIC: "1" })
+  })
+
+  it("merges manifest-level env alongside a config path", () => {
+    const h = handle({ env: { STATIC: "1" } })
+    expect(composeSpawn(h, { mode: "default" }).env).toEqual({ STATIC: "1" })
+  })
+
+  it("lets a selected mode's env override a same-key manifest env", () => {
+    const h = handle({
+      env: { ANTHROPIC_BASE_URL: "https://default" },
+      modes: [
+        {
+          id: "gw",
+          env: { ANTHROPIC_BASE_URL: "https://gw.example/anthropic" },
+        },
+      ],
+    })
+    expect(composeSpawn(h, { mode: "gw" }).env.ANTHROPIC_BASE_URL).toBe(
+      "https://gw.example/anthropic"
+    )
+  })
+})
+
 describe("resolveContinuationStrategy (AIP-45)", () => {
   it("uses operator config override when provided", () => {
     expect(

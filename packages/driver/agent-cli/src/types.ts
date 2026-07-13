@@ -501,6 +501,16 @@ export interface AgentCliDefinition {
   version: string
   bin: string
   bin_args?: string[]
+  /**
+   * Static environment variables always merged into the spawn env,
+   * before any mode/option env patch (so those can still override).
+   * The always-on counterpart to `modes[].env` / `options[].env`, which
+   * only apply when the corresponding mode/option is selected. Primary
+   * user is a generic ACP agent (`acpHandleFromSpec`) whose whole config
+   * surface is bin + args + env; a native adapter can use it too for env
+   * that should apply on every spawn regardless of mode.
+   */
+  env?: Record<string, string>
   install: AgentCliInstallMethod[]
   version_check: AgentCliVersionCheck
   /** AIP-29 § Setup — post-install configuration pipeline. Optional. */

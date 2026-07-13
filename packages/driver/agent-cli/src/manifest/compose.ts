@@ -95,11 +95,18 @@ export function composeSpawn(
   handle: AgentCliHandle,
   config?: RuntimeConfig
 ): ComposedSpawn {
-  if (!config) return { binArgs: [...(handle.bin_args ?? [])], env: {}, envUnset: [] }
+  if (!config)
+    return {
+      binArgs: [...(handle.bin_args ?? [])],
+      env: { ...(handle.env ?? {}) },
+      envUnset: [],
+    }
 
   const prepend: string[] = []
   const append: string[] = []
-  const env: Record<string, string> = {}
+  // Always-on manifest env goes in first so a selected mode/option can
+  // still override any key it also declares (mode/option intent wins).
+  const env: Record<string, string> = { ...(handle.env ?? {}) }
   const envUnset: string[] = []
 
   // ── Mode patch ──────────────────────────────────────────────────
