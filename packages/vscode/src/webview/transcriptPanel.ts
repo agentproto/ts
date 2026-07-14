@@ -11,6 +11,8 @@
  *   - Clean disposal of subscriptions when the panel closes.
  */
 
+import { randomBytes } from "node:crypto"
+
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
@@ -112,7 +114,9 @@ async function handleWebviewMessage(
         type: "init",
         session: current,
         nonce: "",
-        initialContent,
+        // innerHTML sink in the webview — must go through renderMarkdown,
+        // which escapes the raw daemon text before adding markup.
+        initialHtml: renderMarkdown(initialContent),
       })
       return
     }
@@ -147,13 +151,8 @@ function postMessage(panel: vscode.WebviewPanel, msg: ExtMessage): void {
 }
 
 function randomNonce(): string {
-  const bytes = new Uint8Array(16)
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = Math.floor(Math.random() * 256)
-  }
-  return Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("")
+  // CSP nonce — must be unguessable, so use a CSPRNG, not Math.random().
+  return randomBytes(16).toString("hex")
 }
 
 function buildHtml(webview: vscode.Webview, nonce: string): string {

@@ -98,7 +98,7 @@ export interface PendingPermission {
   requestedAt: string
 }
 
-/** One entry in the daemon's adapter registry (GET /adapters / MCP adapter_list). */
+/** One entry in the daemon's adapter registry (MCP-only: mcpCall("adapter_list"), no HTTP route). */
 export interface AdapterInfo {
   slug: string
   /** Display name. */

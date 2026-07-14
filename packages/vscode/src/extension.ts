@@ -26,18 +26,18 @@ import { registerStatusBar } from "./views/statusBar.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
-  let config = getConfig()
-  let client = createDaemonClient(config)
+  const config = getConfig()
+  const client = createDaemonClient(config)
   const store = new SessionStore(client, config.pollIntervalMs)
 
-  // Live config: rebuild the client when connection settings change.
+  // Connection settings are bound at activation; every consumer holds this
+  // client instance by value, so a config change requires a window reload.
+  // (WP5 may thread a live getter through instead.)
   ctx.subscriptions.push(
-    onDidChangeConfig(next => {
-      config = next
-      client = createDaemonClient(config)
-      // The store keeps the old client reference; for WP0 we accept that a
-      // config change requires a reload to fully rebind. (WP5 may make the
-      // store hot-swap its client.)
+    onDidChangeConfig(() => {
+      void vscode.window.showInformationMessage(
+        "agentproto: connection settings changed — reload the window to apply.",
+      )
     }),
   )
 

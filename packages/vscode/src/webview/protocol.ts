@@ -14,8 +14,12 @@ export type ExtMessage =
       session: SessionDescriptor
       /** CSP nonce for the webview's inline script ( echoed back harmlessly). */
       nonce: string
-      /** Initial transcript content, rendered as Markdown. */
-      initialContent: string
+      /**
+       * Initial transcript PRE-RENDERED to safe HTML on the extension host
+       * (renderMarkdown escapes all raw content before markup). The webview
+       * assigns it to innerHTML — never send unescaped daemon text here.
+       */
+      initialHtml: string
     }
   | {
       type: "lines"
