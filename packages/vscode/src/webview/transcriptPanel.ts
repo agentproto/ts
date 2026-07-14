@@ -3,7 +3,7 @@
  *
  * Implements the WP4 contract:
  *   - One WebviewPanel per session id (viewType `agentproto.transcript`).
- *   - Theme-aware HTML using VS Code CSS variables.
+ *   - Theme-aware HTML using VS Code's CSS variables.
  *   - Initial transcript rendered from `exportSession("markdown")` with a
  *     `preview(200)` fallback.
  *   - Live output streamed via `SessionStore.focusOutput()`.
@@ -16,12 +16,12 @@ import { randomBytes } from "node:crypto"
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
+import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 
-import { renderMarkdown } from "./markdown.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
+import { TranscriptPanelController } from "./transcriptPanelController.js"
 
 export interface TranscriptPanels {
   open(session: SessionDescriptor): void
@@ -54,34 +54,33 @@ export function registerTranscriptPanels(
       panels.set(session.id, panel)
 
       const nonce = randomNonce()
-      panel.webview.html = buildHtml(panel.webview, nonce)
 
       const disposables: vscode.Disposable[] = []
+
+      const controller = new TranscriptPanelController({
+        sessionId: session.id,
+        initialSession: session,
+        client,
+        store,
+        messenger: panel.webview,
+      })
+      disposables.push(controller)
 
       // Live session updates (cost, status, tokens).
       disposables.push(
         store.onDidChange(() => {
           const updated = store.sessions.find(s => s.id === session.id)
-          if (updated) {
-            postMessage(panel, { type: "sessionUpdate", session: updated })
-          }
+          if (updated) controller.onSessionUpdate(updated)
         }),
       )
 
-      // Live output stream.
-      const focusSub = store.focusOutput(session.id, {
-        onLine: (line: SessionStreamLine) => {
-          postMessage(panel, { type: "lines", lines: [line] })
-        },
-      })
-      disposables.push(focusSub)
-
-      // Message handling from the webview.
+      // Message handling from the webview. Register before setting HTML so the
+      // handler is in place if the webview posts `ready` synchronously.
       disposables.push(
         panel.webview.onDidReceiveMessage(async (raw: unknown) => {
           if (!isWebviewMessage(raw)) return
           try {
-            await handleWebviewMessage(raw, session.id, client, panel)
+            await handleWebviewMessage(raw, controller)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             void vscode.window.showErrorMessage(`agentproto: ${message}`)
@@ -94,60 +93,31 @@ export function registerTranscriptPanels(
         for (const d of disposables) d.dispose()
         panels.delete(session.id)
       })
+
+      // Set HTML only after the controller and message listener are wired up.
+      panel.webview.html = buildHtml(panel.webview, nonce)
     },
   }
 }
 
 async function handleWebviewMessage(
   msg: WebviewMessage,
-  sessionId: string,
-  client: DaemonClient,
-  panel: vscode.WebviewPanel,
+  controller: TranscriptPanelController,
 ): Promise<void> {
   switch (msg.type) {
-    case "ready": {
-      const initialContent = await fetchInitialContent(client, sessionId)
-      // Re-fetch the freshest session descriptor from the store is not
-      // possible here without a back-reference, so we ask the daemon once.
-      const current = await client.getSession(sessionId)
-      postMessage(panel, {
-        type: "init",
-        session: current,
-        nonce: "",
-        // innerHTML sink in the webview — must go through renderMarkdown,
-        // which escapes the raw daemon text before adding markup.
-        initialHtml: renderMarkdown(initialContent),
-      })
+    case "ready":
+      await controller.onReady()
       return
-    }
     case "send":
-      await client.prompt(sessionId, msg.text)
+      await controller.onSend(msg.text, false)
       return
     case "interruptSend":
-      await client.prompt(sessionId, msg.text, { interrupt: true })
+      await controller.onSend(msg.text, true)
       return
     case "kill":
-      await client.kill(sessionId)
+      await controller.onKill()
       return
   }
-}
-
-async function fetchInitialContent(client: DaemonClient, id: string): Promise<string> {
-  try {
-    const exported = await client.exportSession(id, "markdown")
-    return exported.content ?? ""
-  } catch {
-    try {
-      const preview = await client.preview(id, 200)
-      return preview.lines.join("\n")
-    } catch {
-      return ""
-    }
-  }
-}
-
-function postMessage(panel: vscode.WebviewPanel, msg: ExtMessage): void {
-  void panel.webview.postMessage(msg)
 }
 
 function randomNonce(): string {
@@ -306,6 +276,11 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       background: var(--vscode-errorForeground);
       color: var(--vscode-editor-background);
     }
+    #send-status {
+      font-size: 0.85em;
+      color: var(--vscode-errorForeground);
+      min-height: 1.2em;
+    }
     #empty {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
@@ -329,6 +304,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       <button id="send">Send</button>
       <button id="interrupt-send" class="secondary">Interrupt & send</button>
       <button id="kill" class="danger">Kill</button>
+      <span id="send-status"></span>
     </div>
   </div>
   <script nonce="${nonce}">
@@ -343,14 +319,22 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       const sendBtn = document.getElementById('send');
       const interruptBtn = document.getElementById('interrupt-send');
       const killBtn = document.getElementById('kill');
+      const sendStatus = document.getElementById('send-status');
 
       let exited = false;
       let isScrolledUp = false;
+      let isSending = false;
 
       function setInputEnabled(enabled) {
-        input.disabled = !enabled;
-        sendBtn.disabled = !enabled;
-        interruptBtn.disabled = !enabled;
+        input.disabled = !enabled || isSending;
+        sendBtn.disabled = !enabled || isSending;
+        interruptBtn.disabled = !enabled || isSending;
+      }
+
+      function setSending(sending) {
+        isSending = sending;
+        setInputEnabled(!exited);
+        sendStatus.textContent = sending ? 'Sending…' : '';
       }
 
       function computeStatusChip(session) {
@@ -443,6 +427,16 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
             break;
           case 'lines':
             appendLines(msg.lines);
+            break;
+          case 'sending':
+            setSending(true);
+            break;
+          case 'sendAck':
+            setSending(false);
+            break;
+          case 'sendError':
+            setSending(false);
+            sendStatus.textContent = msg.message || 'Send failed';
             break;
         }
       });
