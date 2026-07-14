@@ -95,6 +95,16 @@ const PROVIDER_MAX_TOOLS: Record<string, number> = {
 // laisserait sinon hostname vide et échouerait plus loin avec une erreur opaque.
 const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']);
 
+// Options bag for trimTools — avoids tracking 7 ordered positional arguments.
+interface ToolTrimOptions {
+  provider: string;
+  queryTools: string | null;
+  queryNoTools: string | null;
+  headerTools: string | null;
+  headerNoTools: string | null;
+  headerExcludeTools: string | null;
+}
+
 // Trimme/strip les outils du payload selon :
 //  - queryTools ("a,b,c") : allow-list explicite (garde uniquement ces outils, par nom).
 //  - queryNoTools ("1") : strip TOUS les outils (+ tool_choice) → mode "lean".
@@ -103,7 +113,8 @@ const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']
 // `toolName` extrait le nom d'un outil quelle que soit sa forme (Anthropic: .name ;
 // OpenAI function: .function.name). Doit tourner AVANT la transformation de forme
 // propre à chaque provider (ZAI/Groq mappent input_schema → function.parameters).
-function trimTools(payload: any, provider: string, queryTools: string | null, queryNoTools: string | null, headerTools: string | null, headerNoTools: string | null, headerExcludeTools: string | null): void {
+function trimTools(payload: any, opts: ToolTrimOptions): void {
+  const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools } = opts;
   if (!payload || !Array.isArray(payload.tools) || payload.tools.length === 0) return;
 
   // 1. Strip total demandé explicite (?notools=1 ou ?tools=none ou header X-Proxy-No-Tools: 1)
