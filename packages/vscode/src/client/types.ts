@@ -150,6 +150,62 @@ export interface SessionStreamLine {
 }
 
 /**
+ * One record from GET /sessions/:id/events — the daemon's durable
+ * per-session events.jsonl capture (packages/runtime transcript-writer.ts).
+ *
+ * This is the NORMALIZED semantic-event boundary: provider/model differences
+ * (Claude-wire, Kimi-behind-Claude-transport, hermes, mastracode, …) are
+ * already resolved by the adapter/protocol layer BEFORE a record is written,
+ * so a frontend renders structured components without ever parsing a raw
+ * provider payload. Records never contain credentials. Optional fields
+ * default to undefined; an unknown `kind` is ignored by the reducer.
+ *
+ * Field-for-field superset of the daemon's TranscriptRecord
+ * (transcript-export.ts) plus the writer's own "user-prompt" /
+ * "usage_snapshot" records. Do NOT reshape without a coordinated daemon change.
+ */
+export interface SessionEventRecord {
+  /** Monotonic per-session sequence — the cursor unit for `since` polling. */
+  seq: number
+  /** ISO-8601 timestamp the daemon stamped when the record was written. */
+  ts: string
+  kind: string
+  sessionId?: string
+  text?: string
+  partial?: boolean
+  toolCallId?: string
+  toolName?: string
+  arguments?: unknown
+  result?: unknown
+  isError?: boolean
+  reason?: string
+  error?: { message: string; code?: number; data?: unknown }
+  options?: unknown
+  entries?: Array<{ content: string; priority: string; status: string }>
+  size?: number
+  used?: number
+  cost?: { amount: number; currency: string }
+  tokensIn?: number
+  tokensOut?: number
+  // usage_snapshot-only fields (turn-boundary durable recap)
+  model?: string
+  costUsd?: number
+  contextSize?: number
+  contextUsed?: number
+  source?: string
+}
+
+/** GET /sessions/:id/events response envelope (http-server.ts). */
+export interface SessionEventsPage {
+  sessionId: string
+  events: SessionEventRecord[]
+  /** Cursor to pass as `since` on the next poll — never regresses. */
+  nextSeq: number
+  /** false when the page was capped by `limit` and more records remain. */
+  complete: boolean
+}
+
+/**
  * Global RuntimeEvent from GET /events SSE. NOTE: the daemon's /events
  * stream carries ONLY runtime events (boot, heartbeat-*, conv-turn-appended,
  * remote-log) — it does NOT surface session:* lifecycle events. Those are

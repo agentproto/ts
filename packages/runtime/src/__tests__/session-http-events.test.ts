@@ -19,6 +19,7 @@ import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
+import { createTranscriptWriter } from "../transcript-writer.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { SessionDescriptor } from "../sessions.js"
 import { createRuntimeEvents } from "../events.js"
@@ -219,6 +220,54 @@ describe("GET /sessions/:id/events", () => {
       expect(res.status).toBe(400)
       const body = (await res.json()) as { error: string }
       expect(body.error).toBe("invalid_since")
+    })
+  })
+
+  it("keeps the since cursor correct across a writer restart (no seq collision)", async () => {
+    // Drive the REAL writer through a simulated daemon restart: a fresh
+    // writer instance must continue seq from disk, so a client that polled
+    // up to the pre-restart cursor drains exactly the post-restart tail.
+    // homedir() is mocked to tmp, so the default baseDir lands under the same
+    // path the HTTP endpoint reads via sessionEventsPath(id).
+    const writerA = createTranscriptWriter()
+    writerA.recordPrompt(SESSION_ID, "first turn")
+    writerA.recordEvent(SESSION_ID, { kind: "text-delta", text: "reply one\n" })
+    writerA.recordEvent(SESSION_ID, { kind: "turn-end", reason: "completed" })
+    await writerA.close(SESSION_ID)
+
+    const writerB = createTranscriptWriter()
+    writerB.recordPrompt(SESSION_ID, "second turn")
+    writerB.recordEvent(SESSION_ID, { kind: "text-delta", text: "reply two\n" })
+    writerB.recordEvent(SESSION_ID, { kind: "turn-end", reason: "completed" })
+    await writerB.close(SESSION_ID)
+
+    await withServer(async (port, registry) => {
+      vi.spyOn(registry, "findByIdOrName").mockReturnValue({
+        id: SESSION_ID,
+      } as SessionDescriptor)
+
+      // Full drain — seq must be strictly increasing with no repeats.
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${SESSION_ID}/events`)
+      const body = (await res.json()) as { events: Array<{ seq: number }>; nextSeq: number }
+      const seqs = body.events.map(e => e.seq)
+      expect(seqs).toEqual([1, 2, 3, 4, 5, 6])
+      expect(body.nextSeq).toBe(6)
+
+      // A client that had already consumed the pre-restart turn (through
+      // seq 3) polls again and gets ONLY the post-restart turn — this is the
+      // behaviour the seq-collision bug used to break.
+      const res2 = await fetch(
+        `http://127.0.0.1:${port}/sessions/${SESSION_ID}/events?since=3`,
+      )
+      const body2 = (await res2.json()) as {
+        events: Array<{ seq: number; kind: string }>
+        nextSeq: number
+        complete: boolean
+      }
+      expect(body2.events.map(e => e.seq)).toEqual([4, 5, 6])
+      expect(body2.events[0]).toMatchObject({ kind: "user-prompt" })
+      expect(body2.nextSeq).toBe(6)
+      expect(body2.complete).toBe(true)
     })
   })
 
