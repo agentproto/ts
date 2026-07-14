@@ -1,14 +1,17 @@
 {
   "name": "agentproto-plugin",
-  "description": "Operate and supervise a fleet of coding agents (claude-code, hermes, codex, ...) through the agentproto daemon: launch and babysit agent sessions, run them in parallel, drive economical light models with a Sonnet verification net, orchestrate an orchestrator (nested), govern durable supervision (policies, gated commits, webhook escalation), and set up the underlying adapters and tunnels.",
-  "version": "0.3.0",
+  "description": "Operate and supervise a fleet of coding agents (claude-code, hermes, codex, ...) through the agentproto daemon: launch and babysit agent sessions, run them in parallel, drive economical light models with a Sonnet verification net, orchestrate an orchestrator (nested), govern durable supervision (policies, gated commits, webhook escalation), set up adapters and tunnels, use custom LLM endpoints, and author protocol tools/drivers.",
+  "version": "0.4.0",
   "skills": [
     "agent-session-orchestration-agentproto",
     "light-coder-orchestration",
     "hermes-headless-background",
     "nested-orchestration",
     "durable-supervision",
-    "adapter-setup-kit"
+    "adapter-setup-kit",
+    "supervisor-session",
+    "agentproto-llm-endpoint",
+    "agentproto"
   ],
   "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",
   "author": { "name": "Jeremy — fabrikapp" },
@@ -22,6 +25,9 @@
     "hermes",
     "supervision",
     "tunnels",
-    "adapters"
+    "adapters",
+    "llm-endpoint",
+    "supervisor-session",
+    "custom-providers"
   ]
 }
