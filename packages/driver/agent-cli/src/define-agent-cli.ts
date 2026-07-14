@@ -95,55 +95,51 @@ export function createAgentCliRuntime(
       // scrubbed key takes responsibility for it (operator intent wins).
       for (const k of composed.envUnset) delete env[k]
 
-      // Deterministic billing-auth mode (AgentCliStartOptions.auth). Scoped
-      // to adapters that actually declare the env-var vocabulary
-      // (auth.modes) — everything else silently ignores `opts.auth`, same
-      // as an adapter that declares no `skills` option ignores a skills
-      // default. EXPLICIT credential selection, not scrub-by-absence: the
-      // resolved credential is SET, never inferred from what's ambient —
-      // so a leaked ambient ANTHROPIC_API_KEY can't silently win even if
-      // `opts.auth` is entirely omitted (mode still defaults to
-      // "subscription", which still requires — and sets — its own
-      // credential below).
-      const authVocabulary = definition.auth?.modes
-      const authMode = opts?.auth?.mode ?? "subscription"
-      if (authVocabulary) {
-        const vocab =
-          authMode === "subscription"
-            ? authVocabulary.subscription
-            : authVocabulary.api_key
-        // Delete the conflicting credential/toggles BEFORE setting this
-        // mode's own credential (order doesn't matter — set_env is never a
-        // member of its own unset_env — but scrub-then-set reads cleanest).
-        // A key this spawn's own mode/option patch explicitly SET (e.g. a
-        // gateway preset's ANTHROPIC_BASE_URL) wins over the blanket scrub
-        // — composed.env is the record of keys this spawn's own config
-        // explicitly assigned.
-        for (const key of vocab.unset_env) {
+      // Deterministic billing-auth (AgentCliStartOptions.auth). MECHANICAL:
+      // the runtime resolver already decided the provider, mode, env var to
+      // SET, and vars to SCRUB — this driver imports no catalog/registry and
+      // makes no policy choice, it just applies the resolved spec. EXPLICIT
+      // credential selection, not scrub-by-absence: the credential is SET from
+      // the resolver's named ref, never inferred from what's ambient.
+      //
+      // ENGAGE when the adapter enforces `always` (claude-code — every spawn,
+      // preserving #312 fail-fast) OR the operator explicitly configured auth
+      // (`explicit`). An unconfigured `when-configured` adapter (codex/hermes/
+      // claude-sdk with no auth) does NOT engage → runs ambient, unchanged.
+      const authSpec = opts?.auth
+      const engageAuth =
+        !!authSpec && (authSpec.enforce === "always" || authSpec.explicit === true)
+      if (authSpec && engageAuth) {
+        // Scrub the conflicting credential(s)/toggles BEFORE setting this
+        // mode's own credential. A key this spawn's own mode/option patch
+        // explicitly SET (e.g. a gateway preset's ANTHROPIC_BASE_URL) wins
+        // over the blanket scrub — composed.env is the record of keys this
+        // spawn's own config explicitly assigned.
+        for (const key of authSpec.unsetEnv) {
           if (!(key in composed.env)) delete env[key]
         }
         // Fail-fast: the credential is resolved by the HOST from a named
-        // secret ref (config or per-spawn), never read ambiently — if it
-        // didn't resolve to anything, refuse the spawn outright rather than
-        // silently falling back to another credential or an ambient one.
-        // Checked against the RESOLVED `opts.auth.credential` input, not the
+        // config/store ref, never read ambiently — if it didn't resolve,
+        // refuse the spawn rather than silently falling back to another or an
+        // ambient credential. Checked against the RESOLVED credential, not the
         // merged env, so an unrelated `opts.env` key can't paper over a
-        // genuinely missing credential.
-        if (!opts?.auth?.credential) {
+        // genuinely missing one.
+        if (!authSpec.credential) {
           throw new RuntimeConfigError(
             "missing_auth_credential",
             "opts.auth.credential",
-            `agent-cli '${definition.id}': auth mode "${authMode}" requires ` +
-              `an explicit credential (resolved from a named secret ref), but ` +
-              `none was provided.` +
-              (authMode === "subscription"
+            `agent-cli '${definition.id}': auth mode "${authSpec.mode}" requires ` +
+              `an explicit credential (resolved from a named config/store ref), ` +
+              `but none was provided.` +
+              (authSpec.mode === "subscription"
                 ? ` Mint one via \`claude setup-token\` (bills the Max/Pro ` +
                   `subscription, not API credits) and configure it — never ` +
                   `inherited from the shell.`
-                : ` Configure an API key — never inherited from the shell.`),
+                : ` Configure an API key (\`agentproto auth provider set …\` or ` +
+                  `per-spawn) — never inherited from the shell.`),
           )
         }
-        env[vocab.set_env] = opts.auth.credential
+        env[authSpec.setEnv] = authSpec.credential
       }
 
       Object.assign(env, opts?.env ?? {})

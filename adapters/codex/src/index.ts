@@ -48,6 +48,11 @@ export const codex: AgentCliHandle = defineAgentCli({
     ref: "./SECRETS.md",
     state: { env: ["OPENAI_API_KEY", "CODEX_API_KEY"] },
   },
+  // Billing-auth (opt-in — no authEnforce, so unconfigured spawns stay
+  // ambient). Single-provider adapter: api-key mode SETS providerEnvVar
+  // ("openai") = OPENAI_API_KEY, derived from the catalog. No authSubscription
+  // ⇒ a `subscription` request fails loud with `unsupported_auth_mode`.
+  provider: "openai",
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./codex-acp.ACP.md",

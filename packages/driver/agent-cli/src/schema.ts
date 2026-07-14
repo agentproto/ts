@@ -196,16 +196,17 @@ const authSchema = z.object({
     parse: z.string().optional(),
     grace_s: z.number().int().nonnegative().optional(),
   }).strict().optional(),
-  modes: z.object({
-    subscription: z.object({
-      set_env: z.string(),
-      unset_env: z.array(z.string()),
-    }).strict(),
-    api_key: z.object({
-      set_env: z.string(),
-      unset_env: z.array(z.string()),
-    }).strict(),
-  }).strict().optional(),
+}).strict()
+
+// Subscription (OAuth/bearer) billing declaration — see
+// AgentCliAuthSubscription. Only the Claude adapters declare it; presence =
+// "supports subscription mode". `setEnv` is the var SET; `conflictEnv` are
+// sibling credential vars scrubbed in every mode (except when set);
+// `unsetEnvAdd` is native-mode-only gateway hygiene.
+const authSubscriptionSchema = z.object({
+  setEnv: z.string().min(1),
+  conflictEnv: z.array(z.string()).optional(),
+  unsetEnvAdd: z.array(z.string()).optional(),
 }).strict()
 
 const sessionSchema = z.object({
@@ -368,6 +369,12 @@ export const agentCliFrontmatterSchema = z
     version_check: versionCheckSchema,
     setup: z.array(setupStepSchema).optional(),
     auth: authSchema.optional(),
+    // Billing-auth resolver inputs (DECISION 3). `provider` is a CatalogProvider
+    // id (validated against the catalog by the runtime resolver, not here, to
+    // keep this generic doctype decoupled from @agentproto/model-catalog).
+    provider: z.string().min(1).optional(),
+    authSubscription: authSubscriptionSchema.optional(),
+    authEnforce: z.enum(["always", "when-configured"]).optional(),
     sandbox: z.union([z.string(), z.record(z.string(), z.unknown())]),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),

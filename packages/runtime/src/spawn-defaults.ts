@@ -13,12 +13,18 @@
  *     than merging into it — a deliberate exact set, mirroring how an
  *     explicit `mcpServers: []` opts out of the hermes default in
  *     `session-spawn.ts`.
- *   - `auth`: `mode` resolves per-spawn > per-adapter config > `"subscription"`
- *     (always resolved — never undefined); the CREDENTIAL for that mode
- *     resolves per-spawn > per-adapter config, and is deliberately NOT
- *     unioned across modes (a `subscription` spawn never sees a configured
- *     `apiKey`). Named in config — never read from the ambient shell env.
+ *   - `auth`: surfaces the RAW billing-auth material (requested mode, both
+ *     candidate credentials, per-spawn provider pin, and the `explicit`
+ *     signal) so the descriptor-aware resolver ({@link resolveAuthSpec},
+ *     which also needs the adapter's provider/subscription descriptor +
+ *     providers.json) can decide the final mode, env var, scrub set, and
+ *     credential source. Credentials are named in config or the provider
+ *     store — never read from the ambient shell env.
  */
+
+import { getModelProvider } from "@agentproto/model-catalog/llm"
+import type { CatalogProvider } from "@agentproto/model-catalog"
+import { providerEnvVar } from "./providers-store.js"
 
 /**
  * Deterministic billing-auth config for one adapter slug (today, only
@@ -30,14 +36,21 @@
  * is ever surfaced back to a caller.
  */
 export interface DefaultsAdapterAuthConfig {
-  /** `"subscription"` (default) or `"api-key"`. */
+  /** `"subscription"` or `"api-key"`. Omitted ⇒ the resolver picks by
+   *  ordered preference (subscription first for adapters that support it —
+   *  see {@link resolveAuthSpec}), never a hardcoded default. */
   mode?: "subscription" | "api-key"
-  /** `ANTHROPIC_AUTH_TOKEN` value for `"subscription"` mode — a bearer
-   *  token minted via `claude setup-token` (bills the Max/Pro subscription,
-   *  not API credits). */
+  /** The subscription bearer token for `"subscription"` mode — minted via
+   *  `claude setup-token` (bills the Max/Pro subscription, not API credits),
+   *  SET to the adapter's `authSubscription.setEnv`. */
   token?: string
-  /** `ANTHROPIC_API_KEY` value for `"api-key"` mode. */
+  /** Explicit API key for `"api-key"` mode, SET to `providerEnvVar(provider)`.
+   *  Wins over the `providers.json` store key for the same provider. */
   apiKey?: string
+  /** Per-spawn provider PIN — overrides the adapter's fixed provider and the
+   *  model-derived provider (the sharp edge for by-model routers whose config
+   *  routes a catalog-"anthropic" model elsewhere). A `CatalogProvider` id. */
+  provider?: CatalogProvider
 }
 
 export interface DefaultsAdapterConfig {
@@ -95,15 +108,30 @@ export interface ResolveSpawnDefaultsInput {
 export interface ResolvedSpawnDefaults {
   skills: string[]
   options: Record<string, boolean | number | string>
-  /** Always resolved — `mode` defaults to `"subscription"` even when
-   *  neither the explicit call nor config set one. `credential` is the
-   *  secret value for the RESOLVED mode only (a `subscription` spawn never
-   *  sees a configured `apiKey`, and vice versa); absent when no ref
-   *  resolved for that mode — callers must fail-fast rather than fall back. */
-  auth: {
-    mode: "subscription" | "api-key"
-    credential?: string
-  }
+  /** RAW billing-auth material (config precedence applied) — fed to the
+   *  descriptor-aware {@link resolveAuthSpec}, which owns the final mode /
+   *  env / scrub / credential-source decision. Both candidate credentials
+   *  are surfaced (NOT collapsed to one), since the ordered-mode selection
+   *  needs to know which are available before it picks the mode. */
+  auth: ResolvedSpawnAuthMaterial
+}
+
+export interface ResolvedSpawnAuthMaterial {
+  /** Operator-requested mode (per-spawn > per-adapter config), or undefined
+   *  ⇒ let the resolver pick by ordered preference. */
+  requestedMode?: "subscription" | "api-key"
+  /** True when the operator explicitly configured `auth` (per-spawn OR in
+   *  `defaults.adapters.<slug>.auth`). The ONLY way to tell "set mode, no
+   *  key" (fail-fast) from "set nothing" (ambient) — both give no credential.
+   *  DECISION 5. */
+  explicit: boolean
+  /** Subscription bearer token (per-spawn > config), if configured. */
+  subscriptionCredential?: string
+  /** Explicit API key (per-spawn > config), if configured — distinct from the
+   *  providers.json store key the resolver fetches separately. */
+  apiKeyCredential?: string
+  /** Per-spawn provider pin, if given. */
+  provider?: CatalogProvider
 }
 
 export function resolveSpawnDefaults(
@@ -126,47 +154,260 @@ export function resolveSpawnDefaults(
           new Set([...(defaults?.skills ?? []), ...(adapterDefaults?.skills ?? [])]),
         )
 
-  const authMode = input.auth?.mode ?? adapterDefaults?.auth?.mode ?? "subscription"
-  const authCredential =
-    authMode === "subscription"
-      ? input.auth?.token ?? adapterDefaults?.auth?.token
-      : input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
+  const requestedMode = input.auth?.mode ?? adapterDefaults?.auth?.mode
+  const explicit = input.auth !== undefined || adapterDefaults?.auth !== undefined
+  const subscriptionCredential = input.auth?.token ?? adapterDefaults?.auth?.token
+  const apiKeyCredential = input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
+  const authProvider = input.auth?.provider ?? adapterDefaults?.auth?.provider
 
   return {
     skills,
     options,
     auth: {
-      mode: authMode,
-      ...(authCredential !== undefined ? { credential: authCredential } : {}),
+      explicit,
+      ...(requestedMode ? { requestedMode } : {}),
+      ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+      ...(apiKeyCredential !== undefined ? { apiKeyCredential } : {}),
+      ...(authProvider ? { provider: authProvider } : {}),
     },
   }
 }
 
 /**
+ * Public credential key-shape prefixes, longest / most-specific first (the
+ * match is first-hit, so `sk-ant-oat` must precede `sk-ant-api`/`sk-ant-`,
+ * `sk-or-v1-` precede `sk-or-`, and both precede the bare `sk-`). These are
+ * PUBLIC key-shape knowledge — the visible leading bytes of each provider's
+ * credential format — never secret; only these + the last 4 chars are ever
+ * revealed. DECISION 6: the fingerprint is derived from the credential's own
+ * shape, NOT from `mode`, so it stays honest across providers (a gateway
+ * `sk-or-…` key run in api-key mode reads as `api-key · sk-or-…`).
+ */
+const CREDENTIAL_FINGERPRINT_PREFIXES: readonly string[] = [
+  "sk-ant-oat",
+  "sk-ant-api",
+  "sk-ant-",
+  "sk-or-v1-",
+  "sk-or-",
+  "sk-proj-",
+  "sk-",
+  "gsk_",
+  "AIza",
+]
+
+/**
  * Derive a SAFE, non-secret fingerprint for a resolved auth credential —
  * NEVER the raw value — for recording on the session descriptor / surfacing
  * in `agentproto sessions --watch` and `agent_sessions_list` (the
- * "verifiability" requirement: answer "what was used" without ever
- * exposing the secret). Format: `<mode> · <type-prefix>…<last4>`, e.g.
- * `subscription · sk-ant-oat…3f9c`.
+ * "verifiability" requirement: answer "what was used" without exposing the
+ * secret). Format: `<mode> · <shape-prefix>…<last4>` when the shape is known
+ * (e.g. `subscription · sk-ant-oat…3f9c`), else `<mode> · …<last4>`.
  *
- * The type marker is derived from `mode`, not parsed out of the credential
- * string: `"subscription"` always sets `ANTHROPIC_AUTH_TOKEN` (an
- * `sk-ant-oat…` bearer token from `claude setup-token`), `"api-key"` always
- * sets `ANTHROPIC_API_KEY` (an `sk-ant-api…` key) — mode and credential type
- * are one-to-one, so deriving from mode is both simpler and safer than
- * pattern-matching the secret itself. The first 6 characters of every
- * Anthropic credential are identically `sk-ant-`, so a literal prefix slice
- * would distinguish nothing; only the type marker + last 4 characters are
- * ever surfaced, never the middle (mirrors GitHub's `ghp_…abcd` style).
+ * The shape marker is matched from a PUBLIC key-prefix table (longest-match),
+ * not derived from `mode` — see {@link CREDENTIAL_FINGERPRINT_PREFIXES}. Only
+ * the matched prefix + the last 4 characters are ever surfaced, never the
+ * middle (mirrors GitHub's `ghp_…abcd` style).
  */
 export function credentialFingerprint(
   mode: "subscription" | "api-key",
   credential: string,
 ): string {
-  const typePrefix = mode === "subscription" ? "sk-ant-oat" : "sk-ant-api"
+  const prefix = CREDENTIAL_FINGERPRINT_PREFIXES.find(p => credential.startsWith(p))
   const last4 = credential.slice(-4)
-  return `${mode} · ${typePrefix}…${last4}`
+  return prefix ? `${mode} · ${prefix}…${last4}` : `${mode} · …${last4}`
+}
+
+/**
+ * The adapter's billing-auth capability, projected from its AIP-45 manifest
+ * (`provider` / `authEnforce` / `authSubscription`) by the host resolver. The
+ * runtime reads THIS, never the manifest directly — keeping the LLM-catalog
+ * coupling in the runtime and the driver mechanical.
+ */
+export interface AdapterAuthDescriptor {
+  /** FIXED provider for a single-provider adapter; omitted for by-model
+   *  routers (provider then derives from the requested model). */
+  provider?: CatalogProvider
+  /** Enforcement policy — `"always"` engages every spawn (claude-code's
+   *  #312 fail-fast); `"when-configured"` (default) only when `explicit`. */
+  authEnforce?: "always" | "when-configured"
+  /** Subscription (OAuth/bearer) support. Presence ⇒ the adapter supports
+   *  `"subscription"` mode. Mirrors the driver's `AgentCliAuthSubscription`. */
+  authSubscription?: {
+    setEnv: string
+    conflictEnv?: string[]
+    unsetEnvAdd?: string[]
+  }
+}
+
+/** The fully-resolved spec the driver applies mechanically. Structurally
+ *  matches `@agentproto/driver-agent-cli`'s `ResolvedAuthSpec` (each package
+ *  owns its own copy; the object flows across the boundary by shape). */
+export interface ResolvedAuthSpec {
+  mode: "subscription" | "api-key"
+  credential?: string
+  setEnv: string
+  unsetEnv: string[]
+  explicit: boolean
+  enforce: "always" | "when-configured"
+}
+
+/** Where the resolved credential came from — the observable billing axis
+ *  (DECISION 10②), never inferred. */
+export type CredentialSource = "explicit-config" | "providers-store" | "none"
+
+/**
+ * The OBSERVABLE echo (DECISION 9③ / 10②) — recorded on the session
+ * descriptor so a verifier checks the RESOLUTION, never the model's
+ * self-report. Never carries the raw credential (only its fingerprint).
+ */
+export interface AuthEcho {
+  provider: CatalogProvider
+  authMode: "subscription" | "api-key"
+  credentialSource: CredentialSource
+  setEnv: string
+  fingerprint?: string
+}
+
+/**
+ * Thrown when the operator requested a billing mode the adapter can't serve —
+ * today only `"subscription"` on an adapter with no `authSubscription`. A
+ * LOUD, distinct failure (DECISION 4②), never a silent downgrade to api-key.
+ */
+export class AuthResolutionError extends Error {
+  readonly code = "unsupported_auth_mode"
+  constructor(message: string) {
+    super(message)
+    this.name = "AuthResolutionError"
+  }
+}
+
+export interface ResolveAuthSpecInput {
+  descriptor: AdapterAuthDescriptor
+  /** `input.model ?? adapter default model` — for model-derived provider. */
+  model?: string
+  /** Per-spawn provider pin (`input.auth.provider`). */
+  requestedProvider?: CatalogProvider
+  /** Operator-requested mode; undefined ⇒ ordered preference. */
+  requestedMode?: "subscription" | "api-key"
+  /** Operator explicitly configured `auth` (DECISION 5). */
+  explicit: boolean
+  /** Subscription bearer credential, if configured. */
+  subscriptionCredential?: string
+  /** Explicit api-key credential from config, if configured. */
+  apiKeyConfigCredential?: string
+  /** api-key credential from `providers.json` (fetched by the caller). */
+  apiKeyStoreCredential?: string
+}
+
+/**
+ * THE billing-auth resolver (DECISIONS 4, 6, 9, 10). Pure: given the adapter
+ * descriptor + raw config material + (caller-fetched) store key, it decides
+ * the provider, the mode (ordered — subscription over api-key when a
+ * subscription credential is present; a requested-but-unsupported mode throws
+ * `unsupported_auth_mode`), the env var to SET, the derived SCRUB set, and the
+ * credential + its source. Returns the driver `spec` + the observable `echo`,
+ * or `undefined` when no provider resolves (⇒ ambient, no injection — never
+ * guess). NEVER falls back to a default provider/model. Fail-loud on a
+ * configured-but-missing credential is deferred to the driver's mechanical
+ * apply (it engages then throws `missing_auth_credential`), so the `explicit`
+ * / `enforce` signals are carried through on the spec.
+ */
+export function resolveAuthSpec(
+  input: ResolveAuthSpecInput,
+): { spec: ResolvedAuthSpec; echo: AuthEcho } | undefined {
+  // 1. Provider: per-spawn pin → adapter-fixed → model-derived. None ⇒
+  //    ambient (no injection); an unknown/free-form model id lands here too.
+  const provider =
+    input.requestedProvider ??
+    input.descriptor.provider ??
+    (input.model ? getModelProvider(input.model) : undefined)
+  if (!provider) return undefined
+
+  const sub = input.descriptor.authSubscription
+  const supportsSub = sub !== undefined
+  const enforce = input.descriptor.authEnforce ?? "when-configured"
+  const apiKeyEnv = providerEnvVar(provider)
+
+  const subCredAvailable = input.subscriptionCredential !== undefined
+  const apiCredAvailable =
+    input.apiKeyConfigCredential !== undefined || input.apiKeyStoreCredential !== undefined
+
+  // 2/3. Mode: explicit request (validated) OR ordered preference (DECISION
+  //      10 — subscription first when supported; never silently pick api-key
+  //      while a subscription credential is present and preferred).
+  let mode: "subscription" | "api-key"
+  if (input.requestedMode) {
+    if (input.requestedMode === "subscription" && !supportsSub) {
+      throw new AuthResolutionError(
+        `auth mode "subscription" is not supported for provider "${provider}" ` +
+          `(this adapter declares no authSubscription) — use api-key instead.`,
+      )
+    }
+    mode = input.requestedMode
+  } else {
+    const preference: Array<"subscription" | "api-key"> = supportsSub
+      ? ["subscription", "api-key"]
+      : ["api-key"]
+    mode =
+      preference.find(m => (m === "subscription" ? subCredAvailable : apiCredAvailable)) ??
+      preference[0]!
+  }
+
+  // 4/5. setEnv + credential + source for the resolved mode.
+  let setEnv: string
+  let credential: string | undefined
+  let credentialSource: CredentialSource
+  if (mode === "subscription") {
+    // Guaranteed present: the explicit path validated supportsSub, and the
+    // ordered path only yields "subscription" when supportsSub.
+    setEnv = sub!.setEnv
+    credential = input.subscriptionCredential
+    credentialSource = credential !== undefined ? "explicit-config" : "none"
+  } else {
+    setEnv = apiKeyEnv
+    if (input.apiKeyConfigCredential !== undefined) {
+      credential = input.apiKeyConfigCredential
+      credentialSource = "explicit-config"
+    } else if (input.apiKeyStoreCredential !== undefined) {
+      credential = input.apiKeyStoreCredential
+      credentialSource = "providers-store"
+    } else {
+      credential = undefined
+      credentialSource = "none"
+    }
+  }
+
+  // 4. Derived scrub: every conflicting billing-credential var EXCEPT the one
+  //    being set, plus (native/subscription mode only) the adapter's gateway
+  //    hygiene. Single-credential provider (no authSubscription) → empty scrub
+  //    (the setEnv overwrite already prevents a leak).
+  const credVars = new Set<string>([apiKeyEnv])
+  if (sub) {
+    credVars.add(sub.setEnv)
+    for (const c of sub.conflictEnv ?? []) credVars.add(c)
+  }
+  credVars.delete(setEnv)
+  const unsetEnv = [...credVars]
+  if (mode === "subscription" && sub?.unsetEnvAdd) unsetEnv.push(...sub.unsetEnvAdd)
+
+  const spec: ResolvedAuthSpec = {
+    mode,
+    ...(credential !== undefined ? { credential } : {}),
+    setEnv,
+    unsetEnv,
+    explicit: input.explicit,
+    enforce,
+  }
+  const echo: AuthEcho = {
+    provider,
+    authMode: mode,
+    credentialSource,
+    setEnv,
+    ...(credential !== undefined
+      ? { fingerprint: credentialFingerprint(mode, credential) }
+      : {}),
+  }
+  return { spec, echo }
 }
 
 /** Manifest-declared AIP-45 option id + type, the minimum an adapter

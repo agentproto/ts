@@ -3,18 +3,20 @@ import { PassThrough } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 
 /**
- * Regression coverage for the claude-code `auth` spawn mode (see
- * `AgentCliAuth.modes` in types.ts and the auth-mode block in
- * `define-agent-cli.ts`'s `start()`): EXPLICIT credential selection, not
- * scrub-by-absence. Each mode POSITIVELY sets exactly one credential env var
- * from the resolved `auth.credential` (never read ambiently) and deletes the
- * conflicting one(s) — so which credential a spawn uses is *stated*, never
- * inferred from whatever a leaked ambient `ANTHROPIC_API_KEY` happens to be.
- * A mode with no resolved credential fails the spawn outright (fail-fast),
- * it never falls back to another credential or an ambient one. Locks in the
- * spawn-time mechanics without spawning a real CLI — mirrors
- * `claude-code-permission-mode.test.ts` and claude-sdk's
- * `gateway-modes.test.ts`.
+ * Regression coverage for the driver's MECHANICAL billing-auth application
+ * (see `AgentCliStartOptions.auth` / `ResolvedAuthSpec` in types.ts and the
+ * auth block in `define-agent-cli.ts`'s `start()`). The runtime resolver now
+ * owns provider/mode/env/scrub selection; the driver only APPLIES the resolved
+ * spec: ENGAGE when `enforce === "always"` OR `explicit`, then scrub the
+ * `unsetEnv` set (unless this spawn's own mode/option patch set the key) and
+ * SET `setEnv = credential`, failing fast when engaged with no credential.
+ *
+ * The specs below are exactly what `@agentproto/runtime`'s `resolveAuthSpec`
+ * produces for claude-code — a BYTE-IDENTICAL scrub set to #312 in each mode
+ * (the resolver side of that equivalence is asserted in the runtime's
+ * spawn-defaults test; here we lock in that the driver reproduces the #312
+ * spawn env from those specs). Mirrors `claude-code-permission-mode.test.ts`
+ * and claude-sdk's `gateway-modes.test.ts` — no real CLI is spawned.
  */
 
 const spawnCalls: Array<{ bin: string; args: string[]; env: Record<string, string> }> = []
@@ -54,15 +56,51 @@ vi.mock("@agentproto/acp/client", () => ({
 
 const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import { RuntimeConfigError } from "../manifest/compose.js"
-import type { AgentCliDefinition } from "../types.js"
+import type { AgentCliDefinition, ResolvedAuthSpec } from "../types.js"
 
-const SUBSCRIPTION_UNSET = [
+// The subscription-mode scrub the runtime resolver derives for claude-code:
+// providerEnvVar("anthropic")=ANTHROPIC_API_KEY (the non-set credential) +
+// conflictEnv (ANTHROPIC_AUTH_TOKEN) + unsetEnvAdd (cloud toggles +
+// ANTHROPIC_BASE_URL). Byte-identical SET to #312's subscription.unset_env.
+const CC_SUBSCRIPTION_UNSET = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
   "ANTHROPIC_BASE_URL",
 ]
+// The api-key-mode scrub: the subscription-family creds (CLAUDE_CODE_OAUTH_TOKEN
+// setEnv + ANTHROPIC_AUTH_TOKEN conflict), NOT the gateway hygiene. Byte-
+// identical SET to #312's api_key.unset_env.
+const CC_APIKEY_UNSET = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]
+
+/** claude-code's resolved subscription spec (enforce "always"). */
+function subSpec(opts: { credential?: string; explicit?: boolean }): ResolvedAuthSpec {
+  return {
+    mode: "subscription",
+    ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
+    setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    unsetEnv: CC_SUBSCRIPTION_UNSET,
+    explicit: opts.explicit ?? true,
+    enforce: "always",
+  }
+}
+
+/** claude-code's resolved api-key spec (enforce "always"). */
+function apiKeySpec(opts: { credential?: string; explicit?: boolean }): ResolvedAuthSpec {
+  return {
+    mode: "api-key",
+    ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
+    setEnv: "ANTHROPIC_API_KEY",
+    unsetEnv: CC_APIKEY_UNSET,
+    explicit: opts.explicit ?? true,
+    enforce: "always",
+  }
+}
 
 const claudeCodeLike = (): AgentCliDefinition => ({
   name: "claude-code",
@@ -73,23 +111,28 @@ const claudeCodeLike = (): AgentCliDefinition => ({
   bin_args: ["-y", "@agentclientprotocol/claude-agent-acp"],
   install: [{ method: "npm", package: "@agentclientprotocol/claude-agent-acp" }],
   version_check: { cmd: "npm view x", parse: "(\\d+)", range: ">=0.0.0" },
-  sandbox: "./SANDBOX.md",
-  protocol: "acp",
-  acp: "./claude-code-acp.ACP.md",
   auth: {
     ref: "./SECRETS.md",
     state: { env: ["ANTHROPIC_API_KEY"] },
-    modes: {
-      subscription: {
-        set_env: "CLAUDE_CODE_OAUTH_TOKEN",
-        unset_env: SUBSCRIPTION_UNSET,
-      },
-      api_key: {
-        set_env: "ANTHROPIC_API_KEY",
-        unset_env: ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
-      },
-    },
   },
+  provider: "anthropic",
+  authEnforce: "always",
+  authSubscription: {
+    setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+    unsetEnvAdd: [
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+      "CLAUDE_CODE_USE_MANTLE",
+      "CLAUDE_CODE_USE_GATEWAY",
+      "ANTHROPIC_BASE_URL",
+    ],
+  },
+  sandbox: "./SANDBOX.md",
+  protocol: "acp",
+  acp: "./claude-code-acp.ACP.md",
   modes: [
     {
       id: "moonshot",
@@ -99,12 +142,12 @@ const claudeCodeLike = (): AgentCliDefinition => ({
   ],
 })
 
-describe("claude-code auth mode — explicit credential selection", () => {
+describe("claude-code auth — mechanical resolved-spec application", () => {
   beforeEach(() => {
     spawnCalls.length = 0
   })
 
-  it("subscription (default): SETS CLAUDE_CODE_OAUTH_TOKEN and DELETES ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN, even when stray creds are present in the parent env", async () => {
+  it("subscription: SETS CLAUDE_CODE_OAUTH_TOKEN and DELETES ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN, even when stray creds are present in the parent env", async () => {
     const handle = defineAgentCli(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
@@ -114,7 +157,7 @@ describe("claude-code auth mode — explicit credential selection", () => {
     try {
       await runtime.start({
         cwd: "/scratch",
-        auth: { mode: "subscription", credential: "sk-ant-oat01-real-token" },
+        auth: subSpec({ credential: "sk-ant-oat01-real-token" }),
       })
     } finally {
       if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY
@@ -137,7 +180,7 @@ describe("claude-code auth mode — explicit credential selection", () => {
     try {
       await runtime.start({
         cwd: "/scratch",
-        auth: { mode: "subscription", credential: "sk-ant-oat01-real-token" },
+        auth: subSpec({ credential: "sk-ant-oat01-real-token" }),
       })
     } finally {
       if (prevBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK
@@ -159,7 +202,7 @@ describe("claude-code auth mode — explicit credential selection", () => {
     try {
       await runtime.start({
         cwd: "/scratch",
-        auth: { mode: "api-key", credential: "sk-ant-api03-real-key" },
+        auth: apiKeySpec({ credential: "sk-ant-api03-real-key" }),
       })
     } finally {
       if (prevToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
@@ -172,17 +215,19 @@ describe("claude-code auth mode — explicit credential selection", () => {
     expect(spawnCalls[0]!.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
   })
 
-  it("fail-fast: subscription mode with no credential refuses the spawn — no fallback, no exec", async () => {
+  it("fail-fast: an engaged subscription spec with no credential refuses the spawn — no fallback, no exec (claude-code unconfigured, enforce=always)", async () => {
     const handle = defineAgentCli(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
     process.env.ANTHROPIC_API_KEY = "sk-ant-api03-ambient"
     try {
+      // enforce="always" engages even when the operator configured nothing
+      // (explicit:false) — the resolver's unconfigured-claude-code spec.
       await expect(
-        runtime.start({ cwd: "/scratch" }),
+        runtime.start({ cwd: "/scratch", auth: subSpec({ explicit: false }) }),
       ).rejects.toThrow(RuntimeConfigError)
       await expect(
-        runtime.start({ cwd: "/scratch", auth: { mode: "subscription" } }),
+        runtime.start({ cwd: "/scratch", auth: subSpec({}) }),
       ).rejects.toThrow(/auth mode "subscription" requires an explicit credential/)
       expect(spawnCalls).toHaveLength(0)
     } finally {
@@ -191,11 +236,11 @@ describe("claude-code auth mode — explicit credential selection", () => {
     }
   })
 
-  it("fail-fast: api-key mode with no credential refuses the spawn and does not fall back to subscription", async () => {
+  it("fail-fast: an engaged api-key spec with no credential refuses the spawn and does not fall back to subscription", async () => {
     const handle = defineAgentCli(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await expect(
-      runtime.start({ cwd: "/scratch", auth: { mode: "api-key" } }),
+      runtime.start({ cwd: "/scratch", auth: apiKeySpec({}) }),
     ).rejects.toThrow(RuntimeConfigError)
     expect(spawnCalls).toHaveLength(0)
   })
@@ -206,19 +251,21 @@ describe("claude-code auth mode — explicit credential selection", () => {
     await runtime.start({
       cwd: "/scratch",
       config: { mode: "moonshot" },
-      auth: { mode: "subscription", credential: "sk-ant-oat01-real-token" },
+      auth: subSpec({ credential: "sk-ant-oat01-real-token" }),
     })
     expect(spawnCalls[0]!.env.ANTHROPIC_BASE_URL).toBe(
       "https://api.moonshot.ai/anthropic",
     )
   })
 
-  it("does not apply the auth-mode logic for an adapter that declares no auth.modes — no fail-fast, no scrub", async () => {
+  it("does not engage — and does not scrub — when no auth spec is passed (ambient preserved)", async () => {
     const handle = defineAgentCli({
       ...claudeCodeLike(),
       id: "hermes",
       name: "hermes",
-      auth: undefined,
+      provider: "openrouter",
+      authEnforce: undefined,
+      authSubscription: undefined,
     })
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
@@ -230,5 +277,37 @@ describe("claude-code auth mode — explicit credential selection", () => {
       else process.env.ANTHROPIC_API_KEY = prevKey
     }
     expect(spawnCalls[0]!.env.ANTHROPIC_API_KEY).toBe("sk-ant-api03-ambient")
+  })
+
+  it("does not engage a when-configured spec that the operator did not configure (explicit=false) — ambient preserved", async () => {
+    const handle = defineAgentCli({
+      ...claudeCodeLike(),
+      id: "codex",
+      name: "codex",
+      provider: "openai",
+      authEnforce: undefined,
+      authSubscription: undefined,
+    })
+    const runtime = createAgentCliRuntime(handle)
+    const prevKey = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = "sk-proj-ambient"
+    try {
+      // A resolved spec exists (provider resolved) but enforce="when-configured"
+      // + explicit=false ⇒ the driver must NOT engage.
+      await runtime.start({
+        cwd: "/scratch",
+        auth: {
+          mode: "api-key",
+          setEnv: "OPENAI_API_KEY",
+          unsetEnv: [],
+          explicit: false,
+          enforce: "when-configured",
+        },
+      })
+    } finally {
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = prevKey
+    }
+    expect(spawnCalls[0]!.env.OPENAI_API_KEY).toBe("sk-proj-ambient")
   })
 })

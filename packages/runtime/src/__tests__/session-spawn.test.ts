@@ -9,6 +9,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { AcpMcpServer } from "@agentproto/acp"
+
+// Control the providers.json api-key lookup deterministically (the resolver's
+// api-key store source), so these tests never read the real ~/.agentproto file.
+const storeKeys = vi.hoisted(() => ({ value: {} as Record<string, string | undefined> }))
+vi.mock("../providers-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../providers-store.js")>()
+  return { ...actual, getProviderKey: vi.fn(async (p: string) => storeKeys.value[p]) }
+})
+
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
@@ -716,5 +725,181 @@ describe("cleanAgentLines", () => {
       "\x1b[31m[tool-error] exit 1: build failed\x1b[0m",
     ])
     expect(out).toEqual(["[tool-error] exit 1: build failed"])
+  })
+})
+
+describe("spawnAgentSession — billing-auth resolution wiring", () => {
+  beforeEach(() => {
+    storeKeys.value = {}
+  })
+
+  type CapturedAuth = {
+    mode: "subscription" | "api-key"
+    credential?: string
+    setEnv: string
+    unsetEnv: string[]
+    explicit: boolean
+    enforce: "always" | "when-configured"
+  }
+
+  function makeAuthResolver(
+    descriptor: {
+      provider?: string
+      authEnforce?: "always" | "when-configured"
+      authSubscription?: { setEnv: string; conflictEnv?: string[]; unsetEnvAdd?: string[] }
+    } | undefined,
+    opts: { defaultModel?: string } = {},
+  ): { resolver: AgentAdapterResolver; captured: { auth?: CapturedAuth }[] } {
+    const captured: { auth?: CapturedAuth }[] = []
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async (o: { auth?: CapturedAuth }) => {
+        captured.push({ auth: o.auth })
+        return fakeAgentSession()
+      }),
+      commandPreview: "mock-adapter",
+      ...(descriptor ? { authDescriptor: descriptor } : {}),
+      ...(opts.defaultModel ? { defaultModel: opts.defaultModel } : {}),
+    })
+    return { resolver, captured }
+  }
+
+  const CODEX_DESC = { provider: "openai" as const }
+  const CLAUDE_CODE_DESC = {
+    provider: "anthropic" as const,
+    authEnforce: "always" as const,
+    authSubscription: {
+      setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+      unsetEnvAdd: ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL"],
+    },
+  }
+
+  it("subscription requested on codex (no authSubscription) ⇒ unsupported_auth_mode, no session", async () => {
+    const { resolver } = makeAuthResolver(CODEX_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "codex", cwd: "/tmp", auth: { mode: "subscription" } },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("unsupported_auth_mode")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("unconfigured codex (when-configured) passes an INERT spec — explicit:false, enforce:when-configured (ambient)", async () => {
+    const { resolver, captured } = makeAuthResolver(CODEX_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "codex", cwd: "/tmp" },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth?.explicit).toBe(false)
+    expect(captured[0]?.auth?.enforce).toBe("when-configured")
+    expect(captured[0]?.auth?.credential).toBeUndefined()
+    // No credential ⇒ nothing recorded on the descriptor.
+    expect(registry.list()[0]?.auth).toBeUndefined()
+  })
+
+  it("configured api-key (explicit key) ⇒ spec carries the credential + records the echo on the descriptor", async () => {
+    const { resolver, captured } = makeAuthResolver(CODEX_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "codex", cwd: "/tmp", auth: { mode: "api-key", apiKey: "sk-proj-explicit1234" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "OPENAI_API_KEY",
+      credential: "sk-proj-explicit1234",
+      explicit: true,
+    })
+    expect(registry.list()[0]?.auth).toMatchObject({
+      mode: "api-key",
+      provider: "openai",
+      credentialSource: "explicit-config",
+      setEnv: "OPENAI_API_KEY",
+      fingerprint: "api-key · sk-proj-…1234",
+    })
+  })
+
+  it("api-key credential sourced from providers.json when no explicit key configured", async () => {
+    storeKeys.value = { openai: "sk-proj-fromstore9999" }
+    const { resolver, captured } = makeAuthResolver(CODEX_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "codex", cwd: "/tmp", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth?.credential).toBe("sk-proj-fromstore9999")
+    expect(registry.list()[0]?.auth).toMatchObject({ credentialSource: "providers-store" })
+  })
+
+  it("model→provider: a by-model adapter with model=claude-sonnet-5 + api-key resolves ANTHROPIC_API_KEY from the store", async () => {
+    storeKeys.value = { anthropic: "sk-ant-api03-store1234" }
+    const { resolver, captured } = makeAuthResolver({}) // no fixed provider
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "opencode", cwd: "/tmp", model: "claude-sonnet-5", auth: { mode: "api-key" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth?.setEnv).toBe("ANTHROPIC_API_KEY")
+    expect(captured[0]?.auth?.credential).toBe("sk-ant-api03-store1234")
+    expect(registry.list()[0]?.auth?.provider).toBe("anthropic")
+  })
+
+  it("unconfigured claude-code (enforce:always) passes an ENGAGED-but-credentialless spec (⇒ driver fail-fast)", async () => {
+    const { resolver, captured } = makeAuthResolver(CLAUDE_CODE_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "claude-code", cwd: "/tmp" },
+    )
+    expect(result.ok).toBe(true) // the stub doesn't run the real driver
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "subscription",
+      setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      enforce: "always",
+      explicit: false,
+    })
+    expect(captured[0]?.auth?.credential).toBeUndefined()
+  })
+
+  it("MONEY REGRESSION: unconfigured claude-code (explicit=false) must NOT pull a providers.json anthropic key — it fail-fasts in subscription mode, never silently bills org api credits", async () => {
+    // The operator previously ran `agentproto auth provider set anthropic …`
+    // but configured NO adapter auth for this spawn. #312 fail-fasted here;
+    // the store key must NOT be consulted (that would flip ordered-mode to
+    // api-key and silently bill org credits — the leak this feature prevents).
+    storeKeys.value = { anthropic: "sk-ant-api03-ORG-CREDIT-KEY" }
+    const { resolver, captured } = makeAuthResolver(CLAUDE_CODE_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "claude-code", cwd: "/tmp" },
+    )
+    expect(result.ok).toBe(true) // the stub doesn't run the real driver
+    // Fail-fast shape: subscription default, NO credential ⇒ the driver
+    // (enforce="always") throws missing_auth_credential. Crucially NOT api-key.
+    expect(captured[0]?.auth?.mode).toBe("subscription")
+    expect(captured[0]?.auth?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+    expect(captured[0]?.auth?.credential).toBeUndefined()
+    // The org api key must never become the credential nor the set env.
+    expect(captured[0]?.auth?.setEnv).not.toBe("ANTHROPIC_API_KEY")
+    expect(captured[0]?.auth?.credential).not.toBe("sk-ant-api03-ORG-CREDIT-KEY")
+  })
+
+  it("an adapter with NO authDescriptor gets NO auth spec (backward compat)", async () => {
+    const { resolver, captured } = makeAuthResolver(undefined)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      { adapter: "legacy", cwd: "/tmp", auth: { mode: "api-key", apiKey: "sk-x" } },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toBeUndefined()
   })
 })

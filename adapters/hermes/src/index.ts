@@ -50,6 +50,11 @@ export const hermes: AgentCliHandle = defineAgentCli({
     // the claude-code adapter.
     state: { env: ["OPENROUTER_API_KEY", "OPENAI_API_KEY"] },
   },
+  // Billing-auth (opt-in — no authEnforce, so unconfigured spawns stay
+  // ambient). Single-provider adapter: api-key mode SETS providerEnvVar
+  // ("openrouter") = OPENROUTER_API_KEY, derived from the catalog. No
+  // authSubscription ⇒ `subscription` fails loud with `unsupported_auth_mode`.
+  provider: "openrouter",
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./hermes-acp.ACP.md",
