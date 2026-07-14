@@ -191,6 +191,8 @@ export class DaemonClient {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        // Streamable-HTTP MCP servers 406 unless the client accepts BOTH.
+        accept: "application/json, text/event-stream",
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
@@ -204,7 +206,7 @@ export class DaemonClient {
     if (!res.ok) {
       throw new Error(`MCP ${toolName} failed: HTTP ${res.status} ${await describeError(res)}`)
     }
-    const envelope = (await res.json()) as McpResponse
+    const envelope = await parseMcpBody(res)
     if (envelope.error) {
       throw new Error(`MCP ${toolName} error: ${JSON.stringify(envelope.error)}`)
     }
@@ -372,6 +374,27 @@ interface McpResponse {
   id: number
   result?: McpResult
   error?: { code: number; message: string; data?: unknown }
+}
+
+/**
+ * A streamable-HTTP MCP server may answer either plain JSON or an SSE body
+ * (content-type text/event-stream) even for a single request/response —
+ * in the SSE case the JSON-RPC envelope is the first `data:` frame.
+ */
+async function parseMcpBody(res: Response): Promise<McpResponse> {
+  const contentType = res.headers.get("content-type") ?? ""
+  if (!contentType.includes("text/event-stream")) {
+    return (await res.json()) as McpResponse
+  }
+  const text = await res.text()
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue
+    const payload = line.slice(5).trim()
+    if (!payload) continue
+    const parsed = JSON.parse(payload) as McpResponse
+    if (parsed.result !== undefined || parsed.error !== undefined) return parsed
+  }
+  throw new Error("MCP SSE response contained no JSON-RPC envelope")
 }
 
 function unwrapMcpResult<T>(result: McpResult | undefined): T {
