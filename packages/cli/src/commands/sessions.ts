@@ -28,6 +28,11 @@ import { resolve } from "node:path"
 import http from "node:http"
 import https from "node:https"
 import WebSocket from "ws"
+import { loadConfig } from "@agentproto/runtime/config"
+import {
+  resolveTerminalPreset,
+  type TerminalPresetCliValues,
+} from "../terminal-preset.js"
 import {
   discoverDaemon,
   readRuntimeJsonWithStatus,
@@ -61,9 +66,9 @@ Usage:
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
                                       [--hold-permissions] [--no-color]
-  agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
-                                            [--name <slug>] [--label <text>]
-                                            [--cols <n>] [--rows <n>]
+  agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
+                                            [--workspace <slug>] [--name <slug>]
+                                            [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o <file>]
                              [--source auto|native|daemon]
@@ -104,6 +109,22 @@ sessions start flags:
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
+
+sessions terminal flags:
+  --preset <name>              use a named 'terminalPresets' entry from
+                                 ~/.agentproto/config.json. The preset may define
+                                 argv, env, cwd, workspace, name and label.
+                                 Explicit CLI flags win over preset values.
+                                 Example config:
+                                   {
+                                     "terminalPresets": {
+                                       "local-tui": {
+                                         "argv": ["claude"],
+                                         "env": { "ANTHROPIC_BASE_URL": "http://localhost:4000" },
+                                         "name": "local-tui"
+                                       }
+                                     }
+                                   }
 
 While attached:
   Ctrl-] q   detach (session keeps running on the daemon)
@@ -759,6 +780,7 @@ async function runTerminal(args: readonly string[]): Promise<number> {
     allowPositionals: true,
     strict: true,
     options: {
+      preset: { type: "string" },
       cwd: { type: "string" },
       workspace: { type: "string" },
       name: { type: "string" },
@@ -771,28 +793,61 @@ async function runTerminal(args: readonly string[]): Promise<number> {
     },
   })
 
-  // argv = positionals before `--` (none allowed) OR everything after `--`.
-  // Pre-`--` positionals are rejected: the user almost certainly typed
-  //   `agentproto sessions terminal claude`
-  // and meant `agentproto sessions terminal -- claude`, but to avoid
-  // ambiguity with flags we require the separator.
-  if (positionals.length > 0 && argvFromSeparator.length === 0) {
-    // Be lenient: if there's only one positional and it doesn't look
-    // like a flag, treat it as `--`-prefixed argv. Saves typing for the
-    // common case `agentproto sessions terminal bash --attach`.
-    // We already consumed verb flags above, so positionals here are
-    // the leftovers — safe to use as argv.
-    // Fall through.
-  }
-  const argv =
+  // argv = positionals before `--` (legacy lenient form) OR everything after `--`.
+  // Pre-`--` positionals are tolerated for the common case
+  //   `agentproto sessions terminal bash --attach`.
+  const explicitArgv =
     argvFromSeparator.length > 0 ? argvFromSeparator : [...positionals]
-  if (argv.length === 0) {
-    process.stderr.write(
-      "agentproto sessions terminal: missing argv.\n" +
-        "  Try: agentproto sessions terminal -- bash\n" +
-        "       agentproto sessions terminal -- claude --resume <id>\n",
-    )
-    return 2
+
+  // Resolve the named preset before daemon discovery so config errors fail
+  // fast. CLI values always win over preset values.
+  let argv: string[]
+  let presetEnv: Record<string, string> | undefined
+  let resolvedCwd = values.cwd
+  let resolvedWorkspace = values.workspace
+  let resolvedName = values.name
+  let resolvedLabel = values.label
+
+  if (values.preset) {
+    const cfg = await loadConfig()
+    const cliValues: TerminalPresetCliValues = {
+      argv: explicitArgv.length > 0 ? explicitArgv : undefined,
+      cwd: values.cwd,
+      workspace: values.workspace,
+      name: values.name,
+      label: values.label,
+    }
+    const result = resolveTerminalPreset(values.preset, cfg, cliValues)
+    if (!result.ok) {
+      process.stderr.write(`agentproto sessions terminal: ${result.error}\n`)
+      return 2
+    }
+    const preset = result.preset
+    argv = explicitArgv.length > 0 ? explicitArgv : preset.argv ?? []
+    if (argv.length === 0) {
+      process.stderr.write(
+        `agentproto sessions terminal: preset "${values.preset}" does not define argv, ` +
+          "and no command was given.\n" +
+          `  Try: agentproto sessions terminal --preset ${values.preset} -- claude\n`,
+      )
+      return 2
+    }
+    presetEnv = preset.env
+    resolvedCwd ??= preset.cwd
+    resolvedWorkspace ??= preset.workspace
+    resolvedName ??= preset.name
+    resolvedLabel ??= preset.label
+  } else {
+    if (explicitArgv.length === 0) {
+      process.stderr.write(
+        "agentproto sessions terminal: missing argv.\n" +
+          "  Try: agentproto sessions terminal -- bash\n" +
+          "       agentproto sessions terminal -- claude --resume <id>\n" +
+          "       agentproto sessions terminal --preset <name> --attach\n",
+      )
+      return 2
+    }
+    argv = explicitArgv
   }
 
   const report = await discoverDaemon()
@@ -819,10 +874,11 @@ async function runTerminal(args: readonly string[]): Promise<number> {
           ? process.stdout.rows
           : 24,
   }
-  if (values.cwd) body.cwd = resolve(values.cwd)
-  if (values.workspace) body.workspaceSlug = values.workspace
-  if (values.name) body.name = values.name
-  if (values.label) body.label = values.label
+  if (resolvedCwd) body.cwd = resolve(resolvedCwd)
+  if (resolvedWorkspace) body.workspaceSlug = resolvedWorkspace
+  if (resolvedName) body.name = resolvedName
+  if (resolvedLabel) body.label = resolvedLabel
+  if (presetEnv) body.env = presetEnv
 
   let desc: SessionDescriptor
   try {

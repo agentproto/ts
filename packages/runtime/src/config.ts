@@ -165,6 +165,31 @@ export interface ProfileConfig {
   features?: FeaturesConfig
 }
 
+/**
+ * A user-defined named terminal/TUI preset stored in
+ * `~/.agentproto/config.json` under `terminalPresets`. Presets keep
+ * local launch recipes (argv, env, cwd, name/label) out of shared
+ * adapter manifests — e.g. pointing a Claude Code TUI at a local
+ * LLM gateway without retyping proxy env vars every spawn.
+ */
+export interface TerminalPreset {
+  /** Command + args to spawn. When provided, `sessions terminal` can
+   *  be used without `-- <argv...>`. */
+  argv?: string[]
+  /** Extra environment variables layered on top of the daemon's
+   *  inherited process.env. Values MUST be strings. */
+  env?: Record<string, string>
+  /** Working directory for the PTY session. Relative paths are
+   *  resolved against the current working directory at CLI time. */
+  cwd?: string
+  /** Workspace slug used for cwd fallback when `cwd` is omitted. */
+  workspace?: string
+  /** Stable session name passed to the registry (`name` field). */
+  name?: string
+  /** Human-readable label surfaced in session listings. */
+  label?: string
+}
+
 export interface AgentprotoConfig {
   version?: number
   daemon?: DaemonConfig
@@ -189,6 +214,9 @@ export interface AgentprotoConfig {
    *  when `resolveAdapter(slug)` finds no npm adapter package. User
    *  entries shadow the curated `ACP_CATALOG` on slug collision. */
   acpAgents?: Record<string, AcpAgentConfigEntry>
+  /** User-defined named terminal/TUI presets. Local-only; never
+   *  packaged in shared adapter manifests or defaults. */
+  terminalPresets?: Record<string, TerminalPreset>
   /** Unknown keys preserved across save round-trips. */
   [unknown: string]: unknown
 }
