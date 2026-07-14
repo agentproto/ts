@@ -19,6 +19,7 @@ vi.mock("../providers-store.js", async (importOriginal) => {
 })
 
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -743,11 +744,7 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
   }
 
   function makeAuthResolver(
-    descriptor: {
-      provider?: string
-      authEnforce?: "always" | "when-configured"
-      authSubscription?: { setEnv: string; conflictEnv?: string[]; unsetEnvAdd?: string[] }
-    } | undefined,
+    descriptor: AdapterAuthDescriptor | undefined,
     opts: { defaultModel?: string } = {},
   ): { resolver: AgentAdapterResolver; captured: { auth?: CapturedAuth }[] } {
     const captured: { auth?: CapturedAuth }[] = []
