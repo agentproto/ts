@@ -165,4 +165,18 @@ describe("subscribeSse — reconnect + error handling", () => {
     await new Promise(r => setTimeout(r, 200))
     expect(events).toEqual([])
   })
+
+  it("close() wakes an in-progress reconnect sleep so no extra fetch fires", async () => {
+    const fetchImpl = vi.fn(() => Promise.reject(new Error("network")))
+    const sub = subscribeSse("http://x", {}, { onEvent: () => {} }, fetchImpl as unknown as typeof fetch)
+    // Wait for the first fetch to fail and enter the 1s reconnect sleep.
+    await new Promise(r => setTimeout(r, 50))
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    sub.close()
+    // Wait longer than the 1s backoff; without cancellation a second fetch
+    // would have fired.
+    await new Promise(r => setTimeout(r, 1200))
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
 })

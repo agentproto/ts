@@ -15,8 +15,9 @@
  *  - fall back to the pollIntervalMs listSessions()+listPermissions() poll
  *    whenever the loop is unhealthy (3 consecutive failures).
  *
- * focusOutput(id) opens the /sessions/:id/stream SSE for ONE session at a
- * time (connection budget — see recon §Gaps 3) and closes the previous.
+ * focusOutput(id) returns a Disposable that opens the /sessions/:id/stream
+ * SSE for that call only. Each subscription is independent; disposing one
+ * never closes another, so multiple transcript panels can stay live.
  */
 
 import * as vscode from "vscode"
@@ -26,6 +27,7 @@ import { subscribeSse } from "../client/sse.js"
 import type {
   PendingPermission,
   SessionDescriptor,
+  SessionLifecycleEvent,
   SessionStreamLine,
 } from "../client/types.js"
 import {
@@ -39,9 +41,55 @@ import {
 const HEALTH_THRESHOLD = 3
 const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
+const IDLE_BACKOFF_MS = 250
+const MAX_IDLE_BACKOFF_MS = 2_000
+const SESSION_REFRESH_DEBOUNCE_MS = 150
+const SESSION_REFRESH_RETRY_MAX_MS = 5_000
+
+const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
+  "session:turn-end",
+  "session:awaiting-input",
+  "session:exited",
+  "session:command-done",
+])
 
 export interface FocusOutputHandlers {
   onLine: (line: SessionStreamLine) => void
+}
+
+/** A timer primitive that exposes a per-sleep cancellation handle. */
+export interface Scheduler {
+  sleep(ms: number): CancellableSleep
+}
+
+export interface CancellableSleep {
+  readonly promise: Promise<void>
+  cancel(): void
+}
+
+const defaultScheduler: Scheduler = {
+  sleep(ms) {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    let resolveFn: (() => void) | undefined
+    const promise = new Promise<void>((resolve) => {
+      resolveFn = resolve
+      timeout = setTimeout(() => {
+        timeout = undefined
+        resolve()
+      }, ms)
+    })
+    return {
+      promise,
+      cancel() {
+        if (timeout) {
+          clearTimeout(timeout)
+          timeout = undefined
+        }
+        resolveFn?.()
+        resolveFn = undefined
+      },
+    }
+  },
 }
 
 export class SessionStore {
@@ -51,15 +99,32 @@ export class SessionStore {
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChange = this._onDidChange.event
 
+  private readonly scheduler: Scheduler
+  private currentSleep: CancellableSleep | undefined
+  private readonly focusSubs = new Set<{
+    cancelled: boolean
+    close(): void
+    sse?: { close(): void }
+  }>()
+
   private cursor = 0
   private consecutiveFailures = 0
   private pollLoop: Promise<void> | undefined
   private stopped = false
-  private focusSub: { close(): void } | undefined
+  private idleBackoff = IDLE_BACKOFF_MS
 
-  constructor(client: DaemonClient, pollIntervalMs = 5000) {
+  private refreshTimeout: ReturnType<typeof setTimeout> | undefined
+  private refreshRetryMs = SESSION_REFRESH_DEBOUNCE_MS
+  private needsSessionRefresh = false
+
+  constructor(
+    client: DaemonClient,
+    pollIntervalMs = 5000,
+    scheduler: Scheduler = defaultScheduler,
+  ) {
     this.client = client
     this.pollIntervalMs = Math.max(1000, pollIntervalMs)
+    this.scheduler = scheduler
   }
 
   get sessions(): SessionDescriptor[] {
@@ -80,14 +145,13 @@ export class SessionStore {
    * session_events_poll loop with poll fallback.
    */
   start(): void {
-    void this.boot()
+    this.pollLoop = this.boot().then(() => this.runPollLoop())
   }
 
   private async boot(): Promise<void> {
     // Initial snapshot — always do this so the UI has data even if the
     // poll loop fails immediately.
     await this.refreshAll()
-    this.pollLoop = this.runPollLoop()
   }
 
   /**
@@ -96,9 +160,17 @@ export class SessionStore {
    * Returns true if anything changed.
    */
   async refreshAll(): Promise<boolean> {
+    const { changed } = await this.refreshCore()
+    return changed
+  }
+
+  private async refreshCore(): Promise<{ changed: boolean; reachable: boolean }> {
     let changed = false
+    let reachable = false
     try {
       const sessions = await this.client.listSessions()
+      reachable = true
+      if (this.stopped) return { changed, reachable }
       if (applySessionsSnapshot(this.state, sessions)) changed = true
     } catch {
       // Daemon unreachable — leave existing state; the views keep showing
@@ -106,31 +178,42 @@ export class SessionStore {
     }
     try {
       const perms = await this.client.listPermissions()
+      if (this.stopped) return { changed, reachable }
       if (applyPermissionsSnapshot(this.state, perms)) changed = true
     } catch {
       // permissions endpoint optional/failed — non-fatal.
     }
     if (changed) this._onDidChange.fire()
-    return changed
+    return { changed, reachable }
   }
 
   /**
    * Resilient session_events_poll loop. Resumes via `since` cursor, backs
    * off exponentially on error, and falls back to the pollIntervalMs
    * listSessions()+listPermissions() poll whenever unhealthy.
+   *
+   * Every poll iteration is followed by a bounded throttle delay. This keeps
+   * the loop from hot-spinning when the daemon answers quickly (e.g. mocks or
+   * bursts of events) while remaining responsive: the delay is reset to the
+   * minimum whenever events arrive.
    */
   private async runPollLoop(): Promise<void> {
     while (!this.stopped) {
       if (this.consecutiveFailures >= HEALTH_THRESHOLD) {
         // Unhealthy — fall back to the snapshot poll on the configured
-        // interval until the daemon recovers.
-        await this.refreshAll()
-        // Reset backoff so the first healthy poll after recovery is prompt.
+        // interval until the daemon recovers. A successful refresh resets
+        // the failure count so the normal poll loop can resume.
         let backoff = INITIAL_BACKOFF_MS
         while (!this.stopped && this.consecutiveFailures >= HEALTH_THRESHOLD) {
-          await sleep(Math.min(backoff, this.pollIntervalMs))
+          const { changed, reachable } = await this.refreshCore()
+          if (changed || reachable) {
+            this.consecutiveFailures = 0
+            this.idleBackoff = IDLE_BACKOFF_MS
+            break
+          }
+          if (this.stopped) return
+          await this.sleep(Math.min(backoff, this.pollIntervalMs))
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
-          await this.refreshAll()
         }
         // Recovered (or stopped) — continue the normal poll loop.
         continue
@@ -139,8 +222,10 @@ export class SessionStore {
       try {
         const result = await this.client.sessionEventsPoll(this.cursor)
         let changed = false
+        let needsSessionRefresh = false
         for (const ev of result.events) {
           if (applyLifecycleEvent(this.state, ev)) changed = true
+          if (isSessionDescriptorEvent(ev)) needsSessionRefresh = true
         }
         // Permission events invalidate the local inbox optimistically, but
         // we still re-fetch to reconcile the full enriched rows.
@@ -161,30 +246,106 @@ export class SessionStore {
         }
         this.consecutiveFailures = 0
         if (changed) this._onDidChange.fire()
+        if (needsSessionRefresh) this.scheduleSessionRefresh()
+
+        // Bounded throttle before the next poll.
+        const delay = Math.min(this.idleBackoff, this.pollIntervalMs)
+        await this.sleep(delay)
+        if (this.stopped) return
+        if (result.events.length === 0) {
+          this.idleBackoff = Math.min(this.idleBackoff * 2, MAX_IDLE_BACKOFF_MS)
+        } else {
+          this.idleBackoff = IDLE_BACKOFF_MS
+        }
       } catch {
         this.consecutiveFailures++
-        // Backoff before the next attempt (the loop re-checks the health
-        // threshold at the top).
-        await sleep(Math.min(INITIAL_BACKOFF_MS * 2 ** this.consecutiveFailures, MAX_BACKOFF_MS))
+        if (this.consecutiveFailures >= HEALTH_THRESHOLD) {
+          // Enter the fallback path immediately on the next loop iteration.
+          continue
+        }
+        // Backoff before the next attempt.
+        await this.sleep(
+          Math.min(INITIAL_BACKOFF_MS * 2 ** this.consecutiveFailures, MAX_BACKOFF_MS),
+        )
       }
     }
   }
 
   /**
-   * Open the /sessions/:id/stream SSE for ONE session at a time. Closes
-   * any previously-focused session's stream first (connection budget —
-   * recon §Gaps 3). Returns a Disposable that closes the stream.
+   * Schedule a debounced refresh of authoritative session descriptors.
+   * Coalesces multiple lifecycle events that fire in quick succession into
+   * a single listSessions() call so cost/tokens/status do not stay stale.
+   */
+  private scheduleSessionRefresh(): void {
+    if (this.stopped) return
+    this.needsSessionRefresh = true
+    if (this.refreshTimeout) return
+    this.refreshRetryMs = SESSION_REFRESH_DEBOUNCE_MS
+    this.refreshTimeout = setTimeout(() => {
+      this.refreshTimeout = undefined
+      void this.runSessionRefresh()
+    }, SESSION_REFRESH_DEBOUNCE_MS)
+  }
+
+  /**
+   * Retry a failed descriptor refresh with bounded exponential backoff.
+   * Keeps the invalidation flag set so the next successful poll or retry
+   * reconciles the descriptor.
+   */
+  private scheduleSessionRefreshRetry(): void {
+    if (this.stopped) return
+    this.needsSessionRefresh = true
+    if (this.refreshTimeout) return
+    const delay = Math.min(this.refreshRetryMs, SESSION_REFRESH_RETRY_MAX_MS)
+    this.refreshRetryMs = Math.min(this.refreshRetryMs * 2, SESSION_REFRESH_RETRY_MAX_MS)
+    this.refreshTimeout = setTimeout(() => {
+      this.refreshTimeout = undefined
+      void this.runSessionRefresh()
+    }, delay)
+  }
+
+  private async runSessionRefresh(): Promise<void> {
+    if (this.stopped || !this.needsSessionRefresh) return
+    this.needsSessionRefresh = false
+    try {
+      const sessions = await this.client.listSessions()
+      if (this.stopped) return
+      this.refreshRetryMs = SESSION_REFRESH_DEBOUNCE_MS
+      if (applySessionsSnapshot(this.state, sessions)) this._onDidChange.fire()
+    } catch {
+      if (this.stopped) return
+      // Keep the invalidation alive and retry later rather than going silent.
+      this.scheduleSessionRefreshRetry()
+    }
+  }
+
+  /**
+   * Open the /sessions/:id/stream SSE for the requested session. Returns a
+   * Disposable that closes ONLY the stream created by this call. Multiple
+   * active subscriptions are allowed so independent transcript panels stay
+   * live.
    */
   focusOutput(id: string, handlers: FocusOutputHandlers): vscode.Disposable {
-    this.focusSub?.close()
+    const sub: {
+      cancelled: boolean
+      close(): void
+      sse?: { close(): void }
+    } = {
+      cancelled: false,
+      close() {
+        this.sse?.close()
+      },
+    }
+    this.focusSubs.add(sub)
     const url = `${this.client.url}/sessions/${encodeURIComponent(id)}/stream`
     this.client.resolveToken().then(token => {
-      if (this.stopped) return
-      this.focusSub = subscribeSse(
+      if (this.stopped || sub.cancelled) return
+      sub.sse = subscribeSse(
         url,
         token ? { authorization: `Bearer ${token}` } : {},
         {
           onEvent: (data) => {
+            if (sub.cancelled) return
             const line = data as SessionStreamLine
             if (line && typeof (line as { line?: unknown }).line === "string") {
               handlers.onLine(line)
@@ -194,20 +355,39 @@ export class SessionStore {
       )
     })
     return new vscode.Disposable(() => {
-      this.focusSub?.close()
-      this.focusSub = undefined
+      sub.cancelled = true
+      sub.close()
+      this.focusSubs.delete(sub)
     })
   }
 
   dispose(): void {
     this.stopped = true
-    this.focusSub?.close()
-    this.focusSub = undefined
+    this.currentSleep?.cancel()
+    if (this.refreshTimeout) {
+      clearTimeout(this.refreshTimeout)
+      this.refreshTimeout = undefined
+    }
+    for (const sub of [...this.focusSubs]) {
+      sub.cancelled = true
+      sub.close()
+    }
+    this.focusSubs.clear()
     void this.pollLoop?.catch(() => {})
     this._onDidChange.dispose()
   }
+
+  private async sleep(ms: number): Promise<void> {
+    const handle = this.scheduler.sleep(ms)
+    this.currentSleep = handle
+    try {
+      await handle.promise
+    } finally {
+      this.currentSleep = undefined
+    }
+  }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function isSessionDescriptorEvent(ev: SessionLifecycleEvent): boolean {
+  return SESSION_DESCRIPTOR_EVENT_TYPES.has(ev.type)
 }

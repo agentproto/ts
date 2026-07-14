@@ -31,6 +31,9 @@ export type ExtMessage =
       /** Latest session descriptor (cost, status, tokens, etc.). */
       session: SessionDescriptor
     }
+  | { type: "sending" }
+  | { type: "sendAck" }
+  | { type: "sendError"; message: string }
 
 /** Messages sent from the webview to the extension host. */
 export type WebviewMessage =
