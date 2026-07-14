@@ -17,41 +17,56 @@ import {
 // explicitly to start(port).
 import { readFileSync } from 'fs';
 import { resolve as resolvePath } from 'path';
+import { fileURLToPath } from 'url';
 
 const PORT = Number(process.env.LLM_ENDPOINT_PORT ?? process.env.PORT ?? 18090);
 
-// Helper: merged pack IDs (official + local)
+// Helper: merged pack IDs (official + local). Cached after first call — the
+// list is effectively static once getLocalPacks() has populated its cache.
+let _mergedPackIdsCache: string[] | null = null;
 function getMergedPackIds(): string[] {
-  return [...new Set([...listPackIds(), ...Object.keys(getLocalPacks())])];
+  if (_mergedPackIdsCache !== null) return _mergedPackIdsCache;
+  _mergedPackIdsCache = [...new Set([...listPackIds(), ...Object.keys(getLocalPacks())])];
+  return _mergedPackIdsCache;
 }
 
 function resolvePackMerged(packId: string | null | undefined): ModelPack {
   if (!packId) packId = DEFAULT_PACK_ID;
   const local = getLocalPacks()[packId];
   if (local) return local;
+  // resolvePack throws RangeError on unknown IDs; callers validate first via getMergedPackIds().
   return resolvePack(packId);
 }
 let _localPacksCache: Record<string, ModelPack> | null = null;
 
-// Load local pack overrides from gitignored JSON (works in ESM + CJS).
-// Searches: CWD/packs.local.json, then src/packs.local.json (dev), then __dirname/packs.local.json.
+// Load local pack overrides from gitignored JSON (ESM-safe; uses fileURLToPath).
+// Searches: CWD/packs.local.json, then src/packs.local.json (dev), then
+// the directory of this module file.
 function getLocalPacks(): Record<string, ModelPack> {
   if (_localPacksCache !== null) return _localPacksCache;
+  const moduleDir = fileURLToPath(new URL('.', import.meta.url));
   const candidates = [
     resolvePath(process.cwd(), 'packs.local.json'),
     resolvePath(process.cwd(), 'src', 'packs.local.json'),
-    resolvePath(new URL('.', import.meta.url).pathname, 'packs.local.json'),
+    resolvePath(moduleDir, 'packs.local.json'),
   ];
   for (const localPath of candidates) {
+    let raw: string;
     try {
-      const raw = readFileSync(localPath, 'utf-8');
+      raw = readFileSync(localPath, 'utf-8');
+    } catch {
+      // file doesn't exist — try next candidate
+      continue;
+    }
+    try {
       const parsed = JSON.parse(raw);
       if (parsed.packs) {
+        // TODO: validate that each entry conforms to the ModelPack shape
         _localPacksCache = parsed.packs as Record<string, ModelPack>;
         return _localPacksCache;
       }
-    } catch {
-      // file doesn't exist or invalid — try next candidate
+    } catch (err) {
+      console.warn(`[llm-endpoint] Skipping malformed packs.local.json at ${localPath}:`, err instanceof Error ? err.message : String(err));
     }
   }
   _localPacksCache = {};

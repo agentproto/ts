@@ -82,11 +82,16 @@ export const PACK_REGISTRY: Record<string, ModelPack> = {
 export const DEFAULT_PACK_ID = 'openrouter';
 
 /**
- * Resolve a pack by ID. Falls back to default pack if not found.
+ * Resolve a pack by ID from the official registry.
+ * Returns the default pack when packId is null/undefined.
+ * Throws a RangeError for non-null IDs that are not in the registry —
+ * callers that need silent fallback should check `PACK_REGISTRY[id]` first.
  */
 export function resolvePack(packId: string | null | undefined): ModelPack {
-  if (!packId) packId = DEFAULT_PACK_ID;
-  return PACK_REGISTRY[packId] || PACK_REGISTRY[DEFAULT_PACK_ID]!;
+  if (!packId) return PACK_REGISTRY[DEFAULT_PACK_ID]!;
+  const pack = PACK_REGISTRY[packId];
+  if (!pack) throw new RangeError(`Unknown pack id: "${packId}". Available: ${Object.keys(PACK_REGISTRY).join(', ')}`);
+  return pack;
 }
 
 /**
@@ -105,9 +110,9 @@ export function listPackIds(): string[] {
 
 /**
  * Wildcard/pattern matching helper for tool names.
- * Supports exact match and suffix wildcard: "agentproto_*" matches "agentproto_start".
+ * Supports exact match and trailing wildcard: "agentproto_*" matches "agentproto_start",
+ * "prefix*" matches "prefixFoo", "*" matches everything.
  */
 export function matchesPattern(name: string, pattern: string): boolean {
-  if (pattern.endsWith('_*')) return name.startsWith(pattern.slice(0, -1));
-  return pattern === name;
+  return pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern;
 }
