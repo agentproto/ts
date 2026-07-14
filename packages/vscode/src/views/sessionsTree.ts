@@ -1,41 +1,92 @@
 /**
- * Placeholder Sessions tree view. WP1 replaces ONLY this file with the
- * real grouped/parented tree (badges, cost, model). This stub returns an
- * empty tree so VS Code doesn't error on activation, and refreshes the
- * view title count when the store changes.
+ * Sessions tree view (WP1). TreeDataProvider on view id `agentproto.sessions`.
+ * Roots are sessions without a parentSessionId; orchestrator subtrees are
+ * nested by parentSessionId. All mapping/sorting rules live in
+ * sessionsTree.logic.ts (no vscode import there) so they're unit-testable;
+ * this file only wraps that data into vscode.TreeItem/ThemeIcon/MarkdownString.
  */
 
 import * as vscode from "vscode"
 
+import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import {
+  buildSessionTree,
+  contextValueFor,
+  descriptionFor,
+  iconFor,
+  labelFor,
+  tooltipFieldsFor,
+  type SessionNode,
+} from "./sessionsTree.logic.js"
 
-export class SessionsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+export class SessionsTreeProvider implements vscode.TreeDataProvider<SessionNode> {
   private readonly store: SessionStore
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
+  private roots: SessionNode[] = []
 
   constructor(store: SessionStore) {
     this.store = store
-    this.store.onDidChange(() => this._onDidChange.fire())
+    this.rebuild()
+    this.store.onDidChange(() => this.rebuild())
   }
 
-  getTreeItem(_element: vscode.TreeItem): vscode.TreeItem {
-    return _element
+  private rebuild(): void {
+    this.roots = buildSessionTree(this.store.sessions)
+    this._onDidChange.fire()
   }
 
-  getChildren(): vscode.TreeItem[] {
-    // WP1 will group sessions here. For now, a single informational line
-    // when there are zero sessions so the view isn't a confusing blank.
-    const count = this.store.sessions.length
-    if (count === 0) {
-      const item = new vscode.TreeItem("No sessions")
-      item.tooltip = "No sessions on the daemon. Spawn one to get started."
-      return [item]
-    }
-    const item = new vscode.TreeItem(`${count} session${count === 1 ? "" : "s"}`)
-    item.tooltip = "WP1 will render the live session tree here."
-    return [item]
+  getTreeItem(element: SessionNode): vscode.TreeItem {
+    const session = element.session
+    const collapsibleState =
+      element.children.length > 0
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.None
+    const item = new vscode.TreeItem(labelFor(session), collapsibleState)
+    item.id = session.id
+    item.description = descriptionFor(session)
+    item.contextValue = contextValueFor(session)
+    item.tooltip = buildTooltip(session)
+    item.iconPath = toThemeIcon(iconFor(session))
+    return item
   }
+
+  getChildren(element?: SessionNode): SessionNode[] {
+    if (element) return element.children
+    return this.roots
+  }
+
+  getParent(element: SessionNode): SessionNode | undefined {
+    const parentId = element.session.parentSessionId
+    if (!parentId) return undefined
+    return findNode(this.roots, parentId)
+  }
+}
+
+function findNode(nodes: SessionNode[], id: string): SessionNode | undefined {
+  for (const node of nodes) {
+    if (node.session.id === id) return node
+    const found = findNode(node.children, id)
+    if (found) return found
+  }
+  return undefined
+}
+
+function toThemeIcon(icon: ReturnType<typeof iconFor>): vscode.ThemeIcon {
+  if (!icon.color) return new vscode.ThemeIcon(icon.id)
+  const themeColorId =
+    icon.color === "error" ? "problemsErrorIcon.foreground" : "problemsWarningIcon.foreground"
+  return new vscode.ThemeIcon(icon.id, new vscode.ThemeColor(themeColorId))
+}
+
+function buildTooltip(session: SessionDescriptor): vscode.MarkdownString {
+  const md = new vscode.MarkdownString()
+  md.appendMarkdown(`**${labelFor(session)}**\n\n`)
+  for (const field of tooltipFieldsFor(session)) {
+    md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
+  }
+  return md
 }
 
 export function registerSessionsView(
@@ -45,7 +96,7 @@ export function registerSessionsView(
   const provider = new SessionsTreeProvider(store)
   const view = vscode.window.createTreeView("agentproto.sessions", {
     treeDataProvider: provider,
-    showCollapseAll: false,
+    showCollapseAll: true,
   })
   ctx.subscriptions.push(view)
 }
