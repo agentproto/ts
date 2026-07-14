@@ -63,10 +63,6 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
   })
 
-  it("xai routes through the intentional local llm-endpoint proxy", () => {
-    const xai = getAnthropicGatewayPreset("xai")
-    expect(xai.baseUrl).toBe("http://localhost:18090/v1")
-    expect(xai.schemaFlavor).toBe("openai")
   it("xai uses the intentional local OpenAI-compatible proxy", () => {
     const xai = getAnthropicGatewayPreset("xai")
     expect(xai.baseUrl).toBe("http://localhost:18090/v1")

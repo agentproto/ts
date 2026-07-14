@@ -1,16 +1,61 @@
 import { createServer } from 'http';
 import { request, RequestOptions } from 'https';
+import {
+  SecretTarget,
+  ModelPack,
+  PACK_REGISTRY,
+  resolvePack,
+  buildMappingFromPack,
+  listPackIds,
+  matchesPattern,
+  DEFAULT_PACK_ID,
+} from './packs.js';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
 // importing this module if you need a non-default port without passing it
 // explicitly to start(port).
+import { readFileSync } from 'fs';
+import { resolve as resolvePath } from 'path';
+
 const PORT = Number(process.env.LLM_ENDPOINT_PORT ?? process.env.PORT ?? 18090);
 
-interface SecretTarget {
-  provider: string;
-  model: string;
-  equivalentClaudeName: string;
+// Helper: merged pack IDs (official + local)
+function getMergedPackIds(): string[] {
+  return [...new Set([...listPackIds(), ...Object.keys(getLocalPacks())])];
+}
+
+function resolvePackMerged(packId: string | null | undefined): ModelPack {
+  if (!packId) packId = DEFAULT_PACK_ID;
+  const local = getLocalPacks()[packId];
+  if (local) return local;
+  return resolvePack(packId);
+}
+let _localPacksCache: Record<string, ModelPack> | null = null;
+
+// Load local pack overrides from gitignored JSON (works in ESM + CJS).
+// Searches: CWD/packs.local.json, then src/packs.local.json (dev), then __dirname/packs.local.json.
+function getLocalPacks(): Record<string, ModelPack> {
+  if (_localPacksCache !== null) return _localPacksCache;
+  const candidates = [
+    resolvePath(process.cwd(), 'packs.local.json'),
+    resolvePath(process.cwd(), 'src', 'packs.local.json'),
+    resolvePath(new URL('.', import.meta.url).pathname, 'packs.local.json'),
+  ];
+  for (const localPath of candidates) {
+    try {
+      const raw = readFileSync(localPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.packs) {
+        _localPacksCache = parsed.packs as Record<string, ModelPack>;
+        return _localPacksCache;
+      }
+    } catch {
+      // file doesn't exist or invalid — try next candidate
+    }
+  }
+  _localPacksCache = {};
+  return _localPacksCache;
 }
 
 // Mappage des codes secrets aléatoires vers les vrais noms de modèles/providers.
@@ -18,44 +63,17 @@ interface SecretTarget {
 // pour que le TUI de `claude` (Claude Code 2.x) accepte le modèle au démarrage — les anciens
 // noms retirés (claude-3-5-*) sont rejetés côté client par le CLI interactif. Les backends
 // secondaires gardent un alias legacy accessible en mode print ou via ?m=<code>.
-const SECRET_CODE_MAPPING: Record<string, SecretTarget> = {
-  // Codes pour Moonshot direct (exposés sous forme de claude pour tromper les parsers Anthropic d'extensions)
-  'jupiter-7': { provider: 'moonshot', model: 'kimi-k2.7-code', equivalentClaudeName: 'claude-opus-4-8' },
-  'mars-6': { provider: 'moonshot', model: 'kimi-k2.6', equivalentClaudeName: 'claude-3-opus' },
 
-  // Codes pour OpenRouter
-  'saturn-5': { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', equivalentClaudeName: 'claude-sonnet-5' },
-  'neptune-4': { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.6', equivalentClaudeName: 'claude-sonnet-4-6' },
-  'uranus-8': { provider: 'openrouter', model: 'google/gemini-3.1-pro-preview', equivalentClaudeName: 'claude-fable-5' },
-  'mercury-9': { provider: 'openrouter', model: 'z-ai/glm-5.2', equivalentClaudeName: 'claude-3-haiku-20240307' }, // Mise à jour de Mercury-9 vers GLM 5.2 via OpenRouter !
-
-  // Codes pour OpenRouter — top modèles populaires (non-Anthropic)
-  'halley-1': { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', equivalentClaudeName: 'claude-fable-4' },        // DeepSeek V4 Flash (rapide)
-  'orion-2': { provider: 'openrouter', model: 'xiaomi/mimo-v2.5', equivalentClaudeName: 'claude-opus-4-6' },                 // Xiaomi MiMo-V2.5
-  'pegasus-3': { provider: 'openrouter', model: 'minimax/minimax-m3', equivalentClaudeName: 'claude-opus-4-9' },              // MiniMax M3
-  'lyra-4': { provider: 'openrouter', model: 'tencent/hy3-preview', equivalentClaudeName: 'claude-opus-4-7' },                // Tencent Hy3 preview
-  'vega-5': { provider: 'openrouter', model: 'stepfun/step-3.7-flash', equivalentClaudeName: 'claude-sonnet-4-5' },  // Step 3.7 Flash (rapide)
-
-  // Codes pour Zhipu AI / ZAI (BigModel direct)
-  'venus-3': { provider: 'zai', model: 'glm-5.2', equivalentClaudeName: 'claude-3-5-fable' },
-
-  // Codes pour Groq (Inférence ultra-rapide)
-  'pluto-2': { provider: 'groq', model: 'qwen/qwen3.6-27b', equivalentClaudeName: 'claude-haiku-4-5' },
-  'atlas-6': { provider: 'groq', model: 'llama-3.3-70b-versatile', equivalentClaudeName: 'claude-3-5-sonnet-20241022' },      // Llama 3.3 70B (non-reasoning)
-  'titan-7': { provider: 'groq', model: 'openai/gpt-oss-120b', equivalentClaudeName: 'claude-sonnet-4-7' },                    // GPT-OSS 120B (reasoning, include_reasoning:false)
-
-  // Codes pour xAI (Grok)
-  'nova-1': { provider: 'xai', model: 'grok-4.5', equivalentClaudeName: 'claude-opus-4-8' },
-  'pulsar-2': { provider: 'xai', model: 'grok-4.3', equivalentClaudeName: 'claude-sonnet-5' },
-  'quasar-3': { provider: 'xai', model: 'grok-4.20', equivalentClaudeName: 'claude-fable-5' },
-  'comet-4': { provider: 'xai', model: 'grok-build-0.1', equivalentClaudeName: 'claude-haiku-4-5' },
-};
+// NOTE: SECRET_CODE_MAPPING is now dynamically built from packs — see packs.ts
+// The active pack is resolved per-request via URL path /v1/{pack}/messages
+// or query param ?pack={packId}. Default pack ('openrouter') has 4 models.
 
 // Limite max d'outils par provider (au-delà, Groq renvoie 400 "maximum number of items is 128").
 // Les providers non listés sont illimités. Le CLI `claude` charge sa config MCP globale
 // (~/.claude + .mcp.json + skills) → dépasse souvent 128 outils → on tronque côté proxy.
 const PROVIDER_MAX_TOOLS: Record<string, number> = {
-  groq: 128
+  groq: 128,
+  xai: 200
 };
 
 // Providers routables — sert d'allow-list pour l'override `?p=`. Un `?p=<inconnu>`
@@ -65,30 +83,46 @@ const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']
 // Trimme/strip les outils du payload selon :
 //  - queryTools ("a,b,c") : allow-list explicite (garde uniquement ces outils, par nom).
 //  - queryNoTools ("1") : strip TOUS les outils (+ tool_choice) → mode "lean".
+//  - headers X-Proxy-Tools (allow-list) et X-Proxy-No-Tools (strip total)
 //  - sinon : tronque au cap du provider si dépassé.
 // `toolName` extrait le nom d'un outil quelle que soit sa forme (Anthropic: .name ;
 // OpenAI function: .function.name). Doit tourner AVANT la transformation de forme
 // propre à chaque provider (ZAI/Groq mappent input_schema → function.parameters).
-function trimTools(payload: any, provider: string, queryTools: string | null, queryNoTools: string | null): void {
+function trimTools(payload: any, provider: string, queryTools: string | null, queryNoTools: string | null, headerTools: string | null, headerNoTools: string | null, headerExcludeTools: string | null): void {
   if (!payload || !Array.isArray(payload.tools) || payload.tools.length === 0) return;
 
-  // 1. Strip total demandé explicite (?notools=1 ou ?tools=none)
-  if (queryNoTools === '1' || queryTools === 'none') {
+  // 1. Strip total demandé explicite (?notools=1 ou ?tools=none ou header X-Proxy-No-Tools: 1)
+  if (queryNoTools === '1' || queryTools === 'none' || headerNoTools === '1') {
     console.log(`[Proxy][tools] strip total (${payload.tools.length} outils supprimés)`);
     delete payload.tools;
     delete payload.tool_choice;
     return;
   }
 
-  // 2. Allow-list explicite (?tools=Bash,Read,Write)
-  if (queryTools) {
-    const allow = new Set(queryTools.split(',').map(s => s.trim()).filter(Boolean));
+  // 2. Allow-list explicite (?tools=Bash,Read,Write ou header X-Proxy-Tools: Bash,Read,Write)
+  //    Supporte les wildcards : "agentproto_*" garde tous les outils dont le nom commence par "agentproto_".
+  const allowList = headerTools || queryTools;
+  if (allowList) {
+    const patterns = allowList.split(',').map(s => s.trim()).filter(Boolean);
     const before = payload.tools.length;
     payload.tools = payload.tools.filter((t: any) => {
       const name = (t && (t.name || (t.function && t.function.name))) || '';
-      return allow.has(name);
+      return patterns.some(p => matchesPattern(name, p));
     });
-    console.log(`[Proxy][tools] allow-list {${[...allow].join(',')}} → ${before}→${payload.tools.length}`);
+    console.log(`[Proxy][tools] allow-list {${patterns.join(',')}} → ${before}→${payload.tools.length}`);
+    if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
+    return;
+  }
+
+  // 2b. Exclude-list via header X-Proxy-Exclude-Tools (strip certains outils, garde le reste)
+  if (headerExcludeTools) {
+    const patterns = headerExcludeTools.split(',').map((s: string) => s.trim()).filter(Boolean);
+    const before = payload.tools.length;
+    payload.tools = payload.tools.filter((t: any) => {
+      const name = (t && (t.name || (t.function && t.function.name))) || '';
+      return !patterns.some((p: string) => matchesPattern(name, p));
+    });
+    console.log(`[Proxy][tools] exclude-list {${patterns.join(',')}} → ${before}→${payload.tools.length}`);
     if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
     return;
   }
@@ -605,6 +639,61 @@ const server = createServer((req, res) => {
   // toutes — un `/v1/v1/...` redevient `/v1/...` pour le matching ET les logs.
   const urlPath = parsedUrl.pathname.replace(/\/+$/, '').replace(/^\/v1\/v1(\/|$)/, '/v1$1');
 
+  // ── Pack resolution ──────────────────────────────────────────────────────
+  // Priority: header X-Proxy-Pack > URL path /v1/{pack}/messages > query param ?pack= > default
+  let packId: string | null = null;
+
+  // 1. Header personnalisé (Claude Desktop "Custom inference headers")
+  const proxyPackHeader = req.headers['x-proxy-pack'];
+  const proxyPackValue: string | null = (Array.isArray(proxyPackHeader) ? proxyPackHeader[0] : proxyPackHeader) || null;
+  if (proxyPackValue) {
+    if (getMergedPackIds().includes(proxyPackValue)) {
+      packId = proxyPackValue;
+    } else {
+      console.warn(`[Proxy] Unknown pack "${proxyPackValue}" via X-Proxy-Pack header — returning 400.`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown pack "${proxyPackValue}" via X-Proxy-Pack. Available: ${getMergedPackIds().join(', ')}` } }));
+      return;
+    }
+  }
+
+  // 2. URL path /v1/{pack}/messages
+  if (!packId) {
+    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions)?$/);
+    if (packPathMatch) {
+      const potentialPack = packPathMatch[1];
+      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat']);
+      if (potentialPack && !RESERVED_SEGMENTS.has(potentialPack)) {
+        if (getMergedPackIds().includes(potentialPack)) {
+          packId = potentialPack;
+        } else {
+          console.warn(`[Proxy] Unknown pack "${potentialPack}" via URL path — returning 400.`);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown pack "${potentialPack}" in URL path. Available: ${getMergedPackIds().join(', ')}` } }));
+          return;
+        }
+      }
+    }
+  }
+
+  // 3. Query param ?pack=
+  if (!packId) {
+    const queryPack = parsedUrl.searchParams.get('pack');
+    if (queryPack) {
+      if (getMergedPackIds().includes(queryPack)) {
+        packId = queryPack;
+      } else {
+        console.warn(`[Proxy] Unknown pack "${queryPack}" — returning 400.`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown pack "${queryPack}". Available: ${getMergedPackIds().join(', ')}` } }));
+        return;
+      }
+    }
+  }
+
+  const activePack = resolvePackMerged(packId);
+  const SECRET_CODE_MAPPING = buildMappingFromPack(activePack);
+
   // Lecture des paramètres de requête p (provider), m (secret code model),
   // tools (allow-list d'outils à garder) et notools (strip tous les outils).
   const queryProvider = parsedUrl.searchParams.get('p');
@@ -612,13 +701,48 @@ const server = createServer((req, res) => {
   const queryTools = parsedUrl.searchParams.get('tools'); // ex: ?tools=Bash,Read,Write
   const queryNoTools = parsedUrl.searchParams.get('notools'); // ex: ?notools=1
 
+  // Headers personnalisés pour le contrôle des outils (Claude Desktop "Custom inference headers")
+  // Unwrap les headers dupliqués (Node les expose comme array) — prend le premier.
+  const rawHeaderTools = req.headers['x-proxy-tools'];
+  const headerTools: string | null = (Array.isArray(rawHeaderTools) ? rawHeaderTools[0] : rawHeaderTools) || null;
+  const rawHeaderNoTools = req.headers['x-proxy-no-tools'];
+  const headerNoTools: string | null = (Array.isArray(rawHeaderNoTools) ? rawHeaderNoTools[0] : rawHeaderNoTools) || null;
+  const rawHeaderExcludeTools = req.headers['x-proxy-exclude-tools'];
+  const headerExcludeTools: string | null = (Array.isArray(rawHeaderExcludeTools) ? rawHeaderExcludeTools[0] : rawHeaderExcludeTools) || null;
+
   console.log(
     `[Proxy] Incoming request: ${req.method} ${rawUrl}` +
-      (urlPath !== parsedUrl.pathname.replace(/\/+$/, '') ? ` (normalized: ${urlPath})` : '')
+      (urlPath !== parsedUrl.pathname.replace(/\/+$/, '') ? ` (normalized: ${urlPath})` : '') +
+      ` [pack: ${activePack.id}]`
   );
 
+  // 0. Endpoint /v1/packs pour la découverte des packs disponibles
+  if (req.method === 'GET' && (urlPath === '/v1/packs' || urlPath === '/packs')) {
+    const mergedRegistry = { ...PACK_REGISTRY, ...getLocalPacks() };
+    const packsResponse = {
+      object: 'list',
+      data: Object.values(mergedRegistry).map((pack: ModelPack) => ({
+        id: pack.id,
+        label: pack.label,
+        description: pack.description,
+        model_count: Object.keys(pack.models).length,
+        models: Object.entries(pack.models).map(([code, target]) => ({
+          code,
+          provider: target.provider,
+          model: target.model,
+          equivalent_claude_name: target.equivalentClaudeName,
+        })),
+      })),
+    };
+    console.log(`[Proxy] Returning pack list (${packsResponse.data.length} packs).`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(packsResponse));
+    return;
+  }
+
   // 1. Endpoint /v1/models pour la découverte des modèles (conforme au format exact d'Anthropic ou d'OpenAI)
-  if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models')) {
+  // Supporte aussi /v1/{pack}/models pour la sélection de pack via URL path
+  if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models' || urlPath.endsWith('/models'))) {
     const isAnthropicStyle = req.headers['anthropic-version'] !== undefined || req.headers['x-api-key'] !== undefined;
 
     if (isAnthropicStyle) {
@@ -730,6 +854,12 @@ const server = createServer((req, res) => {
         if (explicitTarget) {
           resolvedTarget = explicitTarget;
           console.log(`[Proxy] Detected URL model parameter code "${queryModelCode}" -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
+        } else if (queryModelCode) {
+          // Code explicite fourni mais inconnu dans le pack actif — fail loud
+          console.warn(`[Proxy] URL model code "${queryModelCode}" not found in active pack "${activePack.id}" — returning 400 instead of silent fallback.`);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown model code "${queryModelCode}" in pack "${activePack.id}". Available: ${Object.keys(SECRET_CODE_MAPPING).join(', ')}` } }));
+          return;
         } else {
           // Étape 2 : Chercher dans notre dictionnaire d'équivalence Claude (exemples: "claude-3-5-sonnet")
           const matchedEntry = Object.entries(SECRET_CODE_MAPPING).find(
@@ -776,7 +906,7 @@ const server = createServer((req, res) => {
 
       // Trimme les outils AVANT la transformation de forme propre à chaque provider
       // (ZAI/Groq mappent input_schema → function.parameters ; le trim doit voir la forme Anthropic).
-      trimTools(payload, resolvedTarget.provider, queryTools, queryNoTools);
+      trimTools(payload, resolvedTarget.provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools);
 
       switch (resolvedTarget.provider) {
         case 'openrouter':
