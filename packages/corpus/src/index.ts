@@ -110,6 +110,11 @@ export type {
 export { REFINED_KIND_SCHEMA, isRefinedKind } from "./distill/types.js"
 export { buildDistillPrompt, parseItems } from "./distill/prompt.js"
 export { scanDistilledSourceIds } from "./distill/scan.js"
+// Source scan — sources/**​/*.md → DistillSource[] (frontmatter-id provenance,
+// frontmatter-stripped body). The single impl shared by the Bureau client
+// driver and the server-side synthesize payoff (no client/server drift).
+export { readDistillSources } from "./distill/read-sources.js"
+export type { ReadDistillSourcesOptions } from "./distill/read-sources.js"
 // Model-backed distiller — any structural ModelPort (incl. an agent CLI via
 // makeAgentCliModel) becomes a DistillPort. Unifies distill with the report writer.
 export { modelDistiller } from "./distill/model-distiller.js"

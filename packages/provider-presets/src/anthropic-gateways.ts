@@ -65,6 +65,20 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "deepseek-v4-pro",
     homepage: "https://api-docs.deepseek.com",
   },
+  xai: {
+    id: "xai",
+    label: "xAI (Grok)",
+    description:
+      "xAI Grok models via the local LLM endpoint proxy (OpenAI-compatible). " +
+      "Use model option with codenames: nova-1 (grok-4.5), pulsar-2 (grok-4.3), " +
+      "quasar-3 (grok-4.20), comet-4 (grok-build-0.1). Set XAI_API_KEY in env.",
+    schemaFlavor: "openai",
+    baseUrl: "http://localhost:18090/v1", // Routed through llm-endpoint proxy
+    keyEnv: "XAI_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "nova-1",
+    homepage: "https://docs.x.ai",
+  },
 } as const satisfies Record<string, ProviderPreset>
 
 export type AnthropicGatewayPresetId = keyof typeof ANTHROPIC_GATEWAY_PRESETS

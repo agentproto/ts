@@ -77,6 +77,17 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       ],
     },
   },
+  // Billing-auth (opt-in — authEnforce defaults to "when-configured", so an
+  // unconfigured spawn stays ambient/unchanged). provider "anthropic" ⇒
+  // api-key mode SETS ANTHROPIC_API_KEY. Unlike the claude-code CLI wrapper,
+  // the SDK's subscription/bearer var is ANTHROPIC_AUTH_TOKEN (see
+  // options.ts / cli.ts) — so that's this adapter's authSubscription.setEnv,
+  // with the CLI's CLAUDE_CODE_OAUTH_TOKEN scrubbed as the sibling credential.
+  provider: "anthropic",
+  authSubscription: {
+    setEnv: "ANTHROPIC_AUTH_TOKEN",
+    conflictEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  },
   sandbox:
     "In-process: the SDK harness runs inside the spawned node process, scoped " +
     "to the daemon's cwd. Tool-permission handling defaults to " +

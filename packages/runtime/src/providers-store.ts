@@ -20,26 +20,29 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { PROVIDER_KEY_ENV } from "@agentproto/model-catalog"
 
 /**
  * Canonical provider → environment-variable name. The spawned model gateways
  * (Mastra in mastra-agent, hermes/opencode's routers) read the provider key
  * from these env names. Aligned with the adapter manifests' `models.env`
  * maps + the common SDK conventions.
+ *
+ * DERIVED from `@agentproto/model-catalog`'s {@link PROVIDER_KEY_ENV} (the
+ * single source of truth, co-located with the provider enum — DECISION 1) so
+ * the two maps that used to restate the same fact can't drift, plus the few
+ * NON-catalog gateway providers this store also fronts (`groq`,
+ * `vercel-ai-gateway`) which aren't LLM-catalog `provider` values but still
+ * carry a key here. Adding a catalog provider forces adding its key env in the
+ * catalog (the `Record<CatalogProvider, string>` is exhaustive), and it flows
+ * through to here for free.
  */
 export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  ...PROVIDER_KEY_ENV,
+  // ── Non-catalog gateway providers (not LLM-catalog `provider` enum values,
+  //    so absent from PROVIDER_KEY_ENV, but still keyed through this store) ──
   groq: "GROQ_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  // Moonshot (Kimi) — an Anthropic-compatible gateway; its key is sent as a
-  // Bearer token (ANTHROPIC_AUTH_TOKEN) with a custom base_url by the claude-sdk
-  // gateway resolver. Native routers (Mastra/hermes) read this env name directly.
-  moonshot: "MOONSHOT_API_KEY",
-  // MiniMax — direct LLM provider (also serves voice/video under the same key).
-  minimax: "MINIMAX_API_KEY",
+  xai: "XAI_API_KEY",
   // Vercel AI Gateway — a gateway provider, like openrouter, that fronts many
   // upstream model families behind one key.
   "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
@@ -100,6 +103,20 @@ export async function loadProviders(): Promise<ProvidersFile> {
   } catch {
     return emptyFile() // ENOENT / malformed → empty
   }
+}
+
+/**
+ * Read a single provider's stored api key from `providers.json`, or undefined
+ * when the provider has no entry (or the file doesn't exist). The EXPLICIT,
+ * verifiable credential source for the billing-auth resolver's api-key mode
+ * (`agentproto auth provider set <provider> <key>` writes it) — distinct from
+ * the ambient shell env, which the resolver never reads. Returns the raw key;
+ * only a non-secret fingerprint of it is ever surfaced back to a caller.
+ */
+export async function getProviderKey(provider: string): Promise<string | undefined> {
+  const file = await loadProviders()
+  const entry = file.providers[provider]
+  return entry?.apiKey || undefined
 }
 
 async function writeProviders(file: ProvidersFile): Promise<void> {

@@ -22,14 +22,17 @@ import {
 // gateway facts), so a new native-Anthropic credential env var added there is
 // picked up here automatically. Shared by the moonshot/openrouter modes and
 // the base_url option.
-const CLAUDE_CODE_GATEWAY_ENV_UNSET: string[] = [
-  ...ANTHROPIC_CORE_SCRUB_ENV,
+const CLAUDE_CODE_CLOUD_TOGGLES: string[] = [
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
   "CLAUDE_CODE_USE_ANTHROPIC_AWS",
   "CLAUDE_CODE_USE_MANTLE",
   "CLAUDE_CODE_USE_GATEWAY",
+]
+const CLAUDE_CODE_GATEWAY_ENV_UNSET: string[] = [
+  ...ANTHROPIC_CORE_SCRUB_ENV,
+  ...CLAUDE_CODE_CLOUD_TOGGLES,
 ]
 
 export const claudeCode: AgentCliHandle = defineAgentCli({
@@ -56,45 +59,40 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: { env: ["ANTHROPIC_API_KEY"] },
-    // Deterministic `auth` spawn mode (subscription vs api-key billing — see
-    // AgentCliStartOptions.auth). EXPLICIT credential selection, not
-    // scrub-by-absence: each mode POSITIVELY sets exactly one credential env
-    // var from the resolved `auth.credential` (never read ambiently) and
-    // deletes the conflicting one(s), so which credential — and thus which
-    // billing — a spawn uses is *stated*, never inferred from whatever the
-    // daemon's launching shell happened to export (the outage this whole
-    // surface exists to prevent).
-    //
-    // "subscription" sets CLAUDE_CODE_OAUTH_TOKEN to a bearer token minted via
-    // `claude setup-token` (bills the Max/Pro subscription, not API credits) —
-    // this is the var Claude Code documents for that token and the ONLY one
-    // that yields the clean native claude.ai-login path. (Injecting the same
-    // token as ANTHROPIC_AUTH_TOKEN authenticates but is treated as a generic
-    // override that "takes precedence over your claude.ai login" and disables
-    // connectors — the degraded path, so we don't use it here.) It also deletes
-    // ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN + the cloud-provider redirect
-    // toggles + ANTHROPIC_BASE_URL — reusing CLAUDE_CODE_GATEWAY_ENV_UNSET
-    // (already the source of truth for this adapter's leak set) plus
-    // ANTHROPIC_BASE_URL, which that list omits deliberately (a gateway
-    // mode SETS it, so it can't be unset unconditionally there).
-    //
-    // "api_key" sets ANTHROPIC_API_KEY to an explicit key and deletes
-    // ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_OAUTH_TOKEN — the deliberate "bill the
-    // API" choice, with both subscription-style credentials scrubbed.
-    modes: {
-      subscription: {
-        set_env: "CLAUDE_CODE_OAUTH_TOKEN",
-        unset_env: [
-          ...CLAUDE_CODE_GATEWAY_ENV_UNSET,
-          "ANTHROPIC_BASE_URL",
-          "ANTHROPIC_AUTH_TOKEN",
-        ],
-      },
-      api_key: {
-        set_env: "ANTHROPIC_API_KEY",
-        unset_env: ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
-      },
-    },
+  },
+  // Deterministic billing-auth (subscription vs api-key), resolved by the
+  // runtime (@agentproto/runtime's resolveAuthSpec) and applied MECHANICALLY
+  // by the driver. EXPLICIT credential selection, not scrub-by-absence: the
+  // resolver SETS exactly one credential env var (from a named config/store
+  // ref, never the ambient shell) and SCRUBS the conflicting one(s), so which
+  // credential — and thus which billing — a spawn uses is *stated*, never
+  // inferred from whatever the daemon's launching shell exported (the outage
+  // this surface exists to prevent).
+  //
+  // provider "anthropic" ⇒ api-key mode SETS providerEnvVar("anthropic") =
+  // ANTHROPIC_API_KEY (derived from the catalog, not re-listed here) and
+  // scrubs the subscription-family creds (CLAUDE_CODE_OAUTH_TOKEN +
+  // ANTHROPIC_AUTH_TOKEN). authEnforce "always" preserves #312: claude-code
+  // engages on EVERY spawn and fails fast with no credential.
+  //
+  // authSubscription: "subscription" SETS CLAUDE_CODE_OAUTH_TOKEN to a bearer
+  // token minted via `claude setup-token` (bills Max/Pro, not API credits) —
+  // the var Claude Code documents for that token and the ONLY one that yields
+  // the clean native claude.ai-login path. (The same token as
+  // ANTHROPIC_AUTH_TOKEN authenticates but is treated as a generic override
+  // that disables connectors — the degraded path, so it's a `conflictEnv` to
+  // scrub, never the setEnv.) `conflictEnv` (ANTHROPIC_AUTH_TOKEN) is scrubbed
+  // in BOTH modes; `unsetEnvAdd` (cloud toggles + ANTHROPIC_BASE_URL) only in
+  // subscription (native) mode — matching #312's exact byte-for-byte scrub set
+  // in each mode (asserted by the regression snapshot test). ANTHROPIC_API_KEY
+  // is NOT listed in unsetEnvAdd because it derives from providerEnvVar and is
+  // scrubbed as the non-set credential automatically.
+  provider: "anthropic",
+  authEnforce: "always",
+  authSubscription: {
+    setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+    conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+    unsetEnvAdd: [...CLAUDE_CODE_CLOUD_TOGGLES, "ANTHROPIC_BASE_URL"],
   },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
@@ -265,17 +263,15 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       id: "model",
       // string (not enum) so any valid Anthropic model ID is accepted
       // without requiring a code change to expand the list. Applied via
-      // ACP session/set_config_option(configId:"model") after newSession
-      // — the claude-agent-acp wrapper does not forward its own CLI args
-      // to the underlying claude process, so bin_args_template alone
-      // cannot select the model.
+      // ANTHROPIC_MODEL env var so the claude binary picks it up directly
+      // — the claude-agent-acp wrapper only forwards CLI args when --cli
+      // is passed, otherwise it runs in ACP mode and ignores argv.
       type: "string" as const,
       description:
         "Anthropic model ID or wrapper alias (e.g. 'claude-opus-4-8', " +
-        "'claude-sonnet-5', 'sonnet', 'opus'). Applied via ACP " +
-        "session/set_config_option after the session is created; an id the " +
-        "wrapper can't resolve is warned about and ignored (the session keeps " +
-        "the claude-code default). Omit to use the claude-code default.",
+        "'claude-sonnet-5', 'sonnet', 'opus'). Set via ANTHROPIC_MODEL env " +
+        "var so the claude binary uses it directly. Omit to use the claude-code default.",
+      env: { ANTHROPIC_MODEL: "{value}" },
     },
     {
       id: "effort",

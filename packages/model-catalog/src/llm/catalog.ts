@@ -454,6 +454,53 @@ export const LLM_PRICING_CATALOG = {
     provider: "moonshot",
   },
 
+  // ── xAI (direct SDK + proxy) ─────────────────────────────────────────
+  // Source: https://docs.x.ai/docs/models (fetched 2026-07-14)
+  // Pricing from API: prompt_text_token_price / completion_text_token_price
+  // in units per 1 token. Converted to $ per 1M tokens.
+  "grok-4.5": {
+    // $2.00 in / $6.00 out per 1M (flagship).
+    inputPer1M: 2.0,
+    outputPer1M: 6.0,
+    vendor: "xai",
+    provider: "xai",
+  },
+  "grok-4.20": {
+    // $1.25 in / $2.50 out per 1M (non-reasoning default).
+    inputPer1M: 1.25,
+    outputPer1M: 2.5,
+    vendor: "xai",
+    provider: "xai",
+  },
+  "grok-4.20-reasoning": {
+    // Same pricing as grok-4.20, reasoning variant.
+    inputPer1M: 1.25,
+    outputPer1M: 2.5,
+    vendor: "xai",
+    provider: "xai",
+  },
+  "grok-4.20-multi-agent": {
+    // Same pricing as grok-4.20.
+    inputPer1M: 1.25,
+    outputPer1M: 2.5,
+    vendor: "xai",
+    provider: "xai",
+  },
+  "grok-4.3": {
+    // $1.25 in / $2.50 out per 1M (alias: grok-latest).
+    inputPer1M: 1.25,
+    outputPer1M: 2.5,
+    vendor: "xai",
+    provider: "xai",
+  },
+  "grok-build-0.1": {
+    // $1.00 in / $2.00 out per 1M (code/fast variant, 256k context).
+    inputPer1M: 1.0,
+    outputPer1M: 2.0,
+    vendor: "xai",
+    provider: "xai",
+  },
+
   // ── Mistral (direct SDK) ──────────────────────────────────────────────
   "mistral-large-latest": {
     inputPer1M: 0.5,
@@ -552,6 +599,8 @@ export const MODEL_ALIASES = {
   // Mistral
   "mistralai/mistral-large-latest": "mistral-large-latest",
   "mistralai/mistral-small-latest": "mistral-small-latest",
+  // xAI — alias grok-latest to grok-4.3 (current default).
+  "grok-latest": "grok-4.3",
 } satisfies Record<string, string>
 
 /** Every alias id that resolves to a canonical model — the alias keys. */

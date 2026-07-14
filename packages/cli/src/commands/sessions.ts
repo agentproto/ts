@@ -54,6 +54,8 @@ Usage:
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
                                       [--model <id>] [--auth subscription|api-key]
+                                      [--base-url <url>] [--auth-token <token>]
+                                      [--options-json <json|@file>]
                                       [--prompt <text>]
                                       [--label <text>] [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
@@ -81,6 +83,19 @@ sessions start flags:
                                  (default) scrubs API-key/gateway env vars so the
                                  child uses its stored OAuth login; api-key requires
                                  ANTHROPIC_API_KEY and fails the spawn without it.
+  --base-url <url>              manifest 'base_url' option (claude-code/claude-sdk) —
+                                 injected as ANTHROPIC_BASE_URL, fronts a custom
+                                 Anthropic-compatible gateway (proxy, LiteLLM, …).
+                                 Shorthand for --options-json '{"base_url":"<url>"}'.
+  --auth-token <token>          manifest 'auth_token' option — injected as
+                                 ANTHROPIC_AUTH_TOKEN (sent as 'Authorization: Bearer').
+                                 Pair with --base-url to authenticate against a gateway
+                                 instead of the ambient ANTHROPIC_API_KEY.
+  --options-json <json>         object form of any manifest-declared AIP-45 options
+                                 (e.g. '{"base_url":"...","effort":"high"}') — merged
+                                 with --base-url/--auth-token when both are given
+                                 (the discrete flags win on key collision)
+  --options-json @<file>        same, read from a file instead of inline JSON
   --orchestrator                shorthand for orchestrator: true
   --orchestrator-json <json>    object form: {"tools":[...],"maxDepth":N,"maxChildren":N}
                                  (wins over --orchestrator when both are given)
@@ -174,6 +189,9 @@ async function runStart(args: readonly string[]): Promise<number> {
       workspace: { type: "string" },
       model: { type: "string" },
       auth: { type: "string" },
+      "base-url": { type: "string" },
+      "auth-token": { type: "string" },
+      "options-json": { type: "string" },
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
       attach: { type: "boolean" },
@@ -251,6 +269,49 @@ async function runStart(args: readonly string[]): Promise<number> {
     }
   }
 
+  // Parse --options-json client-side (same @file convention as
+  // --mcp-servers-json) so malformed JSON fails fast, before any network
+  // activity. --base-url / --auth-token are sugar for the same manifest
+  // `options` map (claude-code/claude-sdk's `base_url`/`auth_token` — see
+  // adapters/claude-code and adapters/claude-sdk); merged in after so the
+  // discrete flags win over a colliding key in --options-json.
+  let options: Record<string, boolean | number | string> | undefined
+  if (values["options-json"] !== undefined) {
+    const raw = values["options-json"]
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto sessions start: could not read --options-json file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object of option id -> value")
+      }
+      options = parsed as Record<string, boolean | number | string>
+    } catch (err) {
+      process.stderr.write(
+        `agentproto sessions start: invalid --options-json: ${err instanceof Error ? err.message : String(err)}\n`
+      )
+      return 2
+    }
+  }
+  if (values["base-url"] || values["auth-token"]) {
+    options = { ...options }
+    if (values["base-url"]) options.base_url = values["base-url"]
+    if (values["auth-token"]) options.auth_token = values["auth-token"]
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -275,6 +336,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   // ~/.agentproto/config.json's defaults.adapters.<slug>.auth.{token,apiKey}
   // (never inherited from the shell, per the auth-mode design).
   if (values.auth) body.auth = { mode: values.auth }
+  if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
   if (orchestrator !== undefined) body.orchestrator = orchestrator

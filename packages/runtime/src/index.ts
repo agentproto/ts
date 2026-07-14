@@ -199,6 +199,7 @@ export {
   loadProviders,
   setProviderKey,
   removeProviderKey,
+  getProviderKey,
   injectProviderKeysIntoEnv,
   providerEnvVar,
   providersPath,
@@ -206,6 +207,23 @@ export {
   type ProviderEntry,
   type ProvidersFile,
 } from "./providers-store.js"
+export {
+  resolveSpawnDefaults,
+  normalizeSkillsOption,
+  credentialFingerprint,
+  resolveAuthSpec,
+  AuthResolutionError,
+  type SpawnDefaultsConfig,
+  type DefaultsAdapterConfig,
+  type DefaultsAdapterAuthConfig,
+  type ResolvedSpawnDefaults,
+  type ResolvedSpawnAuthMaterial,
+  type AdapterAuthDescriptor,
+  type ResolvedAuthSpec,
+  type AuthEcho,
+  type CredentialSource,
+  type DeclaredAdapterOption,
+} from "./spawn-defaults.js"
 export {
   DEFAULT_ORCHESTRATOR_TOOLS,
   narrowOrchestratorTools,

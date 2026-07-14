@@ -332,7 +332,8 @@ export function registerAgentTools(
             "`token`/`apiKey` (matching the resolved mode) is the secret VALUE, merged " +
             "against `~/.agentproto/config.json`'s `defaults.adapters.claude-code.auth` " +
             "(this field's `mode` wins; the credential for the resolved mode wins over " +
-            "the matching config field). 'subscription' SETS ANTHROPIC_AUTH_TOKEN to " +
+            "the matching config field). For claude-code, 'subscription' SETS " +
+            "CLAUDE_CODE_OAUTH_TOKEN to " +
             "`token` (a bearer token minted via `claude setup-token` — bills the Max/Pro " +
             "subscription, not API credits) and DELETES ANTHROPIC_API_KEY + the cloud-" +
             "provider redirect toggles + ANTHROPIC_BASE_URL. 'api-key' SETS " +

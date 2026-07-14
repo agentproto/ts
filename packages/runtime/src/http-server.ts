@@ -73,7 +73,11 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
-import type { DeclaredAdapterOption } from "./spawn-defaults.js"
+import type {
+  DeclaredAdapterOption,
+  AdapterAuthDescriptor,
+  ResolvedAuthSpec,
+} from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
@@ -171,13 +175,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  surfaced + parked in the daemon's inbox instead of auto-answered.
      *  Adapters/arms with no permission surface ignore it. Default false. */
     permissionHold?: boolean
-    /** Deterministic billing-auth mode + EXPLICIT credential forwarded from
-     *  `agent_start` to the driver's `runtime.start({ auth })` — see
-     *  `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`. `credential`
-     *  is the resolved secret value (never read ambiently); adapters that
-     *  don't declare the env-var vocabulary (everything except claude-code
-     *  today) ignore this field entirely. */
-    auth?: { mode: "subscription" | "api-key"; credential?: string }
+    /** FULLY-RESOLVED billing-auth spec forwarded from `agent_start` to the
+     *  driver's `runtime.start({ auth })`, computed by the runtime's
+     *  `resolveAuthSpec` (provider, ordered mode, setEnv/scrub, credential
+     *  source all pre-decided). The driver applies it mechanically. Absent
+     *  when the resolver produced no spec (ambient). */
+    auth?: ResolvedAuthSpec
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -191,6 +194,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  documented no-op for that adapter (e.g. claude-code, which
    *  auto-discovers skills and declares no such option). */
   declaredOptions?: readonly DeclaredAdapterOption[]
+  /** Billing-auth descriptor projected from the adapter manifest
+   *  (`provider` / `authEnforce` / `authSubscription`) — the sole input the
+   *  runtime's `resolveAuthSpec` reads about the adapter's auth capability
+   *  (keeping the catalog coupling in the runtime, the driver mechanical).
+   *  Omitted ⇒ ambient (no credential injection). */
+  authDescriptor?: AdapterAuthDescriptor
+  /** Adapter's default model id (`models.default`) — lets the resolver derive
+   *  a provider for a by-model spawn that omitted `model`. */
+  defaultModel?: string
 } | null>
 
 /**
@@ -1677,6 +1689,26 @@ function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
   return servers
 }
 
+/** Parse the `options` body field — the same manifest-declared option
+ *  id → value map (AIP-45 `options`, e.g. claude-code/claude-sdk's
+ *  `base_url`/`auth_token`) the MCP `agent_start` tool accepts, tolerant of
+ *  a JSON-stringified object (see `parseOrchestratorField`). Non-primitive
+ *  values are dropped rather than failing the whole map — `composeSpawn`
+ *  validates the survivors against each option's declared type. */
+function parseOptionsField(
+  raw: unknown,
+): Record<string, boolean | number | string> | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const out: Record<string, boolean | number | string> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "boolean" || typeof v === "number" || typeof v === "string") {
+      out[k] = v
+    }
+  }
+  return out
+}
+
 /** Parse the `auth` body field — `{ mode?, token?, apiKey? }`, tolerant of a
  *  JSON-stringified object (see `parseOrchestratorField`). Deliberately
  *  narrow: only the known keys survive, so an unrelated stray field can't
@@ -1764,6 +1796,12 @@ async function handleSessions(
         ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
         ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
         ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+        ...(b.options !== undefined
+          ? (() => {
+              const parsed = parseOptionsField(b.options)
+              return parsed !== undefined ? { options: parsed } : {}
+            })()
+          : {}),
         ...(b.auth !== undefined
           ? (() => {
               const parsed = parseAuthField(b.auth)

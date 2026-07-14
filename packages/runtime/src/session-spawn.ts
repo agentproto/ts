@@ -20,10 +20,15 @@ import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
   resolveSpawnDefaults,
   normalizeSkillsOption,
-  credentialFingerprint,
+  resolveAuthSpec,
+  AuthResolutionError,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
+  type ResolvedAuthSpec,
+  type AuthEcho,
 } from "./spawn-defaults.js"
+import { getProviderKey } from "./providers-store.js"
+import { getModelProvider } from "@agentproto/model-catalog/llm"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -204,6 +209,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
         | "role_spawn_denied"
+        | "unsupported_auth_mode"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
@@ -470,15 +476,73 @@ export async function spawnAgentSession(
     options: input.options,
     auth: input.auth,
   })
-  // Verifiability: a non-secret fingerprint of the resolved credential,
-  // recorded on the session descriptor below (never the raw value). Absent
-  // when no credential resolved for the mode (e.g. every adapter besides
-  // claude-code, or claude-code with nothing configured — the latter fails
-  // fast inside the driver's `start()` before a descriptor is ever created).
-  const authFingerprint =
-    spawnDefaults.auth.credential !== undefined
-      ? credentialFingerprint(spawnDefaults.auth.mode, spawnDefaults.auth.credential)
-      : undefined
+  // ── Billing-auth resolution (DECISIONS 4/9/10) ──────────────────
+  // The runtime decides provider → ordered mode → setEnv/scrub → credential
+  // source → fingerprint, and emits BOTH the mechanical `spec` the driver
+  // applies AND the observable `echo` recorded on the descriptor. Fail-loud
+  // on a configured-but-missing credential is the DRIVER's job (it engages
+  // then throws `missing_auth_credential`); a requested-but-unsupported mode
+  // fails LOUD right here (`unsupported_auth_mode`). No provider resolves ⇒
+  // no spec ⇒ ambient (no injection). Skipped for a sandbox spawn — the box's
+  // own daemon resolves its own credential independently.
+  let authSpec: ResolvedAuthSpec | undefined
+  let authEcho: AuthEcho | undefined
+  if (resolved && input.sandbox === undefined && resolved.authDescriptor) {
+    const authModel = input.model ?? resolved.defaultModel
+    const pinnedProvider = spawnDefaults.auth.provider
+    const resolvedProvider =
+      pinnedProvider ??
+      resolved.authDescriptor.provider ??
+      (authModel ? getModelProvider(authModel) : undefined)
+    // Consult providers.json (the EXPLICIT store — never ambient env) ONLY
+    // when the operator explicitly opted into auth for this spawn (`explicit`)
+    // AND no explicit config key was already supplied. Gating on `explicit` is
+    // the money-safety invariant: for an UNCONFIGURED spawn the store must NOT
+    // be consulted — otherwise an `always` adapter (claude-code) would flip
+    // ordered-mode to api-key off a leftover `auth provider set anthropic` key
+    // and silently bill org credits (DECISION 5/10: unconfigured `always` ⇒
+    // fail-fast, preserving #312). For `when-configured` adapters unconfigured
+    // still means ambient (boot injection already placed keys in ambient env),
+    // so gating on `explicit` is correct for every adapter.
+    const apiKeyStoreCredential =
+      resolvedProvider &&
+      spawnDefaults.auth.explicit &&
+      spawnDefaults.auth.apiKeyCredential === undefined
+        ? await getProviderKey(resolvedProvider)
+        : undefined
+    try {
+      const result = resolveAuthSpec({
+        descriptor: resolved.authDescriptor,
+        ...(authModel ? { model: authModel } : {}),
+        ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
+        ...(spawnDefaults.auth.requestedMode
+          ? { requestedMode: spawnDefaults.auth.requestedMode }
+          : {}),
+        explicit: spawnDefaults.auth.explicit,
+        ...(spawnDefaults.auth.subscriptionCredential !== undefined
+          ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
+          : {}),
+        ...(spawnDefaults.auth.apiKeyCredential !== undefined
+          ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
+          : {}),
+        ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+      })
+      if (result) {
+        authSpec = result.spec
+        authEcho = result.echo
+      }
+    } catch (err) {
+      if (err instanceof AuthResolutionError) {
+        return {
+          ok: false,
+          code: "unsupported_auth_mode",
+          message: `agent_start: ${err.message}`,
+          details: { adapter: input.adapter, provider: resolvedProvider },
+        }
+      }
+      throw err
+    }
+  }
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
     spawnDefaults.options,
@@ -544,7 +608,7 @@ export async function spawnAgentSession(
           : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
-        auth: spawnDefaults.auth,
+        ...(authSpec ? { auth: authSpec } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         onActivity: () => {
@@ -576,14 +640,24 @@ export async function spawnAgentSession(
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
-      // Verifiability: record the resolved auth mode + a non-secret
-      // fingerprint (never the credential) — see `credentialFingerprint`.
-      // Absent when no credential resolved (every adapter besides
-      // claude-code, in practice), and for a sandboxed spawn: the box's own
-      // daemon resolves its own credential independently, so a fingerprint
-      // computed host-side would misrepresent what the box actually used.
-      ...(authFingerprint && input.sandbox === undefined
-        ? { auth: { mode: spawnDefaults.auth.mode, fingerprint: authFingerprint } }
+      // Verifiability: record the OBSERVABLE echo — resolved provider, mode,
+      // credential source, the env var actually set, and a non-secret
+      // fingerprint (never the credential). DECISION 9③/10②. Recorded only
+      // when a credential actually resolved (fingerprint present); a
+      // configured-but-missing-credential spawn fails fast in the driver
+      // before a descriptor exists. Absent for sandbox spawns (the box
+      // resolves its own credential, so a host-side echo would misrepresent
+      // it — `authEcho` is already left undefined for those above).
+      ...(authEcho?.fingerprint
+        ? {
+            auth: {
+              mode: authEcho.authMode,
+              fingerprint: authEcho.fingerprint,
+              provider: authEcho.provider,
+              credentialSource: authEcho.credentialSource,
+              setEnv: authEcho.setEnv,
+            },
+          }
         : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
