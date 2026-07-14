@@ -7,7 +7,7 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes the declared gateway presets", () => {
+  it("exposes moonshot, openrouter, deepseek and xai", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "moonshot",
@@ -55,10 +55,18 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     )
   })
 
+  it("xai pins the conventional default model", () => {
+    expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("nova-1")
+  })
+
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
   })
 
+  it("xai routes through the intentional local llm-endpoint proxy", () => {
+    const xai = getAnthropicGatewayPreset("xai")
+    expect(xai.baseUrl).toBe("http://localhost:18090/v1")
+    expect(xai.schemaFlavor).toBe("openai")
   it("xai uses the intentional local OpenAI-compatible proxy", () => {
     const xai = getAnthropicGatewayPreset("xai")
     expect(xai.baseUrl).toBe("http://localhost:18090/v1")

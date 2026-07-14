@@ -34,7 +34,7 @@ Tout ce qui suit a été **prouvé live** sauf les sections explicitement marqu�
 ## 1. Attacher une policy à une session
 
 ```
-attach_policy({
+policy_attach({
   sessionId: "sess_xxx",        // OU sessionIds:[...] pour un groupe fan-in
   then: "emit",                  // "emit" → policy:passed/failed ; "commit" → stage+commit
   gate: { command, args?, cwd?, timeoutMs? },   // shell : exit 0 = pass
@@ -82,7 +82,7 @@ même un `cwd` absolu explicite au spawn échoue systématiquement, immédiateme
 (`status: blocked`, `retries: 0` — PAS un cas géré par `onFail`, c'est une
 erreur d'infra, pas un exit code). Pire : l'échec est **silencieux** — la policy
 passe à `blocked` sans que tu sois notifié ; tu ne le découvres qu'en rappelant
-`get_policy_status` toi-même, ce qui annule l'intérêt du primitive (superviser
+`policy_status` toi-même, ce qui annule l'intérêt du primitive (superviser
 sans polling).
 
 **Ce qui marche à la place, pour tout worktree hors-workspace** :
@@ -114,7 +114,7 @@ exit code ne capture.
 `then: "commit"` transforme un gate vert en **commit hôte gouverné** :
 
 ```
-attach_policy({
+policy_attach({
   sessionId, then:"commit",
   gate: { command:"ls", args:["hello.txt"], cwd:"." },
   commit: { paths:["hello.txt"], message:"…", requireHumanAck: true }
@@ -176,7 +176,7 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
 
 - **In-memory MVP** : l'état des runs n'est PAS persisté
   (`TODO: persist to ~/.agentproto/routine-runs.json`). Un restart du daemon
-  **perd** les runs en cours. (Les policies `attach_policy` et les transcripts
+  **perd** les runs en cours. (Les policies `policy_attach` et les transcripts
   de session, eux, survivent ; c'est le RoutineRunner qui est volatile.)
 - **Surface MCP : câblée sur branche, pas encore déployée.** Les tools
   `routine_start` / `routine_status` / `routine_cancel` / `routine_escalation_resolve`
