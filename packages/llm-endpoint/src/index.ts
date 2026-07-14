@@ -932,7 +932,14 @@ const server = createServer((req, res) => {
 
       // Trimme les outils AVANT la transformation de forme propre à chaque provider
       // (ZAI/Groq mappent input_schema → function.parameters ; le trim doit voir la forme Anthropic).
-      trimTools(payload, resolvedTarget.provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools);
+      trimTools(payload, {
+        provider: resolvedTarget.provider,
+        queryTools,
+        queryNoTools,
+        headerTools,
+        headerNoTools,
+        headerExcludeTools,
+      });
 
       switch (resolvedTarget.provider) {
         case 'openrouter':
