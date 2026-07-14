@@ -94,7 +94,7 @@ export function registerTranscript(
   }
 
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("agentproto.openTranscript", (arg: unknown) => openTranscript(arg)),
+    vscode.commands.registerCommand("agentproto.openTranscriptChannel", (arg: unknown) => openTranscript(arg)),
   )
 }
 

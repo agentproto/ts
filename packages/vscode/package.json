@@ -62,37 +62,49 @@
       {
         "command": "agentproto.spawnAgent",
         "title": "agentproto: Spawn Agent",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(add)"
       },
       {
         "command": "agentproto.promptSession",
         "title": "agentproto: Prompt Session",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "agentproto.interruptSession",
         "title": "agentproto: Interrupt Session",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(debug-pause)"
       },
       {
         "command": "agentproto.killSession",
         "title": "agentproto: Kill Session",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(trash)"
       },
       {
         "command": "agentproto.openTranscript",
         "title": "agentproto: Open Transcript",
+        "category": "agentproto",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "agentproto.openTranscriptChannel",
+        "title": "agentproto: Open Transcript (Raw Output Channel)",
         "category": "agentproto"
       },
       {
         "command": "agentproto.approvePermission",
         "title": "agentproto: Approve Permission",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(check)"
       },
       {
         "command": "agentproto.denyPermission",
         "title": "agentproto: Deny Permission",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(close)"
       },
       {
         "command": "agentproto.showHealth",
@@ -106,6 +118,48 @@
           "command": "agentproto.refresh",
           "when": "view == 'agentproto.sessions' || view == 'agentproto.permissions'",
           "group": "navigation"
+        },
+        {
+          "command": "agentproto.spawnAgent",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentproto.promptSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.interruptSession",
+          "when": "view == agentproto.sessions && viewItem == session-live",
+          "group": "inline@2"
+        },
+        {
+          "command": "agentproto.killSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "agentproto.openTranscript",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "group": "inline@4"
+        },
+        {
+          "command": "agentproto.openTranscriptChannel",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "group": "transcript@1"
+        },
+        {
+          "command": "agentproto.approvePermission",
+          "when": "view == agentproto.permissions && viewItem == permission-pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.denyPermission",
+          "when": "view == agentproto.permissions && viewItem == permission-pending",
+          "group": "inline@2"
         }
       ]
     },

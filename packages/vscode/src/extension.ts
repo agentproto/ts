@@ -1,22 +1,29 @@
 /**
- * agentproto VS Code extension — activation entrypoint (WP0).
+ * agentproto VS Code extension — activation entrypoint.
  *
- * Wires the frozen foundation: config → DaemonClient → SessionStore, then
- * registers every declared command (full contributes block was written in
- * WP0; WP1–4 implement the stubs). Only `agentproto.showHealth` does real
- * work here — every other command toasts "not implemented yet" so a user
- * clicking through the UI gets honest feedback instead of a silent no-op.
- *
- * A status-bar item shows the live session count, updated on store change.
+ * Wires config → DaemonClient → SessionStore, then the views (sessions tree,
+ * permissions inbox, status bar) and commands (spawn / prompt / interrupt /
+ * kill / permissions / transcript). `agentproto.openTranscript` opens the
+ * webview chat panel; `agentproto.openTranscriptChannel` is the raw
+ * output-channel variant.
  */
 
 import * as vscode from "vscode"
 
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
+import { registerPermissionCommands } from "./commands/permissions.js"
+import {
+  registerSessionActions,
+  resolveSessionArg,
+} from "./commands/sessionActions.js"
+import { registerSpawnCommand } from "./commands/spawn.js"
+import { registerTranscript } from "./commands/transcript.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
 import { SessionStore } from "./services/sessionStore.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
+import { registerStatusBar } from "./views/statusBar.js"
+import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   let config = getConfig()
@@ -34,33 +41,22 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     }),
   )
 
-  // Views (placeholder providers — WP1/WP3 replace only the view files).
+  // Views.
   registerSessionsView(ctx, store)
   registerPermissionsView(ctx, store)
-
-  // Status bar: live session count.
-  const status = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Left,
-    50,
-  )
-  status.command = "agentproto.showHealth"
-  status.tooltip = "agentproto — click to check daemon health"
-  const updateStatus = (): void => {
-    const n = store.sessions.length
-    const running = store.sessions.filter(s => s.status === "running").length
-    status.text = `$(debug-start) agentproto: ${running}/${n}`
-    status.show()
-  }
-  ctx.subscriptions.push(status)
-  ctx.subscriptions.push(store.onDidChange(updateStatus))
-  updateStatus()
+  registerStatusBar(ctx, store)
 
   // Start the live-update loop.
   store.start()
   ctx.subscriptions.push(store)
 
   // ── Commands ────────────────────────────────────────────────────────
-  // `showHealth` is the one real command in WP0; the rest are stubs.
+  registerSpawnCommand(ctx, client, store)
+  registerSessionActions(ctx, client, store)
+  registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
+  registerPermissionCommands(ctx, client, store)
+
+  const transcriptPanels = registerTranscriptPanels(ctx, client, store)
   ctx.subscriptions.push(
     vscode.commands.registerCommand("agentproto.showHealth", () =>
       showHealth(client),
@@ -68,26 +64,17 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("agentproto.refresh", () =>
       store.refreshAll(),
     ),
-    vscode.commands.registerCommand("agentproto.spawnAgent", () =>
-      stub("Spawn Agent"),
-    ),
-    vscode.commands.registerCommand("agentproto.promptSession", () =>
-      stub("Prompt Session"),
-    ),
-    vscode.commands.registerCommand("agentproto.interruptSession", () =>
-      stub("Interrupt Session"),
-    ),
-    vscode.commands.registerCommand("agentproto.killSession", () =>
-      stub("Kill Session"),
-    ),
-    vscode.commands.registerCommand("agentproto.openTranscript", () =>
-      stub("Open Transcript"),
-    ),
-    vscode.commands.registerCommand("agentproto.approvePermission", () =>
-      stub("Approve Permission"),
-    ),
-    vscode.commands.registerCommand("agentproto.denyPermission", () =>
-      stub("Deny Permission"),
+    vscode.commands.registerCommand(
+      "agentproto.openTranscript",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open transcript",
+          () => true,
+        )
+        if (session) transcriptPanels.open(session)
+      },
     ),
   )
 }
@@ -107,12 +94,6 @@ async function showHealth(client: DaemonClient): Promise<void> {
       `agentproto daemon unreachable: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
-}
-
-function stub(label: string): void {
-  void vscode.window.showInformationMessage(
-    `agentproto: ${label} — not implemented yet (WP0 foundation).`,
-  )
 }
 
 export function deactivate(): void {

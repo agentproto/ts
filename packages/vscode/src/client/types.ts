@@ -113,6 +113,12 @@ export interface AdapterInfo {
     status?: "active" | "noop"
     status_note?: string
   }>
+  /** Conventional model ids the adapter advertises. */
+  models?: string[]
+  /** Install/readiness state: ready = installed, available = installable. */
+  status?: "supported" | "available" | "ready"
+  /** Short human hint shown in pickers (e.g. "anthropic · ACP · resumable"). */
+  hint?: string
 }
 
 /** /health probe result. */
