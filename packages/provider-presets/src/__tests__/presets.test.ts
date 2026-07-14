@@ -67,6 +67,11 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     const xai = getAnthropicGatewayPreset("xai")
     expect(xai.baseUrl).toBe("http://localhost:18090/v1")
     expect(xai.schemaFlavor).toBe("openai")
+  it("xai uses the intentional local OpenAI-compatible proxy", () => {
+    const xai = getAnthropicGatewayPreset("xai")
+    expect(xai.baseUrl).toBe("http://localhost:18090/v1")
+    expect(xai.schemaFlavor).toBe("openai")
+    expect(xai.defaultModel).toBe("nova-1")
   })
 
   it("moonshot and openrouter point at distinct base URLs", () => {

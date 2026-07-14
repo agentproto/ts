@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createTranscriptWriter, sessionEventsPath } from "../transcript-writer.js"
+import {
+  createTranscriptWriter,
+  sessionEventsPath,
+  sessionTranscriptDir,
+} from "../transcript-writer.js"
 
 describe("createTranscriptWriter", () => {
   let tmp: string
@@ -18,10 +22,17 @@ describe("createTranscriptWriter", () => {
   function readLines(sessionId: string): Array<Record<string, unknown>> {
     const path = sessionEventsPath(sessionId, tmp)
     if (!existsSync(path)) return []
-    return readFileSync(path, "utf8")
-      .split("\n")
-      .filter(l => l.trim().length > 0)
-      .map(l => JSON.parse(l) as Record<string, unknown>)
+    const out: Array<Record<string, unknown>> = []
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        out.push(JSON.parse(trimmed) as Record<string, unknown>)
+      } catch {
+        // Tolerate a deliberately-malformed line (torn-write regression test).
+      }
+    }
+    return out
   }
 
   it("writes a user-prompt record for recordPrompt", async () => {
@@ -220,6 +231,56 @@ describe("createTranscriptWriter", () => {
     expect(lines).toHaveLength(2)
     expect(lines[0]?.text).toBe("before restart")
     expect(lines[1]?.text).toBe("after restart")
+  })
+
+  it("continues seq monotonically across a simulated daemon restart", async () => {
+    const writerA = createTranscriptWriter({ baseDir: tmp })
+    writerA.recordPrompt("sess_1", "one")
+    writerA.recordEvent("sess_1", { kind: "turn-end", reason: "completed" })
+    await writerA.close("sess_1")
+    expect(readLines("sess_1").map(l => l.seq)).toEqual([1, 2])
+
+    // Fresh writer instance opening the existing file must NOT restart at 1
+    // — a duplicate seq would make a `since` cursor drop the post-restart
+    // tail (see GET /sessions/:id/events).
+    const writerB = createTranscriptWriter({ baseDir: tmp })
+    writerB.recordPrompt("sess_1", "two")
+    writerB.recordEvent("sess_1", { kind: "turn-end", reason: "completed" })
+    await writerB.close("sess_1")
+
+    const seqs = readLines("sess_1").map(l => l.seq)
+    expect(seqs).toEqual([1, 2, 3, 4])
+    // Strictly increasing with no repeats, the invariant a `since` reader relies on.
+    expect(seqs).toEqual([...seqs].sort((a, b) => (a as number) - (b as number)))
+    expect(new Set(seqs).size).toBe(seqs.length)
+  })
+
+  it("resumes seq from the max on disk, skipping an unparseable line", async () => {
+    // A pre-existing file whose middle line is malformed (e.g. a torn write
+    // from a prior crash). highestSeqOnDisk must scan every parseable line
+    // and resume from the real max (2), not choke on the bad line.
+    const dir = sessionTranscriptDir("sess_1", tmp)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      sessionEventsPath("sess_1", tmp),
+      [
+        JSON.stringify({ seq: 1, ts: "2026-01-01T00:00:00.000Z", kind: "user-prompt", text: "one" }),
+        "not valid json {{{",
+        JSON.stringify({ seq: 2, ts: "2026-01-01T00:00:00.000Z", kind: "turn-end" }),
+      ].join("\n") + "\n",
+    )
+
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", "two")
+    await writer.close("sess_1")
+
+    const seqs = readLines("sess_1")
+      .filter(l => typeof l.seq === "number")
+      .map(l => l.seq)
+    // 1 and 2 pre-existed; the appended record must be 3, never a repeat.
+    expect(seqs).toContain(3)
+    expect(Math.max(...(seqs as number[]))).toBe(3)
+    expect(new Set(seqs).size).toBe(seqs.length)
   })
 
   it("close() is a safe no-op for a session that never wrote anything", async () => {

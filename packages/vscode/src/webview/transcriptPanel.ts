@@ -3,7 +3,7 @@
  *
  * Implements the WP4 contract:
  *   - One WebviewPanel per session id (viewType `agentproto.transcript`).
- *   - Theme-aware HTML using VS Code CSS variables.
+ *   - Theme-aware HTML using VS Code's CSS variables.
  *   - Initial transcript rendered from `exportSession("markdown")` with a
  *     `preview(200)` fallback.
  *   - Live output streamed via `SessionStore.focusOutput()`.
@@ -16,12 +16,12 @@ import { randomBytes } from "node:crypto"
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
+import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 
-import { renderMarkdown } from "./markdown.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
+import { TranscriptPanelController } from "./transcriptPanelController.js"
 
 export interface TranscriptPanels {
   open(session: SessionDescriptor): void
@@ -54,34 +54,33 @@ export function registerTranscriptPanels(
       panels.set(session.id, panel)
 
       const nonce = randomNonce()
-      panel.webview.html = buildHtml(panel.webview, nonce)
 
       const disposables: vscode.Disposable[] = []
+
+      const controller = new TranscriptPanelController({
+        sessionId: session.id,
+        initialSession: session,
+        client,
+        store,
+        messenger: panel.webview,
+      })
+      disposables.push(controller)
 
       // Live session updates (cost, status, tokens).
       disposables.push(
         store.onDidChange(() => {
           const updated = store.sessions.find(s => s.id === session.id)
-          if (updated) {
-            postMessage(panel, { type: "sessionUpdate", session: updated })
-          }
+          if (updated) controller.onSessionUpdate(updated)
         }),
       )
 
-      // Live output stream.
-      const focusSub = store.focusOutput(session.id, {
-        onLine: (line: SessionStreamLine) => {
-          postMessage(panel, { type: "lines", lines: [line] })
-        },
-      })
-      disposables.push(focusSub)
-
-      // Message handling from the webview.
+      // Message handling from the webview. Register before setting HTML so the
+      // handler is in place if the webview posts `ready` synchronously.
       disposables.push(
         panel.webview.onDidReceiveMessage(async (raw: unknown) => {
           if (!isWebviewMessage(raw)) return
           try {
-            await handleWebviewMessage(raw, session.id, client, panel)
+            await handleWebviewMessage(raw, controller)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             void vscode.window.showErrorMessage(`agentproto: ${message}`)
@@ -94,60 +93,31 @@ export function registerTranscriptPanels(
         for (const d of disposables) d.dispose()
         panels.delete(session.id)
       })
+
+      // Set HTML only after the controller and message listener are wired up.
+      panel.webview.html = buildHtml(panel.webview, nonce)
     },
   }
 }
 
 async function handleWebviewMessage(
   msg: WebviewMessage,
-  sessionId: string,
-  client: DaemonClient,
-  panel: vscode.WebviewPanel,
+  controller: TranscriptPanelController,
 ): Promise<void> {
   switch (msg.type) {
-    case "ready": {
-      const initialContent = await fetchInitialContent(client, sessionId)
-      // Re-fetch the freshest session descriptor from the store is not
-      // possible here without a back-reference, so we ask the daemon once.
-      const current = await client.getSession(sessionId)
-      postMessage(panel, {
-        type: "init",
-        session: current,
-        nonce: "",
-        // innerHTML sink in the webview — must go through renderMarkdown,
-        // which escapes the raw daemon text before adding markup.
-        initialHtml: renderMarkdown(initialContent),
-      })
+    case "ready":
+      await controller.onReady()
       return
-    }
     case "send":
-      await client.prompt(sessionId, msg.text)
+      await controller.onSend(msg.text, false)
       return
     case "interruptSend":
-      await client.prompt(sessionId, msg.text, { interrupt: true })
+      await controller.onSend(msg.text, true)
       return
     case "kill":
-      await client.kill(sessionId)
+      await controller.onKill()
       return
   }
-}
-
-async function fetchInitialContent(client: DaemonClient, id: string): Promise<string> {
-  try {
-    const exported = await client.exportSession(id, "markdown")
-    return exported.content ?? ""
-  } catch {
-    try {
-      const preview = await client.preview(id, 200)
-      return preview.lines.join("\n")
-    } catch {
-      return ""
-    }
-  }
-}
-
-function postMessage(panel: vscode.WebviewPanel, msg: ExtMessage): void {
-  void panel.webview.postMessage(msg)
 }
 
 function randomNonce(): string {
@@ -259,6 +229,83 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       margin-bottom: 2px;
     }
     .line-stderr { color: var(--vscode-errorForeground); }
+    /* ── Structured chat timeline ─────────────────────────────────── */
+    .turn { margin: 0 0 14px; }
+    .turn .role {
+      font-size: 0.78em;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 4px;
+    }
+    .turn-user .bubble, .turn-assistant .bubble { border-radius: 6px; padding: 8px 12px; }
+    .turn-user .bubble {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    }
+    .turn-assistant .bubble { background: transparent; }
+    .seg { margin: 0 0 8px; }
+    .seg:last-child { margin-bottom: 0; }
+    .seg.text > :first-child { margin-top: 0; }
+    .seg.text > :last-child { margin-bottom: 0; }
+    details.reasoning, details.tool {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 5px;
+      padding: 4px 8px;
+      background: var(--vscode-textCodeBlock-background);
+    }
+    details.reasoning > summary, details.tool > summary {
+      cursor: pointer;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      user-select: none;
+      list-style: revert;
+    }
+    details.reasoning[open] > summary, details.tool[open] > summary { margin-bottom: 6px; }
+    .reasoning-body {
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
+    details.tool > summary { font-family: var(--vscode-editor-font-family); }
+    details.tool-error { border-color: var(--vscode-errorForeground); }
+    .tool-field-label {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--vscode-descriptionForeground);
+      margin: 4px 0 2px;
+    }
+    .tool-args, .tool-result {
+      margin: 0;
+      background: var(--vscode-editor-background);
+      padding: 6px 8px;
+      border-radius: 4px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.9em;
+    }
+    .seg.plan {
+      border-left: 3px solid var(--vscode-progressBar-background);
+      padding: 4px 0 4px 10px;
+    }
+    .plan-head { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; }
+    .plan-list { list-style: none; margin: 0; padding: 0; }
+    .plan-list li { font-size: 0.92em; }
+    .plan-list li.plan-completed { color: var(--vscode-descriptionForeground); text-decoration: line-through; }
+    .seg.question {
+      border-left: 3px solid var(--vscode-editorWarning-foreground);
+      padding: 4px 0 4px 10px;
+    }
+    .seg.error {
+      color: var(--vscode-errorForeground);
+      border-left: 3px solid var(--vscode-errorForeground);
+      padding: 4px 0 4px 10px;
+      white-space: pre-wrap;
+    }
+    #conv-usage { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
     #input-area {
       flex: 0 0 auto;
       padding: 10px 14px;
@@ -306,6 +353,11 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       background: var(--vscode-errorForeground);
       color: var(--vscode-editor-background);
     }
+    #send-status {
+      font-size: 0.85em;
+      color: var(--vscode-errorForeground);
+      min-height: 1.2em;
+    }
     #empty {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
@@ -320,6 +372,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       <span id="header-subtitle"></span>
       <span id="status-chip" class="chip chip-starting"></span>
       <span id="cost"></span>
+      <span id="conv-usage"></span>
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
@@ -329,6 +382,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       <button id="send">Send</button>
       <button id="interrupt-send" class="secondary">Interrupt & send</button>
       <button id="kill" class="danger">Kill</button>
+      <span id="send-status"></span>
     </div>
   </div>
   <script nonce="${nonce}">
@@ -339,18 +393,31 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       const statusChip = document.getElementById('status-chip');
       const costEl = document.getElementById('cost');
       const transcript = document.getElementById('transcript');
+      const convUsage = document.getElementById('conv-usage');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const interruptBtn = document.getElementById('interrupt-send');
       const killBtn = document.getElementById('kill');
+      const sendStatus = document.getElementById('send-status');
 
       let exited = false;
       let isScrolledUp = false;
+      let isSending = false;
+      let mode = 'raw';
+      // Segment ids the user has expanded — preserved across re-renders so a
+      // live update never collapses an open reasoning/tool card.
+      const openSegments = new Set();
 
       function setInputEnabled(enabled) {
-        input.disabled = !enabled;
-        sendBtn.disabled = !enabled;
-        interruptBtn.disabled = !enabled;
+        input.disabled = !enabled || isSending;
+        sendBtn.disabled = !enabled || isSending;
+        interruptBtn.disabled = !enabled || isSending;
+      }
+
+      function setSending(sending) {
+        isSending = sending;
+        setInputEnabled(!exited);
+        sendStatus.textContent = sending ? 'Sending…' : '';
       }
 
       function computeStatusChip(session) {
@@ -402,6 +469,137 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
         isScrolledUp = transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop > threshold;
       });
 
+      // ── Structured timeline rendering ──────────────────────────────
+      // All html fields are pre-escaped on the extension host; raw daemon
+      // text never reaches innerHTML here, and no content is parsed.
+
+      function el(tag, className, text) {
+        const e = document.createElement(tag);
+        if (className) e.className = className;
+        if (text !== undefined) e.textContent = text;
+        return e;
+      }
+
+      function captureOpenState() {
+        const details = transcript.querySelectorAll('details[data-seg]');
+        for (const d of details) {
+          if (d.open) openSegments.add(d.dataset.seg);
+          else openSegments.delete(d.dataset.seg);
+        }
+      }
+
+      function makeDetails(seg, className, summaryText) {
+        const det = document.createElement('details');
+        det.className = className;
+        det.dataset.seg = seg.id;
+        if (openSegments.has(seg.id)) det.open = true;
+        const summary = document.createElement('summary');
+        summary.textContent = summaryText;
+        det.appendChild(summary);
+        return det;
+      }
+
+      function renderSegment(seg) {
+        switch (seg.kind) {
+          case 'user':
+          case 'assistant-text': {
+            const d = el('div', 'seg text');
+            d.innerHTML = seg.html || '';
+            return d;
+          }
+          case 'reasoning': {
+            const det = makeDetails(seg, 'seg reasoning', 'Reasoning');
+            const body = el('div', 'reasoning-body');
+            body.innerHTML = seg.html || '';
+            det.appendChild(body);
+            return det;
+          }
+          case 'tool': {
+            const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
+            const det = makeDetails(seg, 'seg tool tool-' + seg.status, badge + ' ' + (seg.toolName || 'tool'));
+            if (seg.argsText !== undefined) {
+              det.appendChild(el('div', 'tool-field-label', 'input'));
+              const p = el('pre', 'tool-args');
+              p.innerHTML = seg.argsText;
+              det.appendChild(p);
+            }
+            if (seg.resultText !== undefined) {
+              det.appendChild(el('div', 'tool-field-label', 'output'));
+              const p = el('pre', 'tool-result');
+              p.innerHTML = seg.resultText;
+              det.appendChild(p);
+            }
+            return det;
+          }
+          case 'plan': {
+            const d = el('div', 'seg plan');
+            d.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+            const ul = el('ul', 'plan-list');
+            for (const entry of seg.entries || []) {
+              const mark = entry.status === 'completed' ? '☑ '
+                : entry.status === 'in_progress' ? '▸ ' : '☐ ';
+              ul.appendChild(el('li', 'plan-' + entry.status, mark + entry.content));
+            }
+            d.appendChild(ul);
+            return d;
+          }
+          case 'agent-question': {
+            const d = el('div', 'seg question');
+            d.appendChild(el('div', undefined, 'Awaiting your decision'));
+            if (seg.options && seg.options.length) {
+              const ul = el('ul');
+              for (const opt of seg.options) ul.appendChild(el('li', undefined, opt));
+              d.appendChild(ul);
+            }
+            return d;
+          }
+          case 'error': {
+            const d = el('div', 'seg error');
+            d.innerHTML = seg.text || '';
+            return d;
+          }
+          default:
+            return el('div');
+        }
+      }
+
+      function renderTurn(turn) {
+        const wrap = el('div', 'turn turn-' + turn.role);
+        wrap.appendChild(el('div', 'role', turn.role === 'user' ? 'You' : 'Assistant'));
+        const bubble = el('div', 'bubble');
+        for (const seg of turn.segments) bubble.appendChild(renderSegment(seg));
+        wrap.appendChild(bubble);
+        return wrap;
+      }
+
+      function renderUsage(usage) {
+        if (!usage) { convUsage.textContent = ''; return; }
+        const parts = [];
+        if (typeof usage.contextUsed === 'number' && typeof usage.contextSize === 'number') {
+          parts.push('ctx ' + usage.contextUsed + '/' + usage.contextSize);
+        } else if (typeof usage.used === 'number' && typeof usage.size === 'number') {
+          parts.push('ctx ' + usage.used + '/' + usage.size);
+        }
+        if (typeof usage.tokensIn === 'number') parts.push('in ' + usage.tokensIn);
+        if (typeof usage.tokensOut === 'number') parts.push('out ' + usage.tokensOut);
+        convUsage.textContent = parts.join(' · ');
+      }
+
+      function renderConversation(conv) {
+        captureOpenState();
+        const atBottom = !isScrolledUp;
+        transcript.innerHTML = '';
+        if (!conv || !conv.turns || conv.turns.length === 0) {
+          const empty = el('div', undefined, 'No messages yet.');
+          empty.id = 'empty';
+          transcript.appendChild(empty);
+        } else {
+          for (const turn of conv.turns) transcript.appendChild(renderTurn(turn));
+        }
+        renderUsage(conv && conv.usage);
+        if (atBottom) transcript.scrollTop = transcript.scrollHeight;
+      }
+
       function send(interrupt) {
         const text = input.value;
         if (!text || !text.trim()) return;
@@ -429,12 +627,20 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
           case 'init':
+            mode = msg.mode || 'raw';
             updateHeader(msg.session);
-            transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
+            isScrolledUp = false;
+            if (mode === 'structured') {
+              renderConversation(msg.conversation);
+            } else {
+              transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
+              transcript.scrollTop = transcript.scrollHeight;
+            }
             exited = ['exited', 'killed', 'error'].indexOf(msg.session.status) !== -1;
             setInputEnabled(!exited);
-            transcript.scrollTop = transcript.scrollHeight;
-            isScrolledUp = false;
+            break;
+          case 'conversation':
+            renderConversation(msg.conversation);
             break;
           case 'sessionUpdate':
             updateHeader(msg.session);
@@ -442,7 +648,17 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
             setInputEnabled(!exited);
             break;
           case 'lines':
-            appendLines(msg.lines);
+            if (mode !== 'structured') appendLines(msg.lines);
+            break;
+          case 'sending':
+            setSending(true);
+            break;
+          case 'sendAck':
+            setSending(false);
+            break;
+          case 'sendError':
+            setSending(false);
+            sendStatus.textContent = msg.message || 'Send failed';
             break;
         }
       });

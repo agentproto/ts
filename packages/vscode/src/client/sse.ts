@@ -65,7 +65,7 @@ export function subscribeSse(
         handlers.onError?.(error)
       }
       if (closed) return
-      await sleep(backoff)
+      await cancellableSleep(backoff, controller!.signal)
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
     }
   }
@@ -78,6 +78,25 @@ export function subscribeSse(
       controller?.abort()
     },
   }
+}
+
+function cancellableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve()
+      return
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    function onAbort() {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 async function readStream(
@@ -153,8 +172,4 @@ function handleFrame(
   } catch {
     // Non-JSON data frame — swallow rather than kill the stream.
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }

@@ -2,19 +2,29 @@ import { createServer, type Server } from "node:http"
 import { AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { DaemonClient } from "./daemonClient.js"
+import { DaemonClient, NoTranscriptError } from "./daemonClient.js"
 
-/** Spin a mock daemon on an ephemeral port. Returns base URL + request log. */
-function mockDaemon(handler: (req: {
+/**
+ * Spin a mock daemon on an ephemeral port. Returns base URL + request log.
+ *
+ * Binds explicitly to 127.0.0.1 — the SAME host the client dials — and awaits
+ * the `listening` event before reading the port. `listen(0)` without a host
+ * binds to `::` (all IPv6 interfaces); on a dual-stack / v6only host the
+ * OS-assigned port need not be free on the IPv4 loopback, so the client's
+ * `http://127.0.0.1:<port>` request could land on an unrelated real service
+ * (e.g. an auth-enabled agentproto daemon → 401 on a wrong bearer). Binding to
+ * 127.0.0.1 guarantees the client and the mock share the exact same socket.
+ */
+async function mockDaemon(handler: (req: {
   method: string
   url: string
   body: unknown
   headers: Record<string, string | string[] | undefined>
-}) => { status: number; body?: unknown }): {
+}) => { status: number; body?: unknown }): Promise<{
   url: string
   server: Server
   requests: Array<{ method: string; url: string; body: unknown; headers: Record<string, string | string[] | undefined> }>
-} {
+}> {
   const requests: Array<{ method: string; url: string; body: unknown; headers: Record<string, string | string[] | undefined> }> = []
   const server = createServer((req, res) => {
     let chunks = ""
@@ -28,21 +38,41 @@ function mockDaemon(handler: (req: {
       res.end(resp === undefined ? "" : JSON.stringify(resp))
     })
   })
-  server.listen(0)
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => resolve())
+  })
   const { port } = server.address() as AddressInfo
   return { url: `http://127.0.0.1:${port}`, server, requests }
 }
 
 describe("DaemonClient — URL + auth header mapping", () => {
-  let daemon: ReturnType<typeof mockDaemon>
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
-  beforeEach(() => {
-    daemon = mockDaemon(req => {
+  beforeEach(async () => {
+    daemon = await mockDaemon(req => {
       // Echo back the request so tests can assert auth + path mapping.
       if (req.url === "/health") return { status: 200, body: { status: "ok", workspace: "/ws", registered: [] } }
       if (req.url === "/sessions" && req.method === "GET") return { status: 200, body: { sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }] } }
       if (req.url === "/permissions" && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/permissions?sessionId=") && req.method === "GET") return { status: 200, body: { permissions: [] } }
+      if (req.url?.startsWith("/sessions/s1/events") && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            sessionId: "s1",
+            events: [
+              { seq: 1, ts: "t", kind: "user-prompt", text: "hi" },
+              { seq: 2, ts: "t", kind: "turn-end", reason: "completed" },
+            ],
+            nextSeq: 2,
+            complete: true,
+          },
+        }
+      }
+      if (req.url?.startsWith("/sessions/terminal1/events") && req.method === "GET") {
+        return { status: 404, body: { error: "no_transcript" } }
+      }
       if (req.url?.startsWith("/sessions/s1") && req.method === "GET") return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
@@ -61,7 +91,9 @@ describe("DaemonClient — URL + auth header mapping", () => {
     })
   })
 
-  afterEach(() => daemon.server.close())
+  afterEach(async () => {
+    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
 
   function client(tokenPath = ""): DaemonClient {
     return new DaemonClient({ daemonUrl: daemon.url, tokenPath, pollIntervalMs: 5000 })
@@ -155,6 +187,26 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const last = daemon.requests[daemon.requests.length - 1]!
     expect(last.url).toBe("/mcp")
     expect(last.body).toMatchObject({ jsonrpc: "2.0", method: "tools/call", params: { name: "adapter_list" } })
+  })
+
+  it("getSessionEvents returns the typed events page", async () => {
+    const page = await client().getSessionEvents("s1")
+    expect(page.sessionId).toBe("s1")
+    expect(page.events.map(e => e.kind)).toEqual(["user-prompt", "turn-end"])
+    expect(page.nextSeq).toBe(2)
+    expect(page.complete).toBe(true)
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/events")
+  })
+
+  it("getSessionEvents forwards since/limit as query params", async () => {
+    await client().getSessionEvents("s1", { since: 3, limit: 50 })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/events?since=3&limit=50")
+  })
+
+  it("getSessionEvents throws NoTranscriptError on a 404 no_transcript", async () => {
+    await expect(client().getSessionEvents("terminal1")).rejects.toBeInstanceOf(NoTranscriptError)
   })
 
   it("sessionEventsPoll unwraps { events, nextCursor }", async () => {
