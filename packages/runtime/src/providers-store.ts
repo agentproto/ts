@@ -42,6 +42,7 @@ export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
   // ── Non-catalog gateway providers (not LLM-catalog `provider` enum values,
   //    so absent from PROVIDER_KEY_ENV, but still keyed through this store) ──
   groq: "GROQ_API_KEY",
+  xai: "XAI_API_KEY",
   // Vercel AI Gateway — a gateway provider, like openrouter, that fronts many
   // upstream model families behind one key.
   "vercel-ai-gateway": "AI_GATEWAY_API_KEY",

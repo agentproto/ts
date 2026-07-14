@@ -42,7 +42,13 @@ const SECRET_CODE_MAPPING: Record<string, SecretTarget> = {
   // Codes pour Groq (Inférence ultra-rapide)
   'pluto-2': { provider: 'groq', model: 'qwen/qwen3.6-27b', equivalentClaudeName: 'claude-haiku-4-5' },
   'atlas-6': { provider: 'groq', model: 'llama-3.3-70b-versatile', equivalentClaudeName: 'claude-3-5-sonnet-20241022' },      // Llama 3.3 70B (non-reasoning)
-  'titan-7': { provider: 'groq', model: 'openai/gpt-oss-120b', equivalentClaudeName: 'claude-sonnet-4-7' }                    // GPT-OSS 120B (reasoning, include_reasoning:false)
+  'titan-7': { provider: 'groq', model: 'openai/gpt-oss-120b', equivalentClaudeName: 'claude-sonnet-4-7' },                    // GPT-OSS 120B (reasoning, include_reasoning:false)
+
+  // Codes pour xAI (Grok)
+  'nova-1': { provider: 'xai', model: 'grok-4.5', equivalentClaudeName: 'claude-opus-4-8' },
+  'pulsar-2': { provider: 'xai', model: 'grok-4.3', equivalentClaudeName: 'claude-sonnet-5' },
+  'quasar-3': { provider: 'xai', model: 'grok-4.20', equivalentClaudeName: 'claude-fable-5' },
+  'comet-4': { provider: 'xai', model: 'grok-build-0.1', equivalentClaudeName: 'claude-haiku-4-5' },
 };
 
 // Limite max d'outils par provider (au-delà, Groq renvoie 400 "maximum number of items is 128").
@@ -54,7 +60,7 @@ const PROVIDER_MAX_TOOLS: Record<string, number> = {
 
 // Providers routables — sert d'allow-list pour l'override `?p=`. Un `?p=<inconnu>`
 // laisserait sinon hostname vide et échouerait plus loin avec une erreur opaque.
-const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq']);
+const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']);
 
 // Trimme/strip les outils du payload selon :
 //  - queryTools ("a,b,c") : allow-list explicite (garde uniquement ces outils, par nom).
@@ -103,6 +109,7 @@ interface ProviderKeys {
   openrouter: string;
   zai: string;
   groq: string;
+  xai: string;
 }
 
 // Résolution des clés API d'hôtes depuis les variables d'environnement.
@@ -113,7 +120,8 @@ function resolveSecretKeys(): ProviderKeys {
     moonshot: process.env.MOONSHOT_API_KEY || '',
     openrouter: process.env.OPENROUTER_API_KEY || '',
     zai: process.env.ZHIPUAI_API_KEY || process.env.ZAI_API_KEY || '',
-    groq: process.env.GROQ_API_KEY || ''
+    groq: process.env.GROQ_API_KEY || '',
+    xai: process.env.XAI_API_KEY || ''
   };
 }
 
@@ -589,7 +597,13 @@ const server = createServer((req, res) => {
 
   const rawUrl = req.url || '';
   const parsedUrl = new URL(rawUrl, `http://localhost:${PORT}`);
-  const urlPath = parsedUrl.pathname.replace(/\/+$/, '');
+  // Le binary `claude` ajoute lui-même `/v1/messages` à ANTHROPIC_BASE_URL —
+  // si celle-ci se termine déjà par `/v1` (config normale du proxy), la requête
+  // arrive en `/v1/v1/messages`. `endsWith('/messages')` la route déjà
+  // correctement plus bas, mais laisser le chemin brut dans les logs noie le
+  // vrai souci (config base_url mal formée). Normalisé ici une fois pour
+  // toutes — un `/v1/v1/...` redevient `/v1/...` pour le matching ET les logs.
+  const urlPath = parsedUrl.pathname.replace(/\/+$/, '').replace(/^\/v1\/v1(\/|$)/, '/v1$1');
 
   // Lecture des paramètres de requête p (provider), m (secret code model),
   // tools (allow-list d'outils à garder) et notools (strip tous les outils).
@@ -598,7 +612,10 @@ const server = createServer((req, res) => {
   const queryTools = parsedUrl.searchParams.get('tools'); // ex: ?tools=Bash,Read,Write
   const queryNoTools = parsedUrl.searchParams.get('notools'); // ex: ?notools=1
 
-  console.log(`[Proxy] Incoming request: ${req.method} ${rawUrl}`);
+  console.log(
+    `[Proxy] Incoming request: ${req.method} ${rawUrl}` +
+      (urlPath !== parsedUrl.pathname.replace(/\/+$/, '') ? ` (normalized: ${urlPath})` : '')
+  );
 
   // 1. Endpoint /v1/models pour la découverte des modèles (conforme au format exact d'Anthropic ou d'OpenAI)
   if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models')) {
@@ -839,6 +856,31 @@ const server = createServer((req, res) => {
           }
           break;
 
+        case 'xai':
+          hostname = 'api.x.ai';
+          path = '/v1/chat/completions'; // xAI uses OpenAI-compatible API
+          targetApiKey = resolvedKeys.xai;
+          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          adaptAnthropicToOpenAI(payload);
+
+          // Transformation des tools Anthropic pour xAI (format OpenAI)
+          if (payload.tools && Array.isArray(payload.tools)) {
+            payload.tools = payload.tools.map((t: any) => {
+              if (t.input_schema) {
+                return {
+                  type: 'function',
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.input_schema
+                  }
+                };
+              }
+              return t;
+            });
+          }
+          break;
+
         case 'moonshot':
         default:
           hostname = 'api.moonshot.ai';
@@ -879,8 +921,8 @@ const server = createServer((req, res) => {
         // OpenRouter renvoie des blocs thinking/redacted_thinking (signature vide) que le
         // CLI `claude` rejette pour les modèles courants → on les strip côté proxy.
         const needsStrip = resolvedTarget.provider === 'openrouter';
-        // Groq/ZAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
-        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai';
+        // Groq/ZAI/xAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
+        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai';
 
         if (needsConvert && !isStreaming) {
           const respHeaders = { ...proxyRes.headers };

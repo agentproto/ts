@@ -263,17 +263,15 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       id: "model",
       // string (not enum) so any valid Anthropic model ID is accepted
       // without requiring a code change to expand the list. Applied via
-      // ACP session/set_config_option(configId:"model") after newSession
-      // — the claude-agent-acp wrapper does not forward its own CLI args
-      // to the underlying claude process, so bin_args_template alone
-      // cannot select the model.
+      // ANTHROPIC_MODEL env var so the claude binary picks it up directly
+      // — the claude-agent-acp wrapper only forwards CLI args when --cli
+      // is passed, otherwise it runs in ACP mode and ignores argv.
       type: "string" as const,
       description:
         "Anthropic model ID or wrapper alias (e.g. 'claude-opus-4-8', " +
-        "'claude-sonnet-5', 'sonnet', 'opus'). Applied via ACP " +
-        "session/set_config_option after the session is created; an id the " +
-        "wrapper can't resolve is warned about and ignored (the session keeps " +
-        "the claude-code default). Omit to use the claude-code default.",
+        "'claude-sonnet-5', 'sonnet', 'opus'). Set via ANTHROPIC_MODEL env " +
+        "var so the claude binary uses it directly. Omit to use the claude-code default.",
+      env: { ANTHROPIC_MODEL: "{value}" },
     },
     {
       id: "effort",
