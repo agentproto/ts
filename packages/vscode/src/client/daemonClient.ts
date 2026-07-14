@@ -26,8 +26,26 @@ import type {
   DaemonHealth,
   PendingPermission,
   SessionDescriptor,
+  SessionEventsPage,
   SessionEventsPollResult,
 } from "./types.js"
+
+export interface SessionEventsOptions {
+  /** Return only records with seq > since (cursor for incremental polling). */
+  since?: number
+  /** Cap the page size (daemon clamps to [1, 2000], default 500). */
+  limit?: number
+}
+
+/** Raised when a session has no structured events.jsonl (terminal/command
+ *  sessions, or one that predates the capture) so callers can fall back to
+ *  raw output instead of treating it as a hard error. */
+export class NoTranscriptError extends Error {
+  constructor(public readonly sessionId: string) {
+    super(`no structured transcript for session ${sessionId}`)
+    this.name = "NoTranscriptError"
+  }
+}
 
 export interface SpawnAgentOptions {
   adapter: string
@@ -149,6 +167,45 @@ export class DaemonClient {
     const qs = params.toString()
     const url = `/sessions/${encodeURIComponent(id)}/wait${qs ? `?${qs}` : ""}`
     return this.getJson(url)
+  }
+
+  /**
+   * GET /sessions/:id/events — a page of the daemon's durable, normalized
+   * structured events (events.jsonl). This is the semantic source the
+   * transcript panel hydrates and live-polls from (NOT the flattened
+   * /stream lines, and NOT the global /events runtime stream).
+   *
+   * Throws {@link NoTranscriptError} on a 404 no_transcript so terminal-only
+   * sessions can fall back to raw output; any other non-2xx throws normally.
+   */
+  async getSessionEvents(
+    id: string,
+    opts: SessionEventsOptions = {},
+  ): Promise<SessionEventsPage> {
+    const params = new URLSearchParams()
+    if (typeof opts.since === "number") params.set("since", String(opts.since))
+    if (typeof opts.limit === "number") params.set("limit", String(opts.limit))
+    const qs = params.toString()
+    const path = `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`
+    const token = await this.resolveToken()
+    const res = await this.fetchImpl(`${this.url}${path}`, {
+      method: "GET",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (res.status === 404) {
+      // Distinguish "no structured transcript" from other 404s so callers
+      // can degrade to raw output rather than surfacing an error.
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "no_transcript") throw new NoTranscriptError(id)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    return (await res.json()) as SessionEventsPage
   }
 
   // ── Permissions ────────────────────────────────────────────────────

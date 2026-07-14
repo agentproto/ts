@@ -17,7 +17,7 @@
  * `agent-cli` sessions' `runAgentTurn`.
  */
 
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
+import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionObserver } from "./session-observer.js"
@@ -41,6 +41,37 @@ export function sessionTranscriptDir(sessionId: string, baseDir?: string): strin
 
 export function sessionEventsPath(sessionId: string, baseDir?: string): string {
   return join(sessionTranscriptDir(sessionId, baseDir), "events.jsonl")
+}
+
+/** Highest `seq` already durably on disk for a session, or 0 when the file
+ *  is absent/empty. A fresh writer instance (e.g. after a daemon restart)
+ *  opens the existing events.jsonl in append mode, so its first record must
+ *  continue from this cursor rather than restarting at 1 — otherwise a
+ *  restart mid-session emits duplicate seq numbers and any `since`-based
+ *  reader (GET /sessions/:id/events) silently drops the post-restart tail.
+ *  Records are written in ascending `seq`, so the max is on the last valid
+ *  line, but a truncated/partial final line is tolerated by scanning every
+ *  parseable line rather than trusting the tail. */
+function highestSeqOnDisk(path: string): number {
+  let raw: string
+  try {
+    raw = readFileSync(path, "utf8")
+  } catch {
+    // ENOENT (fresh session) or any read error — start from 0.
+    return 0
+  }
+  let max = 0
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const rec = JSON.parse(trimmed) as { seq?: unknown }
+      if (typeof rec.seq === "number" && rec.seq > max) max = rec.seq
+    } catch {
+      // Ignore a malformed/partial line (e.g. a torn final write).
+    }
+  }
+  return max
 }
 
 export interface TranscriptWriter extends SessionObserver {
@@ -88,13 +119,17 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
     const existing = states.get(sessionId)
     if (existing) return existing
     mkdirSync(sessionTranscriptDir(sessionId, baseDir), { recursive: true })
-    const stream = createWriteStream(sessionEventsPath(sessionId, baseDir), { flags: "a" })
+    const eventsPath = sessionEventsPath(sessionId, baseDir)
+    // Resume the seq counter from what's already durable so a restart
+    // mid-session keeps events.jsonl monotonic in append mode.
+    const resumeSeq = highestSeqOnDisk(eventsPath)
+    const stream = createWriteStream(eventsPath, { flags: "a" })
     stream.on("error", err => {
       console.warn(`[transcript-writer] session ${sessionId}: ${err.message}`)
     })
     const state: WriterState = {
       stream,
-      seq: 0,
+      seq: resumeSeq,
       textBuf: "",
       thoughtBuf: "",
       textDebounce: null,

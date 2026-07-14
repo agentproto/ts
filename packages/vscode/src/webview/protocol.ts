@@ -5,6 +5,7 @@
  */
 
 import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
+import type { PresentedConversation } from "./conversation.js"
 
 /** Messages sent from the extension host to the webview. */
 export type ExtMessage =
@@ -15,15 +16,37 @@ export type ExtMessage =
       /** CSP nonce for the webview's inline script ( echoed back harmlessly). */
       nonce: string
       /**
-       * Initial transcript PRE-RENDERED to safe HTML on the extension host
-       * (renderMarkdown escapes all raw content before markup). The webview
-       * assigns it to innerHTML — never send unescaped daemon text here.
+       * Render mode. "structured" drives the semantic chat timeline from
+       * per-session events.jsonl; "raw" is the fallback for terminal/command
+       * sessions with no structured capture (flattened /stream output).
        */
-      initialHtml: string
+      mode: "structured" | "raw"
+      /**
+       * Structured mode: the initial conversation timeline, ALREADY presented
+       * to safe HTML on the extension host (all daemon text escaped via the
+       * markdown renderer). The webview renders it structurally and never
+       * parses raw content.
+       */
+      conversation?: PresentedConversation
+      /**
+       * Raw mode only: initial transcript PRE-RENDERED to safe HTML on the
+       * extension host. The webview assigns it to innerHTML — never send
+       * unescaped daemon text here.
+       */
+      initialHtml?: string
+    }
+  | {
+      type: "conversation"
+      /**
+       * Live-updated conversation timeline (structured mode). Sent on every
+       * poll that advances the cursor; the webview reconciles by stable
+       * segment id, preserving expand/collapse state and scroll.
+       */
+      conversation: PresentedConversation
     }
   | {
       type: "lines"
-      /** New lines from the focused session's SSE stream. */
+      /** New lines from the focused session's SSE stream (raw mode). */
       lines: SessionStreamLine[]
     }
   | {
