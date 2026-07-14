@@ -283,6 +283,21 @@ export class SessionNotAliveError extends Error {
   }
 }
 
+/**
+ * The billing-auth resolver's OBSERVABLE echo, recorded on a session
+ * descriptor. `mode` + `fingerprint` are always present when recorded (a
+ * credential resolved); `provider` / `credentialSource` / `setEnv` are the
+ * multi-provider resolver's additions (DECISION 9③/10②) — optional for
+ * back-compat with descriptors from before that resolver shipped.
+ */
+export interface SessionAuthEcho {
+  mode: "subscription" | "api-key"
+  fingerprint: string
+  provider?: string
+  credentialSource?: "explicit-config" | "providers-store" | "none"
+  setEnv?: string
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -347,8 +362,13 @@ export interface SessionDescriptor {
    * practice) or for a sandboxed spawn (the box's own daemon resolves its
    * own credential independently). Surfaced in `agentproto sessions
    * --watch`'s DETAIL pane and `agent_sessions_list`.
+   *
+   * Carries the resolver's OBSERVABLE echo (DECISION 9③/10②): `provider`,
+   * `credentialSource`, and the `setEnv` actually set — so a verifier checks
+   * the RESOLUTION, not the model's self-report. These are optional for
+   * back-compat with descriptors persisted before the multi-provider resolver.
    */
-  auth?: { mode: "subscription" | "api-key"; fingerprint: string }
+  auth?: SessionAuthEcho
   /** Cumulative estimated USD cost of the session — best-effort, refreshed
    *  on each turn-end from the adapter's usage reader (e.g. hermes reads its
    *  state.db). Absent for adapters with no usage source. */
@@ -909,11 +929,11 @@ export interface SpawnAgentInput {
   depth?: number
   /** Requested model id — recorded on the descriptor for display + echo. */
   model?: string
-  /** Resolved auth mode + non-secret credential fingerprint — recorded
-   *  verbatim onto {@link SessionDescriptor.auth}. See that field's doc for
-   *  the full contract; the caller (`session-spawn.ts`) computes this via
-   *  `credentialFingerprint`, never passing the raw credential here. */
-  auth?: { mode: "subscription" | "api-key"; fingerprint: string }
+  /** Resolved auth echo (mode + fingerprint + provider/source/setEnv) —
+   *  recorded verbatim onto {@link SessionDescriptor.auth}. See that field's
+   *  doc for the full contract; the caller (`session-spawn.ts`) computes this
+   *  via the billing-auth resolver, never passing the raw credential here. */
+  auth?: SessionAuthEcho
   /** Hard ceiling on cumulative session cost (USD). When set and the
    *  adapter's usage reader reports a higher cost at a turn-end, the session
    *  is stopped (best-effort, turn-granular — caps continuation, can't abort

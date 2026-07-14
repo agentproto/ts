@@ -70,10 +70,12 @@ import {
   injectProviderKeysIntoEnv,
   setMcpCredentialDeps,
   type AgentAdapterResolver,
+  type AdapterAuthDescriptor,
   type GatewayHandle,
   type PairingRegistry,
   type PairingChannelHandle,
 } from "@agentproto/runtime"
+import { CatalogProviderSchema } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
 import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
 import { homedir } from "node:os"
@@ -401,6 +403,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
     try {
       const adapter = await resolveAdapter(slug)
       const runtime = createAgentCliRuntime(adapter.handle)
+      // Project the manifest's billing-auth fields into the descriptor the
+      // runtime resolver reads (DECISION 3). `provider` is validated against
+      // the catalog enum here (the driver types it as a plain string to stay
+      // catalog-decoupled) — an unrecognized value narrows to undefined so the
+      // resolver falls back to model-derivation rather than trusting a typo.
+      const providerParse = adapter.handle.provider
+        ? CatalogProviderSchema.safeParse(adapter.handle.provider)
+        : undefined
+      const authDescriptor: AdapterAuthDescriptor = {
+        ...(providerParse?.success ? { provider: providerParse.data } : {}),
+        ...(adapter.handle.authEnforce ? { authEnforce: adapter.handle.authEnforce } : {}),
+        ...(adapter.handle.authSubscription
+          ? { authSubscription: adapter.handle.authSubscription }
+          : {}),
+      }
       return {
         async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity, permissionHold, auth }) {
           // Build config.options only when there's something to set — an
@@ -443,6 +460,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
           id: o.id,
           type: o.type,
         })),
+        authDescriptor,
+        ...(adapter.handle.models?.default
+          ? { defaultModel: adapter.handle.models.default }
+          : {}),
       }
     } catch (err) {
       console.warn(

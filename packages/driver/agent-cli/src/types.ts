@@ -56,41 +56,45 @@ export interface AgentCliAuth {
   login?: { cmd: string; interactive?: boolean; requires_callback_url?: boolean }
   refresh?: { cmd: string; interval_s?: number }
   expiry?: { parse?: string; grace_s?: number }
-  /**
-   * Env-var vocabulary for the deterministic `auth` spawn mode (see
-   * {@link AgentCliStartOptions.auth}) — "subscription" (default) vs
-   * "api-key" billing. EXPLICIT credential selection, not scrub-by-absence:
-   * each mode POSITIVELY sets exactly one credential env var (from the
-   * resolved `auth.credential`) and deletes the conflicting one(s), so which
-   * credential a spawn uses is *stated*, never inferred from whatever
-   * happened to be ambient. Declared once here so the generic runtime
-   * doesn't hardcode provider-specific env var names; mirrors how the
-   * claude-code permission-mode override reads its vocabulary from
-   * `modes[].bin_args_append` instead of duplicating it (see
-   * `define-agent-cli.ts`'s `resolveClaudeCodePermissionMode`). Adapters
-   * that omit this ignore the `auth` field entirely — today only
-   * claude-code declares it.
-   */
-  modes?: {
-    subscription: AgentCliAuthModeVocab
-    api_key: AgentCliAuthModeVocab
-  }
 }
 
 /**
- * Per-mode env-var vocabulary for {@link AgentCliAuth.modes}. The runtime
- * SETS `set_env` to the resolved `auth.credential` and DELETES every key in
- * `unset_env` — unless this spawn's own mode/option patch explicitly set
- * that key (an explicit gateway config wins over the blanket scrub; see
- * `composeSpawn`'s `ComposedSpawn.env`). `set_env` and `unset_env` must be
- * disjoint (a mode never scrubs the credential it just set).
+ * The `subscription` (OAuth / bearer) billing mode declaration — the ONE
+ * axis of the billing-auth resolver that isn't a shared provider fact, so it
+ * lives on the adapter manifest rather than in the model catalog. Its env var
+ * is consumer-specific (claude CLI wrapper → `CLAUDE_CODE_OAUTH_TOKEN`;
+ * claude-sdk → `ANTHROPIC_AUTH_TOKEN`). Presence of this field is what tells
+ * the runtime "this adapter supports `subscription` mode"; an adapter without
+ * it that's asked for `subscription` fails with `unsupported_auth_mode`.
+ *
+ * The api-key axis needs NO such declaration — its env var derives from the
+ * catalog's `PROVIDER_KEY_ENV` via `providerEnvVar(provider)`; only the
+ * runtime resolver reads it, never this manifest.
  */
-export interface AgentCliAuthModeVocab {
-  /** Env var SET to the resolved `auth.credential` under this mode. */
-  set_env: string
-  /** Env vars DELETED from the child env under this mode (the OTHER mode's
-   *  credential env var, plus any provider toggles that would override it). */
-  unset_env: string[]
+export interface AgentCliAuthSubscription {
+  /** Env var SET to the resolved subscription credential (the OAuth/bearer
+   *  token). */
+  setEnv: string
+  /**
+   * Sibling billing-credential env vars the SAME consumer also honors and
+   * that must therefore be scrubbed in EVERY resolved mode except when the
+   * var IS the one being set — a leftover of one of these would silently
+   * override the credential this spawn stated (the org-credit-leak class).
+   * For anthropic: the generic bearer `ANTHROPIC_AUTH_TOKEN`, which the
+   * claude binary honors above `ANTHROPIC_API_KEY`. Distinct from
+   * {@link unsetEnvAdd} (which is native-mode-only gateway hygiene, not a
+   * credential).
+   */
+  conflictEnv?: string[]
+  /**
+   * Extra env vars scrubbed ONLY in `subscription` (native) mode — gateway
+   * hygiene, not credentials: cloud-provider redirect toggles
+   * (`CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/…) + `ANTHROPIC_BASE_URL`, any of
+   * which would reroute or 401 a natively-billed spawn. Left present in
+   * api-key mode (a deliberate api-key + Bedrock combination is valid there),
+   * which is why this is separate from {@link conflictEnv}.
+   */
+  unsetEnvAdd?: string[]
 }
 
 /**
@@ -555,6 +559,35 @@ export interface AgentCliDefinition {
   /** AIP-29 § Setup — post-install configuration pipeline. Optional. */
   setup?: AgentCliSetupStep[]
   auth?: AgentCliAuth
+  /**
+   * FIXED billing provider for a single-provider adapter (`claude-code` /
+   * `claude-sdk` → `"anthropic"`, `codex` → `"openai"`, `hermes` →
+   * `"openrouter"`). A `CatalogProvider` id (typed as `string` here to keep
+   * this generic AIP-45 doctype decoupled from `@agentproto/model-catalog` —
+   * the runtime resolver validates it against the catalog and derives the
+   * api-key env via `providerEnvVar`). Omitted for by-model routers, whose
+   * provider the resolver derives from the requested model
+   * (`getModelProvider`). Consumed by the runtime billing-auth resolver, NOT
+   * by this driver (which stays mechanical).
+   */
+  provider?: string
+  /**
+   * Declares that this adapter supports `subscription` billing mode and how
+   * (which env var to set + what to scrub). Presence = supported; absence
+   * means a `subscription` request is rejected with `unsupported_auth_mode`.
+   * Only the Claude adapters set it. See {@link AgentCliAuthSubscription}.
+   */
+  authSubscription?: AgentCliAuthSubscription
+  /**
+   * When the runtime billing-auth resolver ENGAGES credential injection:
+   *   - `"when-configured"` (default) — only when an operator explicitly set
+   *     `auth` (per-spawn or in `defaults.adapters.<slug>.auth`). Non-breaking:
+   *     an adapter with no auth config runs ambient, unchanged.
+   *   - `"always"` — every spawn, even with nothing configured (then it
+   *     fails fast with `missing_auth_credential`). Only `claude-code` sets
+   *     this, preserving its #312 fail-fast contract.
+   */
+  authEnforce?: "always" | "when-configured"
   sandbox: string | Record<string, unknown>
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
@@ -794,28 +827,50 @@ export interface AgentCliStartOptions {
    */
   permissionHold?: boolean
   /**
-   * Deterministic billing-auth mode for adapters that declare
-   * {@link AgentCliAuth.modes} (today: claude-code). EXPLICIT credential
-   * selection, not scrub-by-absence: `mode` picks which vocabulary entry
-   * applies, and `credential` is the resolved secret value (a subscription
-   * bearer token minted via `claude setup-token`, or a raw API key) — the
-   * host resolves this from a NAMED config/broker ref, never reads it
-   * ambiently from `process.env`.
+   * FULLY-RESOLVED billing-auth spec, computed by the runtime resolver
+   * (`@agentproto/runtime`'s `spawn-defaults`/`session-spawn`) and applied
+   * MECHANICALLY here — this driver does no provider lookup, mode selection,
+   * or catalog import of its own. EXPLICIT credential selection, not
+   * scrub-by-absence: the resolver already decided the mode (ordered
+   * preference — subscription over api-key when a subscription credential is
+   * present), the env var to SET (`setEnv`), the conflicting vars to SCRUB
+   * (`unsetEnv`), and resolved the `credential` from a NAMED config/store
+   * ref (never the ambient shell env).
    *
-   * `createAgentCliRuntime(...).start()` SETS `auth.modes[mode].set_env` to
-   * `credential` and DELETES every key in `auth.modes[mode].unset_env`
-   * (unless this spawn's own mode/option patch explicitly set that key).
-   * When the adapter declares `auth.modes` but `credential` is absent, the
-   * spawn FAILS FAST with `RuntimeConfigError` (code
-   * `missing_auth_credential`) — it never falls back to another credential
-   * or an ambient one. Adapters that don't declare `auth.modes` ignore this
-   * field entirely. `mode` defaults to `"subscription"` when this whole
-   * field is omitted.
+   * `createAgentCliRuntime(...).start()` ENGAGES this spec when
+   * `enforce === "always"` OR `explicit === true`; on engage it deletes every
+   * `unsetEnv` key (unless this spawn's own mode/option patch explicitly set
+   * it) then SETS `setEnv = credential`. When engaged with no `credential`, it
+   * FAILS FAST with `RuntimeConfigError` (`missing_auth_credential`) — never a
+   * fallback to another or ambient credential. When absent (the resolver
+   * produced no spec — e.g. a by-model adapter whose provider didn't resolve),
+   * this driver injects nothing and runs ambient.
    */
-  auth?: {
-    mode: "subscription" | "api-key"
-    credential?: string
-  }
+  auth?: ResolvedAuthSpec
+}
+
+/**
+ * The resolved billing-auth spec the runtime hands the driver — see
+ * {@link AgentCliStartOptions.auth}. Every field is pre-decided; the driver
+ * only applies it.
+ */
+export interface ResolvedAuthSpec {
+  /** The resolved billing mode (already ordered/validated by the runtime). */
+  mode: "subscription" | "api-key"
+  /** The resolved secret value for `mode`, or absent when nothing resolved
+   *  (⇒ fail-fast on engage). Never read ambiently. */
+  credential?: string
+  /** Env var SET to `credential` on engage. */
+  setEnv: string
+  /** Conflicting billing-credential (and, in native mode, gateway-hygiene)
+   *  env vars DELETED on engage — unless this spawn's own mode/option patch
+   *  explicitly set the key. */
+  unsetEnv: string[]
+  /** True when an operator explicitly configured `auth` (per-spawn or in
+   *  `defaults.adapters.<slug>.auth`) — half the engage condition. */
+  explicit: boolean
+  /** The adapter's enforcement policy — the other half of engage. */
+  enforce: "always" | "when-configured"
 }
 
 /**

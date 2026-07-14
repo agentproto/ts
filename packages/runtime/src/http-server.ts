@@ -73,7 +73,11 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
-import type { DeclaredAdapterOption } from "./spawn-defaults.js"
+import type {
+  DeclaredAdapterOption,
+  AdapterAuthDescriptor,
+  ResolvedAuthSpec,
+} from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
@@ -171,13 +175,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  surfaced + parked in the daemon's inbox instead of auto-answered.
      *  Adapters/arms with no permission surface ignore it. Default false. */
     permissionHold?: boolean
-    /** Deterministic billing-auth mode + EXPLICIT credential forwarded from
-     *  `agent_start` to the driver's `runtime.start({ auth })` — see
-     *  `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`. `credential`
-     *  is the resolved secret value (never read ambiently); adapters that
-     *  don't declare the env-var vocabulary (everything except claude-code
-     *  today) ignore this field entirely. */
-    auth?: { mode: "subscription" | "api-key"; credential?: string }
+    /** FULLY-RESOLVED billing-auth spec forwarded from `agent_start` to the
+     *  driver's `runtime.start({ auth })`, computed by the runtime's
+     *  `resolveAuthSpec` (provider, ordered mode, setEnv/scrub, credential
+     *  source all pre-decided). The driver applies it mechanically. Absent
+     *  when the resolver produced no spec (ambient). */
+    auth?: ResolvedAuthSpec
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
@@ -191,6 +194,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  documented no-op for that adapter (e.g. claude-code, which
    *  auto-discovers skills and declares no such option). */
   declaredOptions?: readonly DeclaredAdapterOption[]
+  /** Billing-auth descriptor projected from the adapter manifest
+   *  (`provider` / `authEnforce` / `authSubscription`) — the sole input the
+   *  runtime's `resolveAuthSpec` reads about the adapter's auth capability
+   *  (keeping the catalog coupling in the runtime, the driver mechanical).
+   *  Omitted ⇒ ambient (no credential injection). */
+  authDescriptor?: AdapterAuthDescriptor
+  /** Adapter's default model id (`models.default`) — lets the resolver derive
+   *  a provider for a by-model spawn that omitted `model`. */
+  defaultModel?: string
 } | null>
 
 /**
