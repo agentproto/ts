@@ -7,11 +7,12 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter and deepseek", () => {
+  it("exposes moonshot, openrouter, deepseek and xai", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "moonshot",
       "openrouter",
+      "xai",
     ])
   })
 
@@ -25,9 +26,10 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       it("has the required catalog fields with sane shapes", () => {
         expect(preset.label).toBeTruthy()
         expect(preset.description).toBeTruthy()
-        expect(preset.baseUrl).toMatch(/^https:\/\//)
+        const url = new URL(preset.baseUrl)
+        expect(url.protocol).toMatch(/^https?:$/)
         expect(preset.keyEnv).toMatch(/_API_KEY$/)
-        expect(preset.schemaFlavor).toBe("anthropic")
+        expect(["anthropic", "openai"]).toContain(preset.schemaFlavor)
       })
 
       it("scrubs the ambient ANTHROPIC_API_KEY so it can't leak to the gateway", () => {
@@ -53,8 +55,18 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     )
   })
 
+  it("xai pins the conventional default model", () => {
+    expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("nova-1")
+  })
+
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
+  })
+
+  it("xai routes through the intentional local llm-endpoint proxy", () => {
+    const xai = getAnthropicGatewayPreset("xai")
+    expect(xai.baseUrl).toBe("http://localhost:18090/v1")
+    expect(xai.schemaFlavor).toBe("openai")
   })
 
   it("moonshot and openrouter point at distinct base URLs", () => {
