@@ -107,8 +107,22 @@ export function createAgentCliRuntime(
       // (`explicit`). An unconfigured `when-configured` adapter (codex/hermes/
       // claude-sdk with no auth) does NOT engage → runs ambient, unchanged.
       const authSpec = opts?.auth
+      // A gateway mode (moonshot/openrouter) or an explicit `auth_token`
+      // option already injected ANTHROPIC_AUTH_TOKEN into composed.env for
+      // Bearer auth against a non-Anthropic endpoint. Billing-auth
+      // engagement must not run in that case: an `always`-enforcing adapter
+      // (claude-code) would otherwise SET CLAUDE_CODE_OAUTH_TOKEN for
+      // subscription mode alongside it — two credentials the claude binary
+      // can't reconcile with a gateway ANTHROPIC_BASE_URL, and the resolved
+      // spec's own conflictEnv scrub can't remove ANTHROPIC_AUTH_TOKEN
+      // either (composed.env's own keys are protected from the blanket
+      // scrub below, by design). The gateway's Bearer token wins outright —
+      // skip engagement rather than let two auth mechanisms collide.
+      const hasGatewayAuthToken = "ANTHROPIC_AUTH_TOKEN" in composed.env
       const engageAuth =
-        !!authSpec && (authSpec.enforce === "always" || authSpec.explicit === true)
+        !!authSpec &&
+        !hasGatewayAuthToken &&
+        (authSpec.enforce === "always" || authSpec.explicit === true)
       if (authSpec && engageAuth) {
         // Scrub the conflicting credential(s)/toggles BEFORE setting this
         // mode's own credential. A key this spawn's own mode/option patch

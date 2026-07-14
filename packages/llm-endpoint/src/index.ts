@@ -686,35 +686,54 @@ const server = createServer((req, res) => {
     try {
       const payload = JSON.parse(body);
       const incomingModelName = (payload.model || '').toLowerCase();
-      
+
       // Trouver la destination (Provider & Model)
       let resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.6' };
-      
+
+      // Étape 0 : Alias forcé via le header `X-Proxy-Model-Alias` (par requête,
+      // priorité la plus haute) ou l'env `PROXY_MODEL_ALIAS` (par défaut du
+      // process) — bypass COMPLET de la résolution normale (?m=, matching sur
+      // payload.model, fallback regex). Un code inconnu est ignoré (avec un
+      // warning) plutôt que de faire échouer la requête.
+      const rawHeaderAlias = req.headers['x-proxy-model-alias'];
+      const headerAlias = (Array.isArray(rawHeaderAlias) ? rawHeaderAlias[0] : rawHeaderAlias)?.toLowerCase().trim();
+      const envAlias = process.env.PROXY_MODEL_ALIAS?.toLowerCase().trim();
+      const forcedAliasCode = headerAlias || envAlias;
+      const forcedTarget = forcedAliasCode ? SECRET_CODE_MAPPING[forcedAliasCode] : undefined;
+
       // Étape 1 : S'il y a un paramètre de code secret 'm' explicite dans l'URL
       const explicitTarget = queryModelCode ? SECRET_CODE_MAPPING[queryModelCode] : undefined;
-      if (explicitTarget) {
-        resolvedTarget = explicitTarget;
-        console.log(`[Proxy] Detected URL model parameter code "${queryModelCode}" -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
+      if (forcedTarget) {
+        resolvedTarget = forcedTarget;
+        console.log(`[Proxy] Forced model alias "${forcedAliasCode}" (via ${headerAlias ? 'X-Proxy-Model-Alias header' : 'PROXY_MODEL_ALIAS env'}) -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
       } else {
-        // Étape 2 : Chercher dans notre dictionnaire d'équivalence Claude (exemples: "claude-3-5-sonnet")
-        const matchedEntry = Object.entries(SECRET_CODE_MAPPING).find(
-          ([code, target]) => target.equivalentClaudeName === incomingModelName || code.toLowerCase() === incomingModelName
-        );
-
-        if (matchedEntry) {
-          resolvedTarget = matchedEntry[1];
-          console.log(`[Proxy] Matched incoming model "${incomingModelName}" to equivalent secret mapping ${resolvedTarget.provider}:${resolvedTarget.model}`);
+        if (forcedAliasCode) {
+          console.warn(`[Proxy] Forced model alias "${forcedAliasCode}" not found in SECRET_CODE_MAPPING — ignoring, falling back to normal resolution.`);
+        }
+        if (explicitTarget) {
+          resolvedTarget = explicitTarget;
+          console.log(`[Proxy] Detected URL model parameter code "${queryModelCode}" -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
         } else {
-          // Étape 3 : Fallback par regex habituel si aucune équivalence stricte trouvée.
-          // Routage par tier pour la famille Claude courante (opus/fable → kimi, sonnet → deepseek, haiku → groq).
-          if (/opus|fable/i.test(incomingModelName)) {
-            resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.7-code' };
-          } else if (/sonnet/i.test(incomingModelName)) {
-            resolvedTarget = { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' };
-          } else if (/haiku/i.test(incomingModelName)) {
-            resolvedTarget = { provider: 'groq', model: 'llama-3.3-70b-versatile' };
+          // Étape 2 : Chercher dans notre dictionnaire d'équivalence Claude (exemples: "claude-3-5-sonnet")
+          const matchedEntry = Object.entries(SECRET_CODE_MAPPING).find(
+            ([code, target]) => target.equivalentClaudeName === incomingModelName || code.toLowerCase() === incomingModelName
+          );
+
+          if (matchedEntry) {
+            resolvedTarget = matchedEntry[1];
+            console.log(`[Proxy] Matched incoming model "${incomingModelName}" to equivalent secret mapping ${resolvedTarget.provider}:${resolvedTarget.model}`);
           } else {
-            resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.6' };
+            // Étape 3 : Fallback par regex habituel si aucune équivalence stricte trouvée.
+            // Routage par tier pour la famille Claude courante (opus/fable → kimi, sonnet → deepseek, haiku → groq).
+            if (/opus|fable/i.test(incomingModelName)) {
+              resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.7-code' };
+            } else if (/sonnet/i.test(incomingModelName)) {
+              resolvedTarget = { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' };
+            } else if (/haiku/i.test(incomingModelName)) {
+              resolvedTarget = { provider: 'groq', model: 'llama-3.3-70b-versatile' };
+            } else {
+              resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.6' };
+            }
           }
         }
       }

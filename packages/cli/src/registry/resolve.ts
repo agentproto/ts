@@ -17,6 +17,7 @@ import { promises as fs } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
+import { pathToFileURL } from "node:url"
 import type { AgentCliHandle, AgentCliMode } from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
@@ -144,6 +145,44 @@ function withResolvedProprietaryAdapter(
   return { ...candidate, adapter: resolveFromHere.resolve(packageSpecifier) }
 }
 
+/**
+ * Dynamic-`import()` a bare specifier without inheriting Node's process-
+ * lifetime ESM module cache. In a long-running daemon, `resolveAdapter`
+ * calls stack up over hours/days — a plain `import(packageName)` returns
+ * the SAME module object forever, even after `tsup`/`tsup --watch` rewrites
+ * an adapter's `dist/*.js` on disk (the "frozen catalog" problem: picking up
+ * a rebuilt adapter used to require restarting the daemon).
+ *
+ * Fix: resolve the specifier to its actual file on disk first (works for
+ * both an npm-installed package and a workspace-symlinked one — this is the
+ * same CJS-resolve trick `withResolvedProprietaryAdapter` above already
+ * relies on), then import that file's URL with a `?v=<mtime>` cache-buster.
+ * An unchanged file (same mtime) hits the exact same cache entry every call
+ * — no unbounded growth of the module registry — but a rebuild changes the
+ * mtime, producing a new URL and thus a genuinely fresh import.
+ */
+async function importFresh(specifier: string): Promise<Record<string, unknown>> {
+  let resolvedPath: string
+  try {
+    resolvedPath = resolveFromHere.resolve(specifier)
+  } catch {
+    // Not resolvable to a file on disk from here (e.g. an export condition
+    // the CJS resolver can't see) — fall back to a plain import; there's
+    // no local file to bust a cache against.
+    return (await import(specifier)) as Record<string, unknown>
+  }
+  let cacheBuster = ""
+  try {
+    cacheBuster = `?v=${(await fs.stat(resolvedPath)).mtimeMs}`
+  } catch {
+    /* stat failed — import without a cache-buster rather than fail resolution */
+  }
+  return (await import(pathToFileURL(resolvedPath).href + cacheBuster)) as Record<
+    string,
+    unknown
+  >
+}
+
 export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
     throw new Error(
@@ -156,7 +195,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   let mod: Record<string, unknown>
   let resolvedPackageName = packageName
   try {
-    mod = (await import(packageName)) as Record<string, unknown>
+    mod = await importFresh(packageName)
   } catch (primaryErr) {
     // Fallback: strip the last hyphen-segment and try the parent package,
     // looking for the full camelCase export there.
@@ -165,7 +204,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     if (hyphen > 0) {
       const parentPkg = `@agentproto/adapter-${slug.slice(0, hyphen)}`
       try {
-        const parentMod = (await import(parentPkg)) as Record<string, unknown>
+        const parentMod = await importFresh(parentPkg)
         const parentCandidate = parentMod[camel] as AgentCliHandle | undefined
         if (
           parentCandidate &&
