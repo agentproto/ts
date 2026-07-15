@@ -40,6 +40,7 @@ import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
+  findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
 import { discoverMcps } from "./mcp-discovery.js"
@@ -1729,6 +1730,30 @@ function parseAuthField(
   }
 }
 
+/**
+ * Reverse-map a cwd onto a registered workspace slug — the same rule
+ * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
+ * and raw spawn paths agree with the agent path.
+ *
+ * Why: a SessionDescriptor carries only `workspaceSlug`, and until this existed
+ * only POST /sessions/agent derived it from cwd. Every other spawn path dumped
+ * the session into "default" even when its cwd sat inside a registered
+ * workspace — measured at 160/209 sessions on one real daemon — which made the
+ * slug useless as a grouping key for any client.
+ *
+ * Never throws: an unreadable/absent registry yields undefined and the caller
+ * keeps its "default".
+ */
+async function resolveSlugFromCwd(cwd: string): Promise<string | undefined> {
+  if (!cwd) return undefined
+  try {
+    const config = await loadWorkspacesConfig()
+    return findWorkspaceByPath(config, cwd)?.slug
+  } catch {
+    return undefined
+  }
+}
+
 async function handleSessions(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2040,7 +2065,13 @@ async function handleSessions(
           `— falling back to daemon's cwd ${cwd}`
       )
     }
-    if (!workspaceSlug) workspaceSlug = "default"
+    if (!workspaceSlug) {
+      // cwd given (or defaulted) but no explicit slug — reverse-map it, exactly
+      // as spawnAgentSession does (session-spawn.ts). Without this a terminal
+      // whose cwd sits inside a registered workspace still lands in "default",
+      // so it can never be grouped or filtered by project.
+      workspaceSlug = (await resolveSlugFromCwd(cwd)) ?? "default"
+    }
     try {
       const desc = registry.spawnPty({
         argv,
@@ -2169,14 +2200,20 @@ async function handleSessions(
       return true
     }
     try {
+      const rawCwd = typeof b.cwd === "string" ? b.cwd : process.cwd()
       const desc = registry.spawn({
         kind:
           b.kind === "terminal" || b.kind === "agent-cli" || b.kind === "command"
             ? b.kind
             : "command",
+        // Same reverse-map as /sessions/terminal and spawnAgentSession: an
+        // explicit slug wins, otherwise derive it from cwd rather than
+        // dumping the session into "default".
         workspaceSlug:
-          typeof b.workspaceSlug === "string" ? b.workspaceSlug : "default",
-        cwd: typeof b.cwd === "string" ? b.cwd : process.cwd(),
+          typeof b.workspaceSlug === "string"
+            ? b.workspaceSlug
+            : ((await resolveSlugFromCwd(rawCwd)) ?? "default"),
+        cwd: rawCwd,
         argv,
         env:
           b.env && typeof b.env === "object"
