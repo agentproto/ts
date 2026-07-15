@@ -9,7 +9,17 @@
  *
  * Usage:
  *   node scripts/release-notes.mjs               # auto-detect published packages
- *   node scripts/release-notes.mjs --dry-run     # print to stdout, don't post
+ *   node scripts/release-notes.mjs --dry-run     # render the body, post nothing
+ *
+ * Streams:
+ *   stdout — the rendered release body, and nothing else (only under --dry-run).
+ *   stderr — all progress, tool calls, and warnings.
+ *
+ *   The split is load-bearing, not style. `--dry-run | gh release edit
+ *   --notes-file -` is a thing people reach for, and when the trace lived on
+ *   stdout that pipe published the generator's own console log as the release
+ *   body — see @agentproto/cli@0.5.0. Keep progress on stderr, and keep stdout
+ *   to the body alone.
  *
  * Env:
  *   ANTHROPIC_API_KEY  — required
@@ -23,6 +33,7 @@
 import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 // ── root ──────────────────────────────────────────────────────────────────────
 
@@ -43,6 +54,30 @@ const ROOT =
 const args = process.argv.slice(2)
 const DRY_RUN = args.includes('--dry-run')
 
+// ── the date ──────────────────────────────────────────────────────────────────
+//
+// The model has no idea what day it is, so it used to invent one — which is how
+// we ended up with releases tagged `release/2025-07` and titled "July 2025" for
+// batches that shipped in 2026. Anything date-shaped is computed here and either
+// handed to the model as fact or enforced on its output. Never asked for.
+
+const NOW = new Date()
+const TODAY = NOW.toISOString().slice(0, 10) // YYYY-MM-DD
+const THIS_YEAR = String(NOW.getUTCFullYear())
+const MONTH_YEAR = NOW.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+const CONSOLIDATED_TAG = `release/${TODAY}`
+
+// ── logging ───────────────────────────────────────────────────────────────────
+//
+// Every progress line goes to stderr, deliberately. stdout used to carry this
+// trace, so `release-notes.mjs --dry-run | gh release edit --notes-file -` would
+// cheerfully publish the generator's own console log as a release body. That is
+// exactly how @agentproto/cli@0.5.0's notes became 432 lines of "⟳ Turn 1 / 🔧
+// read_changelog(name)". stdout is now reserved for the rendered body under
+// --dry-run and nothing else, so piping it can only ever yield real notes.
+
+const log = (...a) => console.error(...a)
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function run(cmd, opts = {}) {
@@ -50,6 +85,42 @@ function run(cmd, opts = {}) {
     return execSync(cmd, { cwd: ROOT, encoding: 'utf8', ...opts }).trim()
   } catch {
     return ''
+  }
+}
+
+/**
+ * Refuse to publish anything that looks like this script's own output.
+ *
+ * The stderr split above makes the accidental-pipe route impossible, but a body
+ * can still arrive looking like a log — a model echoing a previous run's trace,
+ * a copy-paste, a future refactor that reintroduces the pipe. This is the gate
+ * at the door: it inspects what is actually about to be published, so it holds
+ * regardless of how the body got here.
+ */
+const TRACE_MARKERS = [
+  /📦 Release notes generator/,
+  /^⟳\s+Turn \d+/m,
+  /^\s*🔧 \w+\(/m,
+  /^\[DRY-RUN\]/m,
+  /✅ Release notes complete/,
+  /Would create consolidated release/,
+  /Would update GitHub Release/,
+]
+
+function assertPublishable(body, what) {
+  if (typeof body !== 'string' || body.trim().length < 200) {
+    throw new Error(`refusing to publish ${what}: body is empty or implausibly short`)
+  }
+  if (!/^#\s+\S/m.test(body)) {
+    throw new Error(`refusing to publish ${what}: body has no markdown heading — this is not a release note`)
+  }
+  for (const marker of TRACE_MARKERS) {
+    if (marker.test(body)) {
+      throw new Error(
+        `refusing to publish ${what}: body contains generator trace output (matched ${marker}). ` +
+          `This is the @agentproto/cli@0.5.0 failure mode — a console log was about to become a release body.`,
+      )
+    }
   }
 }
 
@@ -155,8 +226,14 @@ function tool_list_git_tags() {
 
 function tool_post_release_notes({ tag, body }) {
   if (!tag || !body) return '(tag and body are required)'
+  try {
+    assertPublishable(body, `release notes for ${tag}`)
+  } catch (e) {
+    return `(${e.message})`
+  }
   if (DRY_RUN) {
-    console.log(`\n[DRY-RUN] Would update GitHub Release ${tag}:\n---\n${body}\n---`)
+    log(`\n[dry-run] would update GitHub Release ${tag} — body on stdout`)
+    process.stdout.write(body)
     return `dry-run: release notes not posted for ${tag}`
   }
   try {
@@ -178,23 +255,51 @@ function tool_post_release_notes({ tag, body }) {
   }
 }
 
-function tool_post_consolidated_release({ title, body, tag }) {
-  // Posts a single consolidated GitHub Release for the whole release batch,
-  // tagged as e.g. "release/2026-06-20" or uses the provided tag.
-  const releaseTag = tag ?? `release/${new Date().toISOString().slice(0, 10)}`
+function tool_post_consolidated_release({ title, body }) {
+  // The tag is computed, never supplied. The model used to be able to pass one
+  // and it picked from its own sense of the date — `release/2025-07` for a batch
+  // published in July 2026. There is no reason the author of the prose should
+  // also get to name the tag.
+  const releaseTag = CONSOLIDATED_TAG
+  try {
+    assertPublishable(body, `consolidated release ${releaseTag}`)
+  } catch (e) {
+    return `(${e.message})`
+  }
+  // Same reasoning for the title: the model writes it, so it can still smuggle a
+  // hallucinated year into the prose. Correct it rather than reject — the year is
+  // knowable, and a retry loop over a fact we already hold is waste.
+  let safeTitle = title
+  const wrongYear = /\b(20\d{2})\b/.exec(safeTitle ?? '')
+  if (wrongYear && wrongYear[1] !== THIS_YEAR) {
+    log(`   ⚠️  title said ${wrongYear[1]}, correcting to ${THIS_YEAR}`)
+    safeTitle = safeTitle.replace(wrongYear[1], THIS_YEAR)
+  }
+  if (!safeTitle) safeTitle = `agentproto — ${MONTH_YEAR} release`
+
   if (DRY_RUN) {
-    console.log(`\n[DRY-RUN] Would create consolidated release "${title}" (${releaseTag}):\n---\n${body}\n---`)
+    log(`\n[dry-run] would create consolidated release "${safeTitle}" (${releaseTag}) — body on stdout`)
+    process.stdout.write(body)
     return `dry-run: consolidated release not posted (tag: ${releaseTag})`
   }
+  // `--latest=true`: this is the one release a human should land on. changesets
+  // publishes ~37 per-package releases per batch, and GitHub was picking whichever
+  // sorted last as "Latest" — it settled on `runtime-profile-standard@0.1.1`, a
+  // package nobody installs, while the real notes sat on an unlinked tag. The
+  // consolidated release exists on every run regardless of which packages shipped,
+  // so it is the only stable thing to point at.
   try {
-    execFileSync('gh', ['release', 'create', releaseTag, '--title', title, '--notes', body, '--latest=false'], {
+    execFileSync('gh', ['release', 'create', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
       cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
     })
     return `✓ Created consolidated GitHub Release: ${releaseTag}`
   } catch (e) {
-    // If tag already exists, update it
+    // Tag already exists — same date, re-run or a second publish. Update in place.
+    // (Under the old model-chosen tags this branch also fired across *different*
+    // batches that were handed the same invented tag, silently overwriting the
+    // earlier batch's notes. A computed per-day tag makes that collision honest.)
     try {
-      execFileSync('gh', ['release', 'edit', releaseTag, '--title', title, '--notes', body], {
+      execFileSync('gh', ['release', 'edit', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
         cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
       })
       return `✓ Updated consolidated GitHub Release: ${releaseTag}`
@@ -281,9 +386,10 @@ const TOOL_DEFS = [
       type: 'object',
       required: ['title', 'body'],
       properties: {
-        title: { type: 'string', description: 'Release title, e.g. "agentproto — June 2026 release"' },
+        title: { type: 'string', description: `Release title. Must be "agentproto — ${MONTH_YEAR} release".` },
         body: { type: 'string', description: 'Full markdown announcement' },
-        tag: { type: 'string', description: 'Git tag for the release (default: release/YYYY-MM-DD)' },
+        // No `tag` property, on purpose: the tag is computed from the system
+        // clock. See tool_post_consolidated_release.
       },
     },
   },
@@ -294,6 +400,16 @@ const TOOL_DEFS = [
 const SYSTEM_PROMPT = `You are a technical writer and developer advocate for the @agentproto open-standards project.
 
 Your job: compose a **consolidated, human-readable release announcement** for the latest batch of @agentproto package publishes.
+
+## Today's date
+
+Today is **${TODAY}**. This release is the **${MONTH_YEAR}** release, and the
+current year is **${THIS_YEAR}**.
+
+Use those values verbatim wherever the announcement needs a date. Do not infer
+the date from your own training, from version numbers, or from anything you read
+in the repo — you will get it wrong. The title must read exactly:
+\`agentproto — ${MONTH_YEAR} release\`.
 
 ## Workflow
 
@@ -306,7 +422,7 @@ Your job: compose a **consolidated, human-readable release announcement** for th
 ## Release announcement format
 
 \`\`\`markdown
-# agentproto — [Month Year] release
+# agentproto — ${MONTH_YEAR} release
 
 > [One-sentence hook about the most significant thing in this release]
 
@@ -345,13 +461,20 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 
 // ── agentic loop ──────────────────────────────────────────────────────────────
 
-const apiKey = process.env.ANTHROPIC_API_KEY
-if (!apiKey) {
-  console.error('Error: ANTHROPIC_API_KEY is not set.')
-  process.exit(1)
+// Checked when the loop actually runs, not at import. A top-level process.exit
+// here means importing this module for a test kills the test runner — which it
+// did, the first time CI ran the tests below.
+function requireApiKey() {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
+    log('Error: ANTHROPIC_API_KEY is not set.')
+    process.exit(1)
+  }
+  return apiKey
 }
 
 async function callClaude(messages) {
+  const apiKey = requireApiKey()
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -375,7 +498,7 @@ async function callClaude(messages) {
 }
 
 async function runAgenticLoop() {
-  console.log(`\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''}…`)
+  log(`\n📦 Release notes generator starting${DRY_RUN ? ' (dry-run)' : ''}…`)
 
   const messages = [
     {
@@ -391,7 +514,7 @@ Start by calling list_published_packages to see what was released, then read the
 
   while (iterations < MAX_ITER) {
     iterations++
-    console.log(`\n⟳  Turn ${iterations}`)
+    log(`\n⟳  Turn ${iterations}`)
 
     const resp = await callClaude(messages)
     messages.push({ role: 'assistant', content: resp.content })
@@ -400,7 +523,7 @@ Start by calling list_published_packages to see what was released, then read the
 
     if (toolUses.length === 0) {
       const text = resp.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
-      if (text) console.log('\n' + text)
+      if (text) log('\n' + text)
       break
     }
 
@@ -411,7 +534,7 @@ Start by calling list_published_packages to see what was released, then read the
       if (!fn) {
         result = `(unknown tool: ${use.name})`
       } else {
-        console.log(`   🔧 ${use.name}(${Object.keys(use.input ?? {}).join(', ')})`)
+        log(`   🔧 ${use.name}(${Object.keys(use.input ?? {}).join(', ')})`)
         try {
           result = fn(use.input ?? {})
         } catch (e) {
@@ -434,10 +557,16 @@ Start by calling list_published_packages to see what was released, then read the
   }
 
   if (iterations >= MAX_ITER) {
-    console.warn(`\n⚠️  Reached max iterations (${MAX_ITER}) — stopping.`)
+    log(`\n⚠️  Reached max iterations (${MAX_ITER}) — stopping.`)
   }
 
-  console.log('\n✅ Release notes complete.')
+  log('\n✅ Release notes complete.')
 }
 
-await runAgenticLoop()
+// Only drive the agent when run as a script. Importing this file (tests) must
+// not fire a real release.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await runAgenticLoop()
+}
+
+export { assertPublishable, TRACE_MARKERS, CONSOLIDATED_TAG, MONTH_YEAR, THIS_YEAR, TODAY }
