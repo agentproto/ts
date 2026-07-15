@@ -1,12 +1,18 @@
 # @agentproto/llm-endpoint
 
-A lightweight **Anthropic-Messages-compatible proxy gateway**. It presents a single
-Claude (`/v1/messages`, `/v1/models`) API surface and fans requests out to multiple
-upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu, Groq** — behind stable alias
-codenames. Along the way it handles Anthropic↔OpenAI schema translation, per-provider
-tool caps, orphaned-tool-call repair, and thinking-block stripping, so a client that
-only speaks the Anthropic API (e.g. the `claude` CLI) can transparently drive a
-non-Anthropic model.
+A lightweight **multi-surface LLM proxy gateway**. It exposes three API
+surfaces from a single port:
+
+- `POST /v1/messages` — Anthropic Messages compatibility. Claude-shaped model
+  aliases are supported **only** through an explicit local compatibility pack.
+- `POST /v1/chat/completions` — OpenAI Chat Completions compatibility with
+  transparent `provider/model` routing.
+- `POST /v1/responses` — OpenAI Responses API facade for Codex custom providers.
+
+Requests are fanned out to upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu,
+Groq, xAI, and direct OpenAI** — using provider-native model references. The
+proxy also handles Anthropic↔OpenAI schema translation, per-provider tool caps,
+orphaned-tool-call repair, and thinking-block stripping where needed.
 
 - **Package:** `@agentproto/llm-endpoint`
 - **Entry:** `src/cli.ts` → `start()` in `src/index.ts`
@@ -16,77 +22,124 @@ non-Anthropic model.
 
 ## Quick start (client config)
 
-Point any Anthropic-API client at the proxy:
+Point any Anthropic- or OpenAI-compatible client at the proxy:
 
 | Setting | Value |
 | :--- | :--- |
 | **Base URL** | `https://llm-endpoint.clipgen.co/v1` (public) or `http://localhost:18090/v1` (local) |
 | **API key** | `AAAA` — a passthrough sentinel; the proxy injects the *real* upstream key server-side |
 
-The client asks for a model by its **alias** (a Claude family name the client's TUI
-accepts, or a codename directly); the proxy resolves it to a real upstream model.
+The client asks for a model by its **provider-transparent reference**
+(`provider/model`, e.g. `moonshot/kimi-k2.7-code`, `openai/gpt-4.1`); the proxy
+routes it to the right upstream endpoint.
 
 ---
 
 ## Model catalog
 
-The client sends a Claude-family **alias** (or a codename via `?m=`); the proxy maps it
-to a real provider + model. Alias names use the *current* Claude family (Opus 4.8 /
-Fable 5 / Sonnet 5 / Haiku 4.5) so the `claude` CLI accepts them at startup — the proxy
-accepts a `claude-<family>-N` range, not a fixed list.
+### Transparent routing (`provider/model`)
 
-### Moonshot — direct, native Anthropic endpoint (no translation)
+On the OpenAI surfaces (`/v1/chat/completions` and `/v1/responses`) the model
+field is parsed as `provider/model`:
 
-| Codename | Real model | Claude alias | Notes |
-| :--- | :--- | :--- | :--- |
-| **`jupiter-7`** | `kimi-k2.7-code` | `claude-opus-4-8` | *Thinking* mode on (4000 tokens) |
-| `mars-6` | `kimi-k2.6` | `claude-3-opus` | Standard multitask (legacy) |
+| Provider | Example reference | Upstream endpoint |
+| :--- | :--- | :--- |
+| Moonshot | `moonshot/kimi-k2.7-code` | `api.moonshot.ai/v1/chat/completions` |
+| OpenRouter | `openrouter/anthropic/claude-3-5-sonnet-20241022` | `openrouter.ai/api/v1/chat/completions` |
+| ZAI | `zai/glm-5.2` | `open.bigmodel.cn/api/paas/v4/chat/completions` |
+| Groq | `groq/llama-3.3-70b-versatile` | `api.groq.com/openai/v1/chat/completions` |
+| xAI | `xai/grok-4.5` | `api.x.ai/v1/chat/completions` |
+| OpenAI | `openai/gpt-4.1` | `api.openai.com/v1/chat/completions` |
 
-### OpenRouter — top popular models
+You can also force the provider with `?p=<provider>` and send a bare model id.
 
-| Codename | Real model | Claude alias | Notes |
-| :--- | :--- | :--- | :--- |
-| **`saturn-5`** | `deepseek/deepseek-v4-pro` | `claude-sonnet-5` | DeepSeek V4 Pro |
-| **`halley-1`** | `deepseek/deepseek-v4-flash` | `claude-fable-4` | DeepSeek V4 Flash (fast) |
-| **`mercury-9`** | `z-ai/glm-5.2` | `claude-3-haiku-20240307` | GLM 5.2 (1M ctx, coding) |
-| **`orion-2`** | `xiaomi/mimo-v2.5` | `claude-opus-4-6` | Xiaomi MiMo-V2.5 |
-| **`pegasus-3`** | `minimax/minimax-m3` | `claude-opus-4-9` | MiniMax M3 |
-| **`lyra-4`** | `tencent/hy3-preview` | `claude-opus-4-7` | Tencent Hy3 preview |
-| **`vega-5`** | `stepfun/step-3.7-flash` | `claude-sonnet-4-5` | Step 3.7 Flash (fast) |
-| `neptune-4` | `anthropic/claude-sonnet-4.6` | `claude-sonnet-4-6` | Claude Sonnet 4.6 via OpenRouter |
-| `uranus-8` | `google/gemini-3.1-pro-preview` | `claude-fable-5` | Gemini 3.1 Pro |
+### Anthropic Messages surface (`/v1/messages`)
 
-### ZAI / Zhipu — direct (BigModel)
+The default public pack lists provider-transparent model IDs (the same values
+you would send to the upstream provider). Real Claude model IDs are preserved
+only when they route to an actual Anthropic target.
 
-| Codename | Real model | Claude alias | Notes |
-| :--- | :--- | :--- | :--- |
-| **`venus-3`** | `glm-5.2` | `claude-3-5-fable` | GLM 5.2 direct — reasoning isolated in `reasoning_content` (not surfaced) |
+If you need the `claude` CLI or another Anthropic-only client to accept
+non-Anthropic backends, create a **local compatibility pack** (see below). Local
+packs can define `equivalentClaudeName` aliases; those aliases are matched **only**
+when that pack is explicitly selected.
 
-### Groq — ultra-fast inference (128-tool cap)
+---
 
-| Codename | Real model | Claude alias | Notes |
-| :--- | :--- | :--- | :--- |
-| `pluto-2` | `qwen/qwen3.6-27b` | `claude-haiku-4-5` | `reasoning_effort:"none"` (drops `<think>`) |
-| **`atlas-6`** | `llama-3.3-70b-versatile` | `claude-3-5-sonnet-20241022` | Non-reasoning |
-| **`titan-7`** | `openai/gpt-oss-120b` | `claude-sonnet-4-7` | `include_reasoning:false` |
+## Local compatibility packs
 
-Model → provider mapping and reasoning params live in `SECRET_CODE_MAPPING` in
-[`src/index.ts`](src/index.ts). Upstream API keys are resolved from the monorepo env
-files (`MOONSHOT_API_KEY`, `OPENROUTER_API_KEY`, `ZHIPUAI_API_KEY`/`ZAI_API_KEY`,
-`GROQ_API_KEY`).
+Create a `packs.local.json` file (gitignored) in the workspace root, the package
+root, or next to `src/index.ts`:
+
+```json
+{
+  "packs": {
+    "local-claude": {
+      "id": "local-claude",
+      "label": "Local Claude compat",
+      "description": "Claude-shaped aliases for my preferred backends",
+      "models": {
+        "my-opus": {
+          "provider": "moonshot",
+          "model": "kimi-k2.7-code",
+          "equivalentClaudeName": "claude-opus-4-8"
+        }
+      }
+    }
+  }
+}
+```
+
+Then select the pack via header (`X-Proxy-Pack: local-claude`), query param
+(`?pack=local-claude`), or URL path (`/v1/local-claude/messages`). The alias
+`claude-opus-4-8` will route to `moonshot/kimi-k2.7-code` **only** on the
+Messages path and **only** when `local-claude` is active.
 
 ---
 
 ## Per-request overrides (query string)
 
-Override the provider/model of a single request without touching the JSON body:
-
 | Param | Effect |
 | :--- | :--- |
-| `?m=<codename>` | Force an explicit codename (e.g. `?m=pluto-2`) — bypasses alias resolution |
-| `?p=<provider>` | Force the provider (`moonshot`, `openrouter`, `zai`, `groq`) |
+| `?p=<provider>` | Force the provider (`moonshot`, `openrouter`, `zai`, `groq`, `xai`, `openai`) |
+| `?m=<code>` | Force a pack code on the **Messages** path |
 | `?tools=<names>` | Tool allow-list (e.g. `?tools=Bash,Read,Write`) — drop everything else |
 | `?notools=1` | Strip **all** tools (+ `tool_choice`) → "lean" mode for strict-cap backends |
+
+---
+
+## OpenAI Responses API facade (Codex custom providers)
+
+The proxy exposes a focused `POST /v1/responses` endpoint that implements the
+OpenAI Responses API on top of the existing OpenAI-compatible chat/completions
+providers. Codex custom providers can set `wire_api = "responses"` and point their
+base URL at this proxy.
+
+The facade is intentionally narrow: it supports the constructs that map cleanly to
+a chat/completions request and rejects everything else up front. It routes through
+the **transparent** `provider/model` surface, not through alias packs.
+
+### Supported
+
+- `model` — transparent `provider/model` reference (e.g. `openai/gpt-4.1`).
+- `input` — a plain string or an array of `message` items (`input_text`) and
+  `function_call_output` items.
+- `instructions` — injected as a leading `system` message.
+- `tools` — only `type: "function"` tools are accepted.
+- `tool_choice` — `"auto"`, `"none"`, `"required"`, or `{ type: "function", name }`.
+- `stream` — when `true`, upstream SSE is re-emitted as Responses API SSE events
+  (`response.created`, `response.output_text.delta`, `response.completed`, …).
+- Standard sampling params: `max_output_tokens` / `max_tokens`, `temperature`,
+  `top_p`, `parallel_tool_calls`.
+- `reasoning.effort` — mapped to the upstream `reasoning_effort` parameter.
+
+### Explicitly unsupported (returns 400)
+
+- `previous_response_id` — the facade is stateless; each request is translated
+  independently.
+- `text.format` / structured output.
+- Non-`function` tool types (e.g. `web_search`).
+- Image, audio, or other non-text content items.
 
 ---
 
@@ -99,7 +152,7 @@ often exceeds a provider's tool limit (e.g. **Groq: 128 max** →
 `400 'tools': maximum number of items is 128`). The proxy truncates `payload.tools` to
 the provider cap (`PROVIDER_MAX_TOOLS` in [`src/index.ts`](src/index.ts), currently
 `groq: 128`) **before** reshaping tools for the provider. Providers without a cap
-(moonshot, openrouter, zai) are untouched. Use `?tools=` / `?notools=1` for finer control.
+(moonshot, openrouter, zai, openai) are untouched. Use `?tools=` / `?notools=1` for finer control.
 
 ### Orphaned tool calls
 

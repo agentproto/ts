@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { trimTools, ToolTrimOptions, server } from '../index.js';
+import type { ToolTrimOptions } from '../index.js';
 import { request } from 'http';
 import { xaiPack } from '../packs.js';
+
+// Provide dummy upstream keys so that any test exercising the outbound proxy
+// path does not short-circuit with a missing-key 401.
+process.env.MOONSHOT_API_KEY = 'test-moonshot';
+process.env.OPENROUTER_API_KEY = 'test-openrouter';
+process.env.ZAI_API_KEY = 'test-zai';
+process.env.GROQ_API_KEY = 'test-groq';
+process.env.XAI_API_KEY = 'test-xai';
+process.env.OPENAI_API_KEY = 'test-openai';
+
+const { trimTools, server } = await import('../index.js');
 
 // ── trimTools ─────────────────────────────────────────────────────────────
 
@@ -278,8 +289,8 @@ describe('Proxy HTTP Server', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.length).toBe(Object.keys(xaiPack.models).length);
       const ids = res.body.data.map((m: any) => m.id);
-      expect(ids).toContain('nova-1');
-      expect(ids).toContain('pulsar-2');
+      expect(ids).toContain('grok-4.5');
+      expect(ids).toContain('grok-4.3');
     } finally { srv.close(); }
   });
 
@@ -356,7 +367,7 @@ describe('Proxy HTTP Server', () => {
       expect(res.body.object).toBe('list');
       expect(Array.isArray(res.body.data)).toBe(true);
       const ids = res.body.data.map((p: any) => p.id);
-      expect(ids).toContain('anthropic');
+      expect(ids).toContain('default');
       expect(ids).toContain('xai');
       expect(ids).toContain('openrouter');
     } finally { srv.close(); }
@@ -366,7 +377,7 @@ describe('Proxy HTTP Server', () => {
     const srv = server.listen(0);
     const port = (srv.address() as any).port;
     try {
-      const res = await httpRequest(port, '/v1/models', { headers: { 'X-Proxy-Model-Alias': 'nova-1' } });
+      const res = await httpRequest(port, '/v1/models', { headers: { 'X-Proxy-Model-Alias': 'grok-4.5' } });
       expect(res.status).toBe(200);
       // X-Proxy-Model-Alias doesn't affect /models listing, only message routing
       expect(res.body.data.length).toBeGreaterThan(0);

@@ -1,24 +1,31 @@
-import { createServer } from 'http';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { request, RequestOptions } from 'https';
+import { readFileSync } from 'fs';
+import { resolve as resolvePath } from 'path';
+import { fileURLToPath } from 'url';
 import {
-  SecretTarget,
   ModelPack,
+  ModelRoute,
   PACK_REGISTRY,
   resolvePack,
   buildMappingFromPack,
   listPackIds,
   matchesPattern,
   DEFAULT_PACK_ID,
+  parseTransparentModel,
+  KNOWN_TRANSPARENT_PROVIDERS,
 } from './packs.js';
+import {
+  validateResponsesRequest,
+  responsesToChatCompletionsRequest,
+  chatCompletionsJsonToResponses,
+  OpenAIChatToResponsesStreamConverter,
+} from './responses.js';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
 // importing this module if you need a non-default port without passing it
 // explicitly to start(port).
-import { readFileSync } from 'fs';
-import { resolve as resolvePath } from 'path';
-import { fileURLToPath } from 'url';
-
 const PORT = Number(process.env.LLM_ENDPOINT_PORT ?? process.env.PORT ?? 18090);
 
 // Helper: merged pack IDs (official + local). Cached after first call — the
@@ -37,6 +44,7 @@ function resolvePackMerged(packId: string | null | undefined): ModelPack {
   // resolvePack throws RangeError on unknown IDs; callers validate first via getMergedPackIds().
   return resolvePack(packId);
 }
+
 let _localPacksCache: Record<string, ModelPack> | null = null;
 
 // Load local pack overrides from gitignored JSON (ESM-safe; uses fileURLToPath).
@@ -73,16 +81,6 @@ function getLocalPacks(): Record<string, ModelPack> {
   return _localPacksCache;
 }
 
-// Mappage des codes secrets aléatoires vers les vrais noms de modèles/providers.
-// equivalentClaudeName utilise la famille Claude COURANTE (Opus 4.8 / Fable 5 / Sonnet 5 / Haiku 4.5)
-// pour que le TUI de `claude` (Claude Code 2.x) accepte le modèle au démarrage — les anciens
-// noms retirés (claude-3-5-*) sont rejetés côté client par le CLI interactif. Les backends
-// secondaires gardent un alias legacy accessible en mode print ou via ?m=<code>.
-
-// NOTE: SECRET_CODE_MAPPING is now dynamically built from packs — see packs.ts
-// The active pack is resolved per-request via URL path /v1/{pack}/messages
-// or query param ?pack={packId}. Default pack ('openrouter') has 4 models.
-
 // Limite max d'outils par provider (au-delà, Groq renvoie 400 "maximum number of items is 128").
 // Les providers non listés sont illimités. Le CLI `claude` charge sa config MCP globale
 // (~/.claude + .mcp.json + skills) → dépasse souvent 128 outils → on tronque côté proxy.
@@ -91,9 +89,10 @@ const PROVIDER_MAX_TOOLS: Record<string, number> = {
   xai: 200
 };
 
-// Providers routables — sert d'allow-list pour l'override `?p=`. Un `?p=<inconnu>`
-// laisserait sinon hostname vide et échouerait plus loin avec une erreur opaque.
-const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']);
+// Providers routables — sert d'allow-list pour l'override `?p=` et les préfixes
+// transparents `provider/model`. Un `?p=<inconnu>` laisserait sinon hostname
+// vide et échouerait plus loin avec une erreur opaque.
+const KNOWN_PROVIDERS = new Set([...KNOWN_TRANSPARENT_PROVIDERS]);
 
 // Options bag for trimTools — avoids tracking 7 ordered positional arguments.
 export interface ToolTrimOptions {
@@ -170,6 +169,7 @@ interface ProviderKeys {
   zai: string;
   groq: string;
   xai: string;
+  openai: string;
 }
 
 // Résolution des clés API d'hôtes depuis les variables d'environnement.
@@ -181,16 +181,423 @@ function resolveSecretKeys(): ProviderKeys {
     openrouter: process.env.OPENROUTER_API_KEY || '',
     zai: process.env.ZHIPUAI_API_KEY || process.env.ZAI_API_KEY || '',
     groq: process.env.GROQ_API_KEY || '',
-    xai: process.env.XAI_API_KEY || ''
+    xai: process.env.XAI_API_KEY || '',
+    openai: process.env.OPENAI_API_KEY || '',
   };
 }
 
-const resolvedKeys = resolveSecretKeys();
+function getResolvedKeys(): ProviderKeys {
+  return resolveSecretKeys();
+}
+
+// OpenAI-compatible chat/completions endpoint for the OpenAI surface and the
+// Responses API facade. Every known provider exposes an OpenAI-compatible path.
+function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string } {
+  switch (provider) {
+    case 'openrouter':
+      return { hostname: 'openrouter.ai', path: '/api/v1/chat/completions' };
+    case 'zai':
+      return { hostname: 'open.bigmodel.cn', path: '/api/paas/v4/chat/completions' };
+    case 'groq':
+      return { hostname: 'api.groq.com', path: '/openai/v1/chat/completions' };
+    case 'xai':
+      return { hostname: 'api.x.ai', path: '/v1/chat/completions' };
+    case 'openai':
+      return { hostname: 'api.openai.com', path: '/v1/chat/completions' };
+    case 'moonshot':
+    default:
+      return { hostname: 'api.moonshot.ai', path: '/v1/chat/completions' };
+  }
+}
+
+export interface ModelRouteContext {
+  activePack: ModelPack;
+  queryModelCode: string | null;
+  queryProvider: string | null;
+  forcedAliasCode: string | null;
+  /**
+   * When true, the Messages path is allowed to match local-pack
+   * `equivalentClaudeName` aliases. The OpenAI chat/completions and Responses
+   * surfaces are always transparent and never resolve default alias packs.
+   */
+  allowAliases: boolean;
+}
+
+function applyProviderOverride(
+  target: { provider: string; model: string; equivalentClaudeName?: string },
+  providerOverride: string | null
+): { provider: string; model: string } {
+  const route = { provider: target.provider, model: target.model };
+  if (!providerOverride) return route;
+  if (!KNOWN_PROVIDERS.has(providerOverride)) {
+    throw new Error(`Unknown provider "${providerOverride}" in ?p= (allowed: ${[...KNOWN_PROVIDERS].join(', ')})`);
+  }
+  return { provider: providerOverride, model: route.model };
+}
+
+/**
+ * Resolves the upstream provider/model for a request.
+ *
+ * Messages path (`allowAliases: true`):
+ *   - X-Proxy-Model-Alias header / PROXY_MODEL_ALIAS env forces a pack code.
+ *   - Explicit ?m=<code> selects a pack code.
+ *   - Local packs may define `equivalentClaudeName` aliases.
+ *   - Public pack codes match transparent model IDs.
+ *   - `provider/model` references are parsed transparently.
+ *   - `?p=<provider>` with a bare model id routes to that provider.
+ *
+ * Chat/Responses paths (`allowAliases: false`):
+ *   - Only `provider/model` references or `?p=<provider>` with a bare model id.
+ *   - Pack aliases and regex fallbacks are intentionally not used.
+ *
+ * Throws a plain Error for unknown explicit codes/providers.
+ */
+export function resolveModelRoute(
+  payload: { model?: string },
+  ctx: ModelRouteContext,
+  localPacks: Record<string, ModelPack> = getLocalPacks()
+): { provider: string; model: string } {
+  const mapping = buildMappingFromPack(ctx.activePack);
+  const isLocalPack = Boolean(localPacks[ctx.activePack.id]);
+
+  if (ctx.forcedAliasCode) {
+    const forcedCode = ctx.forcedAliasCode.toLowerCase();
+    const target = Object.entries(mapping).find(([code]) => code.toLowerCase() === forcedCode)?.[1];
+    if (!target) {
+      throw new Error(`Unknown model alias "${ctx.forcedAliasCode}" in active pack "${ctx.activePack.id}"`);
+    }
+    console.log(`[Proxy] Forced model alias "${ctx.forcedAliasCode}" -> ${target.provider}:${target.model}`);
+    return applyProviderOverride(target, ctx.queryProvider);
+  }
+
+  if (ctx.queryModelCode) {
+    const queryCode = ctx.queryModelCode.toLowerCase();
+    const target = Object.entries(mapping).find(([code]) => code.toLowerCase() === queryCode)?.[1];
+    if (!target) {
+      throw new Error(`Unknown model code "${ctx.queryModelCode}" in active pack "${ctx.activePack.id}"`);
+    }
+    console.log(`[Proxy] Detected URL model parameter code "${ctx.queryModelCode}" -> ${target.provider}:${target.model}`);
+    return applyProviderOverride(target, ctx.queryProvider);
+  }
+
+  const incomingModel = (payload.model || '').trim();
+  if (!incomingModel) {
+    throw new Error('Missing "model" field in request body');
+  }
+  const incomingLower = incomingModel.toLowerCase();
+
+  if (ctx.allowAliases && isLocalPack) {
+    const aliasEntry = Object.entries(mapping).find(
+      ([code, target]) =>
+        target.equivalentClaudeName?.toLowerCase() === incomingLower ||
+        code.toLowerCase() === incomingLower
+    );
+    if (aliasEntry) {
+      const target = aliasEntry[1];
+      console.log(`[Proxy] Matched local-pack alias "${incomingModel}" -> ${target.provider}:${target.model}`);
+      return applyProviderOverride(target, ctx.queryProvider);
+    }
+  }
+
+  if (ctx.allowAliases) {
+    const codeEntry = Object.entries(mapping).find(([code]) => code.toLowerCase() === incomingLower);
+    if (codeEntry) {
+      const target = codeEntry[1];
+      console.log(`[Proxy] Matched pack code "${incomingModel}" -> ${target.provider}:${target.model}`);
+      return applyProviderOverride(target, ctx.queryProvider);
+    }
+  }
+
+  const transparent = parseTransparentModel(incomingModel);
+  if (transparent) {
+    console.log(`[Proxy] Transparent model reference "${incomingModel}" -> ${transparent.provider}:${transparent.model}`);
+    return applyProviderOverride(transparent, ctx.queryProvider);
+  }
+
+  if (ctx.queryProvider) {
+    return applyProviderOverride({ provider: ctx.queryProvider, model: incomingModel }, ctx.queryProvider);
+  }
+
+  throw new Error(
+    `Unable to resolve model "${incomingModel}". Use a transparent "provider/model" reference (e.g. "moonshot/kimi-k2.7-code"), select a pack, or provide ?p=<provider>.`
+  );
+}
+
+function readQueryAndToolOptions(parsedUrl: URL, req: IncomingMessage) {
+  const queryProvider = parsedUrl.searchParams.get('p');
+  const queryModelCode = parsedUrl.searchParams.get('m');
+  const queryTools = parsedUrl.searchParams.get('tools');
+  const queryNoTools = parsedUrl.searchParams.get('notools');
+
+  const rawHeaderTools = req.headers['x-proxy-tools'];
+  const headerTools: string | null = (Array.isArray(rawHeaderTools) ? rawHeaderTools[0] : rawHeaderTools) || null;
+  const rawHeaderNoTools = req.headers['x-proxy-no-tools'];
+  const headerNoTools: string | null = (Array.isArray(rawHeaderNoTools) ? rawHeaderNoTools[0] : rawHeaderNoTools) || null;
+  const rawHeaderExcludeTools = req.headers['x-proxy-exclude-tools'];
+  const headerExcludeTools: string | null = (Array.isArray(rawHeaderExcludeTools) ? rawHeaderExcludeTools[0] : rawHeaderExcludeTools) || null;
+
+  const rawHeaderAlias = req.headers['x-proxy-model-alias'];
+  const headerAlias = (Array.isArray(rawHeaderAlias) ? rawHeaderAlias[0] : rawHeaderAlias)?.toLowerCase().trim();
+  const envAlias = process.env.PROXY_MODEL_ALIAS?.toLowerCase().trim();
+  const forcedAliasCode = headerAlias || envAlias || null;
+
+  return {
+    queryProvider,
+    queryModelCode,
+    queryTools,
+    queryNoTools,
+    headerTools,
+    headerNoTools,
+    headerExcludeTools,
+    forcedAliasCode,
+  };
+}
+
+function getApiKey(provider: string): string {
+  return getResolvedKeys()[provider as keyof ProviderKeys] || '';
+}
+
+/**
+ * Handles POST /v1/responses (and /v1/{pack}/responses).
+ *
+ * Validates the Responses API request, translates it to an OpenAI Chat
+ * Completions request, forwards it to the provider's OpenAI-compatible
+ * endpoint, and converts the upstream response back to the Responses API
+ * format (JSON or SSE).
+ */
+function handleResponsesRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: {
+    activePack: ModelPack;
+    queryModelCode: string | null;
+    queryProvider: string | null;
+    queryTools: string | null;
+    queryNoTools: string | null;
+    headerTools: string | null;
+    headerNoTools: string | null;
+    headerExcludeTools: string | null;
+    forcedAliasCode: string | null;
+  }
+): void {
+  let body = '';
+  req.on('data', chunk => {
+    body += chunk;
+  });
+
+  req.on('end', () => {
+    try {
+      const payload = JSON.parse(body);
+      const validated = validateResponsesRequest(payload);
+
+      let resolvedTarget: { provider: string; model: string };
+      try {
+        resolvedTarget = resolveModelRoute(validated, {
+          activePack: opts.activePack,
+          queryModelCode: null, // Responses facade uses transparent routing only
+          queryProvider: opts.queryProvider,
+          forcedAliasCode: null,
+          allowAliases: false,
+        });
+      } catch (e: any) {
+        console.warn(`[Proxy][responses] ${e.message}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
+        return;
+      }
+
+      const chatPayload = responsesToChatCompletionsRequest(validated, resolvedTarget);
+
+      trimTools(chatPayload, {
+        provider: resolvedTarget.provider,
+        queryTools: opts.queryTools,
+        queryNoTools: opts.queryNoTools,
+        headerTools: opts.headerTools,
+        headerNoTools: opts.headerNoTools,
+        headerExcludeTools: opts.headerExcludeTools,
+      });
+
+      const { hostname, path } = getChatCompletionsEndpoint(resolvedTarget.provider);
+      const targetApiKey = getApiKey(resolvedTarget.provider);
+      if (!targetApiKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
+        return;
+      }
+
+      console.log(`[Proxy Sortant][responses] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${chatPayload.model}"`);
+
+      const options: RequestOptions = {
+        hostname,
+        port: 443,
+        path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${targetApiKey}`,
+        },
+      };
+
+      const proxyReq = request(options, (proxyRes) => {
+        const status = proxyRes.statusCode || 200;
+        const contentType = proxyRes.headers['content-type'] as string || '';
+        const isStreaming = validated.stream === true && /text\/event-stream/i.test(contentType);
+
+        if (isStreaming) {
+          const respHeaders: Record<string, string | string[] | undefined> = { ...proxyRes.headers };
+          delete respHeaders['content-length'];
+          delete respHeaders['transfer-encoding'];
+          respHeaders['content-type'] = 'text/event-stream';
+          res.writeHead(status, respHeaders);
+          const converter = new OpenAIChatToResponsesStreamConverter({ requestedModel: validated.model });
+          proxyRes.setEncoding('utf8');
+          proxyRes.on('data', (c: string) => {
+            for (const out of converter.push(c)) res.write(out);
+          });
+          proxyRes.on('end', () => {
+            for (const out of converter.flush()) res.write(out);
+            res.end();
+          });
+        } else {
+          const respHeaders: Record<string, string | string[] | undefined> = { ...proxyRes.headers };
+          delete respHeaders['content-length'];
+          delete respHeaders['transfer-encoding'];
+          respHeaders['content-type'] = 'application/json';
+          res.writeHead(status, respHeaders);
+          let upstreamBody = '';
+          proxyRes.setEncoding('utf8');
+          proxyRes.on('data', (c: string) => { upstreamBody += c; });
+          proxyRes.on('end', () => {
+            res.end(chatCompletionsJsonToResponses(upstreamBody || '{}', { requestedModel: validated.model }));
+          });
+        }
+      });
+
+      proxyReq.on('error', (err) => {
+        console.error('[Proxy SORTANT error]', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'api_error', message: err.message } }));
+      });
+
+      proxyReq.write(JSON.stringify(chatPayload));
+      proxyReq.end();
+
+    } catch (e: any) {
+      console.error('[Payload Error]', e);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
+    }
+  });
+}
+
+/**
+ * Handles POST /v1/chat/completions (and /v1/{pack}/chat/completions).
+ *
+ * This is the normal OpenAI-compatible surface. It does not perform Anthropic
+ * schema adaptation; it resolves a transparent `provider/model` reference and
+ * forwards the request to the matching provider chat/completions endpoint.
+ */
+function handleChatCompletionsRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: {
+    activePack: ModelPack;
+    queryProvider: string | null;
+    queryTools: string | null;
+    queryNoTools: string | null;
+    headerTools: string | null;
+    headerNoTools: string | null;
+    headerExcludeTools: string | null;
+  }
+): void {
+  let body = '';
+  req.on('data', chunk => {
+    body += chunk;
+  });
+
+  req.on('end', () => {
+    try {
+      const payload = JSON.parse(body);
+
+      let resolvedTarget: { provider: string; model: string };
+      try {
+        resolvedTarget = resolveModelRoute(payload, {
+          activePack: opts.activePack,
+          queryModelCode: null,
+          queryProvider: opts.queryProvider,
+          forcedAliasCode: null,
+          allowAliases: false,
+        });
+      } catch (e: any) {
+        console.warn(`[Proxy][chat/completions] ${e.message}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
+        return;
+      }
+
+      payload.model = resolvedTarget.model;
+
+      trimTools(payload, {
+        provider: resolvedTarget.provider,
+        queryTools: opts.queryTools,
+        queryNoTools: opts.queryNoTools,
+        headerTools: opts.headerTools,
+        headerNoTools: opts.headerNoTools,
+        headerExcludeTools: opts.headerExcludeTools,
+      });
+
+      const { hostname, path } = getChatCompletionsEndpoint(resolvedTarget.provider);
+      const targetApiKey = getApiKey(resolvedTarget.provider);
+      if (!targetApiKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
+        return;
+      }
+
+      console.log(`[Proxy Sortant][chat/completions] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${payload.model}"`);
+
+      const options: RequestOptions = {
+        hostname,
+        port: 443,
+        path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${targetApiKey}`,
+        },
+      };
+
+      const proxyReq = request(options, (proxyRes) => {
+        const status = proxyRes.statusCode || 200;
+        const respHeaders: Record<string, string | string[] | undefined> = { ...proxyRes.headers };
+        delete respHeaders['content-length'];
+        delete respHeaders['transfer-encoding'];
+        res.writeHead(status, respHeaders);
+        proxyRes.pipe(res);
+      });
+
+      proxyReq.on('error', (err) => {
+        console.error('[Proxy SORTANT error]', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'api_error', message: err.message } }));
+      });
+
+      proxyReq.write(JSON.stringify(payload));
+      proxyReq.end();
+
+    } catch (e: any) {
+      console.error('[Payload Error]', e);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
+    }
+  });
+}
 
 // Adapte un payload Anthropic Messages vers le schéma OpenAI Chat Completions
-// (Groq / OpenRouter / ZAI). Moonshot expose un endpoint /anthropic natif et
-// n'a PAS besoin de cette adaptation. Renvoie les champs problématiques supprimés
-// et les champs sémantiquement équivalents convertis (system, tool_choice, stop).
+// (Groq / OpenRouter / ZAI / xAI / OpenAI). Moonshot expose un endpoint /anthropic
+// natif et n'a PAS besoin de cette adaptation. Renvoie les champs problématiques
+// supprimés et les champs sémantiquement équivalents convertis (system,
+// tool_choice, stop).
 function adaptAnthropicToOpenAI(payload: any) {
   // 1. system (string | content blocks) -> message role:system en tête de messages
   if (payload.system != null) {
@@ -446,15 +853,10 @@ class AnthropicThinkingStripper {
   }
 }
 
-// --- Groq/ZAI : conversion OpenAI → Anthropic ---
-// Groq et ZAI ne parlent que l'API OpenAI (chat/completions). Le CLI `claude` ne
-// parse QUE le format Anthropic. On convertit donc la réponse OpenAI (JSON ou SSE)
-// en Anthropic côté proxy. Champs clés (validés via le repo
-// Skillter/OpenAI-to-Claude-API-Converter-Proxy) :
-//   finish_reason: stop|length|tool_calls|content_filter  →  stop_reason: end_turn|max_tokens|tool_use|stop
-//   choices[0].message.content (string)                   →  content:[{type:"text",text}]
-//   choices[0].message.tool_calls[]                       →  content:[{type:"tool_use",id,name,input}]
-//   usage.prompt_tokens / completion_tokens               →  usage.input_tokens / output_tokens
+// --- Groq/ZAI/xAI/OpenAI : conversion OpenAI → Anthropic ---
+// Ces providers ne parlent que l'API OpenAI (chat/completions). Le CLI `claude`
+// ne parse QUE le format Anthropic. On convertit donc la réponse OpenAI (JSON
+// ou SSE) en Anthropic côté proxy.
 
 function openaiFinishToAnthropicStop(fr: string | null | undefined): string {
   switch (fr) {
@@ -683,12 +1085,12 @@ const server = createServer((req, res) => {
     }
   }
 
-  // 2. URL path /v1/{pack}/messages
+  // 2. URL path /v1/{pack}/...
   if (!packId) {
-    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions)?$/);
+    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions|\/responses)?$/);
     if (packPathMatch) {
       const potentialPack = packPathMatch[1];
-      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat']);
+      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses']);
       if (potentialPack && !RESERVED_SEGMENTS.has(potentialPack)) {
         if (getMergedPackIds().includes(potentialPack)) {
           packId = potentialPack;
@@ -718,29 +1120,45 @@ const server = createServer((req, res) => {
   }
 
   const activePack = resolvePackMerged(packId);
-  const SECRET_CODE_MAPPING = buildMappingFromPack(activePack);
 
-  // Lecture des paramètres de requête p (provider), m (secret code model),
-  // tools (allow-list d'outils à garder) et notools (strip tous les outils).
-  const queryProvider = parsedUrl.searchParams.get('p');
-  const queryModelCode = parsedUrl.searchParams.get('m');
-  const queryTools = parsedUrl.searchParams.get('tools'); // ex: ?tools=Bash,Read,Write
-  const queryNoTools = parsedUrl.searchParams.get('notools'); // ex: ?notools=1
-
-  // Headers personnalisés pour le contrôle des outils (Claude Desktop "Custom inference headers")
-  // Unwrap les headers dupliqués (Node les expose comme array) — prend le premier.
-  const rawHeaderTools = req.headers['x-proxy-tools'];
-  const headerTools: string | null = (Array.isArray(rawHeaderTools) ? rawHeaderTools[0] : rawHeaderTools) || null;
-  const rawHeaderNoTools = req.headers['x-proxy-no-tools'];
-  const headerNoTools: string | null = (Array.isArray(rawHeaderNoTools) ? rawHeaderNoTools[0] : rawHeaderNoTools) || null;
-  const rawHeaderExcludeTools = req.headers['x-proxy-exclude-tools'];
-  const headerExcludeTools: string | null = (Array.isArray(rawHeaderExcludeTools) ? rawHeaderExcludeTools[0] : rawHeaderExcludeTools) || null;
+  const { queryProvider, queryModelCode, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools, forcedAliasCode } =
+    readQueryAndToolOptions(parsedUrl, req);
 
   console.log(
     `[Proxy] Incoming request: ${req.method} ${rawUrl}` +
       (urlPath !== parsedUrl.pathname.replace(/\/+$/, '') ? ` (normalized: ${urlPath})` : '') +
       ` [pack: ${activePack.id}]`
   );
+
+  // 0b. OpenAI Responses API facade for Codex custom providers
+  if (req.method === 'POST' && urlPath.endsWith('/responses')) {
+    handleResponsesRequest(req, res, {
+      activePack,
+      queryModelCode,
+      queryProvider,
+      queryTools,
+      queryNoTools,
+      headerTools,
+      headerNoTools,
+      headerExcludeTools,
+      forcedAliasCode,
+    });
+    return;
+  }
+
+  // 0c. OpenAI chat/completions surface
+  if (req.method === 'POST' && urlPath.endsWith('/chat/completions')) {
+    handleChatCompletionsRequest(req, res, {
+      activePack,
+      queryProvider,
+      queryTools,
+      queryNoTools,
+      headerTools,
+      headerNoTools,
+      headerExcludeTools,
+    });
+    return;
+  }
 
   // 0. Endpoint /v1/packs pour la découverte des packs disponibles
   if (req.method === 'GET' && (urlPath === '/v1/packs' || urlPath === '/packs')) {
@@ -766,32 +1184,26 @@ const server = createServer((req, res) => {
     return;
   }
 
-  // 1. Endpoint /v1/models pour la découverte des modèles (conforme au format exact d'Anthropic ou d'OpenAI)
+  // 1. Endpoint /v1/models pour la découverte des modèles
   // Supporte aussi /v1/{pack}/models pour la sélection de pack via URL path
   if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models' || urlPath.endsWith('/models'))) {
     const isAnthropicStyle = req.headers['anthropic-version'] !== undefined || req.headers['x-api-key'] !== undefined;
+    const mapping = buildMappingFromPack(activePack);
+    const isLocalPack = Boolean(getLocalPacks()[activePack.id]);
 
     if (isAnthropicStyle) {
       // Format 100% Natif d'Anthropic Claude
       const anthropicModelsResponse = {
-        data: Object.entries(SECRET_CODE_MAPPING).map(([code, target]) => ({
-          id: target.equivalentClaudeName,
-          display_name: `Claude ${code.toUpperCase()}`,
-          created_at: "2026-02-04T00:00:00Z",
-          type: "model",
-          max_input_tokens: 200000,
-          max_tokens: 8192,
-          capabilities: {
-            batch: { supported: true },
-            citations: { supported: true },
-            code_execution: { supported: true },
-            context_management: { supported: true },
-            effort: { high: { supported: true }, supported: true },
-            image_input: { supported: true },
-            structured_outputs: { supported: true },
-            thinking: { supported: true, types: { enabled: { supported: true } } }
-          }
-        })),
+        data: Object.entries(mapping).map(([code, target]) => {
+          const id = (isLocalPack && target.equivalentClaudeName) ? target.equivalentClaudeName : code;
+          return {
+            id,
+            display_name: code,
+            created_at: '2026-02-04T00:00:00Z',
+            type: 'model',
+            capabilities: {},
+          };
+        }),
         has_more: false,
         first_id: null,
         last_id: null
@@ -801,33 +1213,14 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify(anthropicModelsResponse));
       return;
     } else {
-      // Format d'étude OpenAI standardisé au cas où
+      // Format OpenAI standardisé
       const openaiModelsResponse = {
         object: 'list',
-        data: Object.keys(SECRET_CODE_MAPPING).map(code => ({
+        data: Object.entries(mapping).map(([code, target]) => ({
           id: code,
           object: 'model',
           created: 1718841600,
-          owned_by: 'openai', // Utiliser 'openai' par défaut pour forcer les parsers tiers à l'accepter
-          permission: [
-            {
-              id: 'modelperm-' + code,
-              object: 'model_permission',
-              created: 1718841600,
-              allow_create_engine: false,
-              allow_effectively_free: true,
-              allow_sampling: true,
-              allow_logprobs: true,
-              allow_search_indices: false,
-              allow_view: true,
-              allow_fine_tuning: false,
-              organization: '*',
-              group: null,
-              is_blocking: false
-            }
-          ],
-          root: code,
-          parent: null
+          owned_by: target.provider,
         }))
       };
       console.log(`[Proxy] Returning standard OpenAI-formatted model list.`);
@@ -852,74 +1245,22 @@ const server = createServer((req, res) => {
   req.on('end', () => {
     try {
       const payload = JSON.parse(body);
-      const incomingModelName = (payload.model || '').toLowerCase();
 
       // Trouver la destination (Provider & Model)
-      let resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.6' };
-
-      // Étape 0 : Alias forcé via le header `X-Proxy-Model-Alias` (par requête,
-      // priorité la plus haute) ou l'env `PROXY_MODEL_ALIAS` (par défaut du
-      // process) — bypass COMPLET de la résolution normale (?m=, matching sur
-      // payload.model, fallback regex). Un code inconnu est ignoré (avec un
-      // warning) plutôt que de faire échouer la requête.
-      const rawHeaderAlias = req.headers['x-proxy-model-alias'];
-      const headerAlias = (Array.isArray(rawHeaderAlias) ? rawHeaderAlias[0] : rawHeaderAlias)?.toLowerCase().trim();
-      const envAlias = process.env.PROXY_MODEL_ALIAS?.toLowerCase().trim();
-      const forcedAliasCode = headerAlias || envAlias;
-      const forcedTarget = forcedAliasCode ? SECRET_CODE_MAPPING[forcedAliasCode] : undefined;
-
-      // Étape 1 : S'il y a un paramètre de code secret 'm' explicite dans l'URL
-      const explicitTarget = queryModelCode ? SECRET_CODE_MAPPING[queryModelCode] : undefined;
-      if (forcedTarget) {
-        resolvedTarget = forcedTarget;
-        console.log(`[Proxy] Forced model alias "${forcedAliasCode}" (via ${headerAlias ? 'X-Proxy-Model-Alias header' : 'PROXY_MODEL_ALIAS env'}) -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
-      } else {
-        if (forcedAliasCode) {
-          console.warn(`[Proxy] Forced model alias "${forcedAliasCode}" not found in SECRET_CODE_MAPPING — ignoring, falling back to normal resolution.`);
-        }
-        if (explicitTarget) {
-          resolvedTarget = explicitTarget;
-          console.log(`[Proxy] Detected URL model parameter code "${queryModelCode}" -> mapping to ${resolvedTarget.provider}:${resolvedTarget.model}`);
-        } else if (queryModelCode) {
-          // Code explicite fourni mais inconnu dans le pack actif — fail loud
-          console.warn(`[Proxy] URL model code "${queryModelCode}" not found in active pack "${activePack.id}" — returning 400 instead of silent fallback.`);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown model code "${queryModelCode}" in pack "${activePack.id}". Available: ${Object.keys(SECRET_CODE_MAPPING).join(', ')}` } }));
-          return;
-        } else {
-          // Étape 2 : Chercher dans notre dictionnaire d'équivalence Claude (exemples: "claude-3-5-sonnet")
-          const matchedEntry = Object.entries(SECRET_CODE_MAPPING).find(
-            ([code, target]) => target.equivalentClaudeName === incomingModelName || code.toLowerCase() === incomingModelName
-          );
-
-          if (matchedEntry) {
-            resolvedTarget = matchedEntry[1];
-            console.log(`[Proxy] Matched incoming model "${incomingModelName}" to equivalent secret mapping ${resolvedTarget.provider}:${resolvedTarget.model}`);
-          } else {
-            // Étape 3 : Fallback par regex habituel si aucune équivalence stricte trouvée.
-            // Routage par tier pour la famille Claude courante (opus/fable → kimi, sonnet → deepseek, haiku → groq).
-            if (/opus|fable/i.test(incomingModelName)) {
-              resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.7-code' };
-            } else if (/sonnet/i.test(incomingModelName)) {
-              resolvedTarget = { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' };
-            } else if (/haiku/i.test(incomingModelName)) {
-              resolvedTarget = { provider: 'groq', model: 'llama-3.3-70b-versatile' };
-            } else {
-              resolvedTarget = { provider: 'moonshot', model: 'kimi-k2.6' };
-            }
-          }
-        }
-      }
-
-      // S'il y a une demande de changement de provider explicite via "?p=..."
-      if (queryProvider) {
-        if (!KNOWN_PROVIDERS.has(queryProvider)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown provider "${queryProvider}" in ?p= (allowed: ${[...KNOWN_PROVIDERS].join(', ')})` } }));
-          return;
-        }
-        resolvedTarget.provider = queryProvider;
-        console.log(`[Proxy] Explicit URL provider parameter override -> ${queryProvider}`);
+      let resolvedTarget: { provider: string; model: string };
+      try {
+        resolvedTarget = resolveModelRoute(payload, {
+          activePack,
+          queryModelCode,
+          queryProvider,
+          forcedAliasCode,
+          allowAliases: true,
+        });
+      } catch (e: any) {
+        console.warn(`[Proxy] ${e.message}`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: e.message } }));
+        return;
       }
 
       // Configuration de la requête sortante selon le provider résolu
@@ -950,7 +1291,7 @@ const server = createServer((req, res) => {
           // tool_choice, stop_sequences passent en natif Anthropic côté OpenRouter.
           hostname = 'openrouter.ai';
           path = '/api/v1/messages';
-          targetApiKey = resolvedKeys.openrouter;
+          targetApiKey = getApiKey('openrouter');
           headers['Authorization'] = `Bearer ${targetApiKey}`;
           headers['anthropic-version'] = '2023-06-01';
           break;
@@ -958,7 +1299,7 @@ const server = createServer((req, res) => {
         case 'zai':
           hostname = 'open.bigmodel.cn';
           path = '/api/paas/v4/chat/completions'; // Zhipu AI standard path
-          targetApiKey = resolvedKeys.zai;
+          targetApiKey = getApiKey('zai');
           headers['Authorization'] = `Bearer ${targetApiKey}`;
           adaptAnthropicToOpenAI(payload);
 
@@ -983,7 +1324,7 @@ const server = createServer((req, res) => {
         case 'groq':
           hostname = 'api.groq.com';
           path = '/openai/v1/chat/completions'; // Groq utilise l'API OpenAI standard
-          targetApiKey = resolvedKeys.groq;
+          targetApiKey = getApiKey('groq');
           headers['Authorization'] = `Bearer ${targetApiKey}`;
           adaptAnthropicToOpenAI(payload);
           // Raisonnement modèle-aware — Groq a 3 familles aux APIs incompatibles :
@@ -1022,7 +1363,7 @@ const server = createServer((req, res) => {
         case 'xai':
           hostname = 'api.x.ai';
           path = '/v1/chat/completions'; // xAI uses OpenAI-compatible API
-          targetApiKey = resolvedKeys.xai;
+          targetApiKey = getApiKey('xai');
           headers['Authorization'] = `Bearer ${targetApiKey}`;
           adaptAnthropicToOpenAI(payload);
 
@@ -1044,14 +1385,39 @@ const server = createServer((req, res) => {
           }
           break;
 
+        case 'openai':
+          hostname = 'api.openai.com';
+          path = '/v1/chat/completions';
+          targetApiKey = getApiKey('openai');
+          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          adaptAnthropicToOpenAI(payload);
+
+          // Transformation des tools Anthropic pour OpenAI (format function)
+          if (payload.tools && Array.isArray(payload.tools)) {
+            payload.tools = payload.tools.map((t: any) => {
+              if (t.input_schema) {
+                return {
+                  type: 'function',
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.input_schema
+                  }
+                };
+              }
+              return t;
+            });
+          }
+          break;
+
         case 'moonshot':
         default:
           hostname = 'api.moonshot.ai';
           path = '/anthropic/v1/messages'; // Mode d'émulation Anthropic natif (Pas besoin de changer les tools)
-          targetApiKey = resolvedKeys.moonshot;
+          targetApiKey = getApiKey('moonshot');
           headers['X-API-Key'] = targetApiKey;
           headers['Accept'] = 'text/event-stream';
-          
+
           if (!payload.max_tokens) {
             payload.max_tokens = 4096;
           }
@@ -1084,8 +1450,8 @@ const server = createServer((req, res) => {
         // OpenRouter renvoie des blocs thinking/redacted_thinking (signature vide) que le
         // CLI `claude` rejette pour les modèles courants → on les strip côté proxy.
         const needsStrip = resolvedTarget.provider === 'openrouter';
-        // Groq/ZAI/xAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
-        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai';
+        // Groq/ZAI/xAI/OpenAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
+        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai';
 
         if (needsConvert && !isStreaming) {
           const respHeaders = { ...proxyRes.headers };
@@ -1169,8 +1535,9 @@ export { server };
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
   return server.listen(port, () => {
+    const keys = getResolvedKeys();
     console.log(`[Proxy Server] Live on http://localhost:${port}`);
-    console.log(`[Proxy Server] Dual API specifications (Anthropic native & OpenAI schemas) fully configured.`);
-    console.log(`[Proxy Server] Credentials status - Moonshot: ${resolvedKeys.moonshot ? 'OK' : 'MISSING'}, OpenRouter: ${resolvedKeys.openrouter ? 'OK' : 'MISSING'}, ZAI: ${resolvedKeys.zai ? 'OK' : 'MISSING'}, Groq: ${resolvedKeys.groq ? 'OK' : 'MISSING'}`);
+    console.log(`[Proxy Server] Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses surfaces configured.`);
+    console.log(`[Proxy Server] Credentials status - Moonshot: ${keys.moonshot ? 'OK' : 'MISSING'}, OpenRouter: ${keys.openrouter ? 'OK' : 'MISSING'}, ZAI: ${keys.zai ? 'OK' : 'MISSING'}, Groq: ${keys.groq ? 'OK' : 'MISSING'}, xAI: ${keys.xai ? 'OK' : 'MISSING'}, OpenAI: ${keys.openai ? 'OK' : 'MISSING'}`);
   });
 }
