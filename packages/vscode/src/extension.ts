@@ -25,6 +25,7 @@ import { SessionStore } from "./services/sessionStore.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
 import { registerStatusBar } from "./views/statusBar.js"
+import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
@@ -64,6 +65,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionRestart(ctx, client, store) // agentproto.restartSession
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store)
+  registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   ctx.subscriptions.push(
     vscode.commands.registerCommand("agentproto.showHealth", () =>
       showHealth(client),
