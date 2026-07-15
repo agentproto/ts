@@ -25,9 +25,19 @@ import { runLlm, parseJsonLoose } from './agentflow/llm.mjs'
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 const run = (c) => execSync(c, { cwd: ROOT, encoding: 'utf8' }).trim()
 
+/**
+ * Merge policy — read from AGENTFLOW_POLICY_FILE when set.
+ *
+ * The workflow pins that to the *base branch's* copy of agentic-review.json.
+ * Falling back to the in-tree copy means reading the PR's own file, which is a
+ * PR grading its own homework: `alwaysEscalateGlobs` is the deterministic
+ * guardrail below, and a PR could simply empty it. The env var is the
+ * trustworthy path; the fallback is for running this script by hand.
+ */
 function mergeCfg() {
+  const pinned = process.env.AGENTFLOW_POLICY_FILE
   try {
-    return JSON.parse(readFileSync(`${ROOT}/.github/agentic-review.json`, 'utf8')).merge ?? {}
+    return JSON.parse(readFileSync(pinned || `${ROOT}/.github/agentic-review.json`, 'utf8')).merge ?? {}
   } catch {
     return {}
   }
