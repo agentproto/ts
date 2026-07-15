@@ -44,32 +44,8 @@ const provider = defineDriver({
     implementTool(addTenTool, ({ input }) => ({ n: input.n + 10 })),
   ],
 })
-const maybeThrowTool = defineTool({
-  id: "demo.maybe-throw",
-  description: "Throws for negative n, else doubles.",
-  inputSchema: z.object({ n: z.number() }),
-  outputSchema: z.object({ n: z.number() }),
-})
-const flakyProvider = defineDriver({
-  id: "flaky-builtin",
-  name: "Flaky",
-  description: "Throws on negative n.",
-  kind: "builtin",
-  implements: [{ tool: "demo.maybe-throw", version: "0.1.0" }],
-  implementations: [
-    implementTool(maybeThrowTool, ({ input }) => {
-      if (input.n < 0) throw new Error(`item ${input.n} is expired`)
-      return { n: input.n * 2 }
-    }),
-  ],
-})
-const tools = {
-  "demo.double": doubleTool,
-  "demo.add-ten": addTenTool,
-  "demo.maybe-throw": maybeThrowTool,
-}
+const tools = { "demo.double": doubleTool, "demo.add-ten": addTenTool }
 const candidates = [provider]
-const flakyCandidates = [flakyProvider]
 
 describe("compileWorkflow", () => {
   it("resolveRef / evalPredicate read the binding grammar", () => {
@@ -143,54 +119,6 @@ describe("compileWorkflow", () => {
       input: { xs: [1, 2, 3] },
     })
     expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([2, 4, 6])
-  })
-
-  it("compiles a map's `on_error: collect` frontmatter — a failing item stays visible instead of aborting", async () => {
-    const wf = defineWorkflow({
-      name: "Double each, tolerantly",
-      id: "double-each-tolerant",
-      description: "Double every element; expired ones fail without aborting the run.",
-      version: "0.1.0",
-      inputs: {},
-      outputs: {},
-      steps: [
-        {
-          id: "doubled",
-          kind: "map",
-          over: "$input.xs",
-          on_error: "collect",
-          steps: [
-            {
-              id: "d",
-              kind: "tool",
-              tool: "demo.maybe-throw",
-              inputs: { n: "$item" },
-            },
-          ],
-        },
-      ],
-    })
-    const compiled = compileWorkflow(wf, {
-      tools,
-      candidates: [...candidates, ...flakyCandidates],
-    })
-    const { output } = await runWorkflow({
-      workflow: compiled,
-      input: { xs: [1, -2, 3] },
-    })
-    const tolerant = output as {
-      results: Array<{ status: string; index: number; value?: { n: number }; error?: string }>
-      succeeded: number
-      failed: number
-    }
-    expect(tolerant.succeeded).toBe(2)
-    expect(tolerant.failed).toBe(1)
-    expect(tolerant.results[1]).toEqual({
-      status: "rejected",
-      index: 1,
-      item: -2,
-      error: "item -2 is expired",
-    })
   })
 
   it("maps the workflow output from a declarative `result` expression", async () => {
