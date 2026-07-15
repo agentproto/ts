@@ -2162,7 +2162,11 @@ async function handleSessions(
         await registry.enqueuePrompt(id, prompt, { interrupt })
         json(202, { ok: true, id, queued: true })
       } else {
-        await registry.sendPrompt(id, prompt)
+        // `interrupt` used to be parsed and then silently DROPPED on this
+        // arm — it only took effect under ?wait=false. A caller asking to
+        // redirect a mid-turn session got the busy 409 it explicitly asked
+        // not to get. Both arms now honour it identically.
+        await registry.sendPrompt(id, prompt, { interrupt })
         json(200, { ok: true, id })
       }
     } catch (err) {
