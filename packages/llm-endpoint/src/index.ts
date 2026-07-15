@@ -96,7 +96,7 @@ const PROVIDER_MAX_TOOLS: Record<string, number> = {
 const KNOWN_PROVIDERS = new Set(['moonshot', 'openrouter', 'zai', 'groq', 'xai']);
 
 // Options bag for trimTools — avoids tracking 7 ordered positional arguments.
-interface ToolTrimOptions {
+export interface ToolTrimOptions {
   provider: string;
   queryTools: string | null;
   queryNoTools: string | null;
@@ -113,7 +113,7 @@ interface ToolTrimOptions {
 // `toolName` extrait le nom d'un outil quelle que soit sa forme (Anthropic: .name ;
 // OpenAI function: .function.name). Doit tourner AVANT la transformation de forme
 // propre à chaque provider (ZAI/Groq mappent input_schema → function.parameters).
-function trimTools(payload: any, opts: ToolTrimOptions): void {
+export function trimTools(payload: any, opts: ToolTrimOptions): void {
   const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools } = opts;
   if (!payload || !Array.isArray(payload.tools) || payload.tools.length === 0) return;
 
