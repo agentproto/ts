@@ -232,3 +232,32 @@ export type RuntimeEvent =
       contentPreview: string
     }
   | { type: "remote-log"; at: string; line: string }
+
+/**
+ * A registered workspace from the daemon's ~/.agentproto/workspaces.json
+ * control plane (GET /workspaces). Mirrors the daemon's `WorkspaceEntry`
+ * (runtime/src/workspaces-config.ts).
+ *
+ * NOTE the asymmetry this exists to paper over: a SessionDescriptor carries
+ * only `workspaceSlug`, and that slug silently defaults to "default" on the
+ * terminal/raw spawn paths (only POST /sessions/agent reverse-maps cwd →
+ * slug daemon-side). So a client that wants reliable workspace attribution
+ * resolves `descriptor.cwd` against this list itself.
+ */
+export interface WorkspaceEntry {
+  /** Stable handle: /^[a-z0-9][a-z0-9-]{0,63}$/. */
+  slug: string
+  /** Absolute path to the workspace root. */
+  path: string
+  addedAt: string
+  updatedAt: string
+  /** Free-text display name; falls back to `slug` when absent. */
+  label?: string
+}
+
+export interface WorkspacesConfig {
+  version: 1
+  /** Slug of the daemon's active workspace, when one is set. */
+  active?: string
+  workspaces: WorkspaceEntry[]
+}

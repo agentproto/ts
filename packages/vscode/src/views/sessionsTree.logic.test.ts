@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
 import {
+  bucketFor,
+  buildBucketedTree,
   buildSessionTree,
   compareSessions,
   contextValueFor,
@@ -9,7 +11,9 @@ import {
   descriptionFor,
   iconFor,
   labelFor,
+  relativeTime,
   tooltipFieldsFor,
+  type BucketNode,
 } from "./sessionsTree.logic.js"
 
 function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
@@ -44,6 +48,72 @@ describe("descriptionFor", () => {
     expect(descriptionFor(session({ adapterSlug: undefined, model: undefined, kind: "terminal" }))).toBe(
       "terminal · running",
     )
+  })
+
+  describe("with a DescriptionContext", () => {
+    const now = Date.parse("2026-01-06T00:00:00Z")
+
+    it("renders workspace · token delta · relative time", () => {
+      const s = session({
+        startedAt: "2026-01-01T00:00:00Z",
+        tokensIn: 120,
+        tokensOut: 45,
+      })
+      expect(descriptionFor(s, { workspaceLabel: "Agentik Studio", now })).toBe(
+        "Agentik Studio · +120 -45 · 5 days ago",
+      )
+    })
+    it("omits workspace when unset", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 10, tokensOut: 5 })
+      expect(descriptionFor(s, { now })).toBe("+10 -5 · 5 days ago")
+    })
+    it("omits the token part when BOTH tokensIn/tokensOut are absent (never a bare +0 -0)", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z" })
+      expect(descriptionFor(s, { workspaceLabel: "ws", now })).toBe("ws · 5 days ago")
+    })
+    it("defaults a missing side to 0 when at least one token field is present", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 10 })
+      expect(descriptionFor(s, { now })).toBe("+10 -0 · 5 days ago")
+    })
+    it("omits relative time when ctx.now is unset", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z" })
+      expect(descriptionFor(s, { workspaceLabel: "ws" })).toBe("ws")
+    })
+    it("returns an empty string when ctx has no resolvable parts", () => {
+      expect(descriptionFor(session(), {})).toBe("")
+    })
+  })
+})
+
+describe("relativeTime", () => {
+  const now = Date.parse("2026-01-10T12:00:00Z")
+
+  it("just now for sub-45s deltas", () => {
+    expect(relativeTime("2026-01-10T11:59:30Z", now)).toBe("just now")
+  })
+  it("minutes ago", () => {
+    expect(relativeTime("2026-01-10T11:58:00Z", now)).toBe("2 mins ago")
+    expect(relativeTime("2026-01-10T11:59:00Z", now)).toBe("1 min ago")
+  })
+  it("hours ago", () => {
+    expect(relativeTime("2026-01-10T10:00:00Z", now)).toBe("2 hrs ago")
+    expect(relativeTime("2026-01-10T11:00:00Z", now)).toBe("1 hr ago")
+  })
+  it("days ago", () => {
+    expect(relativeTime("2026-01-05T12:00:00Z", now)).toBe("5 days ago")
+    expect(relativeTime("2026-01-09T12:00:00Z", now)).toBe("1 day ago")
+  })
+  it("months ago", () => {
+    expect(relativeTime("2025-11-01T12:00:00Z", now)).toBe("2 months ago")
+  })
+  it("years ago", () => {
+    expect(relativeTime("2024-01-10T12:00:00Z", now)).toBe("2 years ago")
+  })
+  it("clamps a future timestamp (clock skew) to just now instead of a negative duration", () => {
+    expect(relativeTime("2026-01-10T13:00:00Z", now)).toBe("just now")
+  })
+  it("renders an em dash for an unparsable timestamp", () => {
+    expect(relativeTime("not-a-date", now)).toBe("—")
   })
 })
 
@@ -215,5 +285,63 @@ describe("buildSessionTree", () => {
   it("skips descriptors without an id", () => {
     const tree = buildSessionTree([{ ...session(), id: "" } as SessionDescriptor])
     expect(tree).toEqual([])
+  })
+})
+
+describe("bucketFor", () => {
+  const now = Date.parse("2026-01-10T00:00:00Z")
+
+  it("last7days for a session started within the last 7×24h", () => {
+    expect(bucketFor(session({ startedAt: "2026-01-08T00:00:00Z" }), now)).toBe("last7days")
+  })
+  it("older for a session started 7+ days ago", () => {
+    expect(bucketFor(session({ startedAt: "2026-01-02T00:00:00Z" }), now)).toBe("older")
+  })
+  it("older for an unparsable startedAt", () => {
+    expect(bucketFor(session({ startedAt: "not-a-date" }), now)).toBe("older")
+  })
+})
+
+describe("buildBucketedTree", () => {
+  const now = Date.parse("2026-01-10T00:00:00Z")
+
+  it("groups top-level roots into bucket nodes, newest bucket first", () => {
+    const nodes = buildBucketedTree(
+      [
+        session({ id: "recent", startedAt: "2026-01-09T00:00:00Z" }),
+        session({ id: "stale", startedAt: "2025-12-01T00:00:00Z" }),
+      ],
+      now,
+    )
+    expect(nodes.map(n => (n as BucketNode).bucket)).toEqual(["last7days", "older"])
+    expect(nodes.map(n => (n as BucketNode).label)).toEqual(["LAST 7 DAYS", "OLDER"])
+    expect((nodes[0] as BucketNode).children.map(n => n.session.id)).toEqual(["recent"])
+    expect((nodes[1] as BucketNode).children.map(n => n.session.id)).toEqual(["stale"])
+  })
+
+  it("omits an empty bucket entirely", () => {
+    const nodes = buildBucketedTree([session({ id: "recent", startedAt: "2026-01-09T00:00:00Z" })], now)
+    expect(nodes).toHaveLength(1)
+    expect((nodes[0] as BucketNode).bucket).toBe("last7days")
+  })
+
+  it("keeps an orchestrator subtree intact inside its root's bucket (children never migrate)", () => {
+    const nodes = buildBucketedTree(
+      [
+        session({ id: "parent", startedAt: "2026-01-09T00:00:00Z" }),
+        session({ id: "child", parentSessionId: "parent", startedAt: "2025-01-01T00:00:00Z" }),
+      ],
+      now,
+    )
+    expect(nodes).toHaveLength(1)
+    const bucket = nodes[0] as BucketNode
+    expect(bucket.bucket).toBe("last7days")
+    expect(bucket.children).toHaveLength(1)
+    expect(bucket.children[0]?.session.id).toBe("parent")
+    expect(bucket.children[0]?.children.map(n => n.session.id)).toEqual(["child"])
+  })
+
+  it("returns no nodes for an empty session list", () => {
+    expect(buildBucketedTree([], now)).toEqual([])
   })
 })

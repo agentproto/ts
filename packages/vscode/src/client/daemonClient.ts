@@ -28,6 +28,7 @@ import type {
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
+  WorkspacesConfig,
 } from "./types.js"
 
 export interface SessionEventsOptions {
@@ -280,6 +281,20 @@ export class DaemonClient {
     )
     if (Array.isArray(result)) return result
     return result.adapters ?? []
+  }
+
+  /**
+   * GET /workspaces — the daemon's registered workspace list
+   * (~/.agentproto/workspaces.json). Read-only; mutation is CLI-only
+   * (`agentproto workspace add/remove/use`).
+   *
+   * A session descriptor only carries `workspaceSlug`, so this is the join
+   * table for rendering a human workspace name and for resolving a cwd back
+   * to the workspace it belongs to. See services/workspaces.logic.ts.
+   */
+  async listWorkspaces(): Promise<WorkspacesConfig> {
+    const body = await this.getJson<WorkspacesConfig>("/workspaces")
+    return { ...body, version: 1, workspaces: body.workspaces ?? [] }
   }
 
   /**
