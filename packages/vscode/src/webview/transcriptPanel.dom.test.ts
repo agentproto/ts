@@ -443,3 +443,89 @@ describe("transcriptPanel webview — composer", () => {
     expect(btn(panel, "composer").classList.contains("disabled")).toBe(true)
   })
 })
+
+describe("transcriptPanel webview — honest session state", () => {
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+
+  it("shows blocked-on while a turn is actually in flight", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    expect(el(panel, "header-blocked").textContent).toBe("blocked on command · toolu_01")
+  })
+
+  it("does NOT claim a killed session is blocked (stale blockedOn survives the kill)", () => {
+    const panel = renderPanel()
+    // The real descriptor a killed-mid-tool-call session carries: the daemon
+    // clears blockedOn in the turn's finally, which never runs here.
+    init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    expect(el(panel, "header-blocked").textContent).toBe("")
+    // ...and the chip must not contradict it either.
+    expect(el(panel, "status-chip").textContent).toBe("exited")
+  })
+
+  it("renders context as an integer percent, keeping the raw counts in the tooltip", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [],
+        usage: { seq: 1, contextUsed: 206_115, contextSize: 1_000_000, tokensIn: 5, tokensOut: 7 },
+      },
+    })
+    const usage = el(panel, "conv-usage")
+    expect(usage.textContent).toBe("ctx 21% · in 5 · out 7")
+    expect(usage.title).toBe("context 206115 / 1000000")
+  })
+
+  it("omits the context percent rather than dividing by zero", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 5, contextSize: 0 } },
+    })
+    expect(el(panel, "conv-usage").textContent).toBe("")
+  })
+
+  it("shows the working row with a ticking elapsed only while busy", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, tokensOut: 983 })
+
+    const row = el(panel, "working")
+    expect(row.hidden).toBe(false)
+    expect(el(panel, "working-text").textContent).toBe("Working… · 0s · 983 tokens")
+
+    vi.advanceTimersByTime(5_000)
+    expect(el(panel, "working-text").textContent).toBe("Working… · 5s · 983 tokens")
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false }) })
+    expect(row.hidden).toBe(true)
+  })
+
+  it("never spins the working row for a killed session carrying a stale busy flag", () => {
+    const panel = renderPanel()
+    init(panel, { status: "killed", busy: true })
+    expect(el(panel, "working").hidden).toBe(true)
+  })
+})

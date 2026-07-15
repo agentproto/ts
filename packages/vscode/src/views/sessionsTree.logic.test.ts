@@ -219,12 +219,28 @@ describe("tooltipFieldsFor", () => {
       value: "10% (10/100)",
     })
   })
-  it("includes blockedOn only when set", () => {
-    expect(tooltipFieldsFor(session({ blockedOn: "subagent" }))).toContainEqual({
-      label: "blockedOn",
-      value: "subagent",
-    })
-    expect(tooltipFieldsFor(session())).not.toContainEqual(expect.objectContaining({ label: "blockedOn" }))
+  const hasBlockedOn = (s: SessionDescriptor): boolean =>
+    tooltipFieldsFor(s).some(f => f.label === "blockedOn")
+
+  it("includes blockedOn while the session is actually taking a turn", () => {
+    expect(
+      tooltipFieldsFor(session({ blockedOn: "subagent", status: "running", busy: true })),
+    ).toContainEqual({ label: "blockedOn", value: "subagent" })
+  })
+
+  it("omits blockedOn when unset", () => {
+    expect(hasBlockedOn(session())).toBe(false)
+  })
+
+  it("omits a stale blockedOn on a killed session — a dead session is blocked on nothing", () => {
+    // Exactly the descriptor the daemon leaves behind when a session is killed
+    // mid-tool-call: the turn's finally never runs, so busy/blockedOn survive
+    // the kill. The tree must not repeat that claim.
+    expect(hasBlockedOn(session({ status: "killed", busy: true, blockedOn: "command" }))).toBe(false)
+  })
+
+  it("omits blockedOn on a live but idle session", () => {
+    expect(hasBlockedOn(session({ status: "running", busy: false, blockedOn: "command" }))).toBe(false)
   })
 })
 

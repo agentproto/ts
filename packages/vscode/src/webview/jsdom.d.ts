@@ -37,6 +37,8 @@ declare module "jsdom" {
     /** Only meaningful on form controls (<button>, <textarea>). */
     disabled?: boolean
     hidden?: boolean
+    /** Native tooltip text. */
+    title?: string
     dispatchEvent(event: DomEvent): boolean
     querySelector(selectors: string): DomElement | null
     querySelectorAll(selectors: string): Iterable<DomElement>

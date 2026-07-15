@@ -154,8 +154,19 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
       value: `${pct} (${session.contextUsed}/${session.contextSize})`,
     })
   }
-  if (session.blockedOn) fields.push({ label: "blockedOn", value: session.blockedOn })
+  // Only while a turn is actually in flight: a session killed mid-tool-call
+  // keeps a stale blockedOn/busy forever (the daemon clears them in the turn's
+  // finally, which never runs for a generator that is never resumed), and a
+  // tooltip claiming a dead session is "blockedOn: command" is just wrong.
+  if (session.blockedOn && isBlocked(session)) {
+    fields.push({ label: "blockedOn", value: session.blockedOn })
+  }
   return fields
+}
+
+/** True only when the session is taking a turn right now — the sole state in which blockedOn means anything. */
+export function isBlocked(session: SessionDescriptor): boolean {
+  return Boolean(session.blockedOn) && !TERMINAL_STATUSES.has(session.status) && Boolean(session.busy)
 }
 
 /** running-first, then startedAt desc (newest first). */
