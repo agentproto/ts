@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Default types (opened/synchronize/reopened) plus ready_for_review, so a
+    # PR flipped from draft to ready deterministically re-enters this flow
+    # (review-if-needed → merge-gate) instead of the handoff dead-ending.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -170,6 +174,33 @@ jobs:
             exit 1
           fi
           echo "✓ No scratch docs, no AI-attribution trailers."
+
+  # On PRs: conformance tests for the auto-merge decision logic
+  # (scripts/agentflow/merge-gate.mjs) — no workspace deps, so this runs
+  # standalone without a full pnpm install. This is the test that would have
+  # caught the 2026-07-15 incident: draft+APPROVED+var=true must hold, not arm.
+  merge-gate-test:
+    name: Merge-gate conformance tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # No pnpm install here on purpose: merge-gate.mjs and its test use only
+      # node:child_process/node:fs/node:test, zero workspace deps. setup-node@v5
+      # defaults package-manager-cache to true and auto-detects the root
+      # package.json's `packageManager: pnpm@…` field regardless — without this
+      # override it tries to prime a pnpm cache via a pnpm binary this job never
+      # installs (see the sibling `Setup pnpm` step in build-and-test) and fails.
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Run merge-gate conformance tests
+        run: node --test scripts/agentflow/merge-gate.test.mjs
 
   # On PR open: fill an empty description from the diff (never clobbers a
   # human/agent-written body). Opt-in via describe.auto in agentic-review.json.
@@ -461,20 +492,28 @@ jobs:
 
   # On PRs: once the agentic review APPROVES, optionally enable GitHub-native
   # auto-merge so the PR merges itself when all required checks pass. This is the
-  # bot closing its own loop (open → review → fix → merge). OFF by default: it
-  # Opt-in via `vars.AGENTFLOW_AUTOMERGE=true` — the repo variable is the only
-  # thing that can ENABLE auto-merge, because it lives in repo settings where a
-  # PR cannot reach it. `merge.auto: false` in .github/agentic-review.json (read
-  # from the base branch) can veto, but never enable. "merge with conditions" =
-  # GitHub's required checks (rulesets/branch protection) — we only flip the
-  # auto switch.
+  # bot closing its own loop (open → review → fix → merge). Opt-in via
+  # `vars.AGENTFLOW_AUTOMERGE=true` — the repo variable is the only thing that
+  # can ENABLE auto-merge, because it lives in repo settings where a PR cannot
+  # reach it. `merge.auto: false` in .github/agentic-review.json (read from the
+  # base branch) can veto, but never enable. It is never armed on a draft PR —
+  # that guard is a declared rule (job-level `if:` plus `merge-gate.mjs`), not
+  # an accident of the GraphQL error GitHub returns when you try. "merge with
+  # conditions" = GitHub's required checks (rulesets/branch protection) — we
+  # only flip the auto switch.
   auto-merge:
     name: Auto-merge (opt-in)
     runs-on: ubuntu-latest
     needs: [pr-review]
+    # Declared draft guard: "draft ⇒ don't arm" is a job-level rule, not an
+    # accident of the GraphQL error GitHub returns when arming a draft PR (the
+    # failure that was previously swallowed by `|| echo ::warning` further
+    # down). merge-gate.mjs also refuses on draft — this skips the job outright
+    # so a draft never even reaches that check.
     if: |
       always() &&
       github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
     permissions:
       contents: write
@@ -507,101 +546,93 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Enable auto-merge when approved + opted-in
+      # Deterministic half of the decision (draft / var-enables / file-vetoes /
+      # self-modification / approval / ack) — scripts/agentflow/merge-gate.mjs,
+      # a pure + conformance-tested function. This step is a thin caller: it
+      # must never re-implement that logic here. Reads the policy from the base
+      # branch (never the PR's own tree — a PR gets no vote on how it is
+      # merged) and pins it to /tmp/merge-policy.json for the maintainer step.
+      - name: Compute merge-gate decision
+        id: gate
         if: steps.prstate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.base_ref }}
+          VAR_AUTOMERGE: ${{ vars.AGENTFLOW_AUTOMERGE }}
+        run: |
+          VERDICT=$(node scripts/agentflow/merge-gate.mjs)
+          ACTION=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).action}catch{'hold'}")
+          REASON=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).reason}catch{'merge-gate output unreadable'}")
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          # Heredoc form, not a plain KEY=value line: `reason` can echo back a
+          # changed filename from the PR branch, which must not be treated as
+          # shell-significant when this output is later consumed.
+          {
+            echo "reason<<MERGE_GATE_REASON_EOF"
+            echo "$REASON"
+            echo "MERGE_GATE_REASON_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Hold / disabled — no action
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          (steps.gate.outputs.action == 'hold' || steps.gate.outputs.action == 'disabled')
+        # ACTION/REASON via env, not inline `${{ }}` — reason can echo back a
+        # changed filename from the PR branch (see the changeset-check step's
+        # comment on why `${{ }}` interpolation into shell text is unsafe).
+        env:
+          ACTION: ${{ steps.gate.outputs.action }}
+          REASON: ${{ steps.gate.outputs.reason }}
+        run: |
+          echo "merge-gate: $ACTION — $REASON"
+
+      # Self-modification guard: a PR touching the merge machinery cannot be
+      # trusted to judge itself. See merge-gate.mjs's SELF_MODIFICATION_RE.
+      - name: Escalate to a human
+        id: escalate
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.gate.outputs.action == 'escalate'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REASON: ${{ steps.gate.outputs.reason }}
+        run: |
+          cfg() { node -p "String((require('/tmp/merge-policy.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
+          ESC_TO=$(cfg escalateTo); [ -z "$ESC_TO" ] && ESC_TO="agentiknet"
+          echo "merge-gate escalated — handing off to @$ESC_TO. Reason: $REASON"
+          gh pr comment "$PR" --repo "$REPO" --body "🛑 Auto-merge withheld — this PR modifies the auto-merge machinery itself, so the machinery is not judging it. @$ESC_TO please review. Reason: $REASON"
+          gh pr edit "$PR" --repo "$REPO" --add-label "needs-human-review" 2>/dev/null || true
+
+      # Maintainer layer (optional, on top of the deterministic gate): once
+      # merge-gate clears a PR to arm, a judge decides merge vs
+      # escalate-to-human for anything it still finds too risky. Only reached
+      # when merge-gate's action is "arm" — never on hold/disabled/escalate.
+      - name: Maintainer judgment + arm
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.gate.outputs.action == 'arm'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          VAR_AUTOMERGE: ${{ vars.AGENTFLOW_AUTOMERGE }}
-          BASE: ${{ github.base_ref }}
         run: |
-          # ── policy comes from the base branch, never from the PR ─────────────
-          #
-          # This job runs from the PR's merged tree, so `./.github/agentic-review.json`
-          # used to be *the PR's copy* — a PR could rewrite the rules used to judge
-          # it. Read the policy from the base branch instead. A PR gets no vote on
-          # how it is merged.
-          git fetch --quiet origin "$BASE"
-          if ! git show "origin/$BASE:.github/agentic-review.json" > /tmp/merge-policy.json 2>/dev/null; then
-            echo "::error::could not read .github/agentic-review.json from origin/$BASE — refusing to auto-merge."
-            exit 0
-          fi
+          # /tmp/merge-policy.json was written by the "Compute merge-gate
+          # decision" step above (base-branch-pinned) — reuse it rather than
+          # re-fetching, and pass the same pin to the maintainer via
+          # AGENTFLOW_POLICY_FILE so it never falls back to reading the PR's
+          # own copy (which is exactly the hole this PR-cannot-judge-itself
+          # design closes).
           cfg() { node -p "String((require('/tmp/merge-policy.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
-          AUTO=$(cfg auto); METHOD=$(cfg method); REQ_ACK=$(cfg requireAck); ACK_LABEL=$(cfg ackLabel)
-          MAINT=$(cfg maintainer); ESC_TO=$(cfg escalateTo)
+          METHOD=$(cfg method); MAINT=$(cfg maintainer); ESC_TO=$(cfg escalateTo)
           [ -z "$METHOD" ] && METHOD="squash"
-          [ -z "$ACK_LABEL" ] && ACK_LABEL="agentflow:ack"
           [ -z "$ESC_TO" ] && ESC_TO="agentiknet"
 
-          # ── master switch: the repo var enables, the config may only veto ────
-          #
-          # These used to be OR'd, which meant `merge.auto: true` in the config
-          # was sufficient on its own — and since the config was read from the PR,
-          # a PR could enable auto-merge for itself. It also meant `merge.auto:
-          # false` read as "off" while being silently overridden by the repo var,
-          # which is exactly how it was set: var=true, config=false, auto-merge on.
-          #
-          # vars.AGENTFLOW_AUTOMERGE lives in repo settings, out of a PR's reach,
-          # so it is the only thing that may *enable*. The config keeps a
-          # kill-switch, but only in the safe direction.
-          if [ "$VAR_AUTOMERGE" != "true" ]; then
-            echo "auto-merge disabled — vars.AGENTFLOW_AUTOMERGE is not 'true'. Skipping."
-            exit 0
-          fi
-          if [ "$AUTO" = "false" ]; then
-            echo "auto-merge vetoed by merge.auto=false in .github/agentic-review.json (base). Skipping."
-            exit 0
-          fi
-
-          # ── self-modification guard ──────────────────────────────────────────
-          #
-          # If this PR edits the merge machinery, that machinery cannot be trusted
-          # to judge it. Deterministic, evaluated against base-pinned paths, and
-          # ahead of every other condition.
-          #
-          # NOTE: this cannot protect .github/workflows/** from itself. For
-          # `pull_request`, GitHub runs the workflow from the PR's merged tree, so
-          # a PR editing this file runs its own edited version and could simply
-          # delete this check. Requiring human review on .github/** via CODEOWNERS
-          # or a ruleset is the only real control there. The check is still worth
-          # having: it covers the honest-mistake case and every non-workflow path.
-          SELF=$(git diff --name-only "origin/$BASE...HEAD" \
-            | grep -E '^(\.github/(workflows/|agentic-review\.json|actions/)|scripts/(maintainer\.mjs|agentflow/))' || true)
-          if [ -n "$SELF" ]; then
-            echo "PR touches the merge machinery — escalating instead of auto-merging:"
-            echo "$SELF"
-            BODY=$(printf '%s\n\n%s\n' \
-              "🛑 Auto-merge withheld — this PR modifies the auto-merge machinery itself, so the machinery is not judging it. @$ESC_TO please review." \
-              "Paths:$(printf '\n- `%s`' $SELF)")
-            gh pr comment "$PR" --repo "$REPO" --body "$BODY"
-            gh pr edit "$PR" --repo "$REPO" --add-label "needs-human-review" 2>/dev/null || true
-            exit 0
-          fi
-
-          # Condition 1: the agentic review must be APPROVED.
-          DECISION=$(gh pr view "$PR" --repo "$REPO" --json reviewDecision -q '.reviewDecision')
-          if [ "$DECISION" != "APPROVED" ]; then
-            echo "review decision is '$DECISION' (need APPROVED) — not enabling auto-merge."
-            exit 0
-          fi
-
-          # Condition 2 (optional): a human ack label must be present.
-          if [ "$REQ_ACK" = "true" ]; then
-            if ! gh pr view "$PR" --repo "$REPO" --json labels -q '.labels[].name' | grep -qx "$ACK_LABEL"; then
-              echo "requireAck is on and label '$ACK_LABEL' is absent — waiting for a dev ack."
-              exit 0
-            fi
-          fi
-
-          # Maintainer layer (optional, on top of the auto switch): a judge
-          # decides merge vs escalate-to-human. Too-critical changes are handed
-          # off instead of merged.
           if [ "$MAINT" = "true" ]; then
-            # AGENTFLOW_POLICY_FILE pins the maintainer's policy (notably
-            # alwaysEscalateGlobs) to the base branch's copy — otherwise it reads
-            # the PR's, and a PR could empty its own escalate list.
             VERDICT=$(AGENTFLOW_POLICY_FILE=/tmp/merge-policy.json node scripts/maintainer.mjs) || true
             MDEC=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).decision}catch{'escalate'}")
             MWHY=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).reason}catch{'maintainer output unreadable'}")
@@ -616,8 +647,13 @@ jobs:
 
           # Flip GitHub-native auto-merge: GitHub performs the merge once every
           # REQUIRED check passes (the conditions live in branch protection /
-          # rulesets, not here).
+          # rulesets, not here). merge-gate already established that arming is
+          # *expected* to succeed here — a failure at this point is anomalous
+          # and must not be swallowed (2026-07-15's incident was exactly a
+          # swallowed failure of this call on a draft PR).
           echo "Enabling auto-merge (method=$METHOD) on #$PR…"
-          gh pr merge "$PR" --repo "$REPO" --auto --"$METHOD" --delete-branch \
-            || echo "::warning::Could not enable auto-merge — ensure 'Allow auto-merge' is enabled in repo settings and required checks exist."
+          if ! gh pr merge "$PR" --repo "$REPO" --auto --"$METHOD" --delete-branch; then
+            echo "::error::merge-gate said arm, but 'gh pr merge --auto' failed — ensure 'Allow auto-merge' is enabled in repo settings and required checks exist. This is not expected to fail once merge-gate clears a PR; treat as a real failure, not a no-op."
+            exit 1
+          fi
 
