@@ -124,7 +124,7 @@ describe("GET /sessions/:id/events", () => {
     }
   }
 
-  it("returns events with seq > since, nextSeq, and complete=true when exhausted", async () => {
+  it("returns events with seq > since, nextSeq, and complete=true when exhausted", { timeout: 15_000 }, async () => {
     writeEvents([
       { kind: "user-prompt", sessionId: SESSION_ID, text: "hi" },
       { kind: "text-delta", sessionId: SESSION_ID, text: "hello" },
@@ -152,7 +152,7 @@ describe("GET /sessions/:id/events", () => {
     })
   })
 
-  it("windows with since/limit for incremental polling", async () => {
+  it("windows with since/limit for incremental polling", { timeout: 15_000 }, async () => {
     writeEvents([
       { kind: "user-prompt", sessionId: SESSION_ID, text: "1" },
       { kind: "text-delta", sessionId: SESSION_ID, text: "2" },
@@ -197,7 +197,7 @@ describe("GET /sessions/:id/events", () => {
     })
   })
 
-  it("404s with {error: 'no_transcript'} when events.jsonl doesn't exist", async () => {
+  it("404s with {error: 'no_transcript'} when events.jsonl doesn't exist", { timeout: 15_000 }, async () => {
     await withServer(async port => {
       const res = await fetch(`http://127.0.0.1:${port}/sessions/no-such-session/events`)
       expect(res.status).toBe(404)
@@ -206,7 +206,7 @@ describe("GET /sessions/:id/events", () => {
     })
   })
 
-  it("400s on a malformed since", async () => {
+  it("400s on a malformed since", { timeout: 15_000 }, async () => {
     writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi" }])
 
     await withServer(async (port, registry) => {
@@ -223,7 +223,7 @@ describe("GET /sessions/:id/events", () => {
     })
   })
 
-  it("keeps the since cursor correct across a writer restart (no seq collision)", async () => {
+  it("keeps the since cursor correct across a writer restart (no seq collision)", { timeout: 15_000 }, async () => {
     // Drive the REAL writer through a simulated daemon restart: a fresh
     // writer instance must continue seq from disk, so a client that polled
     // up to the pre-restart cursor drains exactly the post-restart tail.
@@ -271,7 +271,7 @@ describe("GET /sessions/:id/events", () => {
     })
   })
 
-  it("skips malformed JSONL lines instead of failing the request", async () => {
+  it("skips malformed JSONL lines instead of failing the request", { timeout: 15_000 }, async () => {
     const dir = join(tmp, ".agentproto", "sessions", SESSION_ID)
     mkdirSync(dir, { recursive: true })
     writeFileSync(

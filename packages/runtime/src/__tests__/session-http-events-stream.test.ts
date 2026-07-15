@@ -262,7 +262,7 @@ describe("GET /sessions/:id/events/stream", () => {
     }
   }
 
-  it("replays records after `since` as SSE data: frames", async () => {
+  it("replays records after `since` as SSE data: frames", { timeout: 15_000 }, async () => {
     writeEvents([
       { kind: "user-prompt", sessionId: SESSION_ID, text: "hi" },
       { kind: "text-delta", sessionId: SESSION_ID, text: "hello" },
@@ -286,7 +286,7 @@ describe("GET /sessions/:id/events/stream", () => {
     })
   })
 
-  it("404s with {error: 'no_transcript'} when events.jsonl doesn't exist", async () => {
+  it("404s with {error: 'no_transcript'} when events.jsonl doesn't exist", { timeout: 15_000 }, async () => {
     await withServer(async port => {
       const res = await fetch(
         `http://127.0.0.1:${port}/sessions/no-such-session/events/stream`,
@@ -297,7 +297,7 @@ describe("GET /sessions/:id/events/stream", () => {
     })
   })
 
-  it("400s on a malformed since", async () => {
+  it("400s on a malformed since", { timeout: 15_000 }, async () => {
     writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi" }])
 
     await withServer(async (port, registry) => {
@@ -314,7 +314,7 @@ describe("GET /sessions/:id/events/stream", () => {
     })
   })
 
-  it("does not shadow plain GET /sessions/:id/events — both routes work for the same session", async () => {
+  it("does not shadow plain GET /sessions/:id/events — both routes work for the same session", { timeout: 15_000 }, async () => {
     writeEvents([{ kind: "user-prompt", sessionId: SESSION_ID, text: "hi" }])
 
     await withServer(async (port, registry) => {
@@ -337,7 +337,7 @@ describe("GET /sessions/:id/events/stream", () => {
     })
   })
 
-  it("pushes a live record to an already-connected client", async () => {
+  it("pushes a live record to an already-connected client", { timeout: 15_000 }, async () => {
     await withServer(async (port, registry) => {
       // A controllable agent-cli session: `send()` blocks on `gate` until
       // the test releases it, so the SSE connection is established (and

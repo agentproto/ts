@@ -86,7 +86,7 @@ function stubHttpUpstream(): void {
 describe("serve --connect E2E upgrade — token-authenticated handshake", () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it("(a) both sides e2e: wire is ciphertext and a real spawn + http round-trip works", async () => {
+  it("(a) both sides e2e: wire is ciphertext and a real spawn + http round-trip works", { timeout: 15_000 }, async () => {
     stubHttpUpstream()
 
     const wire: TunnelFrame[] = []

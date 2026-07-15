@@ -71,7 +71,7 @@ describe("spawnCloudflaredUntil", () => {
         binary,
         logPath,
         readyRegex: /WILL-NEVER-MATCH/,
-        timeoutMs: 600,
+        timeoutMs: 4_000,
         timeoutMessage: "did not become ready in time",
       }),
     ).rejects.toThrow(/did not become ready in time[\s\S]*second/)

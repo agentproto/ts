@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { writeFile, rm } from "node:fs/promises"
+import { writeFile, rm, mkdtemp } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { AssemblyAiStt } from "../assemblyai-stt.adapter.js"
@@ -34,7 +34,8 @@ describe("AssemblyAiStt", () => {
         { speaker: "B", text: "Start with the must-haves." },
       ],
     })
-    const tmp = join(tmpdir(), "aai-test.mp3")
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
     await writeFile(tmp, Buffer.from("fake-audio"))
     try {
       const stt = new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 0, sleep: async () => {} })
@@ -48,32 +49,34 @@ describe("AssemblyAiStt", () => {
       expect(calls).toContain("POST /transcript")
       expect(calls.some(c => c.includes("/transcript/t1"))).toBe(true)
     } finally {
-      await rm(tmp, { force: true })
+      await rm(dir, { recursive: true, force: true })
     }
   })
 
   it("falls back to flat text when no utterances", async () => {
     mockAaiSequence({ id: "t1", status: "completed", text: "flat transcript", utterances: null })
-    const tmp = join(tmpdir(), "aai-test2.mp3")
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
     await writeFile(tmp, Buffer.from("x"))
     try {
       const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
       expect(out.text).toBe("flat transcript")
     } finally {
-      await rm(tmp, { force: true })
+      await rm(dir, { recursive: true, force: true })
     }
   })
 
   it("throws on transcript error status", async () => {
     mockAaiSequence({ id: "t1", status: "error", error: "audio too short" })
-    const tmp = join(tmpdir(), "aai-test3.mp3")
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
     await writeFile(tmp, Buffer.from("x"))
     try {
       await expect(
         new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
       ).rejects.toThrow(/audio too short/)
     } finally {
-      await rm(tmp, { force: true })
+      await rm(dir, { recursive: true, force: true })
     }
   })
 })

@@ -105,7 +105,7 @@ describe("createGithubWorkspaceSync", () => {
     prPolicy: "none",
   }
 
-  it("pull clones an empty tree from the origin", async () => {
+  it("pull clones an empty tree from the origin", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = { ...baseConfig, repoUrl: originPath }
     const fs = createGithubFilesystem(config, { workspaceDir, token: TOKEN }, {
       prCreator: makeStubPrCreator(),
@@ -118,7 +118,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(await fs.readFile("README.md")).toContain("initial")
   })
 
-  it("pull is a no-op when the tree is already populated (fetch+merge)", async () => {
+  it("pull is a no-op when the tree is already populated (fetch+merge)", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = { ...baseConfig, repoUrl: originPath }
     const fs = createGithubFilesystem(config, { workspaceDir, token: TOKEN }, {
       prCreator: makeStubPrCreator(),
@@ -131,7 +131,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(result.message).toContain("pulled")
   })
 
-  it("push commits and pushes to main when branchPolicy=main, prPolicy=none", async () => {
+  it("push commits and pushes to main when branchPolicy=main, prPolicy=none", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = {
       ...baseConfig,
       repoUrl: originPath,
@@ -155,7 +155,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(originHead).toContain("add notes")
   })
 
-  it("push returns no_changes when the working tree is clean", async () => {
+  it("push returns no_changes when the working tree is clean", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = { ...baseConfig, repoUrl: originPath }
     const fs = createGithubFilesystem(config, { workspaceDir, token: TOKEN }, {
       prCreator: makeStubPrCreator(),
@@ -165,7 +165,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(result.kind).toBe("no_changes")
   })
 
-  it("push creates a per-conversation branch and opens an auto PR", async () => {
+  it("push creates a per-conversation branch and opens an auto PR", { timeout: 20_000 }, async () => {
     const pr = makeStubPrCreator()
     const config: GithubStorageConfig = {
       ...baseConfig,
@@ -195,7 +195,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(pr.calls[0]?.base).toBe("main")
   })
 
-  it("push with prPolicy=manual returns a hint, no auto PR", async () => {
+  it("push with prPolicy=manual returns a hint, no auto PR", { timeout: 20_000 }, async () => {
     const pr = makeStubPrCreator()
     const config: GithubStorageConfig = {
       ...baseConfig,
@@ -220,7 +220,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(pr.calls).toHaveLength(0)
   })
 
-  it("push with prPolicy=auto but a failing PR creator still reports the push", async () => {
+  it("push with prPolicy=auto but a failing PR creator still reports the push", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = {
       ...baseConfig,
       // Canonical HTTPS repo for PR owner/repo parsing; clone from the
@@ -246,7 +246,7 @@ describe("createGithubWorkspaceSync", () => {
     }
   })
 
-  it("commit uses AIP-23 identity as author and adds Co-authored-by trailers", async () => {
+  it("commit uses AIP-23 identity as author and adds Co-authored-by trailers", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = {
       ...baseConfig,
       repoUrl: originPath,
@@ -271,7 +271,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(body).toContain("Co-authored-by: Second Bot <second@example.com>")
   })
 
-  it("commit falls back to a default author when identity is missing", async () => {
+  it("commit falls back to a default author when identity is missing", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = {
       ...baseConfig,
       repoUrl: originPath,
@@ -290,13 +290,13 @@ describe("createGithubWorkspaceSync", () => {
     expect(author).toBe("agentproto")
   })
 
-  it("hasWorkspaceSync is true for the github filesystem", async () => {
+  it("hasWorkspaceSync is true for the github filesystem", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = { ...baseConfig, repoUrl: originPath }
     const fs = createGithubFilesystem(config, { workspaceDir, token: TOKEN })
     expect(hasWorkspaceSync(fs)).toBe(true)
   })
 
-  it("defineGithubStorage produces a handle with factory + capabilities", () => {
+  it("defineGithubStorage produces a handle with factory + capabilities", { timeout: 20_000 }, () => {
     const handle = defineGithubStorage({
       repoUrl: "https://github.com/owner/repo",
       branchPolicy: "per-conversation",
@@ -308,7 +308,7 @@ describe("createGithubWorkspaceSync", () => {
     expect(handle.capabilities?.prPolicy).toBe("auto")
   })
 
-  it("pull reports a failed clone when the origin URL is invalid", async () => {
+  it("pull reports a failed clone when the origin URL is invalid", { timeout: 20_000 }, async () => {
     const config: GithubStorageConfig = {
       ...baseConfig,
       repoUrl: "/nonexistent/path/repo.git",

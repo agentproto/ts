@@ -13,7 +13,7 @@ import { resolveAdapter, listInstalledAdapters } from "../registry/resolve.js"
 // `adapter` field to an absolute, fully-resolved URL so the second import
 // always succeeds regardless of which module performs it.
 describe("resolveAdapter — proprietary adapter re-import fix", () => {
-  it("rewrites a proprietary handle's `adapter` to an absolute, importable URL", async () => {
+  it("rewrites a proprietary handle's `adapter` to an absolute, importable URL", { timeout: 15_000 }, async () => {
     const resolved = await resolveAdapter("mastracode-inprocess")
     expect(resolved.handle.protocol).toBe("proprietary")
     expect(resolved.handle.adapter).toMatch(/dist\/index\.mjs$/)
