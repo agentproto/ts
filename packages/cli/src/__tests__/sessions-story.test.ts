@@ -108,6 +108,13 @@ describe("agentproto sessions story — dispatch", () => {
     expect(stderrChunks.join("")).toContain("missing session id")
   })
 
+  it("returns exit code 2 for unexpected extra positionals", async () => {
+    const code = await runSessions(["story", "sess_001", "sess_002"])
+    expect(code).toBe(2)
+    expect(stderrChunks.join("")).toContain("unexpected extra positionals")
+    expect(discoverDaemon).not.toHaveBeenCalled()
+  })
+
   it("returns exit code 2 when no daemon is found", async () => {
     discoverDaemon.mockResolvedValue({ found: null, stale: [] })
     const code = await runSessions(["story", "sess_001"])
