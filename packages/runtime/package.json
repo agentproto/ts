@@ -101,6 +101,7 @@
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
+    "@agentproto/providers-store": "workspace:*",
     "@agentproto/redaction": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
     "@agentproto/secrets": "workspace:*",

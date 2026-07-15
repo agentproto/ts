@@ -1,22 +1,20 @@
 {
-  "name": "@agentproto/llm-endpoint",
+  "name": "@agentproto/providers-store",
   "version": "0.1.0",
-  "private": true,
-  "description": "@agentproto/llm-endpoint — a multi-surface LLM proxy gateway. Exposes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses API surfaces with transparent provider/model routing to Moonshot, OpenRouter, ZAI/Zhipu, Groq, xAI, and OpenAI. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
+  "description": "@agentproto/providers-store — the `~/.agentproto/providers.json` LLM provider API-key store (mode 0600) and the `injectProviderKeysIntoEnv` helper that lets any process (daemon or standalone gateway) boot with keys set via `agentproto auth provider set`, without ever logging a value. Explicit env always wins.",
   "keywords": [
     "agentproto",
+    "providers",
+    "api-key",
+    "secrets",
     "llm",
-    "proxy",
-    "anthropic",
-    "openai-compat",
-    "gateway",
     "open-standard"
   ],
   "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "packages/llm-endpoint"
+    "directory": "packages/providers-store"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -26,9 +24,6 @@
   "main": "dist/index.mjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "bin": {
-    "llm-endpoint": "./dist/cli.mjs"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -42,26 +37,28 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsup --watch",
-    "serve": "tsx watch src/cli.ts",
-    "start": "node dist/cli.mjs",
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest",
-    "test:e2e": "tsx src/__tests__/e2e.live.ts"
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/providers-store": "workspace:*"
+    "@agentproto/model-catalog": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "tsup": "^8.5.1",
-    "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }
