@@ -8,7 +8,7 @@ optional default model. **Pure TS data; projection stays in the consumer.**
 ## Why
 
 `@agentproto/adapter-claude-code` and `@agentproto/adapter-claude-sdk` both front
-Anthropic-compatible gateways (Moonshot, OpenRouter, DeepSeek, …). The `claude` binary and
+Anthropic-compatible gateways (Moonshot, OpenRouter, DeepSeek, xAI, …). The `claude` binary and
 the Claude Agent SDK both honor `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, so
 the *facts* about a gateway — its URL, its key env, its default model — are
 identical across both. Those facts used to be inlined (and copy-pasted) in each
@@ -41,7 +41,7 @@ down, projection stays in the consumer.
 | `ANTHROPIC_GATEWAY_PRESETS` | `Record<id, ProviderPreset>` — the registry |
 | `anthropicGatewayPresetList` | flat `ProviderPreset[]` for catalog UIs |
 | `getAnthropicGatewayPreset(id)` | lookup; throws on unknown id (loud at load, not a silent no-baseUrl mode) |
-| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter" \| "deepseek"` |
+| `AnthropicGatewayPresetId` | `"moonshot" \| "openrouter" \| "deepseek" \| "xai"` |
 | `ProviderPreset` | the data shape |
 
 ## Stage
@@ -56,7 +56,8 @@ down, projection stays in the consumer.
 ## Built-in vs adapter-declared presets
 
 Built-in presets (this registry) are for **public, fixed-endpoint** gateways —
-Moonshot, OpenRouter, DeepSeek all expose one canonical Anthropic-compatible URL.
+Moonshot, OpenRouter, DeepSeek, and xAI all expose one canonical
+Anthropic-compatible (or, for xAI, OpenAI-compatible) URL.
 That fixed `baseUrl` is exactly what makes them safe to ship as a preset: it's
 the source of truth, no operator input needed.
 

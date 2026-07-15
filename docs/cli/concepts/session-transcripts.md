@@ -48,6 +48,7 @@ append to a prior session's file.
 | `agent-prompt` | `toolCallId`, `options` | The agent asking the human a question (e.g. a tool permission prompt) — ACP's own "agent-prompt" direction. |
 | `plan` | `entries` (`{content, priority, status}[]`) | Structured plan/todo-list snapshot. |
 | `usage_update` | `size`, `used`, `cost?` | Context window usage; `cost` is only present when the adapter reports one. |
+| `usage_snapshot` | `model?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `contextSize?`, `contextUsed?`, `source` | On-demand usage pull (e.g. from the `session_usage` MCP tool). |
 | `turn-end` | `reason` | Marks the end of a turn. |
 | `error` | `error` (`{message, code?, data?}`) | A turn-level error. |
 

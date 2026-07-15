@@ -3,9 +3,9 @@
 > Formerly `@agentproto/adapter-kit`; renamed in #245. The `@agentproto/adapter-kit`
 > name lives on as a deprecated re-export shim. Concepts below are unchanged.
 
-**Status:** Proposal · `feat/adapter-kit`  
-**Author:** Design task, 2026-06-22  
-**Scope:** One shared primitive for adapter selection, status, creds, and MCP introspection  
+**Status:** Shipped · `@agentproto/provider-kit` 0.2.0
+**Author:** Design task, 2026-06-22
+**Scope:** One shared primitive for adapter selection, status, creds, and MCP introspection
 **Deliverable:** This document only — no code is created or modified.
 
 ---
@@ -322,7 +322,8 @@ its own `getSteps` callback; the picker UX and ledger write are shared.
     "./ledger": "./dist/ledger.js",
     "./list-resolve": "./dist/list-resolve.js",
     "./mcp-tools": "./dist/mcp-tools.js",
-    "./wizard": "./dist/wizard.js"
+    "./wizard": "./dist/wizard.js",
+    "./discover": "./dist/discover.js"
   },
   "peerDependencies": {
     "@modelcontextprotocol/sdk": ">=1.0.0",
@@ -372,6 +373,12 @@ export { makeAdapterResolver, makeAdapterLister }
 
 // MCP tools
 export { makeListTool, makeSetupTool }
+
+// discovery
+export {
+  collectAgentprotoNamespaceRoots,
+  discoverAdapterPackages,
+}
 
 // wizard
 export { makeAdapterWizard }
@@ -476,14 +483,14 @@ default; the recommendation is not final — the architect decides.
 
 ### OQ-1: Should creds live in the kit core or per-family?
 
-**Option A — Kit core (recommended default).**  
+**Option A — Kit core (recommended default).**
 `CredsStore<TCreds>` is a generic file-backed store. Each family supplies its
 `TCreds` type and a `family` string for the path prefix. The kit owns the
 0600-write logic once. The downside: the kit gains an implicit contract that
 "all families store creds in the same place". Alternative approaches (keychain,
 env vars, vault) would require replacing `CredsStore` entirely per family.
 
-**Option B — Per-family.**  
+**Option B — Per-family.**
 Each family owns its own creds path logic. The kit only defines the
 `CredsStore<TCreds>` interface (not the implementation). Families are free to
 use the file-backed implementation or swap it out. More flexible; less DRY.
@@ -494,13 +501,13 @@ impl into `makeAdapterLister`.*
 
 ### OQ-2: Sync vs async for `check()` and `computeStatus`
 
-**Option A — Always async (recommended default).**  
+**Option A — Always async (recommended default).**
 Agent-CLI's status check is I/O (dynamic import + fs.access). Browser's
 `ensure()` is async. Tunnel's `check()` is proposed as async. A sync override
 complicates the generic interface for no real gain — the kit's lister is already
 async.
 
-**Option B — Sync for capability flags, async for I/O.**  
+**Option B — Sync for capability flags, async for I/O.**
 `AdapterHandle.requiresSetup` (sync bool) drives the status engine; `check()`
 is only called when detailed health info is needed. This keeps `computeStatus`
 a pure sync function fed with booleans.
@@ -512,12 +519,12 @@ flow. This avoids making every list call pay for N async health checks.*
 
 ### OQ-3: One catalog per kit vs one per family
 
-**Option A — One per family (recommended default).**  
+**Option A — One per family (recommended default).**
 `AdapterCatalog` is the shared type; each family defines its own
 `AGENT_CLI_CATALOG`, `TUNNEL_CATALOG`, etc. The kit owns the type, not the
 data. This is already the current approach for agent-CLI.
 
-**Option B — A unified cross-family catalog.**  
+**Option B — A unified cross-family catalog.**
 A `type` discriminant (e.g. `"agent-cli" | "browser" | "tunnel"`) lets one
 catalog enumerate all families. The `install` picker could then show a unified
 type-then-slug flow.
@@ -528,12 +535,12 @@ at the CLI layer without merging the data sources.*
 
 ### OQ-4: `makeListTool` vs `makeSetupTool` vs one `makeAdapterTools` composite
 
-**Option A — Keep separate (recommended default).**  
+**Option A — Keep separate (recommended default).**
 Not every family needs a setup tool (browser has none). Bundling them into one
 `makeAdapterTools` call would require optional params that hurt discoverability.
 Separate named factories are explicit.
 
-**Option B — One composite `makeAdapterTools`.**  
+**Option B — One composite `makeAdapterTools`.**
 Convenience factory that calls both, with `setupTool?: SetupToolOpts` being
 optional. Callers that don't need setup simply omit it.
 

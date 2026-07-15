@@ -6,6 +6,9 @@ agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
+                                       [--model <id>] [--base-url <url>]
+                                       [--auth-token <token>]
+                                       [--options-json <json|@file>]
                                        [--prompt <text>] [--label <text>]
                                        [--orchestrator | --orchestrator-json <json>]
                                        [--mcp-servers-json <json|@file>]
@@ -135,6 +138,11 @@ reattached later.
 |------|---------|
 | `--cwd <dir>` | Adapter working dir (absolute resolved). |
 | `--workspace <slug>` | Registered workspace to bind to (see [`workspace.md`](./workspace.md)). |
+| `--model <id>` | Adapter model option. |
+| `--base-url <url>` | Manifest `base_url` option (claude-code/claude-sdk) — injected as `ANTHROPIC_BASE_URL`. |
+| `--auth-token <token>` | Manifest `auth_token` option — injected as `ANTHROPIC_AUTH_TOKEN`. |
+| `--auth subscription\|api-key` | Deterministic billing-auth mode for adapters that declare it (today: claude-code). |
+| `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |

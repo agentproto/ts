@@ -10,9 +10,10 @@ can use AgentProto's orchestration tools through this bridge — no
 third-party bridge needed.
 
 The bridge connects to the daemon over HTTP (Streamable HTTP transport),
-pulls the tool list once at startup, then passes `listTools` and
-`callTool` requests through verbatim. Tool JSON schemas are forwarded
-intact so clients see the real parameter names and types.
+pulls the tool list once at startup, then passes `listTools`, `callTool`,
+`resources/list`, `resources/read`, and `resources/templates/list`
+requests through verbatim. Tool JSON schemas are forwarded intact so
+clients see the real parameter names and types.
 
 ## Configuration
 

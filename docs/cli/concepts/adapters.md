@@ -121,6 +121,18 @@ export const myAgent = defineAgentCli({
 })
 ```
 
+Newly shipped manifest fields (this release):
+
+- `modes` entries can carry `status` (`active`/`noop`/`planned`),
+  `status_note`, `bin_args_prepend`, `apply` (`bin_args`/`config`), and
+  `env_unset`.
+- `options` map entries can carry `bin_args_prepend`, `bin_args_template`,
+  `bin_args_append_when_true`, `env`, and `env_unset`.
+- `models.deny?: string[]` reserves provider/model patterns (e.g. hermes
+  denies Anthropic ids so a dedicated claude-code adapter owns them).
+- `presets[]` declares adapter-contributed gateway presets, merged into the
+  provider-preset catalog.
+
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.
 

@@ -66,10 +66,27 @@ contract.
 
 The adapter contract is small: declare `models[]` and `modes[]` via an
 AIP-45 manifest, implement the lifecycle verbs, and reuse the shared
-`adapter-kit` primitives (creds, catalog entry, setup/status tools). Obvious
+`provider-kit` primitives (creds, catalog entry, setup/status tools). Obvious
 gaps: gemini-cli, aider, goose, cline, Continue. See `adapters/claude-code`
 for a complete reference implementation, and look for `good first issue`
 labels in the tracker.
+
+## VS Code extension
+
+`packages/vscode` contains the private `agentproto-vscode` extension: local
+operational views for daemon sessions and permissions, plus commands to manage
+agents from the editor. Build a versioned installable archive from that package:
+
+```bash
+cd packages/vscode
+pnpm package
+unzip -t agentproto-vscode-*.vsix
+```
+
+The resulting `agentproto-vscode-<version>.vsix` can be installed through VS
+Code's **Extensions: Install from VSIX...** command. See
+[`packages/vscode/README.md`](./packages/vscode/README.md) for development and
+verification commands.
 
 ## Packages
 
@@ -92,24 +109,32 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 
 | Tool | Purpose |
 |---|---|
-| `start_agent_session` | Launch an agent-CLI session (claude-code, hermes, opencode, …) |
-| `prompt_agent_session` | Send a turn to a running agent session |
-| `list_agent_sessions` | List active sessions with status |
-| `get_agent_session_output` | Read session output |
-| `kill_agent_session` | Terminate a session |
-| `export_agent_session` | Export a clean transcript (JSONL / SQLite) |
-| `summarize_session` | LLM-summarise a session transcript |
+| `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` | Spawn, drive, and stop long-lived agent-CLI sessions |
+| `agent_sessions_list` / `agent_export` | List agent sessions; export a clean transcript |
+| `session_list` / `session_tree` / `session_usage` / `session_restart` | Canonical session list, hierarchy, usage, and resume |
+| `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Drive raw PTY sessions |
+| `command_log_tail` | Read the JSONL audit log for `command_execute` |
+| `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |
+| `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
+| `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_status` | Public URL tunnels for local ports |
+| `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, DeepSeek, xAI) |
+| `list_sandbox_providers` / `setup_sandbox_provider` | Sandbox provider catalog and credentials |
+| `list_eval_reporters` / `setup_eval_reporter` | Eval-reporter backends (e.g. Langfuse) |
 | `start_browser` / `stop_browser` / `browser_status` | Manage browser sessions |
-| `attach_policy` / `cancel_policy` / `get_policy_status` | Supervisor policy lifecycle |
-| `create_tunnel` / `stop_tunnel` / `tunnel_status` | Tunnel management |
-| `setup_tunnel_provider` | Configure a tunnel provider (cloudflare-named, ngrok) |
-| `session_tree` | Inspect the full supervisor/orchestrator tree |
+| `mcp_discovered_list` / `mcp_imported_list` / `mcp_import` / `mcp_imported_remove` | Discover and curate imported MCP servers |
+| `mcp_imported_status` / `mcp_imported_tool_list` / `mcp_imported_call` | Proxy imported MCP tools |
+| `permissions_list` / `permissions_respond` | Held permission requests across permission-hold sessions |
+| `cron_create` / `cron_list` / `cron_delete` / `cron_run` | Recurring daemon jobs (opt-in) |
+| `role_list` | Enumerate spawn-time roles and delegation privileges |
+| `daemon_health` | Cheap in-process liveness probe |
+| `agentproto_session_story` / `agentproto_terminal` | Per-session story / live PTY MCP App panels |
 | `agentproto_sessions` / `agentproto_bureau_sessions` | MCP App panel views |
 
 ### 2 — Adapter families
 
 ```
-packages/adapter-kit/         @agentproto/adapter-kit     Shared catalog, creds, setup-ledger, MCP tool primitives
+packages/provider-kit/        @agentproto/provider-kit    Shared catalog, creds, setup-ledger, MCP tool primitives
+packages/provider-presets/    @agentproto/provider-presets   Shared gateway preset registry (Anthropic, Moonshot, OpenRouter, DeepSeek, xAI)
 
 adapters/claude-code/         @agentproto/adapter-claude-code   AIP-45 adapter for Claude Code
 adapters/claude-sdk/          @agentproto/adapter-claude-sdk    AIP-45 adapter for Claude SDK (Anthropic/Moonshot/OpenRouter gateway modes)
@@ -121,9 +146,9 @@ adapters/mastra-agent/        @agentproto/adapter-mastra-agent   First-party age
 adapters/browser/             @agentproto/adapter-browser        Browser / CDP session adapter
 ```
 
-All agent-CLI adapters share the `adapter-kit` primitives: `makeSetupTool`
-(single-field or multi-field creds), `makeStatusTool`, `makeCatalogEntry`, and
-the creds store. `mastra-agent` is the odd one out: every other adapter wraps
+All agent-CLI adapters share the `provider-kit` primitives: `makeSetupTool`
+(single-field or multi-field creds), `computeStatus`, `AdapterCatalogEntry`, and
+`makeCredsStore`. `mastra-agent` is the odd one out: every other adapter wraps
 an *external* agent CLI, whereas `mastra-agent` is ours end to end — an
 `AGENT.md` run as a live Mastra agent (our loop, our models), spawned by the
 daemon like any arm or standalone via `agentproto-mastra acp`.

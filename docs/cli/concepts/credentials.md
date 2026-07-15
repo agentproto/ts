@@ -90,11 +90,11 @@ across major versions and the helpers track it.
 
 ## Refresh
 
-Some hosts issue a `refreshToken` alongside the access token. The CLI
-doesn't auto-refresh today — `auth status` shows whether a credential
-is expired, and `auth login --host <url>` mints a fresh one. A plugin
-that needs proactive refresh can use the `refreshToken` field
-according to its host's OAuth flow (RFC 6749 § 6).
+Some hosts issue a `refreshToken` alongside the access token. `agentproto
+serve --connect <host>` attempts a silent non-interactive refresh when
+reconnecting with an expired credential that has a stored `refreshToken`.
+Run `agentproto auth login --host <url>` only when silent refresh fails
+or no refresh token exists.
 
 ## Logout
 

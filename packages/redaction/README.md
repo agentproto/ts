@@ -32,6 +32,9 @@ interface Redactor {
   object entry whose key matches a deny pattern (`password`, `token`,
   `secret`, `authorization`, `cookie`, `credential`, etc, case-insensitive).
   Recurses into nested objects and array elements. Never mutates the input.
+- `valueScanRedactor(opts?)` — scans string values for patterns that look like
+  secrets (API keys, tokens, passwords) and masks them, regardless of key name.
+  Useful when a secret leaks into a value field whose key isn't in the deny-list.
 - `truncateRedactor(opts?)` — caps long strings (default 2000 chars) and long
   arrays (default 100 elements), leaving a `"…[+N chars]"` / `"…[+N items]"`
   marker. Recurses into nested structures. Never mutates the input.
@@ -48,7 +51,7 @@ const safe = redactor.redact(payload, { field: "tool-args" })
 ## Catalog and resolver
 
 `REDACTOR_CATALOG` lists the built-in backends (`none`, `deny-list`,
-`truncate`) by slug, each with a `description`, `needsCreds` flag, and a
+`value-scan`, `truncate`, `secrets`) by slug, each with a `description`, `needsCreds` flag, and a
 `build(options?)` factory. `resolveRedactor(spec?)` turns a declarative
 `RedactorSpec` into a `Redactor`:
 
@@ -57,6 +60,8 @@ import { resolveRedactor } from "@agentproto/redaction"
 
 resolveRedactor() // noneRedactor
 resolveRedactor("deny-list")
+resolveRedactor("value-scan")
+resolveRedactor("secrets") // deny-list + value-scan chained
 resolveRedactor({ slug: "truncate", options: { maxStringLength: 500 } })
 resolveRedactor(["deny-list", "truncate"]) // chained, in order
 ```

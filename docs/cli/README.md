@@ -44,9 +44,11 @@ Pick whichever matches what you're trying to do:
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
+- `agentproto pack skill --manifest <path> [--source <dir>] [--bump patch|minor|major] [--dry-run] [--out <dir>]` — generate a versioned skill pack
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — approve/deny held tool-permission requests (permission-hold inbox)
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
+- `agentproto presets` — list provider gateway presets + key-env status
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop

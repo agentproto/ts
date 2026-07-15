@@ -9,6 +9,9 @@ with its provider and whether a provider API key is configured (✓
 runnable, or ✗ missing key). Prices — when known — come from
 `@agentproto/model-catalog` ($ per 1M input/output tokens).
 
+If no installed adapter declares a model list, the command prints
+`no adapters installed — try: agentproto install claude-code`.
+
 The point: `--model anthropic/claude-opus-4-8` fails at runtime with
 "no ANTHROPIC_API_KEY" if you haven't set a key. This surfaces the issue up
 front so you pick a model your environment is ready for.
@@ -27,9 +30,9 @@ its status, then one model per line:
 
 ```text
 mastra-agent  (installed)
-  ✓ anthropic/claude-opus-4-8               anthropic  $15/$75 per 1M
   ✓ openrouter/z-ai/glm-5.2                 openrouter $0/$0 per 1M
-  ✗ openai/gpt-4.1                          openai     $10/$30 per 1M
+  ✓ openrouter/deepseek/deepseek-v4-pro     openrouter $0/$0 per 1M
+  ✗ openai/gpt-5                            openai     $?/$? per 1M
 
 ✗ = no provider key. Set one:
     agentproto auth provider set openai <api-key>
@@ -45,11 +48,25 @@ With `--json`, emits:
       "status": "installed",
       "models": [
         {
-          "id": "anthropic/claude-opus-4-8",
-          "provider": "anthropic",
+          "id": "openrouter/z-ai/glm-5.2",
+          "provider": "openrouter",
           "runnable": true,
-          "inputPer1M": 15,
-          "outputPer1M": 75
+          "inputPer1M": null,
+          "outputPer1M": null
+        },
+        {
+          "id": "openrouter/deepseek/deepseek-v4-pro",
+          "provider": "openrouter",
+          "runnable": true,
+          "inputPer1M": null,
+          "outputPer1M": null
+        },
+        {
+          "id": "openai/gpt-5",
+          "provider": "openai",
+          "runnable": false,
+          "inputPer1M": null,
+          "outputPer1M": null
         }
       ]
     }

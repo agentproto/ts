@@ -53,6 +53,13 @@ gate.
 | `executor` | 0 | `deny` | Leaf — execute the task directly, never spawn or delegate. |
 | `supervisor` | 100 | `allow` | Decompose, delegate the parts that benefit from a separate agent, verify their output. |
 
+Both built-in dispositions explicitly tell the agent not to use its own
+CLI's native subagent/Task tool: the daemon cannot strip tools that are
+not routed through its MCP gateway, so the rule must be followed in the
+prompt. `executor` is told never to spawn or delegate; `supervisor` is
+told to delegate via `agent_start` so the caller gets an observable
+session.
+
 `executor` is the floor of the lattice — in practice it can't spawn
 even a peer at its own level, since `toolPolicy.delegation: "deny"`
 already strips `agent_start` before any level comparison happens.

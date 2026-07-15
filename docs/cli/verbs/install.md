@@ -4,15 +4,21 @@
 agentproto install <adapter-slug>             [--force] [--dry-run] [--skip-setup]
 agentproto install runtime-profile/<name>     [--force] [--dry-run] [--skip-setup]
                                               [--cwd <dir>] [--package <pkg>]
+agentproto install skill/<slug>               [--pack <path|name>] [--target ...]
+                                              [--force] [--dry-run] [--list]
+                                              [--out <dir>]
 ```
 
-Two argument shapes routed through the same verb:
+Three argument shapes routed through the same verb:
 
 - `<adapter-slug>` — install an agent CLI adapter (e.g. `claude-code`).
 - `runtime-profile/<name>` — install a runtime profile (file
   scaffolding for a swarm setup).
+- `skill/<slug>` — install AIP-3 skills from a skill pack into target
+  agents. Without `--target`, the verb fans out to every installed
+  adapter that declares a `metadata.skills` block.
 
-Both are idempotent and re-runnable; `--force` re-runs even when
+All three are idempotent and re-runnable; `--force` re-runs even when
 already-installed checks pass.
 
 ## Adapter install
@@ -25,10 +31,10 @@ agentproto install gemini-cli --dry-run      # print would-be steps
 agentproto install goose --skip-setup        # install binary, skip post-install pipeline
 ```
 
-Resolution: `<slug>` → `@agentproto/adapter-<slug>` from npm. The
-adapter package must already be importable (typically via `npm i -g
-@agentproto/adapter-<slug>` first). The CLI reads the adapter's
-`AgentCliHandle` and walks its `install[]` block.
+Resolution: `<slug>` → `@agentproto/adapter-<slug>` from npm. If the
+package isn't importable, the CLI bootstraps it by running
+`npm i -g @agentproto/adapter-<slug>` first, then re-resolves. The CLI
+reads the adapter's `AgentCliHandle` and walks its `install[]` block.
 
 ### Install methods supported
 
@@ -72,6 +78,24 @@ block, the CLI runs it. This is the same engine `agentproto setup
 step kinds and the idempotency model.
 
 Skip with `--skip-setup`.
+
+## Skill install
+
+```bash
+agentproto install skill/agent-session-orchestration-agentproto
+agentproto install skill/my-skill --target hermes
+agentproto install skill/agentproto-pack --list
+agentproto install skill/my-skill --pack ./my-pack --dry-run
+```
+
+Installs AIP-3 skills from a skill pack into target agents. Pack
+resolution follows `--pack` first (path or pack name), then the legacy
+repo-root `.skills/` glob. Without `--target`, the verb fans out to
+every installed adapter that declares `metadata.skills`; pass `--target`
+multiple times to install directly into known drivers (`hermes`,
+`claude-code`, `claude-desktop`). `--list` prints the skills in a pack
+without installing. `--out` sets the output directory for
+`claude-plugin` targets (default `./agentproto-skill-plugin`).
 
 ## Runtime profile install
 

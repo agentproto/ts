@@ -12,6 +12,7 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
+  findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
@@ -238,21 +239,32 @@ export async function spawnAgentSession(
   // then workspaceSlug lookup, then active workspace, then a
   // hard error (the operator probably forgot a step).
   let cwd = input.cwd
-  let resolvedSlug = input.workspaceSlug ?? "default"
-  if (!cwd) {
+  let resolvedSlug = input.workspaceSlug
+  if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
-      const ws = input.workspaceSlug
-        ? findWorkspace(config, input.workspaceSlug)
-        : getActiveWorkspace(config)
-      if (ws) {
-        cwd = ws.path
-        resolvedSlug = ws.slug
+      if (!cwd) {
+        const ws = input.workspaceSlug
+          ? findWorkspace(config, input.workspaceSlug)
+          : getActiveWorkspace(config)
+        if (ws) {
+          cwd = ws.path
+          resolvedSlug = ws.slug
+        }
+      } else if (!resolvedSlug) {
+        // cwd provided but no explicit workspaceSlug — try to match
+        // cwd against a registered workspace so the session lands in
+        // the right workspace instead of the global default.
+        const ws = findWorkspaceByPath(config, cwd)
+        if (ws) {
+          resolvedSlug = ws.slug
+        }
       }
     } catch {
       // fall through to error below
     }
   }
+  resolvedSlug = resolvedSlug ?? "default"
   if (!cwd) {
     return {
       ok: false,
