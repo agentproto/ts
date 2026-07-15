@@ -25,8 +25,16 @@ with the daemon (round-trips the daemon's `POST /pairings/offer` route, so a
 daemon must be reachable — see [sessions.md](./sessions.md#discovery) for how
 the daemon is discovered).
 
+Works with no config: when neither `--rendezvous` nor `pairing.rendezvous` is
+set, the offer routes through the **hosted broker**
+`wss://rdv.agentproto.sh/v1`. The broker only ever relays ciphertext — the
+routing token, peer IPs, ciphertext sizes, and timing, never your traffic (see
+[concepts/pairing.md](../concepts/pairing.md#threat-model)). `pair offer` names
+the broker it used and flags the hosted default, so a daemon never relays
+through it silently.
+
 ```bash
-agentproto pair offer --ttl 10m --rendezvous wss://rendezvous.example/v1
+agentproto pair offer
 ```
 
 ```text
@@ -40,14 +48,27 @@ Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
 On the other machine:
   agentproto pair accept "agentproto://pair?v=1&…"
 
-The daemon is now listening on wss://rendezvous.example/v1. This window can close.
+The daemon is now relaying through wss://rdv.agentproto.sh/v1
+  (hosted default — the broker sees only ciphertext, never your traffic.
+   Self-host with `agentproto rendezvous serve` and set pairing.rendezvous,
+   or pass --rendezvous, to route elsewhere.)
+This window can close.
 ```
 
 - `--ttl` accepts `10m`, `30s`, `2h`, or a bare number of minutes (default 10m).
-- `--rendezvous` overrides `pairing.rendezvous` from config for this offer.
+- `--rendezvous` overrides `pairing.rendezvous` (and the hosted default) for
+  this offer.
 - `--no-qr` prints the URL only (also the fallback when the optional
   `qrcode-terminal` renderer isn't installed).
-- `--json` emits `{ url, fingerprint, rendezvous, expiresAt }` for scripting.
+- `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
+  expiresAt }` for scripting.
+
+**Routing precedence:** `--rendezvous` → `pairing.rendezvous` in config → the
+hosted default. To point elsewhere, self-host the broker
+([`rendezvous serve`](./rendezvous.md)) and set `pairing.rendezvous`. To disable
+the default entirely — so the daemon never reaches the hosted broker unless an
+endpoint is named — set `pairing.rendezvous: ""` in config; `pair offer` then
+requires an explicit `--rendezvous`.
 
 The daemon dials the broker outbound and parks until the client arrives, then
 runs the `pair/v1` handshake and persists the pairing to
