@@ -28,6 +28,7 @@ export default createTsupConfig({
     "@agentproto/mcp-server",
     "@agentproto/model-catalog",
     "@agentproto/model-catalog/llm",
+    "@agentproto/providers-store",
     "@modelcontextprotocol/sdk",
     "@modelcontextprotocol/sdk/server/mcp.js",
     "@modelcontextprotocol/sdk/server/streamableHttp.js",

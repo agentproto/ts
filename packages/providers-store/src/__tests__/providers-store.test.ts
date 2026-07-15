@@ -9,7 +9,7 @@ import {
   providersPath,
   removeProviderKey,
   setProviderKey,
-} from "../providers-store.js"
+} from "../index.js"
 
 // providersPath() resolves under os.homedir() → $HOME on POSIX, so a temp
 // HOME fully isolates these tests.

@@ -1763,6 +1763,10 @@ importers:
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
 
   packages/llm-endpoint:
+    dependencies:
+      '@agentproto/providers-store':
+        specifier: workspace:*
+        version: link:../providers-store
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -2104,6 +2108,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
 
+  packages/providers-store:
+    dependencies:
+      '@agentproto/model-catalog':
+        specifier: workspace:*
+        version: link:../model-catalog
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
   packages/redaction:
     devDependencies:
       '@agentproto/tooling':
@@ -2353,6 +2379,9 @@ importers:
       '@agentproto/provider-presets':
         specifier: workspace:*
         version: link:../provider-presets
+      '@agentproto/providers-store':
+        specifier: workspace:*
+        version: link:../providers-store
       '@agentproto/redaction':
         specifier: workspace:*
         version: link:../redaction

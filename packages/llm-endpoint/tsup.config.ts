@@ -22,6 +22,7 @@ export default createTsupConfig({
     "https",
     "fs",
     "url",
+    "@agentproto/providers-store",
   ],
   noExternal: [],
 })
