@@ -12,7 +12,7 @@
  *     buffered, never lost or overwritten by the initial render.
  *   - Prompts are fire-and-forget (wait=false) with explicit sending/ack/error
  *     feedback, and concurrent sends are suppressed.
- *   - All disposables (focus stream + poll timer) are released on dispose.
+ *   - All disposables (focus stream + record feed) are released on dispose.
  *
  * The controller has no direct vscode UI dependencies beyond the focus-stream
  * Disposable — it posts through a PanelMessenger so it can be unit-tested
@@ -36,6 +36,7 @@ import {
   reduceConversation,
   type PresentedConversation,
 } from "./conversation.js"
+import { diffConversation } from "./conversationPatch.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
 import { isExited } from "./transcript.logic.js"
 import type { ExtMessage } from "./protocol.js"
@@ -50,7 +51,11 @@ export interface TranscriptPanelControllerOptions {
   client: DaemonClient
   store: SessionStore
   messenger: PanelMessenger
-  /** Structured-events poll interval (ms). Defaults to 1000. */
+  /**
+   * Structured-events poll interval (ms). Defaults to 250 — safe now that a
+   * no-op tick posts nothing and a changed tick posts a patch (not a full
+   * timeline rebuild); see postPatch/PollingRecordFeed.
+   */
   pollIntervalMs?: number
   /** Auto-start the live poll loop after hydration. Defaults to true; tests
    *  disable it and drive {@link pollOnce} manually. */
@@ -60,6 +65,63 @@ export interface TranscriptPanelControllerOptions {
 /** Sessions that never drive an agent turn have no structured capture. */
 function isRawKind(kind: SessionDescriptor["kind"]): boolean {
   return kind === "terminal" || kind === "command"
+}
+
+/**
+ * Transport seam for live conversation updates after initial hydration. The
+ * daemon has no SSE for semantic records today — GET /sessions/:id/events is
+ * polled and re-reads the whole per-session JSONL each call — but a future
+ * `GET /sessions/:id/events/stream` route would replace ONLY this class.
+ * `TranscriptPanelController` never talks to the transport directly, only
+ * through `start`/`dispose`, so the swap is a one-class change.
+ */
+export interface RecordFeed {
+  /** Begin delivering records; onRecords fires with each new, non-empty batch. */
+  start(onRecords: (records: readonly SessionEventRecord[]) => void): void
+  dispose(): void
+}
+
+/**
+ * Polls on a fixed interval via a controller-supplied fetch, so the `since`
+ * cursor stays a single source of truth shared with the on-demand
+ * `pollOnce()` path (see `TranscriptPanelController.fetchNewRecords`) instead
+ * of drifting across two independently-tracked cursors. `isActive` is
+ * re-checked before each tick so pausing (mode switch, exit, dispose) takes
+ * effect without a separate stop/restart dance.
+ */
+class PollingRecordFeed implements RecordFeed {
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private disposed = false
+
+  constructor(
+    private readonly intervalMs: number,
+    private readonly isActive: () => boolean,
+    private readonly fetchSince: () => Promise<readonly SessionEventRecord[]>,
+  ) {}
+
+  start(onRecords: (records: readonly SessionEventRecord[]) => void): void {
+    this.scheduleNext(onRecords)
+  }
+
+  private scheduleNext(onRecords: (records: readonly SessionEventRecord[]) => void): void {
+    if (this.disposed || !this.isActive()) return
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      void this.fetchSince()
+        .then(records => {
+          if (!this.disposed && records.length > 0) onRecords(records)
+        })
+        .finally(() => this.scheduleNext(onRecords))
+    }, this.intervalMs)
+  }
+
+  dispose(): void {
+    this.disposed = true
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = undefined
+    }
+  }
 }
 
 export class TranscriptPanelController {
@@ -84,7 +146,9 @@ export class TranscriptPanelController {
   private readonly records: SessionEventRecord[] = []
   private readonly seenSeqs = new Set<number>()
   private eventsCursor = 0
-  private pollTimer: ReturnType<typeof setTimeout> | undefined
+  private feed: RecordFeed | undefined
+  /** Last conversation posted to the webview — the diff base for the next patch. */
+  private lastPresented: PresentedConversation | undefined
 
   private readonly renderers = { renderMarkdown, escapeHtml }
 
@@ -93,7 +157,7 @@ export class TranscriptPanelController {
     this.client = opts.client
     this.messenger = opts.messenger
     this.initialSession = opts.initialSession
-    this.pollIntervalMs = opts.pollIntervalMs ?? 1000
+    this.pollIntervalMs = opts.pollIntervalMs ?? 250
     this.autoPoll = opts.autoPoll ?? true
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
@@ -147,6 +211,10 @@ export class TranscriptPanelController {
     const session = currentSession ?? this.pendingSessionUpdate ?? this.initialSession
     this.exited = isExited(session.status)
     this.mode = loaded.mode
+    // `init` ships this same snapshot, so the first live update diffs
+    // against what the webview actually has instead of treating every turn
+    // as new.
+    if (loaded.mode === "structured") this.lastPresented = loaded.conversation
 
     this.messenger.postMessage({
       type: "init",
@@ -175,7 +243,7 @@ export class TranscriptPanelController {
     } else {
       // Structured mode ignores the raw stream — drop any buffered lines.
       this.linesBuffer.length = 0
-      this.scheduleNextPoll()
+      this.startFeed()
     }
   }
 
@@ -215,33 +283,63 @@ export class TranscriptPanelController {
 
   /**
    * One live-poll step: fetch events since the cursor, fold them in, and post
-   * the updated timeline if anything changed. A transient failure (daemon
+   * a patch if anything actually changed. A transient failure (daemon
    * restart mid-stream) is swallowed — the NEXT poll resumes from the same
-   * cursor, so no event is missed or double-applied.
+   * cursor, so no event is missed or double-applied. Called both on-demand
+   * (a lifecycle event wants an eager drain — see `onSessionUpdate`) and, via
+   * the same `fetchNewRecords`/`applyRecords` path, from the recurring feed.
    */
   async pollOnce(): Promise<void> {
     if (this.disposed || this.mode !== "structured") return
+    this.applyRecords(await this.fetchNewRecords())
+  }
+
+  /**
+   * Fetch records since the cursor and advance it on success. The single
+   * cursor authority shared by `pollOnce()` and the recurring `RecordFeed` —
+   * see the class doc on `PollingRecordFeed`.
+   */
+  private async fetchNewRecords(): Promise<readonly SessionEventRecord[]> {
     let page
     try {
       page = await this.client.getSessionEvents(this.sessionId, { since: this.eventsCursor })
     } catch {
       // NoTranscriptError (events not written yet) or a transient network
       // error — retry on the next tick with the same cursor.
-      return
+      return []
     }
-    const added = this.appendRecords(page.events)
     if (page.nextSeq > this.eventsCursor) this.eventsCursor = page.nextSeq
-    if (added && !this.disposed) {
-      this.messenger.postMessage({ type: "conversation", conversation: this.present() })
-    }
+    return page.events
   }
 
-  private scheduleNextPoll(): void {
-    if (!this.autoPoll || this.disposed || this.mode !== "structured" || this.exited) return
-    this.pollTimer = setTimeout(() => {
-      this.pollTimer = undefined
-      void this.pollOnce().then(() => this.scheduleNextPoll())
-    }, this.pollIntervalMs)
+  /** Fold newly-fetched records in and post a patch if the presented timeline changed. */
+  private applyRecords(records: readonly SessionEventRecord[]): void {
+    const added = this.appendRecords(records)
+    if (added && !this.disposed) this.postPatch()
+  }
+
+  /** Diff against the last posted snapshot and post ONLY when something changed. */
+  private postPatch(): void {
+    const next = this.present()
+    const patch = diffConversation(this.lastPresented, next)
+    this.lastPresented = next
+    if (patch.empty) return
+    this.messenger.postMessage({
+      type: "patch",
+      upsertTurns: patch.upsertTurns,
+      removeTurnIds: patch.removeTurnIds,
+      ...(patch.usage !== undefined ? { usage: patch.usage } : {}),
+    })
+  }
+
+  private startFeed(): void {
+    if (!this.autoPoll || this.disposed || this.mode !== "structured") return
+    this.feed = new PollingRecordFeed(
+      this.pollIntervalMs,
+      () => !this.disposed && this.mode === "structured" && !this.exited,
+      () => this.fetchNewRecords(),
+    )
+    this.feed.start(records => this.applyRecords(records))
   }
 
   /** Fold a page of records into the accumulator, de-duplicating by seq.
@@ -283,10 +381,7 @@ export class TranscriptPanelController {
 
   dispose(): void {
     this.disposed = true
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer)
-      this.pollTimer = undefined
-    }
+    this.feed?.dispose()
     this.focusDisposable.dispose()
   }
 }

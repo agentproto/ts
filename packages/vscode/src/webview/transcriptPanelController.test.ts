@@ -212,7 +212,7 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     expect(conv.turns).toHaveLength(2) // user + assistant
   })
 
-  it("live-polls from the advancing cursor and posts a conversation update", async () => {
+  it("live-polls from the advancing cursor and posts a patch", async () => {
     seq = 0
     const hydrate = page([ev({ kind: "user-prompt", text: "hello" })], { nextSeq: 1, complete: true })
     const poll = page(
@@ -228,10 +228,32 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
 
     // Second call resumes from the hydration cursor.
     expect(getSessionEvents).toHaveBeenNthCalledWith(2, "s1", { since: 1 })
-    const update = messenger.messages.find(m => m.type === "conversation")
+    const update = messenger.messages.find(m => m.type === "patch")
     expect(update).toBeDefined()
-    const conv = (update as Extract<ExtMessage, { type: "conversation" }>).conversation
-    expect(conv.turns.some(t => t.role === "assistant")).toBe(true)
+    const patch = update as Extract<ExtMessage, { type: "patch" }>
+    // The assistant turn is brand new relative to the hydration snapshot —
+    // it's the only turn in the patch, not the whole timeline.
+    expect(patch.upsertTurns.map(t => t.role)).toEqual(["assistant"])
+    expect(patch.removeTurnIds).toEqual([])
+  })
+
+  it("posts nothing when a poll advances the cursor but changes nothing visible (no-op tick)", async () => {
+    seq = 0
+    const hydrate = page(
+      [ev({ kind: "user-prompt", text: "hi" }), ev({ kind: "text-delta", text: "hey\n" })],
+      { nextSeq: 2, complete: true },
+    )
+    // turn-end carries a new seq (so appendRecords reports `added`) but never
+    // touches a segment, so the presented timeline is byte-for-byte the same.
+    const poll = page([ev({ kind: "turn-end", reason: "completed" })], { nextSeq: 3, complete: true })
+    const getSessionEvents = vi.fn().mockResolvedValueOnce(hydrate).mockResolvedValueOnce(poll)
+    const { controller, messenger } = make(createMockClient({ getSessionEvents }))
+
+    await controller.onReady()
+    const messagesAfterInit = messenger.messages.length
+    await controller.pollOnce()
+
+    expect(messenger.messages.length).toBe(messagesAfterInit)
   })
 
   it("preserves thought→text→tool ordering across hydration + poll", async () => {
@@ -254,9 +276,9 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     await controller.onReady()
     await controller.pollOnce()
 
-    const update = messenger.messages.filter(m => m.type === "conversation").pop()
-    const conv = (update as Extract<ExtMessage, { type: "conversation" }>).conversation
-    const assistant = conv.turns.find(t => t.role === "assistant")!
+    const update = messenger.messages.filter(m => m.type === "patch").pop()
+    const patch = update as Extract<ExtMessage, { type: "patch" }>
+    const assistant = patch.upsertTurns.find(t => t.role === "assistant")!
     expect(assistant.segments.map(s => s.kind)).toEqual([
       "reasoning",
       "assistant-text",
@@ -279,7 +301,7 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
 
     await controller.onReady()
     await controller.pollOnce() // fails — no update, cursor unchanged
-    expect(messenger.messages.some(m => m.type === "conversation")).toBe(false)
+    expect(messenger.messages.some(m => m.type === "patch")).toBe(false)
     await controller.pollOnce() // resumes from since=2
 
     // All three post-hydration polls used the SAME cursor (2), never regressing.
@@ -287,9 +309,9 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
       ["s1", { since: 2 }],
       ["s1", { since: 2 }],
     ])
-    const update = messenger.messages.filter(m => m.type === "conversation").pop()
-    const conv = (update as Extract<ExtMessage, { type: "conversation" }>).conversation
-    const assistant = conv.turns.find(t => t.role === "assistant")!
+    const update = messenger.messages.filter(m => m.type === "patch").pop()
+    const patch = update as Extract<ExtMessage, { type: "patch" }>
+    const assistant = patch.upsertTurns.find(t => t.role === "assistant")!
     // "Hel" + "lo\n" merged into ONE assistant-text segment — not duplicated.
     const texts = assistant.segments.filter(s => s.kind === "assistant-text")
     expect(texts).toHaveLength(1)
@@ -301,7 +323,7 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     const second = ev({ kind: "text-delta", text: "yo\n" })
     const hydrate = page([first, second], { nextSeq: 2, complete: true })
     // A poll that (wrongly) re-delivers seq 2 alongside a new seq 3.
-    const overlap = page([second, ev({ kind: "turn-end", reason: "completed" })], {
+    const overlap = page([second, ev({ kind: "text-delta", text: "!!\n" })], {
       nextSeq: 3,
       complete: true,
     })
@@ -311,12 +333,15 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     await controller.onReady()
     await controller.pollOnce()
 
-    const update = messenger.messages.filter(m => m.type === "conversation").pop()
-    const conv = (update as Extract<ExtMessage, { type: "conversation" }>).conversation
-    const assistant = conv.turns.find(t => t.role === "assistant")!
+    const update = messenger.messages.filter(m => m.type === "patch").pop()
+    const patch = update as Extract<ExtMessage, { type: "patch" }>
+    const assistant = patch.upsertTurns.find(t => t.role === "assistant")!
     const texts = assistant.segments.filter(s => s.kind === "assistant-text")
+    // "yo\n" was already folded in during hydration and re-arrives verbatim
+    // in the poll — it must NOT be re-appended alongside the genuinely new "!!\n".
     expect(texts).toHaveLength(1)
     expect((texts[0] as { html: string }).html).toContain("yo")
+    expect((texts[0] as { html: string }).html).toContain("!!")
   })
 
   it("pollOnce is a no-op after dispose", async () => {
@@ -328,6 +353,38 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     controller.dispose()
     await controller.pollOnce()
     expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit)
+  })
+
+  it("auto-polls on the default 250ms interval and stops after dispose", async () => {
+    vi.useFakeTimers()
+    try {
+      seq = 0
+      const getSessionEvents = vi.fn().mockResolvedValue(page([]))
+      const messenger = createMockMessenger()
+      const store = createMockStore()
+      const client = createMockClient({ getSessionEvents })
+      const controller = new TranscriptPanelController({
+        sessionId: "s1",
+        initialSession: session(),
+        client,
+        store,
+        messenger,
+        // autoPoll defaults to true, pollIntervalMs defaults to 250.
+      })
+      await controller.onReady()
+      const callsAfterInit = getSessionEvents.mock.calls.length
+
+      await vi.advanceTimersByTimeAsync(249)
+      expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit + 1)
+
+      controller.dispose()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit + 1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

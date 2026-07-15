@@ -95,7 +95,7 @@ export function registerTranscriptPanels(
       })
 
       // Set HTML only after the controller and message listener are wired up.
-      panel.webview.html = buildHtml(panel.webview, nonce)
+      panel.webview.html = buildHtml(nonce)
     },
   }
 }
@@ -125,7 +125,13 @@ function randomNonce(): string {
   return randomBytes(16).toString("hex")
 }
 
-function buildHtml(webview: vscode.Webview, nonce: string): string {
+/**
+ * Exported so transcriptPanel.dom.test.ts can build the EXACT HTML/script the
+ * extension ships and execute it in jsdom — the reconciliation logic in the
+ * inline script is the load-bearing part of this module and has no other
+ * way to get automated coverage without a real webview host.
+ */
+export function buildHtml(nonce: string): string {
   const csp = [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
@@ -193,6 +199,8 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
     .chip-awaiting-input { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
     .chip-exited { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
     .chip-starting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
+    .chip-blocked { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
+    #header-blocked:empty { display: none; }
     #transcript {
       flex: 1 1 auto;
       overflow-y: auto;
@@ -252,7 +260,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
     details.reasoning, details.tool {
       border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
       border-radius: 5px;
-      padding: 4px 8px;
+      padding: 3px 8px;
       background: var(--vscode-textCodeBlock-background);
     }
     details.reasoning > summary, details.tool > summary {
@@ -261,14 +269,21 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       color: var(--vscode-descriptionForeground);
       user-select: none;
       list-style: revert;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    details.reasoning[open] > summary, details.tool[open] > summary { margin-bottom: 6px; }
+    details.reasoning[open] > summary, details.tool[open] > summary { margin-bottom: 6px; white-space: normal; }
     .reasoning-body {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
     }
     details.tool > summary { font-family: var(--vscode-editor-font-family); }
     details.tool-error { border-color: var(--vscode-errorForeground); }
+    /* Consecutive tool segments read as one compact group instead of N
+       separately-bordered cards — see markToolRuns() in the script. */
+    .seg.tool.tool-run-start, .seg.tool.tool-run-mid { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    .seg.tool.tool-run-mid, .seg.tool.tool-run-end { border-top: none; border-top-left-radius: 0; border-top-right-radius: 0; }
     .tool-field-label {
       font-size: 0.75em;
       text-transform: uppercase;
@@ -286,6 +301,33 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       word-break: break-word;
       font-family: var(--vscode-editor-font-family);
       font-size: 0.9em;
+    }
+    .tool-pending-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 4px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+    }
+    .tool-spinner {
+      flex: 0 0 auto;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--vscode-progressBar-background);
+      animation: agentproto-pulse 1.1s ease-in-out infinite;
+    }
+    @keyframes agentproto-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+    details.tool.tool-still-running {
+      border-color: var(--vscode-editorWarning-foreground);
+    }
+    .tool-still-running .tool-elapsed {
+      color: var(--vscode-editorWarning-foreground);
+      font-weight: 600;
     }
     .seg.plan {
       border-left: 3px solid var(--vscode-progressBar-background);
@@ -371,6 +413,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
     <div id="header-meta">
       <span id="header-subtitle"></span>
       <span id="status-chip" class="chip chip-starting"></span>
+      <span id="header-blocked" class="chip chip-blocked"></span>
       <span id="cost"></span>
       <span id="conv-usage"></span>
     </div>
@@ -391,6 +434,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       const headerTitle = document.getElementById('header-title');
       const headerSubtitle = document.getElementById('header-subtitle');
       const statusChip = document.getElementById('status-chip');
+      const headerBlocked = document.getElementById('header-blocked');
       const costEl = document.getElementById('cost');
       const transcript = document.getElementById('transcript');
       const convUsage = document.getElementById('conv-usage');
@@ -404,9 +448,13 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
-      // Segment ids the user has expanded — preserved across re-renders so a
-      // live update never collapses an open reasoning/tool card.
-      const openSegments = new Set();
+      let lastUsage;
+      // Turns/segments are addressed by stable id (data-turn-id/data-seg-id)
+      // and patched in place — a live update never tears the DOM down, so
+      // expand/collapse state and text selection survive for free.
+      // Pending tool rows whose elapsed-time label ticks independently of
+      // any patch: segId -> { startedMs, label, node }.
+      const pendingTools = new Map();
 
       function setInputEnabled(enabled) {
         input.disabled = !enabled || isSending;
@@ -439,6 +487,10 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
         const chip = computeStatusChip(session);
         statusChip.textContent = chip;
         statusChip.className = 'chip chip-' + chip;
+
+        headerBlocked.textContent = session.blockedOn
+          ? 'blocked on ' + session.blockedOn + (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '')
+          : '';
 
         const costParts = [];
         if (typeof session.costUsd === 'number') {
@@ -480,96 +532,244 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
         return e;
       }
 
-      function captureOpenState() {
-        const details = transcript.querySelectorAll('details[data-seg]');
-        for (const d of details) {
-          if (d.open) openSegments.add(d.dataset.seg);
-          else openSegments.delete(d.dataset.seg);
+      // Cheap content-equality check for a segment: segments are plain,
+      // host-built data (ids/strings/numbers) rebuilt fresh on every present,
+      // so JSON.stringify is a safe, fast stand-in for a recursive deep-equal
+      // here — same reasoning as conversationPatch.ts on the host side.
+      function segSig(seg) {
+        return JSON.stringify(seg);
+      }
+
+      // The addressable shell for a segment kind: for 'reasoning'/'tool' this
+      // is a <details> element, so it's built ONCE and then repainted in
+      // place — never replaced — which is what keeps <details open> (and any
+      // text selection inside it) alive across live updates.
+      function buildSegmentShell(seg) {
+        if (seg.kind === 'reasoning' || seg.kind === 'tool') {
+          const det = document.createElement('details');
+          det.appendChild(document.createElement('summary'));
+          return det;
         }
+        return el('div');
       }
 
-      function makeDetails(seg, className, summaryText) {
-        const det = document.createElement('details');
-        det.className = className;
-        det.dataset.seg = seg.id;
-        if (openSegments.has(seg.id)) det.open = true;
-        const summary = document.createElement('summary');
-        summary.textContent = summaryText;
-        det.appendChild(summary);
-        return det;
+      function paintElapsed(entry) {
+        const seconds = Math.max(0, Math.round((Date.now() - entry.startedMs) / 1000));
+        const stillRunning = seconds >= 10;
+        entry.label.textContent = (stillRunning ? 'still running · ' : 'running · ') + seconds + 's';
+        entry.node.classList.toggle('tool-still-running', stillRunning);
       }
 
-      function renderSegment(seg) {
+      // Paint a segment's content into an EXISTING shell node. Called both
+      // right after buildSegmentShell (new segment) and whenever an existing
+      // segment's signature changes (updated segment) — the shell itself is
+      // never touched, only its innards.
+      function paintSegment(node, seg) {
         switch (seg.kind) {
           case 'user':
-          case 'assistant-text': {
-            const d = el('div', 'seg text');
-            d.innerHTML = seg.html || '';
-            return d;
-          }
+          case 'assistant-text':
+            node.className = 'seg text';
+            node.innerHTML = seg.html || '';
+            return;
           case 'reasoning': {
-            const det = makeDetails(seg, 'seg reasoning', 'Reasoning');
-            const body = el('div', 'reasoning-body');
+            node.className = 'seg reasoning';
+            node.querySelector(':scope > summary').textContent = 'Reasoning';
+            let body = node.querySelector(':scope > .reasoning-body');
+            if (!body) {
+              body = el('div', 'reasoning-body');
+              node.appendChild(body);
+            }
             body.innerHTML = seg.html || '';
-            det.appendChild(body);
-            return det;
+            return;
           }
           case 'tool': {
             const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
-            const det = makeDetails(seg, 'seg tool tool-' + seg.status, badge + ' ' + (seg.toolName || 'tool'));
+            node.className = 'seg tool tool-' + seg.status;
+            const summary = node.querySelector(':scope > summary');
+            summary.textContent = badge + ' ' + (seg.toolName || 'tool');
+            // Rebuild everything after <summary> — cheap (a handful of
+            // nodes) and simpler than diffing input/pending/output fields
+            // individually; the shell (and its open state) is untouched.
+            while (summary.nextSibling) node.removeChild(summary.nextSibling);
             if (seg.argsText !== undefined) {
-              det.appendChild(el('div', 'tool-field-label', 'input'));
+              node.appendChild(el('div', 'tool-field-label', 'input'));
               const p = el('pre', 'tool-args');
               p.innerHTML = seg.argsText;
-              det.appendChild(p);
+              node.appendChild(p);
+            }
+            if (seg.status === 'pending') {
+              const row = el('div', 'tool-pending-row');
+              row.appendChild(el('span', 'tool-spinner'));
+              const label = el('span', 'tool-elapsed');
+              row.appendChild(label);
+              node.appendChild(row);
+              const startedMs = seg.ts ? Date.parse(seg.ts) : NaN;
+              const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label, node };
+              pendingTools.set(seg.id, entry);
+              paintElapsed(entry);
+            } else {
+              pendingTools.delete(seg.id);
+              node.classList.remove('tool-still-running');
             }
             if (seg.resultText !== undefined) {
-              det.appendChild(el('div', 'tool-field-label', 'output'));
+              node.appendChild(el('div', 'tool-field-label', 'output'));
               const p = el('pre', 'tool-result');
               p.innerHTML = seg.resultText;
-              det.appendChild(p);
+              node.appendChild(p);
             }
-            return det;
+            return;
           }
           case 'plan': {
-            const d = el('div', 'seg plan');
-            d.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
+            node.className = 'seg plan';
+            node.innerHTML = '';
+            node.appendChild(el('div', 'plan-head', 'Plan ' + seg.done + '/' + seg.total));
             const ul = el('ul', 'plan-list');
             for (const entry of seg.entries || []) {
               const mark = entry.status === 'completed' ? '☑ '
                 : entry.status === 'in_progress' ? '▸ ' : '☐ ';
               ul.appendChild(el('li', 'plan-' + entry.status, mark + entry.content));
             }
-            d.appendChild(ul);
-            return d;
+            node.appendChild(ul);
+            return;
           }
           case 'agent-question': {
-            const d = el('div', 'seg question');
-            d.appendChild(el('div', undefined, 'Awaiting your decision'));
+            node.className = 'seg question';
+            node.innerHTML = '';
+            node.appendChild(el('div', undefined, 'Awaiting your decision'));
             if (seg.options && seg.options.length) {
               const ul = el('ul');
               for (const opt of seg.options) ul.appendChild(el('li', undefined, opt));
-              d.appendChild(ul);
+              node.appendChild(ul);
             }
-            return d;
+            return;
           }
-          case 'error': {
-            const d = el('div', 'seg error');
-            d.innerHTML = seg.text || '';
-            return d;
-          }
-          default:
-            return el('div');
+          case 'error':
+            node.className = 'seg error';
+            node.innerHTML = seg.text || '';
+            return;
         }
       }
 
-      function renderTurn(turn) {
-        const wrap = el('div', 'turn turn-' + turn.role);
-        wrap.appendChild(el('div', 'role', turn.role === 'user' ? 'You' : 'Assistant'));
+      // Ticks pending tools' elapsed labels independently of any patch —
+      // "started but no answer yet" must keep moving even on a quiet poll.
+      setInterval(() => {
+        for (const [segId, entry] of pendingTools) {
+          if (!entry.node.isConnected) { pendingTools.delete(segId); continue; }
+          paintElapsed(entry);
+        }
+      }, 1000);
+
+      // Marks runs of consecutive tool segments so CSS can merge them into
+      // one compact group instead of N separately-bordered cards.
+      function markToolRuns(bubble) {
+        const children = Array.prototype.slice.call(bubble.querySelectorAll(':scope > [data-seg-id]'));
+        children.forEach((node, i) => {
+          node.classList.remove('tool-run-start', 'tool-run-mid', 'tool-run-end');
+          if (!node.classList.contains('tool')) return;
+          const prevIsTool = i > 0 && children[i - 1].classList.contains('tool');
+          const nextIsTool = i < children.length - 1 && children[i + 1].classList.contains('tool');
+          if (prevIsTool && nextIsTool) node.classList.add('tool-run-mid');
+          else if (prevIsTool) node.classList.add('tool-run-end');
+          else if (nextIsTool) node.classList.add('tool-run-start');
+        });
+      }
+
+      // Reconcile a turn's segment nodes against the incoming segment list:
+      // upsert changed/new ones, remove dropped ones, and — critically —
+      // never touch a node whose signature didn't change, which is what
+      // keeps <details open> and any in-progress text selection alive.
+      function reconcileSegments(bubble, segments) {
+        const existing = {};
+        bubble.querySelectorAll(':scope > [data-seg-id]').forEach(node => {
+          existing[node.dataset.segId] = node;
+        });
+        const seen = {};
+        let anchor = null;
+        for (const seg of segments) {
+          seen[seg.id] = true;
+          const sig = segSig(seg);
+          let node = existing[seg.id];
+          if (!node) {
+            node = buildSegmentShell(seg);
+            node.dataset.segId = seg.id;
+            paintSegment(node, seg);
+            node.dataset.sig = sig;
+          } else if (node.dataset.sig !== sig) {
+            paintSegment(node, seg);
+            node.dataset.sig = sig;
+          }
+          const inPlace = anchor ? anchor.nextElementSibling === node : bubble.firstElementChild === node;
+          if (!inPlace) {
+            if (anchor) anchor.after(node);
+            else bubble.insertBefore(node, bubble.firstChild);
+          }
+          anchor = node;
+        }
+        for (const id in existing) {
+          if (!seen[id]) existing[id].remove();
+        }
+        markToolRuns(bubble);
+      }
+
+      // Turn ids are "turn-<seq>" (see reduceConversation in conversation.ts)
+      // — host-assigned structural metadata, not daemon content — so the
+      // numeric suffix is a safe, cheap ordering key for placing a
+      // late-arriving or out-of-order turn without needing the full
+      // timeline order in every patch.
+      function turnSeq(turnId) {
+        const n = Number(String(turnId).slice(String(turnId).lastIndexOf('-') + 1));
+        return isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+      }
+
+      function insertTurnInOrder(node) {
+        const seq = turnSeq(node.dataset.turnId);
+        const siblings = transcript.querySelectorAll('.turn[data-turn-id]');
+        for (const sibling of siblings) {
+          if (turnSeq(sibling.dataset.turnId) > seq) {
+            transcript.insertBefore(node, sibling);
+            return;
+          }
+        }
+        transcript.appendChild(node);
+      }
+
+      function currentTurnNodes() {
+        const nodes = {};
+        transcript.querySelectorAll('.turn[data-turn-id]').forEach(node => {
+          nodes[node.dataset.turnId] = node;
+        });
+        return nodes;
+      }
+
+      function upsertTurn(turn, nodes) {
+        const existing = nodes[turn.id];
+        if (existing) {
+          reconcileSegments(existing.querySelector(':scope > .bubble'), turn.segments || []);
+          return;
+        }
+        const node = el('div', 'turn turn-' + turn.role);
+        node.dataset.turnId = turn.id;
+        // "You" labels a user turn; an unlabeled bubble (transparent
+        // background, see CSS) reads as the assistant without repeating it
+        // on every single turn.
+        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
         const bubble = el('div', 'bubble');
-        for (const seg of turn.segments) bubble.appendChild(renderSegment(seg));
-        wrap.appendChild(bubble);
-        return wrap;
+        node.appendChild(bubble);
+        reconcileSegments(bubble, turn.segments || []);
+        insertTurnInOrder(node);
+        nodes[turn.id] = node;
+      }
+
+      function syncEmptyState() {
+        const hasTurns = transcript.querySelector('.turn[data-turn-id]') !== null;
+        const emptyNode = document.getElementById('empty');
+        if (hasTurns) {
+          if (emptyNode) emptyNode.remove();
+        } else if (!emptyNode) {
+          const e = el('div', undefined, 'No messages yet.');
+          e.id = 'empty';
+          transcript.appendChild(e);
+        }
       }
 
       function renderUsage(usage) {
@@ -585,18 +785,36 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
         convUsage.textContent = parts.join(' · ');
       }
 
-      function renderConversation(conv) {
-        captureOpenState();
+      // Full resync — used by 'init' (and a hypothetical future 'conversation'
+      // full-resync message). Everything after this flows as 'patch'.
+      function renderFullConversation(conv) {
         const atBottom = !isScrolledUp;
         transcript.innerHTML = '';
-        if (!conv || !conv.turns || conv.turns.length === 0) {
-          const empty = el('div', undefined, 'No messages yet.');
-          empty.id = 'empty';
-          transcript.appendChild(empty);
-        } else {
-          for (const turn of conv.turns) transcript.appendChild(renderTurn(turn));
+        pendingTools.clear();
+        const nodes = {};
+        if (conv && conv.turns) {
+          for (const turn of conv.turns) upsertTurn(turn, nodes);
         }
-        renderUsage(conv && conv.usage);
+        syncEmptyState();
+        lastUsage = conv && conv.usage;
+        renderUsage(lastUsage);
+        if (atBottom) transcript.scrollTop = transcript.scrollHeight;
+      }
+
+      // Live update — reconciles in place instead of rebuilding the timeline.
+      function applyPatch(patch) {
+        const atBottom = !isScrolledUp;
+        const nodes = currentTurnNodes();
+        for (const id of patch.removeTurnIds || []) {
+          const node = nodes[id];
+          if (node) { node.remove(); delete nodes[id]; }
+        }
+        for (const turn of patch.upsertTurns || []) upsertTurn(turn, nodes);
+        syncEmptyState();
+        if (patch.usage !== undefined) {
+          lastUsage = patch.usage;
+          renderUsage(lastUsage);
+        }
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
 
@@ -631,7 +849,7 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
             updateHeader(msg.session);
             isScrolledUp = false;
             if (mode === 'structured') {
-              renderConversation(msg.conversation);
+              renderFullConversation(msg.conversation);
             } else {
               transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
               transcript.scrollTop = transcript.scrollHeight;
@@ -640,7 +858,10 @@ function buildHtml(webview: vscode.Webview, nonce: string): string {
             setInputEnabled(!exited);
             break;
           case 'conversation':
-            renderConversation(msg.conversation);
+            renderFullConversation(msg.conversation);
+            break;
+          case 'patch':
+            applyPatch(msg);
             break;
           case 'sessionUpdate':
             updateHeader(msg.session);
