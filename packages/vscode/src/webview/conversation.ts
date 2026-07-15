@@ -378,6 +378,8 @@ export interface PresentedToolSegment {
   resultText?: string
   isError: boolean
   status: "pending" | "ok" | "error"
+  /** ISO timestamp the call opened — the webview's elapsed-time display for a pending call. */
+  ts?: string
 }
 
 export interface PresentedPlanSegment {
@@ -460,6 +462,7 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         resultText: seg.result === undefined ? undefined : r.escapeHtml(stringify(seg.result)),
         isError: seg.isError,
         status: seg.status,
+        ts: seg.ts,
       }
     case "plan":
       return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }

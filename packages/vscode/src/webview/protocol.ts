@@ -5,7 +5,7 @@
  */
 
 import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
-import type { PresentedConversation } from "./conversation.js"
+import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
 
 /** Messages sent from the extension host to the webview. */
 export type ExtMessage =
@@ -38,11 +38,30 @@ export type ExtMessage =
   | {
       type: "conversation"
       /**
-       * Live-updated conversation timeline (structured mode). Sent on every
-       * poll that advances the cursor; the webview reconciles by stable
-       * segment id, preserving expand/collapse state and scroll.
+       * A full conversation resync (structured mode), distinct from `init`'s
+       * own `conversation` field so a resync never has to smuggle a session/
+       * mode/nonce payload along with it. The live poll loop does NOT use
+       * this — it posts `patch` (below) so a tick never rebuilds the whole
+       * timeline — but the message stays defined so a full resync (e.g.
+       * recovering from a detected divergence) remains representable without
+       * overloading `init`.
        */
       conversation: PresentedConversation
+    }
+  | {
+      type: "patch"
+      /**
+       * Live update (structured mode): only the turns that are new or whose
+       * content changed since the last present, in document order. Sent on
+       * every poll that advances the cursor; the webview reconciles by
+       * stable turn/segment id (see conversation.ts), preserving
+       * expand/collapse state and scroll instead of rebuilding the DOM.
+       */
+      upsertTurns: PresentedTurn[]
+      /** Turn ids no longer present (defensive — a re-reduce should not drop turns). */
+      removeTurnIds: string[]
+      /** Present only when usage changed since the last present. */
+      usage?: ConversationUsage
     }
   | {
       type: "lines"
