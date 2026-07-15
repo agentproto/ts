@@ -274,6 +274,100 @@ describe("enqueuePrompt({interrupt: true}) — registry", () => {
   })
 })
 
+describe("sendPrompt({interrupt: true}) — the BLOCKING arm", () => {
+  // Regression: `interrupt` was parsed by POST /sessions/:id/prompt and then
+  // silently DROPPED unless ?wait=false, because sendPrompt took no opts at
+  // all. A caller asking to redirect a mid-turn session got the busy 409 it
+  // had explicitly asked not to get. Both arms must now behave identically.
+
+  it("cancels the in-flight turn, awaits it settling, then delivers the new prompt on the same session", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent, events } = interruptibleAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+    expect(reg.get(desc.id)?.busy).toBe(true)
+
+    // Same assertion as the enqueuePrompt case — and unlike enqueuePrompt,
+    // this one only resolves once the SECOND turn has actually run.
+    await reg.sendPrompt(desc.id, "second", { interrupt: true })
+
+    expect(events).toEqual([
+      `turn1-started:${wrapped("first")}`,
+      "cancel-called",
+      "cancel-resolved",
+      "turn1-yielding-cancelled",
+      `turn2-started:${wrapped("second")}`,
+    ])
+    expect(reg.get(desc.id)?.status).toBe("running")
+
+    await expect(firstPromise).resolves.toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("is a no-op on an idle session — no spurious cancel", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const agent = instantAgentSession()
+    const cancelSpy = vi.spyOn(agent, "cancel")
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    await reg.sendPrompt(desc.id, "hello", { interrupt: true })
+
+    expect(cancelSpy).not.toHaveBeenCalled()
+    reg.shutdown()
+  })
+
+  it("interrupt omitted on a mid-turn session still throws the mid-turn error (default false)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const { agent } = interruptibleAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+
+    const firstPromise = reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await expect(reg.sendPrompt(desc.id, "second")).rejects.toThrow(/mid-turn/)
+
+    void firstPromise.catch(() => undefined)
+    reg.shutdown()
+  })
+
+  it("names sendPrompt (not enqueuePrompt) when an adapter cannot cancel", async () => {
+    // The interrupt helper is shared by both arms; a message naming the wrong
+    // entry point would misdirect whoever is debugging it.
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: uncancelableAgentSession(),
+      adapterSlug: "fake",
+    })
+
+    void reg.sendPrompt(desc.id, "first")
+    await Promise.resolve()
+
+    await expect(reg.sendPrompt(desc.id, "second", { interrupt: true })).rejects.toThrow(
+      /^sendPrompt: session .* does not support interrupt/,
+    )
+    reg.shutdown()
+  })
+})
+
 describe("agent_prompt (MCP): interrupt", () => {
   it("redirects a mid-turn session to the new prompt instead of rejecting it", async () => {
     const registry = createSessionsRegistry({ persist: false })

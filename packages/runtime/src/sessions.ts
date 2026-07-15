@@ -767,12 +767,23 @@ export interface SessionsRegistry {
    *  mints a fresh session id. The `stop` callback is invoked by
    *  `kill()` best-effort. */
   registerBrowser(input: RegisterBrowserInput): SessionDescriptor
-  /** Send a follow-up turn to a live agent session. Throws when the
-   *  session is missing, not an agent-cli kind, dead (exited/killed/
-   *  error and unresumable — `SessionNotAliveError`), or busy
+  /** Send a follow-up turn to a live agent session and AWAIT it. Throws
+   *  when the session is missing, not an agent-cli kind, dead (exited/
+   *  killed/error and unresumable — `SessionNotAliveError`), or busy
    *  (mid-turn). The events stream into the existing ring buffer +
-   *  line emitter so /stream consumers see them as they arrive. */
-  sendPrompt(id: string, message: unknown): Promise<void>
+   *  line emitter so /stream consumers see them as they arrive.
+   *
+   *  `opts.interrupt` behaves exactly as it does on `enqueuePrompt`:
+   *  a mid-turn session has its in-flight turn cancelled and settled
+   *  before admission, so this prompt redirects the SAME live session
+   *  instead of hitting the busy rejection. Ignored (identical to the
+   *  default) when the session is idle. Omitted or `false` reproduces
+   *  the previous mid-turn rejection byte-for-byte. */
+  sendPrompt(
+    id: string,
+    message: unknown,
+    opts?: { interrupt?: boolean }
+  ): Promise<void>
   /** Fire-and-forget variant of `sendPrompt` for the TURN ITSELF only.
    *  Admission (resume attempt + the missing/wrong-kind/dead/busy
    *  checks `sendPrompt` throws) is AWAITED before this resolves, so a
@@ -1607,7 +1618,11 @@ export function createSessionsRegistry(opts?: {
    * hasn't settled within `INTERRUPT_SETTLE_TIMEOUT_MS` (a hung/buggy
    * adapter that never delivers a turn-end for the cancelled turn).
    */
-  const waitForTurnSettled = (rt: SessionRuntime, id: string): Promise<void> => {
+  const waitForTurnSettled = (
+    rt: SessionRuntime,
+    id: string,
+    caller: string
+  ): Promise<void> => {
     if (!rt.busy) return Promise.resolve()
     return new Promise<void>((resolve, reject) => {
       const onBusy = (busy: boolean): void => {
@@ -1623,7 +1638,7 @@ export function createSessionsRegistry(opts?: {
         cleanup()
         reject(
           new Error(
-            `enqueuePrompt: session "${id}" did not settle after interrupt within ${INTERRUPT_SETTLE_TIMEOUT_MS}ms`
+            `${caller}: session "${id}" did not settle after interrupt within ${INTERRUPT_SETTLE_TIMEOUT_MS}ms`
           )
         )
       }, INTERRUPT_SETTLE_TIMEOUT_MS)
@@ -1632,17 +1647,21 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
-   * `enqueuePrompt({interrupt: true})`'s mid-turn arm: cancel the
-   * in-flight turn via the session handle's `cancel()` (the CLI-side
-   * equivalent of Ctrl-C — ACP `session/cancel`, or an adapter-specific
-   * SIGINT for process/PTY-backed adapters), then await the turn
-   * actually settling before returning. Does NOT run admission itself
-   * — the caller still goes through `validateAgentTurn` afterward, now
-   * finding the session idle.
+   * The `{interrupt: true}` mid-turn arm, shared by `sendPrompt` and
+   * `enqueuePrompt`: cancel the in-flight turn via the session handle's
+   * `cancel()` (the CLI-side equivalent of Ctrl-C — ACP `session/cancel`,
+   * or an adapter-specific SIGINT for process/PTY-backed adapters), then
+   * await the turn actually settling before returning. Does NOT run
+   * admission itself — the caller still goes through `validateAgentTurn`
+   * afterward, now finding the session idle.
+   *
+   * `caller` only shapes error messages; both entry points reach the same
+   * logic, so a message naming the wrong one would misdirect debugging.
    */
   const interruptInFlightTurn = async (
     rt: SessionRuntime,
-    id: string
+    id: string,
+    caller: string
   ): Promise<void> => {
     const session = rt.agentSession
     if (!session) {
@@ -1651,19 +1670,19 @@ export function createSessionsRegistry(opts?: {
       // (see the `validateAgentTurn` doc comment on `kill()`) — this
       // only fires if that invariant is ever violated.
       throw new Error(
-        `enqueuePrompt: session "${id}" is mid-turn but has no live agent session to cancel`
+        `${caller}: session "${id}" is mid-turn but has no live agent session to cancel`
       )
     }
     try {
       await session.cancel()
     } catch (err) {
       throw new Error(
-        `enqueuePrompt: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
+        `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
         }`
       )
     }
-    await waitForTurnSettled(rt, id)
+    await waitForTurnSettled(rt, id, caller)
   }
 
   /**
@@ -2489,8 +2508,16 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       return desc
     },
-    async sendPrompt(id, message) {
+    async sendPrompt(id, message, opts) {
       const rtPre = sessions.get(id)
+      // Same mid-turn arm as enqueuePrompt: cancel + await settle BEFORE
+      // admission, so `validateAgentTurn` finds the session idle instead
+      // of throwing the busy rejection. Without this, `interrupt` was
+      // silently dropped on the blocking path — the caller asked to
+      // redirect the session and got a 409 (or, worse, nothing).
+      if (opts?.interrupt && rtPre?.busy) {
+        await interruptInFlightTurn(rtPre, id, "sendPrompt")
+      }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
       await runAgentTurn(rt, message)
@@ -2514,7 +2541,7 @@ export function createSessionsRegistry(opts?: {
       // `validateAgentTurn` runs, so admission is never bypassed — it's
       // only ever reached once the prior turn is genuinely over.
       if (opts?.interrupt && rtPre.busy) {
-        await interruptInFlightTurn(rtPre, id)
+        await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
