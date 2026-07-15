@@ -74,6 +74,53 @@ export {
 } from "./services/index.js"
 export { worktreeAgentWorkflow, worktreeAgentInputSchema, type WorktreeAgentInput } from "./workflow.js"
 export {
+  computeTreeState,
+  reconcileIntegration,
+  computeLiveness,
+  classify,
+  computeWorktreeStatus,
+  listWorktreeStatuses,
+  listGitWorktrees,
+  VERDICT_MEMO_PATH,
+  FileVerdictMemoStore,
+  InMemoryVerdictMemoStore,
+  type TreeState,
+  type IntegrationState,
+  type LivenessState,
+  type GateState,
+  type WorktreeClass,
+  type Classification,
+  type WorktreeStatusEntry,
+  type GitWorktreeRef,
+  type VerdictMemoRecord,
+  type VerdictMemoStore,
+  type ReconcileIntegrationInput,
+  type ComputeWorktreeStatusInput,
+  type ListWorktreeStatusesInput,
+} from "./status.js"
+export {
+  createForgeClient,
+  GhCliForgeClient,
+  RestForgeClient,
+  UnreachableForgeClient,
+  ForgeUnavailableError,
+  parseGithubOwnerRepo,
+  type ForgeClient,
+  type ForgePullRequestRef,
+} from "./forge.js"
+export {
+  computeProvenance,
+  readSessionsRegistry,
+  readWorktreeMarker,
+  sessionInWorktree,
+  SESSIONS_FILE_PATH,
+  type ProvenanceInfo,
+  type ProvenanceConfidence,
+  type SessionRef,
+  type WorktreeMarker,
+  type ComputeProvenanceOptions,
+} from "./provenance.js"
+export {
   connectDaemonAgentSessionHost,
   makeDaemonAgentSessionHost,
   type DaemonAgentSessionHost,

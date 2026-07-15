@@ -1,0 +1,121 @@
+import { describe, it, expect, afterEach } from "vitest"
+import { mkdtemp, rm, writeFile, mkdir, realpath } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { execGit } from "../exec.js"
+import {
+  computeProvenance,
+  readSessionsRegistry,
+  sessionInWorktree,
+  readWorktreeMarker,
+} from "../provenance.js"
+
+async function makeSessionsFile(dir: string, sessions: readonly unknown[]): Promise<string> {
+  const path = join(dir, "sessions.json")
+  await writeFile(path, JSON.stringify({ sessions }))
+  return path
+}
+
+describe("sessionInWorktree — containment, not equality (PLAN.md §1.5)", () => {
+  it("matches an exact cwd", () => {
+    expect(sessionInWorktree({ id: "s", startedAt: "t", status: "running", cwd: "/a/b" }, "/a/b")).toBe(true)
+  })
+  it("matches a subdirectory cwd", () => {
+    expect(sessionInWorktree({ id: "s", startedAt: "t", status: "running", cwd: "/a/b/pkg" }, "/a/b")).toBe(true)
+  })
+  it("does NOT match a sibling path that merely shares the prefix string", () => {
+    // /a/b-other starts with "/a/b" as a raw string but is not under "/a/b".
+    expect(sessionInWorktree({ id: "s", startedAt: "t", status: "running", cwd: "/a/b-other" }, "/a/b")).toBe(false)
+  })
+  it("does not match a session with no recorded cwd", () => {
+    expect(sessionInWorktree({ id: "s", startedAt: "t", status: "running" }, "/a/b")).toBe(false)
+  })
+})
+
+describe("readSessionsRegistry", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
+  })
+
+  it("returns [] for a missing file — no daemon has ever run is not an error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    expect(await readSessionsRegistry(join(dir, "nope.json"))).toEqual([])
+  })
+
+  it("returns null for a corrupt file — distinguishable from 'no history'", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const path = join(dir, "sessions.json")
+    await writeFile(path, "not json")
+    expect(await readSessionsRegistry(path)).toBeNull()
+  })
+
+  it("parses well-formed entries and skips malformed ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const path = await makeSessionsFile(dir, [
+      { id: "sess_1", startedAt: "2026-01-01T00:00:00.000Z", status: "running", cwd: "/x" },
+      { id: "sess_2" }, // missing startedAt/status — dropped
+      "not an object", // dropped
+    ])
+    const sessions = await readSessionsRegistry(path)
+    expect(sessions).toEqual([
+      { id: "sess_1", startedAt: "2026-01-01T00:00:00.000Z", status: "running", cwd: "/x" },
+    ])
+  })
+})
+
+describe("computeProvenance", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
+  })
+
+  it("best-effort confidence with no marker — matches sessions by containment, sorted oldest-first", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const worktreePath = join(dir, "worktree")
+    await mkdir(worktreePath)
+    const sessionsPath = await makeSessionsFile(dir, [
+      { id: "s2", startedAt: "2026-01-02T00:00:00.000Z", status: "exited", cwd: worktreePath },
+      { id: "s1", startedAt: "2026-01-01T00:00:00.000Z", status: "exited", cwd: join(worktreePath, "pkg") },
+      { id: "s3", startedAt: "2026-01-03T00:00:00.000Z", status: "exited", cwd: "/somewhere/else" },
+    ])
+    const provenance = await computeProvenance(worktreePath, { sessionsPath })
+    expect(provenance.confidence).toBe("best-effort")
+    expect(provenance.sessions.map((s) => s.id)).toEqual(["s1", "s2"])
+  })
+
+  it("exact confidence + createdAt floor when the PR-B gitdir marker is present", async () => {
+    const repoRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-prov-repo-")))
+    cleanupPaths.push(repoRoot)
+    await execGit(repoRoot, ["init", "-b", "main"])
+    await execGit(repoRoot, ["config", "user.email", "t@e.com"])
+    await execGit(repoRoot, ["config", "user.name", "T"])
+    await writeFile(join(repoRoot, "README.md"), "hi\n")
+    await execGit(repoRoot, ["add", "README.md"])
+    await execGit(repoRoot, ["commit", "-m", "init"])
+
+    const marker = { worktreeId: "wt_1", createdAt: "2026-01-02T00:00:00.000Z" }
+    await writeFile(join(repoRoot, ".git", "agentproto-worktree.json"), JSON.stringify(marker))
+
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const sessionsPath = await makeSessionsFile(dir, [
+      { id: "before", startedAt: "2026-01-01T00:00:00.000Z", status: "exited", cwd: repoRoot },
+      { id: "after", startedAt: "2026-01-03T00:00:00.000Z", status: "exited", cwd: repoRoot },
+    ])
+    const provenance = await computeProvenance(repoRoot, { sessionsPath })
+    expect(provenance.confidence).toBe("exact")
+    expect(provenance.sessions.map((s) => s.id)).toEqual(["after"])
+  })
+
+  it("readWorktreeMarker returns null when absent (every worktree today, pre-PR-B)", async () => {
+    const repoRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-prov-repo-")))
+    cleanupPaths.push(repoRoot)
+    await execGit(repoRoot, ["init", "-b", "main"])
+    expect(await readWorktreeMarker(repoRoot)).toBeNull()
+  })
+})
