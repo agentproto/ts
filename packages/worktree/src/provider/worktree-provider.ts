@@ -22,7 +22,7 @@ export const worktreeProvider = defineDriver({
   version: "0.1.0",
   kind: "builtin",
   implements: [
-    { tool: "worktree.provision", version: "0.1.0" },
+    { tool: "worktree.provision", version: "0.2.0" },
     { tool: "worktree.cleanup", version: "0.2.0" },
     { tool: "worktree.run-gate", version: "0.1.0" },
     { tool: "worktree.run-script", version: "0.1.0" },

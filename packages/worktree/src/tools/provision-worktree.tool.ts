@@ -10,16 +10,17 @@ export const provisionWorktreeTool = defineTool({
   id: "worktree.provision",
   description:
     "Create a git worktree for `repoRoot` at a sibling '_worktrees/<slug>' " +
-    "directory, on a new branch 'wt/<slug>' cut from `base`. If `depsCmd` is " +
-    "given, it runs inside the new worktree afterwards (e.g. install deps). " +
-    "If `copyGlobs` is given, matching files under `repoRoot` (including " +
-    "gitignored ones, e.g. local secrets) are copied into the worktree at " +
-    "the same relative path. If `linkPaths` is given, each is symlinked from " +
-    "`repoRoot` into the worktree before `depsCmd` runs — for gitignored, " +
-    "expensive-to-recreate trees a fresh worktree lacks (node_modules, " +
-    "sibling workspace repos) so the workspace graph resolves without a full " +
-    "reinstall.",
-  version: "0.1.0",
+    "directory (or `dir`, when given), on a new branch 'wt/<slug>' (or " +
+    "`branch`, when given) cut from `base`. If `depsCmd` is given, it runs " +
+    "inside the new worktree afterwards (e.g. install deps). If `copyGlobs` " +
+    "is given, matching files under `repoRoot` (including gitignored ones, " +
+    "e.g. local secrets) are copied into the worktree at the same relative " +
+    "path. If `linkPaths` is given, each is symlinked from `repoRoot` into " +
+    "the worktree before `depsCmd` runs — for gitignored, expensive-to-" +
+    "recreate trees a fresh worktree lacks (node_modules, sibling workspace " +
+    "repos) so the workspace graph resolves without a full reinstall. Also " +
+    "writes a creation-provenance marker into the worktree's private gitdir.",
+  version: "0.2.0",
   inputSchema: z.object({
     repoRoot: z.string().describe("Absolute path to the git repository root."),
     base: z
@@ -30,6 +31,14 @@ export const provisionWorktreeTool = defineTool({
       .string()
       .regex(/^[a-z0-9][a-z0-9-]*$/, "slug must be lowercase kebab-case")
       .describe("Short identifier — names both the worktree directory and its branch."),
+    branch: z
+      .string()
+      .optional()
+      .describe("Branch name for the new worktree. Default 'wt/<slug>'."),
+    dir: z
+      .string()
+      .optional()
+      .describe("Absolute path for the new worktree. Default '<repoRoot>/../_worktrees/<slug>'."),
     depsCmd: z
       .string()
       .optional()

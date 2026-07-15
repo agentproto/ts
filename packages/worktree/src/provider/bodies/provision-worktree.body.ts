@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mkdir, copyFile, symlink, lstat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { implementTool } from "@agentproto/driver"
@@ -7,15 +8,30 @@ import { execGit, execShell } from "../../exec.js"
 import { expandGlob } from "../../glob.js"
 import { loadConfigFromBase } from "../../config.js"
 import { runSetup, HookError } from "../../lifecycle.js"
+import { writeWorktreeMarker } from "../../provenance.js"
 
 export const provisionWorktreeBuiltin = implementTool(
   provisionWorktreeTool,
   async ({ input }) => {
     const base = input.base ?? "origin/main"
-    const branch = `wt/${input.slug}`
-    const cwd = resolve(input.repoRoot, "..", "_worktrees", input.slug)
+    const branch = input.branch ?? `wt/${input.slug}`
+    const cwd = input.dir ? resolve(input.dir) : resolve(input.repoRoot, "..", "_worktrees", input.slug)
 
     await execGit(input.repoRoot, ["worktree", "add", "-b", branch, cwd, base])
+
+    // PLAN.md §1.5: the creation marker, written once, right after the
+    // worktree exists. Lives in the worktree's own private gitdir, so it
+    // dies with `git worktree remove`/`prune` and never shows up in `git
+    // status` — colocated with the artifact it describes, not a registry.
+    // `createdBySessionId` is omitted: nothing in this codebase threads a
+    // session id into `worktree.provision` today (it runs before any
+    // session is spawned into the worktree), and recording a guess would be
+    // worse than the honest `best-effort` provenance callers already fall
+    // back to.
+    await writeWorktreeMarker(cwd, {
+      worktreeId: `wt_${randomUUID().slice(0, 8)}`,
+      createdAt: new Date().toISOString(),
+    })
 
     // Symlink gitignored, expensive-to-recreate trees from the host repo into
     // the worktree BEFORE depsCmd, so a workspace whose graph spans gitignored

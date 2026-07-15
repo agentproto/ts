@@ -120,6 +120,7 @@ export {
   computeProvenance,
   readSessionsRegistry,
   readWorktreeMarker,
+  writeWorktreeMarker,
   sessionInWorktree,
   SESSIONS_FILE_PATH,
   type ProvenanceInfo,

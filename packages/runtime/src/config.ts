@@ -89,6 +89,27 @@ export interface FeaturesConfig {
   pty?: boolean
 }
 
+/**
+ * Policy for `agentproto worktree new` (PLAN.md §1.4 — config carries
+ * policy, never state; git itself is the authority for which worktrees
+ * exist). This is the fix for the sprawl the plan measured: 31 linked
+ * worktrees across 6 different parent directories, because there was no
+ * `worktree new` verb and therefore no convention to converge on.
+ */
+export interface WorktreesConfig {
+  /**
+   * Absolute path new worktrees are created under. Layout:
+   * `<root>/<repoName>/<slug>`. Resolution order (mirrors every other
+   * knob in this file, see the module docblock): `--root` flag >
+   * `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default
+   * `~/.agentproto/worktrees`. The default is a real single root, not
+   * "unconfigured" — `worktree new` converges to one place with zero
+   * setup, which is the only way the sprawl actually stops (the 6 roots
+   * that exist today are 6 people each inventing a default by hand).
+   */
+  root?: string
+}
+
 export interface PairingConfig {
   /** Rendezvous broker WS URL (ws:// or wss://) used by `pair offer` and by
    *  autoconnect on boot. When unset, `pair offer` requires an explicit
@@ -197,6 +218,9 @@ export interface AgentprotoConfig {
   features?: FeaturesConfig
   /** E2E daemon-pairing defaults (rendezvous URL + autoconnect). */
   pairing?: PairingConfig
+  /** Where `agentproto worktree new` creates worktrees. See
+   *  {@link WorktreesConfig}. */
+  worktrees?: WorktreesConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */

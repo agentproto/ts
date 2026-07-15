@@ -3,6 +3,8 @@
  *
  * Subcommands:
  *   ls        [--repo <dir>] [--status] [--json]     list this repo's git worktrees
+ *   new       <slug> [--repo <dir>] [--base <ref>]    create a worktree under
+ *             [--branch <name>] [--no-setup] [--json]  worktrees.root (PLAN.md §1.4/§4)
  *   rm        <path> [--repo <dir>] [--base <ref>]    the guarded destructive verb —
  *             [--keep-branch] [--discard-untracked]  refuses a dirty tree unless the
  *             [--discard-modified] [--json]           matching flag is given
@@ -14,6 +16,17 @@
  * --status` additionally runs the status engine's reconciliation rule per
  * entry (PLAN.md §1.3 — tree/integration/liveness axes, provenance, class).
  *
+ * `new` is a thin shell over the `worktree.provision` tool: it resolves
+ * `worktrees.root` (§1.4) and passes `<root>/<repoName>/<slug>` as the
+ * tool's `dir` input, so every worktree this verb creates lands under one
+ * root regardless of where the repo itself lives. `rm`/`archive` are
+ * deliberately root-agnostic on the other side: they take an explicit
+ * `<path>` and derive everything from that path's own git metadata, never
+ * from `worktrees.root` — required so they can also tear down the worktrees
+ * `new` didn't create (every pre-existing one, scattered across whatever
+ * root its own session picked; PLAN.md §5.3 drains those by attrition
+ * through these same verbs, not a migration).
+ *
  * `rm` and `archive` are deliberately different verbs (PLAN.md §5.2): `rm`
  * is the honest plain-destructive one — it runs `worktree.cleanup` and
  * refuses a dirty tree unless `--discard-untracked`/`--discard-modified`
@@ -24,10 +37,13 @@
  * disk is lost to the removal.
  */
 import { parseArgs } from "node:util"
-import { resolve, dirname, basename } from "node:path"
+import { resolve, dirname, basename, join } from "node:path"
+import { homedir } from "node:os"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
+import { loadConfig } from "@agentproto/runtime/config"
 import {
+  provisionWorktreeTool,
   cleanupWorktreeTool,
   worktreeProvider,
   createForgeClient,
@@ -40,10 +56,12 @@ import {
   type WorktreeStatusEntry,
 } from "@agentproto/worktree"
 
-const USAGE = `agentproto worktree — inspect and tear down git worktrees
+const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
 
 Usage:
   agentproto worktree ls      [--repo <dir>] [--status] [--json]
+  agentproto worktree new     <slug> [--repo <dir>] [--base <ref>]
+                                     [--branch <name>] [--no-setup] [--json]
   agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
                                      [--discard-untracked] [--discard-modified] [--json]
   agentproto worktree archive <path> [--repo <dir>] [--base <ref>]
@@ -54,6 +72,12 @@ Usage:
             --status adds the tree/integration/liveness axes, provenance,
             and reclaim/salvage/hold class per entry — a \`gh\`/GITHUB_TOKEN
             forge round-trip, memoised in ~/.agentproto/worktree-verdicts.json.
+  new       Create a worktree at <worktrees.root>/<repoName>/<slug>, on
+            branch --branch (default wt/<slug>) cut from --base (default
+            origin/main). worktrees.root resolves as --root flag > env
+            AGENTPROTO_WORKTREES_ROOT > config.json \`worktrees.root\` >
+            ~/.agentproto/worktrees. Writes a creation-provenance marker
+            into the worktree's private gitdir.
   rm        Stop the worktree's services, run its agentproto.json teardown
             hooks, then remove it. Refuses if the tree has modified tracked
             files or unignored untracked files, unless --discard-modified /
@@ -75,6 +99,7 @@ export async function runWorktree(args: readonly string[]): Promise<number> {
   }
   const sub = args[0]
   if (sub === "ls" || sub === "list") return runLs(args.slice(1))
+  if (sub === "new") return runNew(args.slice(1))
   if (sub === "rm" || sub === "remove") return runRm(args.slice(1))
   if (sub === "archive") return runArchive(args.slice(1))
 
@@ -83,7 +108,7 @@ export async function runWorktree(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stderr.write(
-    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | rm | archive\n`,
+    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | new | rm | archive\n`,
   )
   return 2
 }
@@ -244,6 +269,86 @@ function formatStatusRow(entry: WorktreeStatusEntry): string {
     formatLiveness(entry.liveness).padEnd(14),
     entry.path,
   ].join("  ")
+}
+
+// ── new ──────────────────────────────────────────────────────────────────
+
+/**
+ * `worktrees.root` resolution — the same precedence every other knob in
+ * `~/.agentproto/config.json` follows (flag > env > config.json > hardcoded
+ * default, see that module's docblock). The default is a real, single root
+ * (`~/.agentproto/worktrees`, alongside the rest of agentproto's per-user
+ * state) rather than "unset" — a `worktree new` with zero configuration
+ * still converges every worktree to one place, which is the actual fix for
+ * the sprawl PLAN.md measured (31 worktrees under 6 different hand-picked
+ * parents, because nothing before this verb gave anyone a place to agree on).
+ */
+export async function resolveWorktreesRoot(flag: string | undefined, configPath?: string): Promise<string> {
+  if (flag) return resolve(flag)
+  const envRoot = process.env["AGENTPROTO_WORKTREES_ROOT"]
+  if (envRoot) return resolve(envRoot)
+  const cfg = await loadConfig(configPath)
+  if (cfg.worktrees?.root) return resolve(cfg.worktrees.root)
+  return join(homedir(), ".agentproto", "worktrees")
+}
+
+async function runNew(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      repo: { type: "string" },
+      base: { type: "string" },
+      branch: { type: "string" },
+      root: { type: "string" },
+      "no-setup": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+
+  const slug = positionals[0]
+  if (!slug) {
+    process.stderr.write(
+      "agentproto worktree new: missing slug.\n" +
+        "  Try: agentproto worktree new <slug> [--repo <dir>] [--base <ref>] [--branch <name>]\n",
+    )
+    return 2
+  }
+
+  const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
+  if (!repoRoot) {
+    process.stderr.write("agentproto worktree new: not inside a git repository.\n")
+    return 2
+  }
+
+  const root = await resolveWorktreesRoot(values.root)
+  const dir = join(root, repoLabel(repoRoot), slug)
+
+  try {
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        slug,
+        dir,
+        ...(values.branch !== undefined ? { branch: values.branch } : {}),
+        ...(values.base !== undefined ? { base: values.base } : {}),
+        ...(values["no-setup"] ? { runSetup: false } : {}),
+      },
+    })
+
+    if (values.json) {
+      process.stdout.write(JSON.stringify(provisioned, null, 2) + "\n")
+    } else {
+      process.stdout.write(`worktree created  ${provisioned.cwd}  (branch ${provisioned.branch})\n`)
+    }
+    return 0
+  } catch (err) {
+    process.stderr.write(`agentproto worktree new: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
 }
 
 // ── shared: resolve a <path> positional to (repoRoot, cwd, branch) ────────

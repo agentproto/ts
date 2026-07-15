@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 import { runTool } from "@agentproto/driver"
 import { provisionWorktreeTool, cleanupWorktreeTool, runGateTool } from "../tools/index.js"
 import { worktreeProvider } from "../provider/worktree-provider.js"
 import { execGit, execArgv } from "../exec.js"
 import { WorktreeNotRemovableError } from "../provider/bodies/cleanup-worktree.body.js"
+import { readWorktreeMarker } from "../provenance.js"
 
 const candidates = [worktreeProvider]
 
@@ -55,6 +56,51 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
 
     const branches = await execGit(repoRoot, ["branch", "--list", "wt/test-feature"])
     expect(branches.stdout.trim()).toBe("")
+  })
+
+  it("honours explicit `branch` and `dir` inputs instead of the wt/<slug> / _worktrees default (v0.2.0)", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const customDir = join(await mkdtemp(join(tmpdir(), "wt-custom-dir-")), "somewhere-else")
+    cleanupPaths.push(dirname(customDir))
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "test-feature", branch: "feat/custom", dir: customDir },
+    })
+    expect(provisioned.branch).toBe("feat/custom")
+    expect(provisioned.cwd).toBe(customDir)
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, branch: provisioned.branch, deleteBranch: true },
+    })
+  })
+
+  it("writes the PR-B creation-provenance marker into the worktree's private gitdir", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "with-marker" },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const marker = await readWorktreeMarker(provisioned.cwd)
+    expect(marker).not.toBeNull()
+    expect(marker?.worktreeId).toMatch(/^wt_/)
+    expect(marker?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(marker?.createdBySessionId).toBeUndefined()
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
+    })
   })
 
   it("runs depsCmd inside the new worktree", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execGit } from "../exec.js"
@@ -8,6 +8,7 @@ import {
   readSessionsRegistry,
   sessionInWorktree,
   readWorktreeMarker,
+  writeWorktreeMarker,
 } from "../provenance.js"
 
 async function makeSessionsFile(dir: string, sessions: readonly unknown[]): Promise<string> {
@@ -117,5 +118,24 @@ describe("computeProvenance", () => {
     cleanupPaths.push(repoRoot)
     await execGit(repoRoot, ["init", "-b", "main"])
     expect(await readWorktreeMarker(repoRoot)).toBeNull()
+  })
+
+  it("writeWorktreeMarker + readWorktreeMarker round-trip through the private gitdir, not .git/config", async () => {
+    const repoRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-prov-repo-")))
+    cleanupPaths.push(repoRoot)
+    await execGit(repoRoot, ["init", "-b", "main"])
+    await execGit(repoRoot, ["config", "user.email", "t@e.com"])
+    await execGit(repoRoot, ["config", "user.name", "T"])
+    await writeFile(join(repoRoot, "README.md"), "hi\n")
+    await execGit(repoRoot, ["add", "README.md"])
+    await execGit(repoRoot, ["commit", "-m", "init"])
+
+    const marker = { worktreeId: "wt_abc12345", createdAt: "2026-07-15T00:00:00.000Z" }
+    await writeWorktreeMarker(repoRoot, marker)
+
+    expect(await readWorktreeMarker(repoRoot)).toEqual(marker)
+    // Written into the gitdir, not the shared `.git/config` the PLAN rejects.
+    const raw = await readFile(join(repoRoot, ".git", "agentproto-worktree.json"), "utf8")
+    expect(JSON.parse(raw)).toEqual(marker)
   })
 })
