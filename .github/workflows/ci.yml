@@ -455,9 +455,12 @@ jobs:
   # On PRs: once the agentic review APPROVES, optionally enable GitHub-native
   # auto-merge so the PR merges itself when all required checks pass. This is the
   # bot closing its own loop (open → review → fix → merge). OFF by default: it
-  # only acts when opted in via `vars.AGENTFLOW_AUTOMERGE=true` or `merge.auto`
-  # in .github/agentic-review.json. "merge with conditions" = GitHub's required
-  # checks (rulesets/branch protection) — we only flip the auto switch.
+  # Opt-in via `vars.AGENTFLOW_AUTOMERGE=true` — the repo variable is the only
+  # thing that can ENABLE auto-merge, because it lives in repo settings where a
+  # PR cannot reach it. `merge.auto: false` in .github/agentic-review.json (read
+  # from the base branch) can veto, but never enable. "merge with conditions" =
+  # GitHub's required checks (rulesets/branch protection) — we only flip the
+  # auto switch.
   auto-merge:
     name: Auto-merge (opt-in)
     runs-on: ubuntu-latest
@@ -505,17 +508,68 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           VAR_AUTOMERGE: ${{ vars.AGENTFLOW_AUTOMERGE }}
+          BASE: ${{ github.base_ref }}
         run: |
-          cfg() { node -p "String((require('./.github/agentic-review.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
+          # ── policy comes from the base branch, never from the PR ─────────────
+          #
+          # This job runs from the PR's merged tree, so `./.github/agentic-review.json`
+          # used to be *the PR's copy* — a PR could rewrite the rules used to judge
+          # it. Read the policy from the base branch instead. A PR gets no vote on
+          # how it is merged.
+          git fetch --quiet origin "$BASE"
+          if ! git show "origin/$BASE:.github/agentic-review.json" > /tmp/merge-policy.json 2>/dev/null; then
+            echo "::error::could not read .github/agentic-review.json from origin/$BASE — refusing to auto-merge."
+            exit 0
+          fi
+          cfg() { node -p "String((require('/tmp/merge-policy.json').merge||{}).$1 ?? '')" 2>/dev/null || echo ""; }
           AUTO=$(cfg auto); METHOD=$(cfg method); REQ_ACK=$(cfg requireAck); ACK_LABEL=$(cfg ackLabel)
           MAINT=$(cfg maintainer); ESC_TO=$(cfg escalateTo)
           [ -z "$METHOD" ] && METHOD="squash"
           [ -z "$ACK_LABEL" ] && ACK_LABEL="agentflow:ack"
           [ -z "$ESC_TO" ] && ESC_TO="agentiknet"
 
-          # Master switch — OFF unless the repo var OR config opts in.
-          if [ "$VAR_AUTOMERGE" != "true" ] && [ "$AUTO" != "true" ]; then
-            echo "auto-merge disabled — set vars.AGENTFLOW_AUTOMERGE=true or merge.auto in .github/agentic-review.json. Skipping."
+          # ── master switch: the repo var enables, the config may only veto ────
+          #
+          # These used to be OR'd, which meant `merge.auto: true` in the config
+          # was sufficient on its own — and since the config was read from the PR,
+          # a PR could enable auto-merge for itself. It also meant `merge.auto:
+          # false` read as "off" while being silently overridden by the repo var,
+          # which is exactly how it was set: var=true, config=false, auto-merge on.
+          #
+          # vars.AGENTFLOW_AUTOMERGE lives in repo settings, out of a PR's reach,
+          # so it is the only thing that may *enable*. The config keeps a
+          # kill-switch, but only in the safe direction.
+          if [ "$VAR_AUTOMERGE" != "true" ]; then
+            echo "auto-merge disabled — vars.AGENTFLOW_AUTOMERGE is not 'true'. Skipping."
+            exit 0
+          fi
+          if [ "$AUTO" = "false" ]; then
+            echo "auto-merge vetoed by merge.auto=false in .github/agentic-review.json (base). Skipping."
+            exit 0
+          fi
+
+          # ── self-modification guard ──────────────────────────────────────────
+          #
+          # If this PR edits the merge machinery, that machinery cannot be trusted
+          # to judge it. Deterministic, evaluated against base-pinned paths, and
+          # ahead of every other condition.
+          #
+          # NOTE: this cannot protect .github/workflows/** from itself. For
+          # `pull_request`, GitHub runs the workflow from the PR's merged tree, so
+          # a PR editing this file runs its own edited version and could simply
+          # delete this check. Requiring human review on .github/** via CODEOWNERS
+          # or a ruleset is the only real control there. The check is still worth
+          # having: it covers the honest-mistake case and every non-workflow path.
+          SELF=$(git diff --name-only "origin/$BASE...HEAD" \
+            | grep -E '^(\.github/(workflows/|agentic-review\.json|actions/)|scripts/(maintainer\.mjs|agentflow/))' || true)
+          if [ -n "$SELF" ]; then
+            echo "PR touches the merge machinery — escalating instead of auto-merging:"
+            echo "$SELF"
+            BODY=$(printf '%s\n\n%s\n' \
+              "🛑 Auto-merge withheld — this PR modifies the auto-merge machinery itself, so the machinery is not judging it. @$ESC_TO please review." \
+              "Paths:$(printf '\n- `%s`' $SELF)")
+            gh pr comment "$PR" --repo "$REPO" --body "$BODY"
+            gh pr edit "$PR" --repo "$REPO" --add-label "needs-human-review" 2>/dev/null || true
             exit 0
           fi
 
@@ -538,7 +592,10 @@ jobs:
           # decides merge vs escalate-to-human. Too-critical changes are handed
           # off instead of merged.
           if [ "$MAINT" = "true" ]; then
-            VERDICT=$(node scripts/maintainer.mjs) || true
+            # AGENTFLOW_POLICY_FILE pins the maintainer's policy (notably
+            # alwaysEscalateGlobs) to the base branch's copy — otherwise it reads
+            # the PR's, and a PR could empty its own escalate list.
+            VERDICT=$(AGENTFLOW_POLICY_FILE=/tmp/merge-policy.json node scripts/maintainer.mjs) || true
             MDEC=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).decision}catch{'escalate'}")
             MWHY=$(printf '%s' "$VERDICT" | node -pe "try{JSON.parse(require('fs').readFileSync(0,'utf8')).reason}catch{'maintainer output unreadable'}")
             if [ "$MDEC" != "merge" ]; then
