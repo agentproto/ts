@@ -38,9 +38,10 @@ import {
   type PresentedConversation,
 } from "./conversation.js"
 import { diffConversation } from "./conversationPatch.js"
+import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
 import { isExited } from "./transcript.logic.js"
-import type { ExtMessage } from "./protocol.js"
+import type { ExtMessage, PresentedLine } from "./protocol.js"
 
 export interface PanelMessenger {
   postMessage(msg: ExtMessage): void
@@ -273,7 +274,7 @@ export class TranscriptPanelController {
       this.linesBuffer.push(line)
       return
     }
-    this.messenger.postMessage({ type: "lines", lines: [line] })
+    this.messenger.postMessage({ type: "lines", lines: [presentLine(line)] })
   }
 
   async onReady(): Promise<void> {
@@ -322,7 +323,10 @@ export class TranscriptPanelController {
 
     if (this.mode === "raw") {
       if (this.linesBuffer.length > 0) {
-        this.messenger.postMessage({ type: "lines", lines: [...this.linesBuffer] })
+        this.messenger.postMessage({
+          type: "lines",
+          lines: this.linesBuffer.map(presentLine),
+        })
         this.linesBuffer.length = 0
       }
     } else {
@@ -342,7 +346,7 @@ export class TranscriptPanelController {
     initialHtml?: string
   }> {
     if (isRawKind(preSession.kind)) {
-      return { mode: "raw", initialHtml: renderMarkdown(await fetchRawContent(this.client, this.sessionId)) }
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
     }
     try {
       await this.hydrateStructured()
@@ -351,7 +355,7 @@ export class TranscriptPanelController {
       if (err instanceof NoTranscriptError) {
         return { mode: "structured", conversation: this.present() }
       }
-      return { mode: "raw", initialHtml: renderMarkdown(await fetchRawContent(this.client, this.sessionId)) }
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
     }
   }
 
@@ -479,19 +483,48 @@ export class TranscriptPanelController {
   }
 }
 
-/** Raw-mode initial content: markdown export with a preview fallback. */
-async function fetchRawContent(client: DaemonClient, id: string): Promise<string> {
+/**
+ * Raw-mode initial content: markdown export, with a preview fallback.
+ *
+ * The two sources are DIFFERENT FORMATS and must not be conflated — that
+ * conflation was the bug. `exportSession` returns markdown; `preview` returns
+ * the daemon's `/stream` lines, which `projectEvent` deliberately authors
+ * pre-colored with ANSI (`\x1b[36m[tool] …`). Rendering the latter as markdown
+ * escaped the ESC bytes without interpreting them, so the escape codes showed
+ * up as literal garbage. The caller renders each kind with its own renderer.
+ */
+type RawContent =
+  | { kind: "markdown"; text: string }
+  | { kind: "ansi-lines"; lines: string[] }
+
+async function fetchRawContent(client: DaemonClient, id: string): Promise<RawContent> {
   try {
     const exported = await client.exportSession(id, "markdown")
-    return exported.content ?? ""
+    return { kind: "markdown", text: exported.content ?? "" }
   } catch {
     try {
       const preview = await client.preview(id, 200)
-      return preview.lines.join("\n")
+      return { kind: "ansi-lines", lines: preview.lines }
     } catch {
-      return ""
+      return { kind: "markdown", text: "" }
     }
   }
+}
+
+/**
+ * Host-side rendering of one raw-mode stream line: ANSI → styled spans, text
+ * HTML-escaped. The webview only ever assigns the result — it never sees the
+ * daemon's raw bytes, and never parses them.
+ */
+function presentLine(line: SessionStreamLine): PresentedLine {
+  const text = typeof line.line === "string" ? line.line : String(line.line)
+  return { html: ansiToHtml(text, escapeHtml), stream: line.stream ?? "stdout" }
+}
+
+/** Render raw-mode initial content to safe HTML, per its actual format. */
+function renderRawContent(content: RawContent): string {
+  if (content.kind === "markdown") return renderMarkdown(content.text)
+  return content.lines.map(line => `<div class="line">${ansiToHtml(line, escapeHtml)}</div>`).join("")
 }
 
 function sessionDescriptorsEqual(a: SessionDescriptor, b: SessionDescriptor): boolean {
