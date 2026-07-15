@@ -48,6 +48,68 @@ import type { SandboxProviderResolver } from "./sandbox-adapters.js"
  *  `SpawnAgentSessionInput.sandbox`. */
 export type SandboxSpecInput = SandboxSpec & { reuse?: string }
 
+/**
+ * Retry-safety for the process-forking half of `agent_start`.
+ *
+ * Why: `agent_start` is a non-idempotent, side-effecting call (it forks a
+ * real adapter process) exposed over MCP's at-least-once transport. A slow
+ * or dropped response followed by a caller retry — measured in production as
+ * two live agents, same label/cwd, 7.7s apart, sharing one working directory
+ * for ~5 minutes before a human noticed — currently spawns TWO processes
+ * with no way for the caller to detect it (the tool result only ever carries
+ * the LAST spawn's id).
+ *
+ * This is deliberately CALLER-SUPPLIED (`idempotencyKey`), not derived from
+ * request content (adapter+cwd+prompt+label hash). A content hash was tried
+ * and rejected: this file's own test suite exercises a legitimate orchestrator
+ * fan-out where two structurally-identical `agent_start` calls (same adapter,
+ * cwd, no label/prompt) under one caller scope are expected to spawn as TWO
+ * distinct sessions — the second is meant to be rejected by the maxChildren
+ * quota check, not silently answered with the first session's descriptor.
+ * Intentional identical-looking concurrent spawns are a real, exercised
+ * pattern here (see also `Workflow`'s `isolation: "worktree"`, which exists
+ * precisely because same-cwd concurrent agents are sometimes wanted and
+ * sometimes dangerous) — content alone can't tell the two apart. Only the
+ * caller's own declared intent can, so idempotency is opt-in: omitting
+ * `idempotencyKey` is a byte-for-byte behavioural no-op.
+ *
+ * Scope: guards only the actual fork + registry registration (the `try`
+ * block below) — the one irreversible side effect. Pre-flight validation
+ * (depth/quota/role checks) still re-runs for a deduped retry; those are
+ * pure functions of current state, not side effects, so re-running them is
+ * harmless. The one known gap: a retry that resolves `orchestrator: true`
+ * still mints a fresh scope token via `buildOrchestratorMcp` before the
+ * dedup check is reached, and that token is never bound (leaked) since the
+ * retry returns the ORIGINAL session's descriptor — accepted as a narrower,
+ * pre-existing-shape problem than the double-process bug this fixes.
+ *
+ * Window: a resolved (successful) claim is remembered for
+ * `SPAWN_CLAIM_WINDOW_MS` so a same-key retry seconds later still hits it;
+ * a FAILED claim is dropped immediately so a genuine post-error retry tries
+ * fresh instead of replaying the same failure forever. Scoped per registry
+ * instance (WeakMap) so independent daemons/tests never share a cache.
+ */
+const SPAWN_CLAIM_WINDOW_MS = 30_000
+
+interface SpawnClaim {
+  result: Promise<SpawnAgentSessionResult>
+  /** Wall-clock time the claim settled successfully — undefined while
+   *  still in-flight. Only set for `ok: true` results; see the docblock
+   *  above for why a failure is dropped instead of cached. */
+  resolvedAt?: number
+}
+
+const spawnClaimsByRegistry = new WeakMap<SessionsRegistry, Map<string, SpawnClaim>>()
+
+function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
+  let claims = spawnClaimsByRegistry.get(registry)
+  if (!claims) {
+    claims = new Map()
+    spawnClaimsByRegistry.set(registry, claims)
+  }
+  return claims
+}
+
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
  *  agent-tools.ts — kept as its own alias here since that's the shape
  *  actually passed in (opts required), not the more permissive
@@ -196,10 +258,26 @@ export interface SpawnAgentSessionInput {
    *  for sandbox spawns (the box's own daemon owns permission handling).
    *  Default false — unchanged auto-answer behaviour. */
   permissionHold?: boolean
+  /** Caller-declared "this is the same logical spawn" token. A second
+   *  `agent_start` with the same `(adapter, cwd, idempotencyKey)` within
+   *  `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn returns that spawn's
+   *  descriptor instead of forking a second process — the fix for a
+   *  retried call otherwise silently duplicating a live agent. Omit for
+   *  today's behaviour (every call spawns). See the docblock on
+   *  `SpawnClaim` for why this is opt-in rather than automatic. */
+  idempotencyKey?: string
 }
 
 export type SpawnAgentSessionResult =
-  | { ok: true; descriptor: SessionDescriptor; output?: string[] }
+  | {
+      ok: true
+      descriptor: SessionDescriptor
+      output?: string[]
+      /** Set when this result was returned to a duplicate call recognized
+       *  via `idempotencyKey` — no new process was spawned; `descriptor` is
+       *  the ORIGINAL spawn's. Absent on the original (non-duplicate) call. */
+      deduped?: boolean
+    }
   | {
       ok: false
       code:
@@ -569,6 +647,40 @@ export async function spawnAgentSession(
   const effectivePrompt = input.prompt
     ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
     : input.prompt
+
+  // ── retry-safety claim (see SpawnClaim docblock above) ────────────
+  // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.
+  let settleClaim: ((result: SpawnAgentSessionResult) => void) | undefined
+  if (input.idempotencyKey) {
+    const claims = claimsFor(registry)
+    const key = `${input.adapter}\x1f${cwd}\x1f${input.idempotencyKey}`
+    const now = Date.now()
+    for (const [k, claim] of claims) {
+      if (claim.resolvedAt !== undefined && now - claim.resolvedAt > SPAWN_CLAIM_WINDOW_MS) {
+        claims.delete(k)
+      }
+    }
+    const existing = claims.get(key)
+    if (existing) {
+      const result = await existing.result
+      return result.ok ? { ...result, deduped: true } : result
+    }
+    let resolveClaim!: (result: SpawnAgentSessionResult) => void
+    claims.set(key, { result: new Promise(resolve => { resolveClaim = resolve }) })
+    settleClaim = result => {
+      if (result.ok) {
+        const claim = claims.get(key)
+        if (claim) claim.resolvedAt = Date.now()
+      } else {
+        claims.delete(key)
+      }
+      resolveClaim(result)
+    }
+  }
+  const finish = (result: SpawnAgentSessionResult): SpawnAgentSessionResult => {
+    settleClaim?.(result)
+    return result
+  }
   try {
     // The registry doesn't assign a session id until `spawnAgent`
     // returns below, but `onActivity` can start firing as soon as
@@ -698,17 +810,17 @@ export async function spawnAgentSession(
       if (waitUnsub) waitUnsub()
       const waitTail = waitLines.slice(-80)
       const output = cleanAgentLines(waitTail)
-      return { ok: true, descriptor: desc, output }
+      return finish({ ok: true, descriptor: desc, output })
     }
-    return { ok: true, descriptor: desc }
+    return finish({ ok: true, descriptor: desc })
   } catch (err) {
-    return {
+    return finish({
       ok: false,
       code: "agent_spawn_failed",
       message: `agent_start: spawn failed — ${
         err instanceof Error ? err.message : String(err)
       }`,
-    }
+    })
   }
 }
 

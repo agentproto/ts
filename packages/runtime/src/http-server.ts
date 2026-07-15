@@ -1901,6 +1901,9 @@ async function handleSessions(
           : {}),
         ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
+        ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
+          ? { idempotencyKey: b.idempotencyKey }
+          : {}),
         ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
         ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
         ...(b.orchestrator !== undefined
@@ -1970,7 +1973,10 @@ async function handleSessions(
       })
       return true
     }
-    json(201, result.descriptor)
+    json(201, {
+      ...result.descriptor,
+      ...(result.deduped ? { deduped: true } : {}),
+    })
     return true
   }
 
