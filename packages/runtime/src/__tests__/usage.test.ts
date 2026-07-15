@@ -91,6 +91,27 @@ describe("deriveSessionUsage", () => {
     expect("tokensIn" in usage).toBe(false)
     expect("costUsd" in usage).toBe(false)
   })
+
+  it("never surfaces a stale out-of-window contextUsed at a session's exit-time recap (real bug shape)", () => {
+    // A rejected ingress update leaves the descriptor's existing contextUsed
+    // in place rather than clearing it — so a pre-guard or reloaded stale
+    // value can still reach buildUsageSnapshot's call into this function.
+    const usage = deriveSessionUsage(
+      { model: "priced-model", contextSize: 200_000, contextUsed: 14_246_419 },
+      fakeResolver,
+    )
+    expect(usage.contextSize).toBe(200_000)
+    expect(usage.contextUsed).toBeUndefined()
+  })
+
+  it("still surfaces a plausible contextUsed (real plausible shape)", () => {
+    const usage = deriveSessionUsage(
+      { model: "priced-model", contextSize: 967_000, contextUsed: 202_718 },
+      fakeResolver,
+    )
+    expect(usage.contextSize).toBe(967_000)
+    expect(usage.contextUsed).toBe(202_718)
+  })
 })
 
 describe("projectSessionUsage", () => {
@@ -115,6 +136,35 @@ describe("projectSessionUsage", () => {
     })
     expect(out.source).toBe("computed")
     expect(out.contextUsed).toBe(42)
+  })
+
+  it("never surfaces a persisted, out-of-window contextUsed — the read-path gap (real bug shape, #364 follow-up)", () => {
+    // Reproduces the live failure: sess_60a517cf persisted contextSize=
+    // 200_000 / contextUsed=14_246_419 (71x over) from before
+    // plausibleContextUsed existed. That session is dead — no future
+    // usage_update will ever arrive to self-correct it — so the read path
+    // itself, not just ingestion, has to refuse to surface it.
+    const out = projectSessionUsage({
+      model: "kimi-k2.7-code",
+      costUsd: 8.955739,
+      contextSize: 200_000,
+      contextUsed: 14_246_419,
+      usageSource: "adapter",
+    })
+    expect(out.contextSize).toBe(200_000)
+    expect(out.contextUsed).toBeUndefined()
+    expect("contextUsed" in out).toBe(false)
+  })
+
+  it("still projects a plausible contextUsed untouched (real plausible shape)", () => {
+    const out = projectSessionUsage({
+      model: "claude-sonnet-5",
+      contextSize: 967_000,
+      contextUsed: 202_718,
+      usageSource: "computed",
+    })
+    expect(out.contextSize).toBe(967_000)
+    expect(out.contextUsed).toBe(202_718)
   })
 })
 
