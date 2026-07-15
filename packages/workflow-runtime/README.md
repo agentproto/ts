@@ -63,8 +63,8 @@ and binds its output under `id`.
 | `tool` | Resolve a TOOL contract against `candidates` and run it. Cacheable. |
 | `agent` | Spawn/reuse an agent session, send a prompt, wait for the turn. Cacheable. |
 | `transform` | Pure in-run compute — combine / filter / shape. No dispatch. |
-| `map` | Run a body once per array element (`bindings.item` / `index`); collect outputs. |
-| `pipeline` | Run N items through K sequential stages with **no cross-item barrier**. |
+| `map` | Run a body once per array element (`bindings.item` / `index`); collect outputs. Fail-fast by default; `onError: "collect"` opts into per-item tolerance. |
+| `pipeline` | Run N items through K sequential stages with **no cross-item barrier**. Same `onError: "collect"` opt-in as `map`. |
 | `parallel` | Run several named branches concurrently; outputs bind by branch id. |
 | `branch` | Pick `then` / `otherwise` from a boolean predicate. |
 | `loop` | Repeat a body while a predicate holds, up to `maxIterations`. |
@@ -157,6 +157,45 @@ Each stage body is `(item, index, prevOutput, bindings) => RunStep`; `prevOutput
 is the previous stage's output **for that item** (undefined at stage 0). Use a
 `parallel` step instead only when a later stage genuinely needs *all* prior
 results at once (a barrier).
+
+### Per-item failure tolerance (`map` / `pipeline`)
+
+By default, `map` and `pipeline` are **fail-fast**: the first item whose body
+(or chain, for `pipeline`) throws aborts the whole step, and every other
+in-flight item's result is discarded. That's correct when any failure should
+halt the run — but wrong when failure is an expected per-item outcome (an
+expired listing, a 404, a flaky endpoint) and the other N-1 items are still
+useful output.
+
+Set `onError: "collect"` to run every item to completion instead. The step's
+bound output changes shape from a bare array to a `TolerantFanOutResult`:
+
+```ts
+{
+  kind: "map", // or "pipeline"
+  id: "details",
+  over: (b) => b.input as string[],
+  onError: "collect",
+  body: (url) => ({ kind: "tool", id: "fetch", tool: fetchDetail, candidates,
+                     input: () => ({ url }) }),
+}
+// → {
+//     results: [
+//       { status: "fulfilled", index: 0, value: {...} },
+//       { status: "rejected",  index: 1, item: "https://…/410", error: "expired" },
+//       { status: "fulfilled", index: 2, value: {...} },
+//     ],
+//     succeeded: 2,
+//     failed: 1,
+//   }
+```
+
+`succeeded` + `failed` answer "how many items failed" without scanning
+`results`; each rejected entry carries the offending `item` and `error.message`
+(or `String(reason)` for a non-`Error` throw) so a caller can answer "why"
+without having watched the run. The default (`onError` omitted, or explicitly
+`"throw"`) is byte-for-byte the old behavior — this is opt-in, not a breaking
+change to existing workflows.
 
 ### Resume cache (journaled replay)
 
