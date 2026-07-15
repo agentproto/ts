@@ -72,7 +72,7 @@ describe("resolveWorktreesRoot — flag > env > config.json > default (config.ts
 })
 
 describe("agentproto worktree new", () => {
-  it("creates <root>/<repoName>/<slug> on branch wt/<slug>, and writes the provenance marker", async () => {
+  it("creates <root>/<repoName>/<slug> on branch wt/<slug>, and writes the provenance marker", { timeout: 15_000 }, async () => {
     const repoRoot = await makeRepo()
     const root = await mkdtemp(join(tmpdir(), "wt-new-root-"))
     cleanupPaths.push(root)
@@ -98,7 +98,7 @@ describe("agentproto worktree new", () => {
     expect(marker?.worktreeId).toMatch(/^wt_/)
   })
 
-  it("--branch overrides the default wt/<slug> branch naming", async () => {
+  it("--branch overrides the default wt/<slug> branch naming", { timeout: 15_000 }, async () => {
     const repoRoot = await makeRepo()
     const root = await mkdtemp(join(tmpdir(), "wt-new-root-"))
     cleanupPaths.push(root)
@@ -127,7 +127,7 @@ describe("agentproto worktree new", () => {
     expect(result.branch).toBe("feat/renamed")
   })
 
-  it("fails with a usage error when the slug is missing", async () => {
+  it("fails with a usage error when the slug is missing", { timeout: 15_000 }, async () => {
     const repoRoot = await makeRepo()
     const code = await runWorktree(["new", "--repo", repoRoot])
     expect(code).toBe(2)

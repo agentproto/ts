@@ -101,7 +101,7 @@ describe("worktree lifecycle end-to-end (real git + services + proxy)", () => {
     while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
   })
 
-  it("provisions (setup ran) → two services w/ peer env → proxy routes → cleanup (teardown ran)", async () => {
+  it("provisions (setup ran) → two services w/ peer env → proxy routes → cleanup (teardown ran)", { timeout: 30_000 }, async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)
 

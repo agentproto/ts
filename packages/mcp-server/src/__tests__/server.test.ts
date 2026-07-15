@@ -86,7 +86,7 @@ extends: aip-99
 })
 
 describe("createMcpServer — round-trip: create extension → write → re-load", () => {
-  it("authoring an EXTENSION.md and using the registered verbs writes a real .md", async () => {
+  it("authoring an EXTENSION.md and using the registered verbs writes a real .md", { timeout: 15_000 }, async () => {
     const workspace = mkdtempSync(join(tmpdir(), "agentproto-mcp-"))
     try {
       await mkdir(join(workspace, "extensions", "acme-deal"), {

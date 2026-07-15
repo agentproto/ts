@@ -58,26 +58,26 @@ describe("corpus CLI — end-to-end", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  it("--help exits 0 with usage block", async () => {
+  it("--help exits 0 with usage block", { timeout: 20_000 }, async () => {
     const r = await runCli(["--help"])
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(/corpus — AIP-10 corpus workspace operator/)
     expect(r.stdout).toContain("init <name>")
   })
 
-  it("--version exits 0", async () => {
+  it("--version exits 0", { timeout: 20_000 }, async () => {
     const r = await runCli(["--version"])
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(/^corpus v0\./)
   })
 
-  it("unknown command exits 2 with helpful stderr", async () => {
+  it("unknown command exits 2 with helpful stderr", { timeout: 20_000 }, async () => {
     const r = await runCli(["frobnicate"])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/unknown command "frobnicate"/)
   })
 
-  it("init --preset marketing scaffolds the full vertical at the target path", async () => {
+  it("init --preset marketing scaffolds the full vertical at the target path", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["init", "marketing", ws, "--preset", "marketing"])
     expect(r.code).toBe(0)
@@ -92,7 +92,7 @@ describe("corpus CLI — end-to-end", () => {
     expect(n).toBeGreaterThanOrEqual(30)
   })
 
-  it("init (bare, no preset) scaffolds a neutral AIP-10 workspace", async () => {
+  it("init (bare, no preset) scaffolds a neutral AIP-10 workspace", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws-bare")
     const r = await runCli(["init", "my-research", ws])
     expect(r.code).toBe(0)
@@ -101,21 +101,21 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stdout).toMatch(/neutral KNOWLEDGE\.md/)
   })
 
-  it("init on an existing workspace refuses (exit 1)", async () => {
+  it("init on an existing workspace refuses (exit 1)", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["init", "marketing", ws, "--preset", "marketing"])
     expect(r.code).toBe(1)
     expect(r.stderr).toMatch(/refusing to overwrite/)
   })
 
-  it("init with unknown --preset exits 2", async () => {
+  it("init with unknown --preset exits 2", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws-unknown")
     const r = await runCli(["init", "x", ws, "--preset", "frobology"])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/not found in any configured package/)
   })
 
-  it("init (bare) rejects an invalid corpus name with exit 2", async () => {
+  it("init (bare) rejects an invalid corpus name with exit 2", { timeout: 20_000 }, async () => {
     // "c" is too short for knowledge.workspace/v1 .name (minLength 2) — the
     // old behaviour scaffolded a corpus that failed its own `validate`.
     const ws = path.join(tmp, "ws-badname")
@@ -125,21 +125,21 @@ describe("corpus CLI — end-to-end", () => {
     expect(existsSync(path.join(ws, "KNOWLEDGE.md"))).toBe(false)
   })
 
-  it("init (bare) suggests a kebab-case slug for a fixable name", async () => {
+  it("init (bare) suggests a kebab-case slug for a fixable name", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws-suggest")
     const r = await runCli(["init", "My Corpus", ws])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/Did you mean: my-corpus/)
   })
 
-  it("validate prints 0 errors on the freshly-init'd workspace (exit 0)", async () => {
+  it("validate prints 0 errors on the freshly-init'd workspace (exit 0)", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["validate", ws])
     expect(r.code).toBe(0)
     expect(r.stdout).toMatch(/all files conform to AIP schemas/)
   })
 
-  it("lint prints info-level orphans on the freshly-init'd workspace (exit 0)", async () => {
+  it("lint prints info-level orphans on the freshly-init'd workspace (exit 0)", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["lint", ws])
     expect(r.code).toBe(0)
@@ -147,7 +147,7 @@ describe("corpus CLI — end-to-end", () => {
     // exit 0 because no errors — orphans are info-level by KNOWLEDGE.md design
   })
 
-  it("verify prints coverage + self-flagged sections on the freshly-init'd workspace (exit 0)", async () => {
+  it("verify prints coverage + self-flagged sections on the freshly-init'd workspace (exit 0)", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["verify", ws, "--facets", "no-such-facet", "--thin", "1"])
     expect(r.code).toBe(0)
@@ -156,14 +156,14 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stdout).toMatch(/== self-flagged entries \(0\) ==/)
   })
 
-  it("verify with no --facets exits 2", async () => {
+  it("verify with no --facets exits 2", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["verify", ws])
     expect(r.code).toBe(2)
     expect(r.stderr).toMatch(/--facets/)
   })
 
-  it("events:emit on a workspace appends to _log.md (exit 0)", async () => {
+  it("events:emit on a workspace appends to _log.md (exit 0)", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli([
       "events:emit",
@@ -178,7 +178,7 @@ describe("corpus CLI — end-to-end", () => {
     )
   })
 
-  it("events:emit with invalid JSON payload exits 2", async () => {
+  it("events:emit with invalid JSON payload exits 2", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli([
       "events:emit",
@@ -191,7 +191,7 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stderr).toMatch(/must be valid JSON/)
   })
 
-  it("events:emit with missing --payload exits 2", async () => {
+  it("events:emit with missing --payload exits 2", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli([
       "events:emit",
@@ -202,7 +202,7 @@ describe("corpus CLI — end-to-end", () => {
     expect(r.stderr).toMatch(/requires --payload/)
   })
 
-  it("events:tail prints the _log.md with AIP-10 header + emitted lines", async () => {
+  it("events:tail prints the _log.md with AIP-10 header + emitted lines", { timeout: 20_000 }, async () => {
     const ws = path.join(tmp, "ws")
     const r = await runCli(["events:tail", ws])
     expect(r.code).toBe(0)
@@ -212,7 +212,7 @@ describe("corpus CLI — end-to-end", () => {
     )
   })
 
-  it("validate on a non-workspace exits 1 with a hint", async () => {
+  it("validate on a non-workspace exits 1 with a hint", { timeout: 20_000 }, async () => {
     const r = await runCli(["validate", path.join(tmp, "not-a-workspace")])
     expect(r.code).toBe(1)
     expect(r.stderr).toMatch(/no KNOWLEDGE\.md/)

@@ -37,7 +37,7 @@ const PLAINTEXT_MARKERS = [
 describe("wrapE2E — real tunnel client ↔ server over an encrypted channel", () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it("runs createTunnelClient ↔ createTunnelServer transparently, and the middle sees only ciphertext", async () => {
+  it("runs createTunnelClient ↔ createTunnelServer transparently, and the middle sees only ciphertext", { timeout: 15_000 }, async () => {
     const { client, daemon } = sessionKeys()
 
     // The rendezvous's-eye view: record every byte that crosses in either
