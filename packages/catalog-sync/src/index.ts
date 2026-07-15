@@ -21,3 +21,15 @@ export { llmOpenRouterGenerator } from "./generators/llm-openrouter.js"
 export { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 export { voiceMinimax } from "./generators/voice-minimax.js"
 export { imageReplicate } from "./generators/image-replicate.js"
+export {
+  reviewedRefresh,
+  refreshSources,
+} from "./refresh-workflow.js"
+export type {
+  RefreshableSource,
+  SourceRefreshResult,
+  CatalogFileDiff,
+  ReviewedRefreshOptions,
+  ReviewedRefreshResult,
+} from "./refresh-workflow.js"
+export { OPENAI_LLM_SOURCE, OPENAI_SOURCES } from "./sources/openai.js"

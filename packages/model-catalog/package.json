@@ -111,6 +111,11 @@
       "types": "./dist/overlay/index.d.ts",
       "import": "./dist/overlay/index.mjs",
       "default": "./dist/overlay/index.mjs"
+    },
+    "./route-identity": {
+      "types": "./dist/route-identity/index.d.ts",
+      "import": "./dist/route-identity/index.mjs",
+      "default": "./dist/route-identity/index.mjs"
     }
   },
   "scripts": {
