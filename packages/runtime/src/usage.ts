@@ -63,6 +63,31 @@ export interface SessionUsage {
   source: UsageSource
 }
 
+/**
+ * A `contextUsed` greater than the reported `contextSize` cannot be tokens
+ * currently occupying the context window — a window can't hold more tokens
+ * than it is wide. At least one adapter's ACP server has been observed
+ * putting a cumulative session-lifetime token total in this field instead
+ * of a point-in-time occupancy figure (a long-running session's running
+ * total can land tens of times past a fixed window, e.g. 14.2M reported
+ * against a 200K window). A value that fails this check is provably not
+ * what the field claims to be, so it's dropped rather than clamped: an
+ * absent `contextUsed` reads as "unmeasured," a clamped one would read as
+ * a plausible but fabricated occupancy percentage. `contextSize` itself is
+ * untouched — it's a static model property, not the corrupted signal.
+ *
+ * When `contextSize` isn't known yet, `contextUsed` can't be disproven —
+ * it's passed through unchanged rather than discarded.
+ */
+export function plausibleContextUsed(
+  contextSize: number | undefined,
+  contextUsed: number | undefined,
+): number | undefined {
+  if (contextUsed === undefined) return undefined
+  if (contextSize !== undefined && contextUsed > contextSize) return undefined
+  return contextUsed
+}
+
 const defaultResolver: PricingResolver = model => resolvePricing(model)
 
 /** Cost of `tokens` at `pricePer1M` USD/1M tokens. */
