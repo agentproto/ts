@@ -20,11 +20,18 @@ RUN addgroup -g 1001 -S rendezvous && \
 
 WORKDIR /app
 
-# Manifest + prebuilt bundle only. The runtime dep (`ws`) is installed from the
-# manifest; devDependencies (tsup, etc.) are skipped via --omit=dev.
+# Manifest + prebuilt bundle only.
+#
+# devDependencies are stripped from the manifest before install rather than
+# skipped with --omit=dev: this package dev-depends on `@agentproto/tooling`
+# at `workspace:*`, and npm rejects the `workspace:` protocol while *parsing*
+# the manifest (EUNSUPPORTEDPROTOCOL) — before --omit=dev gets to exclude it.
+# pnpm resolves that protocol, npm never will, so the field cannot survive here.
+# What's left is the single runtime dep, `ws`.
 COPY --chown=rendezvous:rendezvous package.json ./
 COPY --chown=rendezvous:rendezvous dist ./dist
-RUN npm install --omit=dev --no-audit --no-fund --no-package-lock && \
+RUN node -e "const fs=require('fs'),p=JSON.parse(fs.readFileSync('package.json','utf8'));delete p.devDependencies;delete p.scripts;fs.writeFileSync('package.json',JSON.stringify(p,null,2))" && \
+    npm install --omit=dev --no-audit --no-fund --no-package-lock && \
     npm cache clean --force
 
 USER rendezvous
