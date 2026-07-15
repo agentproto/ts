@@ -16,6 +16,8 @@ import {
   registerSessionActions,
   resolveSessionArg,
 } from "./commands/sessionActions.js"
+import { registerSessionFilter } from "./commands/sessionFilter.js"
+import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
@@ -41,8 +43,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     }),
   )
 
-  // Views.
-  registerSessionsView(ctx, store)
+  // Views. The filter controller owns the tree's filter/search state (and the
+  // cached GET /workspaces join) and must exist before the sessions view, which
+  // renders through it.
+  const filter = registerSessionFilter(ctx, client, store)
+  ctx.subscriptions.push(filter)
+  registerSessionsView(ctx, store, filter)
   registerPermissionsView(ctx, store)
   registerStatusBar(ctx, store)
 
@@ -55,6 +61,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionActions(ctx, client, store)
   registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
   registerPermissionCommands(ctx, client, store)
+  registerSessionRestart(ctx, client, store) // agentproto.restartSession
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store)
   ctx.subscriptions.push(

@@ -95,6 +95,24 @@
         "icon": "$(trash)"
       },
       {
+        "command": "agentproto.restartSession",
+        "title": "agentproto: Restart Session",
+        "category": "agentproto",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "agentproto.filterSessions",
+        "title": "agentproto: Filter Sessions",
+        "category": "agentproto",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "agentproto.searchSessions",
+        "title": "agentproto: Search Sessions",
+        "category": "agentproto",
+        "icon": "$(search)"
+      },
+      {
         "command": "agentproto.openTranscript",
         "title": "agentproto: Open Transcript",
         "category": "agentproto",
@@ -134,6 +152,16 @@
           "command": "agentproto.spawnAgent",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
+        },
+        {
+          "command": "agentproto.searchSessions",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.filterSessions",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -156,6 +184,11 @@
           "command": "agentproto.openTranscript",
           "when": "view == agentproto.sessions && viewItem =~ /^session-/",
           "group": "inline@4"
+        },
+        {
+          "command": "agentproto.restartSession",
+          "when": "view == agentproto.sessions && viewItem == session-done",
+          "group": "inline@5"
         },
         {
           "command": "agentproto.openTranscriptChannel",
