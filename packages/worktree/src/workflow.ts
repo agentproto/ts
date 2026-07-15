@@ -89,11 +89,19 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
               id: "cleanup",
               tool: cleanupWorktreeTool,
               candidates,
+              // discardUntracked/discardModified: worktree.cleanup refuses a
+              // dirty tree by default (PLAN.md §5.2 layer 3). This workflow's
+              // own approval step, just above, is that guard already —  a
+              // human explicitly approved tearing this worktree down, so
+              // both flags are granted here rather than surfacing a second,
+              // redundant refusal.
               input: (b: Bindings) => ({
                 repoRoot: input(b).repoRoot,
                 cwd: (b.steps.provision as { cwd: string }).cwd,
                 branch: (b.steps.provision as { branch: string }).branch,
                 deleteBranch: input(b).deleteBranch ?? true,
+                discardUntracked: true,
+                discardModified: true,
               }),
             },
           ],

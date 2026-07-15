@@ -6,6 +6,7 @@ import { runTool } from "@agentproto/driver"
 import { provisionWorktreeTool, cleanupWorktreeTool, runGateTool } from "../tools/index.js"
 import { worktreeProvider } from "../provider/worktree-provider.js"
 import { execGit, execArgv } from "../exec.js"
+import { WorktreeNotRemovableError } from "../provider/bodies/cleanup-worktree.body.js"
 
 const candidates = [worktreeProvider]
 
@@ -74,10 +75,11 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     const marker = await readFile(join(provisioned.cwd, "deps-ran.txt"), "utf8")
     expect(marker).toBe("ok")
 
+    // depsCmd's output is an untracked file — authorize discarding it.
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
-      input: { repoRoot, cwd: provisioned.cwd },
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
     })
   })
 
@@ -110,10 +112,11 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     const seenByDeps = await readFile(join(provisioned.cwd, "linked.txt"), "utf8")
     expect(seenByDeps).toBe("module.exports = 1\n")
 
+    // The symlink + depsCmd's output are untracked — authorize discarding them.
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
-      input: { repoRoot, cwd: provisioned.cwd },
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
     })
   })
 
@@ -164,10 +167,14 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     const copied = await readFile(join(provisioned.cwd, "envs", "prod", ".env.local"), "utf8")
     expect(copied).toBe("SECRET=1\n")
 
+    // The test's own .gitignore is never committed to "main", so the new
+    // worktree's checkout doesn't have it — the copied secret shows up
+    // genuinely untracked here (a repo that commits its .gitignore, the
+    // common case, wouldn't need this flag for this file).
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
-      input: { repoRoot, cwd: provisioned.cwd },
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
     })
   })
 
@@ -195,6 +202,189 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     // git worktree list no longer knows about it.
     const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
     expect(wtList.stdout).not.toContain("archive-test")
+  })
+})
+
+describe("worktree.cleanup — discard-flag guard (the safety flip)", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) {
+      const p = cleanupPaths.pop()!
+      await rm(p, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses by default when the worktree has an untracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "untracked-dirty")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/untracked-dirty"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "scratch.txt"), "stray output\n")
+
+    await expect(
+      runTool({ tool: cleanupWorktreeTool, candidates, input: { repoRoot, cwd: wtDir } }),
+    ).rejects.toThrow()
+
+    // Refused, not removed: the worktree is still on disk and still known to git.
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).toContain(wtDir)
+  })
+
+  it("refuses by default when the worktree has a modified tracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "modified-dirty")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/modified-dirty"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "README.md"), "edited\n")
+
+    let thrown: unknown
+    try {
+      await runTool({ tool: cleanupWorktreeTool, candidates, input: { repoRoot, cwd: wtDir } })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(WorktreeNotRemovableError)
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).toContain(wtDir)
+  })
+
+  it("discardUntracked alone still refuses a modified tracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "both-dirty")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/both-dirty"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "README.md"), "edited\n")
+    await writeFile(join(wtDir, "scratch.txt"), "stray output\n")
+
+    let thrown: unknown
+    try {
+      await runTool({
+        tool: cleanupWorktreeTool,
+        candidates,
+        input: { repoRoot, cwd: wtDir, discardUntracked: true },
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(WorktreeNotRemovableError)
+    expect((thrown as InstanceType<typeof WorktreeNotRemovableError>).blocked).toEqual(["modified"])
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).toContain(wtDir)
+  })
+
+  it("discardUntracked alone removes a worktree with only an untracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "untracked-only")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/untracked-only"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "scratch.txt"), "stray output\n")
+
+    const result = await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: wtDir, discardUntracked: true },
+    })
+    expect(result).toEqual({ removed: true })
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).not.toContain(wtDir)
+  })
+
+  it("discardModified alone still refuses an untracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "untracked-blocks-modified")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/untracked-blocks-modified"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "scratch.txt"), "stray output\n")
+
+    let thrown: unknown
+    try {
+      await runTool({
+        tool: cleanupWorktreeTool,
+        candidates,
+        input: { repoRoot, cwd: wtDir, discardModified: true },
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(WorktreeNotRemovableError)
+    expect((thrown as InstanceType<typeof WorktreeNotRemovableError>).blocked).toEqual(["untracked"])
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).toContain(wtDir)
+  })
+
+  it("discardModified alone removes a worktree with only a modified tracked file", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "modified-only")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/modified-only"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "README.md"), "edited\n")
+
+    const result = await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: wtDir, discardModified: true },
+    })
+    expect(result).toEqual({ removed: true })
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).not.toContain(wtDir)
+  })
+
+  it("both flags together remove a worktree dirty with both classes", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "both-flags")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/both-flags"])
+    cleanupPaths.push(wtDir)
+    await writeFile(join(wtDir, "README.md"), "edited\n")
+    await writeFile(join(wtDir, "scratch.txt"), "stray output\n")
+
+    const result = await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: wtDir, discardUntracked: true, discardModified: true },
+    })
+    expect(result).toEqual({ removed: true })
+
+    const wtList = await execArgv("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], repoRoot)
+    expect(wtList.stdout).not.toContain(wtDir)
+  })
+
+  it("a clean tree removes with no flags at all (unaffected by the guard)", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    const wtDir = join(repoRoot, "_worktrees", "clean")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/clean"])
+    cleanupPaths.push(wtDir)
+
+    const result = await runTool({ tool: cleanupWorktreeTool, candidates, input: { repoRoot, cwd: wtDir } })
+    expect(result).toEqual({ removed: true })
+  })
+
+  it("gitignored files never block removal, with or without flags", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    await writeFile(join(repoRoot, ".gitignore"), "node_modules\n")
+    await execGit(repoRoot, ["add", ".gitignore"])
+    await execGit(repoRoot, ["commit", "-m", "gitignore"])
+    const wtDir = join(repoRoot, "_worktrees", "gitignored-only")
+    await execGit(repoRoot, ["worktree", "add", wtDir, "-b", "wt/gitignored-only"])
+    cleanupPaths.push(wtDir)
+    await mkdir(join(wtDir, "node_modules"), { recursive: true })
+    await writeFile(join(wtDir, "node_modules", "dep.js"), "module.exports = 1\n")
+
+    const result = await runTool({ tool: cleanupWorktreeTool, candidates, input: { repoRoot, cwd: wtDir } })
+    expect(result).toEqual({ removed: true })
   })
 })
 

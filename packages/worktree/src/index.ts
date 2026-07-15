@@ -19,6 +19,14 @@ export {
   type ServiceStatusOutput,
 } from "./tools/index.js"
 export { worktreeProvider } from "./provider/index.js"
+export { WorktreeNotRemovableError } from "./provider/bodies/cleanup-worktree.body.js"
+export {
+  salvageWorktree,
+  SALVAGE_ROOT,
+  type SalvageManifest,
+  type SalvageWorktreeInput,
+  type SalvageResult,
+} from "./salvage.js"
 export { execArgv, execShell, execGit, type ExecResult, type ExecOptions } from "./exec.js"
 export { expandGlob, globToRegExp } from "./glob.js"
 export {
