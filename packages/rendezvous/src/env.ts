@@ -33,7 +33,7 @@ export interface RendezvousEnvConfig {
   rateLimitMax: number
   /** Rate limit window in ms. Default 60_000. */
   rateLimitWindowMs: number
-  /** Enable debug logging. Default false. */
+  /** Print the effective config to stderr at startup. Default false. */
   debug: boolean
 }
 
