@@ -64,7 +64,7 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
-  it("marks formerly-running sessions as killed on reload", () => {
+  it("marks formerly-running sessions as killed on reload, and clears their frozen in-flight flags", () => {
     writeFileSync(
       persistPath,
       JSON.stringify({
@@ -76,10 +76,17 @@ describe("createSessionsRegistry", () => {
             workspaceSlug: "default",
             command: "claude (agent)",
             pid: null,
-            // Was "running" at last save — daemon presumably died without
-            // graceful shutdown.
+            // Was "running" AND mid-turn at last save — daemon died without
+            // graceful shutdown, so these in-flight fields were never
+            // cleared by the turn loop's own `finally` block.
             status: "running",
             startedAt: "2026-05-14T00:00:00Z",
+            busy: true,
+            awaitingInput: true,
+            awaitingQuestion: { text: "continue?", source: "heuristic" },
+            awaitingPermission: true,
+            blockedOn: "command",
+            pendingToolCallId: "tc_1",
           },
         ],
       }),
@@ -87,8 +94,91 @@ describe("createSessionsRegistry", () => {
     const reg = createSessionsRegistry({ persistPath })
     const list = reg.list()
     // Reclassified to killed so attach calls don't try to reach a
-    // process that's already dead.
-    expect(list[0]?.status).toBe("killed")
+    // process that's already dead, and honestly tagged: this wasn't an
+    // operator kill, the daemon died out from under it.
+    expect(list[0]).toMatchObject({
+      status: "killed",
+      endedReason: "daemon-restart",
+      busy: false,
+      awaitingInput: false,
+    })
+    // The regression this guards: these must not stay frozen at their
+    // mid-turn values — a "killed but busy" session is what the operator
+    // sees as an unexplained stuck agent.
+    expect(list[0]?.awaitingQuestion).toBeUndefined()
+    expect(list[0]?.awaitingPermission).toBeUndefined()
+    expect(list[0]?.blockedOn).toBeUndefined()
+    expect(list[0]?.pendingToolCallId).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("emits session:exited with reason 'daemon-restart' for a formerly-running session reconciled at boot", () => {
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-05-14T00:00:00Z",
+        sessions: [
+          {
+            id: "sess_dddddddd",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "claude (agent)",
+            pid: null,
+            status: "running",
+            startedAt: "2026-05-14T00:00:00Z",
+            busy: true,
+          },
+        ],
+      }),
+    )
+    const bus = createSessionEventBus()
+    const exitedHandler = vi.fn()
+    bus.on("session:exited", exitedHandler)
+    // A watcher (completion-policy supervisor, session_monitor) that missed
+    // the live daemon-death moment still learns about it via this boot
+    // reconcile — it's not left to discover the death by accident.
+    const reg = createSessionsRegistry({ persistPath, sessionEvents: bus })
+    expect(exitedHandler).toHaveBeenCalledTimes(1)
+    expect(exitedHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session:exited",
+        sessionId: "sess_dddddddd",
+        status: "killed",
+        reason: "daemon-restart",
+      }),
+    )
+    reg.shutdown()
+  })
+
+  it("does NOT tag endedReason or re-emit session:exited for sessions that were already terminal at last save", () => {
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-05-14T00:00:00Z",
+        sessions: [
+          {
+            id: "sess_eeeeeeee",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "claude (agent)",
+            pid: null,
+            // Already killed (e.g. via agent_kill) before the prior daemon
+            // stopped — not the daemon's doing, so no endedReason.
+            status: "killed",
+            startedAt: "2026-05-14T00:00:00Z",
+            endedAt: "2026-05-14T00:05:00Z",
+            busy: false,
+          },
+        ],
+      }),
+    )
+    const bus = createSessionEventBus()
+    const exitedHandler = vi.fn()
+    bus.on("session:exited", exitedHandler)
+    const reg = createSessionsRegistry({ persistPath, sessionEvents: bus })
+    expect(reg.list()[0]).toMatchObject({ status: "killed" })
+    expect(reg.list()[0]?.endedReason).toBeUndefined()
+    expect(exitedHandler).not.toHaveBeenCalled()
     reg.shutdown()
   })
 
@@ -125,6 +215,53 @@ describe("createSessionsRegistry", () => {
     const after2 = JSON.parse(readFileSync(persistPath, "utf8"))
     expect(after2.sessions).toHaveLength(1)
     expect(after2.sessions[0].id).toBe("sess_cccccccc")
+  })
+
+  it("shutdown() clears busy + tags endedReason for a session that's mid-turn when the daemon stops (not an operator kill)", async () => {
+    const bus = createSessionEventBus()
+    const exitedHandler = vi.fn()
+    bus.on("session:exited", exitedHandler)
+    const reg = createSessionsRegistry({ persistPath, sessionEvents: bus })
+
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-shutdown-busy",
+      async *send() {
+        // Never yields — the turn is still in flight when shutdown() fires,
+        // so `runAgentTurn`'s own `finally` (which normally clears busy)
+        // never gets a chance to run.
+        await new Promise(() => {})
+        yield { kind: "turn-end" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+    })
+    await reg.enqueuePrompt(desc.id, "hi")
+    // Sanity: the turn is genuinely in flight before shutdown.
+    expect(reg.get(desc.id)?.busy).toBe(true)
+
+    reg.shutdown()
+
+    const persisted = JSON.parse(readFileSync(persistPath, "utf8"))
+    const stored = persisted.sessions.find((s: { id: string }) => s.id === desc.id)
+    expect(stored).toMatchObject({
+      status: "killed",
+      endedReason: "daemon-restart",
+      busy: false,
+    })
+    expect(exitedHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session:exited",
+        sessionId: desc.id,
+        status: "killed",
+        reason: "daemon-restart",
+      }),
+    )
   })
 
   it("captures claude-code resume hint from agent output via the sniffer", async () => {
