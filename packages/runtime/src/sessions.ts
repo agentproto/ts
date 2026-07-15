@@ -3009,7 +3009,16 @@ function loadHistorySnapshot(
           endedReason: "daemon-restart",
         }
       : desc
-    if (wasAlive) clearInFlightFlags(reclassified)
+    // Unconditional, not `if (wasAlive)`: a ghost carries no child/
+    // agentSession, so it is idle whatever the snapshot claimed — and rows
+    // that were ALREADY terminal can carry frozen flags too. Two ways in: a
+    // kill that raced the turn's `finally`, and — the one actually observed —
+    // a snapshot written by a daemon predating this reconciliation, whose
+    // "killed + busy" rows are already terminal by the time a fixed daemon
+    // reads them, so a wasAlive-only guard never revisits them and the lie
+    // survives every future boot. Clearing idle flags on an idle session is a
+    // no-op, so there is nothing to lose by not asking how it got there.
+    clearInFlightFlags(reclassified)
     const rt: SessionRuntime = {
       desc: reclassified,
       recentLines: [],
