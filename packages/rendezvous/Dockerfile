@@ -34,7 +34,12 @@ RUN node -e "const fs=require('fs'),p=JSON.parse(fs.readFileSync('package.json',
     npm install --omit=dev --no-audit --no-fund --no-package-lock && \
     npm cache clean --force
 
-USER rendezvous
+# Numeric UID, not the `rendezvous` name: Kubernetes cannot verify a username
+# maps to a non-root user, so `runAsNonRoot: true` (the standard hardened
+# posture, mandatory under PodSecurity `restricted`) refuses to start the
+# container with CreateContainerConfigError. The numeric form is equivalent to
+# `USER rendezvous` for docker run, and portable to k8s.
+USER 1001
 
 # Default bind port (RENDEZVOUS_PORT overrides at runtime).
 EXPOSE 8788
