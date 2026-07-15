@@ -73,11 +73,21 @@ docker build -t agentproto-rendezvous packages/rendezvous
 docker run -p 8788:8788 agentproto-rendezvous
 ```
 
-Environment variables (all optional, see DEPLOY.md for defaults):
+Environment variables (all optional — shown with their defaults, see
+[DEPLOY.md](./DEPLOY.md#environment-variables) for the full table):
 
 ```sh
 RENDEZVOUS_PORT=8788
 RENDEZVOUS_HOST=0.0.0.0
+RENDEZVOUS_PATH=/v1
+RENDEZVOUS_PARK_TIMEOUT_MS=120000
 RENDEZVOUS_IDLE_TIMEOUT_MS=900000
-RENDEZVOUS_DEBUG=false
+RENDEZVOUS_MAX_MESSAGE_BYTES=1048576
+RENDEZVOUS_RATE_LIMIT_MAX=120
+RENDEZVOUS_RATE_LIMIT_WINDOW_MS=60000
+RENDEZVOUS_DEBUG=false          # print the effective config at startup
 ```
+
+Every one has a matching flag (`--port`, `--path`, `--rate-limit-max`, …) that
+takes precedence over the env var; run `agentproto-rendezvous --help` for the
+list.

@@ -45,7 +45,7 @@ agentproto-rendezvous serve --port 8788 --host 0.0.0.0
 | `RENDEZVOUS_MAX_MESSAGE_BYTES` | `1048576` | Max WebSocket message size (1 MiB) |
 | `RENDEZVOUS_RATE_LIMIT_MAX` | `120` | Rate limit max attempts per window |
 | `RENDEZVOUS_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (1 min) |
-| `RENDEZVOUS_DEBUG` | `false` | Enable debug logging |
+| `RENDEZVOUS_DEBUG` | `false` | Print the effective config to stderr at startup |
 
 CLI arguments take precedence over environment variables.
 
@@ -196,7 +196,18 @@ The server exposes basic stats via the `/healthz` endpoint:
 
 ### Logging
 
-Set `RENDEZVOUS_DEBUG=true` for verbose logging. Logs are written to stderr.
+Operational logs (splices, timeouts, rejected upgrades) are always written to
+stderr — there is no quiet mode.
+
+Set `RENDEZVOUS_DEBUG=true` (or pass `--debug`) to additionally print the
+effective config once at startup, so you can confirm what the container actually
+resolved from env vs. flags:
+
+```
+[debug] effective config: {"port":8788,"host":"0.0.0.0","path":"/v1",...}
+```
+
+It never logs payloads — the broker cannot read them.
 
 ### Prometheus (future)
 
