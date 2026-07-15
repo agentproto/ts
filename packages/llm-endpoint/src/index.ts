@@ -164,6 +164,7 @@ export function trimTools(payload: any, opts: ToolTrimOptions): void {
 // Clés API par provider — forme fixe (accès `.openrouter` etc. typé `string`,
 // pas soumis à noUncheckedIndexedAccess comme le serait un Record indexé).
 interface ProviderKeys {
+  anthropic: string;
   moonshot: string;
   openrouter: string;
   zai: string;
@@ -177,6 +178,7 @@ interface ProviderKeys {
 // d'environnement avant de démarrer le serveur.
 function resolveSecretKeys(): ProviderKeys {
   return {
+    anthropic: process.env.ANTHROPIC_API_KEY || '',
     moonshot: process.env.MOONSHOT_API_KEY || '',
     openrouter: process.env.OPENROUTER_API_KEY || '',
     zai: process.env.ZHIPUAI_API_KEY || process.env.ZAI_API_KEY || '',
@@ -191,9 +193,13 @@ function getResolvedKeys(): ProviderKeys {
 }
 
 // OpenAI-compatible chat/completions endpoint for the OpenAI surface and the
-// Responses API facade. Every known provider exposes an OpenAI-compatible path.
-function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string } {
+// Responses API facade. Returns null for providers that only speak the
+// Anthropic Messages shape (anthropic itself has no /chat/completions
+// endpoint) so callers can fail loud with a 400 instead of misrouting.
+function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string } | null {
   switch (provider) {
+    case 'anthropic':
+      return null;
     case 'openrouter':
       return { hostname: 'openrouter.ai', path: '/api/v1/chat/completions' };
     case 'zai':
@@ -417,7 +423,13 @@ function handleResponsesRequest(
         headerExcludeTools: opts.headerExcludeTools,
       });
 
-      const { hostname, path } = getChatCompletionsEndpoint(resolvedTarget.provider);
+      const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
+      if (!endpoint) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/responses surface.` } }));
+        return;
+      }
+      const { hostname, path } = endpoint;
       const targetApiKey = getApiKey(resolvedTarget.provider);
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -546,7 +558,13 @@ function handleChatCompletionsRequest(
         headerExcludeTools: opts.headerExcludeTools,
       });
 
-      const { hostname, path } = getChatCompletionsEndpoint(resolvedTarget.provider);
+      const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
+      if (!endpoint) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/chat/completions surface.` } }));
+        return;
+      }
+      const { hostname, path } = endpoint;
       const targetApiKey = getApiKey(resolvedTarget.provider);
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -1283,6 +1301,15 @@ const server = createServer((req, res) => {
       });
 
       switch (resolvedTarget.provider) {
+        case 'anthropic':
+          // Anthropic natif — pas de transformation de forme requise.
+          hostname = 'api.anthropic.com';
+          path = '/v1/messages';
+          targetApiKey = getApiKey('anthropic');
+          headers['x-api-key'] = targetApiKey;
+          headers['anthropic-version'] = '2023-06-01';
+          break;
+
         case 'openrouter':
           // OpenRouter expose un endpoint Anthropic NATIF (/api/v1/messages) qui renvoie le
           // format Anthropic (content/stop_reason) tel quel — indispensable pour le CLI `claude`
@@ -1535,9 +1562,7 @@ export { server };
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
   return server.listen(port, () => {
-    const keys = getResolvedKeys();
     console.log(`[Proxy Server] Live on http://localhost:${port}`);
     console.log(`[Proxy Server] Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses surfaces configured.`);
-    console.log(`[Proxy Server] Credentials status - Moonshot: ${keys.moonshot ? 'OK' : 'MISSING'}, OpenRouter: ${keys.openrouter ? 'OK' : 'MISSING'}, ZAI: ${keys.zai ? 'OK' : 'MISSING'}, Groq: ${keys.groq ? 'OK' : 'MISSING'}, xAI: ${keys.xai ? 'OK' : 'MISSING'}, OpenAI: ${keys.openai ? 'OK' : 'MISSING'}`);
   });
 }

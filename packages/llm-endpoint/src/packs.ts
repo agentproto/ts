@@ -126,6 +126,7 @@ export function listPackIds(): string[] {
  * `?p=` overrides and model-id prefixes.
  */
 export const KNOWN_TRANSPARENT_PROVIDERS = new Set([
+  'anthropic',
   'moonshot',
   'openrouter',
   'zai',

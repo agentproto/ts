@@ -56,7 +56,7 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
   })
 
   it("xai pins the conventional default model", () => {
-    expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("nova-1")
+    expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("grok-4.5")
   })
 
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
@@ -67,7 +67,7 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     const xai = getAnthropicGatewayPreset("xai")
     expect(xai.baseUrl).toBe("http://localhost:18090/v1")
     expect(xai.schemaFlavor).toBe("openai")
-    expect(xai.defaultModel).toBe("nova-1")
+    expect(xai.defaultModel).toBe("grok-4.5")
   })
 
   it("moonshot and openrouter point at distinct base URLs", () => {

@@ -15,6 +15,7 @@ vi.mock('https', () => ({
 }));
 
 // Set dummy upstream keys so the proxy does not short-circuit with 401.
+process.env.ANTHROPIC_API_KEY = 'test-anthropic';
 process.env.MOONSHOT_API_KEY = 'test-moonshot';
 process.env.OPENROUTER_API_KEY = 'test-openrouter';
 process.env.ZAI_API_KEY = 'test-zai';
@@ -263,6 +264,76 @@ describe('Responses facade', () => {
       expect(callOptions.path).toBe('/openai/v1/chat/completions');
       const forwardedBody = JSON.parse(writeBody);
       expect(forwardedBody.model).toBe('llama-3.3-70b-versatile');
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('routes the direct anthropic route natively on /v1/messages', async () => {
+    mockUpstreamOnce([
+      JSON.stringify({
+        id: 'msg_test',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hello from Anthropic' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 3 },
+      }),
+    ]);
+
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'anthropic/claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] },
+      });
+
+      expect(res.status).toBe(200);
+      const { options: callOptions, writeBody } = getUpstreamCall();
+      expect(callOptions.hostname).toBe('api.anthropic.com');
+      expect(callOptions.path).toBe('/v1/messages');
+      expect(callOptions.headers['x-api-key']).toBe('test-anthropic');
+      expect(callOptions.headers['anthropic-version']).toBe('2023-06-01');
+      const forwardedBody = JSON.parse(writeBody);
+      expect(forwardedBody.model).toBe('claude-sonnet-5');
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('rejects the direct anthropic route on /v1/responses (no OpenAI-shaped endpoint)', async () => {
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/responses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'anthropic/claude-sonnet-5', input: 'hi' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('does not support the OpenAI-compatible');
+      expect(httpsMock.request).not.toHaveBeenCalled();
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('rejects the direct anthropic route on /v1/chat/completions (no OpenAI-shaped endpoint)', async () => {
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'anthropic/claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] },
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('does not support the OpenAI-compatible');
+      expect(httpsMock.request).not.toHaveBeenCalled();
     } finally {
       srv.close();
     }
@@ -568,5 +639,17 @@ describe('resolveModelRoute', () => {
 
   it('rejects unknown providers in transparent references', () => {
     expect(() => resolveModelRoute({ model: 'fake/model' }, baseCtx, {})).toThrow(/Unable to resolve model/);
+  });
+
+  it('resolves the direct anthropic route via transparent provider/model', () => {
+    expect(
+      resolveModelRoute({ model: 'anthropic/claude-sonnet-5' }, baseCtx, {})
+    ).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' });
+  });
+
+  it('resolves the direct anthropic route via ?p= override with a bare model id', () => {
+    expect(
+      resolveModelRoute({ model: 'claude-sonnet-5' }, { ...baseCtx, queryProvider: 'anthropic' }, {})
+    ).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' });
   });
 });
