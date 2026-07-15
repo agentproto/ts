@@ -31,6 +31,32 @@ Each rung has exactly one owner — don't reach into the next one.
    `agentproto.json` declares `scripts.test` as `pnpm test`
    (`agentproto.json:5`, itself `pnpm -r --filter "./packages/**" --filter
    "./adapters/**" test`, `package.json:18`). Don't invent your own bar.
+
+   **Read the gate's exit code, not its output.** `pnpm test | tail -30`
+   reports **`tail`'s** exit status, not the test run's — a pipeline exits
+   with its LAST command's status, so a red gate reads as exit 0 and you
+   will report a passing gate that failed. `${PIPESTATUS[0]}` does not
+   rescue it either: that's bash, and this repo's sessions run zsh, where
+   it's `$pipestatus[1]` and the bash spelling silently expands to empty.
+   Redirect and check `$?` directly:
+
+   ```sh
+   pnpm test > /tmp/gate.log 2>&1; echo "EXIT=$?"   # then grep the log
+   ```
+
+   Same trap for a backgrounded gate: the harness reports the exit code of
+   the whole compound command, so end it with the real status
+   (`echo "EXIT=$?"`) rather than trusting the completion notification.
+
+   **A fresh worktree needs `pnpm install` AND `pnpm build` before the gate
+   is meaningful.** Packages import each other's built `dist/`, so an
+   unbuilt worktree fails in packages you never touched (`Failed to resolve
+   entry for package "@agentproto/…"`, `Cannot find package 'zod'`). That is
+   your worktree, not the code. `pnpm install --filter <pkg>...` installs
+   only one subgraph and leaves the rest of the monorepo unrunnable — so if
+   you intend to run the full gate, do a full install. Before blaming a
+   failure in a package your diff doesn't touch, re-run it on `main`: if it
+   passes there, the fault is your tree.
 2. **Open the PR.** `gh pr create` — ready, not draft. A ready PR is the
    point: it hands off into the declared flow (agentic review → `APPROVED` →
    maintainer judge → `alwaysEscalateGlobs` escalating migrations/auth/
