@@ -21,41 +21,54 @@ itself.
 
 ## Definition of done for agent sessions
 
-**Done = a green local gate + a draft PR. That is the terminal state for an
-agent session. Nothing further is yours to do.**
+**Done = a green local gate + an open PR. That is the terminal state for an
+agent session — the handoff, not a request for permission.** Your rung ends
+there; review, risk-judgement, escalation, and merge are the CI plane's job,
+already declared in `.github/agentic-review.json` + `.github/workflows/ci.yml`.
+Each rung has exactly one owner — don't reach into the next one.
 
 1. **Green gate.** Run this repo's own gate before calling anything done:
    `agentproto.json` declares `scripts.test` as `pnpm test`
    (`agentproto.json:5`, itself `pnpm -r --filter "./packages/**" --filter
    "./adapters/**" test`, `package.json:18`). Don't invent your own bar.
-2. **Open a draft PR.** `gh pr create --draft`. Never anything else.
+2. **Open the PR.** `gh pr create` — ready, not draft. A ready PR is the
+   point: it hands off into the declared flow (agentic review → `APPROVED` →
+   maintainer judge → `alwaysEscalateGlobs` escalating migrations/auth/
+   workflows/SQL/env to a human automatically → auto-merge). Use `--draft`
+   only for genuinely uncertain/WIP work, or when a human explicitly asked
+   for a look first — it's the exception, not the default.
 
-**Never run `gh pr ready` or `gh pr merge`.** Flipping a PR ready and merging
-it belong to the operator and to the CI merge config
-(`.github/agentic-review.json`, `.github/workflows/ci.yml`), not to a
-session. This is not a style preference — a direct merge under an
-ambient-credentialed actor is exactly the failure this file exists to
-prevent. If your gate is green and the PR is a draft, you are done; wait for
-a human or the pipeline to take it from there.
+**Never run `gh pr merge`.** This is the one hard line, and it's about not
+bypassing the declared flow, not deference for its own sake. Merge
+conditions — review decision, the maintainer's risk judgement, the
+always-escalate paths, the auto-merge switch — are read from the **base
+branch**, deliberately out of any PR's reach (`.github/workflows/ci.yml:471`
+comment, switch logic `:538-556`; "a PR gets no vote on how it is merged",
+commit `4d5dca1` / #343). The only thing that enables auto-merge at all is
+the repo variable `vars.AGENTFLOW_AUTOMERGE`, set in repo settings — a PR,
+and therefore an agent, cannot reach it either way. An agent running
+`gh pr merge` under ambient `gh` credentials routes around every one of
+those gates. That is exactly the 2026-07-15 incident this file exists to
+prevent.
 
 **Don't hand-write a changeset.** The agentic reviewer writes it for you as
-part of its automatic pass on every PR push (`.github/workflows/ci.yml:201`
-comment, commit step at `:291-315`) — a hand-written one is redundant and the
-`changeset-check` job (`ci.yml:53-89`) doesn't need one from you: it only
+part of its automatic pass on every PR push (`.github/workflows/ci.yml:211`
+region, commit step at `:298-322`) — a hand-written one is redundant and the
+`changeset-check` job (`ci.yml:60-94`) doesn't need one from you: it only
 requires *a* changeset to exist before merge, and only when
 `packages/**`/`adapters/**` changed. Docs-only changes (like this file) need
-no changeset at all (`ci.yml:75-80`).
+no changeset at all (`ci.yml:87-90`).
 
 **Don't stamp `[agentflow-reviewed]`** in a commit message, and don't run
 `review:ai --stamp` locally, unless a human explicitly told you to. That
 marker makes the cloud reviewer skip its pass entirely
-(`.github/workflows/ci.yml:268`) — it's a convenience for a human who already
+(`.github/workflows/ci.yml:275`) — it's a convenience for a human who already
 ran and read a local review, not something to reach for on your own.
 
 **No AI attribution in commits or PR bodies.** No `Co-Authored-By: Claude
 ...`, no `Generated with ...`, no equivalent trailer. `hygiene-check`
-enforces this on every PR (`.github/workflows/ci.yml:97-158`, pattern at
-`:124`) and fails the check if one rides in.
+enforces this on every PR (`.github/workflows/ci.yml:104-165`, pattern at
+`:131`) and fails the check if one rides in.
 
 ## Recipes: gates you can declare today
 
@@ -89,10 +102,15 @@ real surface, not a placeholder for something else.
   checked the current config.
 
 - **Risk fail-safe on merge.** `merge.alwaysEscalateGlobs` + the maintainer
-  judge (`scripts/maintainer.mjs:75-110`) already escalate anything touching
+  judge (`scripts/maintainer.mjs:85-119`) already escalate anything touching
   migrations, SQL, auth, security, workflows, or `.env*` files to a human
-  instead of auto-merging — this one is ON today and observed working. You
-  don't need to build risk-scoping; it's there.
+  instead of auto-merging — this one is ON today and observed working. As of
+  `#343`, the merge job also runs its own deterministic guard ahead of the
+  maintainer: a PR touching the merge machinery itself (`.github/workflows/**`,
+  `.github/agentic-review.json`, `.github/actions/**`, `scripts/maintainer.mjs`,
+  `scripts/agentflow/**`) is escalated outright, precisely because that
+  machinery can't be trusted to judge changes to itself (`ci.yml:558-579`).
+  You don't need to build risk-scoping; it's there.
 
 - **Chaining, fan-in, and long-poll.** A policy's `next` field chains a
   fresh completion policy once the current one reaches `done`
