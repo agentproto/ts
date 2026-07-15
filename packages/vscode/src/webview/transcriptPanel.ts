@@ -25,6 +25,13 @@ import { TranscriptPanelController } from "./transcriptPanelController.js"
 
 export interface TranscriptPanels {
   open(session: SessionDescriptor): void
+  /**
+   * Session id of the currently focused transcript panel tab, if any. Lets
+   * `agentproto.openTerminal`'s editor-title-bar entry point (WP5) target
+   * "this" session without an explicit arg — a plain `editor/title` menu
+   * command receives none, unlike a tree item's `view/item/context` command.
+   */
+  activeSessionId(): string | undefined
 }
 
 export function registerTranscriptPanels(
@@ -33,12 +40,14 @@ export function registerTranscriptPanels(
   store: SessionStore,
 ): TranscriptPanels {
   const panels = new Map<string, vscode.WebviewPanel>()
+  let activeId: string | undefined
 
   return {
     open(session: SessionDescriptor): void {
       const existing = panels.get(session.id)
       if (existing) {
         existing.reveal(vscode.ViewColumn.One, false)
+        activeId = session.id
         return
       }
 
@@ -52,6 +61,7 @@ export function registerTranscriptPanels(
         },
       )
       panels.set(session.id, panel)
+      activeId = session.id
 
       const nonce = randomNonce()
 
@@ -88,14 +98,27 @@ export function registerTranscriptPanels(
         }),
       )
 
+      // Track focus so activeSessionId() reflects whichever transcript tab
+      // the user is actually looking at (switching tabs doesn't re-run open()).
+      disposables.push(
+        panel.onDidChangeViewState(e => {
+          if (e.webviewPanel.active) activeId = session.id
+          else if (activeId === session.id) activeId = undefined
+        }),
+      )
+
       // Cleanup on close.
       panel.onDidDispose(() => {
         for (const d of disposables) d.dispose()
         panels.delete(session.id)
+        if (activeId === session.id) activeId = undefined
       })
 
       // Set HTML only after the controller and message listener are wired up.
       panel.webview.html = buildHtml(nonce)
+    },
+    activeSessionId(): string | undefined {
+      return activeId
     },
   }
 }
