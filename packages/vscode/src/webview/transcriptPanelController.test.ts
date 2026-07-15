@@ -55,6 +55,7 @@ type MockClient = DaemonClient & {
   preview: ReturnType<typeof vi.fn>
   getSession: ReturnType<typeof vi.fn>
   getSessionEvents: ReturnType<typeof vi.fn>
+  resolveToken: ReturnType<typeof vi.fn>
 }
 
 function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {}): MockClient {
@@ -66,6 +67,11 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
     preview: vi.fn().mockResolvedValue({ id: "s1", lines: ["line"], bytes: null }),
     getSession: vi.fn().mockResolvedValue(session()),
     getSessionEvents: vi.fn().mockResolvedValue(page([])),
+    // Rejected by default so SseRecordFeed (transcriptPanelController.ts)
+    // falls back to PollingRecordFeed immediately in every test that
+    // doesn't explicitly opt into exercising the SSE path — same fallback
+    // codepath a real old-daemon 404 takes, just triggered earlier.
+    resolveToken: vi.fn().mockRejectedValue(new Error("no SSE in this test")),
     ...over,
   } as unknown as MockClient
 }
@@ -382,6 +388,130 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
       controller.dispose()
       await vi.advanceTimersByTimeAsync(1000)
       expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+/** A controllable SSE response body: `push` enqueues a `data:` frame,
+ *  `close` ends the stream. Backs the fake `fetchImpl` in the SSE tests
+ *  below so a test can decide exactly when a "live" record arrives. */
+function controllableSseBody(): {
+  response: Response
+  push: (record: Record<string, unknown>) => void
+  close: () => void
+} {
+  const encoder = new TextEncoder()
+  let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      ctrl = controller
+    },
+  })
+  return {
+    response: new Response(stream, { status: 200 }),
+    push(record) {
+      ctrl?.enqueue(encoder.encode(`data: ${JSON.stringify(record)}\n\n`))
+    },
+    close() {
+      ctrl?.close()
+    },
+  }
+}
+
+/** Flushes pending microtasks (promise chains) without advancing real time —
+ *  used to let SseRecordFeed's resolveToken().then(subscribeSse(...)) chain
+ *  settle before a test asserts on its effects. */
+function flushMicrotasks(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+describe("TranscriptPanelController — SSE record feed", () => {
+  it("delivers a live record via SSE and posts a patch, same as polling would", async () => {
+    seq = 0
+    const hydrate = page([ev({ kind: "user-prompt", text: "hello" })], { nextSeq: 1, complete: true })
+    const getSessionEvents = vi.fn().mockResolvedValue(hydrate)
+    const sse = controllableSseBody()
+    const fetchStreamImpl: typeof fetch = async input => {
+      const url = String(input)
+      if (url.includes("/events/stream")) return sse.response
+      throw new Error(`unexpected fetch: ${url}`)
+    }
+    const fetchImpl = vi.fn(fetchStreamImpl)
+    const client = createMockClient({
+      getSessionEvents,
+      resolveToken: vi.fn().mockResolvedValue(undefined),
+    })
+    const messenger = createMockMessenger()
+    const store = createMockStore()
+    const controller = new TranscriptPanelController({
+      sessionId: "s1",
+      initialSession: session(),
+      client,
+      store,
+      messenger,
+      fetchImpl,
+    })
+
+    await controller.onReady()
+    expect(getSessionEvents).toHaveBeenCalledTimes(1)
+    await flushMicrotasks()
+
+    sse.push({ seq: 2, ts: "2026-01-01T00:00:00Z", kind: "text-delta", text: "world\n" })
+    await flushMicrotasks()
+
+    const patch = messenger.messages.filter(m => m.type === "patch").pop()
+    expect(patch).toBeDefined()
+    const upserts = (patch as Extract<ExtMessage, { type: "patch" }>).upsertTurns
+    expect(upserts.map(t => t.role)).toEqual(["assistant"])
+
+    // The live record arrived over SSE, not another hydration-style poll.
+    expect(getSessionEvents).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.stringContaining(`/sessions/s1/events/stream?since=1`),
+      expect.anything(),
+    )
+    controller.dispose()
+  })
+
+  it("falls back to polling when the stream route 404s (old daemon)", async () => {
+    vi.useFakeTimers()
+    try {
+      seq = 0
+      const getSessionEvents = vi.fn().mockResolvedValue(page([]))
+      const fetchStreamImpl: typeof fetch = async () => new Response(null, { status: 404 })
+      const fetchImpl = vi.fn(fetchStreamImpl)
+      const client = createMockClient({
+        getSessionEvents,
+        resolveToken: vi.fn().mockResolvedValue(undefined),
+      })
+      const messenger = createMockMessenger()
+      const store = createMockStore()
+      const controller = new TranscriptPanelController({
+        sessionId: "s1",
+        initialSession: session(),
+        client,
+        store,
+        messenger,
+        fetchImpl,
+        // autoPoll/pollIntervalMs default (true / 250ms) — same as the
+        // plain polling auto-poll test above.
+      })
+
+      await controller.onReady()
+      const callsAfterInit = getSessionEvents.mock.calls.length
+      // Let the SSE connect-then-404-then-fallback chain fully settle
+      // (pure microtasks) before advancing real timers.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetchImpl).toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(249)
+      expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(getSessionEvents.mock.calls.length).toBe(callsAfterInit + 1)
+
+      controller.dispose()
     } finally {
       vi.useRealTimers()
     }
