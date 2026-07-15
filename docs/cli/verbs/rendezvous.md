@@ -14,8 +14,11 @@ or forge** anything. It learns only the token, the peers' IPs, message sizes,
 and timing.
 
 Self-hosting is defence in depth (the crypto already protects you against a
-malicious broker) plus an escape hatch: no third party — not even a future
-hosted default instance — need sit between your client and daemon.
+malicious broker) plus an escape hatch: no third party — not even the [hosted
+default broker](./pair.md#offer--daemon-side) `pair offer` uses out of the box —
+need sit between your client and daemon. Set `pairing.rendezvous` to your own
+URL, or `pairing.rendezvous: ""` to require an explicit `--rendezvous` and
+never fall back to the hosted default.
 
 This is a thin re-export of the standalone `agentproto-rendezvous` binary, so
 you don't need that bin on your `PATH`.

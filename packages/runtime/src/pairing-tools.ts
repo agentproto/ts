@@ -62,7 +62,9 @@ export function registerPairingTools(
         .optional()
         .describe(
           "Rendezvous WS URL to route through (ws:// or wss://). Defaults to " +
-            "`pairing.rendezvous` from config.json.",
+            "`pairing.rendezvous` from config.json, or the hosted broker " +
+            "(wss://rdv.agentproto.sh/v1) when neither is set. The response's " +
+            "`rendezvousIsHostedDefault` flags when that fallback applied.",
         ),
     },
     async ({ ttlMinutes, rendezvous }) => {
@@ -74,6 +76,7 @@ export function registerPairingTools(
         url: offer.url,
         fingerprint: offer.fingerprint,
         rendezvous: offer.rendezvousUrl,
+        rendezvousIsHostedDefault: offer.rendezvousIsHostedDefault,
         expiresAt: new Date(offer.exp * 1000).toISOString(),
       })
     },

@@ -9,9 +9,11 @@ trusted middlebox.
 
 This page describes what exists **after Phase 2**: the cryptographic library
 layer (Phase 1), plus the rendezvous broker, the `pair` CLI/MCP verbs, on-disk
-persistence, reconnect epochs, and autoconnect on boot. The hosted broker, the
-mobile deep-link page, and the AIP-53 spec remain Phase 3 — see *Status* at the
-bottom.
+persistence, reconnect epochs, and autoconnect on boot. Pairing also works with
+no config — `pair offer` defaults to the **hosted broker**
+`wss://rdv.agentproto.sh/v1`, which relays only ciphertext (see [The hosted
+default](#the-hosted-default)). The mobile deep-link page and the AIP-53 spec
+remain Phase 3 — see *Status* at the bottom.
 
 Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
 exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
@@ -163,13 +165,43 @@ REST routes: `POST /pairings/offer`, `GET /pairings`, `DELETE /pairings/:fp`.
   anytime. Config keys: `pairing.rendezvous`, `pairing.autoconnect` (see
   [config-schema.md](../reference/config-schema.md)).
 
+## The hosted default
+
+`pair offer` needs a meeting point. So that it works out of the box, the daemon
+defaults to a hosted broker when none is configured:
+
+**Precedence:** `--rendezvous` flag → `pairing.rendezvous` in `config.json` →
+the hosted default `wss://rdv.agentproto.sh/v1`.
+
+What the hosted broker can see is exactly what any rendezvous can see, and no
+more: it splices two sockets by routing token and relays **ciphertext**
+byte-for-byte. It learns the token, the peers' IPs, ciphertext sizes, and
+timing — never plaintext — and it cannot inject, alter, or replay frames (the
+`pair/v1` handshake is transcript-bound and every frame is AEAD-sealed with a
+monotonic nonce; see [Threat model](#threat-model)). This is the same guarantee
+as a self-hosted broker; the only thing that changes by default is *who runs
+the box*.
+
+Because that is a trust decision, it is never silent: `pair offer` names the
+broker it used and flags the hosted default (the REST/MCP surfaces carry a
+`rendezvousIsHostedDefault` field).
+
+**Pointing elsewhere.** Self-host the broker with
+[`agentproto rendezvous serve`](../verbs/rendezvous.md) and set
+`pairing.rendezvous` in `config.json` (or pass `--rendezvous` per offer). To
+disable the default entirely — a daemon that must never reach the hosted broker
+unless an endpoint is named explicitly — set `pairing.rendezvous: ""`; `pair
+offer` then requires an explicit `--rendezvous`.
+
 ## Status
 
 - **Phase 1:** identity module, `pair/v1` handshake, `wrapE2E` channel, and the
   adversarial test suite (tampered-broker vectors: flip / drop / reorder /
   replay / downgrade). Proven end-to-end over an in-process socket pair.
-- **Phase 2 (this):** the `@agentproto/rendezvous` broker package, the `pair`
+- **Phase 2:** the `@agentproto/rendezvous` broker package, the `pair`
   CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke` / `exec`), pairing
   persistence, reconnect epochs, and autoconnect on boot.
-- **Phase 3:** hosted broker deploy, mobile deep-link page, and the AIP-53
-  `PAIRING.md` spec.
+- **Phase 3 (in progress):** the hosted broker is deployed and is now the
+  default meeting point for `pair offer` (see [The hosted
+  default](#the-hosted-default)). Still to come: the mobile deep-link page and
+  the AIP-53 `PAIRING.md` spec.

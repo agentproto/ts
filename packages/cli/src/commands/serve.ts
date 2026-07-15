@@ -572,7 +572,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const pairingRegistry: PairingRegistry = createPairingRegistry({
     loadIdentity: () => loadOrCreateIdentity(joinPath(agentprotoHome, "identity.json")),
     pairingsPath: joinPath(agentprotoHome, "pairings.json"),
-    ...(cfgPairing.rendezvous ? { defaultRendezvousUrl: cfgPairing.rendezvous } : {}),
+    // Pass `pairing.rendezvous` through verbatim, including "" — the registry
+    // treats an explicit "" as an opt-out from the hosted default (an absent
+    // key falls back to it). Coercing "" away here would silently re-enable it.
+    ...(cfgPairing.rendezvous !== undefined
+      ? { defaultRendezvousUrl: cfgPairing.rendezvous }
+      : {}),
     dial: daemonDialRendezvous,
     serve: servePairedChannel,
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),

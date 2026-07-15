@@ -58,6 +58,7 @@ import {
   deriveEpochRoutingToken,
   currentEpoch,
   encodeOfferUrl,
+  HOSTED_RENDEZVOUS_URL,
   PairingError,
 } from "@agentproto/secrets/pairing"
 import {
@@ -121,6 +122,11 @@ export interface CreatedOffer {
   fingerprint: string
   /** The rendezvous the offer routes through. */
   rendezvousUrl: string
+  /** True when `rendezvousUrl` is the hosted default — i.e. neither an explicit
+   *  `--rendezvous` nor a configured `pairing.rendezvous` applied, so the offer
+   *  falls back to `HOSTED_RENDEZVOUS_URL`. Surfaced so `pair offer` can flag,
+   *  never silently, that the daemon is relaying through our infrastructure. */
+  rendezvousIsHostedDefault: boolean
 }
 
 export interface CreateOfferInput {
@@ -136,7 +142,14 @@ export interface PairingRegistryDeps {
   loadIdentity: () => Promise<DaemonIdentity>
   /** Path to `pairings.json`. Defaults to `~/.agentproto/pairings.json`. */
   pairingsPath?: string
-  /** Default rendezvous URL (from `config.pairing.rendezvous`). */
+  /** Configured rendezvous URL (from `config.pairing.rendezvous`). Three states:
+   *  - `undefined` (key absent) → `createOffer` falls back to the hosted default
+   *    (`HOSTED_RENDEZVOUS_URL`).
+   *  - a non-empty URL → that endpoint is the default for offers.
+   *  - `""` (explicitly empty) → an explicit opt-out: no default applies, so an
+   *    offer without `--rendezvous` fails closed. Wire it through verbatim (do
+   *    not coerce `""` to `undefined`) or the opt-out silently reverts to the
+   *    hosted default. */
   defaultRendezvousUrl?: string
   /** Dial a rendezvous WS and adapt it to a FrameSink. Injected by the CLI
    *  (uses `ws` + `wrapWebSocket`). Rejects if the dial fails. The `signal`
@@ -392,12 +405,27 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
 
   async function createOffer(input: CreateOfferInput = {}): Promise<CreatedOffer> {
     await ensureLoaded()
-    const rendezvousUrl = input.rendezvousUrl ?? deps.defaultRendezvousUrl
-    if (!rendezvousUrl) {
-      throw new PairingError(
-        "malformed_offer",
-        "no rendezvous configured — pass --rendezvous or set pairing.rendezvous in config.json",
-      )
+    // Precedence (PLAN deliverable 2): `--rendezvous` flag → `pairing.rendezvous`
+    // in config → hosted default. A configured empty string is an explicit
+    // opt-out (deliverable 4b): no default applies, so an offer without an
+    // explicit `--rendezvous` fails closed — the reachable form of the branch
+    // that used to fire whenever nothing was configured.
+    let rendezvousUrl: string
+    let rendezvousIsHostedDefault = false
+    if (input.rendezvousUrl) {
+      rendezvousUrl = input.rendezvousUrl
+    } else if (deps.defaultRendezvousUrl !== undefined) {
+      if (deps.defaultRendezvousUrl === "") {
+        throw new PairingError(
+          "malformed_offer",
+          'rendezvous disabled — pairing.rendezvous is set to "" (explicit opt-out); ' +
+            "pass --rendezvous to route this offer through a specific broker",
+        )
+      }
+      rendezvousUrl = deps.defaultRendezvousUrl
+    } else {
+      rendezvousUrl = HOSTED_RENDEZVOUS_URL
+      rendezvousIsHostedDefault = true
     }
     const identity = await deps.loadIdentity()
     const token = b64url(randomBytes(16))
@@ -417,8 +445,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     })
 
     startOfferLoop(token, rendezvousUrl)
-    log(`[pairing] offer minted (exp ${new Date(exp * 1000).toISOString()}) via ${rendezvousUrl}`)
-    return { token, exp, url, fingerprint, rendezvousUrl }
+    log(
+      `[pairing] offer minted (exp ${new Date(exp * 1000).toISOString()}) via ${rendezvousUrl}` +
+        (rendezvousIsHostedDefault ? " (hosted default)" : ""),
+    )
+    return { token, exp, url, fingerprint, rendezvousUrl, rendezvousIsHostedDefault }
   }
 
   function offerValid(token: string): boolean {

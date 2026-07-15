@@ -3179,7 +3179,8 @@ function enrichPermission(
 /**
  * /pairings routes — E2E daemon pairing (design: DESIGN §6):
  *   POST   /pairings/offer         → { ttlMinutes?, rendezvous? } mint offer
- *                                    → { url, fingerprint, rendezvous, expiresAt }
+ *                                    → { url, fingerprint, rendezvous,
+ *                                        rendezvousIsHostedDefault, expiresAt }
  *   GET    /pairings               → { pairings: [...] }
  *   DELETE /pairings/:fingerprint  → revoke by fingerprint (or name)
  *
@@ -3211,6 +3212,7 @@ async function handlePairings(
         url: offer.url,
         fingerprint: offer.fingerprint,
         rendezvous: offer.rendezvousUrl,
+        rendezvousIsHostedDefault: offer.rendezvousIsHostedDefault,
         expiresAt: new Date(offer.exp * 1000).toISOString(),
       })
     } catch (err) {

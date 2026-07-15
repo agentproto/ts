@@ -55,8 +55,13 @@ agentproto config set daemon.port 18791
   // `agentproto serve` / `pair offer`. See concepts/pairing.md.
   "pairing": {
     // Rendezvous broker WS URL used by `pair offer` and by autoconnect on
-    // boot. When unset, `pair offer` requires an explicit --rendezvous.
-    // Mirrors tunnel.host.
+    // boot. Mirrors tunnel.host. Three states:
+    //   - absent  → offers fall back to the hosted default,
+    //               wss://rdv.agentproto.sh/v1 (the broker relays only
+    //               ciphertext — see concepts/pairing.md).
+    //   - a URL   → route through that broker (self-hosted or otherwise).
+    //   - ""      → explicit opt-out: no default, `pair offer` requires
+    //               an explicit --rendezvous.
     "rendezvous": "wss://rendezvous.example/v1",
     // Whether the daemon opens standing rendezvous connections for every
     // persisted pairing on boot (so a paired client can reconnect anytime).
