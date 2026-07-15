@@ -15,6 +15,7 @@ export default createTsupConfig({
     "mcp-imports": "src/mcp-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
     "providers-store": "src/providers-store.ts",
+    "session-story": "src/session-story.ts",
   },
   format: ["esm"],
   splitting: false,

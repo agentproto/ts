@@ -73,6 +73,9 @@ Usage:
                                              [--name <slug>] [--label <text>]
                                              [--cols <n>] [--rows <n>] [--attach]
   agentproto sessions  mirror <id-or-name>   read-only tail (Ctrl-C to exit)
+  agentproto sessions  export <id-or-name> [--json] [-o <file>]
+  agentproto sessions  story  <id-or-name> [--json] [--no-color]
+                                           readable per-session timeline
   agentproto sessions  stop <id-or-name>
   agentproto browser   install <adapter> [--force] [--dry-run]
   agentproto browser   start <adapter> [--port N] [--camofox-port N] [--label L]

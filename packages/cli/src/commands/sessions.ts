@@ -50,6 +50,12 @@ import {
   describeResumePath,
   tokenizeCommand,
 } from "@agentproto/runtime/resume-strategies"
+import {
+  buildStory,
+  type Story,
+  type StoryStepKind,
+  type ExportedSession,
+} from "@agentproto/runtime/session-story"
 import type { SessionDescriptor } from "@agentproto/runtime"
 import type { AcpMcpServer } from "@agentproto/acp"
 
@@ -72,6 +78,8 @@ Usage:
                                             [--label <text>] [--cols <n>] [--rows <n>]
                                             [--attach] [--json] [--no-color]
   agentproto sessions export <id-or-name> [--json] [-o <file>]
+                             [--source auto|native|daemon]
+  agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
@@ -151,6 +159,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "stop") return runStop(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
+  if (sub === "story") return runStory(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
@@ -968,6 +977,207 @@ async function runExport(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/**
+ * `agentproto sessions story <id-or-name>` — CLI parity for the daemon's
+ * `agentproto_session_story` MCP app. That app's panel computes its
+ * chapters/steps client-side (a JS port of session-story.ts's heuristics,
+ * driven live over a postMessage bridge — see session-story-panel-app.ts).
+ * The CLI can't run that HTML/JS, so it reuses the canonical TS source of
+ * truth directly: fetch the same transcript `sessions export --json`
+ * already exposes over HTTP, then fold it with `buildStory` (the same
+ * function the panel's JS is ported from) and render it as text.
+ */
+async function runStory(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+      adapter: { type: "string" },
+      cwd: { type: "string" },
+      source: { type: "string" },
+      "no-color": { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id) {
+    process.stderr.write(
+      "agentproto sessions story: missing session id.\n" +
+        "  Try: agentproto sessions story <id-or-name>\n" +
+        "       agentproto sessions story <id-or-name> --json\n",
+    )
+    return 2
+  }
+  if (positionals.length > 1) {
+    process.stderr.write(
+      `agentproto sessions story: unexpected extra positionals: ${positionals.slice(1).join(" ")}\n`,
+    )
+    return 2
+  }
+  if (values.source && !["auto", "native", "daemon"].includes(values.source)) {
+    process.stderr.write(
+      `agentproto sessions story: invalid --source "${values.source}" (expected auto|native|daemon).\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions story")
+    return 2
+  }
+  const endpoint = report.found
+
+  const qs = new URLSearchParams({ format: "json" })
+  if (values.adapter) qs.set("adapter", values.adapter)
+  if (values.cwd) qs.set("cwd", values.cwd)
+  if (values.source) qs.set("source", values.source)
+
+  let result: { sessionId: string; adapter: string; format: string; content: string }
+  try {
+    result = await httpGetJson<{
+      sessionId: string
+      adapter: string
+      format: string
+      content: string
+    }>(`${endpoint.url}/sessions/${encodeURIComponent(id)}/export?${qs.toString()}`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        `agentproto sessions story: session "${id}" not found or export failed.\n`,
+      )
+      return 2
+    }
+    if (/HTTP 422/.test(msg)) {
+      process.stderr.write(`agentproto sessions story: ${msg}\n`)
+      return 1
+    }
+    process.stderr.write(`agentproto sessions story: ${msg}\n`)
+    return 1
+  }
+
+  let session: ExportedSession
+  try {
+    session = JSON.parse(result.content) as ExportedSession
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sessions story: failed to parse transcript: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    )
+    return 1
+  }
+
+  const story = buildStory(session.messages)
+
+  if (values.json) {
+    process.stdout.write(
+      JSON.stringify(
+        { sessionId: result.sessionId, adapter: result.adapter, ...story },
+        null,
+        2,
+      ) + "\n",
+    )
+    return 0
+  }
+
+  process.stdout.write(
+    renderStory(story, result.sessionId, result.adapter, !values["no-color"]),
+  )
+  return 0
+}
+
+const STORY_KIND_LABEL: Record<StoryStepKind, string> = {
+  user: "user",
+  text: "note",
+  edit: "edit",
+  bash: "bash",
+  read: "read",
+}
+
+function storyKindColour(kind: StoryStepKind, c: Record<string, string>): string {
+  switch (kind) {
+    case "user":
+      return c.cyan!
+    case "edit":
+      return c.green!
+    case "bash":
+      return c.amber!
+    case "read":
+      return c.blue!
+    default:
+      return c.dim!
+  }
+}
+
+/** Terminal rendering of a Story — the CLI-appropriate counterpart to the
+ *  MCP panel's HTML/JS view over the same `buildStory` output. */
+export function renderStory(
+  story: Story,
+  sessionLabel: string,
+  adapter: string,
+  colour: boolean,
+): string {
+  const c = colour
+    ? {
+        reset: "\x1b[0m",
+        dim: "\x1b[2m",
+        bold: "\x1b[1m",
+        green: "\x1b[32m",
+        amber: "\x1b[33m",
+        cyan: "\x1b[36m",
+        blue: "\x1b[34m",
+      }
+    : {
+        reset: "",
+        dim: "",
+        bold: "",
+        green: "",
+        amber: "",
+        cyan: "",
+        blue: "",
+      }
+
+  const out: string[] = []
+  out.push(`${c.bold}STORY${c.reset} ${c.dim}${sessionLabel} · ${adapter}${c.reset}`)
+  out.push("")
+
+  if (story.chapters.length === 0) {
+    out.push(`${c.dim}(no steps — empty transcript)${c.reset}`)
+    return out.join("\n") + "\n"
+  }
+
+  out.push(
+    story.chapters
+      .map(ch => {
+        const marker = ch.status === "cur" ? `${c.cyan}▸${c.reset}` : `${c.green}✓${c.reset}`
+        return `${marker} ${ch.title}`
+      })
+      .join(`  ${c.dim}→${c.reset}  `),
+  )
+  out.push("")
+
+  let lastChap: string | undefined
+  for (const step of story.steps) {
+    if (step.chap !== lastChap) {
+      const chapter = story.chapters.find(ch => ch.id === step.chap)
+      out.push(`${c.dim}── ${chapter?.title ?? step.chap} ──${c.reset}`)
+      lastChap = step.chap
+    }
+    const tone = storyKindColour(step.kind, c)
+    const badge = `${tone}[${STORY_KIND_LABEL[step.kind]}]${c.reset}`
+    const ts = step.ts ? `${c.dim}${step.ts}${c.reset} ` : ""
+    const countSuffix = step.count > 1 ? ` ${c.dim}×${step.count}${c.reset}` : ""
+    out.push(`  ${ts}${badge} ${step.sum}${countSuffix}`)
+    for (const fact of step.facts) {
+      out.push(`      ${c.dim}${fact}${c.reset}`)
+    }
+  }
+  out.push("")
+  return out.join("\n") + "\n"
+}
 
 async function resolveDaemon(): Promise<DaemonEndpoint | null> {
   const report = await discoverDaemon()

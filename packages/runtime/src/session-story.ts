@@ -18,6 +18,11 @@
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import type { ExportedMessage } from "./transcript-export.js"
 
+// Re-exported so consumers of buildStory (e.g. the CLI's `sessions story`
+// command) can type the `/sessions/:id/export?format=json` payload they
+// feed into it without a second import from transcript-export.js.
+export type { ExportedMessage, ExportedSession, ExportedSessionMeta } from "./transcript-export.js"
+
 export type StoryStepKind = "text" | "edit" | "bash" | "read" | "user"
 export type ChapterStatus = "done" | "cur"
 export type RouteVerdict = "cont" | "newt"

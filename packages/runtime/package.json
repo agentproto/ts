@@ -70,6 +70,11 @@
       "types": "./dist/resume-strategies.d.ts",
       "import": "./dist/resume-strategies.mjs",
       "default": "./dist/resume-strategies.mjs"
+    },
+    "./session-story": {
+      "types": "./dist/session-story.d.ts",
+      "import": "./dist/session-story.mjs",
+      "default": "./dist/session-story.mjs"
     }
   },
   "files": [
