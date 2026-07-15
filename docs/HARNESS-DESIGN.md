@@ -1,7 +1,7 @@
 # `@agentproto/harness` — design
 
-> Status: **design + scaffold** (phase 1). Harness bodies are stubs; implementation
-> is broken into WP1–WP6 below for execution by `deepseek-v4-pro` via `hermes`.
+> Status: **shipped and implemented**. `@agentproto/harness` is published; the
+> current implementation docs live at `packages/harness/README.md`.
 
 A thin, typed library that lets a caller spin up a **pre-configured agent
 session** — `coder`, `researcher`, `supervisor` — with one function call, the
@@ -207,7 +207,7 @@ Each WP is scoped to a few files with an explicit gate. Order is dependency-froz
 ## 4. Package scaffolding (created in this phase)
 
 Mirrors the canonical leaf-package conventions (`@agentproto/ref`,
-`@agentproto/adapter-kit`): ESM-only, `tsup` build via the shared factory,
+`@agentproto/provider-kit`): ESM-only, `tsup` build via the shared factory,
 tsconfig extends `@agentproto/tooling/typescript/node-library.json`, exports map
 of `dist/*.mjs` + `dist/*.d.ts`.
 

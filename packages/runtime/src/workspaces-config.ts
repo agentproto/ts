@@ -196,6 +196,20 @@ export function findWorkspace(
   return config.workspaces.find(w => w.slug === sanitizeSlug(slug))
 }
 
+/** Find a workspace whose path is an ancestor of (or equal to) the
+ *  given directory. Returns the most specific match (longest path)
+ *  when multiple workspaces nest under the same root. */
+export function findWorkspaceByPath(
+  config: WorkspacesConfig,
+  dir: string
+): WorkspaceEntry | undefined {
+  const resolved = resolve(dir)
+  const candidates = config.workspaces
+    .filter(w => resolved.startsWith(resolve(w.path) + "/") || resolved === resolve(w.path))
+    .sort((a, b) => b.path.length - a.path.length)
+  return candidates[0]
+}
+
 /** The active workspace, or undefined when none is registered. Pure
  *  convenience to avoid re-implementing the lookup at every caller. */
 export function getActiveWorkspace(

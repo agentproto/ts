@@ -11,15 +11,32 @@ This installs the `agentproto` executable on your `PATH`.
 ## Verbs
 
 ```text
-agentproto auth      <login|status|logout>     authenticate against a remote host (Guilde, …)
-agentproto config    <show|get|set|unset|edit> read/write ~/.agentproto/config.json
-agentproto daemon    <install|uninstall|…>     manage agentproto as a background service (launchd)
-agentproto install   <slug>                    install an adapter's underlying CLI
-agentproto setup     <slug>                    re-run an adapter's setup steps (idempotent)
-agentproto run       <slug>                    spawn the adapter, dispatch one turn, exit
-agentproto serve     [--connect <wss>]         long-running local daemon (HTTP + MCP + sessions)
-agentproto workspace <add|list|remove|use>     register workspaces the daemon can spawn into
-agentproto sessions  [...]                     browse + control live sessions on the daemon
+agentproto auth         <login|status|logout> [--host <url>]        authenticate against a remote host
+agentproto config       <show|path|get|set|unset|edit>              read/write ~/.agentproto/config.json
+agentproto daemon       <install|uninstall|start|stop|status|logs>  manage launchd/systemd service
+agentproto install      <slug> [--force] [--dry-run]                install an adapter's underlying CLI
+agentproto plugins      <list|show|install|uninstall|enable|disable> manage runtime plugins
+agentproto setup        <slug> [--force] [--dry-run] [--only ...]   re-run an adapter's setup steps
+agentproto run          <slug> [--cwd <dir>] [--prompt <text>]      spawn the adapter, dispatch one turn, exit
+agentproto chat         <adapter> [--model <id>] [--cwd <dir>]      interactive chat
+agentproto chat-tui     <adapter> [--model <id>] [--cwd <dir>]      interactive TUI chat
+agentproto models       [adapter] [--json]                          runnable models + provider-key status
+agentproto run-swarm    --manifest <path> [--once] [--interval ...]  run a swarm manifest
+agentproto serve        [--port <n>] [--workspace <dir>] [--connect <wss>]  local daemon
+agentproto workspace    <add|list|remove|use>                       register spawn workspaces
+agentproto sessions     [start|terminal|mirror|stop|...]            browse / control live sessions
+agentproto browser      <install|start|list|stop|status>            manage browser sessions
+agentproto tunnel       <create|list|stop|status>                   public URL tunnels
+agentproto presets      list [--json]                               provider gateway presets
+agentproto mcp-bridge                                               stdio MCP proxy to daemon /mcp
+agentproto install-mcp  [--agent <name>...] [--all] [--yes]         register daemon MCP with coding CLIs
+agentproto onboard      [--yes] [--no-skills] [--skills <slug>]     first-run setup
+agentproto cron         <add|list|remove|run>                       recurring daemon jobs
+agentproto worktree     <ls|archive>                                git worktree lifecycle
+agentproto permissions  <ls|approve|deny>                           held tool-permission requests
+agentproto acp          <ls|add|rm>                                 generic ACP agent registry
+agentproto pair         <offer|accept|ls|revoke|exec>               pairing over a rendezvous broker
+agentproto rendezvous   serve [--port <n>] [--host <ip>]           run a rendezvous broker
 ```
 
 `agentproto --help` prints the full usage; `--version` prints the package version.
@@ -71,7 +88,7 @@ agentproto setup openclaw                   # re-run adapter setup (env keys, lo
 agentproto setup openclaw --only login      # only specific steps
 ```
 
-v0.1 implements the `npm` install method; other package managers print a clear "not yet" message and exit non-zero.
+Install methods are tried in declaration order (`npm`, `curl`, `brew`, …). Use `--force` to reinstall, `--dry-run` to preview steps.
 
 ## `config` — defaults at `~/.agentproto/config.json`
 
@@ -90,21 +107,45 @@ agentproto config unset tunnel.host                             # forget
 agentproto config edit                                          # open in $EDITOR
 ```
 
-Schema (all fields optional):
+Schema (all fields optional; see [`docs/cli/reference/config-schema.md`](../../docs/cli/reference/config-schema.md) for the full reference):
 
 ```jsonc
 {
+  "plugins": ["@guilde/agentproto-bridge"],
+  "profileAliases": { "guilde": "@guilde/runtime-profile-guilde" },
+  "corpusPresetPackages": ["@agentproto/corpus-presets"],
   "daemon": {
     "workspace": "/abs/path",                  // default cwd when not passed
-    "port": 18790,
+    "port": 18791,
     "bind": "127.0.0.1",
     "allowedOrigins": ["https://guilde.work"], // extends localhost defaults
-    "strictOrigins": false,                    // when true, drops localhost defaults — only allowedOrigins is honoured
+    "strictOrigins": false,                    // when true, drops localhost defaults
+    "authToken": "<random-hex>",               // stable bearer for /mcp, /events, …
     "label": "jeremy@mbp"
   },
   "tunnel": {
     "host": "wss://guilde.work/api/v1/agentproto/tunnel",
     "autoconnect": false                       // bootstrap with --connect at serve
+  },
+  "pairing": {
+    "rendezvous": "wss://rendezvous.example/v1",
+    "autoconnect": true
+  },
+  "defaults": {
+    "skills": ["review-checklist"],
+    "options": { "verbose": true },
+    "adapters": { "hermes": { "options": { "model": "z-ai/glm-5.2" } } },
+    "defaultRoleDepthCutoff": 1,
+    "langfuseTracing": false
+  },
+  "acpAgents": {
+    "my-agent": { "bin": "my-agent", "bin_args": ["acp"], "resumable": true }
+  },
+  "profiles": {
+    "headless": { "daemon": { "port": 18792 }, "features": { "pty": false } }
+  },
+  "terminalPresets": {
+    "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
   },
   "features": { "pty": true }
 }

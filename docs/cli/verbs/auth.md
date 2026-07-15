@@ -117,9 +117,12 @@ agentproto serve --connect wss://guilde.work   # picks up the token automaticall
 2. `$AGENTPROTO_TOKEN` env var
 3. `~/.agentproto/credentials.json[<host>]`
 
-An expired credential is still used — `serve` logs a warning so the
-host's 401 surfaces a clearer error than a silent disconnect. Re-run
-`agentproto auth login` to refresh.
+If the credential from step 3 is expired and stores a `refreshToken`,
+`serve` first attempts a silent non-interactive refresh (no device-code
+ceremony). Only if that fails does it log a warning and fall back to the
+stale token — the host's 401 then surfaces a clearer error than a silent
+disconnect. Re-run `agentproto auth login --host <host>` if silent
+refresh fails or no refresh token is stored.
 
 ## `cred` — broker credentials for child-MCP auth (0.5.0+)
 

@@ -1,6 +1,6 @@
 # `@agentproto/eval-reporters`
 
-Adapter-kit family for eval reporter backends. It mirrors the tunnel-provider adapter family in `@agentproto/runtime`: each backend is identified by a slug, may require credentials stored in a 0600 creds file, and exposes a `Telemetry<EvalEvent>` sink.
+provider-kit family for eval reporter backends. It mirrors the tunnel-provider adapter family in `@agentproto/runtime`: each backend is identified by a slug, may require credentials stored in a 0600 creds file, and exposes a `Telemetry<EvalEvent>` sink.
 
 ## Backends
 

@@ -36,9 +36,9 @@ launchd / systemd.
 3. `~/.agentproto/credentials.json[<host>]` (set by
    [`auth login`](./auth.md))
 
-Expired credentials are still sent — the host's 401 surfaces a
-clearer error than a silent disconnect — but `serve` prints a warning
-suggesting `agentproto auth login --host <host>`.
+If the credential is expired and stores a `refreshToken`, `serve` first
+tries a silent non-interactive refresh. It only warns and recommends
+`agentproto auth login --host <host>` when that refresh fails.
 
 ### Origins
 

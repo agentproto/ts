@@ -1,7 +1,8 @@
 # `agentproto run`
 
 ```text
-agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>] [--json]
+agentproto run <slug> [--cwd <dir>] [--prompt <text>] [--model <id>] [--effort <level>]
+                      [--resume <session-id>] [--json]
                       [--output-schema <path-or-inline-json>] [--hold-permissions]
 ```
 
@@ -21,6 +22,8 @@ loops, use [`run-swarm.md`](./run-swarm.md).
 |------|---------|
 | `--cwd <dir>` | Working directory the adapter is spawned in. Default `process.cwd()`. |
 | `--prompt <text>`, `-p <text>` | The user turn. Required if stdin isn't piped. |
+| `--model <id>` | Adapter model option (e.g. `claude-opus-4-8` or `openrouter/z-ai/glm-5.2`). |
+| `--effort <level>` | Adapter effort option (e.g. `low`, `medium`, `high`). |
 | `--resume <session-id>` | Resume an existing adapter session by id. Adapter-specific — Claude Code's session ids, for example. |
 | `--json` | Emit one JSON event per line instead of pretty stream. |
 | `--output-schema <path-or-inline-json>` | Validate the agent's final answer against a JSON Schema and print ONLY the matching JSON. Inline when the first non-space char is `{`, otherwise a path to a `.json` file. Cannot be combined with `--json`. |

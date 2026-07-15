@@ -60,6 +60,20 @@ with `workflow_status`.
 so later work can inspect what a stage produced (e.g. `agent_output` on that
 `sessionId`).
 
+## Run a WORKFLOW.md file
+
+The daemon also exposes `workflow_run_file`, which loads an AIP-15
+`WORKFLOW.md` (plus optional `entry.mjs`) via the workflow loader and
+runs it through the same engine as `workflow_start`. Poll the returned
+`runId` with `workflow_status`.
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `path` | Absolute or workspace-relative path to the `WORKFLOW.md` file. |
+| `input` | Optional invocation input, bound to `$input` in the compiled workflow. |
+| `cwd` / `workspaceSlug` | Passed to spawned sessions. |
+| `cacheKey` | Enables journal caching for the run. |
+
 ## Which primitive?
 
 | Use | Shape |

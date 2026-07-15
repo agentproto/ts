@@ -70,7 +70,11 @@ agentproto config set daemon.port 18791
     "skills": ["review-checklist"],
     "options": { "verbose": true },
     "adapters": {
-      "hermes": { "skills": ["hermes-only-skill"], "options": { "model": "z-ai/glm-5.2" } }
+      "hermes": {
+        "skills": ["hermes-only-skill"],
+        "options": { "model": "z-ai/glm-5.2" },
+        "auth": { "mode": "api-key" }
+      }
     },
     "defaultRoleDepthCutoff": 1,
     "maxGrantableDelegation": 2,
@@ -151,7 +155,8 @@ introduced in 0.5.0.
 | ------------------------- | ------------------------------------------ | --------------------------------------------------------------------- |
 | `skills`                  | `string[]`                                  | Global skills folded into every spawn's `options.skills`.             |
 | `options`                 | `Record<string, boolean\|number\|string>`   | Global options merged into every spawn.                                |
-| `adapters`                | `Record<string, { skills?, options? }>`     | Per-adapter overrides, keyed by adapter slug (e.g. `"hermes"`).        |
+| `adapters`                | `Record<string, { skills?, options?, auth? }>` | Per-adapter overrides, keyed by adapter slug (e.g. `"hermes"`).        |
+| `auth` (per-adapter)      | `{ mode?: "subscription" \| "api-key", token?: string, apiKey?: string, provider?: string }` | Per-adapter billing-auth defaults merged at spawn time. |
 | `defaultRoleDepthCutoff`  | `number`                                    | Spawn depth at/above which a session defaults to `executor` instead of `supervisor` (default `1`). |
 | `maxGrantableDelegation`  | `number`                                    | Trust-boundary cap on how much delegation a supervisor can grant a child. |
 | `langfuseTracing`         | `boolean`                                   | Opt in to per-session Langfuse tracing by default.                     |
@@ -186,6 +191,42 @@ same slug, and both lose to a real `@agentproto/adapter-<slug>` npm package
 A malformed entry (no string `bin`) is dropped on load with a warning rather
 than failing the whole config. See
 [`concepts/adapters.md`](../concepts/adapters.md#generic-acp-agents-zero-code).
+
+### `tunnel: object`
+
+Outbound tunnel defaults read by `agentproto serve` (and the managed
+`agentproto daemon`) when `--connect` is not passed explicitly.
+
+| Field        | Type      | Meaning |
+| ------------ | --------- | ------- |
+| `host`       | `string`  | WebSocket URL of the tunnel host. When set with `autoconnect: true`, the daemon connects on boot. |
+| `token`      | `string`  | Bearer token used before falling back to `credentials.json`. Required for `e2e: true`. |
+| `autoconnect`| `boolean` | Connect the tunnel automatically on daemon start. |
+| `e2e`        | `boolean` | Opt into end-to-end encryption of the tunnel. Requires `token`. |
+
+### `profiles: Record<string, object>` and `activeProfile: string`
+
+Named connection bundles. `profiles.<name>` shallow-overrides the top-level
+`daemon`/`tunnel`/`features` blocks when selected; `activeProfile` selects a
+profile by default when `--profile` is not passed. Missing fields fall through
+to the top-level config, so a profile typically only declares `tunnel.host` +
+`tunnel.token`.
+
+```jsonc
+{
+  "activeProfile": "prod",
+  "profiles": {
+    "prod": {
+      "tunnel": { "host": "wss://tunnel.example/connect", "token": "apt_…" },
+      "daemon": { "port": 18791 }
+    }
+  }
+}
+```
+
+Explicit `--profile <name>` is fatal if the profile does not exist;
+`activeProfile` pointing at a missing profile only warns and falls back to the
+top-level config.
 
 ## Permissions
 
