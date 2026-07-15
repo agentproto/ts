@@ -125,7 +125,49 @@ describe("TranscriptPanelController — raw fallback mode", () => {
     expect(client.getSessionEvents).not.toHaveBeenCalled()
     const init = initMsg(messenger.messages)
     expect(init.mode).toBe("raw")
-    expect(messenger.messages).toContainEqual({ type: "lines", lines: [{ line: "before-ready" }] })
+    // Lines reach the webview as HOST-rendered HTML, never raw daemon text —
+    // the webview must never parse daemon content.
+    expect(messenger.messages).toContainEqual({
+      type: "lines",
+      lines: [{ html: "before-ready", stream: "stdout" }],
+    })
+  })
+
+  it("converts a line's ANSI to styled HTML on the host, escape codes and all", async () => {
+    // The daemon authors /stream lines pre-coloured (projectEvent). They used
+    // to reach the webview raw and render as literal escape-code garbage.
+    const client = createMockClient()
+    const { controller, messenger, store } = make(client, {
+      initialSession: session({ kind: "terminal" }),
+    })
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    store.emitLine({ line: "\x1b[36m[tool] Read src/foo.ts\x1b[0m", stream: "stdout" })
+
+    const msg = messenger.messages.find(m => m.type === "lines")
+    expect(msg).toBeDefined()
+    const html = (msg as { lines: { html: string }[] }).lines[0]?.html ?? ""
+    expect(html).toBe(
+      '<span style="color:var(--vscode-terminal-ansiCyan)">[tool] Read src/foo.ts</span>',
+    )
+    expect(html).not.toContain("\x1b")
+  })
+
+  it("escapes HTML in a raw line before it ever reaches the webview", async () => {
+    const client = createMockClient()
+    const { controller, messenger, store } = make(client, {
+      initialSession: session({ kind: "terminal" }),
+    })
+    await controller.onReady()
+    messenger.messages.length = 0
+
+    store.emitLine({ line: "<img src=x onerror=alert(1)>", stream: "stderr" })
+
+    const msg = messenger.messages.find(m => m.type === "lines")
+    const line = (msg as { lines: { html: string; stream: string }[] }).lines[0]
+    expect(line?.html).toBe("&lt;img src=x onerror=alert(1)&gt;")
+    expect(line?.stream).toBe("stderr")
   })
 
   it("degrades to raw when the events route is unavailable (non-NoTranscript error)", async () => {

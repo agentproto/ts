@@ -4,8 +4,25 @@
  * and `onDidReceiveMessage`.
  */
 
-import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
+import type { SessionDescriptor } from "../client/types.js"
 import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
+
+/**
+ * A raw-mode transcript line, ALREADY rendered to safe HTML on the host.
+ *
+ * Carries HTML rather than the daemon's raw `{line, stream}` because those
+ * lines are ANSI-colored on purpose — `projectEvent` authors
+ * `\x1b[36m[tool] …` so a terminal can render them. The webview must never
+ * parse daemon content, so both the ANSI→span conversion and the HTML
+ * escaping happen host-side (see webview/ansi.ts) and the webview just
+ * assigns the result.
+ */
+export interface PresentedLine {
+  /** ANSI-converted and HTML-escaped — safe to assign to innerHTML. */
+  html: string
+  /** "stdout" | "stderr" — drives the line's CSS class. */
+  stream: string
+}
 
 /** Messages sent from the extension host to the webview. */
 export type ExtMessage =
@@ -65,8 +82,9 @@ export type ExtMessage =
     }
   | {
       type: "lines"
-      /** New lines from the focused session's SSE stream (raw mode). */
-      lines: SessionStreamLine[]
+      /** New lines from the focused session's SSE stream (raw mode),
+       *  already ANSI-converted + escaped on the host. */
+      lines: PresentedLine[]
     }
   | {
       type: "sessionUpdate"

@@ -508,7 +508,10 @@ export function buildHtml(nonce: string): string {
         for (const line of lines) {
           const div = document.createElement('div');
           div.className = 'line line-' + (line.stream || 'stdout');
-          div.textContent = typeof line.line === 'string' ? line.line : String(line.line);
+          // Already ANSI-converted and HTML-escaped on the host (webview/ansi.ts).
+          // This was textContent, which rendered the daemon's deliberate ANSI
+          // colouring as literal escape-code garbage.
+          div.innerHTML = line.html || '';
           transcript.appendChild(div);
         }
         if (!isScrolledUp) {
