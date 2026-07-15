@@ -2,30 +2,45 @@
  * `agentproto worktree <subcommand>`
  *
  * Subcommands:
- *   ls        [--repo <dir>] [--json]              list this repo's git worktrees
+ *   ls        [--repo <dir>] [--status] [--json]    list this repo's git worktrees
  *   archive   <path> [--repo <dir>] [--base <ref>] tear a worktree down
  *             [--keep-branch] [--json]             (teardown hook → remove)
  *
- * Pure local shell over `@agentproto/worktree`: `ls` parses
- * `git worktree list --porcelain`; `archive` runs the `worktree.cleanup`
- * tool, which stops any supervised services, runs the committed
- * `agentproto.json` teardown hooks, then removes the worktree.
+ * Pure local shell over `@agentproto/worktree`: plain `ls` parses
+ * `git worktree list --porcelain` (fast path, no forge round-trip); `ls
+ * --status` additionally runs the status engine's reconciliation rule per
+ * entry (PLAN.md §1.3 — tree/integration/liveness axes, provenance, class).
+ * `archive` runs the `worktree.cleanup` tool, which stops any supervised
+ * services, runs the committed `agentproto.json` teardown hooks, then
+ * removes the worktree.
  */
 import { parseArgs } from "node:util"
 import { resolve, dirname } from "node:path"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
-import { cleanupWorktreeTool, worktreeProvider } from "@agentproto/worktree"
+import {
+  cleanupWorktreeTool,
+  worktreeProvider,
+  createForgeClient,
+  FileVerdictMemoStore,
+  listWorktreeStatuses,
+  repoLabel,
+  detectDefaultBranch,
+  type WorktreeStatusEntry,
+} from "@agentproto/worktree"
 
 const USAGE = `agentproto worktree — inspect and tear down git worktrees
 
 Usage:
-  agentproto worktree ls      [--repo <dir>] [--json]
+  agentproto worktree ls      [--repo <dir>] [--status] [--json]
   agentproto worktree archive <path> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
   agentproto worktree --help
 
   ls        List the repo's git worktrees (path, branch, HEAD).
+            --status adds the tree/integration/liveness axes, provenance,
+            and reclaim/salvage/hold class per entry — a \`gh\`/GITHUB_TOKEN
+            forge round-trip, memoised in ~/.agentproto/worktree-verdicts.json.
   archive   Stop the worktree's services, run its agentproto.json teardown
             hooks, then remove it. Also deletes its branch unless
             --keep-branch. --base picks the ref whose committed teardown
@@ -100,12 +115,12 @@ function parseWorktreeList(porcelain: string): WorktreeEntry[] {
 
 // ── ls ────────────────────────────────────────────────────────────────
 
-function runLs(args: readonly string[]): number {
+async function runLs(args: readonly string[]): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
     allowPositionals: false,
     strict: true,
-    options: { repo: { type: "string" }, json: { type: "boolean" } },
+    options: { repo: { type: "string" }, json: { type: "boolean" }, status: { type: "boolean" } },
   })
 
   const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
@@ -113,6 +128,8 @@ function runLs(args: readonly string[]): number {
     process.stderr.write("agentproto worktree ls: not inside a git repository.\n")
     return 2
   }
+
+  if (values.status) return runLsStatus(repoRoot, Boolean(values.json))
 
   const res = spawnSync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf8",
@@ -137,6 +154,76 @@ function runLs(args: readonly string[]): number {
     process.stdout.write(`${(e.branch ?? "—").padEnd(28)}  ${head.padEnd(10)}  ${e.path}\n`)
   }
   return 0
+}
+
+// ── ls --status ──────────────────────────────────────────────────────
+
+/** `ls --status`: the full status engine (PLAN.md §1.3–§1.5) over every linked worktree of `repoRoot`. */
+async function runLsStatus(repoRoot: string, json: boolean): Promise<number> {
+  const [forge, defaultBranch] = await Promise.all([createForgeClient(repoRoot), detectDefaultBranch(repoRoot)])
+  const entries = await listWorktreeStatuses({
+    repoRoot,
+    repoName: repoLabel(repoRoot),
+    forge,
+    memo: new FileVerdictMemoStore(),
+    defaultBranchRef: `origin/${defaultBranch}`,
+  })
+
+  if (json) {
+    process.stdout.write(JSON.stringify(entries, null, 2) + "\n")
+    return 0
+  }
+  if (entries.length === 0) {
+    process.stdout.write("No worktrees.\n")
+    return 0
+  }
+  process.stdout.write(
+    `${"BRANCH".padEnd(28)}  ${"CLASS".padEnd(9)}  ${"TREE".padEnd(16)}  ${"INTEGRATION".padEnd(26)}  ${"LIVENESS".padEnd(14)}  PATH\n`,
+  )
+  for (const e of entries) {
+    process.stdout.write(formatStatusRow(e) + "\n")
+  }
+  return 0
+}
+
+function formatTree(tree: WorktreeStatusEntry["tree"]): string {
+  if (tree.state === "clean") return "clean"
+  return `dirty(${tree.modified}m/${tree.staged}s/${tree.untracked}u)`
+}
+
+function formatIntegration(integration: WorktreeStatusEntry["integration"]): string {
+  const offlineSuffix = "offline" in integration && integration.offline ? ",offline" : ""
+  switch (integration.state) {
+    case "merged":
+      return integration.via === "squash" ? `merged(squash,#${integration.pr}${offlineSuffix})` : "merged(ancestry)"
+    case "partial":
+      return `partial(#${integration.pr},+${integration.aheadBy}${offlineSuffix})`
+    case "open":
+      return `open(#${integration.pr}${offlineSuffix})`
+    case "unpushed":
+      return `unpushed(+${integration.aheadBy})`
+    case "unknown":
+      return "unknown(offline)"
+    default:
+      return integration.state
+  }
+}
+
+function formatLiveness(liveness: WorktreeStatusEntry["liveness"]): string {
+  if (liveness.state === "sessions") return `sessions(${liveness.sessions.length})`
+  return liveness.state
+}
+
+function formatStatusRow(entry: WorktreeStatusEntry): string {
+  const branch = entry.branch ?? "(detached)"
+  return [
+    branch.padEnd(28),
+    entry.class.padEnd(9),
+    formatTree(entry.tree).padEnd(16),
+    formatIntegration(entry.integration).padEnd(26),
+    formatLiveness(entry.liveness).padEnd(14),
+    entry.path,
+  ].join("  ")
 }
 
 // ── archive ─────────────────────────────────────────────────────────────
