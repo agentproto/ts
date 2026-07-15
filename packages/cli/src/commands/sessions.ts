@@ -42,6 +42,7 @@ import {
   humaniseDelta,
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
+import { waitForPolicy } from "./_policy-wait.js"
 import {
   hasResumeStrategy,
   decideRestartStrategy,
@@ -628,7 +629,7 @@ async function runWaitSession(opts: {
   for (;;) {
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
-      return emitWaitTimeout(json, { kind: "session", idOrName })
+      return emitWaitTimeout(json, { idOrName })
     }
     const callTimeout = Math.min(sliceMs, remaining)
     const qs = new URLSearchParams({
@@ -683,7 +684,9 @@ async function runWaitSession(opts: {
 /**
  * Loop GET /policies/:id/wait until the total timeout budget is exhausted
  * or the policy resolves. Exit codes: 0 done, 2 blocked, 1 timeout, 3 not
- * found / unreachable.
+ * found / unreachable. Thin wrapper — the loop itself lives in
+ * `_policy-wait.ts` so `agentproto policy wait` shares the exact same
+ * semantics against the exact same route.
  */
 async function runWaitPolicy(opts: {
   endpoint: DaemonEndpoint
@@ -691,69 +694,23 @@ async function runWaitPolicy(opts: {
   totalTimeout: number
   json: boolean
 }): Promise<number> {
-  const { endpoint, policyId, totalTimeout, json } = opts
-  const deadline = Date.now() + totalTimeout
-  const sliceMs = 50_000
-
-  for (;;) {
-    const remaining = deadline - Date.now()
-    if (remaining <= 0) {
-      return emitWaitTimeout(json, { kind: "policy", policyId })
-    }
-    const callTimeout = Math.min(sliceMs, remaining)
-    const qs = new URLSearchParams({ timeoutMs: String(callTimeout) })
-    const url = `${endpoint.url}/policies/${encodeURIComponent(policyId)}/wait?${qs.toString()}`
-    let result: Record<string, unknown>
-    try {
-      result = await httpGetJson<Record<string, unknown>>(url)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (/HTTP 404/.test(msg)) {
-        process.stderr.write(
-          `agentproto sessions wait: no policy "${policyId}".\n`,
-        )
-        return 3
-      }
-      if (/HTTP 501/.test(msg)) {
-        process.stderr.write(
-          `agentproto sessions wait: daemon does not expose the policy wait endpoint (${msg}).\n`,
-        )
-        return 3
-      }
-      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
-      return 3
-    }
-    if (result.timedOut === true) {
-      continue
-    }
-    const status = typeof result.status === "string" ? result.status : ""
-    if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
-    } else {
-      process.stdout.write(
-        `agentproto sessions wait: policy ${policyId} → ${status}\n`,
-      )
-    }
-    if (status === "done") return 0
-    if (status === "blocked" || status === "cancelled") return 2
-    // awaiting-ack: resolved (out of watching/gating) but needs a human —
-    // treat as a match (condition met) and exit 0.
-    return 0
-  }
+  return waitForPolicy({
+    endpoint: opts.endpoint,
+    policyId: opts.policyId,
+    totalTimeoutMs: opts.totalTimeout,
+    json: opts.json,
+    verb: "agentproto sessions wait",
+  })
 }
 
-function emitWaitTimeout(
-  json: boolean,
-  ctx: { kind: "session"; idOrName: string } | { kind: "policy"; policyId: string },
-): number {
+function emitWaitTimeout(json: boolean, ctx: { idOrName: string }): number {
   if (json) {
     process.stdout.write(
       JSON.stringify({ timedOut: true, ...ctx }, null, 2) + "\n",
     )
   } else {
-    const label = ctx.kind === "session" ? `session "${ctx.idOrName}"` : `policy "${ctx.policyId}"`
     process.stdout.write(
-      `agentproto sessions wait: ${label} timed out. ` +
+      `agentproto sessions wait: session "${ctx.idOrName}" timed out. ` +
         `Pass --timeout <ms> for a longer budget if the task is still running.\n`,
     )
   }
