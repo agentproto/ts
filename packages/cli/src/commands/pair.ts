@@ -123,13 +123,20 @@ async function runOffer(args: readonly string[]): Promise<number> {
   if (ttlMinutes !== undefined) body.ttlMinutes = ttlMinutes
   if (values.rendezvous) body.rendezvous = values.rendezvous
 
-  let result: { url: string; fingerprint: string; rendezvous: string; expiresAt: string }
+  let result: {
+    url: string
+    fingerprint: string
+    rendezvous: string
+    rendezvousIsHostedDefault?: boolean
+    expiresAt: string
+  }
   try {
     result = await httpPostJson(`${endpoint.url}/pairings/offer`, body, endpoint.token)
   } catch (err) {
     process.stderr.write(
       `agentproto pair offer: ${err instanceof Error ? err.message : String(err)}\n` +
-        `  (Is a rendezvous configured? Pass --rendezvous or set pairing.rendezvous in config.json.)\n`,
+        `  (Pass --rendezvous <wss://…> to route through a specific broker. If the\n` +
+        `   daemon's pairing.rendezvous is set to "", that opt-out requires it.)\n`,
     )
     return 1
   }
@@ -146,10 +153,17 @@ async function runOffer(args: readonly string[]): Promise<number> {
   if (!values["no-qr"]) {
     await printQr(result.url)
   }
+  const rvNote = result.rendezvousIsHostedDefault
+    ? `The daemon is now relaying through ${result.rendezvous}\n` +
+      `  (hosted default — the broker sees only ciphertext, never your traffic.\n` +
+      `   Self-host with \`agentproto rendezvous serve\` and set pairing.rendezvous,\n` +
+      `   or pass --rendezvous, to route elsewhere.)\n`
+    : `The daemon is now listening on ${result.rendezvous}.\n`
   process.stdout.write(
     `On the other machine:\n` +
       `  agentproto pair accept "${result.url}"\n\n` +
-      `The daemon is now listening on ${result.rendezvous}. This window can close.\n`,
+      rvNote +
+      `This window can close.\n`,
   )
   return 0
 }

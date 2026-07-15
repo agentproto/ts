@@ -35,6 +35,9 @@ export {
   type ParseOfferOptions,
 } from "./offer-url.js"
 
+// The hosted rendezvous broker `pair offer` defaults to (no flag, no config).
+export { HOSTED_RENDEZVOUS_URL } from "./rendezvous.js"
+
 // P2 — pairing-derived key material (pair root + epoch routing tokens).
 export {
   derivePairRoot,

@@ -24,6 +24,7 @@ import * as vscode from "vscode"
 
 import { NoTranscriptError } from "../client/daemonClient.js"
 import type { DaemonClient } from "../client/daemonClient.js"
+import { subscribeSse, type SseSubscription } from "../client/sse.js"
 import type {
   SessionDescriptor,
   SessionEventRecord,
@@ -37,9 +38,10 @@ import {
   type PresentedConversation,
 } from "./conversation.js"
 import { diffConversation } from "./conversationPatch.js"
+import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
 import { isExited } from "./transcript.logic.js"
-import type { ExtMessage } from "./protocol.js"
+import type { ExtMessage, PresentedLine } from "./protocol.js"
 
 export interface PanelMessenger {
   postMessage(msg: ExtMessage): void
@@ -60,6 +62,10 @@ export interface TranscriptPanelControllerOptions {
   /** Auto-start the live poll loop after hydration. Defaults to true; tests
    *  disable it and drive {@link pollOnce} manually. */
   autoPoll?: boolean
+  /** `fetch` implementation for the SSE record feed (SseRecordFeed → sse.ts).
+   *  Defaults to the global `fetch`; tests override it to control the SSE
+   *  connection without a real daemon. */
+  fetchImpl?: typeof fetch
 }
 
 /** Sessions that never drive an agent turn have no structured capture. */
@@ -68,12 +74,12 @@ function isRawKind(kind: SessionDescriptor["kind"]): boolean {
 }
 
 /**
- * Transport seam for live conversation updates after initial hydration. The
- * daemon has no SSE for semantic records today — GET /sessions/:id/events is
- * polled and re-reads the whole per-session JSONL each call — but a future
- * `GET /sessions/:id/events/stream` route would replace ONLY this class.
+ * Transport seam for live conversation updates after initial hydration.
  * `TranscriptPanelController` never talks to the transport directly, only
- * through `start`/`dispose`, so the swap is a one-class change.
+ * through `start`/`dispose`, so swapping the implementation is a one-class
+ * change — see `SseRecordFeed` (the live daemon transport, GET
+ * /sessions/:id/events/stream) and `PollingRecordFeed` (its fallback, and
+ * the only transport for a daemon that predates the stream route).
  */
 export interface RecordFeed {
   /** Begin delivering records; onRecords fires with each new, non-empty batch. */
@@ -124,6 +130,84 @@ class PollingRecordFeed implements RecordFeed {
   }
 }
 
+/**
+ * SSE transport for `RecordFeed` — `GET /sessions/:id/events/stream`. The
+ * daemon replays everything after `since` then switches to live push
+ * (http-server.ts owns the exactly-once handoff); this class just forwards
+ * each `data:` frame to `onRecords` one record at a time as it arrives.
+ *
+ * Falls back to `makeFallback()` (a `PollingRecordFeed`) the moment the
+ * connection fails to open even once — a 404 (old daemon, no such route), a
+ * network error before any bytes came back, or `resolveToken`/`subscribeSse`
+ * throwing outright. `onOpen` (see sse.ts) marks "the route exists and
+ * accepted us"; once that has fired, a LATER drop is left to `subscribeSse`'s
+ * own reconnect/backoff instead of abandoning SSE — by then the daemon is
+ * known to support the route, so a transient hiccup isn't a compat signal.
+ */
+class SseRecordFeed implements RecordFeed {
+  private sub: SseSubscription | undefined
+  private fallback: RecordFeed | undefined
+  private disposed = false
+  private opened = false
+
+  constructor(
+    private readonly client: DaemonClient,
+    private readonly sessionId: string,
+    private readonly since: number,
+    private readonly makeFallback: () => RecordFeed,
+    private readonly fetchImpl: typeof fetch,
+  ) {}
+
+  start(onRecords: (records: readonly SessionEventRecord[]) => void): void {
+    try {
+      const path = `/sessions/${encodeURIComponent(this.sessionId)}/events/stream?since=${this.since}`
+      this.client
+        .resolveToken()
+        .then(token => {
+          if (this.disposed || this.fallback) return
+          this.sub = subscribeSse(
+            `${this.client.url}${path}`,
+            token ? { authorization: `Bearer ${token}` } : {},
+            {
+              onOpen: () => {
+                this.opened = true
+              },
+              onEvent: data => {
+                if (this.disposed || this.fallback) return
+                const record = data as SessionEventRecord
+                if (record && typeof record.seq === "number") onRecords([record])
+              },
+              onError: () => {
+                if (this.disposed || this.fallback || this.opened) return
+                this.fallBackToPolling(onRecords)
+              },
+            },
+            this.fetchImpl,
+          )
+        })
+        .catch(() => {
+          if (this.disposed || this.fallback) return
+          this.fallBackToPolling(onRecords)
+        })
+    } catch {
+      this.fallBackToPolling(onRecords)
+    }
+  }
+
+  private fallBackToPolling(onRecords: (records: readonly SessionEventRecord[]) => void): void {
+    this.sub?.close()
+    this.sub = undefined
+    this.fallback = this.makeFallback()
+    this.fallback.start(onRecords)
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.sub?.close()
+    this.fallback?.dispose()
+  }
+}
+
 export class TranscriptPanelController {
   private readonly sessionId: string
   private readonly client: DaemonClient
@@ -132,6 +216,7 @@ export class TranscriptPanelController {
   private readonly focusDisposable: vscode.Disposable
   private readonly pollIntervalMs: number
   private readonly autoPoll: boolean
+  private readonly fetchImpl: typeof fetch
 
   private initSent = false
   private initPromise: Promise<void> | undefined
@@ -159,6 +244,7 @@ export class TranscriptPanelController {
     this.initialSession = opts.initialSession
     this.pollIntervalMs = opts.pollIntervalMs ?? 250
     this.autoPoll = opts.autoPoll ?? true
+    this.fetchImpl = opts.fetchImpl ?? fetch
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -188,7 +274,7 @@ export class TranscriptPanelController {
       this.linesBuffer.push(line)
       return
     }
-    this.messenger.postMessage({ type: "lines", lines: [line] })
+    this.messenger.postMessage({ type: "lines", lines: [presentLine(line)] })
   }
 
   async onReady(): Promise<void> {
@@ -237,7 +323,10 @@ export class TranscriptPanelController {
 
     if (this.mode === "raw") {
       if (this.linesBuffer.length > 0) {
-        this.messenger.postMessage({ type: "lines", lines: [...this.linesBuffer] })
+        this.messenger.postMessage({
+          type: "lines",
+          lines: this.linesBuffer.map(presentLine),
+        })
         this.linesBuffer.length = 0
       }
     } else {
@@ -257,7 +346,7 @@ export class TranscriptPanelController {
     initialHtml?: string
   }> {
     if (isRawKind(preSession.kind)) {
-      return { mode: "raw", initialHtml: renderMarkdown(await fetchRawContent(this.client, this.sessionId)) }
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
     }
     try {
       await this.hydrateStructured()
@@ -266,7 +355,7 @@ export class TranscriptPanelController {
       if (err instanceof NoTranscriptError) {
         return { mode: "structured", conversation: this.present() }
       }
-      return { mode: "raw", initialHtml: renderMarkdown(await fetchRawContent(this.client, this.sessionId)) }
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
     }
   }
 
@@ -334,10 +423,18 @@ export class TranscriptPanelController {
 
   private startFeed(): void {
     if (!this.autoPoll || this.disposed || this.mode !== "structured") return
-    this.feed = new PollingRecordFeed(
-      this.pollIntervalMs,
-      () => !this.disposed && this.mode === "structured" && !this.exited,
-      () => this.fetchNewRecords(),
+    const makePollingFeed = (): RecordFeed =>
+      new PollingRecordFeed(
+        this.pollIntervalMs,
+        () => !this.disposed && this.mode === "structured" && !this.exited,
+        () => this.fetchNewRecords(),
+      )
+    this.feed = new SseRecordFeed(
+      this.client,
+      this.sessionId,
+      this.eventsCursor,
+      makePollingFeed,
+      this.fetchImpl,
     )
     this.feed.start(records => this.applyRecords(records))
   }
@@ -386,19 +483,48 @@ export class TranscriptPanelController {
   }
 }
 
-/** Raw-mode initial content: markdown export with a preview fallback. */
-async function fetchRawContent(client: DaemonClient, id: string): Promise<string> {
+/**
+ * Raw-mode initial content: markdown export, with a preview fallback.
+ *
+ * The two sources are DIFFERENT FORMATS and must not be conflated — that
+ * conflation was the bug. `exportSession` returns markdown; `preview` returns
+ * the daemon's `/stream` lines, which `projectEvent` deliberately authors
+ * pre-colored with ANSI (`\x1b[36m[tool] …`). Rendering the latter as markdown
+ * escaped the ESC bytes without interpreting them, so the escape codes showed
+ * up as literal garbage. The caller renders each kind with its own renderer.
+ */
+type RawContent =
+  | { kind: "markdown"; text: string }
+  | { kind: "ansi-lines"; lines: string[] }
+
+async function fetchRawContent(client: DaemonClient, id: string): Promise<RawContent> {
   try {
     const exported = await client.exportSession(id, "markdown")
-    return exported.content ?? ""
+    return { kind: "markdown", text: exported.content ?? "" }
   } catch {
     try {
       const preview = await client.preview(id, 200)
-      return preview.lines.join("\n")
+      return { kind: "ansi-lines", lines: preview.lines }
     } catch {
-      return ""
+      return { kind: "markdown", text: "" }
     }
   }
+}
+
+/**
+ * Host-side rendering of one raw-mode stream line: ANSI → styled spans, text
+ * HTML-escaped. The webview only ever assigns the result — it never sees the
+ * daemon's raw bytes, and never parses them.
+ */
+function presentLine(line: SessionStreamLine): PresentedLine {
+  const text = typeof line.line === "string" ? line.line : String(line.line)
+  return { html: ansiToHtml(text, escapeHtml), stream: line.stream ?? "stdout" }
+}
+
+/** Render raw-mode initial content to safe HTML, per its actual format. */
+function renderRawContent(content: RawContent): string {
+  if (content.kind === "markdown") return renderMarkdown(content.text)
+  return content.lines.map(line => `<div class="line">${ansiToHtml(line, escapeHtml)}</div>`).join("")
 }
 
 function sessionDescriptorsEqual(a: SessionDescriptor, b: SessionDescriptor): boolean {

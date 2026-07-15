@@ -63,6 +63,16 @@ jobs:
       # files well outside its repo). See scripts/lib/path-confine.mjs.
       - name: Run docs-check confinement tests
         run: node --test scripts/path-confine.test.mjs
+        
+      # `changeset version` only runs on main, after the merge, and hard-errors
+      # on a package name that isn't in the workspace — so one bad changeset
+      # takes down every release until a human notices. pr-338-review declared
+      # "@agentproto/vscode" (the package is `agentproto-vscode`) and broke 8
+      # consecutive Release runs. Changesets are usually written by the agentic
+      # reviewer guessing the name from context; check the guess here, on the PR
+      # that introduces it, not an hour later in a dead release.
+      - name: Validate changeset package names
+        run: node scripts/check-changesets.mjs
 
   # On PRs: verify a changeset was added. Quick git-only check that
   # runs in parallel with build-and-test to give fast feedback.

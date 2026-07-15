@@ -12,15 +12,42 @@
  * shape to avoid a value-level import of sessions.ts (see its own
  * top-of-file comment). This module needs the real `SessionsRegistry`
  * / `AgentAdapterResolver` types, so it can't share that constraint.
+ *
+ * Billing-auth resolution (money bug fix): a restarted session used to
+ * respawn with NO auth resolution at all, so a session pinned to
+ * `subscription` billing silently came back on whatever the daemon's
+ * ambient env happened to hold (e.g. a leaked `ANTHROPIC_API_KEY`) —
+ * bills org credits under a Max/Pro-pinned session with no signal
+ * anywhere. This module now re-runs the SAME resolver
+ * `session-spawn.ts` uses (`resolveAuthSpec`, fed by
+ * `resolveSpawnDefaults`), sourcing the requested MODE from the prior
+ * descriptor's `auth.mode` (the secret itself is never persisted there,
+ * by design — see `SessionDescriptor.auth`) and re-resolving the actual
+ * credential from `~/.agentproto/config.json` / providers.json, same
+ * merge order as a fresh spawn. The logic is duplicated rather than
+ * shared with `session-spawn.ts` because that file is out of scope for
+ * this fix (see its own callers) — both call sites must stay in sync by
+ * inspection, same as they already do for `decideRestartStrategy`.
  */
 
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import type { SessionDescriptor, SessionsRegistry, SessionAuthEcho } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
 } from "./resume-strategies.js"
+import {
+  resolveSpawnDefaults,
+  resolveAuthSpec,
+  type SpawnDefaultsConfig,
+  type DefaultsAdapterAuthConfig,
+  type ResolvedAuthSpec,
+  type AuthEcho,
+} from "./spawn-defaults.js"
+import { getProviderKey } from "./providers-store.js"
+import { getModelProvider } from "@agentproto/model-catalog/llm"
+import { loadConfig } from "./config.js"
 
 export interface RestartAgentSessionResult {
   desc: SessionDescriptor
@@ -43,6 +70,12 @@ export interface RestartAgentSessionOptions {
    * agent-cli session instead of a PTY one.
    */
   forceAgentResume?: boolean
+  /** Loads config.json's `defaults` block — same seam as
+   *  `SpawnAgentSessionDeps.loadDefaultsConfig` in session-spawn.ts.
+   *  Defaults to reading the real `~/.agentproto/config.json` via
+   *  `loadConfig` when omitted; tests inject a stub to avoid touching
+   *  the real file. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
 }
 
 /**
@@ -90,6 +123,72 @@ export async function restartAgentSession(
   if (!cwd) console.warn(`[restartAgentSession] no cwd on prior descriptor ${prev.id} — falling back to daemon's cwd ${process.cwd()}`)
   cwd ??= process.cwd()
 
+  // ── Billing-auth re-resolution ───────────────────────────────────
+  // Mirrors session-spawn.ts's resolution exactly (same resolver, same
+  // config precedence), except the requested MODE comes from the prior
+  // descriptor's echo rather than a fresh `agent_start.auth` call — the
+  // credential itself is never on the descriptor (only the fingerprint
+  // is), so it's re-resolved from config/providers.json here, not
+  // copied. No prior `auth` echo (adapter with no `authDescriptor`, or
+  // a session that never got one) ⇒ `explicitAuthInput` stays
+  // undefined, which resolves exactly like a fresh spawn with no
+  // explicit `auth` — falls through to `defaults.adapters.<slug>.auth`,
+  // never inventing a mode. `resolveAuthSpec` throws
+  // `AuthResolutionError` (unsupported mode) and the driver's
+  // `startSession` throws `missing_auth_credential` (engaged mode, no
+  // credential) — both propagate uncaught, exactly the fail-loud
+  // contract `agent_start` already has. Never logged/echoed here beyond
+  // the fingerprint already carried on `AuthEcho`.
+  let authSpec: ResolvedAuthSpec | undefined
+  let authEcho: AuthEcho | undefined
+  if (resolved.authDescriptor) {
+    const configDefaults = opts.loadDefaultsConfig
+      ? await opts.loadDefaultsConfig()
+      : (await loadConfig()).defaults
+    const explicitAuthInput: DefaultsAdapterAuthConfig | undefined = prev.auth
+      ? { mode: prev.auth.mode }
+      : undefined
+    const spawnDefaults = resolveSpawnDefaults(configDefaults, adapterSlug, {
+      auth: explicitAuthInput,
+    })
+    const authModel = prev.model ?? resolved.defaultModel
+    const pinnedProvider = spawnDefaults.auth.provider
+    const resolvedProvider =
+      pinnedProvider ??
+      resolved.authDescriptor.provider ??
+      (authModel ? getModelProvider(authModel) : undefined)
+    // Same money-safety gate as session-spawn.ts: the providers.json store
+    // is only consulted when the resolved auth is EXPLICIT (never for an
+    // unconfigured `always`-enforcing adapter, which must fail-fast instead
+    // of silently picking up a leftover store key).
+    const apiKeyStoreCredential =
+      resolvedProvider &&
+      spawnDefaults.auth.explicit &&
+      spawnDefaults.auth.apiKeyCredential === undefined
+        ? await getProviderKey(resolvedProvider)
+        : undefined
+    const result = resolveAuthSpec({
+      descriptor: resolved.authDescriptor,
+      ...(authModel ? { model: authModel } : {}),
+      ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
+      ...(spawnDefaults.auth.requestedMode
+        ? { requestedMode: spawnDefaults.auth.requestedMode }
+        : {}),
+      explicit: spawnDefaults.auth.explicit,
+      ...(spawnDefaults.auth.subscriptionCredential !== undefined
+        ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
+        : {}),
+      ...(spawnDefaults.auth.apiKeyCredential !== undefined
+        ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
+        : {}),
+      ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+    })
+    if (result) {
+      authSpec = result.spec
+      authEcho = result.echo
+    }
+  }
+
   const spawnWithResume = async (
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
@@ -99,6 +198,7 @@ export async function restartAgentSession(
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(prev.model ? { model: prev.model } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(authSpec ? { auth: authSpec } : {}),
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -112,6 +212,20 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(prev.model ? { model: prev.model } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Verifiability echo (never the credential) — see the auth
+      // resolution block above. Absent when no credential resolved,
+      // same as session-spawn.ts.
+      ...(authEcho?.fingerprint
+        ? {
+            auth: {
+              mode: authEcho.authMode,
+              fingerprint: authEcho.fingerprint,
+              provider: authEcho.provider,
+              credentialSource: authEcho.credentialSource,
+              setEnv: authEcho.setEnv,
+            } satisfies SessionAuthEcho,
+          }
+        : {}),
     })
     liveSessionId = desc.id
     return desc
