@@ -26,6 +26,8 @@ export type {
   TransformStep,
   MapStep,
   PipelineStep,
+  FanOutOutcome,
+  TolerantFanOutResult,
   BranchStep,
   LoopStep,
   ParallelStep,

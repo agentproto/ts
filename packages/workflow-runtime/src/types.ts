@@ -59,6 +59,32 @@ export interface TransformStep {
 }
 
 /**
+ * One item's outcome inside a `map`/`pipeline` run with `onError: "collect"`.
+ * Mirrors `Promise.allSettled`'s fulfilled/rejected split so a caller can tell
+ * a legitimate `undefined` body output apart from a failure at that index.
+ */
+export type FanOutOutcome<T = unknown> =
+  | { readonly status: "fulfilled"; readonly index: number; readonly value: T }
+  | {
+      readonly status: "rejected"
+      readonly index: number
+      readonly item: unknown
+      /** `err.message` if the throw was an `Error`, else `String(err)`. */
+      readonly error: string
+    }
+
+/**
+ * The bound output of a `map`/`pipeline` step run with `onError: "collect"`:
+ * every item's outcome, plus the counts a caller needs to answer "how many
+ * failed and why" without re-scanning `results`.
+ */
+export interface TolerantFanOutResult<T = unknown> {
+  readonly results: readonly FanOutOutcome<T>[]
+  readonly succeeded: number
+  readonly failed: number
+}
+
+/**
  * Run a sub-step once per element of an array, optionally with bounded
  * concurrency. The element + index are exposed to the body via `bindings.item`
  * / `bindings.index`; the collected outputs bind under this step's id.
@@ -70,6 +96,15 @@ export interface MapStep {
   /** Max concurrent bodies (default 1 = sequential). */
   parallelism?: number
   body: (item: unknown, index: number, bindings: Bindings) => RunStep
+  /**
+   * `"throw"` (default): the first item to throw aborts the whole map — the
+   * step's output is a bare array, one entry per item, same as before this
+   * field existed. `"collect"`: every item runs to completion; the step's
+   * output becomes a {@link TolerantFanOutResult} instead of a bare array, so
+   * a failure is visible to the caller rather than aborting or getting
+   * silently dropped.
+   */
+  onError?: "throw" | "collect"
 }
 
 /**
@@ -92,6 +127,11 @@ export interface PipelineStep {
     prevOutput: unknown,
     bindings: Bindings,
   ) => RunStep)[]
+  /** Same semantics as {@link MapStep.onError}: `"throw"` (default) aborts
+   *  the whole pipeline on the first item whose chain throws at any stage;
+   *  `"collect"` runs every item's chain to completion and binds a
+   *  {@link TolerantFanOutResult} instead of a bare array. */
+  onError?: "throw" | "collect"
 }
 
 /** Run one of two branches based on a predicate over the bindings. */

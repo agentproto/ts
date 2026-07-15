@@ -45,6 +45,29 @@ const provider = defineDriver({
 })
 const candidates = [provider]
 
+// Throws for negative `n` (simulating e.g. an expired listing), else doubles —
+// used to exercise per-item failure handling in `map`/`pipeline`.
+const maybeThrowTool = defineTool({
+  id: "demo.maybe-throw",
+  description: "Throws for negative n, else doubles.",
+  inputSchema: z.object({ n: z.number() }),
+  outputSchema: z.object({ n: z.number() }),
+})
+const flakyProvider = defineDriver({
+  id: "flaky-builtin",
+  name: "Flaky",
+  description: "Throws on negative n.",
+  kind: "builtin",
+  implements: [{ tool: "demo.maybe-throw", version: "0.1.0" }],
+  implementations: [
+    implementTool(maybeThrowTool, ({ input }) => {
+      if (input.n < 0) throw new Error(`item ${input.n} is expired`)
+      return { n: input.n * 2 }
+    }),
+  ],
+})
+const flakyCandidates = [flakyProvider]
+
 describe("runWorkflow", () => {
   it("threads one tool's output into the next step's input", async () => {
     const wf: RuntimeWorkflow = {
@@ -135,6 +158,79 @@ describe("runWorkflow", () => {
     expect(
       (await runWorkflow({ workflow: wf, input: { big: false } })).output,
     ).toBe("took-otherwise")
+  })
+})
+
+describe("runWorkflow — map onError", () => {
+  it("default (no onError) — one item throwing aborts the whole map, matching prior behavior", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "map-throws",
+      steps: [
+        {
+          kind: "map",
+          id: "doubled",
+          parallelism: 1,
+          over: () => [1, 2, -3, 4],
+          body: () => ({
+            kind: "tool",
+            id: "d",
+            tool: maybeThrowTool,
+            candidates: flakyCandidates,
+            input: (b) => ({ n: b.item as number }),
+          }),
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("item -3 is expired")
+  })
+
+  it("onError: collect — every item runs; failures are visible instead of aborting the run", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "map-collect",
+      steps: [
+        {
+          kind: "map",
+          id: "doubled",
+          parallelism: 2,
+          over: () => [1, 2, -3, 4, -5],
+          onError: "collect",
+          body: () => ({
+            kind: "tool",
+            id: "d",
+            tool: maybeThrowTool,
+            candidates: flakyCandidates,
+            input: (b) => ({ n: b.item as number }),
+          }),
+        },
+      ],
+      output: (b) => b.steps.doubled,
+    }
+    const { output } = await runWorkflow({ workflow: wf })
+    const tolerant = output as {
+      results: Array<{ status: string; index: number; value?: { n: number }; error?: string }>
+      succeeded: number
+      failed: number
+    }
+    expect(tolerant.succeeded).toBe(3)
+    expect(tolerant.failed).toBe(2)
+    expect(tolerant.results).toHaveLength(5)
+    // successes carry their doubled value, in the original `over` order
+    expect(tolerant.results[0]).toEqual({ status: "fulfilled", index: 0, value: { n: 2 } })
+    expect(tolerant.results[1]).toEqual({ status: "fulfilled", index: 1, value: { n: 4 } })
+    expect(tolerant.results[3]).toEqual({ status: "fulfilled", index: 3, value: { n: 8 } })
+    // failures are visible with a reason, not silently dropped
+    expect(tolerant.results[2]).toEqual({
+      status: "rejected",
+      index: 2,
+      item: -3,
+      error: "item -3 is expired",
+    })
+    expect(tolerant.results[4]).toEqual({
+      status: "rejected",
+      index: 4,
+      item: -5,
+      error: "item -5 is expired",
+    })
   })
 })
 
@@ -733,6 +829,103 @@ describe("runWorkflow — pipeline step", () => {
     const result = await runWorkflow({ workflow: wf, agents: host })
     expect(result.bindings.steps.p1).toEqual([])
     expect(host.sendPromptAndWait).not.toHaveBeenCalled()
+  })
+})
+
+describe("runWorkflow — pipeline onError", () => {
+  it("default (no onError) — one item's chain throwing aborts the whole pipeline, matching prior behavior", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-throws",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [1, 2, -3, 4],
+          concurrency: 1,
+          stages: [
+            (item) => ({
+              kind: "tool",
+              id: "s",
+              tool: maybeThrowTool,
+              candidates: flakyCandidates,
+              input: () => ({ n: item as number }),
+            }),
+          ],
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("item -3 is expired")
+  })
+
+  it("onError: collect — every item's chain runs; failures are visible instead of aborting the run", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-collect",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [1, 2, -3, 4, -5],
+          onError: "collect",
+          stages: [
+            (item) => ({
+              kind: "tool",
+              id: "s",
+              tool: maybeThrowTool,
+              candidates: flakyCandidates,
+              input: () => ({ n: item as number }),
+            }),
+          ],
+        },
+      ],
+      output: (b) => b.steps.p1,
+    }
+    const { output } = await runWorkflow({ workflow: wf })
+    const tolerant = output as {
+      results: Array<{ status: string; index: number; value?: { n: number }; error?: string }>
+      succeeded: number
+      failed: number
+    }
+    expect(tolerant.succeeded).toBe(3)
+    expect(tolerant.failed).toBe(2)
+    expect(tolerant.results).toHaveLength(5)
+    expect(tolerant.results[0]).toEqual({ status: "fulfilled", index: 0, value: { n: 2 } })
+    expect(tolerant.results[2]).toEqual({
+      status: "rejected",
+      index: 2,
+      item: -3,
+      error: "item -3 is expired",
+    })
+    expect(tolerant.results[4]).toEqual({
+      status: "rejected",
+      index: 4,
+      item: -5,
+      error: "item -5 is expired",
+    })
+  })
+
+  it("onError: collect on an empty over returns a zeroed tolerant envelope, not a bare array", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "pipeline-collect-empty",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p1",
+          over: () => [],
+          onError: "collect",
+          stages: [
+            () => ({
+              kind: "tool",
+              id: "s",
+              tool: maybeThrowTool,
+              candidates: flakyCandidates,
+              input: () => ({ n: 1 }),
+            }),
+          ],
+        },
+      ],
+    }
+    const result = await runWorkflow({ workflow: wf })
+    expect(result.bindings.steps.p1).toEqual({ results: [], succeeded: 0, failed: 0 })
   })
 })
 

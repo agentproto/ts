@@ -331,7 +331,12 @@
         "kind": { "const": "map" },
         "over": { "type": "string" },
         "parallelism": { "type": "integer", "minimum": 0 },
-        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+        "on_error": {
+          "description": "Per-item failure handling. `throw` (default): the first item whose body throws aborts the whole map, matching prior (implicit) behavior. `collect`: every item runs to completion; the map's bound output becomes `{ results, succeeded, failed }` — one fulfilled/rejected outcome per item, in `over` order — instead of a bare array, so a caller can see how many items failed and why without aborting the run.",
+          "enum": ["throw", "collect"],
+          "default": "throw"
+        }
       }
     },
     "stepLoop": {

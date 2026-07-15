@@ -13,9 +13,11 @@ import type { ZodError } from "zod"
 import type {
   AgentStep,
   Bindings,
+  FanOutOutcome,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
+  TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
 
@@ -123,6 +125,11 @@ async function readStepCache(
     return { hit: true, output: entry.output }
   }
   return { hit: false, key, hash }
+}
+
+/** `err.message` if `err` is an `Error`, else its string coercion. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function formatZodError(err: ZodError): string {
@@ -246,33 +253,63 @@ async function execStep(
     case "map": {
       const arr = [...step.over(b)]
       const parallelism = Math.max(1, step.parallelism ?? 1)
+      const tolerant = step.onError === "collect"
       const results: unknown[] = new Array(arr.length)
       for (let i = 0; i < arr.length; i += parallelism) {
         const chunk = arr.slice(i, i + parallelism)
-        const outs = await Promise.all(
+        if (!tolerant) {
+          const outs = await Promise.all(
+            chunk.map((el, j) => {
+              const idx = i + j
+              const inner = step.body(el, idx, view(state, el, idx))
+              return execStep(inner, ctx, el, idx)
+            }),
+          )
+          for (let j = 0; j < outs.length; j++) results[i + j] = outs[j]
+          continue
+        }
+        const settled = await Promise.allSettled(
           chunk.map((el, j) => {
             const idx = i + j
             const inner = step.body(el, idx, view(state, el, idx))
             return execStep(inner, ctx, el, idx)
           }),
         )
-        for (let j = 0; j < outs.length; j++) results[i + j] = outs[j]
+        settled.forEach((s, j) => {
+          const idx = i + j
+          results[idx] =
+            s.status === "fulfilled"
+              ? { status: "fulfilled", index: idx, value: s.value }
+              : { status: "rejected", index: idx, item: chunk[j], error: errorMessage(s.reason) }
+        })
       }
-      return results
+      if (!tolerant) return results
+      const outcomes = results as FanOutOutcome[]
+      return {
+        results: outcomes,
+        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
+        failed: outcomes.filter((r) => r.status === "rejected").length,
+      } satisfies TolerantFanOutResult
     }
 
     case "pipeline": {
       const items = [...step.over(b)]
-      if (items.length === 0) return []
+      const tolerant = step.onError === "collect"
+      if (items.length === 0) return tolerant ? { results: [], succeeded: 0, failed: 0 } : []
       const cap = Math.max(1, step.concurrency ?? items.length)
       const results: unknown[] = new Array(items.length)
       let next = 0
       const runItem = async (idx: number): Promise<void> => {
         let prev: unknown = undefined
-        for (const stage of step.stages) {
-          prev = await execStep(stage(items[idx], idx, prev, view(state, items[idx], idx)), ctx, items[idx], idx)
+        try {
+          for (const stage of step.stages) {
+            prev = await execStep(stage(items[idx], idx, prev, view(state, items[idx], idx)), ctx, items[idx], idx)
+          }
+          results[idx] = tolerant ? { status: "fulfilled", index: idx, value: prev } : prev
+        } catch (err) {
+          if (!tolerant) throw err
+          results[idx] = { status: "rejected", index: idx, item: items[idx], error: errorMessage(err) }
         }
-        results[idx] = prev
       }
       const worker = async (): Promise<void> => {
         while (next < items.length) {
@@ -281,7 +318,13 @@ async function execStep(
         }
       }
       await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()))
-      return results
+      if (!tolerant) return results
+      const outcomes = results as FanOutOutcome[]
+      return {
+        results: outcomes,
+        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
+        failed: outcomes.filter((r) => r.status === "rejected").length,
+      } satisfies TolerantFanOutResult
     }
 
     case "branch": {

@@ -231,6 +231,7 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
         parallelism: f<number | undefined>(step, "parallelism"),
         over: (b) => resolveRef(over, b) as readonly unknown[],
         body: () => inner,
+        onError: f<"throw" | "collect" | undefined>(step, "on_error"),
       }
     }
 
