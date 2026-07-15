@@ -32,8 +32,10 @@ import {
   buildSessionRows,
   contextValueFor,
   descriptionFor,
+  formatDuration,
   iconFor,
   labelFor,
+  silentForMs,
   tooltipFieldsFor,
   type SeparatorNode,
   type SessionNode,
@@ -107,8 +109,8 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       now: this.now,
     })
     item.contextValue = contextValueFor(session)
-    item.tooltip = buildTooltip(session)
-    item.iconPath = toThemeIcon(iconFor(session))
+    item.tooltip = buildTooltip(session, this.now)
+    item.iconPath = toThemeIcon(iconFor(session, this.now))
     // Single click opens the transcript — the inline $(open-preview) icon
     // (view/item/context menu, wired in package.json) remains as a second
     // way to trigger the same command.
@@ -155,11 +157,17 @@ function toThemeIcon(icon: ReturnType<typeof iconFor>): vscode.ThemeIcon {
   return new vscode.ThemeIcon(icon.id, new vscode.ThemeColor(themeColorId))
 }
 
-function buildTooltip(session: SessionDescriptor): vscode.MarkdownString {
+function buildTooltip(session: SessionDescriptor, now: number): vscode.MarkdownString {
   const md = new vscode.MarkdownString()
   md.appendMarkdown(`**${labelFor(session)}**\n\n`)
   for (const field of tooltipFieldsFor(session)) {
     md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
+  }
+  // The duration is the fact the user judges on — "no output for 20h" settles
+  // "is it working?" in a way a spinner never can.
+  const silent = silentForMs(session, now)
+  if (silent !== undefined) {
+    md.appendMarkdown(`- **silent for:** ${formatDuration(silent)}\n`)
   }
   return md
 }

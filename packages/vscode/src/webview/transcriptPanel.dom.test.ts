@@ -495,7 +495,9 @@ describe("transcriptPanel webview — honest session state", () => {
       },
     })
     const usage = el(panel, "conv-usage")
-    expect(usage.textContent).toBe("ctx 21% · in 5 · out 7")
+    // in/out dropped: they repeated the cost element in the same header, and a
+    // raw token total isn't a number anyone acts on.
+    expect(usage.textContent).toBe("ctx 21%")
     expect(usage.title).toBe("context 206115 / 1000000")
   })
 
@@ -656,5 +658,77 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "composer-harness").textContent).toBe("claude-code")
     expect(el(panel, "composer-model").textContent).toBe("sonnet-5")
     expect(el(panel, "composer-auth").textContent).toBe("subscription")
+  })
+})
+
+describe("transcriptPanel webview — working / waiting / stalled", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  const fresh = (): string => new Date().toISOString()
+
+  it("says WORKING, not BUSY, while the agent is generating", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true, lastActivityAt: fresh() })
+    expect(el(panel, "status-chip").textContent).toBe("working")
+    expect(el(panel, "working-text").textContent).toContain("Working…")
+  })
+
+  it("says WAITING when the turn is parked on a background command — not the model being slow", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true, blockedOn: "command", lastActivityAt: fresh() })
+    expect(el(panel, "status-chip").textContent).toBe("waiting")
+    expect(el(panel, "working-text").textContent).toContain("Waiting on command…")
+  })
+
+  it("says STALLED for a session silent past the threshold, and stops pretending to work", () => {
+    const panel = renderPanel()
+    // sess_be75fcdd's real shape: busy, but nothing emitted for 20h.
+    const longAgo = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+    init(panel, { busy: true, lastActivityAt: longAgo, lastOutputAt: longAgo })
+
+    expect(el(panel, "status-chip").textContent).toBe("stalled")
+    const text = el(panel, "working-text").textContent ?? ""
+    expect(text).toContain("Stalled")
+    expect(text).toContain("no output for 20h")
+    // The cheerful climbing counter was the lie — it must be gone.
+    expect(text).not.toContain("Working…")
+    expect(el(panel, "working").classList.contains("stalled")).toBe(true)
+  })
+
+  it("shows cost WITHOUT repeating the token counts", () => {
+    const panel = renderPanel()
+    init(panel, { costUsd: 0.03, tokensIn: 68694, tokensOut: 141 })
+    // in/out used to render here AND again in #conv-usage, in the same header.
+    expect(el(panel, "cost").textContent).toBe("$0.0300")
+    expect(el(panel, "cost").textContent).not.toContain("in ")
+  })
+
+  it("shows context fill WITHOUT the token counts trailing it", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [],
+        usage: { seq: 1, contextUsed: 60_000, contextSize: 1_000_000, tokensIn: 68_694, tokensOut: 141 },
+      },
+    })
+    expect(el(panel, "conv-usage").textContent).toBe("ctx 6%")
   })
 })

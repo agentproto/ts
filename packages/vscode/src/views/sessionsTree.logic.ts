@@ -74,9 +74,15 @@ export function labelFor(session: SessionDescriptor): string {
  * Item description.
  *  - Without ctx (default): `adapterSlug ?? kind` + model (if any) + status —
  *    byte-identical to the pre-filter behavior existing call sites depend on.
- *  - With ctx: `workspace · +tokensIn -tokensOut · relative time`, omitting
- *    any part whose backing data is absent (never a bare "+0 -0" from two
- *    missing token fields, never literal "undefined").
+ *  - With ctx: `workspace · relative time`, omitting any part whose backing
+ *    data is absent (never a literal "undefined").
+ *
+ * Deliberately NOT the token counts. `+68694 -141` on every row is a raw
+ * number nobody acts on — it can't be compared across sessions (different
+ * models, different work) and it isn't a budget. Cost and context-fill are the
+ * numbers with a decision attached, and they already live in the transcript
+ * header; a tree row is for identifying a session, not auditing it. The
+ * per-session totals remain in the tooltip for anyone who does want them.
  */
 export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionContext): string {
   if (!ctx) {
@@ -87,16 +93,37 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
   }
   const parts: string[] = []
   if (ctx.workspaceLabel) parts.push(ctx.workspaceLabel)
-  const tokenDelta = tokenDeltaFor(session)
-  if (tokenDelta) parts.push(tokenDelta)
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
   return parts.join(" · ")
 }
 
-/** `+tokensIn -tokensOut`, defaulting a missing side to 0 — omitted when BOTH are absent. */
-function tokenDeltaFor(session: SessionDescriptor): string | undefined {
-  if (typeof session.tokensIn !== "number" && typeof session.tokensOut !== "number") return undefined
-  return `+${session.tokensIn ?? 0} -${session.tokensOut ?? 0}`
+/**
+ * How long a busy session may go silent before the tree stops calling it
+ * healthy. Generous on purpose: `lastActivityAt` tracks ACP traffic, so a
+ * single long tool call (a slow build, a big test run) legitimately goes quiet
+ * for minutes and must not be branded stuck. What this catches is the other
+ * shape — an agent that stopped emitting entirely and never sent `turn-end`,
+ * leaving the daemon awaiting a turn that will never finish. That session sits
+ * at `busy: true` forever, and a spinner claims it is working.
+ */
+export const STALL_AFTER_MS = 10 * 60_000
+
+/** ms of silence for a busy session, or undefined when idle/terminal/unknown. */
+export function silentForMs(session: SessionDescriptor, now: number): number | undefined {
+  if (!session.busy || TERMINAL_STATUSES.has(session.status)) return undefined
+  // lastActivityAt (any ACP traffic) is the truer liveness signal; lastOutputAt
+  // (stdout/stderr) is the fallback for a descriptor predating it.
+  const iso = session.lastActivityAt ?? session.lastOutputAt
+  if (!iso) return undefined
+  const last = Date.parse(iso)
+  if (Number.isNaN(last)) return undefined
+  return Math.max(0, now - last)
+}
+
+/** A busy session that has emitted nothing for STALL_AFTER_MS — busy in name only. */
+export function isStalled(session: SessionDescriptor, now: number): boolean {
+  const silent = silentForMs(session, now)
+  return silent !== undefined && silent > STALL_AFTER_MS
 }
 
 /**
@@ -104,14 +131,22 @@ function tokenDeltaFor(session: SessionDescriptor): string | undefined {
  *  - terminal status (exited/killed/error) → error icon if errored, else
  *    circle-slash ("ok" exit).
  *  - non-terminal + awaiting input/permission → question (warn).
+ *  - non-terminal + busy but long silent → warning: the spinner was the whole
+ *    problem, telling the user a wedged session was hard at work.
  *  - non-terminal + busy → sync~spin.
  *  - non-terminal + idle → play.
+ *
+ * `now` is optional so existing call sites keep their behavior; without it a
+ * stalled session is simply indistinguishable from a working one, as before.
  */
-export function iconFor(session: SessionDescriptor): SessionIcon {
+export function iconFor(session: SessionDescriptor, now?: number): SessionIcon {
   if (TERMINAL_STATUSES.has(session.status)) {
     return isErrored(session) ? { id: "error", color: "error" } : { id: "circle-slash" }
   }
   if (isAwaiting(session)) return { id: "question", color: "warning" }
+  if (typeof now === "number" && isStalled(session, now)) {
+    return { id: "warning", color: "warning" }
+  }
   if (session.busy) return { id: "sync~spin" }
   return { id: "play" }
 }
@@ -280,4 +315,15 @@ export function buildSessionRows(sessions: readonly SessionDescriptor[], now: nu
     label: `${RULE} older than 24h ${RULE}`,
   }
   return [...recent, separator, ...older]
+}
+
+/** Compact duration for a silence window: "45s", "12min", "3h", "2d". */
+export function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}min`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
 }

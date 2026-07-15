@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { SessionDescriptor } from "../client/types.js"
 import {
   SEPARATOR_ID,
+  STALL_AFTER_MS,
   bucketFor,
   buildSessionRows,
   buildSessionTree,
@@ -10,9 +11,12 @@ import {
   contextValueFor,
   contextPercent,
   descriptionFor,
+  formatDuration,
   iconFor,
+  isStalled,
   labelFor,
   relativeTime,
+  silentForMs,
   tooltipFieldsFor,
   type SeparatorNode,
   type SessionNode,
@@ -56,27 +60,17 @@ describe("descriptionFor", () => {
   describe("with a DescriptionContext", () => {
     const now = Date.parse("2026-01-06T00:00:00Z")
 
-    it("renders workspace · token delta · relative time", () => {
-      const s = session({
-        startedAt: "2026-01-01T00:00:00Z",
-        tokensIn: 120,
-        tokensOut: 45,
-      })
+    it("renders workspace · relative time", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 120, tokensOut: 45 })
+      // Token counts are deliberately absent: a raw +in -out per row is a
+      // number nobody acts on. See descriptionFor's docblock.
       expect(descriptionFor(s, { workspaceLabel: "Agentik Studio", now })).toBe(
-        "Agentik Studio · +120 -45 · 5 days ago",
+        "Agentik Studio · 5 days ago",
       )
     })
     it("omits workspace when unset", () => {
       const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 10, tokensOut: 5 })
-      expect(descriptionFor(s, { now })).toBe("+10 -5 · 5 days ago")
-    })
-    it("omits the token part when BOTH tokensIn/tokensOut are absent (never a bare +0 -0)", () => {
-      const s = session({ startedAt: "2026-01-01T00:00:00Z" })
-      expect(descriptionFor(s, { workspaceLabel: "ws", now })).toBe("ws · 5 days ago")
-    })
-    it("defaults a missing side to 0 when at least one token field is present", () => {
-      const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 10 })
-      expect(descriptionFor(s, { now })).toBe("+10 -0 · 5 days ago")
+      expect(descriptionFor(s, { now })).toBe("5 days ago")
     })
     it("omits relative time when ctx.now is unset", () => {
       const s = session({ startedAt: "2026-01-01T00:00:00Z" })
@@ -395,5 +389,71 @@ describe("buildSessionRows", () => {
 
   it("returns no rows for an empty session list", () => {
     expect(buildSessionRows([], now)).toEqual([])
+  })
+})
+
+describe("stall detection", () => {
+  // The real descriptor from sess_be75fcdd: the agent emitted its last
+  // text-delta + usage_update at 21:28 and never sent turn-end, so the daemon
+  // still awaits a turn that will never finish and busy stays true forever.
+  const stuck = (over: Partial<SessionDescriptor> = {}): SessionDescriptor =>
+    session({
+      status: "running",
+      busy: true,
+      lastActivityAt: "2026-07-15T21:28:27.011Z",
+      lastOutputAt: "2026-07-15T21:28:27.002Z",
+      ...over,
+    })
+  const now = Date.parse("2026-07-16T17:28:27.011Z") // exactly 20h after lastActivityAt
+
+  it("reports the silence of a busy session", () => {
+    expect(silentForMs(stuck(), now)).toBe(20 * 60 * 60 * 1000)
+    expect(formatDuration(silentForMs(stuck(), now) ?? 0)).toBe("20h")
+    expect(isStalled(stuck(), now)).toBe(true)
+  })
+
+  it("does not call a busy-but-chatty session stalled", () => {
+    const live = stuck({ lastActivityAt: new Date(now - 5_000).toISOString() })
+    expect(isStalled(live, now)).toBe(false)
+  })
+
+  it("gives a long tool call room — silence under the threshold is not a stall", () => {
+    const building = stuck({ lastActivityAt: new Date(now - (STALL_AFTER_MS - 1_000)).toISOString() })
+    expect(isStalled(building, now)).toBe(false)
+  })
+
+  it("reports nothing for an idle or terminal session — only a turn can stall", () => {
+    expect(silentForMs(stuck({ busy: false }), now)).toBeUndefined()
+    expect(silentForMs(stuck({ status: "killed" }), now)).toBeUndefined()
+    expect(isStalled(stuck({ status: "killed" }), now)).toBe(false)
+  })
+
+  it("falls back to lastOutputAt, and reports nothing when neither timestamp exists", () => {
+    const noActivity = stuck({ lastActivityAt: undefined })
+    expect(formatDuration(silentForMs(noActivity, now) ?? 0)).toBe("20h")
+    expect(silentForMs(stuck({ lastActivityAt: undefined, lastOutputAt: undefined }), now)).toBeUndefined()
+  })
+
+  it("swaps the spinner for a warning — the spinner claiming a wedged session works IS the bug", () => {
+    expect(iconFor(stuck(), now)).toEqual({ id: "warning", color: "warning" })
+    // Without `now`, behavior is unchanged for existing call sites.
+    expect(iconFor(stuck())).toEqual({ id: "sync~spin" })
+    // A healthy busy session still spins.
+    expect(iconFor(stuck({ lastActivityAt: new Date(now - 1_000).toISOString() }), now)).toEqual({
+      id: "sync~spin",
+    })
+  })
+
+  it("awaiting-input still outranks a stall — it needs the user, not a diagnosis", () => {
+    expect(iconFor(stuck({ awaitingInput: true }), now)).toEqual({ id: "question", color: "warning" })
+  })
+})
+
+describe("formatDuration", () => {
+  it("scales the unit to the magnitude", () => {
+    expect(formatDuration(45_000)).toBe("45s")
+    expect(formatDuration(12 * 60_000)).toBe("12min")
+    expect(formatDuration(3 * 3_600_000)).toBe("3h")
+    expect(formatDuration(2 * 86_400_000)).toBe("2d")
   })
 })
