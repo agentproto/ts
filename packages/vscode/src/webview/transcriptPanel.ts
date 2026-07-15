@@ -216,7 +216,11 @@ export function buildHtml(nonce: string): string {
       letter-spacing: 0.03em;
     }
     .chip-running { background: var(--vscode-testing-iconPassed); color: var(--vscode-editor-background); }
-    .chip-busy { background: var(--vscode-progressBar-background); color: var(--vscode-editor-background); }
+    /* chip-busy kept for any descriptor path still reporting it; working/
+       waiting/stalled are what computeStatusChip actually emits now. */
+    .chip-busy, .chip-working { background: var(--vscode-progressBar-background); color: var(--vscode-editor-background); }
+    .chip-waiting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
+    .chip-stalled { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
     .chip-awaiting-input { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
     .chip-exited { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
     .chip-starting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
@@ -425,6 +429,12 @@ export function buildHtml(nonce: string): string {
     #working-glyph {
       color: var(--vscode-progressBar-background);
       animation: agentproto-spin 1.6s linear infinite;
+    }
+    /* Stop the spinner: nothing is spinning. */
+    #working.stalled { color: var(--vscode-editorWarning-foreground); }
+    #working.stalled #working-glyph {
+      animation: none;
+      color: var(--vscode-editorWarning-foreground);
     }
     @keyframes agentproto-spin {
       from { transform: rotate(0deg); }
@@ -668,11 +678,17 @@ export function buildHtml(nonce: string): string {
       const queuedLabel = document.getElementById('queued-label');
       const queuedCancel = document.getElementById('queued-cancel');
 
+      // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
+      // this panel must not disagree about whether a session is stalled.
+      const STALL_AFTER_MS = 10 * 60 * 1000;
+
       let exited = false;
       let busy = false;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
+      /** Latest descriptor — re-read by the 1s ticker so a stall surfaces without a poll. */
+      let lastSession;
       /**
        * Text typed while the agent was mid-turn. The daemon takes ONE turn at
        * a time and rejects anything else with a 409, so instead of firing that
@@ -755,13 +771,28 @@ export function buildHtml(nonce: string): string {
       function refreshWorking() {
         working.hidden = !busy;
         if (!busy) return;
-        const parts = ['Working…'];
-        if (busySince) parts.push(Math.max(0, Math.round((Date.now() - busySince) / 1000)) + 's');
+        const now = Date.now();
+        const silent = lastSession ? silentForMs(lastSession, now) : undefined;
+        const stalled = silent !== undefined && silent > STALL_AFTER_MS;
+        // A stalled session must not keep saying "Working…" with a cheerfully
+        // climbing counter — that IS the lie the user reported. Name the
+        // silence instead and let them judge.
+        working.classList.toggle('stalled', stalled);
+        if (stalled) {
+          workingText.textContent = 'Stalled · no output for ' + formatDuration(silent) +
+            ' · the agent may be stuck';
+          return;
+        }
+        const parts = [lastSession && lastSession.blockedOn
+          ? 'Waiting on ' + lastSession.blockedOn + '…'
+          : 'Working…'];
+        if (busySince) parts.push(Math.max(0, Math.round((now - busySince) / 1000)) + 's');
         if (typeof lastTokensOut === 'number') parts.push(lastTokensOut + ' tokens');
         workingText.textContent = parts.join(' · ');
       }
 
       function applySession(session) {
+        lastSession = session;
         updateHeader(session);
         exited = isTerminal(session);
         // A terminal session is never busy, whatever the descriptor says — see
@@ -792,13 +823,47 @@ export function buildHtml(nonce: string): string {
         return ['exited', 'killed', 'error'].indexOf(session.status) !== -1;
       }
 
-      function computeStatusChip(session) {
-        const s = session.status;
-        if (s === 'exited' || s === 'killed' || s === 'error') return 'exited';
-        if (session.busy) return 'busy';
+      /** ms since the session last did ANYTHING, while mid-turn. */
+      function silentForMs(session, now) {
+        if (!session.busy || isTerminal(session)) return undefined;
+        const iso = session.lastActivityAt || session.lastOutputAt;
+        if (!iso) return undefined;
+        const last = Date.parse(iso);
+        if (isNaN(last)) return undefined;
+        return Math.max(0, now - last);
+      }
+
+      function formatDuration(ms) {
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return seconds + 's';
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return minutes + 'min';
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return hours + 'h';
+        return Math.floor(hours / 24) + 'd';
+      }
+
+      /**
+       * "busy" said nothing: it covered an agent writing a reply and an agent
+       * wedged for 20h alike. The three states differ in what the user should
+       * DO, so they get three words:
+       *   working — generating right now. Wait.
+       *   waiting — mid-turn but parked on a background command/sub-agent
+       *             (blockedOn). It is not the model that is slow.
+       *   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
+       *             coming; the agent stopped emitting without a turn-end and
+       *             the daemon is still awaiting a turn that will never end.
+       */
+      function computeStatusChip(session, now) {
+        if (isTerminal(session)) return 'exited';
         if (session.awaitingInput) return 'awaiting-input';
-        if (s === 'running') return 'running';
-        return s || 'starting';
+        if (session.busy) {
+          const silent = silentForMs(session, now);
+          if (silent !== undefined && silent > STALL_AFTER_MS) return 'stalled';
+          return session.blockedOn ? 'waiting' : 'working';
+        }
+        if (session.status === 'running') return 'running';
+        return session.status || 'starting';
       }
 
       function updateHeader(session) {
@@ -810,7 +875,7 @@ export function buildHtml(nonce: string): string {
         composerModel.textContent = session.model || '';
         composerAuth.textContent = session.auth ? session.auth.mode : '';
 
-        const chip = computeStatusChip(session);
+        const chip = computeStatusChip(session, Date.now());
         statusChip.textContent = chip;
         statusChip.className = 'chip chip-' + chip;
 
@@ -826,15 +891,14 @@ export function buildHtml(nonce: string): string {
           ? 'blocked on ' + session.blockedOn + (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '')
           : '';
 
-        const costParts = [];
-        if (typeof session.costUsd === 'number') {
-          costParts.push('$' + session.costUsd.toFixed(4));
-        }
-        const tokParts = [];
-        if (typeof session.tokensIn === 'number') tokParts.push('in ' + session.tokensIn);
-        if (typeof session.tokensOut === 'number') tokParts.push('out ' + session.tokensOut);
-        if (tokParts.length) costParts.push(tokParts.join(' · '));
-        costEl.textContent = costParts.join(' · ') || '—';
+        // Cost only. The token counts used to render HERE and again in
+        // #conv-usage — the same two numbers, twice in one header — and
+        // neither instance was actionable: raw in/out isn't comparable across
+        // sessions and isn't a budget. Cost and ctx% are the numbers with a
+        // decision attached; the totals stay in the tree tooltip.
+        costEl.textContent = typeof session.costUsd === 'number'
+          ? '$' + session.costUsd.toFixed(4)
+          : '—';
       }
 
       function appendLines(lines) {
@@ -1147,9 +1211,9 @@ export function buildHtml(nonce: string): string {
       function renderUsage(usage) {
         if (!usage) { convUsage.textContent = ''; convUsage.title = ''; return; }
         const parts = [];
-        // "ctx 206115/1000000" is two numbers the reader has to divide. What
-        // they actually want to know is how full the window is, so show the
-        // percent and keep the raw counts in the tooltip.
+        // Context fill only — "ctx 206115/1000000" was two numbers the reader
+        // had to divide, and the in/out totals that used to trail it merely
+        // repeated what the cost element already showed, in the same header.
         const used = typeof usage.contextUsed === 'number' ? usage.contextUsed : usage.used;
         const size = typeof usage.contextSize === 'number' ? usage.contextSize : usage.size;
         if (typeof used === 'number' && typeof size === 'number' && size > 0) {
@@ -1158,8 +1222,6 @@ export function buildHtml(nonce: string): string {
         } else {
           convUsage.title = '';
         }
-        if (typeof usage.tokensIn === 'number') parts.push('in ' + usage.tokensIn);
-        if (typeof usage.tokensOut === 'number') parts.push('out ' + usage.tokensOut);
         convUsage.textContent = parts.join(' · ');
       }
 
