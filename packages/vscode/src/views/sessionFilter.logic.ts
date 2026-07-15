@@ -3,7 +3,9 @@
  * it's unit-testable under plain vitest. sessionFilter.ts wires the
  * interactive QuickPick/InputBox commands that mutate this state;
  * sessionsTree.ts calls filterSessions() on the live session list before
- * handing survivors to buildBucketedTree() (filter first, then bucket).
+ * handing survivors to buildSessionRows() — filter first, then lay out the
+ * survivors, so the recency divider is decided from what's actually shown
+ * and filtering can never leave a rule with nothing on one side of it.
  *
  * SessionFilterState's shape is frozen (WP3 reads it) — do not reshape.
  */

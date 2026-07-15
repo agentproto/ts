@@ -69,8 +69,9 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private rebuild(): void {
     this.now = Date.now()
     const all = this.store.sessions
-    // Filter first, then bucket the survivors (buckets are a top-level
-    // grouping, not a filter dimension).
+    // Filter first, then lay out the survivors: recency is a top-level
+    // presentation split, not a filter dimension, so the divider is decided
+    // from what's actually shown.
     const survivors = filterSessions(all, this.filter.state, this.filter.workspaces)
     this._hiddenCount = all.length - survivors.length
     this.nodes = buildSessionRows(survivors, this.now)
