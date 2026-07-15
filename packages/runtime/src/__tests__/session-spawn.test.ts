@@ -242,6 +242,156 @@ describe("spawnAgentSession", () => {
   })
 })
 
+describe("spawnAgentSession — agent_start idempotency (idempotencyKey)", () => {
+  // Reproduces the measured incident: one logical agent_start call arrives
+  // twice (slow/lost response + caller retry) with identical adapter/cwd/
+  // label/prompt. Without idempotencyKey this forks TWO processes into the
+  // same cwd, and the caller only ever learns the SECOND session's id.
+
+  it("a sequential retry with the same idempotencyKey spawns ONE process and returns the SAME descriptor", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "worker",
+      prompt: "do the thing",
+      idempotencyKey: "req-1",
+    }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(first.deduped).toBeUndefined()
+    expect(second.deduped).toBe(true)
+  })
+
+  it("two truly concurrent calls (Promise.all, no await between them) with the same idempotencyKey still spawn only ONE process", async () => {
+    // The claim is staked synchronously (check-then-set, no `await` in
+    // between) right before the process fork, so whichever call's JS
+    // turn reaches that line first wins it — correct regardless of how
+    // the two calls' earlier `await`s (cwd resolution, adapter lookup,
+    // role resolution, …) happen to interleave. A naive "scan existing
+    // registry sessions" check would miss this tighter race (neither
+    // call has registered yet); staking a claim up front closes it.
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "req-race" }
+
+    const [first, second] = await Promise.all([
+      spawnAgentSession(deps, input),
+      spawnAgentSession(deps, input),
+    ])
+
+    expect(startSession).toHaveBeenCalledTimes(1)
+    expect(registry.list()).toHaveLength(1)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+  })
+
+  it("omitting idempotencyKey is a no-op — repeated identical calls still spawn independently (today's behaviour)", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", label: "worker" }
+
+    const first = await spawnAgentSession(deps, input)
+    const second = await spawnAgentSession(deps, input)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+  })
+
+  it("a different idempotencyKey (or a different cwd) is treated as a distinct spawn", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const a = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", idempotencyKey: "one" })
+    const b = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", idempotencyKey: "two" })
+    const c = await spawnAgentSession(deps, { adapter: "mock", cwd: "/elsewhere", idempotencyKey: "one" })
+
+    expect(startSession).toHaveBeenCalledTimes(3)
+    expect(registry.list()).toHaveLength(3)
+    expect(a.ok && b.ok && c.ok).toBe(true)
+  })
+
+  it("a FAILED spawn is never cached — a retry with the same key tries again instead of replaying the error", async () => {
+    const startSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("adapter boot failed"))
+      .mockImplementationOnce(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "req-retry-after-error" }
+
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(false)
+    if (first.ok) throw new Error("expected failure")
+    expect(first.code).toBe("agent_spawn_failed")
+
+    const second = await spawnAgentSession(deps, input)
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(second.ok).toBe(true)
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("a same-key retry outside the dedupe window spawns a fresh process", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "req-stale" }
+    const nowSpy = vi.spyOn(Date, "now")
+
+    nowSpy.mockReturnValue(1_000)
+    const first = await spawnAgentSession(deps, input)
+    expect(first.ok).toBe(true)
+
+    // 31s later — past SPAWN_CLAIM_WINDOW_MS (30s).
+    nowSpy.mockReturnValue(1_000 + 31_000)
+    const second = await spawnAgentSession(deps, input)
+    expect(second.ok).toBe(true)
+
+    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(registry.list()).toHaveLength(2)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(second.deduped).toBeUndefined()
+
+    nowSpy.mockRestore()
+  })
+
+  it("a legitimate orchestrator fan-out — identical adapter/cwd, NO idempotencyKey — still spawns two distinct sessions, exactly like test (b) above but proving the fix doesn't regress it", async () => {
+    const { registry, deps } = baseDeps()
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId: "fanout-parent",
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+    const first = await spawnAgentSession({ ...deps, callerScope }, { adapter: "mock", cwd: "/tmp" })
+    const second = await spawnAgentSession({ ...deps, callerScope }, { adapter: "mock", cwd: "/tmp" })
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) throw new Error("expected success")
+    expect(second.descriptor.id).not.toBe(first.descriptor.id)
+    expect(
+      registry.list().filter(s => s.parentSessionId === "fanout-parent"),
+    ).toHaveLength(2)
+  })
+})
+
 describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
   function makeBuildOrchestratorMcp(): SpawnAgentSessionDeps["buildOrchestratorMcp"] {
     const entry: AcpMcpServer = {

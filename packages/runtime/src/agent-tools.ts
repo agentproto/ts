@@ -265,6 +265,22 @@ export function registerAgentTools(
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
         ),
+      idempotencyKey: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Caller-declared 'this is the same logical spawn' token. A retried " +
+            "agent_start call (e.g. after a slow/lost response) that repeats the " +
+            "same `idempotencyKey` for the same `adapter`+`cwd` within ~30s of a " +
+            "successful spawn gets that SAME session's descriptor back instead of " +
+            "forking a second process — set `deduped: true` on the response so " +
+            "you can tell. Omit to spawn unconditionally (today's behaviour, and " +
+            "still required for deliberate concurrent spawns into the same cwd — " +
+            "this field can't distinguish a retry from an intentional duplicate " +
+            "spawn, only your own declared key can). Recommended for any caller " +
+            "that might retry a spawn it can't otherwise confirm succeeded."
+        ),
       permissionHold: mcpBool
         .optional()
         .describe(
@@ -535,9 +551,11 @@ export function registerAgentTools(
         input,
       )
       if (result.ok) {
-        const body = result.output
-          ? { ...result.descriptor, output: result.output }
-          : result.descriptor
+        const body = {
+          ...result.descriptor,
+          ...(result.output ? { output: result.output } : {}),
+          ...(result.deduped ? { deduped: true } : {}),
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(body, null, 2) }],
         }
