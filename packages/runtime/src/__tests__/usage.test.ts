@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   deriveSessionUsage,
+  plausibleContextUsed,
   projectSessionUsage,
   type PricingResolver,
 } from "../usage.js"
@@ -114,5 +115,29 @@ describe("projectSessionUsage", () => {
     })
     expect(out.source).toBe("computed")
     expect(out.contextUsed).toBe(42)
+  })
+})
+
+describe("plausibleContextUsed", () => {
+  it("drops a cumulative-looking value that exceeds the reported window", () => {
+    // The real bug: a hermes/kimi session's `used` was 14,246,419 against a
+    // 200,000-token window — 71x over. That can't be "tokens in context."
+    expect(plausibleContextUsed(200_000, 14_246_419)).toBeUndefined()
+  })
+
+  it("keeps a value that plausibly fits inside the window", () => {
+    expect(plausibleContextUsed(967_000, 202_718)).toBe(202_718)
+  })
+
+  it("keeps a value exactly at the window boundary (100% occupancy is valid)", () => {
+    expect(plausibleContextUsed(200_000, 200_000)).toBe(200_000)
+  })
+
+  it("passes the value through when the window size isn't known yet — nothing to disprove it with", () => {
+    expect(plausibleContextUsed(undefined, 5_000)).toBe(5_000)
+  })
+
+  it("returns undefined when contextUsed itself is absent", () => {
+    expect(plausibleContextUsed(200_000, undefined)).toBeUndefined()
   })
 })

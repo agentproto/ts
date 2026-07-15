@@ -227,6 +227,48 @@ describe("per-session usage observability (MCP e2e)", () => {
     registry.shutdown()
   })
 
+  it("a cumulative-looking `used` past the context window never surfaces as contextUsed (regression, #hermes-71x)", async () => {
+    // Reproduces the real observed bug: a hermes/kimi-k2 session reported
+    // size=200_000 (the model's real window — trustworthy) alongside
+    // used=14_246_419 (71x the window — some adapter-side cumulative
+    // counter, not tokens-in-context). contextUsed must stay unset rather
+    // than surface an impossible >100% occupancy figure; contextSize (the
+    // trustworthy half of the same event) must still land.
+    const registry = createSessionsRegistry({
+      persist: false,
+      transcriptDir,
+      sessionEvents: createSessionEventBus(),
+    })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: usageAgentSession({ size: 200_000, used: 14_246_419 }),
+      adapterSlug: "hermes",
+      model: "moonshotai/kimi-k2.7-code",
+    })
+    await registry.sendPrompt(desc.id, "hi")
+
+    // ── live descriptor (what session_list serializes directly) ──
+    const live = registry.get(desc.id)
+    expect(live?.contextSize).toBe(200_000)
+    expect(live?.contextUsed).toBeUndefined()
+
+    const client = await connectTools(registry)
+
+    const listRes = await client.callTool({ name: "session_list", arguments: { kind: "agent-cli" } })
+    const list = parseToolJson(listRes) as { sessions: Array<Record<string, unknown>> }
+    const entry = list.sessions.find(s => s.id === desc.id)
+    expect(entry?.contextSize).toBe(200_000)
+    expect("contextUsed" in (entry ?? {})).toBe(false)
+
+    const usageRes = await client.callTool({ name: "session_usage", arguments: { idOrName: desc.id } })
+    const usage = parseToolJson(usageRes)
+    expect(usage.contextSize).toBe(200_000)
+    expect("contextUsed" in usage).toBe(false)
+
+    registry.shutdown()
+  })
+
   it("session_usage errors for an unknown session", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const client = await connectTools(registry)

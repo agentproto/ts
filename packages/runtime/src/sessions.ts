@@ -35,7 +35,7 @@ import {
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
-import { deriveSessionUsage, type SessionUsage } from "./usage.js"
+import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -1571,7 +1571,17 @@ export function createSessionsRegistry(opts?: {
       // reported cost/tokens are available live to session_list / session_usage.
       case "usage_update": {
         if (typeof evt.size === "number" && evt.size > 0) rt.desc.contextSize = evt.size
-        if (typeof evt.used === "number" && evt.used > 0) rt.desc.contextUsed = evt.used
+        // `used` claims to be tokens currently in context (see the field's
+        // doc comment above) — but at least one adapter's ACP server has
+        // been observed sending a cumulative session-lifetime token total
+        // in this same field instead, which routinely lands 10-70x past the
+        // window. A `used` that exceeds the window it's supposedly inside
+        // of is provably not that; `plausibleContextUsed` drops it rather
+        // than let a fabricated-looking >100% occupancy figure through.
+        if (typeof evt.used === "number" && evt.used > 0) {
+          const used = plausibleContextUsed(rt.desc.contextSize, evt.used)
+          if (used !== undefined) rt.desc.contextUsed = used
+        }
         if (evt.cost) {
           rt.desc.costUsd = evt.cost.amount
           rt.adapterReportedCost = true
