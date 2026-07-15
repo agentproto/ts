@@ -1,7 +1,7 @@
 {
   "name": "agentproto-vscode",
   "displayName": "agentproto",
-  "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/kill from the editor.",
+  "description": "Live operational views for the agentproto daemon \u2014 sessions, permissions, cost \u2014 plus spawn/drive/kill from the editor.",
   "version": "0.0.1",
   "publisher": "agentproto",
   "license": "Apache-2.0",
@@ -31,10 +31,14 @@
     "test:watch": "vitest",
     "package": "pnpm run build && pnpm dlx @vscode/vsce package --out agentproto-vscode-$npm_package_version.vsix"
   },
+  "dependencies": {
+    "ws": "^8.20.0"
+  },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.25.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
@@ -120,6 +124,12 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "agentproto.openTerminal",
+        "title": "agentproto: Open Terminal",
+        "category": "agentproto",
+        "icon": "$(terminal)"
+      },
+      {
         "command": "agentproto.openTranscriptChannel",
         "title": "agentproto: Open Transcript (Raw Output Channel)",
         "category": "agentproto"
@@ -192,6 +202,11 @@
           "group": "inline@5"
         },
         {
+          "command": "agentproto.openTerminal",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "group": "inline@6"
+        },
+        {
           "command": "agentproto.openTranscriptChannel",
           "when": "view == agentproto.sessions && viewItem =~ /^session-/",
           "group": "transcript@1"
@@ -205,6 +220,13 @@
           "command": "agentproto.denyPermission",
           "when": "view == agentproto.permissions && viewItem == permission-pending",
           "group": "inline@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "agentproto.openTerminal",
+          "when": "activeWebviewPanelId == 'agentproto.transcript'",
+          "group": "navigation"
         }
       ]
     },
