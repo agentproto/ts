@@ -310,6 +310,16 @@ export interface SessionDescriptor {
   startedAt: string
   endedAt?: string
   exitCode?: number
+  /** Set alongside `status: "killed"` when the session ended NOT because an
+   *  operator targeted it (`kill()`) but because the daemon process it lived
+   *  in went away out from under it — a hard crash discovered at next boot
+   *  (`loadHistorySnapshot`'s wasAlive reclassification), or a graceful
+   *  shutdown/restart that force-kills whatever's still busy
+   *  (`shutdownImpl`). Absent for every other terminal path (operator kill,
+   *  natural exit, turn error) — the session's own fault, or at least not
+   *  the daemon's. Lets the UI show "crashed with the daemon" instead of a
+   *  bare "killed" that reads as deliberate. */
+  endedReason?: "daemon-restart"
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -1164,7 +1174,7 @@ export function createSessionsRegistry(opts?: {
   // dashboard ages them from this boot rather than the daemon's last
   // life.
   if (persist) {
-    loadHistorySnapshot(persistPath, sessions)
+    loadHistorySnapshot(persistPath, sessions, sessionEvents)
   }
 
   // Belt-and-suspenders: `process.on("exit")` runs even on uncaught
@@ -1197,6 +1207,7 @@ export function createSessionsRegistry(opts?: {
       status: rt.desc.status as "exited" | "killed" | "error",
       label: rt.desc.label,
       ts: new Date().toISOString(),
+      ...(rt.desc.endedReason ? { reason: rt.desc.endedReason } : {}),
     })
   }
 
@@ -2850,6 +2861,14 @@ export function createSessionsRegistry(opts?: {
     // flush so the snapshot accurately reflects what happened. On
     // the next boot, load reads these and we won't have to guess
     // ("was running last time → assume killed" is then a no-op).
+    //
+    // These sessions are being force-killed OUTSIDE their own turn loop —
+    // `runAgentTurn`'s `finally` (which normally clears busy/awaiting-*)
+    // never runs here, so without `clearInFlightFlags` a session that was
+    // mid-turn at shutdown would persist as "killed" yet forever "busy".
+    // `emitExited` announces the same way `kill()` does, so a watcher
+    // subscribed to `sessionEvents` (or polling after reconnect) learns
+    // these died with the daemon instead of finding out by accident.
     const nowIso = new Date().toISOString()
     for (const rt of sessions.values()) {
       rt.emitter.removeAllListeners()
@@ -2859,6 +2878,8 @@ export function createSessionsRegistry(opts?: {
       ) {
         rt.desc.status = "killed"
         rt.desc.endedAt = nowIso
+        rt.desc.endedReason = "daemon-restart"
+        clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
           void rt.agentSession.close().catch(() => undefined)
@@ -2871,6 +2892,7 @@ export function createSessionsRegistry(opts?: {
           }
         }
         rt.child?.kill("SIGTERM")
+        emitExited(rt)
       }
     }
     void transcriptWriter.closeAll()
@@ -2901,6 +2923,28 @@ export function createSessionsRegistry(opts?: {
 }
 
 /**
+ * Reset the ephemeral in-flight fields a descriptor accumulates mid-turn
+ * (busy, awaiting-input/-question/-permission, blockedOn) back to idle.
+ * `runAgentTurn`'s own `finally` block does exactly this whenever a turn
+ * ends normally — including a live `kill()`, since that aborts the
+ * in-flight `send()` and lets the same `finally` run. But a session
+ * force-terminated from OUTSIDE that turn loop — the daemon process dying
+ * underneath it (discovered at next boot) or a shutdown that SIGTERMs
+ * whatever's still busy — never reaches that `finally`, so without this
+ * the flags stay frozen at whatever they were the instant the daemon went
+ * away: a session can end up "killed" yet forever "busy". Both forced-
+ * termination sites below call this before persisting the terminal status.
+ */
+function clearInFlightFlags(desc: SessionDescriptor): void {
+  desc.busy = false
+  desc.awaitingInput = false
+  desc.awaitingQuestion = undefined
+  delete desc.awaitingPermission
+  desc.blockedOn = undefined
+  desc.pendingToolCallId = undefined
+}
+
+/**
  * Read the persisted snapshot at boot and reinflate session
  * descriptors as historical "ghost" entries. Sync-read because this
  * runs once at construction, the file is small (~200 entries), and
@@ -2910,9 +2954,17 @@ export function createSessionsRegistry(opts?: {
  * Anything that was "running"/"starting" when the daemon last died
  * gets re-classified as "killed" with endedAt=now — we can't tell
  * if the orphan PID survived the daemon's exit, and pretending it's
- * still alive would make attach/kill calls fail mysteriously. The
- * descriptor stays in the registry for history; the dashboard sees
- * it under SESSIONS, the user can `d` to forget.
+ * still alive would make attach/kill calls fail mysteriously. Its
+ * in-flight fields (busy, awaiting-*, blockedOn) get cleared the same
+ * way — see `clearInFlightFlags` — since nothing else will ever clear
+ * them for a process that's gone, and `endedReason: "daemon-restart"`
+ * is stamped so the UI can tell this apart from an operator kill. When
+ * `sessionEvents` is wired, each reclassified ghost also gets a
+ * `session:exited` announcement so a watcher polling `session_events_poll`
+ * (or long-polling `session_monitor`) learns its session died instead of
+ * discovering it later by accident. The descriptor stays in the registry
+ * for history; the dashboard sees it under SESSIONS, the user can `d` to
+ * forget.
  *
  * Ghosts carry NO live child / agentSession / pty — calls that
  * would interact with the underlying process degrade to no-ops.
@@ -2922,6 +2974,7 @@ export function createSessionsRegistry(opts?: {
 function loadHistorySnapshot(
   persistPath: string,
   sessions: Map<string, SessionRuntime>,
+  sessionEvents?: SessionEventBus,
 ): void {
   let raw: string
   try {
@@ -2953,8 +3006,10 @@ function loadHistorySnapshot(
           ...desc,
           status: "killed",
           endedAt: desc.endedAt ?? now,
+          endedReason: "daemon-restart",
         }
       : desc
+    if (wasAlive) clearInFlightFlags(reclassified)
     const rt: SessionRuntime = {
       desc: reclassified,
       recentLines: [],
@@ -2964,9 +3019,21 @@ function loadHistorySnapshot(
       busy: false,
       textBuf: "",
       thoughtBuf: "",
+      exitedEmitted: wasAlive,
     }
     rt.emitter.setMaxListeners(50)
     sessions.set(desc.id, rt)
+    if (wasAlive) {
+      sessionEvents?.emit({
+        type: "session:exited",
+        sessionId: reclassified.id,
+        exitCode: reclassified.exitCode,
+        status: "killed",
+        ...(reclassified.label ? { label: reclassified.label } : {}),
+        reason: "daemon-restart",
+        ts: now,
+      })
+    }
   }
 }
 

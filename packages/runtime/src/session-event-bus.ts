@@ -113,6 +113,12 @@ export interface SessionExitedEvent {
   status: "exited" | "killed" | "error"
   label?: string
   ts: string
+  /** Mirrors `SessionDescriptor.endedReason` — set when this exit was the
+   *  daemon dying underneath the session (crash-discovered-at-boot or a
+   *  forced shutdown kill), not an operator targeting it. Lets a watcher
+   *  (completion-policy supervisor, `session_monitor`) tell "my agent died
+   *  because the daemon did" apart from a deliberate kill. Absent otherwise. */
+  reason?: "daemon-restart"
 }
 
 /** Emitted when command_execute finishes. commandId matches the id
