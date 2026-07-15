@@ -42,6 +42,7 @@ import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
+  findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
 
@@ -1067,6 +1068,18 @@ export function registerSessionTools(
           }
         } catch {
           // fall through to error
+        }
+      } else if (!input.workspaceSlug) {
+        // cwd given but no explicit slug — reverse-map it, exactly as
+        // spawnAgentSession does (session-spawn.ts). Without this the session
+        // lands in "default" even when its cwd sits inside a registered
+        // workspace, so it can never be grouped or filtered by project.
+        try {
+          const config = await loadWorkspacesConfig()
+          const ws = findWorkspaceByPath(config, cwd)
+          if (ws) resolvedSlug = ws.slug
+        } catch {
+          // no registry readable — keep "default"
         }
       }
       if (!cwd) {
