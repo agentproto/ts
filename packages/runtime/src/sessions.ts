@@ -812,6 +812,17 @@ export interface SessionsRegistry {
     id: string,
     onLine: (line: string, stream: "stdout" | "stderr") => void
   ): (() => void) | null
+  /** Subscribe to a session's structured events.jsonl records as they're
+   *  written — the live-push half of `GET /sessions/:id/events/stream`'s
+   *  replay-then-subscribe handoff. Thin passthrough to the transcript
+   *  writer's own `subscribe` (see transcript-writer.ts for the exactly-
+   *  once contract this enables); no backfill, no existence check — a
+   *  session id with no writer state simply never calls back. Returns an
+   *  unsubscribe fn. */
+  subscribeToRecords(
+    id: string,
+    onRecord: (record: Record<string, unknown>) => void
+  ): () => void
   /** Subscribe to a PTY session's byte stream. Returns a control
    *  handle (write/resize/detach) and null when the session is
    *  missing or not a PTY kind. Replays the ring buffer
@@ -2563,6 +2574,9 @@ export function createSessionsRegistry(opts?: {
       }): void => onLine(evt.line, evt.stream)
       rt.emitter.on("line", handler)
       return () => rt.emitter.off("line", handler)
+    },
+    subscribeToRecords(id, onRecord) {
+      return baseTranscriptWriter.subscribe(id, onRecord)
     },
     attachPty(id, initial, onData, onExit) {
       const rt = sessions.get(id)

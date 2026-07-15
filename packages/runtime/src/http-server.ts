@@ -1614,6 +1614,66 @@ function clampInt(
 }
 
 /**
+ * The exactly-once replay→live handoff for `GET /sessions/:id/events/stream`,
+ * pulled out of the route handler so the race it exists to close can be unit
+ * tested with a fully controlled disk iterator and a fully controlled
+ * subscribe callback instead of racing real fs/network timing.
+ *
+ * `subscribe` is called SYNCHRONOUSLY, before this function does anything
+ * else — including before it starts consuming `diskRecords` — and the
+ * returned `unsubscribe` is handed back to the caller before `done` even
+ * starts resolving, so a caller can wire cleanup (e.g. `req.once("close",
+ * unsubscribe)`) immediately, with zero awaited statements between
+ * subscribing and the disk read starting. That ordering is what makes the
+ * handoff gap-free: a record written after subscribe() is ALWAYS observed
+ * by the live callback, whether or not the disk read also happens to reach
+ * it first.
+ *
+ * Both channels feed the same `gate`, keyed on the highest seq sent so far
+ * (seeded at `since`). Live records arriving while the disk read is still
+ * in flight are parked in `buffered` rather than sent immediately — sending
+ * them immediately would risk interleaving them ahead of not-yet-read disk
+ * records, breaking ordering. Once the disk read finishes, `gate` already
+ * reflects the highest seq it actually delivered, so draining `buffered`
+ * through it for-free skips anything the disk read already sent and
+ * forwards only what's new — that's what makes the handoff dupe-free too.
+ */
+export function deliverRecordsExactlyOnce(opts: {
+  since: number
+  diskRecords: AsyncIterable<Record<string, unknown>>
+  subscribe: (onRecord: (record: Record<string, unknown>) => void) => () => void
+  send: (record: Record<string, unknown>) => void
+}): { unsubscribe: () => void; done: Promise<void> } {
+  let lastSeqSent = opts.since
+  let replaying = true
+  const buffered: Record<string, unknown>[] = []
+  const gate = (record: Record<string, unknown>): void => {
+    const seq = record.seq
+    if (typeof seq !== "number" || seq <= lastSeqSent) return
+    lastSeqSent = seq
+    opts.send(record)
+  }
+  const unsubscribe = opts.subscribe(record => {
+    if (replaying) {
+      buffered.push(record)
+    } else {
+      gate(record)
+    }
+  })
+  const done = (async (): Promise<void> => {
+    for await (const rec of opts.diskRecords) {
+      gate(rec)
+    }
+    // Synchronous from here — no `await` between flipping `replaying` and
+    // draining `buffered`, so no write can land in the gap between them.
+    replaying = false
+    for (const rec of buffered) gate(rec)
+    buffered.length = 0
+  })()
+  return { unsubscribe, done }
+}
+
+/**
  * /sessions routes — split out of the main switch so the surface
  * stays scannable. Returns `true` when it handled the request, so
  * the dispatcher knows to skip the 404 path.
@@ -1627,6 +1687,12 @@ function clampInt(
  *                                    max 2000). Returns {sessionId, events, nextSeq, complete};
  *                                    404 {error:"no_transcript"} when the file doesn't exist.
  *                                    Read-only GET, no auth gate (same policy as /export).
+ *   GET    /sessions/:id/events/stream → SSE live-push sibling of /events: replays every
+ *                                    record after since=<seq> (default 0) from disk, then
+ *                                    switches to live push as new records are written — one
+ *                                    `data:` frame per record, same JSON shape /events returns
+ *                                    per array element. 404 {error:"no_transcript"} parity with
+ *                                    /events. Read-only GET, no auth gate (same policy as /events).
  *   GET    /sessions/:id/wait     → block until a lifecycle event fires (long-poll;
  *                                    requires sessionEvents + eventRing wired). Query:
  *                                    event=turn-end|awaiting-input|exited|any (default any),
@@ -2234,8 +2300,14 @@ async function handleSessions(
   // Per-id routes. The `:id` slot also accepts a session's `name`
   // when one was set at spawn time — `findByIdOrName` resolves both
   // and the rest of the handler operates on the canonical id.
+  // `/events/stream` MUST be tried before the bare `/events` alternative:
+  // both are valid suffixes and `/events` is a prefix of `/events/stream`,
+  // so putting the longer one first matches it directly instead of relying
+  // on regex backtracking (JS alternation does backtrack across `$`, so
+  // either order technically works today, but ordering by specificity
+  // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/stream|\/kill|\/preview|\/export|\/events|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/preview|\/export|\/events|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -2353,6 +2425,103 @@ async function handleSessions(
       nextSeq,
       complete: !truncated,
     })
+    return true
+  }
+
+  if (suffix === "/events/stream" && req.method === "GET") {
+    // SSE live-push sibling of /events — same source file, same record
+    // shape per `data:` frame, so a client's poll-route reducer works
+    // unchanged against this stream. Read-only GET, no auth gate (same
+    // policy as /events).
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const sinceRaw = qs.get("since")
+    if (sinceRaw !== null && !/^\d+$/.test(sinceRaw)) {
+      json(400, {
+        error: "invalid_since",
+        message: "since must be a non-negative integer",
+      })
+      return true
+    }
+    const since = sinceRaw !== null ? Number.parseInt(sinceRaw, 10) : 0
+
+    // Existence check up front, same ENOENT→404 contract as /events —
+    // lets a caller distinguish "no transcript" from "connection refused"
+    // before any SSE bytes go out.
+    const filePath = sessionEventsPath(id)
+    let fileStream: ReturnType<typeof createReadStream>
+    try {
+      fileStream = createReadStream(filePath, { encoding: "utf8" })
+      await new Promise<void>((resolve, reject) => {
+        fileStream.once("error", reject)
+        fileStream.once("open", resolve)
+      })
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "ENOENT") {
+        json(404, { error: "no_transcript" })
+        return true
+      }
+      throw err
+    }
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    })
+    // Node buffers `writeHead` until the first `res.write` — without this,
+    // a session with nothing new to replay would leave the client's
+    // connection attempt hanging (no bytes at all) until the first live
+    // record or the 25s keep-alive ping, whichever comes first. Matches
+    // the `: connected` convention `/events` (the bus route) already uses.
+    res.write(`: connected\n\n`)
+    const ping = setInterval(() => {
+      try {
+        res.write(`: keep-alive\n\n`)
+      } catch {
+        clearInterval(ping)
+      }
+    }, 25_000)
+
+    async function* diskRecords(): AsyncGenerator<Record<string, unknown>> {
+      const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
+      for await (const line of rl) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          yield JSON.parse(trimmed) as Record<string, unknown>
+        } catch {
+          continue
+        }
+      }
+    }
+
+    const { unsubscribe, done } = deliverRecordsExactlyOnce({
+      since,
+      diskRecords: diskRecords(),
+      subscribe: onRecord => registry.subscribeToRecords(id, onRecord),
+      send: record => {
+        try {
+          res.write(`data: ${JSON.stringify(record)}\n\n`)
+        } catch {
+          // Client gone — cleanup happens on `close`.
+        }
+      },
+    })
+    // Registered immediately after subscribing (deliverRecordsExactlyOnce
+    // subscribes synchronously before returning) so a client that
+    // disconnects mid-replay — a large backlog, a slow pipe — still tears
+    // down the subscription instead of leaking it for the rest of the
+    // daemon's life.
+    req.once("close", () => {
+      unsubscribe()
+      clearInterval(ping)
+    })
+
+    await done
     return true
   }
 

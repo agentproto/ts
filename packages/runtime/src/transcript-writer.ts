@@ -100,6 +100,19 @@ export interface TranscriptWriter extends SessionObserver {
   /** Close every open session stream — called from the registry's
    *  synchronous shutdown path (fire-and-forget there too). */
   closeAll(): Promise<void>
+  /** Subscribe to every record as it's written for one session — the
+   *  live-push half of `GET /sessions/:id/events/stream`'s replay-then-
+   *  subscribe handoff (http-server.ts). Delivers the exact object shape
+   *  written to disk (`{seq, ts, kind, ...}`, pre-JSON.stringify), so a
+   *  consumer already reducing the poll route's `events` array can reduce
+   *  this stream with identical logic. No backfill here — history is a
+   *  file read the caller does itself; this only wires the live tap.
+   *  Notification happens synchronously, in the same call that appends the
+   *  record, so a caller that subscribes before doing its own disk read is
+   *  guaranteed to observe (via this callback) every record from that
+   *  point on, even ones the read might otherwise race. Returns an
+   *  unsubscribe fn; safe to call more than once. */
+  subscribe(sessionId: string, onRecord: (record: Record<string, unknown>) => void): () => void
 }
 
 interface WriterState {
@@ -114,6 +127,7 @@ interface WriterState {
 export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptWriter {
   const baseDir = opts?.baseDir
   const states = new Map<string, WriterState>()
+  const listeners = new Map<string, Set<(record: Record<string, unknown>) => void>>()
 
   const getState = (sessionId: string): WriterState => {
     const existing = states.get(sessionId)
@@ -145,9 +159,12 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
     record: Record<string, unknown>
   ): void => {
     state.seq += 1
-    state.stream.write(
-      JSON.stringify({ seq: state.seq, ts: new Date().toISOString(), ...record }) + "\n"
-    )
+    const full = { seq: state.seq, ts: new Date().toISOString(), ...record }
+    state.stream.write(JSON.stringify(full) + "\n")
+    const subs = listeners.get(sessionId)
+    if (subs) {
+      for (const onRecord of subs) onRecord(full)
+    }
   }
 
   const flushTextBuf = (sessionId: string, state: WriterState): void => {
@@ -337,6 +354,20 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
       }
       states.clear()
       return Promise.all(closings).then(() => undefined)
+    },
+    subscribe(sessionId, onRecord) {
+      let subs = listeners.get(sessionId)
+      if (!subs) {
+        subs = new Set()
+        listeners.set(sessionId, subs)
+      }
+      subs.add(onRecord)
+      return () => {
+        const current = listeners.get(sessionId)
+        if (!current) return
+        current.delete(onRecord)
+        if (current.size === 0) listeners.delete(sessionId)
+      }
     },
   }
 }

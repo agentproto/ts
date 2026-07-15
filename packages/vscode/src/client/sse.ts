@@ -20,6 +20,15 @@ export interface SseSubscription {
 export interface SseHandlers {
   onEvent: (data: unknown) => void
   onError?: (err: Error) => void
+  /** Fires once per successful connect — after the fetch resolves 2xx with a
+   *  body, before the stream starts being read. Optional and additive: a
+   *  caller that doesn't need to distinguish "the route doesn't exist" (404,
+   *  old daemon) from "a transient drop mid-stream" can omit it, same as
+   *  before this field existed. `SseRecordFeed` (transcriptPanelController.ts)
+   *  is the first consumer — it falls back to polling on an error that
+   *  arrives before `onOpen` ever fired, and leaves anything after that to
+   *  this module's own reconnect/backoff. */
+  onOpen?: () => void
 }
 
 const INITIAL_BACKOFF_MS = 1_000
@@ -55,6 +64,7 @@ export function subscribeSse(
         }
         // Stream opened — reset backoff for the next failure.
         backoff = INITIAL_BACKOFF_MS
+        handlers.onOpen?.()
         await readStream(res.body, handlers)
         // Stream ended without close() — the server dropped it; reconnect.
         if (closed) return
