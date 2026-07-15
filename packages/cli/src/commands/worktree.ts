@@ -53,7 +53,11 @@ import {
   detectDefaultBranch,
   salvageWorktree,
   WorktreeNotRemovableError,
+  planGc,
+  applyGc,
   type WorktreeStatusEntry,
+  type GcPlanEntry,
+  type GcApplyOutcome,
 } from "@agentproto/worktree"
 
 const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
@@ -66,6 +70,8 @@ Usage:
                                      [--discard-untracked] [--discard-modified] [--json]
   agentproto worktree archive <path> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
+  agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
+                                     [--include-detached] [--json]
   agentproto worktree --help
 
   ls        List the repo's git worktrees (path, branch, HEAD).
@@ -88,6 +94,16 @@ Usage:
             ~/.agentproto/worktree-salvage/ (changes.patch + a copy of every
             untracked file + MANIFEST.json), then run the same removal as
             \`rm\` with both discard flags granted — nothing on disk is lost.
+  gc        Classify every linked worktree into reclaim (merged+clean+idle) /
+            salvage (merged+dirty) / hold (everything else), then print the
+            plan. DRY RUN by default — nothing is touched without --apply.
+            --apply removes every reclaim-class worktree (plain, non-force
+            \`git worktree remove\` — refuses if the tree turned dirty since
+            the plan was made) and deletes its now-merged branch.
+            --salvage-dirty additionally archives every salvage-class
+            worktree (salvage snapshot, then remove — same as \`archive\`).
+            hold-class worktrees are never touched, with or without flags.
+            --include-detached also reclaims clean, idle detached worktrees.
 `
 
 const candidates = [worktreeProvider]
@@ -102,13 +118,14 @@ export async function runWorktree(args: readonly string[]): Promise<number> {
   if (sub === "new") return runNew(args.slice(1))
   if (sub === "rm" || sub === "remove") return runRm(args.slice(1))
   if (sub === "archive") return runArchive(args.slice(1))
+  if (sub === "gc") return runGc(args.slice(1))
 
   if (!sub) {
     process.stdout.write(USAGE)
     return 0
   }
   process.stderr.write(
-    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | new | rm | archive\n`,
+    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | new | rm | archive | gc\n`,
   )
   return 2
 }
@@ -511,4 +528,147 @@ async function runArchive(args: readonly string[]): Promise<number> {
     process.stdout.write(`worktree archived  ${cwd}${branch ? `  (branch ${branch})` : ""}  (salvaged to ${salvageDir})\n`)
   }
   return 0
+}
+
+// ── gc ──────────────────────────────────────────────────────────────────
+
+/**
+ * `gc` (PLAN.md §5, PR-D): dry-run by default, `--apply` executes. All the
+ * safety logic lives in `@agentproto/worktree`'s `planGc`/`applyGc` — this
+ * is a thin shell that resolves the repo, wires up the same forge/memo `ls
+ * --status` uses, and renders the result.
+ */
+async function runGc(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      repo: { type: "string" },
+      apply: { type: "boolean" },
+      "salvage-dirty": { type: "boolean" },
+      "include-detached": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+
+  const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
+  if (!repoRoot) {
+    process.stderr.write("agentproto worktree gc: not inside a git repository.\n")
+    return 2
+  }
+
+  const [forge, defaultBranch] = await Promise.all([createForgeClient(repoRoot), detectDefaultBranch(repoRoot)])
+  const repoName = repoLabel(repoRoot)
+  const memo = new FileVerdictMemoStore()
+  const includeDetached = Boolean(values["include-detached"])
+  const salvageDirty = Boolean(values["salvage-dirty"])
+  const defaultBranchRef = `origin/${defaultBranch}`
+
+  const plan = await planGc({ repoRoot, repoName, forge, memo, defaultBranchRef, includeDetached })
+
+  if (!values.apply) {
+    printGcPlan(plan, salvageDirty, Boolean(values.json))
+    return 0
+  }
+
+  const outcomes = await applyGc(plan, {
+    repoRoot,
+    repoName,
+    forge,
+    memo,
+    defaultBranchRef,
+    includeDetached,
+    salvageDirty,
+  })
+  printGcOutcomes(outcomes, Boolean(values.json))
+  return outcomes.some((o) => o.result === "failed") ? 1 : 0
+}
+
+function printGcPlan(plan: readonly GcPlanEntry[], salvageDirty: boolean, json: boolean): void {
+  if (json) {
+    process.stdout.write(JSON.stringify(plan, null, 2) + "\n")
+    return
+  }
+  if (plan.length === 0) {
+    process.stdout.write("No worktrees.\n")
+    return
+  }
+  process.stdout.write(
+    `${"BRANCH".padEnd(28)}  ${"CLASS".padEnd(9)}  ${"ACTION".padEnd(30)}  ${"TREE".padEnd(16)}  ${"INTEGRATION".padEnd(26)}  PATH\n`,
+  )
+  const counts = { reclaim: 0, salvage: 0, hold: 0 }
+  for (const entry of plan) {
+    counts[entry.class]++
+    process.stdout.write(formatGcPlanRow(entry, salvageDirty) + "\n")
+  }
+  process.stdout.write(
+    `\n${counts.reclaim} reclaim, ${counts.salvage} salvage, ${counts.hold} hold. ` +
+      `Dry run — pass --apply to execute` +
+      (counts.salvage > 0 && !salvageDirty ? " (add --salvage-dirty to also archive salvage-class worktrees)" : "") +
+      ".\n",
+  )
+}
+
+function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
+  if (entry.class === "reclaim") return "reclaim (rm, delete branch)"
+  if (entry.class === "salvage") return salvageDirty ? "salvage (archive)" : "salvage (skip: needs --salvage-dirty)"
+  return "hold (never touched)"
+}
+
+function formatGcPlanRow(entry: GcPlanEntry, salvageDirty: boolean): string {
+  const branch = entry.branch ?? "(detached)"
+  return [
+    branch.padEnd(28),
+    entry.class.padEnd(9),
+    gcPlanAction(entry, salvageDirty).padEnd(30),
+    formatTree(entry.tree).padEnd(16),
+    formatIntegration(entry.integration).padEnd(26),
+    entry.path,
+  ].join("  ")
+}
+
+function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
+  const branch = outcome.branch ?? "(detached)"
+  let detail: string
+  switch (outcome.result) {
+    case "reclaimed":
+      detail = "reclaimed"
+      break
+    case "salvaged":
+      detail = `salvaged (${outcome.salvageDir})`
+      break
+    case "held":
+      detail = "held"
+      break
+    case "skipped-dirty":
+      detail = "skipped (needs --salvage-dirty)"
+      break
+    case "aborted-reclassified":
+      detail = `aborted: reclassified ${outcome.from} → ${outcome.to} since the plan was made`
+      break
+    case "aborted-vanished":
+      detail = "aborted: worktree no longer exists"
+      break
+    case "failed":
+      detail = `failed: ${outcome.message}`
+      break
+  }
+  return `${branch.padEnd(28)}  ${detail}  ${outcome.path}`
+}
+
+function printGcOutcomes(outcomes: readonly GcApplyOutcome[], json: boolean): void {
+  if (json) {
+    process.stdout.write(JSON.stringify(outcomes, null, 2) + "\n")
+    return
+  }
+  if (outcomes.length === 0) {
+    process.stdout.write("No worktrees.\n")
+    return
+  }
+  for (const outcome of outcomes) process.stdout.write(formatGcOutcomeRow(outcome) + "\n")
+  const reclaimed = outcomes.filter((o) => o.result === "reclaimed").length
+  const salvaged = outcomes.filter((o) => o.result === "salvaged").length
+  const failed = outcomes.filter((o) => o.result === "failed").length
+  process.stdout.write(`\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed.\n`)
 }

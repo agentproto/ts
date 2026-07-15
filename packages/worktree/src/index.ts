@@ -135,3 +135,14 @@ export {
   type DaemonAgentSessionHost,
   type DaemonClient,
 } from "./agent-session-host.js"
+export {
+  classifyForGc,
+  planGc,
+  applyGc,
+  type GcClass,
+  type ClassifyForGcOptions,
+  type GcPlanEntry,
+  type PlanGcInput,
+  type ApplyGcOptions,
+  type GcApplyOutcome,
+} from "./gc.js"
