@@ -57,6 +57,13 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs
 
+      # Guards docs-check.mjs's PreToolUse path-confinement guard — an
+      # unattended `bypassPermissions` SDK run that reads/edits doc files is
+      # otherwise not sandboxed to the repo root (verified live: a run read
+      # files well outside its repo). See scripts/lib/path-confine.mjs.
+      - name: Run docs-check confinement tests
+        run: node --test scripts/path-confine.test.mjs
+
   # On PRs: verify a changeset was added. Quick git-only check that
   # runs in parallel with build-and-test to give fast feedback.
   # If the changeset is missing, pr-review will generate one after

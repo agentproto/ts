@@ -84,8 +84,15 @@ jobs:
       # cheap enough to run on every release. "Machine proposes, human
       # merges": like catalog-sync.yml, edits land as a draft PR, never a
       # direct commit to main.
+      #
+      # continue-on-error: this is a best-effort bonus on top of an already-
+      # published release — a docs-check hiccup (bad key, gateway blip, ran
+      # out of turns on a large batch) must never make an otherwise-successful
+      # release job look red. The script itself already soft-fails (see
+      # scripts/docs-check.mjs's try/catch), this is defense in depth.
       - name: Check docs for release drift
         if: steps.changesets.outputs.published == 'true'
+        continue-on-error: true
         run: node scripts/docs-check.mjs
         env:
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}

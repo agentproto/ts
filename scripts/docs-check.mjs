@@ -45,14 +45,18 @@
  *                        (see buildEnv below) so it can never leak to Moonshot.
  *
  * Exit codes:
- *   0 — completed (edits made, or none needed, or dry-run report printed)
- *   1 — error (missing key, SDK error)
+ *   0 — completed (edits made, or none needed, or dry-run report printed), or
+ *       a soft failure (SDK error, turn-cap, no result message) — this is a
+ *       best-effort bonus on top of an already-published release and must
+ *       never redden that job; see the try/catch in main() below.
+ *   1 — hard error before the SDK run even started (missing API key)
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { execSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
 
 // ── root ──────────────────────────────────────────────────────────────────
 
@@ -273,15 +277,18 @@ function buildEnv() {
   return env
 }
 
-// ── run ───────────────────────────────────────────────────────────────────
+// ── permission guard ────────────────────────────────────────────────────────
 //
-// permissionMode: 'bypassPermissions' (+ its required companion
-// allowDangerouslySkipPermissions) is unavoidable here: this runs unattended
-// in a GitHub Actions job, with no human able to answer a tool-permission
-// prompt. The blast radius is bounded instead by `allowedTools` — Read/Grep/
-// Glob always, Edit only outside --dry-run; no Bash, no Write, so the worst
-// case is an unwanted edit to an existing doc file, never arbitrary exec or
-// new files.
+// See scripts/lib/path-confine.mjs for why `tools` alone isn't confinement
+// and why `PreToolUse` (not `canUseTool`) is the enforcement point. This also
+// covers the --path/--base path-scoped mode (glob/base ref are only used for
+// local `git` shelling-out and prompt text — the model never receives them
+// as a tool-callable path), so there's no separate escape surface to confine
+// there.
+
+const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
+
+// ── run ───────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${scopeLabel}, model ${MODEL}…`)
@@ -294,41 +301,85 @@ async function main() {
       abortController,
       cwd: ROOT,
       env: buildEnv(),
+      // bypassPermissions: this runs unattended in CI, with no human able to
+      // answer a permission prompt (mirrors adapters/claude-sdk's own
+      // unattended-arm rationale). The PreToolUse hook below is a separate
+      // mechanism from the interactive permission system and still fires
+      // under this mode — verified live — so it's the actual enforcement.
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      hooks: { PreToolUse: [{ hooks: [confineToRepoRoot] }] },
       settingSources: [],
-      includePartialMessages: false,
+      // Kimi's --thinking mode can run a long stretch with zero top-level
+      // messages before the first one arrives; partials keep the stream
+      // observably alive in the meantime (mirrors adapters/claude-sdk's
+      // acp-host.ts, which depends on this for the same reason).
+      includePartialMessages: true,
       thinking: { type: 'enabled' },
-      allowedTools: DRY_RUN ? ['Read', 'Grep', 'Glob'] : ['Read', 'Grep', 'Glob', 'Edit'],
-      maxTurns: 40,
+      // `tools` restricts the base toolset available at all — Read/Grep/Glob
+      // always, Edit only outside --dry-run. The PreToolUse hook above then
+      // confines every call within that set to ROOT.
+      tools: DRY_RUN ? ['Read', 'Grep', 'Glob'] : ['Read', 'Grep', 'Glob', 'Edit'],
+      // 40 wasn't enough for an unusually large batch (15 packages in one
+      // release commit, observed live) — the run hit the cap mid-audit.
+      // Raised as headroom, not a guarantee: an even larger batch can still
+      // hit it, which is why hitting the cap is handled as a soft failure
+      // below rather than crashing.
+      maxTurns: 80,
     },
   })
 
   let finalResult = null
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content ?? []) {
-        if (block.type === 'text' && block.text) console.log('\n' + block.text)
-        if (block.type === 'tool_use') {
-          const input = Object.entries(block.input ?? {})
-            .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 80)}`)
-            .join(', ')
-          console.log(`   🔧 ${block.name}(${input})`)
+  try {
+    for await (const message of result) {
+      if (message.type === 'stream_event') {
+        process.stdout.write('.')
+      } else if (message.type === 'assistant') {
+        for (const block of message.message.content ?? []) {
+          if (block.type === 'text' && block.text) console.log('\n' + block.text)
+          if (block.type === 'tool_use') {
+            const input = Object.entries(block.input ?? {})
+              .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 80)}`)
+              .join(', ')
+            console.log(`   🔧 ${block.name}(${input})`)
+          }
         }
+      } else if (message.type === 'user') {
+        // Surfaces PreToolUse denials (e.g. the path-confinement guard) in the
+        // CI log — otherwise a denied call is silent apart from the model's
+        // own retry.
+        for (const block of message.message.content ?? []) {
+          if (block.type === 'tool_result' && block.is_error) {
+            const text = Array.isArray(block.content) ? block.content.map((c) => c.text).join('') : block.content
+            console.log(`   ⛔ ${String(text).slice(0, 300)}`)
+          }
+        }
+      } else if (message.type === 'result') {
+        finalResult = message
       }
-    } else if (message.type === 'result') {
-      finalResult = message
     }
+  } catch (e) {
+    // The SDK throws (rather than yielding a `result` message) on some
+    // terminal conditions — e.g. `error_max_turns`, observed live on an
+    // unusually large batch (15 packages in one release commit). This is a
+    // soft failure, not a hard one: docs-check is a best-effort bonus on top
+    // of an already-published release, and must never make the release job
+    // itself look red. Whatever edits were already applied before the cutoff
+    // are still on disk — the workflow's drift-detection step still picks
+    // them up and opens a PR (partial coverage, flagged by this message in
+    // the log, is preferable to no PR at all).
+    console.warn(`\n⚠️  docs-check did not finish cleanly: ${e.message}`)
+    console.warn('Any edits made before the cutoff are still on disk; the workflow will PR them if present.')
+    return
   }
 
   if (!finalResult) {
-    console.error('Error: docs-check produced no result message.')
-    process.exit(1)
+    console.warn('\n⚠️  docs-check produced no result message (stream ended without one).')
+    return
   }
   if (finalResult.is_error) {
-    console.error(`Error: docs-check ended with an error (stop_reason: ${finalResult.stop_reason}).`)
-    console.error(finalResult.result)
-    process.exit(1)
+    console.warn(`\n⚠️  docs-check ended with an error (stop_reason: ${finalResult.stop_reason}): ${finalResult.result}`)
+    return
   }
 
   console.log(`\n✅ docs-check complete (${finalResult.num_turns} turns, $${finalResult.total_cost_usd.toFixed(4)}).`)
