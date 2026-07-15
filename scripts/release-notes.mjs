@@ -461,13 +461,20 @@ npm install @agentproto/agent@latest @agentproto/mcp-server@latest ...
 
 // ── agentic loop ──────────────────────────────────────────────────────────────
 
-const apiKey = process.env.ANTHROPIC_API_KEY
-if (!apiKey) {
-  console.error('Error: ANTHROPIC_API_KEY is not set.')
-  process.exit(1)
+// Checked when the loop actually runs, not at import. A top-level process.exit
+// here means importing this module for a test kills the test runner — which it
+// did, the first time CI ran the tests below.
+function requireApiKey() {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) {
+    log('Error: ANTHROPIC_API_KEY is not set.')
+    process.exit(1)
+  }
+  return apiKey
 }
 
 async function callClaude(messages) {
+  const apiKey = requireApiKey()
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
