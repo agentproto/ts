@@ -7,7 +7,9 @@
  *   - Initial transcript rendered from `exportSession("markdown")` with a
  *     `preview(200)` fallback.
  *   - Live output streamed via `SessionStore.focusOutput()`.
- *   - Send / interrupt-send / kill actions wired to the daemon client.
+ *   - Send / interrupt-send wired to the daemon client. NOT kill: that lives
+ *     in the sessions tree (`agentproto.killSession`), not under the user's
+ *     eyes as a permanently-red slab beside the thing they type into.
  *   - Clean disposal of subscriptions when the panel closes.
  */
 
@@ -136,9 +138,6 @@ async function handleWebviewMessage(
       return
     case "interruptSend":
       await controller.onSend(msg.text, true)
-      return
-    case "kill":
-      await controller.onKill()
       return
   }
 }
@@ -444,9 +443,61 @@ export function buildHtml(nonce: string): string {
        under the user's eyes. */
     #input-area {
       flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       padding: 10px 14px 12px;
       background-color: var(--vscode-editor-background);
     }
+    /* ── Error banner ─────────────────────────────────────────────────
+       Errors used to be one line of red text wedged under the buttons,
+       clipped mid-sentence — the daemon's actual reason was unreadable. A
+       banner above the composer gets the full message, selectable so it can
+       be copied into a bug report, and a dismiss. */
+    #error-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      background: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.1));
+      border-radius: 6px;
+    }
+    #error-banner[hidden] { display: none; }
+    #eb-icon { flex: 0 0 auto; color: var(--vscode-errorForeground); }
+    #eb-body { flex: 1 1 auto; min-width: 0; }
+    #eb-title { font-weight: 600; margin-bottom: 2px; }
+    #eb-message {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-editor-font-family);
+      /* The whole reason this exists: never clip the daemon's message. */
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    #eb-dismiss { flex: 0 0 auto; }
+    /* ── Queued message ───────────────────────────────────────────────
+       A prompt typed mid-turn is held here rather than rejected. */
+    #queued {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+    }
+    #queued[hidden] { display: none; }
+    #queued-label {
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #queued-cancel { flex: 0 0 auto; }
     #composer {
       display: flex;
       flex-direction: column;
@@ -563,16 +614,29 @@ export function buildHtml(nonce: string): string {
     <span id="working-text"></span>
   </div>
   <div id="input-area">
+    <div id="error-banner" hidden>
+      <span id="eb-icon">&#9888;</span>
+      <div id="eb-body">
+        <div id="eb-title"></div>
+        <div id="eb-message"></div>
+      </div>
+      <button id="eb-dismiss" title="Dismiss">✕</button>
+    </div>
+    <div id="queued" hidden>
+      <span id="queued-icon">&#9203;</span>
+      <span id="queued-label"></span>
+      <button id="queued-cancel" title="Discard the queued message">✕</button>
+    </div>
     <div id="composer">
       <textarea id="input" rows="1" placeholder="Reply to the agent…"></textarea>
       <div id="composer-bar">
         <span id="composer-meta">
-          <span id="composer-adapter" class="composer-chip"></span>
+          <span id="composer-harness" class="composer-chip"></span>
           <span id="composer-model" class="composer-chip"></span>
+          <span id="composer-auth" class="composer-chip"></span>
         </span>
         <span id="send-status"></span>
-        <button id="interrupt-send" hidden title="Interrupt the current turn and send this instead">Interrupt &amp; send</button>
-        <button id="kill" title="Kill this session">Kill</button>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
         <button id="send" title="Send (Enter)">↵</button>
       </div>
     </div>
@@ -589,19 +653,33 @@ export function buildHtml(nonce: string): string {
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
-      const composerAdapter = document.getElementById('composer-adapter');
+      const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
+      const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const interruptBtn = document.getElementById('interrupt-send');
-      const killBtn = document.getElementById('kill');
       const sendStatus = document.getElementById('send-status');
+      const errorBanner = document.getElementById('error-banner');
+      const ebTitle = document.getElementById('eb-title');
+      const ebMessage = document.getElementById('eb-message');
+      const ebDismiss = document.getElementById('eb-dismiss');
+      const queuedRow = document.getElementById('queued');
+      const queuedLabel = document.getElementById('queued-label');
+      const queuedCancel = document.getElementById('queued-cancel');
 
       let exited = false;
       let busy = false;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
+      /**
+       * Text typed while the agent was mid-turn. The daemon takes ONE turn at
+       * a time and rejects anything else with a 409, so instead of firing that
+       * at the user we hold the message here and flush it the moment the turn
+       * ends — or immediately, if they choose to interrupt.
+       */
+      let queuedText = null;
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
@@ -630,10 +708,46 @@ export function buildHtml(nonce: string): string {
         input.disabled = !live;
         sendBtn.disabled = !live || !hasText;
         sendBtn.classList.toggle('has-text', hasText && live);
-        interruptBtn.disabled = !live || !hasText;
-        interruptBtn.hidden = !busy || exited;
-        killBtn.disabled = exited;
+        // "Interrupt & send" exists to force a message the agent hasn't taken
+        // yet — so it appears only when there IS one waiting, not merely
+        // whenever the agent is busy.
+        interruptBtn.hidden = queuedText === null || exited;
+        interruptBtn.disabled = !live;
         composer.classList.toggle('disabled', exited);
+        renderQueued();
+      }
+
+      function renderQueued() {
+        queuedRow.hidden = queuedText === null;
+        if (queuedText === null) return;
+        // \\s, not \s: this script lives in a template literal, where an
+        // unrecognised escape collapses to its own letter — /\s+/ would ship
+        // as /s+/ and blank out every "s" in the user's message.
+        const oneLine = queuedText.replace(/\\s+/g, ' ').trim();
+        const clipped = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
+        queuedLabel.textContent = 'Queued · ' + clipped;
+        queuedRow.title = queuedText;
+      }
+
+      function showError(title, message) {
+        ebTitle.textContent = title;
+        ebMessage.textContent = message;
+        errorBanner.hidden = false;
+      }
+
+      function clearError() {
+        errorBanner.hidden = true;
+        ebMessage.textContent = '';
+      }
+
+      /** Hand the queued text to the agent, optionally cutting its turn short. */
+      function flushQueued(interrupt) {
+        if (queuedText === null) return;
+        const text = queuedText;
+        queuedText = null;
+        renderQueued();
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text });
+        refreshComposer();
       }
 
       // "Working…" plus how long and how much — the three things a user
@@ -651,14 +765,19 @@ export function buildHtml(nonce: string): string {
         updateHeader(session);
         exited = isTerminal(session);
         // A terminal session is never busy, whatever the descriptor says — see
-        // isTerminal. Without this a killed session span the working row forever.
+        // isTerminal. Without this a killed session spins the working row forever.
         const nowBusy = !exited && Boolean(session.busy);
         if (nowBusy && !busy) busySince = Date.now();
         if (!nowBusy) busySince = 0;
+        const wasBusy = busy;
         busy = nowBusy;
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
         refreshComposer();
         refreshWorking();
+        // The turn just ended — the daemon will accept a prompt again, so hand
+        // over whatever was typed during it. This is the whole point of the
+        // queue: the user types when they think of it, not when the agent is ready.
+        if (wasBusy && !nowBusy && !exited && queuedText !== null) flushQueued(false);
       }
 
       function setSending(sending) {
@@ -684,10 +803,12 @@ export function buildHtml(nonce: string): string {
 
       function updateHeader(session) {
         headerTitle.textContent = session.label || session.id || '';
-        // adapter/model deliberately NOT repeated here — they live in the
-        // composer bar, next to where the user types to them.
-        composerAdapter.textContent = session.adapterSlug || '';
+        // What will answer, shown where you type to it — the header no longer
+        // repeats any of it. Each chip is omitted when the daemon doesn't
+        // report the field (CSS :empty), rather than rendering "undefined".
+        composerHarness.textContent = session.adapterSlug || '';
         composerModel.textContent = session.model || '';
+        composerAuth.textContent = session.auth ? session.auth.mode : '';
 
         const chip = computeStatusChip(session);
         statusChip.textContent = chip;
@@ -1078,9 +1199,18 @@ export function buildHtml(nonce: string): string {
       function send(interrupt) {
         const text = input.value;
         if (!text || !text.trim()) return;
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text.trim() });
+        const trimmed = text.trim();
         input.value = '';
         autoGrow();
+        clearError();
+        // Mid-turn and not explicitly interrupting: hold it rather than POST a
+        // prompt the daemon will refuse with a 409. It goes out on turn-end.
+        if (busy && !interrupt) {
+          queuedText = trimmed;
+          refreshComposer();
+          return;
+        }
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: trimmed });
         refreshComposer();
       }
 
@@ -1097,12 +1227,14 @@ export function buildHtml(nonce: string): string {
       });
 
       sendBtn.addEventListener('click', function() { send(false); });
-      interruptBtn.addEventListener('click', function() { send(true); });
-      killBtn.addEventListener('click', function() {
-        if (confirm('Kill this session?')) {
-          vscode.postMessage({ type: 'kill' });
-        }
+      // Interrupt only ever acts on the queued message — it's the only thing
+      // waiting, and it's what the button offers to stop waiting for.
+      interruptBtn.addEventListener('click', function() { flushQueued(true); });
+      queuedCancel.addEventListener('click', function() {
+        queuedText = null;
+        refreshComposer();
       });
+      ebDismiss.addEventListener('click', clearError);
 
       window.addEventListener('message', function(e) {
         const msg = e.data;
@@ -1139,7 +1271,15 @@ export function buildHtml(nonce: string): string {
             break;
           case 'sendError':
             setSending(false);
-            sendStatus.textContent = msg.message || 'Send failed';
+            if (msg.kind === 'busy') {
+              // Lost the race: the turn started between our busy check and the
+              // POST. Not an error — re-queue and let turn-end flush it, which
+              // is exactly what would have happened had we seen busy in time.
+              queuedText = msg.text || queuedText;
+              refreshComposer();
+              break;
+            }
+            showError(msg.title || 'Send failed', msg.message || '');
             break;
         }
       });

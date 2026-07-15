@@ -47,6 +47,9 @@ interface RenderOptions {
    *  vi.useFakeTimers() has already patched those, so the ticker can be
    *  driven with vi.advanceTimersByTime instead of a real sleep. */
   fakeTimers?: boolean
+  /** Observe what the webview posts BACK to the host — the only way to assert
+   *  that a mid-turn message was withheld rather than sent. */
+  onPost?: (msg: unknown) => void
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
@@ -55,7 +58,7 @@ function renderPanel(opts: RenderOptions = {}): Panel {
     url: "https://example.test/",
     beforeParse(window) {
       window.acquireVsCodeApi = () => ({
-        postMessage: () => {},
+        postMessage: (msg: unknown) => opts.onPost?.(msg),
         getState: () => undefined,
         setState: () => {},
       })
@@ -398,7 +401,7 @@ describe("transcriptPanel webview — composer", () => {
   it("names the agent and model in the composer bar, where the user types to them", () => {
     const panel = renderPanel()
     init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
-    expect(btn(panel, "composer-adapter").textContent).toBe("claude-code")
+    expect(btn(panel, "composer-harness").textContent).toBe("claude-code")
     expect(btn(panel, "composer-model").textContent).toBe("sonnet-5")
     // ...and the header does not repeat them.
     expect(panel.document.getElementById("header-subtitle")).toBeNull()
@@ -419,28 +422,29 @@ describe("transcriptPanel webview — composer", () => {
     expect(send.classList.contains("has-text")).toBe(true)
   })
 
-  it("hides interrupt unless the agent is actually busy", () => {
-    const panel = renderPanel()
-    init(panel, { busy: false })
-    expect(btn(panel, "interrupt-send").hidden).toBe(true)
-
-    panel.send({ type: "sessionUpdate", session: session({ busy: true }) })
-    expect(btn(panel, "interrupt-send").hidden).toBe(false)
-  })
-
-  it("disables the composer and kill once the session is dead", () => {
+  it("hides interrupt until a message is actually waiting — busy alone is not enough", () => {
     const panel = renderPanel()
     init(panel, { busy: true })
-    expect(btn(panel, "kill").disabled).toBe(false)
+    // The agent is working, but nothing is queued: there is nothing to force.
+    expect(btn(panel, "interrupt-send").hidden).toBe(true)
+  })
+
+  it("disables the composer once the session is dead", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
 
     panel.send({ type: "sessionUpdate", session: session({ status: "exited", busy: false }) })
 
     expect(btn(panel, "input").disabled).toBe(true)
     expect(btn(panel, "send").disabled).toBe(true)
-    expect(btn(panel, "kill").disabled).toBe(true)
-    // Nothing to interrupt on a dead session.
     expect(btn(panel, "interrupt-send").hidden).toBe(true)
     expect(btn(panel, "composer").classList.contains("disabled")).toBe(true)
+  })
+
+  it("has no kill button — killing lives in the sessions tree", () => {
+    const panel = renderPanel()
+    init(panel)
+    expect(panel.document.getElementById("kill")).toBeNull()
   })
 })
 
@@ -527,5 +531,130 @@ describe("transcriptPanel webview — honest session state", () => {
     const panel = renderPanel()
     init(panel, { status: "killed", busy: true })
     expect(el(panel, "working").hidden).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — typing mid-turn queues instead of erroring", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function type(panel: Panel, text: string): void {
+    const input = el(panel, "input")
+    input.value = text
+    input.dispatchEvent(new panel.window.Event("input"))
+  }
+
+  it("holds a message typed mid-turn rather than posting a prompt the daemon would 409", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+
+    type(panel, "also fix the tests")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    // Nothing went to the daemon — the agent is mid-turn.
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    expect(el(panel, "queued").hidden).toBe(false)
+    expect(el(panel, "queued-label").textContent).toBe("Queued · also fix the tests")
+    // No error anywhere: typing while it works is normal.
+    expect(el(panel, "error-banner").hidden).toBe(true)
+    // ...and NOW there is something to force.
+    expect(el(panel, "interrupt-send").hidden).toBe(false)
+    expect(el(panel, "input").value).toBe("")
+  })
+
+  it("flushes the queued message when the turn ends", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "next task")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+
+    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+
+    expect(posted).toContainEqual({ type: "send", text: "next task" })
+    expect(el(panel, "queued").hidden).toBe(true)
+    expect(el(panel, "interrupt-send").hidden).toBe(true)
+  })
+
+  it("interrupt & send forces the queued message immediately", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "stop and do this")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    el(panel, "interrupt-send").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "stop and do this" })
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("cancelling the queued message drops it — it must not fire on turn-end", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "never mind")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    el(panel, "queued-cancel").dispatchEvent(new panel.window.Event("click"))
+    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("re-queues rather than erroring when a 409 wins the race against the busy check", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false }) // idle as far as the panel knows, so it posts
+    panel.send({
+      type: "sendError",
+      kind: "busy",
+      title: "Agent is mid-turn",
+      message: 'HTTP 409 ... is mid-turn — wait for it to finish or cancel',
+      text: "raced message",
+    })
+    expect(el(panel, "error-banner").hidden).toBe(true)
+    expect(el(panel, "queued-label").textContent).toBe("Queued · raced message")
+  })
+
+  it("shows a REAL failure in the banner, with the daemon's full message intact", () => {
+    const panel = renderPanel()
+    init(panel)
+    const message = "POST /sessions/s1/prompt?wait=false failed: ECONNREFUSED 127.0.0.1:18790"
+    panel.send({ type: "sendError", kind: "other", title: "Send failed", message, text: "hi" })
+
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Send failed")
+    // Never clipped — the old one-line red text truncated the reason mid-sentence.
+    expect(el(panel, "eb-message").textContent).toBe(message)
+    expect(el(panel, "queued").hidden).toBe(true)
+
+    el(panel, "eb-dismiss").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "error-banner").hidden).toBe(true)
+  })
+
+  it("names the harness, model and auth mode in the composer bar", () => {
+    const panel = renderPanel()
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      auth: { mode: "subscription", fingerprint: "abc" },
+    })
+    expect(el(panel, "composer-harness").textContent).toBe("claude-code")
+    expect(el(panel, "composer-model").textContent).toBe("sonnet-5")
+    expect(el(panel, "composer-auth").textContent).toBe("subscription")
   })
 })
