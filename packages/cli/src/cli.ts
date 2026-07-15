@@ -39,6 +39,7 @@ import { runOnboard } from "./commands/onboard.js"
 import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runWorktree } from "./commands/worktree.js"
+import { runPolicy } from "./commands/policy.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
@@ -95,6 +96,13 @@ Usage:
   agentproto cron      run    <id>
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
+  agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]
+                              [-- <gate-cmd> [args...]] [--wait] [--json]
+  agentproto policy    status <policyId> [--json]
+  agentproto policy    wait   <policyId> [--timeout <ms>] [--json]
+  agentproto policy    ack    <policyId> (--approve|--reject) [--json]
+  agentproto policy    ls     [--json]
+  agentproto policy    cancel <policyId> [--json]
   agentproto permissions ls    [--json]                   held tool-permission requests
   agentproto permissions <approve|deny> <id> [--always]   resolve a held request
   agentproto acp       ls      [--json]
@@ -153,6 +161,7 @@ const VERBS = new Set([
   "cron",
   "pack",
   "worktree",
+  "policy",
   "permissions",
   "acp",
   "pair",
@@ -235,6 +244,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runPack(rest)
     case "worktree":
       return runWorktree(rest)
+    case "policy":
+      return runPolicy(rest)
     case "permissions":
       return runPermissions(rest)
     case "acp":
