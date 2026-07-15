@@ -5,9 +5,19 @@ in `agentproto/ts` — local or delegated, human-prompted or supervisor-run.
 If you're an agent reading this from a prompt instead of loading it, stop:
 load this file first, it overrides ad-hoc instructions.
 
-See also `.github/AGENT.md` for the cloud reviewer/fixer that runs on every
-PR — this file is about what *you* (the session driving the work) must do
-before and around that.
+Not to be confused with: an AIP-42 agent manifest (also named `AGENT.md`,
+singular, loaded from `<workspace>/.agents/<id>/AGENT.md` —
+`packages/agent/src/schema.ts:2`), or `.github/AGENT.md`, the cloud
+reviewer/fixer harness that runs on every PR — see that file for what it
+does; this file is about what *you* (the session driving the work) must do
+before and around it.
+
+**Reach:** this is a convention, not enforcement. It binds local and
+delegated coding sessions that load it — nothing in the daemon reads it, and
+the cloud reviewer doesn't either (it runs on `.github/AGENT.md` + the
+`aip-conventions` skill from `.github/agentic-review.json`). Loading this
+file is still on the session; it doesn't reach in and gate anything by
+itself.
 
 ## Definition of done for agent sessions
 
@@ -53,8 +63,9 @@ These are already possible through the supervisor's completion-policy engine
 (`policy_attach` MCP verb / `POST /policies` REST route,
 `packages/runtime/src/orchestration-tools.ts:938`,
 `packages/runtime/src/http-server.ts:2902-2951`) — they just aren't written
-down anywhere else. All use today's verb names (`policy_*`); see
-[Naming](#naming-note) below for what's changing later.
+down anywhere else. These use today's verb names (`policy_*`, `policy_attach`,
+`policy_status`, `policy_ack`, `policy_cancel`, `policy_list`) — that's the
+real surface, not a placeholder for something else.
 
 - **CI-status gate.** Wait for a PR's checks as a shell gate:
   ```json
@@ -91,11 +102,3 @@ down anywhere else. All use today's verb names (`policy_*`); see
   (`JudgeGateSpec`, `packages/runtime/src/supervisor.ts:127-148`); and
   `GET /policies/:id/wait` (`http-server.ts:2902-2951`) is a blocking
   long-poll if you'd rather not spin a gate loop yourself.
-
-## Naming note (forward-looking, not yet true)
-
-A later PR renames the supervisor's completion-policy concept from
-**policy** to **contract** (a CLI verb `agentproto contract ...` ships with
-it) — the MCP verbs above (`policy_attach`, `policy_status`, `policy_ack`,
-`policy_cancel`, `policy_list`) are what exists *today*. Don't invoke
-`contract_*` verbs or a `contract` CLI command until that PR lands.
