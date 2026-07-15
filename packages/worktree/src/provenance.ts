@@ -24,7 +24,7 @@
  *     — when it's absent, which is every worktree today.
  */
 
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { sep } from "node:path"
 import { resolve } from "node:path"
@@ -126,6 +126,30 @@ export async function readWorktreeMarker(worktreePath: string): Promise<Worktree
   }
   const result = worktreeMarkerSchema.safeParse(parsed)
   return result.success ? result.data : null
+}
+
+/**
+ * Write the creation marker into `$(git rev-parse --git-dir)/agentproto-
+ * worktree.json` — the worktree's own private gitdir, not the shared
+ * `.git/config` (PLAN.md §1.5 rejected `git config --local` for exactly
+ * this reason: in a linked worktree it reads/writes the main repo's shared
+ * config, so it wouldn't die with the worktree and would collide across
+ * worktrees). Called once, by `worktree.provision`, right after the
+ * worktree is created; nothing else ever rewrites it.
+ */
+export async function writeWorktreeMarker(worktreePath: string, marker: WorktreeMarker): Promise<void> {
+  const gitDirRes = await execArgv(
+    "git",
+    ["-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir"],
+    worktreePath,
+  )
+  if (gitDirRes.exitCode !== 0) {
+    throw new Error(
+      `git rev-parse --git-dir failed in ${worktreePath} (exit ${gitDirRes.exitCode}): ${gitDirRes.stderr.trim()}`,
+    )
+  }
+  const gitDir = gitDirRes.stdout.trim()
+  await writeFile(resolve(gitDir, "agentproto-worktree.json"), JSON.stringify(marker, null, 2) + "\n", "utf8")
 }
 
 export interface ComputeProvenanceOptions {
