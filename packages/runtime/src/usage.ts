@@ -105,12 +105,20 @@ export function deriveSessionUsage(
   input: UsageComputeInput,
   resolve: PricingResolver = defaultResolver,
 ): SessionUsage {
+  // Re-validated here, not just at usage_update ingestion: a rejected
+  // ingress update leaves whatever was already on the descriptor in place
+  // rather than clearing it, so a stale out-of-window value written before
+  // that guard existed (or reloaded from a pre-guard persisted snapshot)
+  // can still reach this call at a session's exit-time recap. Same
+  // reasoning as `plausibleContextUsed`'s own doc comment — drop, don't
+  // clamp.
+  const contextUsed = plausibleContextUsed(input.contextSize, input.contextUsed)
   const base: Omit<SessionUsage, "source" | "costUsd"> = {
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.tokensIn !== undefined ? { tokensIn: input.tokensIn } : {}),
     ...(input.tokensOut !== undefined ? { tokensOut: input.tokensOut } : {}),
     ...(input.contextSize !== undefined ? { contextSize: input.contextSize } : {}),
-    ...(input.contextUsed !== undefined ? { contextUsed: input.contextUsed } : {}),
+    ...(contextUsed !== undefined ? { contextUsed } : {}),
   }
 
   // 1. Adapter reported a cost directly — authoritative.
@@ -154,13 +162,19 @@ export interface UsageDescriptorFields {
  * unstamped `usageSource` to `"none"`.
  */
 export function projectSessionUsage(desc: UsageDescriptorFields): SessionUsage {
+  // Same re-validation as `deriveSessionUsage`, for the same reason: this
+  // formats a descriptor that may have been reloaded from a persisted
+  // snapshot written before `plausibleContextUsed` existed — a session
+  // that's already dead never gets a fresh usage_update to self-correct
+  // it, so a stale out-of-window value would otherwise surface forever.
+  const contextUsed = plausibleContextUsed(desc.contextSize, desc.contextUsed)
   return {
     ...(desc.model !== undefined ? { model: desc.model } : {}),
     ...(desc.costUsd !== undefined ? { costUsd: desc.costUsd } : {}),
     ...(desc.tokensIn !== undefined ? { tokensIn: desc.tokensIn } : {}),
     ...(desc.tokensOut !== undefined ? { tokensOut: desc.tokensOut } : {}),
     ...(desc.contextSize !== undefined ? { contextSize: desc.contextSize } : {}),
-    ...(desc.contextUsed !== undefined ? { contextUsed: desc.contextUsed } : {}),
+    ...(contextUsed !== undefined ? { contextUsed } : {}),
     source: desc.usageSource ?? "none",
   }
 }

@@ -156,6 +156,59 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("re-validates a persisted contextUsed on reload — a stale out-of-window value can't outlive a restart (#364 follow-up)", () => {
+    // Observed on a live daemon: a hermes/kimi session's sessions.json row
+    // carried contextSize=200_000 / contextUsed=14_246_419 (71x over) from
+    // before plausibleContextUsed existed. The session is already dead
+    // (killed), so it will never get a fresh usage_update to self-correct
+    // — reload itself has to refuse to resurrect the stale figure.
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-07-15T00:00:00Z",
+        sessions: [
+          {
+            id: "sess_60a517cf",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "hermes (agent)",
+            pid: null,
+            status: "killed",
+            startedAt: "2026-07-15T00:00:00Z",
+            endedAt: "2026-07-15T00:05:00Z",
+            model: "kimi-k2.7-code",
+            contextSize: 200_000,
+            contextUsed: 14_246_419,
+          },
+          {
+            // Control row: a plausible contextUsed must survive reload
+            // untouched — this isn't a blanket wipe of the field.
+            id: "sess_a6c60ae4",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "claude-sonnet-5 (agent)",
+            pid: null,
+            status: "killed",
+            startedAt: "2026-07-15T00:00:00Z",
+            endedAt: "2026-07-15T00:05:00Z",
+            model: "claude-sonnet-5",
+            contextSize: 967_000,
+            contextUsed: 202_718,
+          },
+        ],
+      }),
+    )
+    const reg = createSessionsRegistry({ persistPath })
+    const list = reg.list()
+    const bad = list.find(s => s.id === "sess_60a517cf")
+    expect(bad?.contextSize).toBe(200_000)
+    expect(bad?.contextUsed).toBeUndefined()
+    const good = list.find(s => s.id === "sess_a6c60ae4")
+    expect(good?.contextSize).toBe(967_000)
+    expect(good?.contextUsed).toBe(202_718)
+    reg.shutdown()
+  })
+
   it("emits session:exited with reason 'daemon-restart' for a formerly-running session reconciled at boot", () => {
     writeFileSync(
       persistPath,

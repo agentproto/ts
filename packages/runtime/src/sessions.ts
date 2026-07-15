@@ -3029,6 +3029,15 @@ function loadHistorySnapshot(
     // survives every future boot. Clearing idle flags on an idle session is a
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
+    // Same reasoning as the in-flight flags above, for `contextUsed`: a
+    // snapshot written before `plausibleContextUsed` existed can carry an
+    // out-of-window value on disk, and a dead/historical ghost never gets
+    // a fresh usage_update to self-correct it — so re-validate on the way
+    // back into memory instead of resurrecting the stale figure forever.
+    reclassified.contextUsed = plausibleContextUsed(
+      reclassified.contextSize,
+      reclassified.contextUsed,
+    )
     const rt: SessionRuntime = {
       desc: reclassified,
       recentLines: [],
