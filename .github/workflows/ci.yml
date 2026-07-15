@@ -46,6 +46,13 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # `pnpm test` only covers packages/** and adapters/**, so the release
+      # tooling in scripts/ would otherwise ship untested. These guard the
+      # @agentproto/cli@0.5.0 incident (a console trace published as a release
+      # body) and the model-invented release date behind it.
+      - name: Run release-tooling tests
+        run: node --test scripts/release-notes.test.mjs
+
   # On PRs: verify a changeset was added. Quick git-only check that
   # runs in parallel with build-and-test to give fast feedback.
   # If the changeset is missing, pr-review will generate one after
