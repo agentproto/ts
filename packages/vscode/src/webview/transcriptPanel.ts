@@ -207,7 +207,6 @@ export function buildHtml(nonce: string): string {
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
     }
-    #header-subtitle { }
     .chip {
       display: inline-block;
       padding: 2px 8px;
@@ -303,6 +302,45 @@ export function buildHtml(nonce: string): string {
     }
     details.tool > summary { font-family: var(--vscode-editor-font-family); }
     details.tool-error { border-color: var(--vscode-errorForeground); }
+    /* ── Activity group (folded reasoning/tool run) ────────────────── */
+    details.activity {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 5px;
+      background: var(--vscode-textCodeBlock-background);
+      padding: 3px 8px;
+    }
+    details.activity > summary {
+      cursor: pointer;
+      user-select: none;
+      list-style: revert;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+    }
+    details.activity[open] > summary { margin-bottom: 6px; }
+    .act-badge { flex: 0 0 auto; }
+    .act-label {
+      font-family: var(--vscode-editor-font-family);
+      color: var(--vscode-editor-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .act-elapsed:empty { display: none; }
+    /* The fold's children indent under the summary so the run reads as a tree. */
+    .act-children {
+      border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      margin-left: 4px;
+      padding-left: 8px;
+    }
+    details.activity-error { border-color: var(--vscode-errorForeground); }
+    details.activity.tool-still-running { border-color: var(--vscode-editorWarning-foreground); }
+    .tool-still-running > summary > .act-elapsed {
+      color: var(--vscode-editorWarning-foreground);
+      font-weight: 600;
+    }
     /* Consecutive tool segments read as one compact group instead of N
        separately-bordered cards — see markToolRuns() in the script. */
     .seg.tool.tool-run-start, .seg.tool.tool-run-mid { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
@@ -371,58 +409,110 @@ export function buildHtml(nonce: string): string {
       white-space: pre-wrap;
     }
     #conv-usage { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+    /* ── Composer ─────────────────────────────────────────────────────
+       One bordered box that OWNS the textarea and its action row, rather
+       than a textarea sitting next to a stack of coloured buttons. Actions
+       are ghost-styled and live inside the box on one line: the destructive
+       one earns colour on hover only, so a red slab never sits permanently
+       under the user's eyes. */
     #input-area {
       flex: 0 0 auto;
-      padding: 10px 14px;
-      border-top: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, rgba(128,128,128,0.3)));
-      background-color: var(--vscode-sideBar-background);
-      display: flex;
-      gap: 8px;
-      align-items: flex-start;
+      padding: 10px 14px 12px;
+      background-color: var(--vscode-editor-background);
     }
-    #input {
-      flex: 1 1 auto;
-      resize: vertical;
-      min-height: 60px;
-      max-height: 200px;
-      padding: 8px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      border-radius: 4px;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-    }
-    #input:disabled { opacity: 0.6; cursor: not-allowed; }
-    .button-stack {
-      flex: 0 0 auto;
+    #composer {
       display: flex;
       flex-direction: column;
       gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border-radius: 8px;
+      background: var(--vscode-input-background);
     }
+    #composer:focus-within { border-color: var(--vscode-focusBorder); }
+    #composer.disabled { opacity: 0.6; }
+    #input {
+      width: 100%;
+      resize: none;
+      min-height: 22px;
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      line-height: 1.4;
+    }
+    #input:focus { outline: none; }
+    #input::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
+    #input:disabled { cursor: not-allowed; }
+    #composer-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+    }
+    /* Which agent/model will answer belongs where you type, not only in the
+       header — so the header no longer repeats it. */
+    #composer-meta {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .composer-chip {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .composer-chip:empty { display: none; }
     button {
-      padding: 6px 12px;
+      padding: 3px 8px;
       border: none;
       border-radius: 4px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    button:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2));
+      color: var(--vscode-editor-foreground);
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Hidden rather than disabled: interrupting a session that isn't working
+       on anything is a no-op, so the affordance shouldn't be there at all. */
+    button[hidden] { display: none; }
+    #kill:hover:not(:disabled) {
+      background: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.12));
+      color: var(--vscode-errorForeground);
+    }
+    /* The submit key. Stays quiet until there is actually something to send. */
+    #send {
+      flex: 0 0 auto;
+      min-width: 26px;
+      font-size: 1em;
+      line-height: 1;
+      padding: 4px 8px;
+    }
+    #send.has-text {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
-      cursor: pointer;
-      font-size: 0.95em;
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    button.secondary {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-    }
-    button.danger {
-      background: var(--vscode-errorForeground);
-      color: var(--vscode-editor-background);
+    #send.has-text:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+      color: var(--vscode-button-foreground);
     }
     #send-status {
-      font-size: 0.85em;
+      flex: 0 0 auto;
       color: var(--vscode-errorForeground);
-      min-height: 1.2em;
     }
+    #send-status:empty { display: none; }
     #empty {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
@@ -434,7 +524,6 @@ export function buildHtml(nonce: string): string {
   <div id="header">
     <div id="header-title"></div>
     <div id="header-meta">
-      <span id="header-subtitle"></span>
       <span id="status-chip" class="chip chip-starting"></span>
       <span id="header-blocked" class="chip chip-blocked"></span>
       <span id="cost"></span>
@@ -443,24 +532,32 @@ export function buildHtml(nonce: string): string {
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
   <div id="input-area">
-    <textarea id="input" placeholder="Type a message… (Enter to send, Shift+Enter for newline)"></textarea>
-    <div class="button-stack">
-      <button id="send">Send</button>
-      <button id="interrupt-send" class="secondary">Interrupt & send</button>
-      <button id="kill" class="danger">Kill</button>
-      <span id="send-status"></span>
+    <div id="composer">
+      <textarea id="input" rows="1" placeholder="Reply to the agent…"></textarea>
+      <div id="composer-bar">
+        <span id="composer-meta">
+          <span id="composer-adapter" class="composer-chip"></span>
+          <span id="composer-model" class="composer-chip"></span>
+        </span>
+        <span id="send-status"></span>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send this instead">Interrupt &amp; send</button>
+        <button id="kill" title="Kill this session">Kill</button>
+        <button id="send" title="Send (Enter)">↵</button>
+      </div>
     </div>
   </div>
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
       const headerTitle = document.getElementById('header-title');
-      const headerSubtitle = document.getElementById('header-subtitle');
       const statusChip = document.getElementById('status-chip');
       const headerBlocked = document.getElementById('header-blocked');
       const costEl = document.getElementById('cost');
       const transcript = document.getElementById('transcript');
       const convUsage = document.getElementById('conv-usage');
+      const composer = document.getElementById('composer');
+      const composerAdapter = document.getElementById('composer-adapter');
+      const composerModel = document.getElementById('composer-model');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const interruptBtn = document.getElementById('interrupt-send');
@@ -468,6 +565,7 @@ export function buildHtml(nonce: string): string {
       const sendStatus = document.getElementById('send-status');
 
       let exited = false;
+      let busy = false;
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
@@ -479,15 +577,39 @@ export function buildHtml(nonce: string): string {
       // any patch: segId -> { startedMs, label, node }.
       const pendingTools = new Map();
 
-      function setInputEnabled(enabled) {
-        input.disabled = !enabled || isSending;
-        sendBtn.disabled = !enabled || isSending;
-        interruptBtn.disabled = !enabled || isSending;
+      // Grow with the text instead of forcing the user to drag a resize
+      // handle, up to the CSS max-height (then the textarea scrolls).
+      function autoGrow() {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+      }
+
+      // Single source of truth for every composer affordance. Each control
+      // reflects what the session can ACTUALLY do right now: no sending to a
+      // dead session, no killing an already-dead one, no interrupting an agent
+      // that isn't working.
+      function refreshComposer() {
+        const hasText = Boolean(input.value.trim());
+        const live = !exited && !isSending;
+        input.disabled = !live;
+        sendBtn.disabled = !live || !hasText;
+        sendBtn.classList.toggle('has-text', hasText && live);
+        interruptBtn.disabled = !live || !hasText;
+        interruptBtn.hidden = !busy || exited;
+        killBtn.disabled = exited;
+        composer.classList.toggle('disabled', exited);
+      }
+
+      function applySession(session) {
+        updateHeader(session);
+        exited = ['exited', 'killed', 'error'].indexOf(session.status) !== -1;
+        busy = Boolean(session.busy);
+        refreshComposer();
       }
 
       function setSending(sending) {
         isSending = sending;
-        setInputEnabled(!exited);
+        refreshComposer();
         sendStatus.textContent = sending ? 'Sending…' : '';
       }
 
@@ -502,10 +624,10 @@ export function buildHtml(nonce: string): string {
 
       function updateHeader(session) {
         headerTitle.textContent = session.label || session.id || '';
-        const parts = [];
-        if (session.adapterSlug) parts.push(session.adapterSlug);
-        if (session.model) parts.push(session.model);
-        headerSubtitle.textContent = parts.join(' · ');
+        // adapter/model deliberately NOT repeated here — they live in the
+        // composer bar, next to where the user types to them.
+        composerAdapter.textContent = session.adapterSlug || '';
+        composerModel.textContent = session.model || '';
 
         const chip = computeStatusChip(session);
         statusChip.textContent = chip;
@@ -571,7 +693,7 @@ export function buildHtml(nonce: string): string {
       // place — never replaced — which is what keeps <details open> (and any
       // text selection inside it) alive across live updates.
       function buildSegmentShell(seg) {
-        if (seg.kind === 'reasoning' || seg.kind === 'tool') {
+        if (seg.kind === 'reasoning' || seg.kind === 'tool' || seg.kind === 'activity') {
           const det = document.createElement('details');
           det.appendChild(document.createElement('summary'));
           return det;
@@ -673,6 +795,38 @@ export function buildHtml(nonce: string): string {
             node.className = 'seg error';
             node.innerHTML = seg.text || '';
             return;
+          case 'activity': {
+            // Collapsed by default (the open attribute is never set): a fold
+            // that springs open on every new step would defeat its own purpose.
+            // The <details> shell is never replaced, so once the user opens the
+            // tree it STAYS open as steps stream in underneath.
+            node.className = 'seg activity activity-' + seg.status;
+            const summary = node.querySelector(':scope > summary');
+            summary.textContent = '';
+            const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
+            summary.appendChild(el('span', 'act-badge', badge));
+            summary.appendChild(el('span', 'act-label', seg.summary || ''));
+            const elapsed = el('span', 'act-elapsed');
+            summary.appendChild(elapsed);
+            let kids = node.querySelector(':scope > .act-children');
+            if (!kids) {
+              kids = el('div', 'act-children');
+              node.appendChild(kids);
+            }
+            // Recursive reconcile — a child whose signature didn't change is
+            // left untouched, so its own expand state survives too.
+            reconcileSegments(kids, seg.children || []);
+            if (seg.status === 'pending') {
+              const startedMs = seg.pendingSince ? Date.parse(seg.pendingSince) : NaN;
+              const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
+              pendingTools.set(seg.id, entry);
+              paintElapsed(entry);
+            } else {
+              pendingTools.delete(seg.id);
+              node.classList.remove('tool-still-running');
+            }
+            return;
+          }
         }
       }
 
@@ -849,6 +1003,8 @@ export function buildHtml(nonce: string): string {
         if (!text || !text.trim()) return;
         vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text.trim() });
         input.value = '';
+        autoGrow();
+        refreshComposer();
       }
 
       input.addEventListener('keydown', function(e) {
@@ -856,6 +1012,11 @@ export function buildHtml(nonce: string): string {
           e.preventDefault();
           send(false);
         }
+      });
+
+      input.addEventListener('input', function() {
+        autoGrow();
+        refreshComposer();
       });
 
       sendBtn.addEventListener('click', function() { send(false); });
@@ -872,7 +1033,6 @@ export function buildHtml(nonce: string): string {
         switch (msg.type) {
           case 'init':
             mode = msg.mode || 'raw';
-            updateHeader(msg.session);
             isScrolledUp = false;
             if (mode === 'structured') {
               renderFullConversation(msg.conversation);
@@ -880,8 +1040,7 @@ export function buildHtml(nonce: string): string {
               transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
               transcript.scrollTop = transcript.scrollHeight;
             }
-            exited = ['exited', 'killed', 'error'].indexOf(msg.session.status) !== -1;
-            setInputEnabled(!exited);
+            applySession(msg.session);
             break;
           case 'conversation':
             renderFullConversation(msg.conversation);
@@ -890,9 +1049,7 @@ export function buildHtml(nonce: string): string {
             applyPatch(msg);
             break;
           case 'sessionUpdate':
-            updateHeader(msg.session);
-            exited = ['exited', 'killed', 'error'].indexOf(msg.session.status) !== -1;
-            setInputEnabled(!exited);
+            applySession(msg.session);
             break;
           case 'lines':
             if (mode !== 'structured') appendLines(msg.lines);

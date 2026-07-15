@@ -20,7 +20,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { buildHtml } from "./transcriptPanel.js"
 import type { ExtMessage } from "./protocol.js"
-import type { PresentedConversation, PresentedTurn, PresentedToolSegment } from "./conversation.js"
+import type {
+  PresentedActivitySegment,
+  PresentedConversation,
+  PresentedTurn,
+  PresentedToolSegment,
+} from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { DomWindow, DomDocument, DomElement } from "jsdom"
 
@@ -255,5 +260,186 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     const labelAfter = node?.querySelector(".tool-elapsed")?.textContent ?? ""
     expect(labelAfter).toMatch(/^still running · \d+s$/)
     expect(node?.classList.contains("tool-still-running")).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — activity group folding", () => {
+  const activity = (over: Partial<PresentedActivitySegment> = {}): PresentedActivitySegment => ({
+    kind: "activity",
+    id: "act-seg-1",
+    summary: "2 steps",
+    count: 2,
+    status: "ok",
+    children: [
+      { kind: "reasoning", id: "seg-1", html: "thinking" },
+      { kind: "tool", id: "tool-t1", toolName: "bash", isError: false, status: "ok", resultText: "ok" },
+    ],
+    ...over,
+  })
+
+  function initWith(panel: Panel, seg: PresentedActivitySegment): void {
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+  }
+
+  it("renders the group COLLAPSED, showing only the summary row", () => {
+    const panel = renderPanel()
+    initWith(panel, activity())
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.tagName).toBe("DETAILS")
+    // The whole point: a long run must not spam a user waiting on the answer.
+    expect(node?.open).toBeFalsy()
+    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps")
+    expect(node?.querySelector(".act-badge")?.textContent).toBe("✓")
+  })
+
+  it("nests the folded steps as a tree the user can open", () => {
+    const panel = renderPanel()
+    initWith(panel, activity())
+    const kids = segNode(panel, "act-seg-1")?.querySelector(".act-children")
+    expect(kids).not.toBeNull()
+    expect([...(kids?.querySelectorAll(":scope > [data-seg-id]") ?? [])].map(n => n.dataset.segId)).toEqual([
+      "seg-1",
+      "tool-t1",
+    ])
+  })
+
+  it("KEEPS the group open, and its opened child open, as a new step streams in", () => {
+    const panel = renderPanel()
+    initWith(panel, activity({ status: "pending", summary: "bash · 2 steps", pendingSince: new Date().toISOString() }))
+
+    const group = segNode(panel, "act-seg-1")
+    const child = segNode(panel, "tool-t1")
+    if (!group || !child) throw new Error("unreachable")
+    // The user opens the tree to watch, and expands one step inside it.
+    group.open = true
+    child.open = true
+
+    const grown = activity({
+      status: "pending",
+      summary: "grep · 3 steps",
+      count: 3,
+      pendingSince: new Date().toISOString(),
+      children: [
+        { kind: "reasoning", id: "seg-1", html: "thinking" },
+        { kind: "tool", id: "tool-t1", toolName: "bash", isError: false, status: "ok", resultText: "ok" },
+        { kind: "tool", id: "tool-t2", toolName: "grep", isError: false, status: "pending" },
+      ],
+    })
+    panel.send({
+      type: "patch",
+      upsertTurns: [{ id: "turn-1", role: "assistant", segments: [grown] }],
+      removeTurnIds: [],
+    })
+
+    const groupAfter = segNode(panel, "act-seg-1")
+    expect(groupAfter).toBe(group) // same node — never replaced
+    expect(groupAfter?.open).toBe(true) // the tree the user opened stayed open
+    expect(segNode(panel, "tool-t1")).toBe(child) // untouched child untouched
+    expect(segNode(panel, "tool-t1")?.open).toBe(true)
+    // ...and the summary tracks the step now actually running.
+    expect(groupAfter?.querySelector(".act-label")?.textContent).toBe("grep · 3 steps")
+    expect(segNode(panel, "tool-t2")).toBeDefined()
+  })
+
+  it("ticks the collapsed row's elapsed label so a pending fold still shows progress", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    initWith(
+      panel,
+      activity({
+        status: "pending",
+        summary: "bash · 2 steps",
+        pendingSince: new Date(Date.now() - 3_000).toISOString(),
+      }),
+    )
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^running · \d+s$/)
+    expect(node?.classList.contains("tool-still-running")).toBe(false)
+
+    vi.advanceTimersByTime(8_000) // ~11s total — past the escalation threshold
+
+    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^still running · \d+s$/)
+    // A fold that is quietly stuck must still say so from the collapsed row.
+    expect(node?.classList.contains("tool-still-running")).toBe(true)
+  })
+
+  it("marks a group carrying a failed step so the fold never hides the failure", () => {
+    const panel = renderPanel()
+    initWith(panel, activity({ status: "error", summary: "2 steps · 1 failed" }))
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.className).toContain("activity-error")
+    expect(node?.querySelector(".act-badge")?.textContent).toBe("✗")
+    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps · 1 failed")
+  })
+})
+
+describe("transcriptPanel webview — composer", () => {
+  const btn = (panel: Panel, id: string): DomElement => {
+    const el = panel.document.getElementById(id)
+    if (!el) throw new Error(id + " missing from buildHtml output")
+    return el
+  }
+
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("names the agent and model in the composer bar, where the user types to them", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
+    expect(btn(panel, "composer-adapter").textContent).toBe("claude-code")
+    expect(btn(panel, "composer-model").textContent).toBe("sonnet-5")
+    // ...and the header does not repeat them.
+    expect(panel.document.getElementById("header-subtitle")).toBeNull()
+  })
+
+  it("keeps send inert until there is something to send", () => {
+    const panel = renderPanel()
+    init(panel)
+    const send = btn(panel, "send")
+    expect(send.disabled).toBe(true)
+    expect(send.classList.contains("has-text")).toBe(false)
+
+    const input = btn(panel, "input")
+    input.value = "hello"
+    input.dispatchEvent(new panel.window.Event("input"))
+
+    expect(send.disabled).toBe(false)
+    expect(send.classList.contains("has-text")).toBe(true)
+  })
+
+  it("hides interrupt unless the agent is actually busy", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false })
+    expect(btn(panel, "interrupt-send").hidden).toBe(true)
+
+    panel.send({ type: "sessionUpdate", session: session({ busy: true }) })
+    expect(btn(panel, "interrupt-send").hidden).toBe(false)
+  })
+
+  it("disables the composer and kill once the session is dead", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
+    expect(btn(panel, "kill").disabled).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "exited", busy: false }) })
+
+    expect(btn(panel, "input").disabled).toBe(true)
+    expect(btn(panel, "send").disabled).toBe(true)
+    expect(btn(panel, "kill").disabled).toBe(true)
+    // Nothing to interrupt on a dead session.
+    expect(btn(panel, "interrupt-send").hidden).toBe(true)
+    expect(btn(panel, "composer").classList.contains("disabled")).toBe(true)
   })
 })

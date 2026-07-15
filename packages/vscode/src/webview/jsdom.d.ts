@@ -32,6 +32,12 @@ declare module "jsdom" {
     readonly dataset: DomDOMStringMap
     /** Only meaningful on <details> elements. */
     open?: boolean
+    /** Only meaningful on <textarea>/<input>. */
+    value?: string
+    /** Only meaningful on form controls (<button>, <textarea>). */
+    disabled?: boolean
+    hidden?: boolean
+    dispatchEvent(event: DomEvent): boolean
     querySelector(selectors: string): DomElement | null
     querySelectorAll(selectors: string): Iterable<DomElement>
   }
@@ -65,6 +71,7 @@ declare module "jsdom" {
       setState: (state: unknown) => void
     }
     dispatchEvent(event: DomEvent): boolean
+    Event: new (type: string) => DomEvent
     MessageEvent: new (type: string, init?: { data?: unknown }) => DomEvent
     MutationObserver: new (callback: (records: unknown[]) => void) => DomMutationObserver
   }
