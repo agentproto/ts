@@ -112,3 +112,36 @@ export function formatSubtitle(session: Pick<SessionDescriptor, "adapterSlug" | 
   if (session.model) parts.push(session.model)
   return parts.join(" · ") || ""
 }
+
+/**
+ * Why a prompt POST was refused.
+ *
+ * `busy` is NOT a failure the user should ever see as an error: the daemon
+ * allows one turn at a time per session and rejects a prompt sent mid-turn
+ * with 409 (`validateAgentTurn`, sessions.ts — "is mid-turn — wait for it to
+ * finish or cancel"). Despite its name `enqueuePrompt` does not queue; only
+ * `interrupt: true` gets through. Typing while the agent works is completely
+ * normal, so the panel holds the message and sends it when the turn ends —
+ * this classification is what tells it to queue instead of shouting.
+ */
+export type SendFailureKind = "busy" | "not-alive" | "other"
+
+export function classifySendFailure(message: string): SendFailureKind {
+  // Match the daemon's own wording/status rather than a substring of the URL,
+  // which carries a session id and would false-positive on any 409.
+  if (/\b409\b/.test(message) && /mid-turn/i.test(message)) return "busy"
+  if (/session_not_alive/i.test(message) || /not alive/i.test(message)) return "not-alive"
+  return "other"
+}
+
+/** Human title for the error banner — the one-line "what happened". */
+export function sendFailureTitle(kind: SendFailureKind): string {
+  switch (kind) {
+    case "busy":
+      return "Agent is mid-turn"
+    case "not-alive":
+      return "Session is no longer running"
+    case "other":
+      return "Send failed"
+  }
+}

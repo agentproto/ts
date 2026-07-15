@@ -20,7 +20,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { buildHtml } from "./transcriptPanel.js"
 import type { ExtMessage } from "./protocol.js"
-import type { PresentedConversation, PresentedTurn, PresentedToolSegment } from "./conversation.js"
+import type {
+  PresentedActivitySegment,
+  PresentedConversation,
+  PresentedTurn,
+  PresentedToolSegment,
+} from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { DomWindow, DomDocument, DomElement } from "jsdom"
 
@@ -42,6 +47,9 @@ interface RenderOptions {
    *  vi.useFakeTimers() has already patched those, so the ticker can be
    *  driven with vi.advanceTimersByTime instead of a real sleep. */
   fakeTimers?: boolean
+  /** Observe what the webview posts BACK to the host — the only way to assert
+   *  that a mid-turn message was withheld rather than sent. */
+  onPost?: (msg: unknown) => void
 }
 
 function renderPanel(opts: RenderOptions = {}): Panel {
@@ -50,7 +58,7 @@ function renderPanel(opts: RenderOptions = {}): Panel {
     url: "https://example.test/",
     beforeParse(window) {
       window.acquireVsCodeApi = () => ({
-        postMessage: () => {},
+        postMessage: (msg: unknown) => opts.onPost?.(msg),
         getState: () => undefined,
         setState: () => {},
       })
@@ -255,5 +263,398 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     const labelAfter = node?.querySelector(".tool-elapsed")?.textContent ?? ""
     expect(labelAfter).toMatch(/^still running · \d+s$/)
     expect(node?.classList.contains("tool-still-running")).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — activity group folding", () => {
+  const activity = (over: Partial<PresentedActivitySegment> = {}): PresentedActivitySegment => ({
+    kind: "activity",
+    id: "act-seg-1",
+    summary: "2 steps",
+    count: 2,
+    status: "ok",
+    children: [
+      { kind: "reasoning", id: "seg-1", html: "thinking" },
+      { kind: "tool", id: "tool-t1", toolName: "bash", isError: false, status: "ok", resultText: "ok" },
+    ],
+    ...over,
+  })
+
+  function initWith(panel: Panel, seg: PresentedActivitySegment): void {
+    const conv: PresentedConversation = {
+      version: 1,
+      sessionId: "s1",
+      turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+    }
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+  }
+
+  it("renders the group COLLAPSED, showing only the summary row", () => {
+    const panel = renderPanel()
+    initWith(panel, activity())
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.tagName).toBe("DETAILS")
+    // The whole point: a long run must not spam a user waiting on the answer.
+    expect(node?.open).toBeFalsy()
+    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps")
+    expect(node?.querySelector(".act-badge")?.textContent).toBe("✓")
+  })
+
+  it("nests the folded steps as a tree the user can open", () => {
+    const panel = renderPanel()
+    initWith(panel, activity())
+    const kids = segNode(panel, "act-seg-1")?.querySelector(".act-children")
+    expect(kids).not.toBeNull()
+    expect([...(kids?.querySelectorAll(":scope > [data-seg-id]") ?? [])].map(n => n.dataset.segId)).toEqual([
+      "seg-1",
+      "tool-t1",
+    ])
+  })
+
+  it("KEEPS the group open, and its opened child open, as a new step streams in", () => {
+    const panel = renderPanel()
+    initWith(panel, activity({ status: "pending", summary: "bash · 2 steps", pendingSince: new Date().toISOString() }))
+
+    const group = segNode(panel, "act-seg-1")
+    const child = segNode(panel, "tool-t1")
+    if (!group || !child) throw new Error("unreachable")
+    // The user opens the tree to watch, and expands one step inside it.
+    group.open = true
+    child.open = true
+
+    const grown = activity({
+      status: "pending",
+      summary: "grep · 3 steps",
+      count: 3,
+      pendingSince: new Date().toISOString(),
+      children: [
+        { kind: "reasoning", id: "seg-1", html: "thinking" },
+        { kind: "tool", id: "tool-t1", toolName: "bash", isError: false, status: "ok", resultText: "ok" },
+        { kind: "tool", id: "tool-t2", toolName: "grep", isError: false, status: "pending" },
+      ],
+    })
+    panel.send({
+      type: "patch",
+      upsertTurns: [{ id: "turn-1", role: "assistant", segments: [grown] }],
+      removeTurnIds: [],
+    })
+
+    const groupAfter = segNode(panel, "act-seg-1")
+    expect(groupAfter).toBe(group) // same node — never replaced
+    expect(groupAfter?.open).toBe(true) // the tree the user opened stayed open
+    expect(segNode(panel, "tool-t1")).toBe(child) // untouched child untouched
+    expect(segNode(panel, "tool-t1")?.open).toBe(true)
+    // ...and the summary tracks the step now actually running.
+    expect(groupAfter?.querySelector(".act-label")?.textContent).toBe("grep · 3 steps")
+    expect(segNode(panel, "tool-t2")).toBeDefined()
+  })
+
+  it("ticks the collapsed row's elapsed label so a pending fold still shows progress", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    initWith(
+      panel,
+      activity({
+        status: "pending",
+        summary: "bash · 2 steps",
+        pendingSince: new Date(Date.now() - 3_000).toISOString(),
+      }),
+    )
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^running · \d+s$/)
+    expect(node?.classList.contains("tool-still-running")).toBe(false)
+
+    vi.advanceTimersByTime(8_000) // ~11s total — past the escalation threshold
+
+    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^still running · \d+s$/)
+    // A fold that is quietly stuck must still say so from the collapsed row.
+    expect(node?.classList.contains("tool-still-running")).toBe(true)
+  })
+
+  it("marks a group carrying a failed step so the fold never hides the failure", () => {
+    const panel = renderPanel()
+    initWith(panel, activity({ status: "error", summary: "2 steps · 1 failed" }))
+    const node = segNode(panel, "act-seg-1")
+    expect(node?.className).toContain("activity-error")
+    expect(node?.querySelector(".act-badge")?.textContent).toBe("✗")
+    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps · 1 failed")
+  })
+})
+
+describe("transcriptPanel webview — composer", () => {
+  const btn = (panel: Panel, id: string): DomElement => {
+    const el = panel.document.getElementById(id)
+    if (!el) throw new Error(id + " missing from buildHtml output")
+    return el
+  }
+
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("names the agent and model in the composer bar, where the user types to them", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
+    expect(btn(panel, "composer-harness").textContent).toBe("claude-code")
+    expect(btn(panel, "composer-model").textContent).toBe("sonnet-5")
+    // ...and the header does not repeat them.
+    expect(panel.document.getElementById("header-subtitle")).toBeNull()
+  })
+
+  it("keeps send inert until there is something to send", () => {
+    const panel = renderPanel()
+    init(panel)
+    const send = btn(panel, "send")
+    expect(send.disabled).toBe(true)
+    expect(send.classList.contains("has-text")).toBe(false)
+
+    const input = btn(panel, "input")
+    input.value = "hello"
+    input.dispatchEvent(new panel.window.Event("input"))
+
+    expect(send.disabled).toBe(false)
+    expect(send.classList.contains("has-text")).toBe(true)
+  })
+
+  it("hides interrupt until a message is actually waiting — busy alone is not enough", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
+    // The agent is working, but nothing is queued: there is nothing to force.
+    expect(btn(panel, "interrupt-send").hidden).toBe(true)
+  })
+
+  it("disables the composer once the session is dead", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "exited", busy: false }) })
+
+    expect(btn(panel, "input").disabled).toBe(true)
+    expect(btn(panel, "send").disabled).toBe(true)
+    expect(btn(panel, "interrupt-send").hidden).toBe(true)
+    expect(btn(panel, "composer").classList.contains("disabled")).toBe(true)
+  })
+
+  it("has no kill button — killing lives in the sessions tree", () => {
+    const panel = renderPanel()
+    init(panel)
+    expect(panel.document.getElementById("kill")).toBeNull()
+  })
+})
+
+describe("transcriptPanel webview — honest session state", () => {
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+
+  it("shows blocked-on while a turn is actually in flight", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    expect(el(panel, "header-blocked").textContent).toBe("blocked on command · toolu_01")
+  })
+
+  it("does NOT claim a killed session is blocked (stale blockedOn survives the kill)", () => {
+    const panel = renderPanel()
+    // The real descriptor a killed-mid-tool-call session carries: the daemon
+    // clears blockedOn in the turn's finally, which never runs here.
+    init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    expect(el(panel, "header-blocked").textContent).toBe("")
+    // ...and the chip must not contradict it either.
+    expect(el(panel, "status-chip").textContent).toBe("exited")
+  })
+
+  it("renders context as an integer percent, keeping the raw counts in the tooltip", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [],
+        usage: { seq: 1, contextUsed: 206_115, contextSize: 1_000_000, tokensIn: 5, tokensOut: 7 },
+      },
+    })
+    const usage = el(panel, "conv-usage")
+    expect(usage.textContent).toBe("ctx 21% · in 5 · out 7")
+    expect(usage.title).toBe("context 206115 / 1000000")
+  })
+
+  it("omits the context percent rather than dividing by zero", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 5, contextSize: 0 } },
+    })
+    expect(el(panel, "conv-usage").textContent).toBe("")
+  })
+
+  it("shows the working row with a ticking elapsed only while busy", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, tokensOut: 983 })
+
+    const row = el(panel, "working")
+    expect(row.hidden).toBe(false)
+    expect(el(panel, "working-text").textContent).toBe("Working… · 0s · 983 tokens")
+
+    vi.advanceTimersByTime(5_000)
+    expect(el(panel, "working-text").textContent).toBe("Working… · 5s · 983 tokens")
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false }) })
+    expect(row.hidden).toBe(true)
+  })
+
+  it("never spins the working row for a killed session carrying a stale busy flag", () => {
+    const panel = renderPanel()
+    init(panel, { status: "killed", busy: true })
+    expect(el(panel, "working").hidden).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — typing mid-turn queues instead of erroring", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function type(panel: Panel, text: string): void {
+    const input = el(panel, "input")
+    input.value = text
+    input.dispatchEvent(new panel.window.Event("input"))
+  }
+
+  it("holds a message typed mid-turn rather than posting a prompt the daemon would 409", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+
+    type(panel, "also fix the tests")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    // Nothing went to the daemon — the agent is mid-turn.
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    expect(el(panel, "queued").hidden).toBe(false)
+    expect(el(panel, "queued-label").textContent).toBe("Queued · also fix the tests")
+    // No error anywhere: typing while it works is normal.
+    expect(el(panel, "error-banner").hidden).toBe(true)
+    // ...and NOW there is something to force.
+    expect(el(panel, "interrupt-send").hidden).toBe(false)
+    expect(el(panel, "input").value).toBe("")
+  })
+
+  it("flushes the queued message when the turn ends", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "next task")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+
+    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+
+    expect(posted).toContainEqual({ type: "send", text: "next task" })
+    expect(el(panel, "queued").hidden).toBe(true)
+    expect(el(panel, "interrupt-send").hidden).toBe(true)
+  })
+
+  it("interrupt & send forces the queued message immediately", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "stop and do this")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    el(panel, "interrupt-send").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "interruptSend", text: "stop and do this" })
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("cancelling the queued message drops it — it must not fire on turn-end", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+    type(panel, "never mind")
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    el(panel, "queued-cancel").dispatchEvent(new panel.window.Event("click"))
+    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+
+    expect(posted.filter(m => (m as { type: string }).type === "send")).toEqual([])
+    expect(el(panel, "queued").hidden).toBe(true)
+  })
+
+  it("re-queues rather than erroring when a 409 wins the race against the busy check", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false }) // idle as far as the panel knows, so it posts
+    panel.send({
+      type: "sendError",
+      kind: "busy",
+      title: "Agent is mid-turn",
+      message: 'HTTP 409 ... is mid-turn — wait for it to finish or cancel',
+      text: "raced message",
+    })
+    expect(el(panel, "error-banner").hidden).toBe(true)
+    expect(el(panel, "queued-label").textContent).toBe("Queued · raced message")
+  })
+
+  it("shows a REAL failure in the banner, with the daemon's full message intact", () => {
+    const panel = renderPanel()
+    init(panel)
+    const message = "POST /sessions/s1/prompt?wait=false failed: ECONNREFUSED 127.0.0.1:18790"
+    panel.send({ type: "sendError", kind: "other", title: "Send failed", message, text: "hi" })
+
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Send failed")
+    // Never clipped — the old one-line red text truncated the reason mid-sentence.
+    expect(el(panel, "eb-message").textContent).toBe(message)
+    expect(el(panel, "queued").hidden).toBe(true)
+
+    el(panel, "eb-dismiss").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "error-banner").hidden).toBe(true)
+  })
+
+  it("names the harness, model and auth mode in the composer bar", () => {
+    const panel = renderPanel()
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      auth: { mode: "subscription", fingerprint: "abc" },
+    })
+    expect(el(panel, "composer-harness").textContent).toBe("claude-code")
+    expect(el(panel, "composer-model").textContent).toBe("sonnet-5")
+    expect(el(panel, "composer-auth").textContent).toBe("subscription")
   })
 })

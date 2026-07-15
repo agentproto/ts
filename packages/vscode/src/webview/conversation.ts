@@ -403,12 +403,41 @@ export interface PresentedErrorSegment {
   text: string
 }
 
+/** What an activity group folds: the agent's working steps, never its conclusions. */
+export type PresentedActivityChild = PresentedTextSegment | PresentedToolSegment
+
+/**
+ * A run of consecutive reasoning/tool steps folded into ONE collapsed row.
+ *
+ * A turn can spend minutes emitting thoughts and tool calls that a user
+ * waiting on the final answer doesn't need to read — but may well want to
+ * inspect. So the run collapses to a single line naming the CURRENT step and
+ * expands to the full list on demand. Only reasoning and tool steps fold:
+ * text, plans, questions and errors are conclusions or demand action, so they
+ * stay visible at the top level and are never hidden behind a fold.
+ */
+export interface PresentedActivitySegment {
+  kind: "activity"
+  id: string
+  /** The folded steps, in order. Never contains another activity. */
+  children: PresentedActivityChild[]
+  /** Collapsed-row text: the current step while pending, a step count once settled. */
+  summary: string
+  /** Number of folded steps. */
+  count: number
+  /** pending while a step is still in flight; error when any step errored. */
+  status: "pending" | "ok" | "error"
+  /** ISO ts the in-flight step opened — drives the collapsed row's elapsed ticker. */
+  pendingSince?: string
+}
+
 export type PresentedSegment =
   | PresentedTextSegment
   | PresentedToolSegment
   | PresentedPlanSegment
   | PresentedQuestionSegment
   | PresentedErrorSegment
+  | PresentedActivitySegment
 
 export interface PresentedTurn {
   id: string
@@ -442,9 +471,91 @@ export function presentConversation(
     turns: conversation.turns.map(turn => ({
       id: turn.id,
       role: turn.role,
-      segments: turn.segments.map(seg => presentSegment(seg, renderers)),
+      segments: groupActivity(turn.segments.map(seg => presentSegment(seg, renderers))),
     })),
   }
+}
+
+/**
+ * A lone step is left ungrouped: collapsed, it already occupies exactly one
+ * row, so folding it would add a level of nesting and buy nothing.
+ */
+const MIN_ACTIVITY_GROUP = 2
+
+function isActivityChild(seg: PresentedSegment): seg is PresentedActivityChild {
+  return seg.kind === "reasoning" || seg.kind === "tool"
+}
+
+/**
+ * Fold each run of consecutive reasoning/tool segments into one
+ * PresentedActivitySegment. Order is preserved and nothing is dropped: every
+ * input segment either survives at the top level or becomes a child of exactly
+ * one group, so the fold is purely presentational and fully reversible.
+ *
+ * Pure and deterministic — the same segments always yield the same groups with
+ * the same ids, which is what lets diffConversation's serialize-compare stay
+ * honest across polls.
+ */
+export function groupActivity(segments: readonly PresentedSegment[]): PresentedSegment[] {
+  const out: PresentedSegment[] = []
+  let run: PresentedActivityChild[] = []
+
+  const flush = (): void => {
+    if (run.length === 0) return
+    if (run.length < MIN_ACTIVITY_GROUP) out.push(...run)
+    else out.push(buildActivity(run))
+    run = []
+  }
+
+  for (const seg of segments) {
+    if (isActivityChild(seg)) {
+      run.push(seg)
+      continue
+    }
+    flush()
+    out.push(seg)
+  }
+  flush()
+  return out
+}
+
+function buildActivity(children: PresentedActivityChild[]): PresentedActivitySegment {
+  // The in-flight step is normally the last one, but a result can land out of
+  // order — find it rather than assuming position.
+  const pending = children.find(
+    (c): c is PresentedToolSegment => c.kind === "tool" && c.status === "pending",
+  )
+  const failed = children.filter(c => c.kind === "tool" && c.status === "error").length
+  const status: PresentedActivitySegment["status"] = pending ? "pending" : failed > 0 ? "error" : "ok"
+  return {
+    kind: "activity",
+    // Derived from the first child's id, which is seq-derived and stable — so
+    // the group keeps its identity (and its expanded state) as steps are added.
+    id: `act-${children[0]!.id}`,
+    children,
+    summary: activitySummary(children, pending, failed),
+    count: children.length,
+    status,
+    ...(pending?.ts !== undefined ? { pendingSince: pending.ts } : {}),
+  }
+}
+
+/** The collapsed row's text — what a waiting user reads without expanding. */
+function activitySummary(
+  children: readonly PresentedActivityChild[],
+  pending: PresentedActivityChild | undefined,
+  failed: number,
+): string {
+  const steps = `${children.length} step${children.length === 1 ? "" : "s"}`
+  // Live: name the step actually running — that's the whole point of the row.
+  if (pending) return `${stepLabel(pending)} · ${steps}`
+  // Settled: a count, plus a failure tally so a fold never buries a failure.
+  return failed > 0 ? `${steps} · ${failed} failed` : steps
+}
+
+function stepLabel(seg: PresentedActivityChild): string {
+  if (seg.kind === "reasoning") return "Thinking"
+  return seg.kind === "tool" ? (seg.toolName ?? "tool") : "Working"
 }
 
 function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegment {

@@ -7,7 +7,9 @@
  *   - Initial transcript rendered from `exportSession("markdown")` with a
  *     `preview(200)` fallback.
  *   - Live output streamed via `SessionStore.focusOutput()`.
- *   - Send / interrupt-send / kill actions wired to the daemon client.
+ *   - Send / interrupt-send wired to the daemon client. NOT kill: that lives
+ *     in the sessions tree (`agentproto.killSession`), not under the user's
+ *     eyes as a permanently-red slab beside the thing they type into.
  *   - Clean disposal of subscriptions when the panel closes.
  */
 
@@ -137,9 +139,6 @@ async function handleWebviewMessage(
     case "interruptSend":
       await controller.onSend(msg.text, true)
       return
-    case "kill":
-      await controller.onKill()
-      return
   }
 }
 
@@ -207,7 +206,6 @@ export function buildHtml(nonce: string): string {
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
     }
-    #header-subtitle { }
     .chip {
       display: inline-block;
       padding: 2px 8px;
@@ -303,6 +301,45 @@ export function buildHtml(nonce: string): string {
     }
     details.tool > summary { font-family: var(--vscode-editor-font-family); }
     details.tool-error { border-color: var(--vscode-errorForeground); }
+    /* ── Activity group (folded reasoning/tool run) ────────────────── */
+    details.activity {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 5px;
+      background: var(--vscode-textCodeBlock-background);
+      padding: 3px 8px;
+    }
+    details.activity > summary {
+      cursor: pointer;
+      user-select: none;
+      list-style: revert;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+    }
+    details.activity[open] > summary { margin-bottom: 6px; }
+    .act-badge { flex: 0 0 auto; }
+    .act-label {
+      font-family: var(--vscode-editor-font-family);
+      color: var(--vscode-editor-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .act-elapsed:empty { display: none; }
+    /* The fold's children indent under the summary so the run reads as a tree. */
+    .act-children {
+      border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      margin-left: 4px;
+      padding-left: 8px;
+    }
+    details.activity-error { border-color: var(--vscode-errorForeground); }
+    details.activity.tool-still-running { border-color: var(--vscode-editorWarning-foreground); }
+    .tool-still-running > summary > .act-elapsed {
+      color: var(--vscode-editorWarning-foreground);
+      font-weight: 600;
+    }
     /* Consecutive tool segments read as one compact group instead of N
        separately-bordered cards — see markToolRuns() in the script. */
     .seg.tool.tool-run-start, .seg.tool.tool-run-mid { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
@@ -371,58 +408,189 @@ export function buildHtml(nonce: string): string {
       white-space: pre-wrap;
     }
     #conv-usage { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
-    #input-area {
+    /* ── Working row ──────────────────────────────────────────────────
+       The one always-visible answer to "is it doing anything?", sitting
+       between the timeline and the composer so it stays put while the
+       transcript scrolls. Only shown while a turn is actually in flight. */
+    #working {
       flex: 0 0 auto;
-      padding: 10px 14px;
-      border-top: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, rgba(128,128,128,0.3)));
-      background-color: var(--vscode-sideBar-background);
       display: flex;
+      align-items: baseline;
       gap: 8px;
-      align-items: flex-start;
+      padding: 6px 14px 0;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
     }
-    #input {
-      flex: 1 1 auto;
-      resize: vertical;
-      min-height: 60px;
-      max-height: 200px;
-      padding: 8px;
-      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      border-radius: 4px;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
+    #working[hidden] { display: none; }
+    #working-glyph {
+      color: var(--vscode-progressBar-background);
+      animation: agentproto-spin 1.6s linear infinite;
     }
-    #input:disabled { opacity: 0.6; cursor: not-allowed; }
-    .button-stack {
+    @keyframes agentproto-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    /* Honour the OS "reduce motion" setting — this thing spins for minutes. */
+    @media (prefers-reduced-motion: reduce) {
+      #working-glyph { animation: none; }
+      .tool-spinner { animation: none; }
+    }
+    /* ── Composer ─────────────────────────────────────────────────────
+       One bordered box that OWNS the textarea and its action row, rather
+       than a textarea sitting next to a stack of coloured buttons. Actions
+       are ghost-styled and live inside the box on one line: the destructive
+       one earns colour on hover only, so a red slab never sits permanently
+       under the user's eyes. */
+    #input-area {
       flex: 0 0 auto;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
+      padding: 10px 14px 12px;
+      background-color: var(--vscode-editor-background);
     }
+    /* ── Error banner ─────────────────────────────────────────────────
+       Errors used to be one line of red text wedged under the buttons,
+       clipped mid-sentence — the daemon's actual reason was unreadable. A
+       banner above the composer gets the full message, selectable so it can
+       be copied into a bug report, and a dismiss. */
+    #error-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      background: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.1));
+      border-radius: 6px;
+    }
+    #error-banner[hidden] { display: none; }
+    #eb-icon { flex: 0 0 auto; color: var(--vscode-errorForeground); }
+    #eb-body { flex: 1 1 auto; min-width: 0; }
+    #eb-title { font-weight: 600; margin-bottom: 2px; }
+    #eb-message {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-editor-font-family);
+      /* The whole reason this exists: never clip the daemon's message. */
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+    }
+    #eb-dismiss { flex: 0 0 auto; }
+    /* ── Queued message ───────────────────────────────────────────────
+       A prompt typed mid-turn is held here rather than rejected. */
+    #queued {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+    }
+    #queued[hidden] { display: none; }
+    #queued-label {
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #queued-cancel { flex: 0 0 auto; }
+    #composer {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border-radius: 8px;
+      background: var(--vscode-input-background);
+    }
+    #composer:focus-within { border-color: var(--vscode-focusBorder); }
+    #composer.disabled { opacity: 0.6; }
+    #input {
+      width: 100%;
+      resize: none;
+      min-height: 22px;
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      line-height: 1.4;
+    }
+    #input:focus { outline: none; }
+    #input::placeholder { color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
+    #input:disabled { cursor: not-allowed; }
+    #composer-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+    }
+    /* Which agent/model will answer belongs where you type, not only in the
+       header — so the header no longer repeats it. */
+    #composer-meta {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .composer-chip {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .composer-chip:empty { display: none; }
     button {
-      padding: 6px 12px;
+      padding: 3px 8px;
       border: none;
       border-radius: 4px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    button:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2));
+      color: var(--vscode-editor-foreground);
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Hidden rather than disabled: interrupting a session that isn't working
+       on anything is a no-op, so the affordance shouldn't be there at all. */
+    button[hidden] { display: none; }
+    #kill:hover:not(:disabled) {
+      background: var(--vscode-inputValidation-errorBackground, rgba(255,0,0,0.12));
+      color: var(--vscode-errorForeground);
+    }
+    /* The submit key. Stays quiet until there is actually something to send. */
+    #send {
+      flex: 0 0 auto;
+      min-width: 26px;
+      font-size: 1em;
+      line-height: 1;
+      padding: 4px 8px;
+    }
+    #send.has-text {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
-      cursor: pointer;
-      font-size: 0.95em;
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    button.secondary {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-    }
-    button.danger {
-      background: var(--vscode-errorForeground);
-      color: var(--vscode-editor-background);
+    #send.has-text:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+      color: var(--vscode-button-foreground);
     }
     #send-status {
-      font-size: 0.85em;
+      flex: 0 0 auto;
       color: var(--vscode-errorForeground);
-      min-height: 1.2em;
     }
+    #send-status:empty { display: none; }
     #empty {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
@@ -434,7 +602,6 @@ export function buildHtml(nonce: string): string {
   <div id="header">
     <div id="header-title"></div>
     <div id="header-meta">
-      <span id="header-subtitle"></span>
       <span id="status-chip" class="chip chip-starting"></span>
       <span id="header-blocked" class="chip chip-blocked"></span>
       <span id="cost"></span>
@@ -442,32 +609,77 @@ export function buildHtml(nonce: string): string {
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="working" hidden>
+    <span id="working-glyph">✳</span>
+    <span id="working-text"></span>
+  </div>
   <div id="input-area">
-    <textarea id="input" placeholder="Type a message… (Enter to send, Shift+Enter for newline)"></textarea>
-    <div class="button-stack">
-      <button id="send">Send</button>
-      <button id="interrupt-send" class="secondary">Interrupt & send</button>
-      <button id="kill" class="danger">Kill</button>
-      <span id="send-status"></span>
+    <div id="error-banner" hidden>
+      <span id="eb-icon">&#9888;</span>
+      <div id="eb-body">
+        <div id="eb-title"></div>
+        <div id="eb-message"></div>
+      </div>
+      <button id="eb-dismiss" title="Dismiss">✕</button>
+    </div>
+    <div id="queued" hidden>
+      <span id="queued-icon">&#9203;</span>
+      <span id="queued-label"></span>
+      <button id="queued-cancel" title="Discard the queued message">✕</button>
+    </div>
+    <div id="composer">
+      <textarea id="input" rows="1" placeholder="Reply to the agent…"></textarea>
+      <div id="composer-bar">
+        <span id="composer-meta">
+          <span id="composer-harness" class="composer-chip"></span>
+          <span id="composer-model" class="composer-chip"></span>
+          <span id="composer-auth" class="composer-chip"></span>
+        </span>
+        <span id="send-status"></span>
+        <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
+        <button id="send" title="Send (Enter)">↵</button>
+      </div>
     </div>
   </div>
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
       const headerTitle = document.getElementById('header-title');
-      const headerSubtitle = document.getElementById('header-subtitle');
       const statusChip = document.getElementById('status-chip');
       const headerBlocked = document.getElementById('header-blocked');
       const costEl = document.getElementById('cost');
       const transcript = document.getElementById('transcript');
       const convUsage = document.getElementById('conv-usage');
+      const working = document.getElementById('working');
+      const workingText = document.getElementById('working-text');
+      const composer = document.getElementById('composer');
+      const composerHarness = document.getElementById('composer-harness');
+      const composerModel = document.getElementById('composer-model');
+      const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const interruptBtn = document.getElementById('interrupt-send');
-      const killBtn = document.getElementById('kill');
       const sendStatus = document.getElementById('send-status');
+      const errorBanner = document.getElementById('error-banner');
+      const ebTitle = document.getElementById('eb-title');
+      const ebMessage = document.getElementById('eb-message');
+      const ebDismiss = document.getElementById('eb-dismiss');
+      const queuedRow = document.getElementById('queued');
+      const queuedLabel = document.getElementById('queued-label');
+      const queuedCancel = document.getElementById('queued-cancel');
 
       let exited = false;
+      let busy = false;
+      /** Wall-clock ms when the current turn started (0 when idle). */
+      let busySince = 0;
+      let lastTokensOut;
+      /**
+       * Text typed while the agent was mid-turn. The daemon takes ONE turn at
+       * a time and rejects anything else with a 409, so instead of firing that
+       * at the user we hold the message here and flush it the moment the turn
+       * ends — or immediately, if they choose to interrupt.
+       */
+      let queuedText = null;
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
@@ -479,16 +691,105 @@ export function buildHtml(nonce: string): string {
       // any patch: segId -> { startedMs, label, node }.
       const pendingTools = new Map();
 
-      function setInputEnabled(enabled) {
-        input.disabled = !enabled || isSending;
-        sendBtn.disabled = !enabled || isSending;
-        interruptBtn.disabled = !enabled || isSending;
+      // Grow with the text instead of forcing the user to drag a resize
+      // handle, up to the CSS max-height (then the textarea scrolls).
+      function autoGrow() {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+      }
+
+      // Single source of truth for every composer affordance. Each control
+      // reflects what the session can ACTUALLY do right now: no sending to a
+      // dead session, no killing an already-dead one, no interrupting an agent
+      // that isn't working.
+      function refreshComposer() {
+        const hasText = Boolean(input.value.trim());
+        const live = !exited && !isSending;
+        input.disabled = !live;
+        sendBtn.disabled = !live || !hasText;
+        sendBtn.classList.toggle('has-text', hasText && live);
+        // "Interrupt & send" exists to force a message the agent hasn't taken
+        // yet — so it appears only when there IS one waiting, not merely
+        // whenever the agent is busy.
+        interruptBtn.hidden = queuedText === null || exited;
+        interruptBtn.disabled = !live;
+        composer.classList.toggle('disabled', exited);
+        renderQueued();
+      }
+
+      function renderQueued() {
+        queuedRow.hidden = queuedText === null;
+        if (queuedText === null) return;
+        // \\s, not \s: this script lives in a template literal, where an
+        // unrecognised escape collapses to its own letter — /\s+/ would ship
+        // as /s+/ and blank out every "s" in the user's message.
+        const oneLine = queuedText.replace(/\\s+/g, ' ').trim();
+        const clipped = oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine;
+        queuedLabel.textContent = 'Queued · ' + clipped;
+        queuedRow.title = queuedText;
+      }
+
+      function showError(title, message) {
+        ebTitle.textContent = title;
+        ebMessage.textContent = message;
+        errorBanner.hidden = false;
+      }
+
+      function clearError() {
+        errorBanner.hidden = true;
+        ebMessage.textContent = '';
+      }
+
+      /** Hand the queued text to the agent, optionally cutting its turn short. */
+      function flushQueued(interrupt) {
+        if (queuedText === null) return;
+        const text = queuedText;
+        queuedText = null;
+        renderQueued();
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text });
+        refreshComposer();
+      }
+
+      // "Working…" plus how long and how much — the three things a user
+      // waiting on a reply actually wants, without expanding anything.
+      function refreshWorking() {
+        working.hidden = !busy;
+        if (!busy) return;
+        const parts = ['Working…'];
+        if (busySince) parts.push(Math.max(0, Math.round((Date.now() - busySince) / 1000)) + 's');
+        if (typeof lastTokensOut === 'number') parts.push(lastTokensOut + ' tokens');
+        workingText.textContent = parts.join(' · ');
+      }
+
+      function applySession(session) {
+        updateHeader(session);
+        exited = isTerminal(session);
+        // A terminal session is never busy, whatever the descriptor says — see
+        // isTerminal. Without this a killed session spins the working row forever.
+        const nowBusy = !exited && Boolean(session.busy);
+        if (nowBusy && !busy) busySince = Date.now();
+        if (!nowBusy) busySince = 0;
+        const wasBusy = busy;
+        busy = nowBusy;
+        if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
+        refreshComposer();
+        refreshWorking();
+        // The turn just ended — the daemon will accept a prompt again, so hand
+        // over whatever was typed during it. This is the whole point of the
+        // queue: the user types when they think of it, not when the agent is ready.
+        if (wasBusy && !nowBusy && !exited && queuedText !== null) flushQueued(false);
       }
 
       function setSending(sending) {
         isSending = sending;
-        setInputEnabled(!exited);
+        refreshComposer();
         sendStatus.textContent = sending ? 'Sending…' : '';
+      }
+
+      // A terminal session is over: whatever busy/blockedOn still say about an
+      // in-flight turn is stale by definition, so status wins over both.
+      function isTerminal(session) {
+        return ['exited', 'killed', 'error'].indexOf(session.status) !== -1;
       }
 
       function computeStatusChip(session) {
@@ -502,16 +803,26 @@ export function buildHtml(nonce: string): string {
 
       function updateHeader(session) {
         headerTitle.textContent = session.label || session.id || '';
-        const parts = [];
-        if (session.adapterSlug) parts.push(session.adapterSlug);
-        if (session.model) parts.push(session.model);
-        headerSubtitle.textContent = parts.join(' · ');
+        // What will answer, shown where you type to it — the header no longer
+        // repeats any of it. Each chip is omitted when the daemon doesn't
+        // report the field (CSS :empty), rather than rendering "undefined".
+        composerHarness.textContent = session.adapterSlug || '';
+        composerModel.textContent = session.model || '';
+        composerAuth.textContent = session.auth ? session.auth.mode : '';
 
         const chip = computeStatusChip(session);
         statusChip.textContent = chip;
         statusChip.className = 'chip chip-' + chip;
 
-        headerBlocked.textContent = session.blockedOn
+        // blockedOn describes an IN-FLIGHT turn, so only claim it while the
+        // session is actually taking one. A session killed mid-tool-call keeps
+        // a stale blockedOn/busy forever (the daemon clears them in the turn's
+        // finally, which never runs for a generator that is never resumed), and
+        // rendering that verbatim told the user a dead session was blocked on a
+        // command. The chip already reads "exited" in that state — the two must
+        // not contradict each other.
+        const live = !isTerminal(session) && Boolean(session.busy);
+        headerBlocked.textContent = live && session.blockedOn
           ? 'blocked on ' + session.blockedOn + (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '')
           : '';
 
@@ -571,7 +882,7 @@ export function buildHtml(nonce: string): string {
       // place — never replaced — which is what keeps <details open> (and any
       // text selection inside it) alive across live updates.
       function buildSegmentShell(seg) {
-        if (seg.kind === 'reasoning' || seg.kind === 'tool') {
+        if (seg.kind === 'reasoning' || seg.kind === 'tool' || seg.kind === 'activity') {
           const det = document.createElement('details');
           det.appendChild(document.createElement('summary'));
           return det;
@@ -673,6 +984,38 @@ export function buildHtml(nonce: string): string {
             node.className = 'seg error';
             node.innerHTML = seg.text || '';
             return;
+          case 'activity': {
+            // Collapsed by default (the open attribute is never set): a fold
+            // that springs open on every new step would defeat its own purpose.
+            // The <details> shell is never replaced, so once the user opens the
+            // tree it STAYS open as steps stream in underneath.
+            node.className = 'seg activity activity-' + seg.status;
+            const summary = node.querySelector(':scope > summary');
+            summary.textContent = '';
+            const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
+            summary.appendChild(el('span', 'act-badge', badge));
+            summary.appendChild(el('span', 'act-label', seg.summary || ''));
+            const elapsed = el('span', 'act-elapsed');
+            summary.appendChild(elapsed);
+            let kids = node.querySelector(':scope > .act-children');
+            if (!kids) {
+              kids = el('div', 'act-children');
+              node.appendChild(kids);
+            }
+            // Recursive reconcile — a child whose signature didn't change is
+            // left untouched, so its own expand state survives too.
+            reconcileSegments(kids, seg.children || []);
+            if (seg.status === 'pending') {
+              const startedMs = seg.pendingSince ? Date.parse(seg.pendingSince) : NaN;
+              const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
+              pendingTools.set(seg.id, entry);
+              paintElapsed(entry);
+            } else {
+              pendingTools.delete(seg.id);
+              node.classList.remove('tool-still-running');
+            }
+            return;
+          }
         }
       }
 
@@ -683,6 +1026,9 @@ export function buildHtml(nonce: string): string {
           if (!entry.node.isConnected) { pendingTools.delete(segId); continue; }
           paintElapsed(entry);
         }
+        // The working row's elapsed must keep moving on a quiet poll too — a
+        // frozen counter is exactly what "is it stuck?" looks like.
+        refreshWorking();
       }, 1000);
 
       // Marks runs of consecutive tool segments so CSS can merge them into
@@ -799,12 +1145,18 @@ export function buildHtml(nonce: string): string {
       }
 
       function renderUsage(usage) {
-        if (!usage) { convUsage.textContent = ''; return; }
+        if (!usage) { convUsage.textContent = ''; convUsage.title = ''; return; }
         const parts = [];
-        if (typeof usage.contextUsed === 'number' && typeof usage.contextSize === 'number') {
-          parts.push('ctx ' + usage.contextUsed + '/' + usage.contextSize);
-        } else if (typeof usage.used === 'number' && typeof usage.size === 'number') {
-          parts.push('ctx ' + usage.used + '/' + usage.size);
+        // "ctx 206115/1000000" is two numbers the reader has to divide. What
+        // they actually want to know is how full the window is, so show the
+        // percent and keep the raw counts in the tooltip.
+        const used = typeof usage.contextUsed === 'number' ? usage.contextUsed : usage.used;
+        const size = typeof usage.contextSize === 'number' ? usage.contextSize : usage.size;
+        if (typeof used === 'number' && typeof size === 'number' && size > 0) {
+          parts.push('ctx ' + Math.round((used / size) * 100) + '%');
+          convUsage.title = 'context ' + used + ' / ' + size;
+        } else {
+          convUsage.title = '';
         }
         if (typeof usage.tokensIn === 'number') parts.push('in ' + usage.tokensIn);
         if (typeof usage.tokensOut === 'number') parts.push('out ' + usage.tokensOut);
@@ -847,8 +1199,19 @@ export function buildHtml(nonce: string): string {
       function send(interrupt) {
         const text = input.value;
         if (!text || !text.trim()) return;
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: text.trim() });
+        const trimmed = text.trim();
         input.value = '';
+        autoGrow();
+        clearError();
+        // Mid-turn and not explicitly interrupting: hold it rather than POST a
+        // prompt the daemon will refuse with a 409. It goes out on turn-end.
+        if (busy && !interrupt) {
+          queuedText = trimmed;
+          refreshComposer();
+          return;
+        }
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: trimmed });
+        refreshComposer();
       }
 
       input.addEventListener('keydown', function(e) {
@@ -858,13 +1221,20 @@ export function buildHtml(nonce: string): string {
         }
       });
 
-      sendBtn.addEventListener('click', function() { send(false); });
-      interruptBtn.addEventListener('click', function() { send(true); });
-      killBtn.addEventListener('click', function() {
-        if (confirm('Kill this session?')) {
-          vscode.postMessage({ type: 'kill' });
-        }
+      input.addEventListener('input', function() {
+        autoGrow();
+        refreshComposer();
       });
+
+      sendBtn.addEventListener('click', function() { send(false); });
+      // Interrupt only ever acts on the queued message — it's the only thing
+      // waiting, and it's what the button offers to stop waiting for.
+      interruptBtn.addEventListener('click', function() { flushQueued(true); });
+      queuedCancel.addEventListener('click', function() {
+        queuedText = null;
+        refreshComposer();
+      });
+      ebDismiss.addEventListener('click', clearError);
 
       window.addEventListener('message', function(e) {
         const msg = e.data;
@@ -872,7 +1242,6 @@ export function buildHtml(nonce: string): string {
         switch (msg.type) {
           case 'init':
             mode = msg.mode || 'raw';
-            updateHeader(msg.session);
             isScrolledUp = false;
             if (mode === 'structured') {
               renderFullConversation(msg.conversation);
@@ -880,8 +1249,7 @@ export function buildHtml(nonce: string): string {
               transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
               transcript.scrollTop = transcript.scrollHeight;
             }
-            exited = ['exited', 'killed', 'error'].indexOf(msg.session.status) !== -1;
-            setInputEnabled(!exited);
+            applySession(msg.session);
             break;
           case 'conversation':
             renderFullConversation(msg.conversation);
@@ -890,9 +1258,7 @@ export function buildHtml(nonce: string): string {
             applyPatch(msg);
             break;
           case 'sessionUpdate':
-            updateHeader(msg.session);
-            exited = ['exited', 'killed', 'error'].indexOf(msg.session.status) !== -1;
-            setInputEnabled(!exited);
+            applySession(msg.session);
             break;
           case 'lines':
             if (mode !== 'structured') appendLines(msg.lines);
@@ -905,7 +1271,15 @@ export function buildHtml(nonce: string): string {
             break;
           case 'sendError':
             setSending(false);
-            sendStatus.textContent = msg.message || 'Send failed';
+            if (msg.kind === 'busy') {
+              // Lost the race: the turn started between our busy check and the
+              // POST. Not an error — re-queue and let turn-end flush it, which
+              // is exactly what would have happened had we seen busy in time.
+              queuedText = msg.text || queuedText;
+              refreshComposer();
+              break;
+            }
+            showError(msg.title || 'Send failed', msg.message || '');
             break;
         }
       });

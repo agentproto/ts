@@ -6,6 +6,7 @@
 
 import type { SessionDescriptor } from "../client/types.js"
 import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
+import type { SendFailureKind } from "./transcript.logic.js"
 
 /**
  * A raw-mode transcript line, ALREADY rendered to safe HTML on the host.
@@ -93,14 +94,28 @@ export type ExtMessage =
     }
   | { type: "sending" }
   | { type: "sendAck" }
-  | { type: "sendError"; message: string }
+  /**
+   * A prompt POST was refused. `kind` decides the panel's reaction: "busy"
+   * means the agent is mid-turn, which is normal — the panel re-queues `text`
+   * and flushes it when the turn ends rather than surfacing an error. Anything
+   * else is a real failure and earns the banner. `text` is echoed back so the
+   * queue can be rebuilt without the webview having to hold in-flight copies.
+   */
+  | { type: "sendError"; message: string; kind: SendFailureKind; title: string; text: string }
 
-/** Messages sent from the webview to the extension host. */
+/**
+ * Messages sent from the webview to the extension host.
+ *
+ * No `kill`: the composer dropped its Kill button (a permanently-red slab
+ * under the user's eyes, for the one action they least often want), and
+ * killing a session remains available from the sessions tree via
+ * `agentproto.killSession`. Nothing else could ever send this message, so the
+ * arm went with the button rather than lingering as unreachable code.
+ */
 export type WebviewMessage =
   | { type: "ready" }
   | { type: "send"; text: string }
   | { type: "interruptSend"; text: string }
-  | { type: "kill" }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -109,7 +124,6 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof type !== "string") return false
   switch (type) {
     case "ready":
-    case "kill":
       return true
     case "send":
     case "interruptSend":

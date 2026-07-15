@@ -25,17 +25,22 @@ export interface SessionNode {
   children: SessionNode[]
 }
 
-export type TimeBucket = "last7days" | "older"
+export type TimeBucket = "recent" | "older"
 
-/** A top-level time-bucket group node; only ever holds session roots, never nests inside another bucket. */
-export interface BucketNode {
-  kind: "bucket"
-  bucket: TimeBucket
+/**
+ * The rule drawn between the recent and the older session rows. Deliberately
+ * NOT a group node: sessions stay at the top level, so there is nothing to
+ * expand or collapse — this is one inert row that reads as a divider.
+ */
+export interface SeparatorNode {
+  kind: "separator"
+  /** Stable TreeItem id; the tree only ever holds one separator. */
+  id: string
+  /** Divider text, rendered dim — e.g. "──── older than 24h ────". */
   label: string
-  children: SessionNode[]
 }
 
-export type TreeNode = BucketNode | SessionNode
+export type TreeNode = SeparatorNode | SessionNode
 
 /** Description-string extras for the richer (post-filter) row rendering — see descriptionFor. */
 export interface DescriptionContext {
@@ -149,8 +154,19 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
       value: `${pct} (${session.contextUsed}/${session.contextSize})`,
     })
   }
-  if (session.blockedOn) fields.push({ label: "blockedOn", value: session.blockedOn })
+  // Only while a turn is actually in flight: a session killed mid-tool-call
+  // keeps a stale blockedOn/busy forever (the daemon clears them in the turn's
+  // finally, which never runs for a generator that is never resumed), and a
+  // tooltip claiming a dead session is "blockedOn: command" is just wrong.
+  if (session.blockedOn && isBlocked(session)) {
+    fields.push({ label: "blockedOn", value: session.blockedOn })
+  }
   return fields
+}
+
+/** True only when the session is taking a turn right now — the sole state in which blockedOn means anything. */
+export function isBlocked(session: SessionDescriptor): boolean {
+  return Boolean(session.blockedOn) && !TERMINAL_STATUSES.has(session.status) && Boolean(session.busy)
 }
 
 /** running-first, then startedAt desc (newest first). */
@@ -200,13 +216,12 @@ export function buildSessionTree(sessions: readonly SessionDescriptor[]): Sessio
 const MS_PER_MINUTE = 60_000
 const MS_PER_HOUR = 60 * MS_PER_MINUTE
 const MS_PER_DAY = 24 * MS_PER_HOUR
-const LAST_7_DAYS_MS = 7 * MS_PER_DAY
 
-/** Which top-level bucket a session's `startedAt` falls into, relative to `now`. An unparsable startedAt is "older". */
+/** Which side of the divider a session's `startedAt` falls on, relative to `now`. An unparsable startedAt is "older". */
 export function bucketFor(session: SessionDescriptor, now: number): TimeBucket {
   const started = Date.parse(session.startedAt)
   if (Number.isNaN(started)) return "older"
-  return now - started < LAST_7_DAYS_MS ? "last7days" : "older"
+  return now - started < MS_PER_DAY ? "recent" : "older"
 }
 
 /**
@@ -232,35 +247,37 @@ export function relativeTime(iso: string, now: number): string {
   return `${years} year${years === 1 ? "" : "s"} ago`
 }
 
-const BUCKET_LABELS: Record<TimeBucket, string> = {
-  last7days: "LAST 7 DAYS",
-  older: "OLDER",
-}
+export const SEPARATOR_ID = "separator-older"
 
-const BUCKET_ORDER: readonly TimeBucket[] = ["last7days", "older"]
+/** Box-drawing rule around the divider's caption. Fixed width: a tree row can't measure the sidebar. */
+const RULE = "─".repeat(8)
 
 /**
- * Bucket sessions by recency at the TOP LEVEL ONLY: orchestrator subtrees
- * (parentSessionId nesting from buildSessionTree) stay intact inside
- * whichever bucket their root lands in — a child never migrates to its own
- * bucket. An empty bucket is omitted entirely rather than rendered hollow.
+ * Session roots as a FLAT top-level row list, with a single divider row
+ * separating those started in the last 24h from the older ones.
+ *
+ * Recency is a top-level concern only: orchestrator subtrees
+ * (parentSessionId nesting from buildSessionTree) stay intact under whichever
+ * side their root lands on — a child never migrates across the divider on its
+ * own `startedAt`.
+ *
+ * The divider is emitted ONLY when both sides are non-empty: a rule with
+ * nothing above or below it separates nothing, and would just read as a
+ * broken row.
  */
-export function buildBucketedTree(sessions: readonly SessionDescriptor[], now: number): TreeNode[] {
-  const roots = buildSessionTree(sessions)
-  const byBucket = new Map<TimeBucket, SessionNode[]>()
-  for (const root of roots) {
-    const bucket = bucketFor(root.session, now)
-    const children = byBucket.get(bucket)
-    if (children) children.push(root)
-    else byBucket.set(bucket, [root])
+export function buildSessionRows(sessions: readonly SessionDescriptor[], now: number): TreeNode[] {
+  const recent: SessionNode[] = []
+  const older: SessionNode[] = []
+  for (const root of buildSessionTree(sessions)) {
+    if (bucketFor(root.session, now) === "recent") recent.push(root)
+    else older.push(root)
   }
 
-  const nodes: TreeNode[] = []
-  for (const bucket of BUCKET_ORDER) {
-    const children = byBucket.get(bucket)
-    if (children && children.length > 0) {
-      nodes.push({ kind: "bucket", bucket, label: BUCKET_LABELS[bucket], children })
-    }
+  if (recent.length === 0 || older.length === 0) return [...recent, ...older]
+  const separator: SeparatorNode = {
+    kind: "separator",
+    id: SEPARATOR_ID,
+    label: `${RULE} older than 24h ${RULE}`,
   }
-  return nodes
+  return [...recent, separator, ...older]
 }

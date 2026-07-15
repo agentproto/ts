@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import {
   CONVERSATION_SCHEMA_VERSION,
+  groupActivity,
   presentConversation,
   reduceConversation,
+  type PresentedActivitySegment,
+  type PresentedSegment,
   type PresentedTextSegment,
   type PresentedToolSegment,
 } from "./conversation.js"
@@ -381,5 +384,105 @@ describe("presentConversation", () => {
     const presented = presentConversation(conv, renderers)
     expect(presented.turns[0]!.segments[0]!.id).toBe(conv.turns[0]!.segments[0]!.id)
     expect(presented.usage).toMatchObject({ size: 10, used: 2 })
+  })
+})
+
+describe("groupActivity", () => {
+  const tool = (id: string, over: Partial<PresentedToolSegment> = {}): PresentedToolSegment => ({
+    kind: "tool",
+    id,
+    toolName: "bash",
+    isError: false,
+    status: "ok",
+    ...over,
+  })
+  const text = (id: string): PresentedTextSegment => ({ kind: "assistant-text", id, html: "hi" })
+  const reasoning = (id: string): PresentedTextSegment => ({ kind: "reasoning", id, html: "hmm" })
+
+  const kinds = (segs: PresentedSegment[]): string[] => segs.map(s => s.kind)
+
+  it("folds a run of consecutive reasoning/tool steps into one activity group", () => {
+    const out = groupActivity([reasoning("a"), tool("b"), tool("c")])
+    expect(kinds(out)).toEqual(["activity"])
+    const group = out[0] as PresentedActivitySegment
+    expect(group.children.map(c => c.id)).toEqual(["a", "b", "c"])
+    expect(group.count).toBe(3)
+    expect(group.summary).toBe("3 steps")
+    expect(group.status).toBe("ok")
+  })
+
+  it("leaves a lone step ungrouped — folding one row into one row buys nothing", () => {
+    expect(kinds(groupActivity([tool("a"), text("b")]))).toEqual(["tool", "assistant-text"])
+  })
+
+  it("never folds text, plans, questions or errors — a conclusion is never hidden behind a fold", () => {
+    const out = groupActivity([
+      tool("a"),
+      tool("b"),
+      text("c"),
+      { kind: "error", id: "d", text: "boom" },
+      { kind: "agent-question", id: "e", options: ["yes"] },
+      { kind: "plan", id: "f", entries: [], done: 0, total: 0 },
+    ])
+    expect(kinds(out)).toEqual(["activity", "assistant-text", "error", "agent-question", "plan"])
+  })
+
+  it("starts a NEW group after an interrupting text segment", () => {
+    const out = groupActivity([tool("a"), tool("b"), text("c"), tool("d"), tool("e")])
+    expect(kinds(out)).toEqual(["activity", "assistant-text", "activity"])
+    expect((out[0] as PresentedActivitySegment).id).toBe("act-a")
+    expect((out[2] as PresentedActivitySegment).id).toBe("act-d")
+  })
+
+  it("drops nothing and preserves order — every input segment survives exactly once", () => {
+    const input: PresentedSegment[] = [reasoning("a"), tool("b"), text("c"), tool("d"), tool("e")]
+    const flatten = (segs: PresentedSegment[]): string[] =>
+      segs.flatMap(s => (s.kind === "activity" ? s.children.map(c => c.id) : [s.id]))
+    expect(flatten(groupActivity(input))).toEqual(["a", "b", "c", "d", "e"])
+  })
+
+  it("names the in-flight step while pending — that is what a waiting user reads", () => {
+    const group = groupActivity([
+      reasoning("a"),
+      tool("b", { toolName: "read_file", status: "pending", ts: "2026-01-01T00:00:00.000Z" }),
+    ])[0] as PresentedActivitySegment
+    expect(group.status).toBe("pending")
+    expect(group.summary).toBe("read_file · 2 steps")
+    expect(group.pendingSince).toBe("2026-01-01T00:00:00.000Z")
+  })
+
+  it("finds the in-flight step even when a later step already settled (out-of-order results)", () => {
+    const group = groupActivity([
+      tool("a", { toolName: "slow", status: "pending", ts: "2026-01-01T00:00:00.000Z" }),
+      tool("b", { toolName: "fast", status: "ok" }),
+    ])[0] as PresentedActivitySegment
+    expect(group.status).toBe("pending")
+    expect(group.summary).toBe("slow · 2 steps")
+  })
+
+  it("labels a pending reasoning-only run as Thinking", () => {
+    const group = groupActivity([reasoning("a"), reasoning("b")])[0] as PresentedActivitySegment
+    // No tool in flight, so the run reads as settled rather than hanging.
+    expect(group.status).toBe("ok")
+    expect(group.summary).toBe("2 steps")
+  })
+
+  it("surfaces a failure count so a fold never buries a failed step", () => {
+    const group = groupActivity([
+      tool("a", { status: "error", isError: true }),
+      tool("b", { status: "ok" }),
+    ])[0] as PresentedActivitySegment
+    expect(group.status).toBe("error")
+    expect(group.summary).toBe("2 steps · 1 failed")
+  })
+
+  it("keeps a stable group id as steps stream in, so the expanded tree stays open", () => {
+    const first = groupActivity([reasoning("a"), tool("b")])[0] as PresentedActivitySegment
+    const later = groupActivity([reasoning("a"), tool("b"), tool("c")])[0] as PresentedActivitySegment
+    expect(later.id).toBe(first.id)
+  })
+
+  it("returns an empty list unchanged", () => {
+    expect(groupActivity([])).toEqual([])
   })
 })

@@ -40,7 +40,7 @@ import {
 import { diffConversation } from "./conversationPatch.js"
 import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
-import { isExited } from "./transcript.logic.js"
+import { classifySendFailure, isExited, sendFailureTitle } from "./transcript.logic.js"
 import type { ExtMessage, PresentedLine } from "./protocol.js"
 
 export interface PanelMessenger {
@@ -466,14 +466,20 @@ export class TranscriptPanelController {
       this.messenger.postMessage({ type: "sendAck" })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      this.messenger.postMessage({ type: "sendError", message })
+      // Echo the text back alongside a classification: a mid-turn rejection is
+      // not an error the user should see, it's a cue to queue the text and
+      // send it when the turn ends (see classifySendFailure).
+      const kind = classifySendFailure(message)
+      this.messenger.postMessage({
+        type: "sendError",
+        message,
+        kind,
+        title: sendFailureTitle(kind),
+        text,
+      })
     } finally {
       this.isSending = false
     }
-  }
-
-  async onKill(): Promise<void> {
-    await this.client.kill(this.sessionId)
   }
 
   dispose(): void {

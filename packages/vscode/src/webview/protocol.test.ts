@@ -8,7 +8,8 @@ describe("isWebviewMessage", () => {
   })
 
   it("accepts kill", () => {
-    expect(isWebviewMessage({ type: "kill" })).toBe(true)
+    // kill went with the composer button — see WebviewMessage.
+    expect(isWebviewMessage({ type: "kill" })).toBe(false)
   })
 
   it("accepts send with text", () => {

@@ -1,19 +1,24 @@
 /**
  * Sessions tree view (WP1). TreeDataProvider on view id `agentproto.sessions`.
- * Sessions are filtered (SessionFilterController's SessionFilterState),
- * bucketed by recency (LAST 7 DAYS / OLDER, top level only), and within a
- * bucket nested by parentSessionId into orchestrator subtrees. All
+ * Sessions are filtered (SessionFilterController's SessionFilterState), listed
+ * FLAT at the top level split by recency across a divider row (last 24h above,
+ * older below), and nested by parentSessionId into orchestrator subtrees. All
  * mapping/sorting/filtering rules live in sessionsTree.logic.ts and
  * sessionFilter.logic.ts (no vscode import there) so they're
  * unit-testable; this file only wraps that data into
  * vscode.TreeItem/ThemeIcon/MarkdownString and drives the view's
  * badge/description.
  *
+ * Recency is a divider, not an accordion: the old LAST 7 DAYS / OLDER group
+ * nodes made every session cost an extra expand and let a collapsed group hide
+ * live sessions outright. The separator row carries the same information as a
+ * single rule and can't hide anything.
+ *
  * A single click opens the transcript: every session TreeItem sets
  * `command` to agentproto.openTranscript with the tree node as its arg —
  * normalizeSessionArg (sessionActions.logic.ts) already unwraps a node
- * shaped `{ session }`, so passing the node through works unchanged. Bucket
- * group nodes never get a command (nothing to open).
+ * shaped `{ session }`, so passing the node through works unchanged. The
+ * separator row never gets a command (nothing to open).
  */
 
 import * as vscode from "vscode"
@@ -24,19 +29,19 @@ import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
-  buildBucketedTree,
+  buildSessionRows,
   contextValueFor,
   descriptionFor,
   iconFor,
   labelFor,
   tooltipFieldsFor,
-  type BucketNode,
+  type SeparatorNode,
   type SessionNode,
   type TreeNode,
 } from "./sessionsTree.logic.js"
 
-function isBucketNode(node: TreeNode): node is BucketNode {
-  return "kind" in node && node.kind === "bucket"
+function isSeparatorNode(node: TreeNode): node is SeparatorNode {
+  return "kind" in node && node.kind === "separator"
 }
 
 export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
@@ -68,18 +73,24 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     // grouping, not a filter dimension).
     const survivors = filterSessions(all, this.filter.state, this.filter.workspaces)
     this._hiddenCount = all.length - survivors.length
-    this.nodes = buildBucketedTree(survivors, this.now)
+    this.nodes = buildSessionRows(survivors, this.now)
     this._onDidChange.fire()
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
-    if (isBucketNode(element)) {
-      const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.Expanded)
+    if (isSeparatorNode(element)) {
+      const item = new vscode.TreeItem("", vscode.TreeItemCollapsibleState.None)
+      // The rule goes in `description`, not `label`: description renders in
+      // descriptionForeground (dim), which is what makes the row read as a
+      // divider instead of as another session.
+      item.description = element.label
+      item.id = element.id
       // Deliberately NOT prefixed "session-": every view/item/context menu
-      // entry in package.json gates on `viewItem =~ /^session-/`, and a
-      // bucket header must never pick up per-session inline actions
-      // (open transcript / prompt / interrupt / kill).
-      item.contextValue = "bucket"
+      // entry in package.json gates on `viewItem =~ /^session-/`, and the
+      // divider must never pick up per-session inline actions (open
+      // transcript / prompt / interrupt / kill).
+      item.contextValue = "separator"
+      // No `command`: clicking a divider does nothing.
       return item
     }
 
@@ -110,27 +121,26 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   getChildren(element?: TreeNode): TreeNode[] {
     if (!element) return this.nodes
+    if (isSeparatorNode(element)) return []
     return element.children
   }
 
   getParent(element: TreeNode): TreeNode | undefined {
-    if (isBucketNode(element)) return undefined
+    if (isSeparatorNode(element)) return undefined
     const parentId = element.session.parentSessionId
     if (parentId) {
       const parent = findNode(this.nodes, parentId)
       if (parent) return parent
     }
-    // No parentSessionId (or it's dangling) — element is a bucket root.
-    for (const node of this.nodes) {
-      if (isBucketNode(node) && node.children.includes(element)) return node
-    }
+    // No parentSessionId (or it's dangling) — element is a top-level row.
     return undefined
   }
 }
 
 function findNode(nodes: readonly TreeNode[], id: string): SessionNode | undefined {
   for (const node of nodes) {
-    if (!isBucketNode(node) && node.session.id === id) return node
+    if (isSeparatorNode(node)) continue
+    if (node.session.id === id) return node
     const found = findNode(node.children, id)
     if (found) return found
   }

@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
 import {
+  SEPARATOR_ID,
   bucketFor,
-  buildBucketedTree,
+  buildSessionRows,
   buildSessionTree,
   compareSessions,
   contextValueFor,
@@ -13,7 +14,9 @@ import {
   labelFor,
   relativeTime,
   tooltipFieldsFor,
-  type BucketNode,
+  type SeparatorNode,
+  type SessionNode,
+  type TreeNode,
 } from "./sessionsTree.logic.js"
 
 function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
@@ -216,12 +219,28 @@ describe("tooltipFieldsFor", () => {
       value: "10% (10/100)",
     })
   })
-  it("includes blockedOn only when set", () => {
-    expect(tooltipFieldsFor(session({ blockedOn: "subagent" }))).toContainEqual({
-      label: "blockedOn",
-      value: "subagent",
-    })
-    expect(tooltipFieldsFor(session())).not.toContainEqual(expect.objectContaining({ label: "blockedOn" }))
+  const hasBlockedOn = (s: SessionDescriptor): boolean =>
+    tooltipFieldsFor(s).some(f => f.label === "blockedOn")
+
+  it("includes blockedOn while the session is actually taking a turn", () => {
+    expect(
+      tooltipFieldsFor(session({ blockedOn: "subagent", status: "running", busy: true })),
+    ).toContainEqual({ label: "blockedOn", value: "subagent" })
+  })
+
+  it("omits blockedOn when unset", () => {
+    expect(hasBlockedOn(session())).toBe(false)
+  })
+
+  it("omits a stale blockedOn on a killed session — a dead session is blocked on nothing", () => {
+    // Exactly the descriptor the daemon leaves behind when a session is killed
+    // mid-tool-call: the turn's finally never runs, so busy/blockedOn survive
+    // the kill. The tree must not repeat that claim.
+    expect(hasBlockedOn(session({ status: "killed", busy: true, blockedOn: "command" }))).toBe(false)
+  })
+
+  it("omits blockedOn on a live but idle session", () => {
+    expect(hasBlockedOn(session({ status: "running", busy: false, blockedOn: "command" }))).toBe(false)
   })
 })
 
@@ -291,10 +310,13 @@ describe("buildSessionTree", () => {
 describe("bucketFor", () => {
   const now = Date.parse("2026-01-10T00:00:00Z")
 
-  it("last7days for a session started within the last 7×24h", () => {
-    expect(bucketFor(session({ startedAt: "2026-01-08T00:00:00Z" }), now)).toBe("last7days")
+  it("recent for a session started within the last 24h", () => {
+    expect(bucketFor(session({ startedAt: "2026-01-09T06:00:00Z" }), now)).toBe("recent")
   })
-  it("older for a session started 7+ days ago", () => {
+  it("older for a session started just over 24h ago", () => {
+    expect(bucketFor(session({ startedAt: "2026-01-08T23:59:00Z" }), now)).toBe("older")
+  })
+  it("older for a session started days ago", () => {
     expect(bucketFor(session({ startedAt: "2026-01-02T00:00:00Z" }), now)).toBe("older")
   })
   it("older for an unparsable startedAt", () => {
@@ -302,46 +324,76 @@ describe("bucketFor", () => {
   })
 })
 
-describe("buildBucketedTree", () => {
+describe("buildSessionRows", () => {
   const now = Date.parse("2026-01-10T00:00:00Z")
 
-  it("groups top-level roots into bucket nodes, newest bucket first", () => {
-    const nodes = buildBucketedTree(
+  const isSeparator = (n: TreeNode): n is SeparatorNode => "kind" in n && n.kind === "separator"
+  /** Row ids top-to-bottom, with the divider rendered as "—". */
+  const ids = (nodes: TreeNode[]): string[] =>
+    nodes.map(n => (isSeparator(n) ? "—" : n.session.id))
+
+  it("lists sessions flat with a single divider between recent and older", () => {
+    const nodes = buildSessionRows(
       [
-        session({ id: "recent", startedAt: "2026-01-09T00:00:00Z" }),
+        session({ id: "recent", startedAt: "2026-01-09T12:00:00Z" }),
         session({ id: "stale", startedAt: "2025-12-01T00:00:00Z" }),
       ],
       now,
     )
-    expect(nodes.map(n => (n as BucketNode).bucket)).toEqual(["last7days", "older"])
-    expect(nodes.map(n => (n as BucketNode).label)).toEqual(["LAST 7 DAYS", "OLDER"])
-    expect((nodes[0] as BucketNode).children.map(n => n.session.id)).toEqual(["recent"])
-    expect((nodes[1] as BucketNode).children.map(n => n.session.id)).toEqual(["stale"])
+    expect(ids(nodes)).toEqual(["recent", "—", "stale"])
+    expect((nodes[1] as SeparatorNode).id).toBe(SEPARATOR_ID)
+    expect((nodes[1] as SeparatorNode).label).toContain("older than 24h")
   })
 
-  it("omits an empty bucket entirely", () => {
-    const nodes = buildBucketedTree([session({ id: "recent", startedAt: "2026-01-09T00:00:00Z" })], now)
-    expect(nodes).toHaveLength(1)
-    expect((nodes[0] as BucketNode).bucket).toBe("last7days")
-  })
-
-  it("keeps an orchestrator subtree intact inside its root's bucket (children never migrate)", () => {
-    const nodes = buildBucketedTree(
+  it("omits the divider when every session is recent — a rule with nothing below it separates nothing", () => {
+    const nodes = buildSessionRows(
       [
-        session({ id: "parent", startedAt: "2026-01-09T00:00:00Z" }),
+        session({ id: "a", startedAt: "2026-01-09T12:00:00Z" }),
+        session({ id: "b", startedAt: "2026-01-09T18:00:00Z" }),
+      ],
+      now,
+    )
+    expect(ids(nodes)).toEqual(["b", "a"])
+  })
+
+  it("omits the divider when every session is older", () => {
+    const nodes = buildSessionRows(
+      [
+        session({ id: "a", startedAt: "2025-12-01T00:00:00Z" }),
+        session({ id: "b", startedAt: "2025-11-01T00:00:00Z" }),
+      ],
+      now,
+    )
+    expect(ids(nodes)).toEqual(["a", "b"])
+  })
+
+  it("keeps an orchestrator subtree intact under its root (a child never migrates across the divider)", () => {
+    const nodes = buildSessionRows(
+      [
+        session({ id: "parent", startedAt: "2026-01-09T12:00:00Z" }),
         session({ id: "child", parentSessionId: "parent", startedAt: "2025-01-01T00:00:00Z" }),
       ],
       now,
     )
-    expect(nodes).toHaveLength(1)
-    const bucket = nodes[0] as BucketNode
-    expect(bucket.bucket).toBe("last7days")
-    expect(bucket.children).toHaveLength(1)
-    expect(bucket.children[0]?.session.id).toBe("parent")
-    expect(bucket.children[0]?.children.map(n => n.session.id)).toEqual(["child"])
+    // The stale child stays nested under its recent parent — no divider, since
+    // nothing sits at the top level on the older side.
+    expect(ids(nodes)).toEqual(["parent"])
+    const parent = nodes[0] as SessionNode
+    expect(parent.children.map(n => n.session.id)).toEqual(["child"])
   })
 
-  it("returns no nodes for an empty session list", () => {
-    expect(buildBucketedTree([], now)).toEqual([])
+  it("sorts running sessions above idle ones within the recent side", () => {
+    const nodes = buildSessionRows(
+      [
+        session({ id: "idle", status: "exited", startedAt: "2026-01-09T20:00:00Z" }),
+        session({ id: "live", status: "running", startedAt: "2026-01-09T01:00:00Z" }),
+      ],
+      now,
+    )
+    expect(ids(nodes)).toEqual(["live", "idle"])
+  })
+
+  it("returns no rows for an empty session list", () => {
+    expect(buildSessionRows([], now)).toEqual([])
   })
 })

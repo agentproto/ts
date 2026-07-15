@@ -112,6 +112,50 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("clears frozen in-flight flags on a row that was ALREADY terminal in the snapshot", () => {
+    // Observed on a live daemon: 9 rows shaped exactly like this, two of them
+    // rendering as "blocked on command · toolu_…" on a session whose own
+    // status said killed. They reach this state either from a kill racing the
+    // turn's finally, or — the real path — from a snapshot written by a daemon
+    // predating the boot-time reconciliation: those "killed + busy" rows are
+    // already terminal when a fixed daemon reads them, so a wasAlive-only
+    // guard never revisits them and the lie survives every future boot.
+    writeFileSync(
+      persistPath,
+      JSON.stringify({
+        savedAt: "2026-05-14T00:00:00Z",
+        sessions: [
+          {
+            id: "sess_f0559f3e",
+            kind: "agent-cli",
+            workspaceSlug: "default",
+            command: "claude (agent)",
+            pid: null,
+            status: "killed",
+            busy: true,
+            blockedOn: "command",
+            pendingToolCallId: "toolu_01E28Z1dK24Khf43rYQy94Ud",
+            awaitingInput: true,
+            startedAt: "2026-05-14T00:00:00Z",
+            endedAt: "2026-05-14T00:05:00Z",
+          },
+        ],
+      }),
+    )
+    const reg = createSessionsRegistry({ persistPath })
+    const ghost = reg.list()[0]
+    expect(ghost?.busy).toBe(false)
+    expect(ghost?.blockedOn).toBeUndefined()
+    expect(ghost?.pendingToolCallId).toBeUndefined()
+    expect(ghost?.awaitingInput).toBe(false)
+    // Already terminal, so its own ending is untouched: it did NOT die with a
+    // daemon this boot, and endedAt must not be rewritten to boot time.
+    expect(ghost?.status).toBe("killed")
+    expect(ghost?.endedAt).toBe("2026-05-14T00:05:00Z")
+    expect(ghost?.endedReason).toBeUndefined()
+    reg.shutdown()
+  })
+
   it("emits session:exited with reason 'daemon-restart' for a formerly-running session reconciled at boot", () => {
     writeFileSync(
       persistPath,

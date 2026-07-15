@@ -5,11 +5,13 @@ import type { SessionDescriptor } from "../client/types.js"
 import {
   appendStreamLines,
   applySessionUpdate,
+  classifySendFailure,
   createTranscriptModel,
   formatCostLine,
   formatSubtitle,
   formatTitle,
   isExited,
+  sendFailureTitle,
   statusChip,
 } from "./transcript.logic.js"
 
@@ -164,5 +166,37 @@ describe("formatSubtitle", () => {
 
   it("returns empty string when neither is present", () => {
     expect(formatSubtitle({})).toBe("")
+  })
+})
+
+describe("classifySendFailure", () => {
+  it("classifies the daemon's mid-turn 409 as busy — typing while the agent works is not an error", () => {
+    // The exact string a user hit: POST .../prompt?wait=false failed: HTTP 409
+    // enqueuePrompt: session "sess_be75fcdd" is mid-turn — wait for it to finish or cancel
+    const msg =
+      'POST /sessions/sess_be75fcdd/prompt?wait=false failed: HTTP 409 enqueuePrompt: session "sess_be75fcdd" is mid-turn — wait for it to finish or cancel'
+    expect(classifySendFailure(msg)).toBe("busy")
+    expect(sendFailureTitle("busy")).toBe("Agent is mid-turn")
+  })
+
+  it("does NOT treat every 409 as busy", () => {
+    expect(classifySendFailure("HTTP 409 session_not_alive")).toBe("not-alive")
+    expect(classifySendFailure("HTTP 409 something else entirely")).toBe("other")
+  })
+
+  it("classifies a dead session", () => {
+    expect(classifySendFailure('failed: HTTP 409 {"error":"session_not_alive","status":"killed"}')).toBe(
+      "not-alive",
+    )
+    expect(sendFailureTitle("not-alive")).toBe("Session is no longer running")
+  })
+
+  it("falls back to other for an unrecognised failure", () => {
+    expect(classifySendFailure("ECONNREFUSED 127.0.0.1:18790")).toBe("other")
+    expect(sendFailureTitle("other")).toBe("Send failed")
+  })
+
+  it("does not mistake a session id containing 409 for a busy rejection", () => {
+    expect(classifySendFailure("POST /sessions/sess_409abc/prompt failed: HTTP 500 boom")).toBe("other")
   })
 })
