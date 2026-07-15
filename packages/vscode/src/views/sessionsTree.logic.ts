@@ -25,6 +25,24 @@ export interface SessionNode {
   children: SessionNode[]
 }
 
+export type TimeBucket = "last7days" | "older"
+
+/** A top-level time-bucket group node; only ever holds session roots, never nests inside another bucket. */
+export interface BucketNode {
+  kind: "bucket"
+  bucket: TimeBucket
+  label: string
+  children: SessionNode[]
+}
+
+export type TreeNode = BucketNode | SessionNode
+
+/** Description-string extras for the richer (post-filter) row rendering — see descriptionFor. */
+export interface DescriptionContext {
+  workspaceLabel?: string
+  now?: number
+}
+
 const TERMINAL_STATUSES = new Set<SessionDescriptor["status"]>(["exited", "killed", "error"])
 
 export function isRunning(session: SessionDescriptor): boolean {
@@ -47,12 +65,33 @@ export function labelFor(session: SessionDescriptor): string {
   return session.label ?? session.command
 }
 
-/** Item description: `adapterSlug ?? kind` + model (if any) + status. */
-export function descriptionFor(session: SessionDescriptor): string {
-  const parts = [session.adapterSlug ?? session.kind]
-  if (session.model) parts.push(session.model)
-  parts.push(session.status)
+/**
+ * Item description.
+ *  - Without ctx (default): `adapterSlug ?? kind` + model (if any) + status —
+ *    byte-identical to the pre-filter behavior existing call sites depend on.
+ *  - With ctx: `workspace · +tokensIn -tokensOut · relative time`, omitting
+ *    any part whose backing data is absent (never a bare "+0 -0" from two
+ *    missing token fields, never literal "undefined").
+ */
+export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionContext): string {
+  if (!ctx) {
+    const parts = [session.adapterSlug ?? session.kind]
+    if (session.model) parts.push(session.model)
+    parts.push(session.status)
+    return parts.join(" · ")
+  }
+  const parts: string[] = []
+  if (ctx.workspaceLabel) parts.push(ctx.workspaceLabel)
+  const tokenDelta = tokenDeltaFor(session)
+  if (tokenDelta) parts.push(tokenDelta)
+  if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
   return parts.join(" · ")
+}
+
+/** `+tokensIn -tokensOut`, defaulting a missing side to 0 — omitted when BOTH are absent. */
+function tokenDeltaFor(session: SessionDescriptor): string | undefined {
+  if (typeof session.tokensIn !== "number" && typeof session.tokensOut !== "number") return undefined
+  return `+${session.tokensIn ?? 0} -${session.tokensOut ?? 0}`
 }
 
 /**
@@ -156,4 +195,72 @@ export function buildSessionTree(sessions: readonly SessionDescriptor[]): Sessio
   }
   sortTree(roots)
   return roots
+}
+
+const MS_PER_MINUTE = 60_000
+const MS_PER_HOUR = 60 * MS_PER_MINUTE
+const MS_PER_DAY = 24 * MS_PER_HOUR
+const LAST_7_DAYS_MS = 7 * MS_PER_DAY
+
+/** Which top-level bucket a session's `startedAt` falls into, relative to `now`. An unparsable startedAt is "older". */
+export function bucketFor(session: SessionDescriptor, now: number): TimeBucket {
+  const started = Date.parse(session.startedAt)
+  if (Number.isNaN(started)) return "older"
+  return now - started < LAST_7_DAYS_MS ? "last7days" : "older"
+}
+
+/**
+ * Human relative time for an ISO timestamp, e.g. "5 days ago", "2 hrs ago",
+ * "just now". Clamps a negative delta (clock skew / future timestamp) to
+ * "just now" rather than a nonsensical negative duration. An unparsable
+ * `iso` renders as "—".
+ */
+export function relativeTime(iso: string, now: number): string {
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return "—"
+  const diffMs = Math.max(0, now - then)
+  if (diffMs < 45_000) return "just now"
+  const minutes = Math.floor(diffMs / MS_PER_MINUTE)
+  if (minutes < 60) return `${minutes} min${minutes === 1 ? "" : "s"} ago`
+  const hours = Math.floor(diffMs / MS_PER_HOUR)
+  if (hours < 24) return `${hours} hr${hours === 1 ? "" : "s"} ago`
+  const days = Math.floor(diffMs / MS_PER_DAY)
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months} month${months === 1 ? "" : "s"} ago`
+  const years = Math.floor(days / 365)
+  return `${years} year${years === 1 ? "" : "s"} ago`
+}
+
+const BUCKET_LABELS: Record<TimeBucket, string> = {
+  last7days: "LAST 7 DAYS",
+  older: "OLDER",
+}
+
+const BUCKET_ORDER: readonly TimeBucket[] = ["last7days", "older"]
+
+/**
+ * Bucket sessions by recency at the TOP LEVEL ONLY: orchestrator subtrees
+ * (parentSessionId nesting from buildSessionTree) stay intact inside
+ * whichever bucket their root lands in — a child never migrates to its own
+ * bucket. An empty bucket is omitted entirely rather than rendered hollow.
+ */
+export function buildBucketedTree(sessions: readonly SessionDescriptor[], now: number): TreeNode[] {
+  const roots = buildSessionTree(sessions)
+  const byBucket = new Map<TimeBucket, SessionNode[]>()
+  for (const root of roots) {
+    const bucket = bucketFor(root.session, now)
+    const children = byBucket.get(bucket)
+    if (children) children.push(root)
+    else byBucket.set(bucket, [root])
+  }
+
+  const nodes: TreeNode[] = []
+  for (const bucket of BUCKET_ORDER) {
+    const children = byBucket.get(bucket)
+    if (children && children.length > 0) {
+      nodes.push({ kind: "bucket", bucket, label: BUCKET_LABELS[bucket], children })
+    }
+  }
+  return nodes
 }
