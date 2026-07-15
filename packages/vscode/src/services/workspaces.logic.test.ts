@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import type { WorkspacesConfig } from "../client/types.js"
+import type { WorkspaceEntry, WorkspacesConfig } from "../client/types.js"
 import {
   findWorkspaceByPath,
+  sameWorkspaces,
   workspaceLabel,
   workspaceLabelFor,
   workspaceLabelsIn,
@@ -94,5 +95,61 @@ describe("workspaceLabelsIn", () => {
       { cwd: "/tmp/x", workspaceSlug: "default" },
     ]
     expect(workspaceLabelsIn(config, sessions)).toEqual(["Agentik Studio", "ts"])
+  })
+})
+
+describe("sameWorkspaces", () => {
+  const entry: WorkspaceEntry = { slug: "a", path: "/p/a", addedAt: "t0", updatedAt: "t0", label: "A" }
+  const base: WorkspacesConfig = { version: 1, active: "a", workspaces: [entry] }
+
+  it("is true for the identical reference and for a deep copy", () => {
+    expect(sameWorkspaces(base, base)).toBe(true)
+    expect(sameWorkspaces(base, structuredClone(base))).toBe(true)
+  })
+
+  it("detects a changed active slug", () => {
+    expect(sameWorkspaces(base, { ...base, active: "b" })).toBe(false)
+  })
+
+  it("detects added, removed, and renamed entries", () => {
+    expect(
+      sameWorkspaces(base, {
+        ...base,
+        workspaces: [...base.workspaces, { slug: "b", path: "/p/b", addedAt: "", updatedAt: "" }],
+      }),
+    ).toBe(false)
+    expect(sameWorkspaces(base, { ...base, workspaces: [] })).toBe(false)
+    expect(
+      sameWorkspaces(base, {
+        ...base,
+        workspaces: [{ ...entry, label: "Renamed" }],
+      }),
+    ).toBe(false)
+    expect(
+      sameWorkspaces(base, {
+        ...base,
+        workspaces: [{ ...entry, path: "/p/moved" }],
+      }),
+    ).toBe(false)
+  })
+
+  it("ignores timestamp churn — it changes nothing the user can see", () => {
+    // This is the point: the refresh runs on every store tick, so equality must
+    // not be tripped by fields the UI never renders, or the tree double-rebuilds.
+    expect(
+      sameWorkspaces(base, {
+        ...base,
+        workspaces: [{ ...entry, addedAt: "t9", updatedAt: "t9" }],
+      }),
+    ).toBe(true)
+  })
+
+  it("treats a label going undefined as a change (the row would re-render)", () => {
+    expect(
+      sameWorkspaces(base, {
+        ...base,
+        workspaces: [{ slug: "a", path: "/p/a", addedAt: "t0", updatedAt: "t0" }],
+      }),
+    ).toBe(false)
   })
 })

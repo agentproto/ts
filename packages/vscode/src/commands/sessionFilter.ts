@@ -20,7 +20,11 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
-import { EMPTY_WORKSPACES, workspaceLabelsIn } from "../services/workspaces.logic.js"
+import {
+  EMPTY_WORKSPACES,
+  sameWorkspaces,
+  workspaceLabelsIn,
+} from "../services/workspaces.logic.js"
 import {
   adapterIdentitiesIn,
   EMPTY_FILTER,
@@ -53,12 +57,27 @@ export function registerSessionFilter(
     onDidChangeEmitter.fire()
   }
 
+  /**
+   * Refresh the cached workspace join. MUST notify on change: the tree's first
+   * paint runs synchronously in SessionsTreeProvider's constructor, strictly
+   * before this async fetch resolves — so without a fire() every row renders
+   * with EMPTY_WORKSPACES (no labels) until some unrelated store change happens
+   * to trigger a rebuild.
+   *
+   * Fire only when the config actually CHANGED: this runs on every
+   * store.onDidChange, and the tree already rebuilds on that same event, so an
+   * unconditional fire would rebuild the tree twice per session tick.
+   */
   const refreshWorkspaces = async (): Promise<void> => {
+    let next: WorkspacesConfig
     try {
-      workspaces = await client.listWorkspaces()
+      next = await client.listWorkspaces()
     } catch {
-      workspaces = EMPTY_WORKSPACES
+      next = EMPTY_WORKSPACES
     }
+    if (sameWorkspaces(workspaces, next)) return
+    workspaces = next
+    onDidChangeEmitter.fire()
   }
   void refreshWorkspaces()
   const storeSub = store.onDidChange(() => void refreshWorkspaces())

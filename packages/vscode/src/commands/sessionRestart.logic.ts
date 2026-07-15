@@ -75,9 +75,16 @@ export function parseRestartResult(raw: unknown): RestartResult | undefined {
  * is silently hidden from the user.
  */
 export function describeRestart(before: SessionDescriptor, after: RestartResult): string {
-  const newLabel = after.label ?? after.id
-  const viaSuffix = after.resumeVia ? ` via ${after.resumeVia}` : ""
-  const sentences = [`agentproto: restarted ${describeSession(before)} as ${newLabel}${viaSuffix}.`]
+  // The daemon phrases resumeVia as a full clause ("resumed via ACP"), so
+  // prefixing our own "via" stutters into "via resumed via ACP".
+  const via = after.resumeVia?.replace(/^resumed\s+via\s+/i, "").trim()
+  const viaSuffix = via ? ` via ${via}` : ""
+  // Always name the NEW id. Restart carries the label over unchanged, so
+  // "restarted X as X" tells the user nothing — the id is the only thing that
+  // changed, and it's the row they now have to look at.
+  const sentences = [
+    `agentproto: restarted ${describeSession(before)} → new session ${after.id}${viaSuffix}.`,
+  ]
 
   if (before.kind === "agent-cli" && after.pty === true) {
     sentences.push(

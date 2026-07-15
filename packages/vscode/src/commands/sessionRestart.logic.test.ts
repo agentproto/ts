@@ -28,7 +28,7 @@ describe("canRestart", () => {
     expect(canRestart(session({ status: "starting" }))).toBe(false)
   })
 
-  it("is false for a terminal-status session still awaiting input (contextValueFor gates on status first)", () => {
+  it("is TRUE for a terminal-status session still flagged awaiting input (contextValueFor gates on status first)", () => {
     expect(canRestart(session({ status: "exited", awaitingInput: true }))).toBe(true)
   })
 })
@@ -95,20 +95,40 @@ describe("parseRestartResult", () => {
 })
 
 describe("describeRestart", () => {
-  it("names the new session and resume path", () => {
+  it("names the new session id and resume path", () => {
     const before = session({ id: "sess_old1", label: "before-label", status: "exited" })
     const message = describeRestart(before, {
       id: "sess_new1",
       label: "after-label",
       resumeVia: "claude --resume",
     })
-    expect(message).toBe("agentproto: restarted before-label as after-label via claude --resume.")
+    expect(message).toBe(
+      "agentproto: restarted before-label → new session sess_new1 via claude --resume.",
+    )
   })
 
   it("omits the via clause when resumeVia is absent", () => {
     const before = session({ id: "sess_old1", status: "exited" })
     const message = describeRestart(before, { id: "sess_new1" })
-    expect(message).toBe("agentproto: restarted sess_old1 as sess_new1.")
+    expect(message).toBe("agentproto: restarted sess_old1 → new session sess_new1.")
+  })
+
+  it("does not stutter when the daemon phrases resumeVia as a full clause", () => {
+    // Live daemon returns resumeVia: "resumed via ACP" — naively prefixing our
+    // own "via" produced "via resumed via ACP". Caught by a live e2e, not by
+    // the unit suite, so it's pinned here.
+    const before = session({ id: "sess_old1", label: "worker", status: "killed" })
+    const message = describeRestart(before, { id: "sess_new1", resumeVia: "resumed via ACP" })
+    expect(message).toBe("agentproto: restarted worker → new session sess_new1 via ACP.")
+    expect(message).not.toContain("via resumed via")
+  })
+
+  it("names the new id even when the label carries over unchanged", () => {
+    // Restart copies label+name onto the new session, so a label-only message
+    // would read "restarted worker as worker" and hide what actually changed.
+    const before = session({ id: "sess_old1", label: "worker", status: "exited" })
+    const message = describeRestart(before, { id: "sess_new1", label: "worker" })
+    expect(message).toContain("sess_new1")
   })
 
   it("calls out the pty-native category flip for a restarted agent-cli session", () => {

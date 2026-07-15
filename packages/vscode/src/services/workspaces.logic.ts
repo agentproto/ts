@@ -114,3 +114,29 @@ export function workspaceLabelsIn(
   }
   return [...labels].sort((a, b) => a.localeCompare(b))
 }
+
+/**
+ * Value-equality for two workspace configs — the change-detector for the
+ * cached GET /workspaces join.
+ *
+ * Exists so the refresh can fire its change event ONLY on a real change: the
+ * refresh runs on every session-store tick, and the tree already rebuilds on
+ * that same event, so an unconditional notify would rebuild the tree twice per
+ * tick. Compares the fields the UI actually renders (slug/path/label/active) —
+ * addedAt/updatedAt churn is deliberately ignored, since it changes nothing a
+ * user can see.
+ */
+export function sameWorkspaces(a: WorkspacesConfig, b: WorkspacesConfig): boolean {
+  if (a === b) return true
+  if (a.active !== b.active) return false
+  if (a.workspaces.length !== b.workspaces.length) return false
+  return a.workspaces.every((entry, i) => {
+    const other = b.workspaces[i]
+    return (
+      other !== undefined &&
+      entry.slug === other.slug &&
+      entry.path === other.path &&
+      entry.label === other.label
+    )
+  })
+}

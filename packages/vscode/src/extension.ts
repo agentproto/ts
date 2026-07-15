@@ -79,6 +79,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
           store,
           "Select a session to open transcript",
           () => true,
+          client,
         )
         if (session) transcriptPanels.open(session)
       },

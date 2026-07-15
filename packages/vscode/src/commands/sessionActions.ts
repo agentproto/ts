@@ -51,15 +51,40 @@ export async function pickSession(
   return picked?.session
 }
 
-/** Resolve a command arg to a SessionDescriptor: direct arg, else quick-pick (default: live sessions only). */
+/**
+ * Resolve a command arg to a SessionDescriptor: a tree node / descriptor, else
+ * a bare session-id string, else a quick-pick (default: live sessions only).
+ *
+ * The bare-id arm matters: programmatic callers pass an id string, not a
+ * descriptor — `agentproto.restartSession` reveals the session it just minted,
+ * and spawn's "Open transcript" toast action reveals the one it just spawned.
+ * Without it, `normalizeSessionArg` rejects the string (it only unwraps
+ * objects) and the caller silently falls through to a QuickPick over EVERY
+ * session — so the one thing the user asked to see is the one thing they then
+ * have to hunt for. Falls back to the store first (no round-trip) and only
+ * then to the daemon, since a just-restarted id may not be in the local
+ * snapshot yet.
+ */
 export async function resolveSessionArg(
   arg: unknown,
   store: SessionStore,
   placeHolder: string,
   filter: (session: SessionDescriptor) => boolean = isLiveSession,
+  client?: DaemonClient,
 ): Promise<SessionDescriptor | undefined> {
   const direct = normalizeSessionArg(arg)
   if (direct) return direct
+  if (typeof arg === "string" && arg.length > 0) {
+    const known = store.sessions.find(s => s.id === arg)
+    if (known) return known
+    if (client) {
+      try {
+        return await client.getSession(arg)
+      } catch {
+        // Unknown id — fall through to the picker rather than dead-ending.
+      }
+    }
+  }
   return pickSession(store.sessions.filter(filter), placeHolder)
 }
 
