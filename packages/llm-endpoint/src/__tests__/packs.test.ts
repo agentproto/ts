@@ -6,9 +6,10 @@ import {
   listPackIds,
   DEFAULT_PACK_ID,
   PACK_REGISTRY,
-  anthropicPack,
+  defaultPack,
   xaiPack,
   openrouterPack,
+  parseTransparentModel,
   type ModelPack,
 } from '../packs.js';
 
@@ -83,8 +84,8 @@ describe('resolvePack', () => {
     expect(pack).toBe(xaiPack);
   });
 
-  it('returns the anthropic pack by ID', () => {
-    expect(resolvePack('anthropic')).toBe(anthropicPack);
+  it('returns the default pack by ID', () => {
+    expect(resolvePack('default')).toBe(defaultPack);
   });
 
   it('returns the openrouter pack by ID', () => {
@@ -106,9 +107,9 @@ describe('resolvePack', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(RangeError);
       const msg = (err as RangeError).message;
-      expect(msg).toContain('openrouter');
+      expect(msg).toContain('default');
       expect(msg).toContain('xai');
-      expect(msg).toContain('anthropic');
+      expect(msg).toContain('openrouter');
     }
   });
 });
@@ -122,16 +123,15 @@ describe('buildMappingFromPack', () => {
   });
 
   it('returns a shallow copy (not the same reference)', () => {
-    const mapping = buildMappingFromPack(openrouterPack);
-    expect(mapping).not.toBe(openrouterPack.models);
+    const mapping = buildMappingFromPack(defaultPack);
+    expect(mapping).not.toBe(defaultPack.models);
   });
 
-  it('each entry contains provider, model, and equivalentClaudeName', () => {
-    const mapping = buildMappingFromPack(anthropicPack);
+  it('each entry contains provider and model fields', () => {
+    const mapping = buildMappingFromPack(openrouterPack);
     for (const [_code, target] of Object.entries(mapping)) {
       expect(target).toHaveProperty('provider');
       expect(target).toHaveProperty('model');
-      expect(target).toHaveProperty('equivalentClaudeName');
     }
   });
 
@@ -142,7 +142,33 @@ describe('buildMappingFromPack', () => {
 
   it('mapping values match the pack model entries exactly', () => {
     const mapping = buildMappingFromPack(xaiPack);
-    expect(mapping['nova-1']).toEqual(xaiPack.models['nova-1']);
+    expect(mapping['grok-4.5']).toEqual(xaiPack.models['grok-4.5']);
+  });
+});
+
+// ── parseTransparentModel ─────────────────────────────────────────────────
+
+describe('parseTransparentModel', () => {
+  it('parses provider/model references', () => {
+    expect(parseTransparentModel('moonshot/kimi-k2.7-code')).toEqual({
+      provider: 'moonshot',
+      model: 'kimi-k2.7-code',
+    });
+  });
+
+  it('preserves nested namespaces for openrouter', () => {
+    expect(parseTransparentModel('openrouter/anthropic/claude-3-5-sonnet-20241022')).toEqual({
+      provider: 'openrouter',
+      model: 'anthropic/claude-3-5-sonnet-20241022',
+    });
+  });
+
+  it('returns null for unknown provider prefixes', () => {
+    expect(parseTransparentModel('unknown/gpt-4')).toBeNull();
+  });
+
+  it('returns null for bare model ids', () => {
+    expect(parseTransparentModel('gpt-4')).toBeNull();
   });
 });
 
@@ -151,7 +177,7 @@ describe('buildMappingFromPack', () => {
 describe('listPackIds', () => {
   it('includes all official pack IDs', () => {
     const ids = listPackIds();
-    expect(ids).toContain('anthropic');
+    expect(ids).toContain('default');
     expect(ids).toContain('xai');
     expect(ids).toContain('openrouter');
   });
@@ -170,7 +196,9 @@ describe('PACK_REGISTRY', () => {
 
   it('all packs have unique equivalentClaudeNames within each pack', () => {
     for (const pack of Object.values(PACK_REGISTRY)) {
-      const names = Object.values(pack.models).map(m => m.equivalentClaudeName);
+      const names = Object.values(pack.models)
+        .map(m => m.equivalentClaudeName)
+        .filter((n): n is string => Boolean(n));
       const unique = new Set(names);
       expect(unique.size).toBe(names.length);
     }
@@ -181,7 +209,22 @@ describe('PACK_REGISTRY', () => {
       for (const [code, target] of Object.entries(pack.models)) {
         expect(target.provider, `${pack.id}/${code}.provider`).toBeTruthy();
         expect(target.model, `${pack.id}/${code}.model`).toBeTruthy();
-        expect(target.equivalentClaudeName, `${pack.id}/${code}.equivalentClaudeName`).toBeTruthy();
+      }
+    }
+  });
+
+  it('never maps a real Claude alias to a non-Anthropic target', () => {
+    // Public packs may only bind real Claude names to actual Anthropic models
+    // (currently routed through OpenRouter). Local packs are exempt because they
+    // are explicitly opted-in compatibility aliases.
+    for (const pack of Object.values(PACK_REGISTRY)) {
+      for (const [code, target] of Object.entries(pack.models)) {
+        const alias = target.equivalentClaudeName;
+        if (!alias) continue;
+        if (alias.startsWith('claude-')) {
+          expect(target.provider, `${pack.id}/${code} Claude alias target`).toBe('openrouter');
+          expect(target.model, `${pack.id}/${code} Claude alias model`).toMatch(/^anthropic\//);
+        }
       }
     }
   });

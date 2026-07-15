@@ -1,13 +1,19 @@
-export interface SecretTarget {
+export interface ModelRoute {
   provider: string;
   model: string;
-  equivalentClaudeName: string;
+  /**
+   * Optional Claude-shaped compatibility alias. Only local packs (loaded from
+   * `packs.local.json`) should populate this field. Public committed packs use
+   * provider-transparent model IDs and never pretend to be real Claude models.
+   */
+  equivalentClaudeName?: string;
 }
 
 /**
- * A pack is a curated set of up to 8 models with unique equivalentClaudeNames.
- * Packs solve the collision problem when multiple providers share the same
- * Anthropic model name alias.
+ * A pack is a curated set of model routes. Packs solve the collision problem
+ * when multiple providers share the same display name, and they let users opt
+ * into local compatibility aliases for clients that only speak the Anthropic
+ * model namespace.
  *
  * Selection methods:
  *   - URL path: /v1/{packId}/messages → pack = {packId}
@@ -20,66 +26,72 @@ export interface ModelPack {
   id: string;
   label: string;
   description: string;
-  models: Record<string, SecretTarget>;
+  models: Record<string, ModelRoute>;
 }
 
 // ── Official packs (committed) ─────────────────────────────────────────────
-// These are public, provider-sanctioned model routes. Keep this minimal.
-// For private/custom packs, use packs.local.ts (gitignored).
+// These are public, provider-transparent model routes. They never contain
+// private codenames or bare Claude aliases mapping to non-Anthropic targets.
+// For Claude compatibility aliases, use a local pack (packs.local.json).
 
-export const anthropicPack: ModelPack = {
-  id: 'anthropic',
-  label: 'Anthropic',
-  description: 'Native Anthropic models via OpenRouter',
+export const defaultPack: ModelPack = {
+  id: 'default',
+  label: 'Default transparent routes',
+  description: 'Provider-transparent model IDs routed directly to each backend',
   models: {
-    'neptune-4': { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.6', equivalentClaudeName: 'claude-sonnet-4-6' },
-    'saturn-5': { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', equivalentClaudeName: 'claude-sonnet-5' },
-    'uranus-8': { provider: 'openrouter', model: 'google/gemini-3.1-pro-preview', equivalentClaudeName: 'claude-fable-5' },
+    'kimi-k2.7-code': { provider: 'moonshot', model: 'kimi-k2.7-code' },
+    'kimi-k2.6': { provider: 'moonshot', model: 'kimi-k2.6' },
+    'llama-3.3-70b-versatile': { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+    'qwen/qwen3.6-27b': { provider: 'groq', model: 'qwen/qwen3.6-27b' },
+    'glm-5.2': { provider: 'zai', model: 'glm-5.2' },
+    'gpt-4.1': { provider: 'openai', model: 'gpt-4.1' },
+    'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
+    'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
   },
 };
 
 export const xaiPack: ModelPack = {
   id: 'xai',
   label: 'xAI (Grok)',
-  description: 'xAI Grok models via OpenAI-compatible API',
+  description: 'xAI Grok models via the OpenAI-compatible API',
   models: {
-    'nova-1': { provider: 'xai', model: 'grok-4.5', equivalentClaudeName: 'claude-opus-4-8-xai' },
-    'pulsar-2': { provider: 'xai', model: 'grok-4.3', equivalentClaudeName: 'claude-sonnet-5-xai' },
-    'quasar-3': { provider: 'xai', model: 'grok-4.20', equivalentClaudeName: 'claude-fable-5-xai' },
-    'comet-4': { provider: 'xai', model: 'grok-build-0.1', equivalentClaudeName: 'claude-haiku-4-5-xai' },
+    'grok-4.5': { provider: 'xai', model: 'grok-4.5' },
+    'grok-4.3': { provider: 'xai', model: 'grok-4.3' },
+    'grok-4.20': { provider: 'xai', model: 'grok-4.20' },
+    'grok-build-0.1': { provider: 'xai', model: 'grok-build-0.1' },
   },
 };
 
 export const openrouterPack: ModelPack = {
   id: 'openrouter',
   label: 'OpenRouter',
-  description: 'Popular non-Anthropic models via OpenRouter and other providers',
+  description: 'Source-backed models available through OpenRouter',
   models: {
-    'jupiter-7': { provider: 'moonshot', model: 'kimi-k2.7-code', equivalentClaudeName: 'claude-opus-4-8' },
-    'mars-6': { provider: 'moonshot', model: 'kimi-k2.6', equivalentClaudeName: 'claude-3-opus' },
-    'halley-1': { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', equivalentClaudeName: 'claude-fable-4' },
-    'pluto-2': { provider: 'groq', model: 'qwen/qwen3.6-27b', equivalentClaudeName: 'claude-haiku-4-5' },
-    'mercury-9': { provider: 'openrouter', model: 'zai/zai-v1', equivalentClaudeName: 'claude-haiku-4-5-mercury' },
-    'orion-2': { provider: 'openrouter', model: 'mimo-ai/mimo-v2.5', equivalentClaudeName: 'claude-sonnet-4-5-orion' },
-    'pegasus-3': { provider: 'openrouter', model: 'minimax/minimax-m3', equivalentClaudeName: 'claude-opus-4-5-pegasus' },
-    'lyra-4': { provider: 'openrouter', model: 'moonshotai/kimi-k2.5', equivalentClaudeName: 'claude-fable-5-lyra' },
-    'vega-5': { provider: 'openrouter', model: 'stepfun/step-3.7-flash', equivalentClaudeName: 'claude-haiku-4-5-vega' },
-    'venus-3': { provider: 'openrouter', model: 'zai/zai-v1', equivalentClaudeName: 'claude-sonnet-4-6-venus' },
-    'atlas-6': { provider: 'openrouter', model: 'meta-llama/llama-3.3-70b', equivalentClaudeName: 'claude-sonnet-4-5-atlas' },
-    'titan-7': { provider: 'openrouter', model: 'openai/gpt-oss-120b', equivalentClaudeName: 'claude-opus-4-8-titan' },
+    'anthropic/claude-3-5-sonnet-20241022': {
+      provider: 'openrouter',
+      model: 'anthropic/claude-3-5-sonnet-20241022',
+      equivalentClaudeName: 'claude-3-5-sonnet-20241022',
+    },
+    'anthropic/claude-3-opus-20240229': {
+      provider: 'openrouter',
+      model: 'anthropic/claude-3-opus-20240229',
+      equivalentClaudeName: 'claude-3-opus-20240229',
+    },
+    'openai/gpt-4o': { provider: 'openrouter', model: 'openai/gpt-4o' },
+    'openai/gpt-4o-mini': { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
   },
 };
 
 // ── Registry ──────────────────────────────────────────────────────────────
 // Start with official packs. Local packs are merged at runtime if present.
 export const PACK_REGISTRY: Record<string, ModelPack> = {
-  [anthropicPack.id]: anthropicPack,
+  [defaultPack.id]: defaultPack,
   [xaiPack.id]: xaiPack,
   [openrouterPack.id]: openrouterPack,
 };
 
 // Default pack used when no pack is specified.
-export const DEFAULT_PACK_ID = 'openrouter';
+export const DEFAULT_PACK_ID = 'default';
 
 /**
  * Resolve a pack by ID from the official registry.
@@ -95,9 +107,9 @@ export function resolvePack(packId: string | null | undefined): ModelPack {
 }
 
 /**
- * Build a flat SECRET_CODE_MAPPING from a pack.
+ * Build a flat route mapping from a pack.
  */
-export function buildMappingFromPack(pack: ModelPack): Record<string, SecretTarget> {
+export function buildMappingFromPack(pack: ModelPack): Record<string, ModelRoute> {
   return { ...pack.models };
 }
 
@@ -106,6 +118,34 @@ export function buildMappingFromPack(pack: ModelPack): Record<string, SecretTarg
  */
 export function listPackIds(): string[] {
   return Object.keys(PACK_REGISTRY);
+}
+
+/**
+ * Providers that support transparent `provider/model` routing on the OpenAI
+ * chat/completions and Responses surfaces. This is the allow-list for both
+ * `?p=` overrides and model-id prefixes.
+ */
+export const KNOWN_TRANSPARENT_PROVIDERS = new Set([
+  'moonshot',
+  'openrouter',
+  'zai',
+  'groq',
+  'xai',
+  'openai',
+]);
+
+/**
+ * Parse a transparent model reference of the form `provider/model`.
+ * Returns `{ provider, model }` when the prefix is a known provider, else null.
+ * For `openrouter`, the remainder may contain additional slashes (e.g.
+ * `openrouter/anthropic/claude-3-5-sonnet-20241022`).
+ */
+export function parseTransparentModel(model: string): { provider: string; model: string } | null {
+  const slashIdx = model.indexOf('/');
+  if (slashIdx <= 0 || slashIdx === model.length - 1) return null;
+  const provider = model.slice(0, slashIdx);
+  if (!KNOWN_TRANSPARENT_PROVIDERS.has(provider)) return null;
+  return { provider, model: model.slice(slashIdx + 1) };
 }
 
 /**
