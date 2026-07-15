@@ -172,7 +172,16 @@ describe("worktree lifecycle end-to-end (real git + services + proxy)", () => {
       const cleaned = await runTool({
         tool: cleanupWorktreeTool,
         candidates,
-        input: { repoRoot: repo, cwd: provisioned.cwd, branch: provisioned.branch, base: "main", deleteBranch: true },
+        input: {
+          repoRoot: repo,
+          cwd: provisioned.cwd,
+          branch: provisioned.branch,
+          base: "main",
+          deleteBranch: true,
+          // Setup/services leave scratch/log output as untracked files —
+          // authorize discarding them (no tracked file was ever modified here).
+          discardUntracked: true,
+        },
       })
       expect(cleaned).toEqual({ removed: true })
     }

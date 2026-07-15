@@ -2,20 +2,29 @@
  * `agentproto worktree <subcommand>`
  *
  * Subcommands:
- *   ls        [--repo <dir>] [--status] [--json]    list this repo's git worktrees
- *   archive   <path> [--repo <dir>] [--base <ref>] tear a worktree down
- *             [--keep-branch] [--json]             (teardown hook → remove)
+ *   ls        [--repo <dir>] [--status] [--json]     list this repo's git worktrees
+ *   rm        <path> [--repo <dir>] [--base <ref>]    the guarded destructive verb —
+ *             [--keep-branch] [--discard-untracked]  refuses a dirty tree unless the
+ *             [--discard-modified] [--json]           matching flag is given
+ *   archive   <path> [--repo <dir>] [--base <ref>]    salvage-then-remove: snapshots
+ *             [--keep-branch] [--json]                uncommitted state first
  *
  * Pure local shell over `@agentproto/worktree`: plain `ls` parses
  * `git worktree list --porcelain` (fast path, no forge round-trip); `ls
  * --status` additionally runs the status engine's reconciliation rule per
  * entry (PLAN.md §1.3 — tree/integration/liveness axes, provenance, class).
- * `archive` runs the `worktree.cleanup` tool, which stops any supervised
- * services, runs the committed `agentproto.json` teardown hooks, then
- * removes the worktree.
+ *
+ * `rm` and `archive` are deliberately different verbs (PLAN.md §5.2): `rm`
+ * is the honest plain-destructive one — it runs `worktree.cleanup` and
+ * refuses a dirty tree unless `--discard-untracked`/`--discard-modified`
+ * authorizes the class of change present. `archive` re-earns its old name:
+ * it snapshots the tree's uncommitted state to
+ * `~/.agentproto/worktree-salvage/` (via `salvageWorktree`) *before* calling
+ * `worktree.cleanup` with both discard flags granted, so nothing still on
+ * disk is lost to the removal.
  */
 import { parseArgs } from "node:util"
-import { resolve, dirname } from "node:path"
+import { resolve, dirname, basename } from "node:path"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
 import {
@@ -26,6 +35,8 @@ import {
   listWorktreeStatuses,
   repoLabel,
   detectDefaultBranch,
+  salvageWorktree,
+  WorktreeNotRemovableError,
   type WorktreeStatusEntry,
 } from "@agentproto/worktree"
 
@@ -33,6 +44,8 @@ const USAGE = `agentproto worktree — inspect and tear down git worktrees
 
 Usage:
   agentproto worktree ls      [--repo <dir>] [--status] [--json]
+  agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
+                                     [--discard-untracked] [--discard-modified] [--json]
   agentproto worktree archive <path> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
   agentproto worktree --help
@@ -41,10 +54,16 @@ Usage:
             --status adds the tree/integration/liveness axes, provenance,
             and reclaim/salvage/hold class per entry — a \`gh\`/GITHUB_TOKEN
             forge round-trip, memoised in ~/.agentproto/worktree-verdicts.json.
-  archive   Stop the worktree's services, run its agentproto.json teardown
-            hooks, then remove it. Also deletes its branch unless
-            --keep-branch. --base picks the ref whose committed teardown
-            hooks run (default origin/main).
+  rm        Stop the worktree's services, run its agentproto.json teardown
+            hooks, then remove it. Refuses if the tree has modified tracked
+            files or unignored untracked files, unless --discard-modified /
+            --discard-untracked authorizes it. Also deletes its branch
+            unless --keep-branch. --base picks the ref whose committed
+            teardown hooks run (default origin/main).
+  archive   Snapshot the worktree's uncommitted state under
+            ~/.agentproto/worktree-salvage/ (changes.patch + a copy of every
+            untracked file + MANIFEST.json), then run the same removal as
+            \`rm\` with both discard flags granted — nothing on disk is lost.
 `
 
 const candidates = [worktreeProvider]
@@ -56,14 +75,15 @@ export async function runWorktree(args: readonly string[]): Promise<number> {
   }
   const sub = args[0]
   if (sub === "ls" || sub === "list") return runLs(args.slice(1))
-  if (sub === "archive" || sub === "rm" || sub === "remove") return runArchive(args.slice(1))
+  if (sub === "rm" || sub === "remove") return runRm(args.slice(1))
+  if (sub === "archive") return runArchive(args.slice(1))
 
   if (!sub) {
     process.stdout.write(USAGE)
     return 0
   }
   process.stderr.write(
-    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | archive\n`,
+    `agentproto worktree: unknown subcommand "${sub}"\n  Known: ls | rm | archive\n`,
   )
   return 2
 }
@@ -226,8 +246,98 @@ function formatStatusRow(entry: WorktreeStatusEntry): string {
   ].join("  ")
 }
 
+// ── shared: resolve a <path> positional to (repoRoot, cwd, branch) ────────
+
+interface ResolvedWorktreeTarget {
+  repoRoot: string
+  cwd: string
+  /** `undefined` for a detached HEAD (git reports "HEAD" for `--abbrev-ref`). */
+  branch: string | undefined
+}
+
+/** Resolves the shared `<path> [--repo <dir>]` positional both `rm` and `archive` take. Writes its own error and returns `null` on failure. */
+function resolveWorktreeTarget(target: string | undefined, repoFlag: string | undefined, cmdName: string): ResolvedWorktreeTarget | null {
+  if (!target) {
+    process.stderr.write(
+      `agentproto worktree ${cmdName}: missing worktree path.\n` +
+        `  Try: agentproto worktree ${cmdName} <path>  (see \`agentproto worktree ls\`)\n`,
+    )
+    return null
+  }
+  const cwd = resolve(target)
+
+  // The repo root that owns the worktree — prefer --repo, else derive from the
+  // worktree's own git metadata (its main working tree).
+  const repoRoot = repoRootOf(resolve(repoFlag ?? cwd))
+  if (!repoRoot) {
+    process.stderr.write(`agentproto worktree ${cmdName}: could not resolve the git repo for "${target}".\n`)
+    return null
+  }
+
+  // The branch the worktree is on, so cleanup can delete it.
+  const branchRes = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
+  const rawBranch = branchRes.status === 0 ? branchRes.stdout.trim() : undefined
+  const branch = rawBranch && rawBranch !== "HEAD" ? rawBranch : undefined
+
+  return { repoRoot, cwd, branch }
+}
+
+// ── rm ──────────────────────────────────────────────────────────────────
+
+/** The guarded destructive verb: refuses a dirty tree unless the matching `--discard-*` flag authorizes it. */
+async function runRm(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      repo: { type: "string" },
+      base: { type: "string" },
+      "keep-branch": { type: "boolean" },
+      "discard-untracked": { type: "boolean" },
+      "discard-modified": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+
+  const resolved = resolveWorktreeTarget(positionals[0], values.repo, "rm")
+  if (!resolved) return 2
+  const { repoRoot, cwd, branch } = resolved
+
+  try {
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        cwd,
+        ...(branch ? { branch } : {}),
+        deleteBranch: !values["keep-branch"],
+        discardUntracked: Boolean(values["discard-untracked"]),
+        discardModified: Boolean(values["discard-modified"]),
+        ...(values.base !== undefined ? { base: values.base } : {}),
+      },
+    })
+  } catch (err) {
+    if (err instanceof WorktreeNotRemovableError) {
+      process.stderr.write(`agentproto worktree rm: ${err.message}\n`)
+      return 1
+    }
+    process.stderr.write(`agentproto worktree rm: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ removed: cwd, branch: branch ?? null }, null, 2) + "\n")
+  } else {
+    process.stdout.write(`worktree removed  ${cwd}${branch ? `  (branch ${branch})` : ""}\n`)
+  }
+  return 0
+}
+
 // ── archive ─────────────────────────────────────────────────────────────
 
+/** Salvage-then-remove (PLAN.md §5.2 layer 4): snapshot uncommitted state, then remove with both discard flags granted. */
 async function runArchive(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -241,31 +351,33 @@ async function runArchive(args: readonly string[]): Promise<number> {
     },
   })
 
-  const target = positionals[0]
-  if (!target) {
-    process.stderr.write(
-      "agentproto worktree archive: missing worktree path.\n" +
-        "  Try: agentproto worktree archive <path>  (see `agentproto worktree ls`)\n",
-    )
+  const resolved = resolveWorktreeTarget(positionals[0], values.repo, "archive")
+  if (!resolved) return 2
+  const { repoRoot, cwd, branch } = resolved
+
+  const tipRes = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" })
+  if (tipRes.status !== 0) {
+    process.stderr.write(`agentproto worktree archive: could not resolve HEAD for "${cwd}".\n`)
     return 2
   }
-  const cwd = resolve(target)
+  const tipSha = tipRes.stdout.trim()
 
-  // The repo root that owns the worktree — prefer --repo, else derive from the
-  // worktree's own git metadata (its main working tree).
-  const repoRoot = repoRootOf(resolve(values.repo ?? cwd))
-  if (!repoRoot) {
+  let salvageDir: string
+  try {
+    const result = await salvageWorktree({
+      repoName: repoLabel(repoRoot),
+      worktreePath: cwd,
+      branch: branch ?? null,
+      tipSha,
+      slug: branch ?? basename(cwd),
+    })
+    salvageDir = result.dir
+  } catch (err) {
     process.stderr.write(
-      `agentproto worktree archive: could not resolve the git repo for "${target}".\n`,
+      `agentproto worktree archive: salvage failed, nothing removed: ${err instanceof Error ? err.message : String(err)}\n`,
     )
-    return 2
+    return 1
   }
-
-  // The branch the worktree is on, so cleanup can delete it.
-  const branchRes = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], {
-    encoding: "utf8",
-  })
-  const branch = branchRes.status === 0 ? branchRes.stdout.trim() : undefined
 
   try {
     await runTool({
@@ -274,22 +386,24 @@ async function runArchive(args: readonly string[]): Promise<number> {
       input: {
         repoRoot,
         cwd,
-        ...(branch && branch !== "HEAD" ? { branch } : {}),
+        ...(branch ? { branch } : {}),
         deleteBranch: !values["keep-branch"],
+        discardUntracked: true,
+        discardModified: true,
         ...(values.base !== undefined ? { base: values.base } : {}),
       },
     })
   } catch (err) {
     process.stderr.write(
-      `agentproto worktree archive: ${err instanceof Error ? err.message : String(err)}\n`,
+      `agentproto worktree archive: salvaged to ${salvageDir}, but removal failed: ${err instanceof Error ? err.message : String(err)}\n`,
     )
     return 1
   }
 
   if (values.json) {
-    process.stdout.write(JSON.stringify({ archived: cwd, branch: branch ?? null }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({ archived: cwd, branch: branch ?? null, salvageDir }, null, 2) + "\n")
   } else {
-    process.stdout.write(`worktree archived  ${cwd}${branch ? `  (branch ${branch})` : ""}\n`)
+    process.stdout.write(`worktree archived  ${cwd}${branch ? `  (branch ${branch})` : ""}  (salvaged to ${salvageDir})\n`)
   }
   return 0
 }
