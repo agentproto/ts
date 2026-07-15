@@ -282,15 +282,24 @@ function tool_post_consolidated_release({ title, body }) {
     process.stdout.write(body)
     return `dry-run: consolidated release not posted (tag: ${releaseTag})`
   }
+  // `--latest=true`: this is the one release a human should land on. changesets
+  // publishes ~37 per-package releases per batch, and GitHub was picking whichever
+  // sorted last as "Latest" — it settled on `runtime-profile-standard@0.1.1`, a
+  // package nobody installs, while the real notes sat on an unlinked tag. The
+  // consolidated release exists on every run regardless of which packages shipped,
+  // so it is the only stable thing to point at.
   try {
-    execFileSync('gh', ['release', 'create', releaseTag, '--title', safeTitle, '--notes', body, '--latest=false'], {
+    execFileSync('gh', ['release', 'create', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
       cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
     })
     return `✓ Created consolidated GitHub Release: ${releaseTag}`
   } catch (e) {
-    // If tag already exists, update it
+    // Tag already exists — same date, re-run or a second publish. Update in place.
+    // (Under the old model-chosen tags this branch also fired across *different*
+    // batches that were handed the same invented tag, silently overwriting the
+    // earlier batch's notes. A computed per-day tag makes that collision honest.)
     try {
-      execFileSync('gh', ['release', 'edit', releaseTag, '--title', safeTitle, '--notes', body], {
+      execFileSync('gh', ['release', 'edit', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
         cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
       })
       return `✓ Updated consolidated GitHub Release: ${releaseTag}`
