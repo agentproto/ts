@@ -23,6 +23,7 @@ export default createTsupConfig({
     "access/index": "src/access/index.ts",
     "picker/index": "src/picker/index.ts",
     "overlay/index": "src/overlay/index.ts",
+    "route-identity/index": "src/route-identity/index.ts",
   },
   format: ["esm"],
   splitting: true,

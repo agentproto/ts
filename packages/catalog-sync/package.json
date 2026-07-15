@@ -55,6 +55,16 @@
       "types": "./dist/generators/llm-openrouter.d.ts",
       "import": "./dist/generators/llm-openrouter.mjs",
       "default": "./dist/generators/llm-openrouter.mjs"
+    },
+    "./refresh-workflow": {
+      "types": "./dist/refresh-workflow.d.ts",
+      "import": "./dist/refresh-workflow.mjs",
+      "default": "./dist/refresh-workflow.mjs"
+    },
+    "./sources/openai": {
+      "types": "./dist/sources/openai.d.ts",
+      "import": "./dist/sources/openai.mjs",
+      "default": "./dist/sources/openai.mjs"
     }
   },
   "scripts": {
