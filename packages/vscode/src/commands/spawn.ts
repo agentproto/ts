@@ -1,20 +1,33 @@
 /**
- * agentproto.spawnAgent — quick-pick wizard: adapter → model → mode (only
- * when the adapter declares any) → cwd → label → initial prompt, then
- * POST /sessions/agent. Escape at any step aborts the whole wizard; an
- * empty input box means "use the adapter default" and continues.
+ * agentproto.spawnAgent — one quick-pick flattening adapter+model into
+ * "slug · model" rows. The default cwd (active editor's folder → sole
+ * folder → ambiguous folder pick → none, see resolveDefaultCwd) and its
+ * matching daemon workspace slug are resolved up front and shown in the
+ * picker's placeHolder, then sent explicitly on spawn rather than left to
+ * the daemon's own inference — autodetection must be visible, never silent.
+ * A trailing "$(gear) Configure…" row opens the full adapter → model → mode
+ * → cwd → label → prompt chain, unchanged, for anyone overriding a default.
+ * Escape at any step aborts the whole wizard; an empty input box in the
+ * Configure chain means "use the adapter default" and continues.
  */
 
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
+import type { WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import { EMPTY_WORKSPACES } from "../services/workspaces.logic.js"
 import {
   assembleSpawnOptions,
+  buildSpawnPlaceHolder,
   CUSTOM_MODEL_LABEL,
   mapAdapterQuickPickItems,
+  mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
+  mapSpawnQuickPickItems,
+  resolveDefaultCwd,
+  resolveWorkspaceSlug,
   type SpawnAdapterInfo,
   type SpawnWizardAnswers,
 } from "./spawn.logic.js"
@@ -42,47 +55,47 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
     return
   }
 
-  const adapterPick = await vscode.window.showQuickPick(mapAdapterQuickPickItems(adapters), {
-    placeHolder: "Select an agent adapter to spawn",
+  const cwdResolution = await resolveWizardDefaultCwd()
+  if (cwdResolution === undefined) return // Escape during folder disambiguation aborts the wizard.
+  const defaultCwd = cwdResolution
+
+  let workspaceConfig: WorkspacesConfig
+  try {
+    workspaceConfig = await client.listWorkspaces()
+  } catch {
+    // Old daemon with no /workspaces route, or unreachable — degrade to no
+    // slug rather than block the spawn; the daemon infers as it does today.
+    workspaceConfig = EMPTY_WORKSPACES
+  }
+
+  const picked = await vscode.window.showQuickPick(mapSpawnQuickPickItems(adapters), {
+    placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd),
   })
-  if (!adapterPick) return
+  if (!picked) return
 
-  const answers: SpawnWizardAnswers = { adapter: adapterPick.adapter.slug }
-
-  const modelPick = await vscode.window.showQuickPick(
-    mapModelQuickPickItems(adapterPick.adapter.models ?? []),
-    { placeHolder: "Select a model (Escape for adapter default)" },
-  )
-  if (!modelPick) return
-  if (modelPick.custom) {
-    const custom = await vscode.window.showInputBox({
-      prompt: "Custom model id (leave empty for adapter default)",
-    })
-    if (custom === undefined) return
-    if (custom) answers.model = custom
-  } else if (modelPick.label !== CUSTOM_MODEL_LABEL) {
-    answers.model = modelPick.label
+  let answers: SpawnWizardAnswers
+  if (picked.configure) {
+    const configured = await runConfigureWizard(adapters, defaultCwd)
+    if (!configured) return
+    answers = configured
+  } else if (picked.adapter) {
+    answers = { adapter: picked.adapter.slug }
+    if (picked.custom) {
+      const custom = await vscode.window.showInputBox({
+        prompt: "Custom model id (leave empty for adapter default)",
+      })
+      if (custom === undefined) return
+      if (custom) answers.model = custom
+    } else if (picked.model) {
+      answers.model = picked.model
+    }
+    if (defaultCwd) answers.cwd = defaultCwd
+  } else {
+    return
   }
 
-  const modeItems = mapModeQuickPickItems(adapterPick.adapter.modes)
-  if (modeItems.length > 0) {
-    const modePick = await vscode.window.showQuickPick(modeItems, { placeHolder: "Select a mode" })
-    if (!modePick) return
-    answers.mode = modePick.mode
-  }
-
-  const defaultCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ""
-  const cwd = await vscode.window.showInputBox({ prompt: "Working directory", value: defaultCwd })
-  if (cwd === undefined) return
-  if (cwd) answers.cwd = cwd
-
-  const label = await vscode.window.showInputBox({ prompt: "Session label (optional)" })
-  if (label === undefined) return
-  if (label) answers.label = label
-
-  const prompt = await vscode.window.showInputBox({ prompt: "Initial prompt (optional)" })
-  if (prompt === undefined) return
-  if (prompt) answers.prompt = prompt
+  const slug = resolveWorkspaceSlug(workspaceConfig, answers.cwd)
+  if (slug) answers.workspaceSlug = slug
 
   try {
     const session = await client.spawnAgent(assembleSpawnOptions(answers))
@@ -98,6 +111,74 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
   } catch (err) {
     vscode.window.showErrorMessage(`agentproto: spawn failed — ${describeError(err)}`)
   }
+}
+
+/**
+ * Runs the cwd ladder against the live editor/workspace state. Returns the
+ * resolved cwd (possibly undefined when no folder is open), or `undefined`
+ * to signal the whole wizard was aborted (Escape during folder
+ * disambiguation) — distinguished from a resolved-but-empty cwd by the
+ * caller checking `=== undefined`.
+ */
+async function resolveWizardDefaultCwd(): Promise<string | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? []
+  const activeFilePath = vscode.window.activeTextEditor?.document.uri.fsPath
+  const resolution = resolveDefaultCwd({ folders, activeFilePath })
+  if (resolution.kind === "resolved") return resolution.cwd
+  if (resolution.kind === "none") return ""
+  const picked = await vscode.window.showQuickPick(mapFolderQuickPickItems(resolution.candidates), {
+    placeHolder: "Multiple workspace folders open — select one for the new session",
+  })
+  return picked?.folder.uri.fsPath
+}
+
+/** The pre-existing full chain: adapter → model → mode → cwd → label → prompt, reached only via the Configure… row. */
+async function runConfigureWizard(
+  adapters: SpawnAdapterInfo[],
+  defaultCwd: string,
+): Promise<SpawnWizardAnswers | undefined> {
+  const adapterPick = await vscode.window.showQuickPick(mapAdapterQuickPickItems(adapters), {
+    placeHolder: "Select an agent adapter to spawn",
+  })
+  if (!adapterPick) return undefined
+
+  const answers: SpawnWizardAnswers = { adapter: adapterPick.adapter.slug }
+
+  const modelPick = await vscode.window.showQuickPick(
+    mapModelQuickPickItems(adapterPick.adapter.models ?? []),
+    { placeHolder: "Select a model (Escape for adapter default)" },
+  )
+  if (!modelPick) return undefined
+  if (modelPick.custom) {
+    const custom = await vscode.window.showInputBox({
+      prompt: "Custom model id (leave empty for adapter default)",
+    })
+    if (custom === undefined) return undefined
+    if (custom) answers.model = custom
+  } else if (modelPick.label !== CUSTOM_MODEL_LABEL) {
+    answers.model = modelPick.label
+  }
+
+  const modeItems = mapModeQuickPickItems(adapterPick.adapter.modes)
+  if (modeItems.length > 0) {
+    const modePick = await vscode.window.showQuickPick(modeItems, { placeHolder: "Select a mode" })
+    if (!modePick) return undefined
+    answers.mode = modePick.mode
+  }
+
+  const cwd = await vscode.window.showInputBox({ prompt: "Working directory", value: defaultCwd })
+  if (cwd === undefined) return undefined
+  if (cwd) answers.cwd = cwd
+
+  const label = await vscode.window.showInputBox({ prompt: "Session label (optional)" })
+  if (label === undefined) return undefined
+  if (label) answers.label = label
+
+  const prompt = await vscode.window.showInputBox({ prompt: "Initial prompt (optional)" })
+  if (prompt === undefined) return undefined
+  if (prompt) answers.prompt = prompt
+
+  return answers
 }
 
 function describeError(err: unknown): string {
