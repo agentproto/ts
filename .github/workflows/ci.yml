@@ -70,13 +70,21 @@ jobs:
       - name: Run cli-docs coverage tests
         run: node --test scripts/agentflow/docs.test.mjs
 
+      # Guards check-changesets' name-resolution + --fix auto-heal (the reviewer
+      # writes changesets by guessing the package name; --fix corrects an
+      # unambiguous scope↔dash near-miss before it lands).
+      - name: Run changeset-check tests
+        run: node --test scripts/check-changesets.test.mjs
+
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
       # takes down every release until a human notices. pr-338-review declared
       # "@agentproto/vscode" (the package is `agentproto-vscode`) and broke 8
       # consecutive Release runs. Changesets are usually written by the agentic
       # reviewer guessing the name from context; check the guess here, on the PR
-      # that introduces it, not an hour later in a dead release.
+      # that introduces it, not an hour later in a dead release. The reviewer's
+      # commit step runs `--fix` first, so a resolvable near-miss self-heals and
+      # only a genuinely-unknown name reaches this hard gate.
       - name: Validate changeset package names
         run: node scripts/check-changesets.mjs
 
@@ -361,6 +369,14 @@ jobs:
           # Attribute the commit to the App bot (mentionable identity) when an
           # App token was minted; fall back to github-actions[bot] otherwise.
           bash scripts/configure-bot-git.sh
+          # Auto-heal a mis-scoped package name the reviewer guessed (e.g.
+          # "@agentproto/vscode" → "agentproto-vscode") before it's committed,
+          # so it doesn't red every later PR's changeset check the way
+          # pr-379-review did. Deterministic near-miss only; a name with no
+          # unique workspace match is left for the "Validate changeset package
+          # names" gate. `|| true` so a leftover unresolvable name doesn't abort
+          # the commit — that gate is what turns it red, honestly.
+          node scripts/check-changesets.mjs --fix || true
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
