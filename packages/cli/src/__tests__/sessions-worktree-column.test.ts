@@ -62,18 +62,13 @@ const inCheckout: SessionDescriptor = {
 
 describe("agentproto sessions — WORKTREE column", () => {
   let stdout: string[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let stdoutSpy: any
 
   beforeEach(() => {
     stdout = []
-    stdoutSpy = vi
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(process.stdout as any, "write")
-      .mockImplementation((chunk: unknown) => {
-        stdout.push(String(chunk))
-        return true
-      })
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      stdout.push(String(chunk))
+      return true
+    })
     discoverDaemon.mockResolvedValue({
       found: { url: "http://127.0.0.1:18790", token: "tok" },
       stale: [],
@@ -81,7 +76,6 @@ describe("agentproto sessions — WORKTREE column", () => {
   })
 
   afterEach(() => {
-    stdoutSpy.mockRestore()
     vi.restoreAllMocks()
   })
 
