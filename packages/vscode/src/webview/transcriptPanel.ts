@@ -68,6 +68,17 @@ export function registerTranscriptPanels(
           retainContextWhenHidden: true,
         },
       )
+      // Wear agentproto's mark in the tab strip. With no iconPath VS Code
+      // falls back to a generic document glyph, so a transcript is
+      // indistinguishable from every other open editor at a glance — and
+      // these tabs stay open for hours.
+      //
+      // Deliberately the extension's mark rather than the session's activity
+      // icon: WebviewPanel.iconPath takes a Uri, NOT a ThemeIcon, so the
+      // tree's codicon alphabet (●/spinner/✓) cannot be rendered here at all.
+      // A per-state SVG set would be a second, hand-drawn copy of that
+      // alphabet, free to drift from it. One mark, always true.
+      panel.iconPath = vscode.Uri.joinPath(ctx.extensionUri, "media", "activitybar.svg")
       panels.set(session.id, panel)
       activeId = session.id
 

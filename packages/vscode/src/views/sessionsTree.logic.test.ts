@@ -116,6 +116,71 @@ describe("relativeTime", () => {
   })
 })
 
+describe("subagents nest under their spawner", () => {
+  const now = Date.parse("2026-07-16T12:00:00Z")
+  const at = (iso: string) => iso
+
+  it("puts children under the session that spawned them, at any depth", () => {
+    const rows = buildSessionRows(
+      [
+        session({ id: "leaf", parentSessionId: "worker", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "worker", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    // One top-level row: the spawner. The chain hangs off it.
+    expect(rows).toHaveLength(1)
+    const root = rows[0] as SessionNode
+    expect(root.session.id).toBe("root")
+    expect(root.children.map(c => c.session.id)).toEqual(["worker"])
+    expect(root.children[0]!.children.map(c => c.session.id)).toEqual(["leaf"])
+  })
+
+  it("says how many subagents a spawner has, so a collapsed row still tells you", () => {
+    const rows = buildSessionRows(
+      [
+        session({ id: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "a", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "b", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    const root = rows[0] as SessionNode
+    expect(descriptionFor(root.session, { now, childCount: root.children.length })).toBe(
+      "1 hr ago · 2 subagents",
+    )
+    // A leaf claims nothing.
+    expect(descriptionFor(root.children[0]!.session, { now, childCount: 0 })).toBe("1 hr ago")
+  })
+
+  it("keeps a subtree with its spawner across the 24h divider", () => {
+    // A child started today under a parent started last week must not float
+    // up to the recent side on its own — the subtree belongs to its root.
+    const rows = buildSessionRows(
+      [
+        session({ id: "old-root", startedAt: at("2026-07-09T11:00:00Z") }),
+        session({ id: "fresh-child", parentSessionId: "old-root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "recent", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    const ids = rows.map(r => ("kind" in r ? r.id : r.session.id))
+    expect(ids).toEqual(["recent", SEPARATOR_ID, "old-root"])
+    const oldRoot = rows[2] as SessionNode
+    expect(oldRoot.children.map(c => c.session.id)).toEqual(["fresh-child"])
+  })
+
+  it("never orphans a child whose spawner is gone — it becomes a root, not a dropped row", () => {
+    const rows = buildSessionRows(
+      [session({ id: "orphan", parentSessionId: "reaped", startedAt: at("2026-07-16T11:00:00Z") })],
+      now,
+    )
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as SessionNode).session.id).toBe("orphan")
+  })
+})
+
 describe("activityFor", () => {
   it("names what a session is doing, not whether its process is up", () => {
     expect(activityFor(session())).toBe("idle")

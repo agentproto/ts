@@ -46,6 +46,8 @@ export type TreeNode = SeparatorNode | SessionNode
 export interface DescriptionContext {
   workspaceLabel?: string
   now?: number
+  /** Direct children in the RENDERED tree — drives the "N subagents" suffix. */
+  childCount?: number
 }
 
 const TERMINAL_STATUSES = new Set<SessionDescriptor["status"]>(["exited", "killed", "error"])
@@ -94,6 +96,14 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
   const parts: string[] = []
   if (ctx.workspaceLabel) parts.push(ctx.workspaceLabel)
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
+  // A spawner says so on its own row. Indentation already nests the children,
+  // but indentation is invisible the moment the row is collapsed or its
+  // children scroll past — and "this session spawned 3 agents" is the whole
+  // reason to look at it. Counted from the rendered subtree rather than the
+  // descriptor, so it can never claim children the tree isn't showing.
+  if (ctx.childCount && ctx.childCount > 0) {
+    parts.push(`${ctx.childCount} subagent${ctx.childCount === 1 ? "" : "s"}`)
+  }
   return parts.join(" · ")
 }
 
