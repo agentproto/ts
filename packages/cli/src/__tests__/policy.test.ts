@@ -307,10 +307,28 @@ describe("agentproto policy", () => {
     })
 
     it("defaults --timeout to 900000ms (a gate may be a full test suite)", async () => {
+      // "5ms" (not bare "5"): a bare number under 1000 is rejected as an
+      // ambiguous units slip (see ../util/duration.ts) before the daemon is
+      // ever touched, which would turn this into a usage-error test instead
+      // of a budget-exhaustion test. The explicit suffix keeps the same
+      // tiny, fast-failing budget while staying valid input.
       httpGetJson.mockResolvedValue({ timedOut: true })
-      const code = await runPolicy(["wait", "pol_1", "--timeout", "5"])
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "5ms"])
       expect(code).toBe(2)
       expect(stdoutChunks.join("")).toContain("timed out")
+    })
+
+    it("rejects a bare --timeout under 1000 as an ambiguous units slip, without touching the daemon", async () => {
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "30"])
+      expect(code).toBe(2)
+      expect(httpGetJson).not.toHaveBeenCalled()
+    })
+
+    it("states the resolved duration in the timeout message", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: true })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "150ms"])
+      expect(code).toBe(2)
+      expect(stdoutChunks.join("")).toContain("timed out after 150ms")
     })
 
     it("exits 2 on blocked", async () => {

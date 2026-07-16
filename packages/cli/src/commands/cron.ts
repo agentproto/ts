@@ -21,18 +21,23 @@ import {
   httpGetJson,
   httpDelete,
 } from "./_daemon-helpers.js"
+import { parseDuration } from "../util/duration.js"
 
 const USAGE = `agentproto cron — manage durable cron jobs on the daemon
 
 Usage:
   agentproto cron add --schedule <cron-expr>
-                      (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <ms>]
+                      (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
                        | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                        | --target-session <id> --prompt <text>)
                       [--label <text>] [--once] [--json]
   agentproto cron list [--json]
   agentproto cron remove <id>
   agentproto cron run    <id> [--json]
+
+--timeout-ms <duration>: bare integer = milliseconds (unchanged), or an
+  explicit \`ms\` suffix (e.g. 30000ms). The flag name already declares its
+  unit, so s/m/h suffixes are rejected rather than silently reinterpreted.
 
 Schedule is a 5-field cron expression in local time:
   minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-7,0=Sun)
@@ -140,15 +145,27 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  // The flag's own name already declares milliseconds — msOnly skips the
+  // bare-number-under-1000 units-slip guard (unambiguous here) and rejects
+  // a suffix other than `ms` instead of silently misparsing it (a `30s`
+  // would otherwise have its "30" grabbed and its "s" dropped).
+  let commandTimeoutMs: number | undefined
+  if (values["timeout-ms"]) {
+    const parsed = parseDuration(values["timeout-ms"] as string, "--timeout-ms", { msOnly: true })
+    if (!parsed.ok) {
+      process.stderr.write(`agentproto cron add: ${parsed.error}\n`)
+      return 2
+    }
+    commandTimeoutMs = parsed.ms
+  }
+
   const action = values.command
     ? {
         kind: "command" as const,
         command: values.command,
         ...(values["args"] ? { args: values["args"] as string[] } : {}),
         ...(values.cwd ? { cwd: values.cwd } : {}),
-        ...(values["timeout-ms"]
-          ? { timeoutMs: Number.parseInt(values["timeout-ms"] as string, 10) }
-          : {}),
+        ...(commandTimeoutMs !== undefined ? { timeoutMs: commandTimeoutMs } : {}),
       }
     : values["target-session"]
       ? {

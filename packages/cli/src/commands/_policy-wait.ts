@@ -10,6 +10,7 @@
  * daemon.
  */
 import { httpGetJson, type DaemonEndpoint } from "./_daemon-helpers.js"
+import { formatDuration } from "../util/duration.js"
 
 /**
  * Blocks until the policy resolves (leaves watching/gating/queued/nudging/
@@ -41,11 +42,13 @@ export async function waitForPolicy(opts: {
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
       if (json) {
-        process.stdout.write(JSON.stringify({ timedOut: true, policyId }, null, 2) + "\n")
+        process.stdout.write(
+          JSON.stringify({ timedOut: true, policyId, totalTimeoutMs }, null, 2) + "\n",
+        )
       } else {
         process.stdout.write(
-          `${verb}: policy "${policyId}" timed out. ` +
-            `Pass --timeout <ms> for a longer budget if the gate is still running.\n`,
+          `${verb}: policy "${policyId}" timed out after ${formatDuration(totalTimeoutMs)}. ` +
+            `Pass a longer --timeout (e.g. --timeout 30m) if the gate is still running.\n`,
         )
       }
       return 2

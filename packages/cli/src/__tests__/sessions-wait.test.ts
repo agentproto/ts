@@ -162,13 +162,40 @@ describe("agentproto sessions wait — long-poll loop + exit codes", () => {
     // the CLI loop must give up and report the overall timeout as exit 2 —
     // distinct from a hard CLI failure (which stays at 1) — and point the
     // caller at --timeout.
+    //
+    // "5ms" (not bare "5"): a bare number under 1000 is now rejected as an
+    // ambiguous units slip (see ../util/duration.ts) before the daemon is
+    // ever touched, which would turn this into a usage-error test instead
+    // of a budget-exhaustion test. The explicit suffix keeps the same tiny,
+    // fast-failing budget while staying valid input.
     httpGetJson.mockResolvedValue({ timedOut: true, nextCursor: 1 })
 
-    const code = await runSessions(["wait", "sess_1", "--timeout", "5"])
+    const code = await runSessions(["wait", "sess_1", "--timeout", "5ms"])
 
     expect(code).toBe(2)
     expect(stdoutChunks.join("")).toContain("timed out")
     expect(stdoutChunks.join("")).toContain("--timeout")
+  })
+
+  it("states the resolved duration in the timeout message, not just 'timed out'", async () => {
+    // The actual incident: --timeout 3000 meant to be 3000 SECONDS timed out
+    // in 3 seconds and looked like a broken session, not a units mistake.
+    // Echoing the resolved duration back makes a wrong unit obvious the
+    // moment it bites. (150ms, not a round "seconds" value, to keep this
+    // test fast — the loop's deadline is real wall-clock time.)
+    httpGetJson.mockResolvedValue({ timedOut: true, nextCursor: 1 })
+
+    const code = await runSessions(["wait", "sess_1", "--timeout", "150ms"])
+
+    expect(code).toBe(2)
+    expect(stdoutChunks.join("")).toContain("timed out after 150ms")
+  })
+
+  it("rejects a bare --timeout under 1000 as an ambiguous units slip, without touching the daemon", async () => {
+    const code = await runSessions(["wait", "sess_1", "--timeout", "30"])
+
+    expect(code).toBe(2)
+    expect(httpGetJson).not.toHaveBeenCalled()
   })
 
   it("exits 3 when the session is unknown (daemon 404)", async () => {
