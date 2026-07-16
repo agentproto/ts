@@ -62,6 +62,26 @@ export const xaiPack: ModelPack = {
   },
 };
 
+export const anthropicPack: ModelPack = {
+  id: 'anthropic',
+  label: 'Anthropic (direct)',
+  description: 'Claude models routed directly to api.anthropic.com',
+  models: {
+    'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
+    'claude-sonnet-5': { provider: 'anthropic', model: 'claude-sonnet-5' },
+    // Unlike the other entries here, Anthropic's live /v1/models does not
+    // expose a bare "claude-haiku-4-5" id — only the datestamped one
+    // resolves (verified against a live models-list fetch; see
+    // packages/model-catalog/src/llm/context-windows.generated.ts). Do not
+    // "fix" this to match the other entries — that would 404 upstream.
+    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    // claude-fable-5 is registered in the model catalog (catalog.ts) and
+    // context-windows.generated.ts with confirmed pricing. The model ID is
+    // used as-is because Anthropic exposes it without a datestamp alias.
+    'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
+  },
+};
+
 export const openrouterPack: ModelPack = {
   id: 'openrouter',
   label: 'OpenRouter',
@@ -88,6 +108,7 @@ export const PACK_REGISTRY: Record<string, ModelPack> = {
   [defaultPack.id]: defaultPack,
   [xaiPack.id]: xaiPack,
   [openrouterPack.id]: openrouterPack,
+  [anthropicPack.id]: anthropicPack,
 };
 
 // Default pack used when no pack is specified.
