@@ -75,8 +75,9 @@ labels in the tracker.
 
 `packages/vscode` contains the private `agentproto-vscode` extension: local
 operational views for daemon sessions and permissions, plus commands to manage
-agents from the editor. Every push to `main` that touches `packages/vscode`
-builds a fresh VSIX and publishes it as a GitHub release asset (tag
+agents from the editor. Every actual release (a "Version Packages" PR merge,
+not every PR merge to `main`) that included vscode changes builds a fresh
+VSIX and publishes it as a GitHub release asset (tag
 `vscode-v<version>-<sha>`) — grab the latest one from
 [Releases](https://github.com/agentproto/ts/releases) and install it through
 VS Code's **Extensions: Install from VSIX...** command. The `.vsix` itself is
