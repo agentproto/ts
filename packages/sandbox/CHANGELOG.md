@@ -1,5 +1,29 @@
 # @agentproto/sandbox
 
+## 0.1.1
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+- Updated dependencies [5ae8c13]
+- Updated dependencies [6d4aa4b]
+- Updated dependencies [60792f1]
+- Updated dependencies [4f62f46]
+- Updated dependencies [8a4d5d5]
+- Updated dependencies [2bed7e6]
+- Updated dependencies [3639abd]
+- Updated dependencies [3e99abf]
+- Updated dependencies [a63b4bc]
+- Updated dependencies [47d3251]
+- Updated dependencies [a32bb69]
+- Updated dependencies [e0fbccc]
+- Updated dependencies [0839e5f]
+  - @agentproto/define-doctype@0.1.1
+  - @agentproto/secrets@0.2.0
+  - @agentproto/workflow-runtime@0.4.0
+  - @agentproto/worktree@0.3.0
+
 ## 0.1.0
 
 ### Minor Changes

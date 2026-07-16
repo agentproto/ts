@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/provider-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/provider-kit — generic provider/backend catalog, status, creds, setup-ledger, and MCP tool primitives shared by the agent-CLI, browser, tunnel, and eval-reporter families.",
   "keywords": [
     "agentproto",

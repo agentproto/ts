@@ -1,5 +1,22 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.1.3
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+- Updated dependencies [049c2fe]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [386a573]
+- Updated dependencies [c036f59]
+- Updated dependencies [76747fc]
+- Updated dependencies [d425044]
+- Updated dependencies [2d94149]
+  - @agentproto/agent@0.2.1
+  - @agentproto/driver-agent-cli@1.0.0
+  - @agentproto/mastra@0.2.2
+
 ## 0.1.2
 
 ### Patch Changes

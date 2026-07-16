@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/skill",
-  "version": "0.2.0-alpha.0",
+  "version": "0.2.0",
   "description": "@agentproto/skill — AIP-3 SKILL.md reference implementation. A markdown + frontmatter format for distributing reusable agent skills as portable, version-controlled files.",
   "keywords": [
     "agentproto",

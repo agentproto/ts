@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/company",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/company — AIP-6 COMPANY.md reference implementation. A filesystem-first, vendor-neutral file format for representing AI companies — their org structure, roles, and objectives — as portable git-native packages.",
   "keywords": [
     "agentproto",

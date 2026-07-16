@@ -1,5 +1,17 @@
 # @agentproto/corpus-presets
 
+## 0.2.2
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+- Updated dependencies [d89f0ad]
+- Updated dependencies [a59c2d8]
+- Updated dependencies [e4d9087]
+- Updated dependencies [67aabc9]
+  - @agentproto/corpus@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

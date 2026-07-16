@@ -1,5 +1,19 @@
 # @agentproto/workflow-runtime
 
+## 0.4.0
+
+### Minor Changes
+
+- e0fbccc: Add opt-in per-item error tolerance (onError: "collect") to map/pipeline steps
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+  - @agentproto/driver@0.1.3
+  - @agentproto/tool@0.2.1
+  - @agentproto/workflow@0.1.0
+
 ## 0.3.0
 
 ### Minor Changes

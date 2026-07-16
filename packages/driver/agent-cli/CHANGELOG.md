@@ -1,5 +1,33 @@
 # @agentproto/driver-agent-cli
 
+## 1.0.0
+
+### Major Changes
+
+- c036f59: Explicit credential selection + verifiable auth mode for claude-code spawns
+
+### Minor Changes
+
+- 049c2fe: Add generic ACP agent support: curated catalog, config-defined agents, acp verb
+- 0ea6fc1: Add cross-session permission-hold inbox: permissions ls|approve|deny, MCP tools, REST routes
+- 386a573: Add deterministic auth spawn mode (subscription vs api-key) for claude-code
+- d425044: Add catalog-sourced billing-credential resolver for all adapters
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- 76747fc: fix(claude-code): subscription auth injects CLAUDE_CODE_OAUTH_TOKEN, not ANTHROPIC_AUTH_TOKEN
+- 2d94149: Fix gateway auth collision, adapter cache invalidation, and proxy model alias override
+- Updated dependencies [7b53b8c]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [6d4aa4b]
+- Updated dependencies [60792f1]
+- Updated dependencies [8a4d5d5]
+- Updated dependencies [a32bb69]
+- Updated dependencies [c8198c6]
+  - @agentproto/acp@0.5.0
+  - @agentproto/define-doctype@0.1.1
+
 ## 0.4.0
 
 ### Minor Changes

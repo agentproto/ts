@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/role-catalog",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "Reference catalogue of AIP-47 ROLE.md builtins — 15 starter roles (executive, specialist, coordinator) covering common AI-company positions. Composed via @agentproto/role; consumed via BuiltinRoleSource.",
   "keywords": [
     "agentproto",

@@ -1,5 +1,36 @@
 # @agentproto/adapter-claude-code
 
+## 1.0.0
+
+### Major Changes
+
+- c036f59: Explicit credential selection + verifiable auth mode for claude-code spawns
+
+### Minor Changes
+
+- 386a573: Add deterministic auth spawn mode (subscription vs api-key) for claude-code
+- d425044: Add catalog-sourced billing-credential resolver for all adapters
+
+### Patch Changes
+
+- 1bdc055: Add xAI provider support and session options passthrough (base-url/auth-token/options-json)
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- 76747fc: fix(claude-code): subscription auth injects CLAUDE_CODE_OAUTH_TOKEN, not ANTHROPIC_AUTH_TOKEN
+- Updated dependencies [1b282ab]
+- Updated dependencies [1bdc055]
+- Updated dependencies [7b53b8c]
+- Updated dependencies [049c2fe]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [386a573]
+- Updated dependencies [c036f59]
+- Updated dependencies [76747fc]
+- Updated dependencies [d425044]
+- Updated dependencies [2d94149]
+- Updated dependencies [c430b9f]
+- Updated dependencies [94a7e90]
+  - @agentproto/provider-presets@0.3.0
+  - @agentproto/driver-agent-cli@1.0.0
+
 ## 0.2.0
 
 ### Minor Changes

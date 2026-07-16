@@ -1,5 +1,81 @@
 # @agentproto/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- 1bdc055: Add xAI provider support and session options passthrough (base-url/auth-token/options-json)
+- d62aca3: Add --model / --effort flags to `agentproto run`, with friendly unknown-flag error
+- 7b6c8d0: Add daemon.authToken config field and --auth-token flag for persistent gateway bearer token
+- be2842e: Add --output-schema flag to run for schema-validated JSON final output
+- 5ae8c13: Add agentproto.json lifecycle: setup/teardown hooks, supervised services, localhost reverse proxy, and worktree CLI verb
+- 049c2fe: Add generic ACP agent support: curated catalog, config-defined agents, acp verb
+- 0ea6fc1: Add cross-session permission-hold inbox: permissions ls|approve|deny, MCP tools, REST routes
+- 386a573: Add deterministic auth spawn mode (subscription vs api-key) for claude-code
+- c036f59: Explicit credential selection + verifiable auth mode for claude-code spawns
+- 60792f1: Add E2E daemon pairing: rendezvous broker, pair CLI, daemon registry
+- 6894d2e: Add named terminal presets via terminalPresets in config.json
+- 2bed7e6: Add worktree status engine (tree/integration/liveness axes, squash-proof reconciliation, ForgeClient, provenance join, ls --status)
+- 94daa59: Add `agentproto policy` verb (attach|status|wait|ack|ls|cancel)
+- 3e99abf: Split worktree.cleanup --force into discardUntracked/discardModified flags; add rm/archive CLI verbs and salvage writer
+- a63b4bc: Add worktree new verb, worktrees.root config, and provision provenance marker
+- ea44602: Add sessions story subcommand and expose runtime/session-story subpath export
+- 47d3251: Add `worktree gc` command: plan/apply/salvage cleanup sweep over linked worktrees
+
+### Patch Changes
+
+- bd57d69: Add @agentproto/adapter-pi: AIP-45 proprietary-arm adapter for earendil-works/pi
+- afbf5c4: Register claude-opus-4-8, claude-sonnet-5, claude-fable-5 in pricing catalog; decouple runnable from pricing presence
+- fe0d6f0: Fix sessions wait --until default timeout (15m) and timeout exit code (2)
+- 58e4a83: Distinguish idle-after-turn from never-run in sessions status badge and detail pane
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- 4f62f46: Fix worktree archive ENOENT by resolving the main repo root via --git-common-dir
+- 8a4d5d5: Add opt-in E2E encryption for the serve --connect tunnel (tunnel-e2e/v1)
+- d425044: Add catalog-sourced billing-credential resolver for all adapters
+- 2d94149: Fix gateway auth collision, adapter cache invalidation, and proxy model alias override
+- 3639abd: Default pair offer to the hosted rendezvous broker when nothing is configured
+- a32bb69: Bump test timeouts on subprocess/IO-heavy tests that flake under parallel load
+- 0839e5f: Fix gc salvaging dirty fresh worktrees; add recent-write hold window
+- Updated dependencies [1bdc055]
+- Updated dependencies [afbf5c4]
+- Updated dependencies [7b53b8c]
+- Updated dependencies [5ae8c13]
+- Updated dependencies [049c2fe]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [6d4aa4b]
+- Updated dependencies [386a573]
+- Updated dependencies [c036f59]
+- Updated dependencies [60792f1]
+- Updated dependencies [4f62f46]
+- Updated dependencies [76747fc]
+- Updated dependencies [6db7c6a]
+- Updated dependencies [8a4d5d5]
+- Updated dependencies [d425044]
+- Updated dependencies [2d94149]
+- Updated dependencies [d924e95]
+- Updated dependencies [20add88]
+- Updated dependencies [e44242d]
+- Updated dependencies [2bed7e6]
+- Updated dependencies [234b2e6]
+- Updated dependencies [3639abd]
+- Updated dependencies [3e99abf]
+- Updated dependencies [a63b4bc]
+- Updated dependencies [47d3251]
+- Updated dependencies [a32bb69]
+- Updated dependencies [0839e5f]
+- Updated dependencies [c8198c6]
+  - @agentproto/model-catalog@0.3.0
+  - @agentproto/acp@0.5.0
+  - @agentproto/auth@0.1.1
+  - @agentproto/driver-agent-cli@1.0.0
+  - @agentproto/driver@0.1.3
+  - @agentproto/provider-kit@0.2.1
+  - @agentproto/runtime-profile-standard@0.1.2
+  - @agentproto/secrets@0.2.0
+  - @agentproto/worktree@0.3.0
+  - @agentproto/adapter-browser@0.1.1
+  - @agentproto/rendezvous@0.2.0
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,8 +1,8 @@
 {
   "name": "agentproto-vscode",
   "displayName": "agentproto",
-  "description": "Live operational views for the agentproto daemon \u2014 sessions, permissions, cost \u2014 plus spawn/drive/stop from the editor.",
-  "version": "0.0.1",
+  "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
+  "version": "0.1.0",
   "publisher": "agentproto",
   "license": "Apache-2.0",
   "private": true,

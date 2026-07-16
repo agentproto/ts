@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/telemetry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "agentproto/telemetry — vendor-neutral Telemetry port + reference sinks (noop, stderr, array, compose) and an OpenTelemetry adapter that maps the kernel's TelemetryEvent stream to OTel spans grouped on cycleId. The adapter takes a host-supplied Tracer; no global provider or exporter wiring.",
   "keywords": [
     "agentproto",

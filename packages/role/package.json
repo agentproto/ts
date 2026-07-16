@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/role",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/role — AIP-47 ROLE.md reference implementation. A single-doc markdown + frontmatter format for portable organizational roles — mission, responsibilities, capabilities, tools, KPIs, seniority, reporting line, lifecycle hooks. Sibling to AIP-25 PERSONA (face) and AIP-23 IDENTITY (substance); referenced by AIP-9 OPERATOR (`role:` field) and AIP-6 COMPANY (`roles/<slug>/ROLE.md` doctype). Roles describe what a job is — independent of who holds it (persona/identity) and which instance is hired (operator).",
   "keywords": [
     "agentproto",

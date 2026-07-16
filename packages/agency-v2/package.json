@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agency-v2",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/agency-v2 — AIP-21 AGENCY.md reference implementation. A workspace-only successor to AIP-8 that drops the eleven hardcoded agency doctypes (service, engagement, agreement, deliverable, invoice, counterparty, procedure, pricing-model, routine, capacity, agency) and delegates all per-doctype schema work to AIP-18 collections — owning only the workspace root manifest, the engagement lifecycle helpers that span collections, scope axes, and cross-AIP composition with strong governance and work bindings.",
   "keywords": [
     "agentproto",

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/io",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/io — AIP-16 IO.md reference implementation. A composable schema block defining `inputs`, `outputs`, `inputsFiles`, and `outputsFiles` — the data-shape primitives reused by every manifest format that needs to declare what flows in and out of a runnable unit.",
   "keywords": [
     "agentproto",

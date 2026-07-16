@@ -1,5 +1,16 @@
 # @agentproto/eval-reporters
 
+## 0.2.1
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+  - @agentproto/eval@0.2.1
+  - @agentproto/provider-kit@0.2.1
+  - @agentproto/telemetry-langfuse@0.2.1
+  - @agentproto/telemetry@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
