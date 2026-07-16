@@ -65,11 +65,12 @@ export const xaiPack: ModelPack = {
 export const anthropicPack: ModelPack = {
   id: 'anthropic',
   label: 'Anthropic (direct)',
-  description: 'Real Claude models routed straight to api.anthropic.com using ANTHROPIC_API_KEY — no other provider in the path',
+  description: 'Claude models routed directly to api.anthropic.com via ANTHROPIC_API_KEY',
   models: {
     'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
     'claude-sonnet-5': { provider: 'anthropic', model: 'claude-sonnet-5' },
-    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5' },
+    // claude-fable-5 is an internal Anthropic codename; included for local dev/testing only.
     'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
   },
 };

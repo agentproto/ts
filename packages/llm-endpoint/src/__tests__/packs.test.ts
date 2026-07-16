@@ -9,6 +9,7 @@ import {
   defaultPack,
   xaiPack,
   openrouterPack,
+  anthropicPack,
   parseTransparentModel,
   type ModelPack,
 } from '../packs.js';
@@ -92,6 +93,10 @@ describe('resolvePack', () => {
     expect(resolvePack('openrouter')).toBe(openrouterPack);
   });
 
+  it('resolves the anthropic pack by ID', () => {
+    expect(resolvePack('anthropic')).toBe(anthropicPack);
+  });
+
   it('throws RangeError for an unknown pack ID (no silent fallback)', () => {
     expect(() => resolvePack('nonexistent-pack')).toThrow(RangeError);
     expect(() => resolvePack('nonexistent-pack')).toThrow(/Unknown pack id/);
@@ -110,6 +115,30 @@ describe('resolvePack', () => {
       expect(msg).toContain('default');
       expect(msg).toContain('xai');
       expect(msg).toContain('openrouter');
+    }
+  });
+});
+
+// ── anthropicPack ─────────────────────────────────────────────────────────
+
+describe('anthropicPack', () => {
+  it('has id "anthropic"', () => {
+    expect(anthropicPack.id).toBe('anthropic');
+  });
+
+  it('routes all keys to the anthropic provider', () => {
+    for (const [key, route] of Object.entries(anthropicPack.models)) {
+      expect(route.provider, `${key}.provider`).toBe('anthropic');
+    }
+  });
+
+  it('routes haiku key to the consistent model id (no datestamp divergence)', () => {
+    expect(anthropicPack.models['claude-haiku-4-5']?.model).toBe('claude-haiku-4-5');
+  });
+
+  it('key and model id match for every entry', () => {
+    for (const [key, route] of Object.entries(anthropicPack.models)) {
+      expect(route.model, `key "${key}" should match its routed model id`).toBe(key);
     }
   });
 });
@@ -180,6 +209,7 @@ describe('listPackIds', () => {
     expect(ids).toContain('default');
     expect(ids).toContain('xai');
     expect(ids).toContain('openrouter');
+    expect(ids).toContain('anthropic');
   });
 
   it('matches the keys of PACK_REGISTRY', () => {
