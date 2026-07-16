@@ -253,6 +253,11 @@
           "type": "boolean",
           "default": false,
           "description": "Spawn sessions in permission-hold mode: every tool-permission request is parked for your decision, listed in the Permissions view, and announced with an Approve/Deny notification. When off, the agent answers its own permission requests and there is nothing to approve. Override per spawn under Spawn Agent → Configure…"
+        },
+        "agentproto.confirmStop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before stopping a session. When off, Stop terminates the agent immediately with no prompt — its transcript stays readable and the post-stop notification offers Restart. Turn this off here, or from the confirmation dialog itself via \"Stop and don't ask again\"."
         }
       }
     }
