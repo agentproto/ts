@@ -1,7 +1,7 @@
 {
   "name": "agentproto-vscode",
   "displayName": "agentproto",
-  "description": "Live operational views for the agentproto daemon \u2014 sessions, permissions, cost \u2014 plus spawn/drive/kill from the editor.",
+  "description": "Live operational views for the agentproto daemon \u2014 sessions, permissions, cost \u2014 plus spawn/drive/stop from the editor.",
   "version": "0.0.1",
   "publisher": "agentproto",
   "license": "Apache-2.0",
@@ -95,9 +95,9 @@
       },
       {
         "command": "agentproto.killSession",
-        "title": "agentproto: Kill Session",
+        "title": "agentproto: Stop Session",
         "category": "agentproto",
-        "icon": "$(trash)"
+        "icon": "$(debug-stop)"
       },
       {
         "command": "agentproto.restartSession",

@@ -23,8 +23,8 @@
  *
  * The main worktree (`repoRoot` itself) is never part of the plan: `git
  * worktree list`'s first entry is always the main checkout, and a repo
- * sitting on an up-to-date default branch is trivially `merged(ancestry) ∧
- * clean` — exactly what `reclaim` looks for. Git itself refuses to remove
+ * sitting on an up-to-date default branch is trivially `fresh ∧ clean` —
+ * exactly what `reclaim` looks for. Git itself refuses to remove
  * the main working tree ("is a main working tree", verified empirically),
  * but this module doesn't lean on that as the only guard: the main worktree
  * is filtered out before classification even runs, so it can never appear
@@ -63,6 +63,8 @@ export interface ClassifyForGcOptions {
    * false.
    */
   includeDetached?: boolean
+  /** Threaded straight through to `classify`'s `RECENT_WRITE_HOLD_WINDOW_MS` guard. Defaults to `Date.now()`. */
+  nowMs?: number
 }
 
 /**
@@ -82,7 +84,7 @@ export function classifyForGc(
     const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
     if (tree.state === "clean" && idleOrUnreachable) return "reclaim"
   }
-  return classify(tree, integration, liveness).class
+  return classify(tree, integration, liveness, options.nowMs).class
 }
 
 // ── plan ─────────────────────────────────────────────────────────────
@@ -107,6 +109,8 @@ export interface PlanGcInput {
   sessionsPath?: string
   includeDetached?: boolean
   now?: () => string
+  /** See `ComputeWorktreeStatusInput.nowMs` (status.ts) — kept separate from `now`. Defaults to `Date.now()`. */
+  nowMs?: number
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
@@ -119,6 +123,7 @@ function toPlanEntry(
   worktree: GitWorktreeRef,
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
   includeDetached: boolean,
+  nowMs: number,
 ): GcPlanEntry {
   return {
     path: worktree.path,
@@ -127,7 +132,7 @@ function toPlanEntry(
     tree: status.tree,
     integration: status.integration,
     liveness: status.liveness,
-    class: classifyForGc(status.tree, status.integration, status.liveness, { includeDetached }),
+    class: classifyForGc(status.tree, status.integration, status.liveness, { includeDetached, nowMs }),
   }
 }
 
@@ -138,6 +143,8 @@ function toPlanEntry(
  */
 export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
   const includeDetached = Boolean(input.includeDetached)
+  // One frozen instant for the whole plan's recent-write checks.
+  const nowMs = input.nowMs ?? Date.now()
   const worktrees = await linkedWorktreesOf(input.repoRoot)
   const entries: GcPlanEntry[] = []
   for (const worktree of worktrees) {
@@ -151,7 +158,7 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       sessionsPath: input.sessionsPath,
       now: input.now,
     })
-    entries.push(toPlanEntry(worktree, status, includeDetached))
+    entries.push(toPlanEntry(worktree, status, includeDetached, nowMs))
   }
   return entries
 }
@@ -169,6 +176,8 @@ export interface ApplyGcOptions {
   /** Archive (salvage-then-remove) every salvage-class entry. Default false — salvage entries are left untouched. */
   salvageDirty?: boolean
   now?: () => string
+  /** See `ComputeWorktreeStatusInput.nowMs` (status.ts) — kept separate from `now`. Defaults to `Date.now()`. */
+  nowMs?: number
   /** Override for `~/.agentproto/worktree-salvage` — tests use a temp dir. */
   salvageRoot?: string
 }
@@ -201,8 +210,9 @@ async function reclaimOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
         cwd: worktree.path,
         ...(worktree.branch ? { branch: worktree.branch } : {}),
         // Branch deletion only ever runs for a `reclaim`-class entry, which by
-        // construction requires `integration = merged(*)` (PLAN.md's
-        // invariant: branch -D only for merged, never a hold class).
+        // construction requires `integration ∈ {merged(*), fresh}` and
+        // `tree = clean` (PLAN.md's invariant: branch -D only when there's
+        // nothing uncommitted to lose, never a hold class).
         deleteBranch: true,
         // No discardUntracked/discardModified, ever, on this path (PLAN.md
         // §5.2 layer 3): `reclaim` means `tree = clean`, so plain `git
@@ -304,6 +314,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   })
   const freshClass = classifyForGc(status.tree, status.integration, status.liveness, {
     includeDetached: Boolean(options.includeDetached),
+    nowMs: options.nowMs,
   })
   if (freshClass !== entry.class) {
     return {

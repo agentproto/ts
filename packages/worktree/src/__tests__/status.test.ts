@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execGit } from "../exec.js"
@@ -94,7 +94,25 @@ describe("computeTreeState", () => {
     await writeFile(join(repo, "new.txt"), "new\n") // untracked
     await writeFile(join(repo, "staged.txt"), "staged\n")
     await execGit(repo, ["add", "staged.txt"]) // staged
-    expect(await computeTreeState(repo)).toEqual({ state: "dirty", modified: 1, staged: 1, untracked: 1 })
+    const result = await computeTreeState(repo)
+    expect(result).toMatchObject({ state: "dirty", modified: 1, staged: 1, untracked: 1 })
+    expect(result.state === "dirty" && result.newestMtimeMs).toEqual(expect.any(Number))
+  })
+
+  it("newestMtimeMs reflects the actual on-disk write time of dirty paths, not the status read time", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await writeFile(join(repo, "old.txt"), "old\n") // untracked, backdated below
+    await writeFile(join(repo, "README.md"), "changed\n") // modified, unstaged, written just now
+
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000) // 1 hour ago
+    await utimes(join(repo, "old.txt"), longAgo, longAgo)
+
+    const result = await computeTreeState(repo)
+    if (result.state !== "dirty") throw new Error("expected dirty")
+    // The newest write wins (README.md, just now) even though old.txt (an
+    // hour old) is also part of the dirty set.
+    expect(result.newestMtimeMs).toBeGreaterThan(Date.now() - 10_000)
   })
 
   it("never reports gitignored files as dirty", async () => {
@@ -115,7 +133,7 @@ describe("reconcileIntegration (PLAN.md §1.3)", () => {
     while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
   })
 
-  it("step 1: merged(ancestry) when the tip is contained in the default branch — never calls the forge", async () => {
+  it("step 1: fresh when the tip is contained in the default branch — never calls the forge", async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)
     await execGit(repo, ["checkout", "-b", "feat/ff"])
@@ -137,7 +155,31 @@ describe("reconcileIntegration (PLAN.md §1.3)", () => {
       defaultBranchRef: "main",
       now: FROZEN_NOW,
     })
-    expect(result).toEqual({ state: "merged", via: "ancestry", checkedAt: FROZEN_NOW() })
+    // Not "merged": a fast-forward merge moves the ref with no new commit
+    // object, so this is git-graph-identical to a branch that never had any
+    // commits of its own (`worktree new`'s exact starting shape) — see the
+    // `fresh` doc on `reconcileIntegration`'s step 1.
+    expect(result).toEqual({ state: "fresh", checkedAt: FROZEN_NOW() })
+  })
+
+  it("step 1: fresh for a branch with literally zero commits of its own — the 2026-07-15 incident's exact shape", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "wt/fresh"])
+    const tip = await headSha(repo) // identical to main's tip — nothing was ever committed on this branch
+
+    const forge: ForgeClient = new UnreachableForgeClient("must not be called")
+    const result = await reconcileIntegration({
+      repoRoot: repo,
+      repoName: "test-repo",
+      branch: "wt/fresh",
+      tipSha: tip,
+      forge,
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(result).toEqual({ state: "fresh", checkedAt: FROZEN_NOW() })
   })
 
   it("step 2: merged(squash) when the forge's merged PR head contains the local tip", async () => {
@@ -448,31 +490,62 @@ describe("reconcileIntegration (PLAN.md §1.3)", () => {
 
 describe("classify (PLAN.md §1.2)", () => {
   const CLEAN = { state: "clean" as const }
-  const DIRTY = { state: "dirty" as const, modified: 1, staged: 0, untracked: 0 }
+  const DIRTY = { state: "dirty" as const, modified: 1, staged: 0, untracked: 0, newestMtimeMs: null }
   const IDLE = { state: "idle" as const, sessions: [] as never[], services: [] as never[] }
   const DAEMON_UNREACHABLE = { state: "daemon-unreachable" as const, sessions: [] as never[], services: [] as never[] }
   const LIVE = { state: "sessions" as const, sessions: [{ id: "s1", startedAt: "t", status: "running" }], services: [] as never[] }
-  const MERGED_ANCESTRY: IntegrationState = { state: "merged", via: "ancestry", checkedAt: "t" }
+  const MERGED_SQUASH: IntegrationState = { state: "merged", via: "squash", pr: 1, checkedAt: "t", offline: false }
+  const FRESH: IntegrationState = { state: "fresh", checkedAt: "t" }
   const OPEN: IntegrationState = { state: "open", pr: 1, checkedAt: "t", offline: false }
+  const NOW_MS = 2_000_000_000_000
 
   it("merged + clean + idle => reclaim", () => {
-    expect(classify(CLEAN, MERGED_ANCESTRY, IDLE)).toEqual({ reclaimable: true, class: "reclaim" })
+    expect(classify(CLEAN, MERGED_SQUASH, IDLE)).toEqual({ reclaimable: true, class: "reclaim" })
   })
 
   it("merged + clean + daemon-unreachable => still reclaim (git's own refusal is the safety net)", () => {
-    expect(classify(CLEAN, MERGED_ANCESTRY, DAEMON_UNREACHABLE)).toEqual({ reclaimable: true, class: "reclaim" })
+    expect(classify(CLEAN, MERGED_SQUASH, DAEMON_UNREACHABLE)).toEqual({ reclaimable: true, class: "reclaim" })
   })
 
   it("merged + clean + a live session => hold, not reclaim", () => {
-    expect(classify(CLEAN, MERGED_ANCESTRY, LIVE)).toEqual({ reclaimable: false, class: "hold" })
+    expect(classify(CLEAN, MERGED_SQUASH, LIVE)).toEqual({ reclaimable: false, class: "hold" })
   })
 
-  it("merged + dirty => salvage", () => {
-    expect(classify(DIRTY, MERGED_ANCESTRY, IDLE)).toEqual({ reclaimable: false, class: "salvage" })
+  it("merged + dirty, no recent-write signal => salvage (the 12-worktrees-tonight case)", () => {
+    expect(classify(DIRTY, MERGED_SQUASH, IDLE)).toEqual({ reclaimable: false, class: "salvage" })
+  })
+
+  it("merged + dirty, written inside the hold window => hold, not salvage", () => {
+    const justWritten = { ...DIRTY, newestMtimeMs: NOW_MS - 60_000 } // 1 minute ago
+    expect(classify(justWritten, MERGED_SQUASH, IDLE, NOW_MS)).toEqual({ reclaimable: false, class: "hold" })
+  })
+
+  it("merged + dirty, written well outside the hold window => still salvage", () => {
+    const longAgo = { ...DIRTY, newestMtimeMs: NOW_MS - 60 * 60_000 } // 1 hour ago
+    expect(classify(longAgo, MERGED_SQUASH, IDLE, NOW_MS)).toEqual({ reclaimable: false, class: "salvage" })
   })
 
   it("open PR, even clean+idle => hold", () => {
     expect(classify(CLEAN, OPEN, IDLE)).toEqual({ reclaimable: false, class: "hold" })
+  })
+
+  // ── fresh: no commits of its own — never enough evidence to destroy dirty work ──
+
+  it("fresh + clean + idle => reclaim (nothing uncommitted to lose)", () => {
+    expect(classify(CLEAN, FRESH, IDLE)).toEqual({ reclaimable: true, class: "reclaim" })
+  })
+
+  it("fresh + clean + a live session => hold, not reclaim", () => {
+    expect(classify(CLEAN, FRESH, LIVE)).toEqual({ reclaimable: false, class: "hold" })
+  })
+
+  it("fresh + dirty => hold, never salvage — the 2026-07-15 incident", () => {
+    expect(classify(DIRTY, FRESH, IDLE)).toEqual({ reclaimable: false, class: "hold" })
+  })
+
+  it("fresh + dirty stays hold even long after any write — ancestry alone never licenses salvage", () => {
+    const longAgo = { ...DIRTY, newestMtimeMs: NOW_MS - 60 * 60_000 }
+    expect(classify(longAgo, FRESH, IDLE, NOW_MS)).toEqual({ reclaimable: false, class: "hold" })
   })
 })
 
@@ -514,7 +587,10 @@ describe("listGitWorktrees + computeWorktreeStatus orchestration", () => {
       now: FROZEN_NOW,
     })
     expect(status.tree).toEqual({ state: "clean" })
-    expect(status.integration).toEqual({ state: "merged", via: "ancestry", checkedAt: FROZEN_NOW() })
+    // "feat/linked" was branched from main with zero commits of its own —
+    // `fresh`, not `merged`. Still reclaim: a clean tree has nothing
+    // uncommitted to lose either way.
+    expect(status.integration).toEqual({ state: "fresh", checkedAt: FROZEN_NOW() })
     expect(status.liveness).toEqual({ state: "idle", sessions: [], services: [] })
     expect(status.provenance).toEqual({ confidence: "best-effort", sessions: [] })
     expect(status.gate).toEqual({ state: "none" })
