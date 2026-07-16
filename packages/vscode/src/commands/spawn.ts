@@ -1,14 +1,19 @@
 /**
- * agentproto.spawnAgent — one quick-pick flattening adapter+model into
- * "slug · model" rows. The default cwd (active editor's folder → sole
- * folder → ambiguous folder pick → none, see resolveDefaultCwd) and its
- * matching daemon workspace slug are resolved up front and shown in the
- * picker's placeHolder, then sent explicitly on spawn rather than left to
- * the daemon's own inference — autodetection must be visible, never silent.
- * A trailing "$(gear) Configure…" row opens the full adapter → model → mode
- * → cwd → label → prompt chain, unchanged, for anyone overriding a default.
- * Escape at any step aborts the whole wizard; an empty input box in the
- * Configure chain means "use the adapter default" and continues.
+ * agentproto.spawnAgent — one quick-pick grouping every adapter's declared
+ * models under a provider heading (see mapSpawnQuickPickItems), so picking
+ * a row is enough to spawn — mode/cwd/label/prompt all default. Picking a
+ * gateway model (e.g. claude-sdk's kimi-k2.7-code) applies its bound mode
+ * automatically, since a gateway id spawned in the adapter's default mode
+ * routes to the wrong provider (moonshot's model id sent straight to
+ * native Anthropic). The default cwd (active editor's folder → sole folder
+ * → ambiguous folder pick → none, see resolveDefaultCwd) and its matching
+ * daemon workspace slug are resolved up front and shown in the picker's
+ * placeHolder, then sent explicitly on spawn rather than left to the
+ * daemon's own inference — autodetection must be visible, never silent. A
+ * trailing "$(gear) Configure…" row opens the full adapter → provider →
+ * model → mode → cwd → label → prompt chain for anyone overriding a
+ * default. Escape at any step aborts the whole wizard; an empty input box
+ * in the Configure chain means "use the adapter default" and continues.
  */
 
 import * as vscode from "vscode"
@@ -27,7 +32,9 @@ import {
   mapModelQuickPickItems,
   mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
+  mapProviderQuickPickItems,
   mapSpawnQuickPickItems,
+  modelEntriesOf,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
@@ -101,6 +108,14 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
       if (custom) answers.model = custom
     } else if (picked.model) {
       answers.model = picked.model
+      // The bug this collapsed picker used to ship: a gateway model (e.g.
+      // claude-sdk's kimi-k2.7-code) has no effect without its bound mode
+      // — omitting this sends the id in the adapter's default mode, i.e.
+      // straight to native Anthropic, never to Moonshot. `picked.mode`
+      // carries the manifest's models.allowed[].mode binding for exactly
+      // this row; absent for a native/unbound model, so this never forces
+      // a mode where none was declared.
+      if (picked.mode) answers.mode = picked.mode
     }
     if (defaultCwd) answers.cwd = defaultCwd
   } else {
@@ -162,7 +177,18 @@ async function resolveWizardDefaultCwd(): Promise<string | undefined> {
   return picked?.folder.uri.fsPath
 }
 
-/** The full chain: adapter → model → mode → orchestrator → permissions → cwd → label → prompt, reached only via the Configure… row. */
+/**
+ * The full chain: adapter → provider → model → mode → orchestrator →
+ * permissions → cwd → label → prompt, reached only via the Configure… row.
+ * Provider narrows the model list (an adapter with no declared models
+ * skips straight to the model step's custom-only list, same as today).
+ * The mode step only runs when the picked model carries no bound mode —
+ * AIP-45 modes are mutually exclusive per turn, so a gateway model's bound
+ * mode (moonshot/openrouter/…) already IS the mode; asking again would
+ * only offer to override it with an incompatible one. A model with no
+ * binding (native, custom-typed, or an adapter with no models at all)
+ * still gets the free choice of any declared mode, unchanged.
+ */
 async function runConfigureWizard(
   adapters: SpawnAdapterInfo[],
   defaultCwd: string,
@@ -175,10 +201,20 @@ async function runConfigureWizard(
 
   const answers: SpawnWizardAnswers = { adapter: adapterPick.adapter.slug }
 
-  const modelPick = await vscode.window.showQuickPick(
-    mapModelQuickPickItems(adapterPick.adapter.models ?? []),
-    { placeHolder: "Select a model (Escape for adapter default)" },
-  )
+  const entries = modelEntriesOf(adapterPick.adapter)
+  let boundMode: string | undefined
+  let modelIds = entries.map((e) => e.id)
+  if (entries.length > 0) {
+    const providerPick = await vscode.window.showQuickPick(mapProviderQuickPickItems(adapterPick.adapter), {
+      placeHolder: "Select a provider",
+    })
+    if (!providerPick) return undefined
+    modelIds = entries.filter((e) => e.provider === providerPick.provider).map((e) => e.id)
+  }
+
+  const modelPick = await vscode.window.showQuickPick(mapModelQuickPickItems(modelIds), {
+    placeHolder: "Select a model (Escape for adapter default)",
+  })
   if (!modelPick) return undefined
   if (modelPick.custom) {
     const custom = await vscode.window.showInputBox({
@@ -188,13 +224,18 @@ async function runConfigureWizard(
     if (custom) answers.model = custom
   } else if (modelPick.label !== CUSTOM_MODEL_LABEL) {
     answers.model = modelPick.label
+    boundMode = entries.find((e) => e.id === modelPick.label)?.mode
   }
 
-  const modeItems = mapModeQuickPickItems(adapterPick.adapter.modes)
-  if (modeItems.length > 0) {
-    const modePick = await vscode.window.showQuickPick(modeItems, { placeHolder: "Select a mode" })
-    if (!modePick) return undefined
-    answers.mode = modePick.mode
+  if (boundMode) {
+    answers.mode = boundMode
+  } else {
+    const modeItems = mapModeQuickPickItems(adapterPick.adapter.modes)
+    if (modeItems.length > 0) {
+      const modePick = await vscode.window.showQuickPick(modeItems, { placeHolder: "Select a mode" })
+      if (!modePick) return undefined
+      answers.mode = modePick.mode
+    }
   }
 
   // Asked before permissions: this decides what the session IS (does it

@@ -47,4 +47,28 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1" })).toBe(false)
     expect(isWebviewMessage({ type: "openToolIo", field: "input" })).toBe(false)
   })
+
+  it("accepts attachImage carrying real bytes (ArrayBuffer or a view)", () => {
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: "image/png" })).toBe(true)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new Uint8Array([1, 2]), mime: "image/jpeg" })).toBe(true)
+  })
+
+  it("rejects attachImage whose bytes are base64 text — the exact thing that must not pass as bytes", () => {
+    expect(isWebviewMessage({ type: "attachImage", bytes: "iVBORw0KGgo=", mime: "image/png" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: [1, 2, 3], mime: "image/png" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4) })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: 5 })).toBe(false)
+  })
+
+  it("accepts attachFile only with bytes, mime AND a name", () => {
+    expect(isWebviewMessage({ type: "attachFile", bytes: new Uint8Array([1]), mime: "application/pdf", name: "x.pdf" })).toBe(true)
+    expect(isWebviewMessage({ type: "attachFile", bytes: new Uint8Array([1]), mime: "application/pdf" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachFile", bytes: "nope", mime: "application/pdf", name: "x.pdf" })).toBe(false)
+  })
+
+  it("accepts requestMentions with a string query (empty is valid — the initial list)", () => {
+    expect(isWebviewMessage({ type: "requestMentions", query: "" })).toBe(true)
+    expect(isWebviewMessage({ type: "requestMentions", query: "src/" })).toBe(true)
+    expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
+  })
 })

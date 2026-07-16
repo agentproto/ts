@@ -24,6 +24,13 @@ import type { SessionStore } from "../services/sessionStore.js"
 import { registerOutputDocuments, type OutputDocuments } from "../services/outputDocument.js"
 import { activityFor, TREE_REPAINT_INTERVAL_MS, type SessionActivity } from "../views/sessionsTree.logic.js"
 import { TAB_ICON_DIR, tabIconFor } from "./tabIcon.logic.js"
+import {
+  ATTACHMENT_COUNT_CAP,
+  MAX_ATTACHMENT_BYTES,
+  WARN_ATTACHMENT_BYTES,
+  parseUriList,
+} from "./attachments.logic.js"
+import { mentionQueryAt } from "./mentions.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -223,6 +230,15 @@ async function handleWebviewMessage(
     case "interruptSend":
       await controller.onSend(msg.text, true)
       return
+    case "attachImage":
+      await controller.onAttachImage(msg.bytes, msg.mime)
+      return
+    case "attachFile":
+      await controller.onAttachFile(msg.bytes, msg.mime, msg.name)
+      return
+    case "requestMentions":
+      await controller.onRequestMentions(msg.query)
+      return
     case "openToolIo": {
       const doc = controller.resolveToolIo(msg.segmentId, msg.field)
       if (!doc) {
@@ -257,6 +273,15 @@ export function buildHtml(nonce: string): string {
     `script-src 'nonce-${nonce}'`,
   ].join("; ")
 
+  // Two pure helpers must run INSIDE the webview (caret detection for @mentions,
+  // uri-list parsing for drops). The webview script is a string with no import
+  // mechanism, so rather than hand-copy them — and risk a copy that silently
+  // drifts from the tested source — we inject them BY VALUE from the very
+  // functions the logic-module unit tests pin. Safe because both are
+  // self-contained (no module-scope references) and the build isn't minified,
+  // so `.toString()` yields a clean, named, hoistable declaration.
+  const injectedHelpers = [mentionQueryAt, parseUriList].map(fn => fn.toString()).join("\n      ")
+
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -283,52 +308,73 @@ export function buildHtml(nonce: string): string {
       display: flex;
       flex-direction: column;
     }
+    /* One row: the conversation's name on the left, two detail buttons on
+       the right. Everything this used to carry (status chip, blocked-on
+       chip, token totals) either repeats the tab icon or is a number you
+       consult in a popover, not one you monitor in a strip. */
     #header {
       flex: 0 0 auto;
-      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 14px;
       border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, rgba(128,128,128,0.3)));
       background-color: var(--vscode-sideBar-background);
     }
     #header-title {
       font-weight: 600;
       font-size: 1.1em;
-      margin-bottom: 4px;
       color: var(--vscode-sideBarTitle-foreground);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    #header-meta {
+    #header-actions {
+      flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      font-size: 0.9em;
-      color: var(--vscode-descriptionForeground);
+      gap: 4px;
     }
-    .chip {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 10px;
+    .header-action { position: relative; }
+    .header-btn { font-size: 0.85em; }
+    .header-btn:empty { display: none; }
+    /* A webview has no VS Code popover API — this is our own
+       absolutely-positioned element, anchored to its button so it never
+       reflows the transcript underneath it. */
+    .popover {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      z-index: 30;
+      min-width: 200px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.3)));
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       font-size: 0.85em;
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
     }
-    .chip-running { background: var(--vscode-testing-iconPassed); color: var(--vscode-editor-background); }
-    /* chip-busy kept for any descriptor path still reporting it; working/
-       waiting/stalled are what computeStatusChip actually emits now. */
-    .chip-busy, .chip-working { background: var(--vscode-progressBar-background); color: var(--vscode-editor-background); }
-    .chip-waiting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
-    .chip-stalled { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    .chip-awaiting-input { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    /* Terminal states — see computeStatusChip. "done" reuses the running
-       (pass) color: a clean exit or a reap-after-finish is not a problem.
-       "stopped" is neutral, not alarming: SIGTERM is how stopping works.
-       Only "failed" gets the failure color. */
-    .chip-done { background: var(--vscode-testing-iconPassed); color: var(--vscode-editor-background); }
-    .chip-stopped { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
-    .chip-failed { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
-    .chip-starting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
-    .chip-blocked { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    #header-blocked:empty { display: none; }
+    .popover[hidden] { display: none; }
+    .popover-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 2px 0;
+    }
+    .popover-label { color: var(--vscode-descriptionForeground); }
+    /* Delayed and low-key on purpose — see BLOCKED_NOTE_DELAY_MS in the
+       script. Sits in the conversation body, next to the tool call it
+       describes, not the header: the tab icon already carries the states
+       that deserve a permanent glyph. */
+    #blocked-note {
+      flex: 0 0 auto;
+      padding: 4px 14px 0;
+      font-size: 0.85em;
+      color: var(--vscode-editorWarning-foreground);
+    }
+    #blocked-note[hidden] { display: none; }
     #transcript {
       flex: 1 1 auto;
       overflow-y: auto;
@@ -653,6 +699,7 @@ export function buildHtml(nonce: string): string {
     }
     #queued-cancel { flex: 0 0 auto; }
     #composer {
+      position: relative;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -663,6 +710,82 @@ export function buildHtml(nonce: string): string {
     }
     #composer:focus-within { border-color: var(--vscode-focusBorder); }
     #composer.disabled { opacity: 0.6; }
+    /* Drop affordance: the composer is the drop target, so it lights up while a
+       file is dragged over the panel. */
+    #composer.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
+    /* ── Attachment chips ─────────────────────────────────────────────
+       A pasted/dragged/mentioned path becomes a removable chip here, not
+       raw text in the box — the path still rides along in the sent prompt
+       (composePrompt appends it), this is just the editable pre-send view. */
+    #composer-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #composer-attachments[hidden] { display: none; }
+    .attach-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 260px;
+      padding: 2px 4px 2px 8px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border-radius: 10px;
+      background: var(--vscode-badge-background, rgba(128,128,128,0.18));
+      color: var(--vscode-badge-foreground, var(--vscode-editor-foreground));
+      font-size: 0.85em;
+    }
+    .attach-chip-label {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attach-chip-remove {
+      flex: 0 0 auto;
+      cursor: pointer;
+      opacity: 0.6;
+      padding: 0 3px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .attach-chip-remove:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.25)); }
+    /* ── @mention popup ───────────────────────────────────────────────
+       Floats above the composer; the webview renders it itself (a VS Code
+       CompletionProvider isn't available inside a webview). */
+    #mention-popup {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: calc(100% + 4px);
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 5;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      background: var(--vscode-editorSuggestWidget-background, var(--vscode-input-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    #mention-popup[hidden] { display: none; }
+    .mention-item {
+      padding: 4px 10px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.9em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+    }
+    .mention-item.active,
+    .mention-item:hover {
+      background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground));
+      color: var(--vscode-list-activeSelectionForeground, var(--vscode-editor-foreground));
+    }
+    .mention-empty {
+      padding: 4px 10px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
     #input {
       width: 100%;
       resize: none;
@@ -755,14 +878,28 @@ export function buildHtml(nonce: string): string {
 <body>
   <div id="header">
     <div id="header-title"></div>
-    <div id="header-meta">
-      <span id="status-chip" class="chip chip-starting"></span>
-      <span id="header-blocked" class="chip chip-blocked"></span>
-      <span id="cost"></span>
-      <span id="conv-usage"></span>
+    <div id="header-actions">
+      <div class="header-action">
+        <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="cost-popover" class="popover" hidden>
+          <div class="popover-row"><span class="popover-label">Tokens in</span><span id="popover-tokens-in"></span></div>
+          <div class="popover-row"><span class="popover-label">Tokens out</span><span id="popover-tokens-out"></span></div>
+          <div class="popover-row"><span class="popover-label">Model</span><span id="popover-model"></span></div>
+          <div class="popover-row"><span class="popover-label">Harness</span><span id="popover-harness"></span></div>
+          <div class="popover-row"><span class="popover-label">Auth</span><span id="popover-auth"></span></div>
+        </div>
+      </div>
+      <div class="header-action">
+        <button id="context-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="context-popover" class="popover" hidden>
+          <div class="popover-row"><span class="popover-label">Used</span><span id="popover-context-used"></span></div>
+          <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
+        </div>
+      </div>
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="blocked-note" hidden></div>
   <div id="working" hidden>
     <span id="working-glyph">✳</span>
     <span id="working-text"></span>
@@ -782,7 +919,9 @@ export function buildHtml(nonce: string): string {
       <button id="queued-cancel" title="Discard the queued message">✕</button>
     </div>
     <div id="composer">
-      <textarea id="input" rows="1" placeholder="Reply to the agent…"></textarea>
+      <div id="mention-popup" hidden></div>
+      <div id="composer-attachments" hidden></div>
+      <textarea id="input" rows="1" placeholder="Reply to the agent… (paste, drop, or @-mention a file)"></textarea>
       <div id="composer-bar">
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip"></span>
@@ -802,12 +941,28 @@ export function buildHtml(nonce: string): string {
       // performs the clamp — the two can never disagree about how many lines
       // are on screen, so "N more" is always arithmetic the user can trust.
       const MAX_IO_LINES = ${TOOL_IO_MAX_LINES};
+      // Attachment caps — interpolated from attachments.logic.ts so the webview
+      // and the host can never disagree about the limits (same reasoning as
+      // MAX_IO_LINES above).
+      const MAX_ATTACHMENT_BYTES = ${MAX_ATTACHMENT_BYTES};
+      const WARN_ATTACHMENT_BYTES = ${WARN_ATTACHMENT_BYTES};
+      const ATTACHMENT_COUNT_CAP = ${ATTACHMENT_COUNT_CAP};
+      // Injected by value from the tested logic modules — see buildHtml.
+      ${injectedHelpers}
       const headerTitle = document.getElementById('header-title');
-      const statusChip = document.getElementById('status-chip');
-      const headerBlocked = document.getElementById('header-blocked');
-      const costEl = document.getElementById('cost');
+      const costBtn = document.getElementById('cost-btn');
+      const costPopover = document.getElementById('cost-popover');
+      const popoverTokensIn = document.getElementById('popover-tokens-in');
+      const popoverTokensOut = document.getElementById('popover-tokens-out');
+      const popoverModel = document.getElementById('popover-model');
+      const popoverHarness = document.getElementById('popover-harness');
+      const popoverAuth = document.getElementById('popover-auth');
+      const contextBtn = document.getElementById('context-btn');
+      const contextPopover = document.getElementById('context-popover');
+      const popoverContextUsed = document.getElementById('popover-context-used');
+      const popoverContextSize = document.getElementById('popover-context-size');
+      const blockedNote = document.getElementById('blocked-note');
       const transcript = document.getElementById('transcript');
-      const convUsage = document.getElementById('conv-usage');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
@@ -825,13 +980,23 @@ export function buildHtml(nonce: string): string {
       const queuedRow = document.getElementById('queued');
       const queuedLabel = document.getElementById('queued-label');
       const queuedCancel = document.getElementById('queued-cancel');
+      const attachmentsRow = document.getElementById('composer-attachments');
+      const mentionPopup = document.getElementById('mention-popup');
 
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
       // this panel must not disagree about whether a session is stalled.
       const STALL_AFTER_MS = 10 * 60 * 1000;
+      // A different, much shorter signal — not a replacement for the stall
+      // check above. Almost every blocked-on-tool note clears in a second or
+      // two, so showing it instantly just flashes; only a block that outlasts
+      // this delay is worth a note in the conversation body.
+      const BLOCKED_NOTE_DELAY_MS = 20 * 1000;
 
       let exited = false;
       let busy = false;
+      /** Wall-clock ms when the current turn's blockedOn note started being
+       *  true (0 when not currently blocked) — see refreshBlockedNote. */
+      let blockedSince = 0;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
@@ -844,6 +1009,14 @@ export function buildHtml(nonce: string): string {
        * ends — or immediately, if they choose to interrupt.
        */
       let queuedText = null;
+      // Pending attachments: { path, label }. Their paths are appended to the
+      // prompt by composePrompt() at send time, so the queue keeps storing a
+      // plain string and nothing here has to survive a mid-turn queue.
+      let attachments = [];
+      // Active @mention: { start, end, query, items, active } or null. start/end
+      // bracket the @token in the textarea so a selection replaces exactly it;
+      // active is the index of the highlighted item.
+      let mention = null;
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
@@ -867,7 +1040,8 @@ export function buildHtml(nonce: string): string {
       // dead session, no killing an already-dead one, no interrupting an agent
       // that isn't working.
       function refreshComposer() {
-        const hasText = Boolean(input.value.trim());
+        // An attachment alone is sendable — "here, look at this" with no words.
+        const hasText = Boolean(input.value.trim()) || attachments.length > 0;
         const live = !exited && !isSending;
         input.disabled = !live;
         sendBtn.disabled = !live || !hasText;
@@ -914,8 +1088,18 @@ export function buildHtml(nonce: string): string {
         refreshComposer();
       }
 
-      // "Working…" plus how long and how much — the three things a user
-      // waiting on a reply actually wants, without expanding anything.
+      // "busy" said nothing: it covered an agent writing a reply and an agent
+      // wedged for 20h alike. working/waiting/stalled differ in what the user
+      // should DO, so they get three words — this is the only remaining
+      // renderer of that vocabulary now that the header's status chip is gone:
+      //   working — generating right now. Wait.
+      //   waiting — mid-turn but parked on a background command/sub-agent
+      //             (blockedOn). It is not the model that is slow.
+      //   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
+      //             coming; the agent stopped emitting without a turn-end and
+      //             the daemon is still awaiting a turn that will never end.
+      // Plus how long and how much — the three things a user waiting on a
+      // reply actually wants, without expanding anything.
       function refreshWorking() {
         working.hidden = !busy;
         if (!busy) return;
@@ -953,6 +1137,7 @@ export function buildHtml(nonce: string): string {
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
         refreshComposer();
         refreshWorking();
+        refreshBlockedNote();
         // The turn just ended — the daemon will accept a prompt again, so hand
         // over whatever was typed during it. This is the whole point of the
         // queue: the user types when they think of it, not when the agent is ready.
@@ -991,53 +1176,50 @@ export function buildHtml(nonce: string): string {
         return Math.floor(hours / 24) + 'd';
       }
 
-      /**
-       * "busy" said nothing: it covered an agent writing a reply and an agent
-       * wedged for 20h alike. The three states differ in what the user should
-       * DO, so they get three words:
-       *   working — generating right now. Wait.
-       *   waiting — mid-turn but parked on a background command/sub-agent
-       *             (blockedOn). It is not the model that is slow.
-       *   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
-       *             coming; the agent stopped emitting without a turn-end and
-       *             the daemon is still awaiting a turn that will never end.
-       *
-       * Terminal sessions used to collapse to a bare 'exited' here — wrong
-       * independently of everything else, since a killed session did not
-       * exit. Mirrors killedActivityFor in views/sessionsTree.logic.ts (the
-       * one vocabulary the tree, the status bar, and this chip all render):
-       * 'killed' alone can't tell a human's Stop mid-turn apart from a
-       * supervisor reaping a child that had already finished — both leave
-       * exitCode null. killedMidTurn, captured by the daemon at the
-       * instant kill() ran (before busy can go stale), is what tells them
-       * apart; turnsCompleted alone would call a mid-SECOND-turn stop
-       * "done" just as wrongly as reading stale busy would.
-       */
-      function isErrored(session) {
-        return session.status === 'error' || (typeof session.exitCode === 'number' && session.exitCode > 0);
-      }
-      function killedChip(session) {
-        const finishedBeforeKill = session.killedMidTurn !== true &&
-          typeof session.turnsCompleted === 'number' && session.turnsCompleted > 0;
-        return finishedBeforeKill ? 'done' : 'stopped';
-      }
-      function computeStatusChip(session, now) {
-        if (isTerminal(session)) {
-          if (session.status === 'killed') return killedChip(session);
-          return isErrored(session) ? 'failed' : 'done';
+      // blockedOn describes an IN-FLIGHT turn, so only claim it while the
+      // session is actually taking one. A session killed mid-tool-call keeps
+      // a stale blockedOn/busy forever (the daemon clears them in the turn's
+      // finally, which never runs for a generator that is never resumed), and
+      // rendering that verbatim told the user a dead session was blocked on a
+      // command. isTerminal already governs busy/exited elsewhere — this must
+      // not contradict it.
+      function refreshBlockedNote() {
+        const session = lastSession;
+        const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
+        if (!live) {
+          blockedSince = 0;
+          blockedNote.hidden = true;
+          blockedNote.textContent = '';
+          return;
         }
-        if (session.awaitingInput) return 'awaiting-input';
-        if (session.busy) {
-          const silent = silentForMs(session, now);
-          if (silent !== undefined && silent > STALL_AFTER_MS) return 'stalled';
-          return session.blockedOn ? 'waiting' : 'working';
+        if (!blockedSince) blockedSince = Date.now();
+        // Almost every block clears in a second or two — showing it instantly
+        // just flashes and means nothing. Only a block that outlasts the
+        // delay is worth a note, and it clears the instant live goes false.
+        if (Date.now() - blockedSince < BLOCKED_NOTE_DELAY_MS) {
+          blockedNote.hidden = true;
+          blockedNote.textContent = '';
+          return;
         }
-        if (session.status === 'running') return 'running';
-        return session.status || 'starting';
+        blockedNote.hidden = false;
+        blockedNote.textContent = 'blocked on ' + session.blockedOn +
+          (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '');
+      }
+
+      function renderCostPopover(session) {
+        popoverTokensIn.textContent = typeof session.tokensIn === 'number' ? String(session.tokensIn) : '—';
+        popoverTokensOut.textContent = typeof session.tokensOut === 'number' ? String(session.tokensOut) : '—';
+        popoverModel.textContent = session.model || '—';
+        popoverHarness.textContent = session.adapterSlug || '—';
+        popoverAuth.textContent = session.auth ? session.auth.mode : '—';
       }
 
       function updateHeader(session) {
-        headerTitle.textContent = session.label || session.id || '';
+        // Mirrors formatTitle in transcript.logic.ts — this inline script has
+        // no module system to import it from, so the fallback order (label,
+        // then the derived title, then id) is duplicated here and the two
+        // must stay in sync.
+        headerTitle.textContent = session.label ?? session.title ?? session.id ?? '';
         // What will answer, shown where you type to it — the header no longer
         // repeats any of it. Each chip is omitted when the daemon doesn't
         // report the field (CSS :empty), rather than rendering "undefined".
@@ -1045,30 +1227,14 @@ export function buildHtml(nonce: string): string {
         composerModel.textContent = session.model || '';
         composerAuth.textContent = session.auth ? session.auth.mode : '';
 
-        const chip = computeStatusChip(session, Date.now());
-        statusChip.textContent = chip;
-        statusChip.className = 'chip chip-' + chip;
-
-        // blockedOn describes an IN-FLIGHT turn, so only claim it while the
-        // session is actually taking one. A session killed mid-tool-call keeps
-        // a stale blockedOn/busy forever (the daemon clears them in the turn's
-        // finally, which never runs for a generator that is never resumed), and
-        // rendering that verbatim told the user a dead session was blocked on a
-        // command. The chip already reads "exited" in that state — the two must
-        // not contradict each other.
-        const live = !isTerminal(session) && Boolean(session.busy);
-        headerBlocked.textContent = live && session.blockedOn
-          ? 'blocked on ' + session.blockedOn + (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '')
-          : '';
-
-        // Cost only. The token counts used to render HERE and again in
-        // #conv-usage — the same two numbers, twice in one header — and
-        // neither instance was actionable: raw in/out isn't comparable across
-        // sessions and isn't a budget. Cost and ctx% are the numbers with a
-        // decision attached; the totals stay in the tree tooltip.
-        costEl.textContent = typeof session.costUsd === 'number'
+        // Cost only, on the button — the full in/out breakdown plus what
+        // decides the rate (model/harness/auth) lives one click away, in the
+        // popover, rather than crowding the header with numbers nobody acts
+        // on at a glance.
+        costBtn.textContent = typeof session.costUsd === 'number'
           ? '$' + session.costUsd.toFixed(4)
           : '—';
+        renderCostPopover(session);
       }
 
       function appendLines(lines) {
@@ -1307,6 +1473,9 @@ export function buildHtml(nonce: string): string {
         // The working row's elapsed must keep moving on a quiet poll too — a
         // frozen counter is exactly what "is it stuck?" looks like.
         refreshWorking();
+        // The blocked note's delay must elapse on a quiet poll too — nothing
+        // else re-renders it while the session sits unchanged mid-block.
+        refreshBlockedNote();
       }, 1000);
 
       // Marks runs of consecutive tool segments so CSS can merge them into
@@ -1423,20 +1592,19 @@ export function buildHtml(nonce: string): string {
       }
 
       function renderUsage(usage) {
-        if (!usage) { convUsage.textContent = ''; convUsage.title = ''; return; }
-        const parts = [];
         // Context fill only — "ctx 206115/1000000" was two numbers the reader
         // had to divide, and the in/out totals that used to trail it merely
-        // repeated what the cost element already showed, in the same header.
-        const used = typeof usage.contextUsed === 'number' ? usage.contextUsed : usage.used;
-        const size = typeof usage.contextSize === 'number' ? usage.contextSize : usage.size;
-        if (typeof used === 'number' && typeof size === 'number' && size > 0) {
-          parts.push('ctx ' + Math.round((used / size) * 100) + '%');
-          convUsage.title = 'context ' + used + ' / ' + size;
-        } else {
-          convUsage.title = '';
-        }
-        convUsage.textContent = parts.join(' · ');
+        // repeated what the cost button already shows. The raw counts move
+        // to the popover — a title= tooltip is not a surface anyone finds.
+        const used = usage && typeof usage.contextUsed === 'number' ? usage.contextUsed : usage && usage.used;
+        const size = usage && typeof usage.contextSize === 'number' ? usage.contextSize : usage && usage.size;
+        const hasFill = typeof used === 'number' && typeof size === 'number' && size > 0;
+        contextBtn.textContent = hasFill ? 'ctx ' + Math.round((used / size) * 100) + '%' : '';
+        popoverContextUsed.textContent = typeof used === 'number' ? String(used) : '—';
+        popoverContextSize.textContent = typeof size === 'number' ? String(size) : '—';
+        // A button reading "undefined" is worse than a button that isn't
+        // there — and there's nothing to open a popover onto either.
+        if (!hasFill) contextPopover.hidden = true;
       }
 
       // Full resync — used by 'init' (and a hypothetical future 'conversation'
@@ -1472,25 +1640,122 @@ export function buildHtml(nonce: string): string {
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
 
+      // The wire prompt is text + every attachment path, space-joined: v1 hands
+      // the agent readable PATHS (Decision A), so a chip collapses back into the
+      // prompt string here. Keeping it a plain string is what lets the mid-turn
+      // queue (which stores one string) carry attachments for free.
+      function composePrompt() {
+        const parts = [];
+        const typed = input.value.trim();
+        if (typed) parts.push(typed);
+        for (let i = 0; i < attachments.length; i++) parts.push(attachments[i].path);
+        return parts.join(' ');
+      }
+
       function send(interrupt) {
-        const text = input.value;
-        if (!text || !text.trim()) return;
-        const trimmed = text.trim();
+        const composed = composePrompt();
+        if (!composed) return;
         input.value = '';
+        attachments = [];
+        renderAttachments();
+        closeMention();
         autoGrow();
         clearError();
         // Mid-turn and not explicitly interrupting: hold it rather than POST a
         // prompt the daemon will refuse with a 409. It goes out on turn-end.
         if (busy && !interrupt) {
-          queuedText = trimmed;
+          queuedText = composed;
           refreshComposer();
           return;
         }
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: trimmed });
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: composed });
         refreshComposer();
       }
 
+      // ── Attachment chips ──────────────────────────────────────────────
+      function attachmentLabel(path) {
+        const parts = path.split(/[\\/]/);
+        return parts[parts.length - 1] || path;
+      }
+
+      function renderAttachments() {
+        attachmentsRow.textContent = '';
+        attachmentsRow.hidden = attachments.length === 0;
+        for (let i = 0; i < attachments.length; i++) {
+          const att = attachments[i];
+          const chip = document.createElement('span');
+          chip.className = 'attach-chip';
+          chip.title = att.path;
+          const label = document.createElement('span');
+          label.className = 'attach-chip-label';
+          label.textContent = att.label;
+          chip.appendChild(label);
+          const remove = document.createElement('span');
+          remove.className = 'attach-chip-remove';
+          remove.textContent = '✕';
+          remove.title = 'Remove attachment';
+          // Bind the path, not the index — the row is rebuilt on every change,
+          // so an index would go stale the moment an earlier chip is removed.
+          const path = att.path;
+          remove.addEventListener('click', function() { removeAttachment(path); });
+          chip.appendChild(remove);
+          attachmentsRow.appendChild(chip);
+        }
+      }
+
+      // Add a ready path (already on disk) as a chip. Enforces the count cap and
+      // de-dupes, so mentioning or dropping the same file twice is a no-op.
+      function addAttachment(path) {
+        if (!path) return;
+        for (let i = 0; i < attachments.length; i++) {
+          if (attachments[i].path === path) { refreshComposer(); return; }
+        }
+        if (attachments.length >= ATTACHMENT_COUNT_CAP) {
+          showError('Too many attachments',
+            'Up to ' + ATTACHMENT_COUNT_CAP + ' attachments per message. Remove one to add another.');
+          return;
+        }
+        attachments.push({ path: path, label: attachmentLabel(path) });
+        renderAttachments();
+        refreshComposer();
+        input.focus();
+      }
+
+      function removeAttachment(path) {
+        attachments = attachments.filter(function(a) { return a.path !== path; });
+        renderAttachments();
+        refreshComposer();
+      }
+
+      // Read a File to bytes and hand it to the host to store. Pre-checks the
+      // size so an oversize file is refused HERE with a friendly message rather
+      // than eating the route's 413 (Decision G). kind: 'image' (paste, no
+      // name) or 'file' (drop, named).
+      function uploadFile(file, kind) {
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          const mib = Math.round(file.size / (1024 * 1024));
+          showError('File too large', 'That file is ' + mib + ' MiB — over the 32 MiB limit. It was not attached.');
+          return;
+        }
+        if (file.size > WARN_ATTACHMENT_BYTES) {
+          const mib = Math.round(file.size / (1024 * 1024));
+          showError('Large attachment', 'That file is ' + mib + ' MiB — large for an attachment, but it was attached.');
+        }
+        file.arrayBuffer().then(function(buf) {
+          if (kind === 'image') {
+            vscode.postMessage({ type: 'attachImage', bytes: buf, mime: file.type });
+          } else {
+            vscode.postMessage({ type: 'attachFile', bytes: buf, mime: file.type, name: file.name || 'file' });
+          }
+        }).catch(function() {
+          showError('Attachment failed', 'Could not read the file.');
+        });
+      }
+
       input.addEventListener('keydown', function(e) {
+        // While the @mention popup is open it owns the arrow/enter/tab/escape
+        // keys — otherwise Enter would send instead of picking a file.
+        if (mention && handleMentionKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           send(false);
@@ -1500,7 +1765,147 @@ export function buildHtml(nonce: string): string {
       input.addEventListener('input', function() {
         autoGrow();
         refreshComposer();
+        updateMention();
       });
+
+      // Clicking elsewhere in the textarea moves the caret out of an @token.
+      input.addEventListener('click', updateMention);
+
+      // Paste an image → the agent reads it. The webview can't touch disk, so
+      // it reads the pasted image to bytes and ships them to the host, which
+      // stores the file and posts back a path (see 'attachmentUploaded').
+      // preventDefault stops the same binary from ALSO landing as garbage text.
+      input.addEventListener('paste', function(e) {
+        const data = e.clipboardData;
+        if (!data || !data.items) return;
+        const images = [];
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i];
+          if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+            const file = item.getAsFile();
+            if (file) images.push(file);
+          }
+        }
+        if (images.length === 0) return; // no image → let the normal text paste run
+        e.preventDefault();
+        for (let j = 0; j < images.length; j++) uploadFile(images[j], 'image');
+      });
+
+      // ── Drag and drop ─────────────────────────────────────────────────
+      // A file dragged from the VS Code Explorer arrives as a uri-list with a
+      // REAL on-disk path → attach it directly, no upload (Decision A1). A file
+      // dragged from the OS arrives as raw bytes in dataTransfer.files → upload
+      // it like a paste (A2).
+      composer.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        composer.classList.add('drag-over');
+      });
+      composer.addEventListener('dragleave', function() { composer.classList.remove('drag-over'); });
+      composer.addEventListener('drop', function(e) {
+        e.preventDefault();
+        composer.classList.remove('drag-over');
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        const uriList = (dt.getData && (dt.getData('application/vnd.code.uri-list') || dt.getData('text/uri-list'))) || '';
+        const paths = parseUriList(uriList);
+        if (paths.length > 0) {
+          for (let i = 0; i < paths.length; i++) addAttachment(paths[i]);
+          return;
+        }
+        const files = dt.files;
+        if (files && files.length > 0) {
+          for (let j = 0; j < files.length; j++) uploadFile(files[j], 'file');
+        }
+      });
+
+      // ── @mention popup ────────────────────────────────────────────────
+      function closeMention() {
+        mention = null;
+        mentionPopup.hidden = true;
+        mentionPopup.textContent = '';
+      }
+
+      // Recompute the active @token from the caret; ask the host for candidates.
+      function updateMention() {
+        const found = mentionQueryAt(input.value, input.selectionStart == null ? input.value.length : input.selectionStart);
+        if (!found) { closeMention(); return; }
+        // Keep any already-fetched items so the popup doesn't flicker empty
+        // between the request and the response; correlate the response by query.
+        mention = { start: found.start, end: found.end, query: found.query, items: mention ? mention.items : [], active: 0 };
+        renderMention();
+        vscode.postMessage({ type: 'requestMentions', query: found.query });
+      }
+
+      function renderMention() {
+        if (!mention) return;
+        mentionPopup.textContent = '';
+        if (mention.items.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'mention-empty';
+          empty.textContent = 'No matching files';
+          mentionPopup.appendChild(empty);
+          mentionPopup.hidden = false;
+          return;
+        }
+        for (let i = 0; i < mention.items.length; i++) {
+          const item = mention.items[i];
+          const row = document.createElement('div');
+          row.className = 'mention-item' + (i === mention.active ? ' active' : '');
+          row.textContent = item.label;
+          row.title = item.path;
+          const idx = i;
+          row.addEventListener('mousedown', function(ev) {
+            // mousedown, not click: click fires after the textarea blurs, which
+            // would tear the mention state down before the handler runs.
+            ev.preventDefault();
+            chooseMention(idx);
+          });
+          mentionPopup.appendChild(row);
+        }
+        mentionPopup.hidden = false;
+      }
+
+      // Returns true if it consumed the key (popup navigation), false otherwise.
+      function handleMentionKey(e) {
+        if (!mention) return false;
+        if (e.key === 'Escape') { e.preventDefault(); closeMention(); return true; }
+        if (mention.items.length === 0) return false;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          mention.active = (mention.active + 1) % mention.items.length;
+          renderMention();
+          return true;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          mention.active = (mention.active - 1 + mention.items.length) % mention.items.length;
+          renderMention();
+          return true;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          chooseMention(mention.active);
+          return true;
+        }
+        return false;
+      }
+
+      // Replace the @token with the chosen file — as a chip, and the leftover
+      // text keeps the caret. The path rides in composePrompt at send time.
+      function chooseMention(index) {
+        if (!mention || !mention.items[index]) return;
+        const chosen = mention.items[index];
+        const before = input.value.slice(0, mention.start);
+        const after = input.value.slice(mention.end);
+        const sep = after.length > 0 && after.charAt(0) !== ' ' ? ' ' : '';
+        input.value = before + after.replace(/^\\s*/, sep ? '' : '');
+        // Trim a leading space we might have left where the @token was.
+        if (before.length === 0) input.value = input.value.replace(/^\\s+/, '');
+        closeMention();
+        addAttachment(chosen.path);
+        autoGrow();
+      }
 
       sendBtn.addEventListener('click', function() { send(false); });
       // Interrupt only ever acts on the queued message — it's the only thing
@@ -1511,6 +1916,35 @@ export function buildHtml(nonce: string): string {
         refreshComposer();
       });
       ebDismiss.addEventListener('click', clearError);
+
+      // ── Header popovers ─────────────────────────────────────────────
+      // A webview has no VS Code popover API, so this is plain DOM: toggle
+      // on the button, dismiss on Escape or a click outside, and never more
+      // than one open — opening either one closes the other first.
+      const popovers = [costPopover, contextPopover];
+      function closeAllPopovers() {
+        for (const p of popovers) p.hidden = true;
+      }
+      function togglePopover(popover) {
+        const wasOpen = !popover.hidden;
+        closeAllPopovers();
+        popover.hidden = wasOpen;
+      }
+      costBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(costPopover);
+      });
+      contextBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(contextPopover);
+      });
+      document.addEventListener('click', function(e) {
+        if (!costPopover.contains(e.target) && e.target !== costBtn) costPopover.hidden = true;
+        if (!contextPopover.contains(e.target) && e.target !== contextBtn) contextPopover.hidden = true;
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeAllPopovers();
+      });
 
       window.addEventListener('message', function(e) {
         const msg = e.data;
@@ -1544,6 +1978,21 @@ export function buildHtml(nonce: string): string {
             break;
           case 'sendAck':
             setSending(false);
+            break;
+          case 'attachmentUploaded':
+            addAttachment(msg.path);
+            break;
+          case 'attachError':
+            showError(msg.title || 'Attachment failed', msg.message || '');
+            break;
+          case 'mentionCandidates':
+            // Ignore a response that arrived after the user typed on — only the
+            // query currently in the box should paint (see updateMention).
+            if (mention && msg.query === mention.query) {
+              mention.items = msg.items || [];
+              if (mention.active >= mention.items.length) mention.active = 0;
+              renderMention();
+            }
             break;
           case 'sendError':
             setSending(false);

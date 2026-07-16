@@ -107,15 +107,26 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // these (via its own `resolveModelPreference`) and rejects anything it
   // can't — a rejected `session/set_config_option` used to kill the spawn
   // (agentproto#186; the apply is now best-effort, see @agentproto/acp's
-  // newSession). Stale ids that the wrapper no longer offers were removed:
-  // `claude-sonnet-4-6` (the old default), `claude-opus-4-7`, `claude-opus-4-6`.
+  // newSession). Stale native ids that the wrapper no longer offers were
+  // removed: `claude-sonnet-4-6` (the old default), `claude-opus-4-7`,
+  // `claude-opus-4-6`. The gateway ids mirror claude-sdk's set — the
+  // claude binary honors ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN exactly
+  // like the SDK does, so the same moonshot/openrouter modes below reach
+  // them; they were simply never declared here before.
   models: {
     default: "claude-sonnet-5",
     allowed: [
-      "claude-sonnet-5",
-      "claude-opus-4-8",
-      "claude-haiku-4-5",
-      "claude-fable-5",
+      // Native Anthropic — no mode switch needed
+      { id: "claude-sonnet-5", provider: "anthropic" },
+      { id: "claude-opus-4-8", provider: "anthropic" },
+      { id: "claude-haiku-4-5", provider: "anthropic" },
+      { id: "claude-fable-5", provider: "anthropic" },
+      // Moonshot (Kimi) — mode: moonshot
+      { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+      // OpenRouter — mode: openrouter
+      { id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" },
+      { id: "deepseek/deepseek-v4-pro", provider: "openrouter", mode: "openrouter" },
+      { id: "moonshotai/kimi-k2", provider: "openrouter", mode: "openrouter" },
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },

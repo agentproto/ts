@@ -56,3 +56,55 @@ describe("listInstalledAdapters — mode status projection", () => {
   })
 })
 
+// The operator-visible bug this splits apart: `models.allowed` used to be a
+// flat string, so a manifest could declare a gateway model id (Moonshot's
+// kimi-k2.7-code) but had nowhere to say it needs claude-sdk's `moonshot`
+// mode to actually route there — picking it from a flattened "slug · model"
+// picker spawned in the adapter's default mode (native Anthropic), sending
+// a Moonshot model id to the wrong provider. AIP-45's structured
+// `{id, provider, mode}` form (declared on claude-sdk in
+// adapters/claude-sdk/src/index.ts) closes that gap; `modelDetails` is
+// where it's projected for every consumer (daemon HTTP/MCP `adapter_list`,
+// the VS Code picker). This test fails without the fix: before it,
+// `AdapterInfo` had no `modelDetails` field at all and the manifest could
+// only declare bare strings, so there was no `mode`/`provider` to assert.
+describe("listInstalledAdapters — structured models.allowed (provider/mode)", () => {
+  it("projects claude-sdk's kimi-k2.7-code with its moonshot provider+mode binding", async () => {
+    const adapters = await listInstalledAdapters()
+    const claudeSdk = adapters.find((a) => a.slug === "claude-sdk")
+    expect(claudeSdk).toBeDefined()
+
+    const kimi = claudeSdk?.modelDetails.find((m) => m.id === "kimi-k2.7-code")
+    expect(kimi).toBeDefined()
+    expect(kimi?.provider).toBe("moonshot")
+    expect(kimi?.mode).toBe("moonshot")
+
+    // The flat `models: string[]` field is untouched by this change — every
+    // existing consumer of that contract keeps working, id-for-id.
+    expect(claudeSdk?.models).toContain("kimi-k2.7-code")
+  })
+
+  it("leaves a native Anthropic model with no mode binding — it needs no gateway switch", async () => {
+    const adapters = await listInstalledAdapters()
+    const claudeSdk = adapters.find((a) => a.slug === "claude-sdk")
+
+    const sonnet = claudeSdk?.modelDetails.find((m) => m.id === "claude-sonnet-5")
+    expect(sonnet?.provider).toBe("anthropic")
+    expect(sonnet?.mode).toBeUndefined()
+  })
+
+  // Back-compat: codex's manifest still declares `models.allowed` as bare
+  // strings (untouched by this PR) — it must keep listing/spawning exactly
+  // as before, and must report an unstated provider rather than a guessed
+  // one (a wrong-but-confident guess would bill the wrong account).
+  it("back-compat: a bare-string models.allowed (codex) still lists, with no provider guessed", async () => {
+    const adapters = await listInstalledAdapters()
+    const codex = adapters.find((a) => a.slug === "codex")
+    expect(codex).toBeDefined()
+    expect(codex?.models).toContain("gpt-5-codex")
+
+    const entry = codex?.modelDetails.find((m) => m.id === "gpt-5-codex")
+    expect(entry).toEqual({ id: "gpt-5-codex" })
+  })
+})
+

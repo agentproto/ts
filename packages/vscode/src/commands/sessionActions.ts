@@ -17,6 +17,7 @@ import {
   mapSessionsToQuickPickItems,
   normalizeSessionArg,
 } from "./sessionActions.logic.js"
+import { interpretStopChoice, STOP_AND_SILENCE_BUTTON, STOP_BUTTON } from "./stopConfirm.logic.js"
 
 export function registerSessionActions(
   ctx: vscode.ExtensionContext,
@@ -140,18 +141,47 @@ async function killSessionCommand(
   const session = await resolveSessionArg(arg, store, "Select a session to stop")
   if (!session) return
   const label = describeSession(session)
-  const confirm = await vscode.window.showWarningMessage(
-    `Stop session ${label}?`,
-    { modal: true, detail: "The agent is terminated. Its transcript stays readable, and Restart can revive it." },
-    "Stop",
-  )
-  if (confirm !== "Stop") return
+
+  if (confirmStopSetting()) {
+    const choice = await vscode.window.showWarningMessage(
+      `Stop session ${label}?`,
+      { modal: true, detail: "The agent is terminated. Its transcript stays readable, and Restart can revive it." },
+      STOP_BUTTON,
+      STOP_AND_SILENCE_BUTTON,
+    )
+    const decision = interpretStopChoice(choice)
+    if (!decision.stop) return
+    if (decision.silence) {
+      await vscode.workspace
+        .getConfiguration("agentproto")
+        .update("confirmStop", false, vscode.ConfigurationTarget.Global)
+    }
+  }
+
   try {
     await client.kill(session.id)
-    vscode.window.showInformationMessage(`agentproto: stopped ${label}`)
     await store.refreshAll()
+    await notifyStopped(session.id, label)
   } catch (err) {
     vscode.window.showErrorMessage(`agentproto: stop failed — ${describeError(err)}`)
+  }
+}
+
+/** Read fresh each stop — it's a setting the user can flip from the modal itself mid-session. */
+function confirmStopSetting(): boolean {
+  return vscode.workspace.getConfiguration("agentproto").get<boolean>("confirmStop", true)
+}
+
+/**
+ * The confirm's job — "you might not have meant that" — moves downstream
+ * once it's silenced: this toast is the safety net that's left, so it offers
+ * Restart on every stop, confirmed or silent, rather than only the silent
+ * path.
+ */
+async function notifyStopped(sessionId: string, label: string): Promise<void> {
+  const action = await vscode.window.showInformationMessage(`agentproto: stopped ${label}`, "Restart")
+  if (action === "Restart") {
+    await vscode.commands.executeCommand("agentproto.restartSession", sessionId)
   }
 }
 

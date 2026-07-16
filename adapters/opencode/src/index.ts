@@ -68,10 +68,13 @@ export const opencode: AgentCliHandle = defineAgentCli({
     // is out of scope). Premium Anthropic (Opus/Haiku) and the redundant
     // gateway dupe are dropped from the menu so orchestrators don't select
     // them here; the free-form `model` option still accepts any id.
+    // `provider` is read straight off each id's own prefix — opencode routes
+    // by that prefix itself, no adapter mode needed (unlike claude-sdk /
+    // claude-code, which need ANTHROPIC_BASE_URL pre-wired by a mode).
     allowed: [
-      "anthropic/claude-sonnet-4-6",
-      "openai/gpt-5",
-      "openai/gpt-5-mini",
+      { id: "anthropic/claude-sonnet-4-6", provider: "anthropic" },
+      { id: "openai/gpt-5", provider: "openai" },
+      { id: "openai/gpt-5-mini", provider: "openai" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

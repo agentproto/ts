@@ -5,7 +5,9 @@
  */
 
 import type { SessionDescriptor } from "../client/types.js"
+import { isBinaryPayload } from "./attachments.logic.js"
 import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
+import type { MentionCandidate } from "./mentions.logic.js"
 import type { SendFailureKind } from "./transcript.logic.js"
 
 /**
@@ -102,6 +104,27 @@ export type ExtMessage =
    * queue can be rebuilt without the webview having to hold in-flight copies.
    */
   | { type: "sendError"; message: string; kind: SendFailureKind; title: string; text: string }
+  /**
+   * A pasted image finished uploading — `path` is the absolute on-disk path the
+   * agent's Read tool can pick up. The webview inserts it into the composer as
+   * text (Decision A: v1 hands over a path, never inline bytes), so the eventual
+   * prompt stays a plain string and the transcript records a short line, not
+   * base64.
+   */
+  | { type: "attachmentUploaded"; path: string }
+  /**
+   * A paste/upload failed (read error, oversize 413, daemon unreachable).
+   * Surfaced in the composer's error banner rather than dropped silently — a
+   * silent drop is the exact failure mode this feature is built to avoid.
+   */
+  | { type: "attachError"; title: string; message: string }
+  /**
+   * The `@file` candidate list for a mention query, scoped to the session's cwd
+   * (honoring `.gitignore`). `query` is echoed back so the webview can discard a
+   * response that arrived after the user typed on — only the newest query's
+   * results should paint.
+   */
+  | { type: "mentionCandidates"; query: string; items: MentionCandidate[] }
 
 /**
  * Messages sent from the webview to the extension host.
@@ -125,6 +148,26 @@ export type WebviewMessage =
    * out of the webview even for the values the user explicitly asks to read.
    */
   | { type: "openToolIo"; segmentId: string; field: "input" | "output" }
+  /**
+   * Raw bytes of a pasted image, headed for `POST /files/upload`. The webview
+   * can't write disk, so it structured-clones the ArrayBuffer to the host. Typed
+   * as ArrayBuffer|view because the runtime may hand the host either — the guard
+   * (`isBinaryPayload`) accepts both so a real paste is never rejected at the
+   * boundary, and a base64 STRING never sneaks through as if it were bytes.
+   */
+  | { type: "attachImage"; bytes: ArrayBuffer | ArrayBufferView; mime: string }
+  /**
+   * A file dragged from the OS (not the VS Code Explorer) — it carries its own
+   * `name` but, like a paste, exists only as bytes the host must store. A file
+   * dragged FROM the Explorer never comes this way: it has a real on-disk path
+   * and the webview inserts that directly (Decision A1), no upload.
+   */
+  | { type: "attachFile"; bytes: ArrayBuffer | ArrayBufferView; mime: string; name: string }
+  /**
+   * Ask the host for `@file` candidates matching `query`, scoped to the
+   * session's cwd. The host replies with `mentionCandidates`.
+   */
+  | { type: "requestMentions"; query: string }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -139,6 +182,12 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.text === "string"
     case "openToolIo":
       return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
+    case "attachImage":
+      return isBinaryPayload(m.bytes) && typeof m.mime === "string"
+    case "attachFile":
+      return isBinaryPayload(m.bytes) && typeof m.mime === "string" && typeof m.name === "string"
+    case "requestMentions":
+      return typeof m.query === "string"
     default:
       return false
   }
