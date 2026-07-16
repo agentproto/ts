@@ -32,7 +32,8 @@ agentproto mcp-bridge                                               stdio MCP pr
 agentproto install-mcp  [--agent <name>...] [--all] [--yes]         register daemon MCP with coding CLIs
 agentproto onboard      [--yes] [--no-skills] [--skills <slug>]     first-run setup
 agentproto cron         <add|list|remove|run>                       recurring daemon jobs
-agentproto worktree     <ls|archive>                                git worktree lifecycle
+agentproto worktree     <ls|new|rm|archive|gc>                       git worktree lifecycle
+agentproto policy       <attach|status|wait|ack|ls|cancel>          completion-policy CLI (shell/judge gates)
 agentproto permissions  <ls|approve|deny>                           held tool-permission requests
 agentproto acp          <ls|add|rm>                                 generic ACP agent registry
 agentproto pair         <offer|accept|ls|revoke|exec>               pairing over a rendezvous broker

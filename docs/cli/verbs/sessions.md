@@ -20,6 +20,8 @@ agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
                                           [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
 agentproto sessions mirror   <id-or-name> [--no-color]
+agentproto sessions story    <id-or-name> [--json] [--no-color]
+                                          [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
                                           [--source auto|native|daemon]
                                           [--adapter <slug>] [--cwd <dir>]
@@ -278,6 +280,21 @@ sessions: same as `--attach`.
 Dead sessions (exited/killed/error) print a hint pointing at
 `restart`; the WS upgrade would only return a confusing close 1011
 mid-stream.
+
+### `story <id-or-name>`
+
+```bash
+agentproto sessions story ses_abc12
+agentproto sessions story claude-tui --json
+agentproto sessions story ses_abc12 --source daemon
+```
+
+CLI parity for the `agentproto_session_story` MCP App: parses the session's
+transcript and renders it as chapters/steps (a human-readable narrative of
+what the agent did) instead of raw events. Takes the same `--source
+auto|native|daemon` backend selection as `export` above. `--json` emits the
+structured `{ sessionId, adapter, chapters, steps }` shape instead of the
+rendered terminal view.
 
 ### `export <id-or-name>`
 
