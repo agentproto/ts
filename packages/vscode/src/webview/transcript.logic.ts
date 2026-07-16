@@ -145,3 +145,32 @@ export function sendFailureTitle(kind: SendFailureKind): string {
       return "Send failed"
   }
 }
+
+/**
+ * Filename for a tool value opened in an editor — e.g. `Bash output (a1b2c3).log`.
+ *
+ * This is the tab title, so it has to survive real tool names: agentproto's
+ * carry their target (`read: /Volumes/…/index.ts`), which is full of path
+ * separators and would otherwise fabricate URI path segments. Anything not
+ * filename-safe collapses to `-`, and the name is capped — untruncated, it
+ * renders as an unreadable tab.
+ *
+ * The segment-id suffix disambiguates two calls to the same tool in one turn
+ * AND keeps the URI stable, so re-opening the same value reveals its existing
+ * tab instead of stacking duplicates.
+ */
+export function toolIoDocumentName(
+  toolName: string | undefined,
+  field: "input" | "output",
+  segmentId: string,
+  json: boolean,
+): string {
+  const safe =
+    (toolName ?? "tool")
+      .replace(/[^\w.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40)
+      .replace(/-+$/, "") || "tool"
+  const short = segmentId.replace(/\W+/g, "").slice(-6) || "value"
+  return `${safe} ${field} (${short}).${json ? "json" : "log"}`
+}

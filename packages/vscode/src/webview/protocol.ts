@@ -116,6 +116,15 @@ export type WebviewMessage =
   | { type: "ready" }
   | { type: "send"; text: string }
   | { type: "interruptSend"; text: string }
+  /**
+   * Open a tool call's full input/output in a read-only editor tab.
+   *
+   * Carries an id and which side to open — deliberately NOT the text. The
+   * webview holds a 3-line preview and nothing else; the host re-derives the
+   * full value from its own conversation record. So raw daemon content stays
+   * out of the webview even for the values the user explicitly asks to read.
+   */
+  | { type: "openToolIo"; segmentId: string; field: "input" | "output" }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -128,6 +137,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "send":
     case "interruptSend":
       return typeof m.text === "string"
+    case "openToolIo":
+      return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
     default:
       return false
   }

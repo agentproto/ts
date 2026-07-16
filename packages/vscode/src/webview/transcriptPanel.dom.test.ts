@@ -732,3 +732,81 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
     expect(el(panel, "conv-usage").textContent).toBe("ctx 6%")
   })
 })
+
+describe("transcriptPanel webview — tool IO opens in an editor", () => {
+  function initWithTool(panel: Panel, tool: PresentedToolSegment): void {
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [{ id: "turn-1", role: "assistant", segments: [tool] }],
+      },
+    })
+  }
+
+  const clampedTool: PresentedToolSegment = {
+    kind: "tool",
+    id: "tool-t1",
+    toolName: "Bash",
+    isError: false,
+    status: "ok",
+    argsText: "pnpm test",
+    argsClamped: false,
+    argsLines: 1,
+    resultText: "line 1\nline 2\nline 3",
+    resultClamped: true,
+    resultLines: 40,
+  }
+
+  it("offers to open a clamped value, saying exactly how much is hidden", () => {
+    const panel = renderPanel()
+    initWithTool(panel, clampedTool)
+    const node = segNode(panel, "tool-t1")
+    expect(node?.querySelector(".tool-result")?.classList.contains("tool-io-clamped")).toBe(true)
+    // 40 total, 3 shown → 37 hidden. Arithmetic the user can check.
+    expect(node?.querySelector(".tool-io-open")?.textContent).toBe("⤢ open 40 lines (37 more)")
+  })
+
+  it("says nothing about opening when nothing is hidden", () => {
+    const panel = renderPanel()
+    initWithTool(panel, clampedTool)
+    const node = segNode(panel, "tool-t1")
+    // The input fit — no link, and no truncation mark.
+    expect(node?.querySelector(".tool-args")?.classList.contains("tool-io-clamped")).toBe(false)
+    expect(node?.querySelectorAll(".tool-io-open")).toHaveLength(1)
+  })
+
+  it("posts openToolIo with the segment id and side when the block is clicked", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    initWithTool(panel, clampedTool)
+    const node = segNode(panel, "tool-t1")
+    // The script posts `ready` on load — only the opens are under test here.
+    const opens = (): unknown[] =>
+      posted.filter(m => (m as { type?: string }).type === "openToolIo")
+
+    node?.querySelector(".tool-result")?.dispatchEvent(new panel.window.Event("click"))
+    expect(opens()).toEqual([{ type: "openToolIo", segmentId: "tool-t1", field: "output" }])
+
+    // The input block is clickable too, even though it was never clamped: a
+    // single very long line is clipped by CSS, which the host cannot detect.
+    node?.querySelector(".tool-args")?.dispatchEvent(new panel.window.Event("click"))
+    expect(opens()[1]).toEqual({ type: "openToolIo", segmentId: "tool-t1", field: "input" })
+
+    // And the explicit link opens the same thing as the block it labels.
+    node?.querySelector(".tool-io-open")?.dispatchEvent(new panel.window.Event("click"))
+    expect(opens()[2]).toEqual({ type: "openToolIo", segmentId: "tool-t1", field: "output" })
+  })
+
+  it("never ships the hidden lines — the DOM holds the preview and nothing else", () => {
+    const panel = renderPanel()
+    initWithTool(panel, clampedTool)
+    // If this ever fails, the clamp has regressed into a CSS trick and the
+    // full payload is sitting in the webview.
+    expect(segNode(panel, "tool-t1")?.textContent).not.toContain("line 4")
+  })
+})

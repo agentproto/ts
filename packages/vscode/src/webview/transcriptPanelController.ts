@@ -33,15 +33,30 @@ import type {
 import type { SessionStore } from "../services/sessionStore.js"
 
 import {
+  isJsonToolValue,
   presentConversation,
   reduceConversation,
+  stringifyToolValue,
   type PresentedConversation,
 } from "./conversation.js"
 import { diffConversation } from "./conversationPatch.js"
 import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
-import { classifySendFailure, isExited, sendFailureTitle } from "./transcript.logic.js"
+import {
+  classifySendFailure,
+  isExited,
+  sendFailureTitle,
+  toolIoDocumentName,
+} from "./transcript.logic.js"
 import type { ExtMessage, PresentedLine } from "./protocol.js"
+
+/** A tool value resolved for opening in an editor tab. */
+export interface ToolIoDocument {
+  /** Filename — becomes the tab title and drives syntax highlighting. */
+  name: string
+  /** The FULL value: unclamped, and unescaped because it goes to a document, not innerHTML. */
+  text: string
+}
 
 export interface PanelMessenger {
   postMessage(msg: ExtMessage): void
@@ -455,6 +470,34 @@ export class TranscriptPanelController {
   private present(): PresentedConversation {
     const conversation = reduceConversation(this.sessionId, this.records)
     return presentConversation(conversation, this.renderers)
+  }
+
+  /**
+   * Resolve a tool call's full input/output for opening in an editor.
+   *
+   * Re-reduces from the accumulated records rather than reading anything the
+   * webview sent: the webview only ever held a 3-line escaped preview, and
+   * asking it for the full value would be the one place raw daemon content
+   * crossed into it. Reducing on a click is cheap and keeps the contract.
+   *
+   * Returns undefined when the id is unknown or that side of the call has no
+   * value yet (a pending call has no result) — the caller says so rather than
+   * opening an empty tab.
+   */
+  resolveToolIo(segmentId: string, field: "input" | "output"): ToolIoDocument | undefined {
+    const conversation = reduceConversation(this.sessionId, this.records)
+    for (const turn of conversation.turns) {
+      for (const seg of turn.segments) {
+        if (seg.kind !== "tool" || seg.id !== segmentId) continue
+        const value = field === "input" ? seg.arguments : seg.result
+        if (value === undefined) return undefined
+        return {
+          name: toolIoDocumentName(seg.toolName, field, seg.id, isJsonToolValue(value)),
+          text: stringifyToolValue(value),
+        }
+      }
+    }
+    return undefined
   }
 
   async onSend(text: string, interrupt: boolean): Promise<void> {

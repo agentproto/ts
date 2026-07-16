@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import {
   CONVERSATION_SCHEMA_VERSION,
+  clampToLines,
   groupActivity,
   presentConversation,
   reduceConversation,
+  TOOL_IO_MAX_LINES,
   type PresentedActivitySegment,
   type PresentedSegment,
   type PresentedTextSegment,
@@ -375,6 +377,47 @@ describe("presentConversation", () => {
     expect(tool.status).toBe("ok")
   })
 
+  it("clamps a long tool result to TOOL_IO_MAX_LINES and reports the full count", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash", arguments: "pnpm test" }),
+      rec({
+        kind: "tool-result",
+        toolCallId: "t1",
+        result: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"),
+        isError: false,
+      }),
+    ])
+    const tool = presentConversation(conv, renderers).turns[0]!.segments.find(
+      s => s.kind === "tool",
+    ) as PresentedToolSegment
+
+    expect(tool.resultText?.split("\n")).toHaveLength(TOOL_IO_MAX_LINES)
+    expect(tool.resultText).toBe("line 1\nline 2\nline 3")
+    expect(tool.resultClamped).toBe(true)
+    // The count is of the FULL value — it's what the "N more" link promises.
+    expect(tool.resultLines).toBe(40)
+    // A short input is left whole and advertises nothing to open.
+    expect(tool.argsText).toBe("pnpm test")
+    expect(tool.argsClamped).toBe(false)
+    expect(tool.argsLines).toBe(1)
+  })
+
+  it("never ships the dropped lines to the webview — the clamp is not a CSS trick", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash", arguments: "x" }),
+      rec({ kind: "tool-result", toolCallId: "t1", result: "a\nb\nc\nSECRET_TAIL", isError: false }),
+    ])
+    const tool = presentConversation(conv, renderers).turns[0]!.segments.find(
+      s => s.kind === "tool",
+    ) as PresentedToolSegment
+    // Clipping in CSS would leave the tail sitting in the DOM. It must not
+    // cross the boundary at all — the host re-derives it on demand instead.
+    expect(tool.resultText).not.toContain("SECRET_TAIL")
+    expect(JSON.stringify(tool)).not.toContain("SECRET_TAIL")
+  })
+
   it("preserves segment ids and usage metadata through presentation", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
@@ -484,5 +527,31 @@ describe("groupActivity", () => {
 
   it("returns an empty list unchanged", () => {
     expect(groupActivity([])).toEqual([])
+  })
+})
+
+describe("clampToLines", () => {
+  it("passes text at or under the limit through untouched", () => {
+    expect(clampToLines("a\nb\nc", 3)).toEqual({ preview: "a\nb\nc", clamped: false, lineCount: 3 })
+    expect(clampToLines("", 3)).toEqual({ preview: "", clamped: false, lineCount: 1 })
+  })
+
+  it("keeps the first N lines and counts the whole thing", () => {
+    expect(clampToLines("a\nb\nc\nd\ne", 3)).toEqual({
+      preview: "a\nb\nc",
+      clamped: true,
+      lineCount: 5,
+    })
+  })
+
+  it("does not count a trailing newline as a line", () => {
+    // "a\nb\n" is two lines, not three — otherwise every file-shaped output
+    // claims one phantom extra line in the "N more" count.
+    expect(clampToLines("a\nb\n", 3)).toEqual({ preview: "a\nb", clamped: false, lineCount: 2 })
+  })
+
+  it("treats one very long line as one line — CSS clips it, the count stays honest", () => {
+    const long = "x".repeat(5000)
+    expect(clampToLines(long, 3)).toEqual({ preview: long, clamped: false, lineCount: 1 })
   })
 })

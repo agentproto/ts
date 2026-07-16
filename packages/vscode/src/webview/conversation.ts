@@ -372,10 +372,18 @@ export interface PresentedToolSegment {
   kind: "tool"
   id: string
   toolName?: string
-  /** Pretty-printed, escaped tool input (rendered in a <pre>). */
+  /** Pretty-printed, escaped tool input — CLAMPED to TOOL_IO_MAX_LINES. */
   argsText?: string
-  /** Pretty-printed, escaped tool output (rendered in a <pre>). */
+  /** True when argsText dropped lines: the full value is only in the editor. */
+  argsClamped?: boolean
+  /** Total line count of the full input, for the "open" affordance's label. */
+  argsLines?: number
+  /** Pretty-printed, escaped tool output — CLAMPED to TOOL_IO_MAX_LINES. */
   resultText?: string
+  /** True when resultText dropped lines. */
+  resultClamped?: boolean
+  /** Total line count of the full output. */
+  resultLines?: number
   isError: boolean
   status: "pending" | "ok" | "error"
   /** ISO timestamp the call opened — the webview's elapsed-time display for a pending call. */
@@ -564,17 +572,33 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
     case "assistant-text":
     case "reasoning":
       return { kind: seg.kind, id: seg.id, html: r.renderMarkdown(seg.text) }
-    case "tool":
+    case "tool": {
+      // Only the clamped preview is escaped and shipped. The full value never
+      // crosses into the webview at all — when the user opens it, the host
+      // re-derives it from its own conversation record (see the controller's
+      // resolveToolIo), which keeps the "webview never holds raw daemon
+      // content" contract intact for free.
+      const args = seg.arguments === undefined ? undefined : clampToLines(stringifyToolValue(seg.arguments))
+      const result = seg.result === undefined ? undefined : clampToLines(stringifyToolValue(seg.result))
       return {
         kind: "tool",
         id: seg.id,
         toolName: seg.toolName,
-        argsText: seg.arguments === undefined ? undefined : r.escapeHtml(stringify(seg.arguments)),
-        resultText: seg.result === undefined ? undefined : r.escapeHtml(stringify(seg.result)),
+        ...(args
+          ? { argsText: r.escapeHtml(args.preview), argsClamped: args.clamped, argsLines: args.lineCount }
+          : {}),
+        ...(result
+          ? {
+              resultText: r.escapeHtml(result.preview),
+              resultClamped: result.clamped,
+              resultLines: result.lineCount,
+            }
+          : {}),
         isError: seg.isError,
         status: seg.status,
         ts: seg.ts,
       }
+    }
     case "plan":
       return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }
     case "agent-question":
@@ -584,12 +608,60 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
   }
 }
 
-/** Compact, human-readable rendering of an arbitrary tool arg/result value. */
-function stringify(value: unknown): string {
+/**
+ * Compact, human-readable rendering of an arbitrary tool arg/result value.
+ * Exported so the HOST can re-derive the identical text when opening the full
+ * value in an editor — the webview only ever receives the clamped preview.
+ */
+export function stringifyToolValue(value: unknown): string {
   if (typeof value === "string") return value
   try {
     return JSON.stringify(value, null, 2)
   } catch {
     return String(value)
   }
+}
+
+/** True when the value renders as JSON rather than plain text — decides the
+ *  opened document's extension, hence its syntax highlighting. */
+export function isJsonToolValue(value: unknown): boolean {
+  return typeof value !== "string"
+}
+
+/**
+ * How many lines of a tool's input/output the transcript shows inline.
+ *
+ * A tool card is a step in a story, not a log viewer. A 400-line test run or
+ * a dumped file pushes every later message off the screen and buries the
+ * thing the reader actually came for. Three lines is enough to recognize the
+ * call and see how it opened; the full value is one click away in a real
+ * editor, where search, folding and word-wrap already exist.
+ */
+export const TOOL_IO_MAX_LINES = 3
+
+export interface ClampedText {
+  /** The first `maxLines` lines, verbatim. */
+  preview: string
+  /** True when lines were dropped — i.e. there is provably more to open. */
+  clamped: boolean
+  /** Total line count of the full text. */
+  lineCount: number
+}
+
+/**
+ * Take the first `maxLines` lines.
+ *
+ * Deliberately line-based only. Horizontal overflow is left to CSS (the row
+ * clips), because the host cannot know the panel's pixel width — so `clamped`
+ * means precisely "lines were dropped", a claim this module can actually
+ * prove. The rendered block stays clickable either way, so a single very long
+ * line is never unreachable just because it is technically one line.
+ */
+export function clampToLines(text: string, maxLines: number = TOOL_IO_MAX_LINES): ClampedText {
+  const lines = text.split("\n")
+  // A trailing newline yields a final empty element that isn't a real line.
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop()
+  const lineCount = lines.length
+  if (lineCount <= maxLines) return { preview: lines.join("\n"), clamped: false, lineCount }
+  return { preview: lines.slice(0, maxLines).join("\n"), clamped: true, lineCount }
 }
