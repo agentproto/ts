@@ -2,7 +2,10 @@
  * Regression tests for the @agentproto/cli@0.5.0 incident: the generator's own
  * console trace was published as that release's body (432 lines of "⟳ Turn 1 /
  * 🔧 read_changelog(name)"), and the model invented the release date, tagging a
- * July-2026 batch as `release/2025-07`.
+ * July-2026 batch as `release/2025-07`. Also covers the later month-granularity
+ * bug: titling every batch "agentproto — July 2026 release" produced multiple
+ * identically-titled releases once this repo started shipping several batches
+ * a month.
  *
  * Run: node --test scripts/release-notes.test.mjs
  */
@@ -12,7 +15,7 @@ import assert from 'node:assert/strict'
 import {
   assertPublishable,
   CONSOLIDATED_TAG,
-  MONTH_YEAR,
+  RELEASE_DATE_LONG,
   THIS_YEAR,
   TODAY,
 } from './release-notes.mjs'
@@ -51,7 +54,7 @@ persistence, proactive refresh, and audience scoping across every provider path.
 ✅ Release notes complete.
 `
 
-const GOOD_BODY = `# agentproto — ${MONTH_YEAR} release
+const GOOD_BODY = `# agentproto — ${RELEASE_DATE_LONG} release
 
 > This release ships credential brokering, sandboxed execution, and honest cost
 > accounting across 37 packages.
@@ -106,6 +109,6 @@ test('the consolidated tag is computed from the clock, not the model', () => {
   assert.ok(CONSOLIDATED_TAG.includes(THIS_YEAR), 'tag must carry the current year')
 })
 
-test('MONTH_YEAR carries the real current year', () => {
-  assert.match(MONTH_YEAR, new RegExp(`^[A-Z][a-z]+ ${THIS_YEAR}$`))
+test('RELEASE_DATE_LONG carries the real current year, at day granularity', () => {
+  assert.match(RELEASE_DATE_LONG, new RegExp(`^[A-Z][a-z]+ \\d{1,2}, ${THIS_YEAR}$`))
 })
