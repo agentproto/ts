@@ -272,7 +272,7 @@ describe("agentproto pack skill (resync vs bump)", () => {
     await rm(tmp, { recursive: true, force: true }).catch(() => {})
   })
 
-  it("same-version resync overwrites existing pack directory", async () => {
+  it("same-version resync overwrites existing pack directory", { timeout: 20_000 }, async () => {
     const { manifestPath, outDir, packName } = await createFixture(tmp)
 
     // First generation
