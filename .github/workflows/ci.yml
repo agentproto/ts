@@ -54,12 +54,19 @@ jobs:
       # full unscoped `pnpm build`/`check-types`/`test` — no code change,
       # no redeploy, just flip the variable — if turbo's affected-scoping
       # or the remote cache ever misbehaves.
+      #
+      # The affected path only applies on `pull_request` — on `push` (i.e.
+      # post-merge to main) HEAD already IS origin/main's tip, so
+      # `origin/main...HEAD` is empty and `--affected` would find nothing,
+      # silently no-op-ing the one run that's supposed to catch two
+      # individually-fine PRs combining into a broken main. Push events
+      # always get the full unscoped run.
       - name: Build all packages
         run: |
-          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
-            pnpm build
-          else
+          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
             pnpm exec turbo run build --affected --filter="./packages/**" --filter="./adapters/**"
+          else
+            pnpm build
           fi
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
@@ -69,10 +76,10 @@ jobs:
 
       - name: Type-check all packages
         run: |
-          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
-            pnpm check-types
-          else
+          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
             pnpm exec turbo run check-types --affected --filter="./packages/**" --filter="./adapters/**"
+          else
+            pnpm check-types
           fi
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
@@ -84,16 +91,19 @@ jobs:
       # check before the actual tests. The turbo path below calls `pnpm exec
       # turbo run test` directly, which does NOT go through the `pnpm test`
       # npm script and so would silently skip that hook — run it explicitly
-      # instead, unconditionally, so both paths carry the same gate.
+      # instead, only on the turbo path (the full-scope path below still
+      # gets it for free via the lifecycle hook; running both would just
+      # duplicate the check).
       - name: Check CLI docs coverage (pretest)
+        if: github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false'
         run: node scripts/agentflow/docs.mjs --check
 
       - name: Run tests
         run: |
-          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
-            pnpm test
-          else
+          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
             pnpm exec turbo run test --affected --filter="./packages/**" --filter="./adapters/**"
+          else
+            pnpm test
           fi
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
