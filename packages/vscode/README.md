@@ -16,11 +16,15 @@ pnpm test
 
 ## Getting a VSIX
 
-The official build lives in
-[GitHub Releases](https://github.com/agentproto/ts/releases): the
-`vscode-release` workflow packages a fresh `.vsix` and publishes it (tag
-`vscode-v<version>-<sha>`) on every push to `main` that touches this package.
-The `.vsix` is a build artifact — it's gitignored and never committed here.
+Every VSIX lives in [GitHub Releases](https://github.com/agentproto/ts/releases)
+— it's a build artifact, gitignored and never committed here. Two tracks:
+
+- **`vscode-dev-<sha>`** (prerelease) — built on every push to `main` that
+  touches this package (`.github/workflows/vscode-release.yml`). Bleeding
+  edge, one per commit.
+- **`vscode-v<version>`** — built from `.github/workflows/release.yml` only
+  when an actual release (a "Version Packages" PR merge) bumps this
+  package's version, same cadence as every other package.
 
 Install a downloaded release from VS Code with **Extensions: Install from
 VSIX...**, or:
