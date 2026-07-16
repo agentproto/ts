@@ -105,6 +105,11 @@ export interface AgentStreamEvent {
   toolName?: string
   /** Tool-call input, e.g. an ACP `tool_call`'s `arguments` — see @agentproto/acp's `StreamEvent`. */
   arguments?: unknown
+  /** True when a "tool-call" event ENRICHES one already announced under the
+   *  same `toolCallId` (the agent knew the input only after announcing the
+   *  call) rather than announcing a new one — see @agentproto/acp's
+   *  `StreamEvent`. Consumers merge by toolCallId; it is not a second call. */
+  isUpdate?: boolean
   /** Tool-call output, e.g. an ACP `tool_call_update`'s `result` — see @agentproto/acp's `StreamEvent`. */
   result?: unknown
   isError?: boolean
@@ -1459,11 +1464,18 @@ export function createSessionsRegistry(opts?: {
           rt.desc.blockedOn = blocked
           rt.desc.pendingToolCallId = evt.toolCallId
         }
-        appendLine(
-          rt,
-          `\x1b[36m[tool] ${formatToolCall(evt.toolName ?? "?", evt.arguments)}\x1b[0m`,
-          "stdout"
-        )
+        // An enrichment restates a call already announced under this
+        // toolCallId (the agent only learned its input afterwards — see
+        // @agentproto/acp's tool_call_update handling). The structured
+        // transcript merges it by id; the ring buffer must NOT print a second
+        // [tool] line for one call.
+        if (!evt.isUpdate) {
+          appendLine(
+            rt,
+            `\x1b[36m[tool] ${formatToolCall(evt.toolName ?? "?", evt.arguments)}\x1b[0m`,
+            "stdout"
+          )
+        }
         break
       }
       case "tool-result": {

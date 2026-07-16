@@ -179,3 +179,125 @@ describe("createAcpClient — tool_call rendering fields", () => {
     })
   })
 })
+
+/**
+ * Frames below are copied VERBATIM from a wire trace of the real claude-code
+ * ACP bridge (`@agentclientprotocol/claude-agent-acp`) reading a file. The
+ * bridge announces a call it does not yet know the input of, then fills it in
+ * — and the fill-in frame carries no `status`, which is what used to make
+ * `translateSessionUpdate` drop it and render "Read File" with an empty input
+ * for ~95% of that adapter's tool calls.
+ */
+describe("createAcpClient — tool_call_update carries the input (claude-code bridge)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    capturedHandlersFactory = undefined
+    mockInitialize.mockResolvedValue({ agentCapabilities: {} })
+    mockNewSession.mockResolvedValue({ sessionId: "sess-tool" })
+    mockLoadSession.mockResolvedValue({})
+    mockSetSessionConfigOption.mockResolvedValue({})
+    mockPrompt.mockReturnValue(new Promise(() => {}))
+    mockCancel.mockResolvedValue({})
+  })
+
+  it("emits the input and the real title from the in-progress update", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+    const handlers = capturedHandlersFactory!()
+
+    // Frame 1 — the announcement. rawInput is an EMPTY object, not the input.
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "toolu_01Buvi",
+        kind: "read",
+        title: "Read File",
+        rawInput: {},
+        locations: [],
+        content: [],
+      },
+    })
+    expect((await iter.next()).value).toMatchObject({
+      kind: "tool-call",
+      toolCallId: "toolu_01Buvi",
+      toolName: "Read File",
+    })
+
+    // Frame 2 — no status. This is the one that used to be discarded.
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "toolu_01Buvi",
+        title: "Read /private/tmp/acp-probe/probe.txt",
+        rawInput: { file_path: "/private/tmp/acp-probe/probe.txt" },
+        locations: [{ line: 1, path: "/private/tmp/acp-probe/probe.txt" }],
+      },
+    })
+    expect((await iter.next()).value).toMatchObject({
+      kind: "tool-call",
+      toolCallId: "toolu_01Buvi",
+      toolName: "Read /private/tmp/acp-probe/probe.txt",
+      arguments: { file_path: "/private/tmp/acp-probe/probe.txt" },
+      // Flagged so consumers merge onto the announced call instead of
+      // rendering a second card for one read.
+      isUpdate: true,
+    })
+  })
+
+  it("stays silent on an update that adds nothing", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+    const handlers = capturedHandlersFactory!()
+
+    // Frame 3 from the same trace: a bare keep-alive. No title, no input —
+    // a no-op frame must stay a no-op event, not an empty tool-call.
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: { sessionUpdate: "tool_call_update", toolCallId: "toolu_01Buvi" },
+    })
+    // Frame 4 — completion still yields the result, exactly as before.
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "toolu_01Buvi",
+        status: "completed",
+        rawOutput: { content: "hello from the probe" },
+      },
+    })
+
+    const { value } = await iter.next()
+    expect(value).toMatchObject({
+      kind: "tool-result",
+      toolCallId: "toolu_01Buvi",
+      result: { content: "hello from the probe" },
+    })
+  })
+
+  it("still reports a failed update as an errored result", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+    const handlers = capturedHandlersFactory!()
+
+    await handlers.sessionUpdate({
+      sessionId: "sess-tool",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call-x",
+        status: "failed",
+        rawOutput: "boom",
+      },
+    })
+
+    expect((await iter.next()).value).toMatchObject({
+      kind: "tool-result",
+      isError: true,
+      result: "boom",
+    })
+  })
+})
