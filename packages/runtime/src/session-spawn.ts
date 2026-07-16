@@ -362,10 +362,24 @@ export async function spawnAgentSession(
   // reached.
   const resolved = input.sandbox === undefined ? await resolveAgentAdapter(input.adapter) : null
   if (input.sandbox === undefined && !resolved) {
+    // `resolveAgentAdapter` collapses every failure reason to `null` by
+    // contract (it's injected across a dozen call sites that all assume it
+    // never throws — see its doc comment), so this message can't name the
+    // exact cause the way `resolveAdapter`'s own thrown error can. It CAN
+    // stop asserting "not found" as settled fact: an adapter that resolved
+    // moments ago and now doesn't is most likely mid-rebuild, not
+    // uninstalled — a resolver with a warm last-known-good cache (the CLI's
+    // `resolveAdapter`) already returns successfully through that window,
+    // so reaching this branch at all means either the adapter has never
+    // resolved in this process, or it went unresolvable long enough to
+    // exhaust that grace period.
     return {
       ok: false,
       code: "adapter_not_found",
-      message: `agent_start: adapter "${input.adapter}" not found. Try \`agentproto install <slug>\` first.`,
+      message:
+        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
     }
   }
   // ── Recursion guardrails (WP4) ──────────────────────────────

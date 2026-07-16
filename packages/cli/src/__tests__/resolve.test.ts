@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { resolveAdapter, listInstalledAdapters } from "../registry/resolve.js"
+import { createRequire } from "node:module"
+import { promises as fs } from "node:fs"
+import {
+  resolveAdapter,
+  listInstalledAdapters,
+  listAdaptersWithCatalog,
+  _resetLastKnownGoodForTests,
+  _setLastKnownGoodTtlMsForTests,
+} from "../registry/resolve.js"
+import { CATALOG } from "../registry/catalog.js"
 
 // Regression test for a real bug: `createProprietaryProtocolArm` (inside
 // @agentproto/driver-agent-cli, a package that deliberately does NOT
@@ -105,6 +114,140 @@ describe("listInstalledAdapters — structured models.allowed (provider/mode)", 
 
     const entry = codex?.modelDetails.find((m) => m.id === "gpt-5-codex")
     expect(entry).toEqual({ id: "gpt-5-codex" })
+  })
+})
+
+// Incident regression: a real `pnpm build` (or `tsup --watch`) rewriting an
+// adapter's dist mid-request made `resolveAdapter` throw, and the daemon
+// reported an installed, working adapter as "not installed" — see the PR
+// description for the live-probe evidence that `tsup`'s `clean: true`
+// genuinely deletes `dist/*` before rewriting it (not just briefly
+// unreadable), so a disk-existence check can't tell "rebuilding" from
+// "uninstalled" apart. These tests corrupt a REAL adapter's REAL dist file
+// (no mocking of `resolveAdapter` itself) to reproduce both windows.
+//
+// "opencode" and "pi" are used here (not touched by real resolution
+// anywhere else in this package's test suite) so mutating their dist files
+// can't race a concurrently-running test file.
+const requireFromHere = createRequire(import.meta.url)
+
+async function withMutatedDist<T>(
+  packageName: string,
+  mutate: "delete" | "truncate",
+  fn: () => Promise<T>
+): Promise<T> {
+  const distPath = requireFromHere.resolve(packageName)
+  const original = await fs.readFile(distPath)
+  try {
+    if (mutate === "delete") {
+      await fs.unlink(distPath)
+    } else {
+      await fs.writeFile(distPath, "{")
+    }
+    return await fn()
+  } finally {
+    await fs.writeFile(distPath, original)
+  }
+}
+
+describe("resolveAdapter — last-known-good fallback for a mid-rebuild adapter", () => {
+  it("prefers the cached handle over reporting a previously-resolved adapter as not-installed", async () => {
+    _resetLastKnownGoodForTests()
+    const first = await resolveAdapter("opencode")
+    expect(first.stale).toBeUndefined()
+
+    await withMutatedDist("@agentproto/adapter-opencode", "delete", async () => {
+      // The dominant window this PR fixes: tsup's clean step deletes the
+      // file outright (see the PR description's live-probe measurements),
+      // so a fresh resolveAdapter() call throws a plain module-not-found —
+      // exactly like an uninstalled package, by disk state alone.
+      const second = await resolveAdapter("opencode")
+      expect(second.stale).toBe(true)
+      expect(second.handle).toEqual(first.handle)
+      expect(second.source).toBe(first.source)
+    })
+  })
+
+  it("does not report the fallback as plain 'ready' in adapter_list — a distinct status, no install advice", async () => {
+    _resetLastKnownGoodForTests()
+    await resolveAdapter("opencode")
+
+    await withMutatedDist("@agentproto/adapter-opencode", "delete", async () => {
+      const listed = await listAdaptersWithCatalog(CATALOG)
+      const entry = listed.find((a) => a.slug === "opencode")
+      expect(entry).toBeDefined()
+      expect(entry?.status).not.toBe("ready")
+      expect(entry?.status).not.toBe("supported")
+      expect(entry?.status).toBe("unresolvable")
+      expect(entry?.hint ?? "").not.toMatch(/agentproto install/i)
+    })
+  })
+})
+
+describe("resolveAdapter — regression: a never-resolved adapter is unaffected", () => {
+  it("a genuinely unknown slug still throws the classic 'could not load adapter' error", async () => {
+    await expect(
+      resolveAdapter("totally-not-a-real-adapter-xyz")
+    ).rejects.toThrow(/could not load adapter/)
+  })
+
+  it("listAdaptersWithCatalog still reports a never-resolved catalog entry as 'supported' (not installed)", async () => {
+    const fakeCatalog = [
+      {
+        slug: "totally-not-a-real-adapter-xyz",
+        name: "Fake Adapter",
+        description: "does not exist, for the regression test",
+        packageName: "@agentproto/adapter-totally-not-a-real-adapter-xyz",
+      },
+    ]
+    const listed = await listAdaptersWithCatalog(fakeCatalog)
+    const entry = listed.find((a) => a.slug === "totally-not-a-real-adapter-xyz")
+    expect(entry?.status).toBe("supported")
+    expect(entry?.version).toBe("not installed")
+  })
+})
+
+describe("resolveAdapter — the error text for a transient failure doesn't send the operator to reinstall", () => {
+  it("names 'resolves on disk but could not be imported' instead of 'not installed' when the package IS present but momentarily broken", async () => {
+    _resetLastKnownGoodForTests()
+    await withMutatedDist("@agentproto/adapter-pi", "truncate", async () => {
+      // No prior successful resolve in this process (reset above) and the
+      // file still exists with garbage content — the narrow window this
+      // PR's `AdapterImportFailedError` distinguishes: present, but the
+      // import itself just failed.
+      try {
+        await resolveAdapter("pi")
+        expect.fail("resolveAdapter('pi') should have thrown")
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        expect(message).toMatch(/resolves on disk but could not be imported/)
+        expect(message).not.toMatch(/agentproto install/i)
+        expect(message).not.toMatch(/npm i -g/i)
+      }
+    })
+  })
+})
+
+describe("resolveAdapter — last-known-good is bounded by a TTL, not disk existence", () => {
+  it("stops trusting a stale resolution once the TTL elapses, so a genuinely-removed adapter is reported as not-installed again", async () => {
+    _resetLastKnownGoodForTests()
+    const restoreTtl = _setLastKnownGoodTtlMsForTests(20)
+    try {
+      await resolveAdapter("opencode") // primes the cache while the dist file is intact
+
+      await withMutatedDist("@agentproto/adapter-opencode", "delete", async () => {
+        await new Promise((r) => setTimeout(r, 80)) // outlive the 20ms TTL
+        await expect(resolveAdapter("opencode")).rejects.toThrow()
+
+        const listed = await listAdaptersWithCatalog(CATALOG)
+        const entry = listed.find((a) => a.slug === "opencode")
+        expect(entry?.status).toBe("supported")
+        expect(entry?.status).not.toBe("unresolvable")
+        expect(entry?.status).not.toBe("ready")
+      })
+    } finally {
+      restoreTtl()
+    }
   })
 })
 
