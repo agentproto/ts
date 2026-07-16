@@ -63,7 +63,13 @@ jobs:
       # files well outside its repo). See scripts/lib/path-confine.mjs.
       - name: Run docs-check confinement tests
         run: node --test scripts/path-confine.test.mjs
-        
+
+      # Guards the cli-docs coverage detector (scripts/agentflow/docs.mjs) that
+      # gates `pnpm test` via pretest — the verb-set parse + stale-version regex
+      # ship untested otherwise, and a silent-empty parse would neuter the gate.
+      - name: Run cli-docs coverage tests
+        run: node --test scripts/agentflow/docs.test.mjs
+
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
       # takes down every release until a human notices. pr-338-review declared

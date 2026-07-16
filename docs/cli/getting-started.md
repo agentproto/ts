@@ -7,7 +7,7 @@ A 5-minute walkthrough from `npm install` to a running swarm.
 ```bash
 npm i -g @agentproto/cli
 agentproto --version
-# → agentproto 0.1.0-alpha
+# → agentproto 0.6.0
 ```
 
 The binary is named `agentproto`. `--help` (no args, or `-h`) prints
