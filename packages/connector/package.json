@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/connector",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "@agentproto/connector — ConnectorMcpDescriptor: the portable, host-agnostic description of an MCP connector (how its server runs / is reached + what credentials it needs).",
   "keywords": [
     "agentproto",

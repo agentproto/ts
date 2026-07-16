@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/egress",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/egress — outbound traffic control for agent sandboxes. Mode registry (off / cooperative / strict / paranoid), provider allowlist, transport-agnostic proxy core, audit hooks. Cooperative mode delegates substitution to @agentproto/secrets so the agent never sees raw upstream credentials. Strict / paranoid modes (network-level enforcement via NAT or TLS-MITM) ship as conventions; the helpers land per-host as the sandbox runtimes mature.",
   "keywords": [
     "agentproto",

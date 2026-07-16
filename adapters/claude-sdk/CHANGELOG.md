@@ -1,5 +1,29 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- d425044: Add catalog-sourced billing-credential resolver for all adapters
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [1b282ab]
+- Updated dependencies [1bdc055]
+- Updated dependencies [7b53b8c]
+- Updated dependencies [049c2fe]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [386a573]
+- Updated dependencies [c036f59]
+- Updated dependencies [76747fc]
+- Updated dependencies [d425044]
+- Updated dependencies [2d94149]
+- Updated dependencies [c430b9f]
+- Updated dependencies [94a7e90]
+  - @agentproto/provider-presets@0.3.0
+  - @agentproto/driver-agent-cli@1.0.0
+
 ## 0.2.0
 
 ### Minor Changes

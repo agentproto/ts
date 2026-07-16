@@ -1,5 +1,22 @@
 # @agentproto/acp
 
+## 0.5.0
+
+### Minor Changes
+
+- 0ea6fc1: Add cross-session permission-hold inbox: permissions ls|approve|deny, MCP tools, REST routes
+- 6d4aa4b: Add E2E pairing: daemon identity, pair/v1 handshake, wrapE2E AEAD channel
+- 60792f1: Add E2E daemon pairing: rendezvous broker, pair CLI, daemon registry
+- 8a4d5d5: Add opt-in E2E encryption for the serve --connect tunnel (tunnel-e2e/v1)
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- a32bb69: Bump test timeouts on subprocess/IO-heavy tests that flake under parallel load
+- c8198c6: Fix dropped tool-call arguments from non-terminal ACP tool_call_update frames
+- Updated dependencies [7b53b8c]
+  - @agentproto/define-doctype@0.1.1
+
 ## 0.4.0
 
 ### Minor Changes

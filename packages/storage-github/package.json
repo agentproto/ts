@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/storage-github",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/storage-github — github `WorkspaceSync` provider for @agentproto/storage. Clones a repo on pull, commits with AIP-23 identity on push, and opens PRs per the sync.push.pr_policy. Host-side @octokit/rest for PR creation — no in-box gh dependency.",
   "keywords": [
     "agentproto",

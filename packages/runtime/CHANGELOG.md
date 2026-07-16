@@ -1,5 +1,77 @@
 # @agentproto/runtime
 
+## 0.6.0
+
+### Minor Changes
+
+- 1bdc055: Add xAI provider support and session options passthrough (base-url/auth-token/options-json)
+- ed52691: Surface empty (zero-output, zero-tool) turns with empty:true on session:turn-end
+- 7b6c8d0: Add daemon.authToken config field and --auth-token flag for persistent gateway bearer token
+- 049c2fe: Add generic ACP agent support: curated catalog, config-defined agents, acp verb
+- 0ea6fc1: Add cross-session permission-hold inbox: permissions ls|approve|deny, MCP tools, REST routes
+- 386a573: Add deterministic auth spawn mode (subscription vs api-key) for claude-code
+- c036f59: Explicit credential selection + verifiable auth mode for claude-code spawns
+- 60792f1: Add E2E daemon pairing: rendezvous broker, pair CLI, daemon registry
+- d425044: Add catalog-sourced billing-credential resolver for all adapters
+- 6894d2e: Add named terminal presets via terminalPresets in config.json
+- 6aafd13: Auto-detect workspace from cwd when no workspaceSlug is provided
+- 3639abd: Default pair offer to the hosted rendezvous broker when nothing is configured
+- ed241b8: Add GET /sessions/:id/events/stream SSE endpoint with exactly-once replay→live handoff
+- a63b4bc: Add worktree new verb, worktrees.root config, and provision provenance marker
+- eec7b5d: Add opt-in idempotencyKey to agent_start for retry-safe process spawning
+- ea44602: Add sessions story subcommand and expose runtime/session-story subpath export
+
+### Patch Changes
+
+- 410271d: Accept `id` alias on drive tools; coalesce session_monitor arg shapes
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- 8a4d5d5: Add opt-in E2E encryption for the serve --connect tunnel (tunnel-e2e/v1)
+- af7ab1f: Fix transcript-writer seq collision after daemon restart; add structured VS Code conversation rendering
+- 031735e: Fix workspaceSlug derivation from cwd on terminal and raw spawn paths
+- 33f5fa4: Fix sendPrompt silently dropping interrupt on the blocking prompt arm
+- 769f75f: Re-resolve billing auth on session_restart to prevent silent credential fallback
+- d85e129: Clear frozen in-flight flags on already-terminal ghosts at snapshot load
+- 475249b: Clear frozen in-flight flags on forced session termination (daemon-restart path)
+- 8e7353a: Extract providers-store into a leaf package; fix llm-endpoint boot to inject stored provider keys
+- 40fb9e8: Reject out-of-window contextUsed values instead of surfacing impossible occupancy figures
+- a32bb69: Bump test timeouts on subprocess/IO-heavy tests that flake under parallel load
+- 1549bdd: Close read-path gap for stale out-of-window contextUsed (#364 follow-up)
+- ff4617c: Fix blockedOn latching when a tool fails (error event now releases it)
+- c8198c6: Fix dropped tool-call arguments from non-terminal ACP tool_call_update frames
+- Updated dependencies [1b282ab]
+- Updated dependencies [1bdc055]
+- Updated dependencies [afbf5c4]
+- Updated dependencies [7b53b8c]
+- Updated dependencies [0ea6fc1]
+- Updated dependencies [6d4aa4b]
+- Updated dependencies [60792f1]
+- Updated dependencies [8a4d5d5]
+- Updated dependencies [d425044]
+- Updated dependencies [c430b9f]
+- Updated dependencies [d924e95]
+- Updated dependencies [94a7e90]
+- Updated dependencies [3639abd]
+- Updated dependencies [8e7353a]
+- Updated dependencies [a32bb69]
+- Updated dependencies [e0fbccc]
+- Updated dependencies [c8198c6]
+  - @agentproto/provider-presets@0.3.0
+  - @agentproto/model-catalog@0.3.0
+  - @agentproto/acp@0.5.0
+  - @agentproto/agent@0.2.1
+  - @agentproto/eval-reporters@0.2.1
+  - @agentproto/manifest@0.2.1
+  - @agentproto/mcp-server@0.2.2
+  - @agentproto/provider-kit@0.2.1
+  - @agentproto/redaction@0.2.1
+  - @agentproto/sandbox@0.1.1
+  - @agentproto/secrets@0.2.0
+  - @agentproto/telemetry-langfuse@0.2.1
+  - @agentproto/workflow-loader@0.1.0
+  - @agentproto/workflow-runtime@0.4.0
+  - @agentproto/workflow@0.1.0
+  - @agentproto/providers-store@0.2.0
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/wallet",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/wallet — AIP-49 principal-owned multi-asset wallet primitive. Assets declared ERC-20-style (ref/symbol/decimals/standard/peg/ruleSet) ⊃ partitions (ERC-1410 tranches) ⊃ lots. Event-sourced journal, restriction lattice (no-arbitrage convert), coalescing spend, allowance delegation. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
   "keywords": [
     "agentproto",

@@ -1,5 +1,20 @@
 # @agentproto/mcp-server
 
+## 0.2.2
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- a32bb69: Bump test timeouts on subprocess/IO-heavy tests that flake under parallel load
+- Updated dependencies [7b53b8c]
+  - @agentproto/agent@0.2.1
+  - @agentproto/define-doctype@0.1.1
+  - @agentproto/driver@0.1.3
+  - @agentproto/extension@0.1.2
+  - @agentproto/manifest@0.2.1
+  - @agentproto/routine@0.1.2
+  - @agentproto/tool@0.2.1
+
 ## 0.2.1
 
 ### Patch Changes

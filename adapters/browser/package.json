@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/adapter-browser — browser service adapters for agentproto. Manages Camofox (stealth Firefox) and Bureau (Camofox + MCP capability server) as first-class process handles: health-check, idempotent launch, structured stop.",
   "keywords": [
     "agentproto",

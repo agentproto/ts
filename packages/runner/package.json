@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/runner",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/runner — AIP-17 RUNNER.md reference implementation. A composable schema block defining the `runner` field — engine (in-process / subprocess / sandbox), optional container image, declarative dependency needs, and resource limits — reused by every manifest format that runs code. Permissions (secrets, network) and IO are defined elsewhere; this block scopes only to the process boundary.",
   "keywords": [
     "agentproto",

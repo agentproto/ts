@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/lifecycle",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/lifecycle — AIP-37 LIFECYCLE.md reference implementation. A vocabulary AIP defining the standard lifecycle event names that hosts fire and that policy blocks (storage sync, sandbox lifecycle, etc.) reference. Not a runtime — just a shared language so configs across hosts mean the same thing.",
   "keywords": [
     "agentproto",

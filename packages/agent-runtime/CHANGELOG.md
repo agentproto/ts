@@ -1,5 +1,14 @@
 # @agentproto/agent-runtime
 
+## 0.1.1
+
+### Patch Changes
+
+- 7b53b8c: Relicense all packages from MIT to Apache-2.0
+- Updated dependencies [7b53b8c]
+  - @agentproto/cli-exec@0.1.0
+  - @agentproto/telemetry@0.2.1
+
 ## 0.1.0
 
 ### Minor Changes

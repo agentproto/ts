@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/cli-exec",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0",
   "description": "Minimal one-shot CLI execution helper — spawn a command, feed a prompt over stdin, capture stdout, with timeout + AbortSignal. Plus a tolerant parser for agent CLIs that emit a `--output-format json` result envelope. Shared by anything that drives a headless agent CLI (claude --print, gemini, goose, …).",
   "keywords": [
     "cli",

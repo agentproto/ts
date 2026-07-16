@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/canvakit",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0",
   "description": "@agentproto/canvakit — AIP-5 TEMPLATE.md reference implementation. A markdown + frontmatter format for templates that declare named data sources, resolve them in parallel, and re-render when data changes.",
   "keywords": [
     "agentproto",
