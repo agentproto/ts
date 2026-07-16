@@ -181,8 +181,38 @@ export type SessionActivity =
   | "working" // a turn is in flight (model generating, or a tool running)
   | "idle" // alive, no turn — parked, ready for a prompt
   | "failed" // ended badly: status "error", or a non-zero exit it wasn't asked for
-  | "stopped" // ended because someone stopped it
-  | "done" // ended cleanly, on its own
+  | "stopped" // killed while a turn was in flight, or before it ever finished one
+  | "done" // ended cleanly on its own, OR killed only after its last turn finished
+
+/**
+ * `killed` alone doesn't say whether the session was cut off mid-work or
+ * had already finished it — a supervisor reaping a child that reported back
+ * looks identical to a human pressing Stop mid-turn: same `status: "killed"`,
+ * same `exitCode: null`. Reading `busy` off a dead descriptor doesn't answer
+ * it either — `runAgentTurn`'s `finally` is what clears `busy`, and it never
+ * runs for a generator that's never resumed, so a killed-mid-tool-call
+ * session can carry a stale `busy: true` forever. `turnsCompleted` alone is
+ * too weak too: a session killed mid-SECOND-turn also has
+ * `turnsCompleted: 1`.
+ *
+ * `killedMidTurn` is the daemon's answer to the one question that actually
+ * matters — was a turn in flight the INSTANT it called `kill()` — captured
+ * before anything could go stale (see SessionDescriptor.killedMidTurn).
+ * Combined with `turnsCompleted`, that's enough to tell the three endings
+ * apart: interrupted mid-turn is `stopped` regardless of how many turns
+ * came before it; idle with nothing ever finished is also `stopped` (there
+ * is no completed work to call `done`); only idle-after-finishing-something
+ * reads as `done` — whether it was a supervisor reaping a child that
+ * reported back or a human stopping an already-idle session, the work was
+ * genuinely done either way.
+ */
+function killedActivityFor(session: SessionDescriptor): SessionActivity {
+  const finishedBeforeKill =
+    session.killedMidTurn !== true &&
+    typeof session.turnsCompleted === "number" &&
+    session.turnsCompleted > 0
+  return finishedBeforeKill ? "done" : "stopped"
+}
 
 /**
  * Classify a session onto the activity axis.
@@ -196,7 +226,7 @@ export function activityFor(session: SessionDescriptor, now?: number): SessionAc
     // works, so a stopped session carries exitCode 143 and `isErrored` calls
     // it a failure. Two sessions on a real daemon were painted red purely
     // because the user pressed Stop. Being stopped is not failing.
-    if (session.status === "killed") return "stopped"
+    if (session.status === "killed") return killedActivityFor(session)
     return isErrored(session) ? "failed" : "done"
   }
   if (isAwaiting(session)) return "needs-you"

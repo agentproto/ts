@@ -344,6 +344,23 @@ export interface SessionDescriptor {
    *  the daemon's. Lets the UI show "crashed with the daemon" instead of a
    *  bare "killed" that reads as deliberate. */
   endedReason?: "daemon-restart"
+  /** Whether a turn was actually in flight the INSTANT `status` flipped to
+   *  "killed" — captured before anything else runs, because `busy` itself
+   *  cannot be trusted after the fact: `runAgentTurn`'s `finally` is what
+   *  clears `busy`, and that `finally` never fires for a generator that's
+   *  never resumed (a killed child mid-tool-call, or a dead daemon), so a
+   *  post-hoc read of `busy` on a killed session may just be showing you
+   *  whatever it froze at. This field exists because `status: "killed"`
+   *  alone can't tell a human's Stop mid-turn apart from a supervisor
+   *  reaping a child that had already finished — both leave `exitCode:
+   *  null`, and `turnsCompleted` alone is too weak (a session killed
+   *  mid-SECOND-turn also has `turnsCompleted: 1`). `killedMidTurn: true`
+   *  paired with any `turnsCompleted` means interrupted; `false`/absent
+   *  alongside `turnsCompleted > 0` means the work was done before the
+   *  kill — see activityFor in the vscode package for the read. Set by
+   *  `kill()`, `shutdownImpl`'s force-kill, and `loadHistorySnapshot`'s
+   *  wasAlive reclassification; absent for every other terminal path. */
+  killedMidTurn?: boolean
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -2768,6 +2785,10 @@ export function createSessionsRegistry(opts?: {
       ) {
         return false
       }
+      // Read BEFORE the flip below — see killedMidTurn's docblock: this is
+      // the one moment `busy` is still guaranteed live, not whatever it was
+      // last set to by a `finally` that may never run again.
+      rt.desc.killedMidTurn = rt.desc.busy === true
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       // Close agent session first (graceful protocol shutdown), then
@@ -2947,6 +2968,10 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status = "killed"
         rt.desc.endedAt = nowIso
         rt.desc.endedReason = "daemon-restart"
+        // Same "read busy before it's cleared" rule as kill() — see
+        // killedMidTurn's docblock. clearInFlightFlags below zeroes busy
+        // right after, so this is the last honest look at it.
+        rt.desc.killedMidTurn = rt.desc.busy === true
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
@@ -3075,6 +3100,12 @@ function loadHistorySnapshot(
           status: "killed",
           endedAt: desc.endedAt ?? now,
           endedReason: "daemon-restart",
+          // Read from the persisted `desc`, not `reclassified` —
+          // `clearInFlightFlags` below zeroes `busy` on `reclassified`, and
+          // this is the last honest look at what the snapshot actually
+          // recorded. Same rule as kill()/shutdownImpl — see killedMidTurn's
+          // docblock.
+          killedMidTurn: desc.busy === true,
         }
       : desc
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/

@@ -211,9 +211,47 @@ describe("activityFor", () => {
     // Stop sends SIGTERM, so a stopped session carries exitCode 143 and the
     // old isErrored() check painted it red. Two sessions on a real daemon
     // were marked as failures purely because the user pressed Stop.
+    // Regression guard for the sessionsTree.logic.ts:194 fix — must never
+    // regress into "failed" no matter what killedMidTurn/turnsCompleted say.
     expect(activityFor(session({ status: "killed", exitCode: 143 }))).toBe("stopped")
     expect(activityFor(session({ status: "killed", exitCode: 137 }))).toBe("stopped")
     expect(activityFor(session({ status: "killed" }))).toBe("stopped")
+    expect(
+      activityFor(session({ status: "killed", exitCode: 143, killedMidTurn: true, turnsCompleted: 3 })),
+    ).toBe("stopped")
+  })
+
+  it("a child reaped by its supervisor AFTER finishing reads as complete, not stopped", () => {
+    // The reported bug, verbatim: a supervisor's ordinary post-success
+    // cleanup — kill() called while idle, after the child's only turn had
+    // already completed. `killedMidTurn: false` is what the daemon captured
+    // at the instant kill() ran, honestly, before busy could go stale.
+    expect(
+      activityFor(session({ status: "killed", killedMidTurn: false, turnsCompleted: 1 })),
+    ).toBe("done")
+    // Same read whether killedMidTurn is explicitly false or simply absent
+    // (a fresh kill() always sets it, but nothing else does).
+    expect(activityFor(session({ status: "killed", turnsCompleted: 2 }))).toBe("done")
+  })
+
+  it("a session killed by the user MID-TURN still reads as stopped, even with prior completed turns", () => {
+    // turnsCompleted alone is too weak: a session killed mid-SECOND-turn
+    // also has turnsCompleted: 1, identical to the reaped-after-finish case
+    // above. killedMidTurn: true — captured at the instant kill() ran — is
+    // what tells them apart.
+    expect(
+      activityFor(session({ status: "killed", killedMidTurn: true, turnsCompleted: 1 })),
+    ).toBe("stopped")
+  })
+
+  it("a session killed before ever finishing a turn reads as stopped, not done", () => {
+    // Nothing to call "complete" — killedMidTurn is false/absent, but
+    // turnsCompleted is 0/absent too, so there is no finished work to credit.
+    expect(activityFor(session({ status: "killed", turnsCompleted: 0 }))).toBe("stopped")
+  })
+
+  it("a session that exited non-zero still reads as failed", () => {
+    expect(activityFor(session({ status: "exited", exitCode: 7 }))).toBe("failed")
   })
 
   it("ranks what needs a human above everything else", () => {
