@@ -787,6 +787,84 @@ function buildClientHandlers(
   } as AcpClientHandlers
 }
 
+/**
+ * Nothing worth calling a tool's input: absent, `{}`, or `[]`. All three are
+ * what an agent sends when it hasn't decided the input yet — the claude-code
+ * bridge announces a read with `rawInput: {}` and `content: []` before it
+ * knows the path.
+ */
+function isEmptyish(value: unknown): boolean {
+  if (value == null) return true
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === "object") return Object.keys(value as object).length === 0
+  return false
+}
+
+/**
+ * Derive a tool call's `arguments` from an ACP tool_call / tool_call_update
+ * payload, or undefined when the payload says nothing about the input.
+ *
+ * Preference order: `rawInput` (the real thing) → the file paths in
+ * `locations` (some agents describe a read only that way) → `content`. An
+ * EMPTY `rawInput` counts as "nothing", not as "the input is {}" — otherwise
+ * the placeholder the agent sends before it knows the input would outrank the
+ * locations it did send, and would later look indistinguishable from a real
+ * no-argument call.
+ */
+function toolCallArguments(update: Record<string, unknown>): unknown | undefined {
+  const rawInput = update.rawInput
+  if (!isEmptyish(rawInput)) return rawInput
+
+  const locations = update.locations as
+    | Array<{ path: string; line?: number | null }>
+    | undefined
+  // Some tool calls (e.g. a bare "read" with no structured input) carry only
+  // `locations` — fold the file paths into `arguments` so they survive
+  // downstream instead of being dropped. Reached whenever rawInput said
+  // nothing, including the `{}` placeholder: a real path beats a placeholder.
+  if (locations && locations.length > 0) {
+    const first = locations[0]!
+    return locations.length === 1
+      ? { path: first.path, ...(first.line != null ? { line: first.line } : {}) }
+      : { paths: locations.map(location => location.path) }
+  }
+
+  if (!isEmptyish(update.content)) return update.content
+  // Distinguish "the agent sent an empty input" from "the agent said nothing
+  // about the input". The announcement keeps rendering the former as-is; an
+  // enrichment carrying the latter isn't worth emitting at all.
+  return rawInput != null ? rawInput : undefined
+}
+
+/**
+ * Build the tool-call ENRICHMENT for a non-terminal `tool_call_update` — the
+ * frame where the claude-code bridge delivers the input and the real title
+ * for a call it already announced as a bare "Read File" with `rawInput: {}`.
+ *
+ * Returns null when the update adds nothing (e.g. a bare `{_meta, toolCallId}`
+ * keep-alive), so a no-op frame stays a no-op event.
+ */
+function toolCallEnrichment(
+  sessionId: string,
+  update: Record<string, unknown>,
+): StreamEvent | null {
+  const toolCallId = update.toolCallId as string | undefined
+  if (!toolCallId) return null
+  const args = toolCallArguments(update)
+  const title = typeof update.title === "string" ? update.title : undefined
+  if (args === undefined && title === undefined) return null
+  return {
+    kind: "tool-call",
+    sessionId,
+    toolCallId,
+    // "" when the update carried no title — consumers merge only non-empty
+    // names, so an untitled enrichment can't erase the announced one.
+    toolName: title ?? "",
+    arguments: args,
+    isUpdate: true,
+  }
+}
+
 function translateSessionUpdate(
   sessionId: string,
   update: Record<string, unknown>,
@@ -812,30 +890,12 @@ function translateSessionUpdate(
       // informative instead of generic.
       const toolName =
         (update.title as string) ?? (update.kind as string) ?? "tool"
-      const locations = update.locations as
-        | Array<{ path: string; line?: number | null }>
-        | undefined
-      let args: unknown = update.rawInput ?? update.content ?? {}
-      // Some tool calls (e.g. a bare "read" with no structured input)
-      // carry only `locations` — fold the file paths into `arguments`
-      // so they survive downstream instead of being dropped.
-      if (update.rawInput == null && locations && locations.length > 0) {
-        args =
-          locations.length === 1
-            ? {
-                path: locations[0]!.path,
-                ...(locations[0]!.line != null
-                  ? { line: locations[0]!.line }
-                  : {}),
-              }
-            : { paths: locations.map((location) => location.path) }
-      }
       return {
         kind: "tool-call",
         sessionId,
         toolCallId,
         toolName,
-        arguments: args,
+        arguments: toolCallArguments(update) ?? {},
       }
     }
     case "tool_call_update": {
@@ -849,7 +909,20 @@ function translateSessionUpdate(
           isError: status === "failed",
         }
       }
-      return null
+      // A non-terminal update is where several agents actually DELIVER the
+      // call's input. Captured off the wire from the claude-code bridge:
+      //
+      //   tool_call        title="Read File"  rawInput={}   locations=[]
+      //   tool_call_update title="Read /tmp/probe.txt"
+      //                    rawInput={"file_path":"/tmp/probe.txt"}
+      //                    locations=[{path:"/tmp/probe.txt",line:1}]
+      //   tool_call_update status=completed   rawOutput=…
+      //
+      // The middle frame has no `status`, so returning null here discarded the
+      // arguments AND the real title of ~95% of that adapter's tool calls —
+      // which is why they rendered as "Read File" with an empty input while
+      // adapters that inline their input on the initial call looked fine.
+      return toolCallEnrichment(sessionId, update)
     }
     case "plan": {
       const entries = (update.entries as Array<Record<string, unknown>>) ?? []

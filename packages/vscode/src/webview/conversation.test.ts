@@ -23,6 +23,56 @@ function freshSeq(): void {
   seq = 0
 }
 
+describe("reduceConversation — tool-call enrichment", () => {
+  it("merges a repeat tool-call onto the announced one instead of opening a second card", () => {
+    freshSeq()
+    // The claude-code bridge's real shape: announce with a bare title and no
+    // input, then fill both in (see @agentproto/acp's tool_call_update arm).
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "Read File", arguments: {} }),
+      rec({
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "Read /tmp/probe.txt",
+        arguments: { file_path: "/tmp/probe.txt" },
+      }),
+      rec({ kind: "tool-result", toolCallId: "t1", result: "hello", isError: false }),
+    ])
+
+    const tools = conv.turns.flatMap(t => t.segments).filter(s => s.kind === "tool")
+    expect(tools).toHaveLength(1) // one read, one card
+    expect(tools[0]).toMatchObject({
+      id: "tool-t1",
+      toolName: "Read /tmp/probe.txt",
+      arguments: { file_path: "/tmp/probe.txt" },
+      result: "hello",
+      status: "ok",
+    })
+  })
+
+  it("never lets an enrichment erase what the announcement said", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "Read File", arguments: { a: 1 } }),
+      // toolName "" is what the acp client emits for an untitled enrichment.
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "" }),
+    ])
+    const tool = conv.turns.flatMap(t => t.segments).find(s => s.kind === "tool")
+    expect(tool).toMatchObject({ toolName: "Read File", arguments: { a: 1 } })
+  })
+
+  it("stays idempotent under replay — re-reducing the same records yields the same segments", () => {
+    freshSeq()
+    const records = [
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "Read File", arguments: {} }),
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "Read x.ts", arguments: { path: "x.ts" } }),
+    ]
+    // Every poll re-reduces the accumulated list; a merge that appended would
+    // grow the timeline on each tick.
+    expect(reduceConversation("s1", records)).toEqual(reduceConversation("s1", records))
+  })
+})
+
 describe("reduceConversation", () => {
   it("stamps the schema version and session id", () => {
     freshSeq()

@@ -208,6 +208,22 @@ export function reduceConversation(
         break
       }
       case "tool-call": {
+        // A repeat tool-call for a KNOWN id enriches the announced call; it
+        // does not open a second one. ACP agents may announce a call before
+        // they know its input — the claude-code bridge announces
+        // `{title: "Read File", rawInput: {}}` and only afterwards sends the
+        // real `{file_path: …}` plus a better title (see @agentproto/acp's
+        // tool_call_update handling). Merging keeps one card per call, and
+        // keeps the reduce idempotent under replay: the same records always
+        // fold to the same segments.
+        const known = rec.toolCallId ? toolIndex.get(rec.toolCallId) : undefined
+        if (known) {
+          // Only ever ADD information — an untitled or argument-less
+          // enrichment must not erase what the announcement already told us.
+          if (rec.toolName) known.toolName = rec.toolName
+          if (rec.arguments !== undefined) known.arguments = rec.arguments
+          break
+        }
         const turn = openAssistant(rec)
         const seg: ToolSegment = {
           kind: "tool",

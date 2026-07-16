@@ -262,6 +262,11 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             toolCallId: evt.toolCallId,
             toolName: evt.toolName,
             arguments: evt.arguments,
+            // Carried through so a replay can tell an ENRICHMENT of an
+            // announced call from a genuine second call. Readers merge by
+            // toolCallId either way, but a record that silently drops the
+            // distinction can't be reasoned about after the fact.
+            ...(evt.isUpdate ? { isUpdate: true } : {}),
           })
           break
         case "tool-result":

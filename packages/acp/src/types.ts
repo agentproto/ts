@@ -131,7 +131,29 @@ export type AcpHandle = Readonly<AcpDefinition>
  */
 export type StreamEvent =
   | { kind: "text-delta"; sessionId: string; text: string }
-  | { kind: "tool-call"; sessionId: string; toolCallId: string; toolName: string; arguments: unknown }
+  | {
+      kind: "tool-call"
+      sessionId: string
+      toolCallId: string
+      toolName: string
+      arguments: unknown
+      /**
+       * True when this event ENRICHES a call already announced under the same
+       * `toolCallId` rather than announcing a new one.
+       *
+       * ACP lets an agent announce a call before it knows the details and fill
+       * them in afterwards. The claude-code bridge does exactly that: its
+       * `tool_call` carries `title: "Read File"` with `rawInput: {}`, and the
+       * FOLLOWING `tool_call_update` carries `rawInput: {file_path: …}` plus a
+       * real title. Consumers must merge an update onto the existing call
+       * (keyed by `toolCallId`) rather than rendering a second card, and must
+       * not count it as a fresh call for logging or blocked-on purposes.
+       *
+       * `toolName` is `""` when the update carried no title — merge only
+       * non-empty names so an untitled enrichment can't erase a good one.
+       */
+      isUpdate?: boolean
+    }
   | { kind: "tool-result"; sessionId: string; toolCallId: string; result: unknown; isError?: boolean }
   | { kind: "thought"; sessionId: string; text: string }
   | {

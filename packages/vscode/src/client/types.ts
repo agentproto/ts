@@ -176,6 +176,11 @@ export interface SessionEventRecord {
   toolCallId?: string
   toolName?: string
   arguments?: unknown
+  /** True when a "tool-call" record ENRICHES a call already announced under
+   *  the same toolCallId (an agent that announced before it knew the input),
+   *  rather than announcing a new one. reduceConversation merges by
+   *  toolCallId regardless, so this is descriptive rather than load-bearing. */
+  isUpdate?: boolean
   result?: unknown
   isError?: boolean
   reason?: string
