@@ -65,7 +65,7 @@ export const xaiPack: ModelPack = {
 export const anthropicPack: ModelPack = {
   id: 'anthropic',
   label: 'Anthropic (direct)',
-  description: 'Claude models routed directly to api.anthropic.com via ANTHROPIC_API_KEY',
+  description: 'Claude models routed directly to api.anthropic.com',
   models: {
     'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
     'claude-sonnet-5': { provider: 'anthropic', model: 'claude-sonnet-5' },
@@ -75,6 +75,9 @@ export const anthropicPack: ModelPack = {
     // packages/model-catalog/src/llm/context-windows.generated.ts). Do not
     // "fix" this to match the other entries — that would 404 upstream.
     'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+    // claude-fable-5 is registered in the model catalog (catalog.ts) and
+    // context-windows.generated.ts with confirmed pricing. The model ID is
+    // used as-is because Anthropic exposes it without a datestamp alias.
     'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
   },
 };
