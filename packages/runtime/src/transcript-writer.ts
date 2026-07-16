@@ -122,6 +122,19 @@ interface WriterState {
   thoughtBuf: string
   textDebounce: ReturnType<typeof setTimeout> | null
   thoughtDebounce: ReturnType<typeof setTimeout> | null
+  /**
+   * Latest un-written tool-call ENRICHMENT per toolCallId — the same
+   * coalescing textBuf/thoughtBuf do, for the same reason.
+   *
+   * An ACP agent streams a tool's `rawInput` as the model types it, so one
+   * call arrives as a run of growing updates:
+   *   {} → {adapter} → {adapter,cwd} → {adapter,cwd,role} → {…,prompt} → …
+   * Writing each would put six records on disk for one `agent_start`, and
+   * only the last is true. They're superseding snapshots, not increments:
+   * keep the newest and write it once, when something else needs ordering
+   * around it (see flushBuffers).
+   */
+  toolUpdates: Map<string, Record<string, unknown>>
 }
 
 export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptWriter {
@@ -148,6 +161,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
       thoughtBuf: "",
       textDebounce: null,
       thoughtDebounce: null,
+      toolUpdates: new Map(),
     }
     states.set(sessionId, state)
     return state
@@ -189,12 +203,21 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
     writeRecord(sessionId, state, { kind: "thought", sessionId, text })
   }
 
-  /** Flush both coalescing buffers as FINAL (non-partial) records — called
-   *  before any non text/thought event so on-disk order matches wall-clock
-   *  order even when a partial line was still sitting in the buffer. */
+  /** Write the newest held enrichment for each in-flight tool call. */
+  const flushToolUpdates = (sessionId: string, state: WriterState): void => {
+    if (state.toolUpdates.size === 0) return
+    const held = [...state.toolUpdates.values()]
+    state.toolUpdates.clear()
+    for (const record of held) writeRecord(sessionId, state, record)
+  }
+
+  /** Flush every coalescing buffer as FINAL (non-partial) records — called
+   *  before any other event so on-disk order matches wall-clock order even
+   *  when a partial line, or a still-growing tool input, was still held. */
   const flushBuffers = (sessionId: string, state: WriterState): void => {
     flushThoughtBuf(sessionId, state)
     flushTextBuf(sessionId, state)
+    flushToolUpdates(sessionId, state)
   }
 
   const scheduleTextDebounce = (sessionId: string, state: WriterState): void => {
@@ -254,9 +277,8 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           if (state.thoughtBuf) scheduleThoughtDebounce(sessionId, state)
           break
         }
-        case "tool-call":
-          flushBuffers(sessionId, state)
-          writeRecord(sessionId, state, {
+        case "tool-call": {
+          const record = {
             kind: "tool-call",
             sessionId,
             toolCallId: evt.toolCallId,
@@ -267,8 +289,24 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             // toolCallId either way, but a record that silently drops the
             // distinction can't be reasoned about after the fact.
             ...(evt.isUpdate ? { isUpdate: true } : {}),
-          })
+          }
+          // An enrichment is a superseding SNAPSHOT of the call's input, and
+          // the agent emits one per token as the model types it. Hold the
+          // newest instead of writing all of them — flushBuffers puts it on
+          // disk the moment anything else needs ordering around it (the
+          // tool-result, the next call, a text delta, turn-end). Deliberately
+          // no flushBuffers here: that's what lets consecutive updates for the
+          // same call collapse into one record.
+          if (evt.isUpdate && evt.toolCallId) {
+            state.toolUpdates.set(evt.toolCallId, record)
+            break
+          }
+          // The announcement is written at once — it's what makes the step
+          // appear, and a pending row the user can see is the whole point.
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, record)
           break
+        }
         case "tool-result":
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, {
