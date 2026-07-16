@@ -21,6 +21,8 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 
+import { registerOutputDocuments, type OutputDocuments } from "../services/outputDocument.js"
+import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
 import { TranscriptPanelController } from "./transcriptPanelController.js"
@@ -43,6 +45,10 @@ export function registerTranscriptPanels(
 ): TranscriptPanels {
   const panels = new Map<string, vscode.WebviewPanel>()
   let activeId: string | undefined
+  // One provider for every panel: the scheme is registered once per
+  // extension activation, and each document's URI is already unique per
+  // session/segment/field.
+  const outputDocs = registerOutputDocuments(ctx)
 
   return {
     open(session: SessionDescriptor): void {
@@ -92,7 +98,7 @@ export function registerTranscriptPanels(
         panel.webview.onDidReceiveMessage(async (raw: unknown) => {
           if (!isWebviewMessage(raw)) return
           try {
-            await handleWebviewMessage(raw, controller)
+            await handleWebviewMessage(raw, controller, outputDocs)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             void vscode.window.showErrorMessage(`agentproto: ${message}`)
@@ -128,6 +134,7 @@ export function registerTranscriptPanels(
 async function handleWebviewMessage(
   msg: WebviewMessage,
   controller: TranscriptPanelController,
+  outputDocs: OutputDocuments,
 ): Promise<void> {
   switch (msg.type) {
     case "ready":
@@ -139,6 +146,19 @@ async function handleWebviewMessage(
     case "interruptSend":
       await controller.onSend(msg.text, true)
       return
+    case "openToolIo": {
+      const doc = controller.resolveToolIo(msg.segmentId, msg.field)
+      if (!doc) {
+        // The only way here is a call whose result hasn't landed yet — say
+        // that, rather than opening a blank tab and looking broken.
+        void vscode.window.showInformationMessage(
+          `agentproto: this tool call has no ${msg.field} yet.`,
+        )
+        return
+      }
+      await outputDocs.show(doc.name, doc.text)
+      return
+    }
   }
 }
 
@@ -355,17 +375,45 @@ export function buildHtml(nonce: string): string {
       color: var(--vscode-descriptionForeground);
       margin: 4px 0 2px;
     }
+    /* Clamped to TOOL_IO_MAX_LINES rows and clipped horizontally — a tool
+       card shows what the call was, not what it returned in full. pre
+       (not pre-wrap) is deliberate: wrapping one 900-char line would blow
+       the whole line budget on a single line, so long lines clip and the
+       block opens in an editor on click. */
     .tool-args, .tool-result {
       margin: 0;
       background: var(--vscode-editor-background);
       padding: 6px 8px;
       border-radius: 4px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
+      overflow: hidden;
+      white-space: pre;
+      text-overflow: ellipsis;
       font-family: var(--vscode-editor-font-family);
       font-size: 0.9em;
+      line-height: 1.4;
+      cursor: pointer;
     }
+    .tool-args:hover, .tool-result:hover {
+      outline: 1px solid var(--vscode-focusBorder);
+    }
+    /* "Cut here" — a dashed edge, not a fade. The preview is exactly
+       MAX_IO_LINES tall, so a gradient mask would dissolve the last line the
+       user can actually read in exchange for saying what the link below
+       already says outright. */
+    .tool-io-clamped {
+      border-bottom: 1px dashed var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .tool-io-open {
+      display: inline-block;
+      margin: 2px 0 4px;
+      font-size: 0.8em;
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-io-open:hover { text-decoration: underline; }
     .tool-pending-row {
       display: flex;
       align-items: center;
@@ -654,6 +702,10 @@ export function buildHtml(nonce: string): string {
   <script nonce="${nonce}">
     (function() {
       const vscode = acquireVsCodeApi();
+      // Interpolated from the host's TOOL_IO_MAX_LINES, which is what actually
+      // performs the clamp — the two can never disagree about how many lines
+      // are on screen, so "N more" is always arithmetic the user can trust.
+      const MAX_IO_LINES = ${TOOL_IO_MAX_LINES};
       const headerTitle = document.getElementById('header-title');
       const statusChip = document.getElementById('status-chip');
       const headerBlocked = document.getElementById('header-blocked');
@@ -933,6 +985,30 @@ export function buildHtml(nonce: string): string {
         return e;
       }
 
+      // One side (input/output) of a tool card: a clamped <pre> that opens
+      // the FULL value in a read-only editor tab when clicked.
+      //
+      // The block is always clickable, not only when clamped: the clamped
+      // flag means "lines were dropped", which the host can prove — but a
+      // single line 900 chars wide is clipped by CSS and the host has no way
+      // to know it. Clicking anywhere therefore always works; the explicit
+      // link only appears when we can honestly say how much is hidden.
+      function appendToolIo(node, seg, field, className, html, clamped, lines) {
+        const pre = el('pre', className + (clamped ? ' tool-io-clamped' : ''));
+        pre.innerHTML = html;
+        pre.title = 'Click to open the full ' + field + ' in an editor';
+        const open = () => vscode.postMessage({ type: 'openToolIo', segmentId: seg.id, field: field });
+        pre.addEventListener('click', open);
+        node.appendChild(pre);
+        if (clamped) {
+          const hidden = lines - MAX_IO_LINES;
+          const link = el('span', 'tool-io-open',
+            '⤢ open ' + lines + ' lines (' + hidden + ' more)');
+          link.addEventListener('click', open);
+          node.appendChild(link);
+        }
+      }
+
       // Cheap content-equality check for a segment: segments are plain,
       // host-built data (ids/strings/numbers) rebuilt fresh on every present,
       // so JSON.stringify is a safe, fast stand-in for a recursive deep-equal
@@ -994,9 +1070,7 @@ export function buildHtml(nonce: string): string {
             while (summary.nextSibling) node.removeChild(summary.nextSibling);
             if (seg.argsText !== undefined) {
               node.appendChild(el('div', 'tool-field-label', 'input'));
-              const p = el('pre', 'tool-args');
-              p.innerHTML = seg.argsText;
-              node.appendChild(p);
+              appendToolIo(node, seg, 'input', 'tool-args', seg.argsText, seg.argsClamped, seg.argsLines);
             }
             if (seg.status === 'pending') {
               const row = el('div', 'tool-pending-row');
@@ -1014,9 +1088,7 @@ export function buildHtml(nonce: string): string {
             }
             if (seg.resultText !== undefined) {
               node.appendChild(el('div', 'tool-field-label', 'output'));
-              const p = el('pre', 'tool-result');
-              p.innerHTML = seg.resultText;
-              node.appendChild(p);
+              appendToolIo(node, seg, 'output', 'tool-result', seg.resultText, seg.resultClamped, seg.resultLines);
             }
             return;
           }

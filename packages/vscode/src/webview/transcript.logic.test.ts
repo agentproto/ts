@@ -13,6 +13,7 @@ import {
   isExited,
   sendFailureTitle,
   statusChip,
+  toolIoDocumentName,
 } from "./transcript.logic.js"
 
 function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
@@ -198,5 +199,33 @@ describe("classifySendFailure", () => {
 
   it("does not mistake a session id containing 409 for a busy rejection", () => {
     expect(classifySendFailure("POST /sessions/sess_409abc/prompt failed: HTTP 500 boom")).toBe("other")
+  })
+})
+
+describe("toolIoDocumentName", () => {
+  it("names the tab after the tool, the side, and a stable id suffix", () => {
+    expect(toolIoDocumentName("Bash", "output", "tool-toolu_01ab9c3f", false)).toBe(
+      "Bash output (ab9c3f).log",
+    )
+    expect(toolIoDocumentName("Bash", "input", "tool-toolu_01ab9c3f", true)).toBe(
+      "Bash input (ab9c3f).json",
+    )
+  })
+
+  it("survives a tool name that is a file path — it becomes a URI segment", () => {
+    // agentproto tool names embed their target ("read: /Volumes/…/index.ts").
+    // Left raw, the slashes would fabricate extra URI path segments and the
+    // tab would be titled "index.ts".
+    const name = toolIoDocumentName("read: /Volumes/SSD/Code/src/index.ts", "output", "seg-12", false)
+    expect(name).not.toContain("/")
+    expect(name).toMatch(/\.log$/)
+  })
+
+  it("caps a very long name and still falls back when there is no name at all", () => {
+    const long = toolIoDocumentName("x".repeat(300), "input", "seg-1", false)
+    // An untruncated name renders as an unreadable tab.
+    expect(long.length).toBeLessThan(70)
+    expect(toolIoDocumentName(undefined, "input", "seg-1", false)).toBe("tool input (seg1).log")
+    expect(toolIoDocumentName("///", "input", "seg-1", false)).toBe("tool input (seg1).log")
   })
 })

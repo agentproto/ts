@@ -75,7 +75,14 @@ labels in the tracker.
 
 `packages/vscode` contains the private `agentproto-vscode` extension: local
 operational views for daemon sessions and permissions, plus commands to manage
-agents from the editor. Build a versioned installable archive from that package:
+agents from the editor. Every push to `main` that touches `packages/vscode`
+builds a fresh VSIX and publishes it as a GitHub release asset (tag
+`vscode-v<version>-<sha>`) — grab the latest one from
+[Releases](https://github.com/agentproto/ts/releases) and install it through
+VS Code's **Extensions: Install from VSIX...** command. The `.vsix` itself is
+a build artifact and is never committed to the repo.
+
+To build one yourself instead:
 
 ```bash
 cd packages/vscode
@@ -83,10 +90,8 @@ pnpm package
 unzip -t agentproto-vscode-*.vsix
 ```
 
-The resulting `agentproto-vscode-<version>.vsix` can be installed through VS
-Code's **Extensions: Install from VSIX...** command. See
-[`packages/vscode/README.md`](./packages/vscode/README.md) for development and
-verification commands.
+See [`packages/vscode/README.md`](./packages/vscode/README.md) for
+development and verification commands.
 
 ## Packages
 

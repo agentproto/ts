@@ -37,4 +37,14 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage("ready")).toBe(false)
     expect(isWebviewMessage(42)).toBe(false)
   })
+
+  it("accepts openToolIo only with a known field", () => {
+    expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1", field: "input" })).toBe(true)
+    expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1", field: "output" })).toBe(true)
+    // `field` indexes straight into the tool segment, so anything else is
+    // refused at the boundary rather than silently resolving to undefined.
+    expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1", field: "stdout" })).toBe(false)
+    expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1" })).toBe(false)
+    expect(isWebviewMessage({ type: "openToolIo", field: "input" })).toBe(false)
+  })
 })

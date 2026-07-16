@@ -1,0 +1,61 @@
+name: VS Code extension release
+
+# The vsix used to be built locally and committed straight into
+# packages/vscode/ — a binary that two branches touching the extension in
+# the same window would inevitably conflict on merging. It's a build
+# artifact now (gitignored, see .gitignore), and this workflow is what makes
+# it officially available: every push to main that touches the package
+# builds a fresh VSIX and attaches it to a GitHub release.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/vscode/**'
+  workflow_dispatch:  # manual (re)build, e.g. to recover from a failed run
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # create the release + tag
+
+jobs:
+  release:
+    name: Build + publish VSIX
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package the extension
+        run: pnpm --filter agentproto-vscode run package
+
+      - name: Publish VSIX as a GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./packages/vscode/package.json').version")
+          sha=$(git rev-parse --short HEAD)
+          tag="vscode-v${version}-${sha}"
+          vsix=$(ls packages/vscode/*.vsix)
+          gh release create "$tag" "$vsix" \
+            --title "agentproto VS Code extension v${version} (${sha})" \
+            --notes "Automated build from $(git rev-parse HEAD) on main. Install with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
+            --latest=false
