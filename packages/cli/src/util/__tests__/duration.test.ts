@@ -124,26 +124,60 @@ describe("parseDuration — msOnly (--timeout-ms and friends)", () => {
   })
 })
 
-describe("formatDuration", () => {
-  it("renders sub-second as ms", () => {
-    expect(formatDuration(500)).toBe("500ms")
+describe("formatDuration — exact compound breakdown, never a rounded fraction of a unit", () => {
+  it("renders exactly 0", () => {
     expect(formatDuration(0)).toBe("0ms")
   })
 
-  it("renders seconds", () => {
+  it("renders sub-second as ms", () => {
+    expect(formatDuration(500)).toBe("500ms")
+    expect(formatDuration(1)).toBe("1ms")
+  })
+
+  it("renders whole seconds", () => {
     expect(formatDuration(3000)).toBe("3s")
     expect(formatDuration(1000)).toBe("1s")
   })
 
-  it("renders minutes", () => {
+  it("renders whole minutes", () => {
     expect(formatDuration(300_000)).toBe("5m")
   })
 
-  it("renders hours", () => {
+  it("renders whole hours", () => {
     expect(formatDuration(7_200_000)).toBe("2h")
   })
 
-  it("renders days", () => {
+  it("renders whole days", () => {
     expect(formatDuration(2 * 86_400_000)).toBe("2d")
+  })
+
+  it("60000 (the s/m boundary) renders as a clean 1m, not 60s or 1.0m", () => {
+    expect(formatDuration(60_000)).toBe("1m")
+  })
+
+  it("59999 (just under the boundary) renders in seconds, not a rounded minute", () => {
+    expect(formatDuration(59_999)).toBe("59s999ms")
+  })
+
+  it("3600000 (the m/h boundary) renders as a clean 1h, not 60m", () => {
+    expect(formatDuration(3_600_000)).toBe("1h")
+  })
+
+  it("3599999 (just under the boundary) renders in minutes, not a rounded hour", () => {
+    expect(formatDuration(3_599_999)).toBe("59m59s999ms")
+  })
+
+  it("compounds non-round values exactly instead of rounding to the nearest unit", () => {
+    // 90000ms is 1.5 minutes — rounding to the nearest unit would show "2m"
+    // (overstating by 33%) or "1m" (understating); the compound form loses
+    // nothing.
+    expect(formatDuration(90_000)).toBe("1m30s")
+    expect(formatDuration(5_400_000)).toBe("1h30m")
+  })
+
+  it("carries every unit down to milliseconds when none divide evenly", () => {
+    const ms =
+      1 * 86_400_000 + 2 * 3_600_000 + 3 * 60_000 + 4 * 1_000 + 5
+    expect(formatDuration(ms)).toBe("1d2h3m4s5ms")
   })
 })

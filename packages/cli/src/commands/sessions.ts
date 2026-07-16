@@ -636,10 +636,24 @@ async function runWaitSession(opts: {
   const sliceMs = 50_000
   let cursor: number | undefined = undefined
 
+  // Stated BEFORE blocking, not just on timeout: the incident this whole
+  // module exists for was a wrong unit that looked exactly like a stuck
+  // session — a caller who reads "waiting up to 3s (3000ms)" catches a
+  // 1000x units slip immediately instead of after it's already blocked.
+  // Suppressed under --json: a JSON caller gets the same numbers back as
+  // fields (see emitWaitTimeout / the matched-result branch below) instead
+  // of a stray prose line on stderr.
+  if (!json) {
+    process.stderr.write(
+      `agentproto sessions wait: waiting up to ${formatDuration(totalTimeout)} ` +
+        `(${totalTimeout}ms) for ${untilEvent} on ${idOrName}…\n`,
+    )
+  }
+
   for (;;) {
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
-      return emitWaitTimeout(json, { idOrName, totalTimeoutMs: totalTimeout })
+      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout })
     }
     const callTimeout = Math.min(sliceMs, remaining)
     const qs = new URLSearchParams({
@@ -676,7 +690,13 @@ async function runWaitSession(opts: {
     }
     // Matched.
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      process.stdout.write(
+        JSON.stringify(
+          { ...result, timeoutMs: totalTimeout, timeout: formatDuration(totalTimeout) },
+          null,
+          2,
+        ) + "\n",
+      )
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
       const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
@@ -715,16 +735,20 @@ async function runWaitPolicy(opts: {
 
 function emitWaitTimeout(
   json: boolean,
-  ctx: { idOrName: string; totalTimeoutMs: number },
+  ctx: { idOrName: string; timeoutMs: number },
 ): number {
   if (json) {
     process.stdout.write(
-      JSON.stringify({ timedOut: true, ...ctx }, null, 2) + "\n",
+      JSON.stringify(
+        { timedOut: true, ...ctx, timeout: formatDuration(ctx.timeoutMs) },
+        null,
+        2,
+      ) + "\n",
     )
   } else {
     process.stdout.write(
       `agentproto sessions wait: session "${ctx.idOrName}" timed out after ` +
-        `${formatDuration(ctx.totalTimeoutMs)}. Pass a longer --timeout ` +
+        `${formatDuration(ctx.timeoutMs)}. Pass a longer --timeout ` +
         `(e.g. --timeout 30s) if the task is still running.\n`,
     )
   }

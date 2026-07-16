@@ -122,14 +122,38 @@ export function parseDuration(
   return { ok: true, ms: amount * UNIT_MS[unit]! }
 }
 
-/** Human-readable rendering of a resolved duration, for echoing back what
- *  was actually parsed (e.g. a timeout error saying what it timed out
- *  after) — so a wrong unit is obvious the moment it bites instead of
- *  looking like a broken session. */
+const COMPOUND_UNITS: ReadonlyArray<readonly [string, number]> = [
+  ["d", 86_400_000],
+  ["h", 3_600_000],
+  ["m", 60_000],
+  ["s", 1_000],
+  ["ms", 1],
+]
+
+/**
+ * Human-readable rendering of a resolved duration, for echoing back what
+ * was actually parsed (e.g. a timeout error saying what it timed out
+ * after, or an up-front "waiting up to …" line) — so a wrong unit is
+ * obvious the moment it bites instead of looking like a broken session.
+ *
+ * Exact compound breakdown (`1m30s`, `1h30m`), never a rounded fraction of
+ * a unit (`1.5m`) — rounding to the nearest unit is itself a small version
+ * of the same silent-misreading problem this module exists to close: a
+ * 90000ms budget rendered as "2m" overstates it by 33%, in the wrong
+ * direction (it read as if the caller waited LONGER than it did) — and one
+ * would understate it the same way. Every millisecond is accounted for in
+ * the parts shown.
+ */
 export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`
-  return `${Math.round(ms / 86_400_000)}d`
+  if (ms === 0) return "0ms"
+  let remaining = ms
+  const parts: string[] = []
+  for (const [suffix, unitMs] of COMPOUND_UNITS) {
+    const count = Math.floor(remaining / unitMs)
+    if (count > 0) {
+      parts.push(`${count}${suffix}`)
+      remaining -= count * unitMs
+    }
+  }
+  return parts.join("")
 }
