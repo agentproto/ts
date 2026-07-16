@@ -65,6 +65,10 @@ jobs:
           # CatalogSource.headers.
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
         run: |
           pnpm --filter @agentproto/catalog-sync exec catalog-sync generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}

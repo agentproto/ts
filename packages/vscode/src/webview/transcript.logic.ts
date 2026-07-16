@@ -93,8 +93,8 @@ export function formatCostLine(
   return parts.join(" · ") || "—"
 }
 
-export function formatTitle(session: Pick<SessionDescriptor, "label" | "id">): string {
-  return session.label ?? session.id
+export function formatTitle(session: Pick<SessionDescriptor, "label" | "title" | "id">): string {
+  return session.label ?? session.title ?? session.id
 }
 
 export function formatSubtitle(session: Pick<SessionDescriptor, "adapterSlug" | "model">): string {

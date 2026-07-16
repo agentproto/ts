@@ -43,6 +43,7 @@ import {
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
 import { waitForPolicy } from "./_policy-wait.js"
+import { parseDuration, formatDuration } from "../util/duration.js"
 import {
   hasResumeStrategy,
   decideRestartStrategy,
@@ -83,9 +84,11 @@ Usage:
                              [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
-                              [--timeout <ms>] [--json]
-                              (default timeout: 900000ms/15m with --until,
-                               60000ms/60s bare — --timeout always wins)
+                              [--timeout <duration>] [--json]
+                              (duration: bare integer = ms, unchanged — or an
+                               explicit unit: 500ms, 30s, 5m, 2h. default
+                               timeout: 900000ms/15m with --until, 60000ms/60s
+                               bare — --timeout always wins)
 
 Discovers the daemon via ~/.agentproto/runtime.json. The token in that file
 is sent as Bearer on mutating routes; set AGENTPROTO_DAEMON_URL +
@@ -572,14 +575,12 @@ async function runWait(args: readonly string[]): Promise<number> {
   const totalTimeout = (() => {
     const raw = values.timeout
     if (!raw) return defaultTimeout
-    const n = Number.parseInt(raw, 10)
-    if (!Number.isFinite(n) || n <= 0) {
-      process.stderr.write(
-        `agentproto sessions wait: invalid --timeout "${raw}" (must be a positive integer ms).\n`,
-      )
+    const parsed = parseDuration(raw, "--timeout")
+    if (!parsed.ok) {
+      process.stderr.write(`agentproto sessions wait: ${parsed.error}\n`)
       return NaN
     }
-    return n
+    return parsed.ms
   })()
   if (Number.isNaN(totalTimeout)) return 2
 
@@ -635,10 +636,24 @@ async function runWaitSession(opts: {
   const sliceMs = 50_000
   let cursor: number | undefined = undefined
 
+  // Stated BEFORE blocking, not just on timeout: the incident this whole
+  // module exists for was a wrong unit that looked exactly like a stuck
+  // session — a caller who reads "waiting up to 3s (3000ms)" catches a
+  // 1000x units slip immediately instead of after it's already blocked.
+  // Suppressed under --json: a JSON caller gets the same numbers back as
+  // fields (see emitWaitTimeout / the matched-result branch below) instead
+  // of a stray prose line on stderr.
+  if (!json) {
+    process.stderr.write(
+      `agentproto sessions wait: waiting up to ${formatDuration(totalTimeout)} ` +
+        `(${totalTimeout}ms) for ${untilEvent} on ${idOrName}…\n`,
+    )
+  }
+
   for (;;) {
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
-      return emitWaitTimeout(json, { idOrName })
+      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout })
     }
     const callTimeout = Math.min(sliceMs, remaining)
     const qs = new URLSearchParams({
@@ -675,7 +690,13 @@ async function runWaitSession(opts: {
     }
     // Matched.
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      process.stdout.write(
+        JSON.stringify(
+          { ...result, timeoutMs: totalTimeout, timeout: formatDuration(totalTimeout) },
+          null,
+          2,
+        ) + "\n",
+      )
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
       const sid = typeof result.sessionId === "string" ? result.sessionId : idOrName
@@ -712,15 +733,23 @@ async function runWaitPolicy(opts: {
   })
 }
 
-function emitWaitTimeout(json: boolean, ctx: { idOrName: string }): number {
+function emitWaitTimeout(
+  json: boolean,
+  ctx: { idOrName: string; timeoutMs: number },
+): number {
   if (json) {
     process.stdout.write(
-      JSON.stringify({ timedOut: true, ...ctx }, null, 2) + "\n",
+      JSON.stringify(
+        { timedOut: true, ...ctx, timeout: formatDuration(ctx.timeoutMs) },
+        null,
+        2,
+      ) + "\n",
     )
   } else {
     process.stdout.write(
-      `agentproto sessions wait: session "${ctx.idOrName}" timed out. ` +
-        `Pass --timeout <ms> for a longer budget if the task is still running.\n`,
+      `agentproto sessions wait: session "${ctx.idOrName}" timed out after ` +
+        `${formatDuration(ctx.timeoutMs)}. Pass a longer --timeout ` +
+        `(e.g. --timeout 30s) if the task is still running.\n`,
     )
   }
   return 2

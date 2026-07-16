@@ -26,6 +26,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
+import { deriveSessionTitle } from "./session-title.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import {
   composeSessionObservers,
@@ -362,6 +363,10 @@ export interface SessionDescriptor {
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
+  /** Derived from the session's FIRST prompt — what this conversation is
+   *  about, for a UI that would otherwise show the adapter's argv. Distinct
+   *  from `label`, which the spawner supplies and which always wins. */
+  title?: string
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -1885,6 +1890,12 @@ export function createSessionsRegistry(opts?: {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
     }
+    // `if (!title)`, not "on turn 1": every session already running when this
+    // shipped has already had its first prompt, so a turn-1-only check would
+    // leave them unnamed forever. This way they self-heal on their NEXT
+    // prompt — free, gradual adoption, no backfill. Never overwrites: a
+    // conversation is named by what it was first about.
+    if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.emitter.emit("busy", true)

@@ -49,6 +49,9 @@ export interface SessionDescriptor {
   lastActivityAt?: string
   processAlive?: boolean
   label?: string
+  /** Derived from the session's FIRST prompt — see the runtime's
+   *  SessionDescriptor.title doc for the derivation + overwrite rules. */
+  title?: string
   pty?: boolean
   name?: string
   argv?: readonly string[]

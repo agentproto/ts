@@ -54,15 +54,20 @@ export function registerTranscriptPanels(
   // session/segment/field.
   const outputDocs = registerOutputDocuments(ctx)
 
-  /** Last activity each tab's icon was painted for — assigning iconPath makes
-   *  VS Code re-render the tab, so only a real state CHANGE should do it. */
-  const painted = new Map<string, SessionActivity>()
+  /** What each tab's icon was last painted for — assigning iconPath makes VS
+   *  Code re-render the tab, so only a real CHANGE should do it. Keyed on
+   *  activity AND unread: they're two axes, and a session going from unread to
+   *  read never changes its activity, so an activity-only key would swallow
+   *  exactly the repaint that clears the dot. */
+  const painted = new Map<string, string>()
 
   const paintTabIcon = (panel: vscode.WebviewPanel, session: SessionDescriptor): void => {
     const activity = activityFor(session, Date.now())
-    if (painted.get(session.id) === activity) return
-    painted.set(session.id, activity)
-    const icon = tabIconFor(activity)
+    const unread = seen.isUnread(session)
+    const key = `${activity}:${unread}`
+    if (painted.get(session.id) === key) return
+    painted.set(session.id, key)
+    const icon = tabIconFor(activity, unread)
     panel.iconPath = {
       light: vscode.Uri.joinPath(ctx.extensionUri, ...TAB_ICON_DIR, icon.light),
       dark: vscode.Uri.joinPath(ctx.extensionUri, ...TAB_ICON_DIR, icon.dark),
@@ -73,13 +78,21 @@ export function registerTranscriptPanels(
   // function of elapsed silence, so the one state a wedged tab needs to reach
   // is the one no event will ever announce — same reasoning, same interval, as
   // the sessions tree.
-  const repaintTimer = setInterval(() => {
+  const repaintTabs = (): void => {
     for (const [id, panel] of panels) {
       const session = store.sessions.find(s => s.id === id)
       if (session) paintTabIcon(panel, session)
     }
-  }, TREE_REPAINT_INTERVAL_MS)
+  }
+
+  const repaintTimer = setInterval(repaintTabs, TREE_REPAINT_INTERVAL_MS)
   ctx.subscriptions.push(new vscode.Disposable(() => clearInterval(repaintTimer)))
+
+  // A receipt changing is a repaint like any other. Without this, reading one
+  // transcript would clear its dot in the tree while its own tab kept the
+  // filled one until some unrelated event happened by — the two disagreeing
+  // about the same session, which is the thing this is supposed to fix.
+  ctx.subscriptions.push(seen.onDidChange(repaintTabs))
 
   /**
    * The operator has eyes on this session — clear its unread dot. Re-read from

@@ -307,16 +307,65 @@ describe("agentproto policy", () => {
     })
 
     it("defaults --timeout to 900000ms (a gate may be a full test suite)", async () => {
+      // "5ms" (not bare "5"): a bare number under 1000 is rejected as an
+      // ambiguous units slip (see ../util/duration.ts) before the daemon is
+      // ever touched, which would turn this into a usage-error test instead
+      // of a budget-exhaustion test. The explicit suffix keeps the same
+      // tiny, fast-failing budget while staying valid input.
       httpGetJson.mockResolvedValue({ timedOut: true })
-      const code = await runPolicy(["wait", "pol_1", "--timeout", "5"])
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "5ms"])
       expect(code).toBe(2)
       expect(stdoutChunks.join("")).toContain("timed out")
+    })
+
+    it("rejects a bare --timeout under 1000 as an ambiguous units slip, without touching the daemon", async () => {
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "30"])
+      expect(code).toBe(2)
+      expect(httpGetJson).not.toHaveBeenCalled()
+    })
+
+    it("states the resolved duration in the timeout message", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: true })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "150ms"])
+      expect(code).toBe(2)
+      expect(stdoutChunks.join("")).toContain("timed out after 150ms")
     })
 
     it("exits 2 on blocked", async () => {
       httpGetJson.mockResolvedValue({ timedOut: false, policyId: "pol_1", status: "blocked" })
       const code = await runPolicy(["wait", "pol_1"])
       expect(code).toBe(2)
+    })
+
+    it("states the resolved budget, in both forms, on stderr BEFORE the wait resolves", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: false, policyId: "pol_1", status: "done" })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "30s"])
+      expect(code).toBe(0)
+      expect(stderrChunks.join("")).toContain("waiting up to 30s (30000ms)")
+      expect(stderrChunks.join("")).toContain('policy "pol_1"')
+    })
+
+    it("suppresses the up-front budget line under --json", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: false, policyId: "pol_1", status: "done" })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "30s", "--json"])
+      expect(code).toBe(0)
+      expect(stderrChunks.join("")).not.toContain("waiting up to")
+    })
+
+    it("the resolved-result JSON carries timeoutMs and timeout alongside the daemon's own fields", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: false, policyId: "pol_1", status: "done" })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "30s", "--json"])
+      expect(code).toBe(0)
+      const parsed = JSON.parse(stdoutChunks.join(""))
+      expect(parsed).toMatchObject({ policyId: "pol_1", status: "done", timeoutMs: 30_000, timeout: "30s" })
+    })
+
+    it("the timeout error JSON carries timeoutMs and timeout", async () => {
+      httpGetJson.mockResolvedValue({ timedOut: true })
+      const code = await runPolicy(["wait", "pol_1", "--timeout", "150ms", "--json"])
+      expect(code).toBe(2)
+      const parsed = JSON.parse(stdoutChunks.join(""))
+      expect(parsed).toMatchObject({ timedOut: true, policyId: "pol_1", timeoutMs: 150, timeout: "150ms" })
     })
   })
 

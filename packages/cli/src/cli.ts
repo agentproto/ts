@@ -59,7 +59,7 @@ Usage:
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
   agentproto chat-tui  <adapter> [--model <id>] [--cwd <dir>] [--keep]
   agentproto models    [adapter] [--json]                  runnable models + provider-key status
-  agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>] [--verbose]
+  agentproto run-swarm --manifest <path> [--once] [--interval <duration>] [--verbose]
   agentproto serve     [--profile <name>]
                        [--workspace <dir>] [--port <n>] [--bind <ip>]
                        [--connect <url> [--token <jwt>] [--label <name>]]
@@ -102,7 +102,7 @@ Usage:
   agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]
                               [-- <gate-cmd> [args...]] [--wait] [--json]
   agentproto policy    status <policyId> [--json]
-  agentproto policy    wait   <policyId> [--timeout <ms>] [--json]
+  agentproto policy    wait   <policyId> [--timeout <duration>] [--json]
   agentproto policy    ack    <policyId> (--approve|--reject) [--json]
   agentproto policy    ls     [--json]
   agentproto policy    cancel <policyId> [--json]

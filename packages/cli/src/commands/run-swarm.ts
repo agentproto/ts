@@ -14,6 +14,7 @@
 
 import { parseArgs } from "node:util"
 import { resolve as resolvePath } from "node:path"
+import { parseDuration } from "../util/duration.js"
 import {
   loadManifest,
   runTurn,
@@ -63,6 +64,16 @@ export async function runRunSwarm(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  let intervalMs = 2000
+  if (values.interval) {
+    const parsed = parseDuration(values.interval, "--interval")
+    if (!parsed.ok) {
+      process.stderr.write(`agentproto run-swarm: ${parsed.error}\n`)
+      return 2
+    }
+    intervalMs = parsed.ms
+  }
+
   registerBuiltins()
   const cliPlugins = values.plugin ?? []
   const configPlugins = await loadPluginsFromConfig()
@@ -93,7 +104,6 @@ export async function runRunSwarm(args: readonly string[]): Promise<number> {
   }
 
   const onceMode = values.once === true
-  const intervalMs = parseInterval(values.interval) ?? 2000
 
   if (verbose) {
     logVerbose(`loaded manifest "${loaded.manifest.id}" from ${loaded.path}`)
@@ -247,15 +257,6 @@ async function runCleanups(
       process.stderr.write(`agentproto run-swarm: cleanup failed — ${msg}\n`)
     }
   }
-}
-
-function parseInterval(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const match = /^(\d+)(ms|s)?$/.exec(value)
-  if (!match) return undefined
-  const n = Number(match[1])
-  const unit = match[2] ?? "ms"
-  return unit === "s" ? n * 1000 : n
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
