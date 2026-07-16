@@ -90,6 +90,13 @@ async function bootFakeReconnectableBox(receivedPrompts: string[]): Promise<{
     specs: [],
     port,
     boot: false,
+    // Never write this fake box's rows into the developer's real
+    // ~/.agentproto/ — the host-side registry below is already `persist: false`.
+    // `persistPath` is pinned as well as `persist: false` because the
+    // structured-transcript dir is derived from it, and that write is not
+    // gated on `persist`.
+    persist: false,
+    persistPath: join(workspace, "sessions.json"),
     resolveAgentAdapter: makeFakeCliResolver(receivedPrompts),
   })
   const stopSpy = vi.fn(async () => {
@@ -124,8 +131,14 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
   beforeEach(async () => {
     receivedPrompts = []
     box = await bootFakeReconnectableBox(receivedPrompts)
-    registry = createSessionsRegistry({ persist: false })
     workspace = await mkdtemp(join(tmpdir(), "agentproto-sandbox-reconnect-host-"))
+    // `transcriptDir` as well as `persist: false`: transcripts default to a
+    // sibling of the (real) sessions.json path and are written regardless of
+    // `persist`.
+    registry = createSessionsRegistry({
+      persist: false,
+      transcriptDir: join(workspace, "transcripts"),
+    })
 
     const resolveSandboxProviderSpy = vi.fn(async (slug: string): Promise<SandboxProviderHandle | null> => {
       if (slug !== "fake") return null

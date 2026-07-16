@@ -11,6 +11,8 @@
  */
 
 import { spawn } from "node:child_process"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { afterAll, expect, test } from "vitest"
@@ -34,13 +36,22 @@ const CLI_PATH = join(
 )
 
 let wss: WebSocketServer | null = null
+// Isolated HOME for the spawned daemon. `os.homedir()` reads $HOME on
+// POSIX, and every ~/.agentproto/ state path resolves off it — so without
+// this the child daemon persists its `vitest-e2e` session rows into the
+// developer's REAL ~/.agentproto/sessions.json, where the next real daemon
+// boot reloads them as history. Isolating the PORT (above) is not enough:
+// the state file is shared regardless of port.
+let fakeHome: string | null = null
 
-afterAll(() => {
+afterAll(async () => {
   wss?.close()
+  if (fakeHome) await rm(fakeHome, { recursive: true, force: true })
 })
 
 test("agentproto serve relays a child process end-to-end", { timeout: 15_000 }, async () => {
     wss = new WebSocketServer({ port: PORT })
+    fakeHome = await mkdtemp(join(tmpdir(), "agentproto-tunnel-e2e-home-"))
 
     // Capture the host-side flow as a promise that resolves with
     // the result so the test can assert on it.
@@ -92,7 +103,12 @@ test("agentproto serve relays a child process end-to-end", { timeout: 15_000 }, 
         "--label",
         "vitest-e2e",
       ],
-      { stdio: ["ignore", "pipe", "pipe"] }
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        // Keep the rest of the environment (PATH, node flags) — only the
+        // home the daemon writes its state under is redirected.
+        env: { ...process.env, HOME: fakeHome },
+      }
     )
 
     // Drain stderr so a failed gateway boot surfaces in the test output

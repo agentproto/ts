@@ -323,6 +323,30 @@ export interface CreateGatewayOptions {
    *  tool family, and the `/sessions/:id/pty` WebSocket. Without it,
    *  those routes return 501 / the MCP tools aren't registered. */
   spawnPty?: PtyFactory
+  /** Enable filesystem persistence for every store this gateway owns —
+   *  the sessions registry plus the supervisor / routine / cron / workflow
+   *  / inbound-watcher run stores. Defaults to `true`, i.e. production is
+   *  unchanged.
+   *
+   *  Tests pass `false`. Without it, a test gateway writes its fake rows
+   *  into the *developer's real* `~/.agentproto/sessions.json` (and the
+   *  sibling `policies.json` / `routine-runs.json` / `cron-jobs.json` /
+   *  `workflow-runs.json`): those paths resolve off `homedir()`, and the
+   *  gateway opted each store into persistence unconditionally. Since
+   *  `loadHistorySnapshot` re-reads sessions.json at boot, the real daemon
+   *  then restores the fakes and shows them in the dashboard — and against
+   *  `HISTORY_CAP` (200) they evict genuine history.
+   *
+   *  The sibling stores already default to persist-off when constructed
+   *  directly (see `createRoutineRunner`); this knob is what lets a
+   *  gateway stop overriding that on their behalf. */
+  persist?: boolean
+  /** Override the sessions-registry persistence path — tests pin a tmpdir
+   *  so an assertion can look at the file the gateway would have written
+   *  instead of the developer's real one. Defaults to
+   *  `~/.agentproto/sessions.json`. The structured-transcript dir follows
+   *  this path's parent, so pinning it isolates transcripts too. */
+  persistPath?: string
   /** Override the per-boot bearer token. Default: `randomUUID()`.
    *  Tests can pin a known value; production should always let
    *  the gateway generate fresh. The token is written into
@@ -572,6 +596,12 @@ export async function createGateway(
       })
     : undefined
 
+  // Persistence switch for every store this gateway owns. Production
+  // (and any caller that omits it) keeps today's behaviour: persist on,
+  // default paths. Tests pass `persist: false` so their fakes never reach
+  // the real ~/.agentproto/ — see `CreateGatewayOptions.persist`.
+  const persist = opts.persist ?? true
+
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
   // startHttpServer for the /sessions HTTP routes. Declared here
@@ -579,6 +609,8 @@ export async function createGateway(
   // build time, even though the factory only invokes later.
   const sessions = createSessionsRegistry({
     sessionEvents,
+    persist,
+    ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
@@ -629,7 +661,7 @@ export async function createGateway(
     registry: sessions,
     sessionEvents,
     workspace,
-    persist: true,
+    persist,
     // WP6: daemon-wide cap on policies concurrently gating/acting. Excess
     // queue (FIFO) until a slot frees. Override via AGENTPROTO_POLICY_CONCURRENCY.
     concurrencyCap: (() => {
@@ -656,7 +688,7 @@ export async function createGateway(
         sessionEvents,
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
-        persist: true,
+        persist,
       })
     : undefined
 
@@ -672,7 +704,7 @@ export async function createGateway(
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
     workspace,
-    persist: true,
+    persist,
   })
 
   // Workflow runner — sibling primitive to routineRunner (stage-barrier
@@ -685,7 +717,7 @@ export async function createGateway(
         sessionEvents,
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
-        persist: true,
+        persist,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. The daemon's workflow
         // surface is agent-step based (like the stage primitive), so no tool/
@@ -717,7 +749,7 @@ export async function createGateway(
           mcpProxy,
           registry: sessions,
           resolveAgentAdapter: opts.resolveAgentAdapter,
-          persist: true,
+          persist,
         })
       : undefined
 
