@@ -16,6 +16,19 @@ import { sessionTranscriptDir } from "../transcript-writer.js"
  * the provider-aware output sniffer.
  */
 
+/** Poll a fire-and-forget read until it resolves non-null, instead of a
+ *  fixed sleep-then-read — a single 20ms sleep flakes under CI load
+ *  (the write genuinely hasn't landed yet), this doesn't. */
+async function pollUntil<T>(read: () => Promise<T | null>, timeoutMs = 2000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = await read()
+    if (value !== null) return value
+    if (Date.now() >= deadline) throw new Error("pollUntil timed out")
+    await new Promise(res => setTimeout(res, 5))
+  }
+}
+
 describe("createSessionsRegistry", () => {
   let tmp: string
   let persistPath: string
@@ -1404,8 +1417,7 @@ describe("createSessionsRegistry", () => {
         stdout: "full body\n",
         stderr: "",
       })
-      await new Promise(res => setTimeout(res, 20)) // fire-and-forget write
-      const entry = await reg.readCommandLog(desc.id)
+      const entry = await pollUntil(() => reg.readCommandLog(desc.id))
       expect(entry).toMatchObject({ command: "gh", args: ["pr", "view"], stdout: "full body\n" })
       reg.shutdown()
     })
