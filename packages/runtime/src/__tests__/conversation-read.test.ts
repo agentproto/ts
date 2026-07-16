@@ -253,6 +253,61 @@ describe("readConversation — ambiguous discovery", () => {
   })
 })
 
+// ── ladder step 3 narrowing: `until` + `attachmentMode` (sess_fea9b4f3) ──
+
+describe("readConversation — ladder step 3 narrows 5 candidates to 1 (the sess_fea9b4f3 shape)", () => {
+  it("resolves to the single real conversation, not ambiguous, for a dead terminal session", async () => {
+    setupFakeHome()
+    const cwd = "/repo/agentproto"
+    const dir = claudeProjectDir(cwd)
+    const real = "c618de81-1016-45f7-bfe4-e24e2121f025"
+    writeJsonl(dir, real, [
+      {
+        type: "user",
+        timestamp: "2026-07-15T02:51:07.987Z",
+        entrypoint: "cli",
+        message: { role: "user", content: [{ type: "text", text: "hi" }] },
+      },
+    ])
+
+    const siblings = [
+      "11111111-0000-0000-0000-000000000001",
+      "22222222-0000-0000-0000-000000000002",
+      "33333333-0000-0000-0000-000000000003",
+      "44444444-0000-0000-0000-000000000004",
+    ]
+    for (const sib of siblings) {
+      writeJsonl(dir, sib, [
+        {
+          type: "user",
+          timestamp: "2026-07-16T09:00:00.000Z",
+          entrypoint: "sdk-ts",
+          message: { role: "user", content: [{ type: "text", text: "unrelated, a day later" }] },
+        },
+      ])
+    }
+
+    // No adapterSessionId, no --resume argv — a bare `claude` PTY, exactly
+    // like sess_fea9b4f3. `endedAt` set (dead session) is what lets `until`
+    // narrow away the 4 siblings.
+    const desc = makeDescriptor({
+      kind: "terminal",
+      pty: true,
+      argv: ["claude"],
+      cwd,
+      startedAt: "2026-07-15T02:51:04.000Z",
+      endedAt: "2026-07-15T03:17:21.000Z",
+    })
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversationId).toBe(real)
+    expect(result.adapter).toBe("claude-code")
+    expect(result.candidates).toBeUndefined()
+    expect(result.reason).toBeUndefined()
+  })
+})
+
 // ── MCP tool registration ────────────────────────────────────────────────
 
 async function makeClient(server: McpServer) {
