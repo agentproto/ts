@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { decideMergeGate } from './merge-gate.mjs'
 
 function decide(overrides = {}) {
@@ -129,4 +131,57 @@ test('requireAck on + label present ⇒ arm', () => {
     labels: ['agentflow:ack'],
   })
   assert.equal(result.action, 'arm')
+})
+
+// ── red build ⇒ never arm (regression for #379) ──────────────────────────
+// decideMergeGate deliberately has no opinion on CI: whether the build passed
+// is the workflow's to know, not this function's. So these assert the guard
+// where it actually lives — the auto-merge job's `if` in ci.yml.
+//
+// #379 merged with `Build + test` red. Nothing was broken in merge-gate: the
+// arming step delegates "wait for green" to GitHub's required checks, `main`
+// has none, and so arming *is* merging. `always()` (needed so a skipped
+// pr-review still reaches the gate) defeated the needs-failure skip that
+// would otherwise have caught it.
+function autoMergeJobBlock() {
+  const ci = readFileSync(fileURLToPath(new URL('../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+  const lines = ci.split('\n')
+  const start = lines.findIndex((l) => l === '  auto-merge:')
+  assert.notEqual(start, -1, 'ci.yml must define an `auto-merge` job')
+  // Until the next job at the same indent (2 spaces, non-comment).
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex((l) => /^ {2}[a-z0-9_-]+:\s*$/.test(l))
+  return (end === -1 ? rest : rest.slice(0, end)).join('\n')
+}
+
+test('auto-merge names build-and-test in needs', () => {
+  const block = autoMergeJobBlock()
+  const needs = /^\s*needs:\s*\[(.+)\]/m.exec(block)
+  assert.ok(needs, 'auto-merge must declare `needs`')
+  const named = needs[1].split(',').map((s) => s.trim())
+  assert.ok(
+    named.includes('build-and-test'),
+    `auto-merge must need build-and-test directly, not inherit it via pr-review (got: ${named.join(', ')})`,
+  )
+})
+
+test('auto-merge refuses to arm unless build-and-test succeeded', () => {
+  const block = autoMergeJobBlock()
+  const guard = /needs\.build-and-test\.result\s*==\s*'success'/.test(block)
+  assert.ok(
+    guard,
+    "auto-merge's `if` must require needs.build-and-test.result == 'success' — " +
+      'with `always()` present, a failed dependency does not skip the job, and ' +
+      'a red PR arms and merges (#379).',
+  )
+})
+
+test('the green guard survives always()', () => {
+  // Belt and braces: if someone drops always(), the needs-failure skip covers
+  // us; if someone keeps always(), the explicit result check must be there.
+  // Exactly one of those must hold — this fails only if BOTH are gone.
+  const block = autoMergeJobBlock()
+  const hasAlways = /always\(\)/.test(block)
+  const hasGreenCheck = /needs\.build-and-test\.result\s*==\s*'success'/.test(block)
+  assert.ok(!hasAlways || hasGreenCheck, 'always() without an explicit build-and-test success check re-opens #379')
 })
