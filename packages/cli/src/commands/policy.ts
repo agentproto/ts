@@ -70,7 +70,7 @@ Usage:
   agentproto policy status <policyId> [--json]
   agentproto policy wait   <policyId> [--timeout <duration>] [--json]
   agentproto policy ack    <policyId> (--approve | --reject) [--json]
-  agentproto policy ls     [--json]
+  agentproto policy ls     [--session <id>] [--json]
   agentproto policy cancel <policyId> [--json]
   agentproto policy --help
 
@@ -102,6 +102,12 @@ status vs wait:
   cancelled/CLI-timeout, 3 not found/daemon too old. On CLI-timeout, the
   message states the resolved duration it waited (e.g. "timed out after
   15m") so a wrong unit is obvious rather than looking like a stuck gate.
+
+ls:
+  \`--session <id>\` answers the reverse question — which policies are attached
+  to this session — matching a policy's single \`sessionId\` or any member of
+  its fan-in \`sessionIds\` group. Narrowed server-side by
+  \`GET /policies?sessionId=\`; without it, \`ls\` lists everything as before.
 
 ack:
   Operator gesture — see this file's docblock. Never invoke from a delegated
@@ -544,7 +550,7 @@ async function runLs(args: readonly string[]): Promise<number> {
     args: [...args],
     allowPositionals: false,
     strict: true,
-    options: { json: { type: "boolean" } },
+    options: { session: { type: "string" }, json: { type: "boolean" } },
   })
 
   const report = await discoverDaemon()
@@ -553,9 +559,16 @@ async function runLs(args: readonly string[]): Promise<number> {
     return 3
   }
 
+  // `--session` narrows server-side via `GET /policies?sessionId=` rather
+  // than fetching everything and filtering here — one definition of "watches
+  // this session", shared with the `policy_list` MCP filter.
+  const url = values.session
+    ? `${report.found.url}/policies?sessionId=${encodeURIComponent(values.session)}`
+    : `${report.found.url}/policies`
+
   let body: { policies: PolicyRunState[] }
   try {
-    body = await httpGetJson<{ policies: PolicyRunState[] }>(`${report.found.url}/policies`)
+    body = await httpGetJson<{ policies: PolicyRunState[] }>(url)
   } catch (err) {
     process.stderr.write(`agentproto policy ls: ${err instanceof Error ? err.message : String(err)}\n`)
     return 1
@@ -567,7 +580,9 @@ async function runLs(args: readonly string[]): Promise<number> {
     return 0
   }
   if (policies.length === 0) {
-    process.stdout.write("No policies.\n")
+    process.stdout.write(
+      values.session ? `No policies for session "${values.session}".\n` : "No policies.\n",
+    )
     return 0
   }
   process.stdout.write(
