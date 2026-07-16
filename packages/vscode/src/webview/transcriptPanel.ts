@@ -223,6 +223,9 @@ async function handleWebviewMessage(
     case "interruptSend":
       await controller.onSend(msg.text, true)
       return
+    case "attachImage":
+      await controller.onAttachImage(msg.bytes, msg.mime)
+      return
     case "openToolIo": {
       const doc = controller.resolveToolIo(msg.segmentId, msg.field)
       if (!doc) {
@@ -1474,6 +1477,49 @@ export function buildHtml(nonce: string): string {
         refreshComposer();
       });
 
+      // Drop the agent-readable path into the composer as TEXT, not a chip:
+      // v1 hands over a path (Decision A) and lets the user edit the prompt
+      // around it before sending. A space is inserted only when the composer
+      // doesn't already end in whitespace, so consecutive pastes don't run the
+      // paths together.
+      function insertAttachmentPath(path) {
+        if (!path) return;
+        const cur = input.value;
+        const last = cur.charAt(cur.length - 1);
+        const sep = cur.length > 0 && last !== ' ' && last !== '\\n' ? ' ' : '';
+        input.value = cur + sep + path + ' ';
+        autoGrow();
+        refreshComposer();
+        input.focus();
+      }
+
+      // Paste an image → the agent reads it. The webview can't touch disk, so
+      // it reads the pasted image to bytes and ships them to the host, which
+      // stores the file and posts back a path (see 'attachmentUploaded').
+      // preventDefault stops the same binary from ALSO landing as garbage text.
+      input.addEventListener('paste', function(e) {
+        const data = e.clipboardData;
+        if (!data || !data.items) return;
+        const images = [];
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i];
+          if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+            const file = item.getAsFile();
+            if (file) images.push(file);
+          }
+        }
+        if (images.length === 0) return; // no image → let the normal text paste run
+        e.preventDefault();
+        for (let j = 0; j < images.length; j++) {
+          const file = images[j];
+          file.arrayBuffer().then(function(buf) {
+            vscode.postMessage({ type: 'attachImage', bytes: buf, mime: file.type });
+          }).catch(function() {
+            showError('Attachment failed', 'Could not read the pasted image from the clipboard.');
+          });
+        }
+      });
+
       sendBtn.addEventListener('click', function() { send(false); });
       // Interrupt only ever acts on the queued message — it's the only thing
       // waiting, and it's what the button offers to stop waiting for.
@@ -1516,6 +1562,12 @@ export function buildHtml(nonce: string): string {
             break;
           case 'sendAck':
             setSending(false);
+            break;
+          case 'attachmentUploaded':
+            insertAttachmentPath(msg.path);
+            break;
+          case 'attachError':
+            showError(msg.title || 'Attachment failed', msg.message || '');
             break;
           case 'sendError':
             setSending(false);

@@ -20,6 +20,9 @@
  * the webview stays credential-free and never parses raw daemon content.
  */
 
+import { randomBytes } from "node:crypto"
+import { homedir } from "node:os"
+
 import * as vscode from "vscode"
 
 import { NoTranscriptError } from "../client/daemonClient.js"
@@ -39,6 +42,7 @@ import {
   stringifyToolValue,
   type PresentedConversation,
 } from "./conversation.js"
+import { buildAttachmentName, resolveAttachmentsCwd } from "./attachments.logic.js"
 import { diffConversation } from "./conversationPatch.js"
 import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
@@ -522,6 +526,33 @@ export class TranscriptPanelController {
       })
     } finally {
       this.isSending = false
+    }
+  }
+
+  /**
+   * A pasted image arrived as raw bytes — the webview can't write disk, so the
+   * bytes crossed the boundary and we copy them to a file the agent can read.
+   *
+   * The file goes to the agentproto home, NOT the session's cwd: a pasted
+   * screenshot must not litter the user's git working tree (this overrides the
+   * plan's original repo-local choice). The upload route appends its own
+   * `.agentproto-attachments/` and returns the absolute path; we hand that path
+   * back to the webview to insert as composer TEXT. The prompt therefore stays a
+   * plain string — bytes never reach `recordPrompt`, so the transcript stores a
+   * short path, not base64. That an agent can Read a path outside its cwd was
+   * verified empirically against a live claude-code session before this shipped.
+   */
+  async onAttachImage(bytes: ArrayBuffer | ArrayBufferView, mime: string): Promise<void> {
+    const cwd = resolveAttachmentsCwd(process.env, homedir())
+    const name = buildAttachmentName(mime, new Date(), randomBytes(3).toString("hex"))
+    try {
+      const { path } = await this.client.uploadFile(cwd, name, bytes, mime)
+      this.messenger.postMessage({ type: "attachmentUploaded", path })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // Never a silent drop — the whole point of the feature is that a paste the
+      // agent can't get is SAID, not swallowed.
+      this.messenger.postMessage({ type: "attachError", title: "Attachment upload failed", message })
     }
   }
 

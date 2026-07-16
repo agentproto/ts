@@ -136,6 +136,50 @@ export class DaemonClient {
     })
   }
 
+  /**
+   * POST /files/upload — copy raw bytes to `{cwd}/.agentproto-attachments/{name}`
+   * and return the absolute path the agent's Read tool can pick up. This is the
+   * transport half for a pasted screenshot: the webview can't write disk, so the
+   * host hands the bytes to the daemon and gets back a path to drop into the
+   * prompt.
+   *
+   * The body is sent RAW (not JSON) — the route reads the request stream
+   * verbatim — so this bypasses `request()` and its JSON serialization. `cwd`
+   * and `name` ride in the query string; both are re-validated + sanitized by
+   * the route, and the route caps the body at 32 MiB (413 past that).
+   */
+  async uploadFile(
+    cwd: string,
+    name: string,
+    bytes: ArrayBuffer | ArrayBufferView,
+    mime: string,
+  ): Promise<{ path: string; bytes: number }> {
+    const body =
+      bytes instanceof ArrayBuffer
+        ? new Uint8Array(bytes)
+        : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    const token = await this.resolveToken()
+    const path = `/files/upload?cwd=${encodeURIComponent(cwd)}&name=${encodeURIComponent(name)}`
+    const res = await this.fetchImpl(`${this.url}${path}`, {
+      method: "POST",
+      headers: {
+        // The route ignores the content-type (it reads the raw stream) but a
+        // truthful one keeps proxies/logs honest. Default when the paste has no
+        // mime rather than sending an empty header.
+        "content-type": mime || "application/octet-stream",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body,
+      // Binary, and up to the route's 32 MiB cap — give it more headroom than
+      // the 30s JSON default even though loopback makes it near-instant.
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (!res.ok) {
+      throw new Error(`POST /files/upload failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    return (await res.json()) as { path: string; bytes: number }
+  }
+
   async kill(id: string): Promise<{ ok: boolean; sessionId: string }> {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }

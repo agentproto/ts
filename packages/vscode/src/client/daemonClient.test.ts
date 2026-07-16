@@ -252,6 +252,90 @@ describe("DaemonClient — URL + auth header mapping", () => {
   })
 })
 
+/**
+ * A raw-body mock daemon for the file-upload route: unlike `mockDaemon` above
+ * it does NOT JSON-parse the body (the upload body is binary), it captures the
+ * exact bytes so a test can prove they arrive untouched. `respond` lets a test
+ * force a non-2xx (e.g. the route's 413) to exercise the error path.
+ */
+async function uploadMock(
+  respond: (req: { url: string; method: string; headers: Record<string, string | string[] | undefined> }) => {
+    status: number
+    body?: unknown
+  } = () => ({ status: 200 }),
+): Promise<{
+  url: string
+  server: Server
+  requests: Array<{ url: string; method: string; body: Buffer; headers: Record<string, string | string[] | undefined> }>
+}> {
+  const requests: Array<{ url: string; method: string; body: Buffer; headers: Record<string, string | string[] | undefined> }> = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on("data", (c: Buffer) => chunks.push(c))
+    req.on("end", () => {
+      const body = Buffer.concat(chunks)
+      const captured = { url: req.url ?? "/", method: req.method ?? "GET", body, headers: { ...req.headers } }
+      requests.push(captured)
+      const { status, body: resp } = respond(captured)
+      res.writeHead(status, { "content-type": "application/json" })
+      res.end(status === 200 ? JSON.stringify(resp ?? { path: "/home/.agentproto/.agentproto-attachments/x.png", bytes: body.length }) : JSON.stringify(resp ?? { error: "file_too_large" }))
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => resolve())
+  })
+  const { port } = server.address() as AddressInfo
+  return { url: `http://127.0.0.1:${port}`, server, requests }
+}
+
+describe("DaemonClient.uploadFile — raw binary transport", () => {
+  let daemon: Awaited<ReturnType<typeof uploadMock>>
+
+  afterEach(async () => {
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  function client(): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+  }
+
+  it("POSTs the raw bytes and encodes cwd + name into the query string", async () => {
+    daemon = await uploadMock(() => ({ status: 200, body: { path: "/home/.agentproto/.agentproto-attachments/paste.png", bytes: 3 } }))
+    const res = await client().uploadFile("/home/.agentproto", "paste 1.png", new Uint8Array([1, 2, 3]), "image/png")
+    expect(res).toEqual({ path: "/home/.agentproto/.agentproto-attachments/paste.png", bytes: 3 })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    // A space in the name must be percent-encoded, not left to split the query.
+    expect(last.url).toBe("/files/upload?cwd=%2Fhome%2F.agentproto&name=paste%201.png")
+    expect([...last.body]).toEqual([1, 2, 3])
+    expect(last.headers["content-type"]).toBe("image/png")
+  })
+
+  it("sends the bytes verbatim from an ArrayBuffer, not the whole backing buffer of a view", async () => {
+    daemon = await uploadMock()
+    const backing = new Uint8Array([0, 1, 2, 3, 4, 5])
+    const view = new Uint8Array(backing.buffer, 2, 3) // [2,3,4]
+    await client().uploadFile("/home/.agentproto", "x.png", view, "image/png")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect([...last.body]).toEqual([2, 3, 4])
+  })
+
+  it("defaults the content-type when the paste carries no mime", async () => {
+    daemon = await uploadMock()
+    await client().uploadFile("/home/.agentproto", "x.bin", new Uint8Array([9]), "")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.headers["content-type"]).toBe("application/octet-stream")
+  })
+
+  it("throws with the daemon's reason on a 413 rather than swallowing it", async () => {
+    daemon = await uploadMock(() => ({ status: 413, body: { error: "file_too_large", maxBytes: 33554432 } }))
+    await expect(
+      client().uploadFile("/home/.agentproto", "big.png", new Uint8Array([0]), "image/png"),
+    ).rejects.toThrow(/413/)
+  })
+})
+
 // Inline mkdtemp to avoid a top-level import the linter would reorder.
 async function mkdtemp(prefix: string): Promise<string> {
   const { mkdtemp } = await import("node:fs/promises")

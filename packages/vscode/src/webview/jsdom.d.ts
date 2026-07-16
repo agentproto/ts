@@ -13,6 +13,19 @@
 declare module "jsdom" {
   export interface DomEvent {
     readonly type: string
+    /** True once a handler has called preventDefault on a cancelable event —
+     *  how the paste test proves the binary didn't ALSO land as text. */
+    readonly defaultPrevented: boolean
+    /** Present on a `paste` event only; shaped by the test to mirror a
+     *  browser's `DataTransfer` (items with kind/type/getAsFile). */
+    clipboardData?: unknown
+  }
+
+  /** A jsdom File — the paste handler reads its bytes and mime. */
+  export interface DomFile {
+    readonly type: string
+    readonly name: string
+    arrayBuffer(): Promise<ArrayBuffer>
   }
 
   export interface DomClassList {
@@ -73,9 +86,10 @@ declare module "jsdom" {
       setState: (state: unknown) => void
     }
     dispatchEvent(event: DomEvent): boolean
-    Event: new (type: string) => DomEvent
+    Event: new (type: string, init?: { cancelable?: boolean; bubbles?: boolean }) => DomEvent
     MessageEvent: new (type: string, init?: { data?: unknown }) => DomEvent
     MutationObserver: new (callback: (records: unknown[]) => void) => DomMutationObserver
+    File: new (bits: readonly unknown[], name: string, options?: { type?: string }) => DomFile
   }
 
   export interface JSDOMOptions {
