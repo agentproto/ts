@@ -69,8 +69,12 @@ export const anthropicPack: ModelPack = {
   models: {
     'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
     'claude-sonnet-5': { provider: 'anthropic', model: 'claude-sonnet-5' },
-    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5' },
-    // claude-fable-5 is an internal Anthropic codename; included for local dev/testing only.
+    // Unlike the other entries here, Anthropic's live /v1/models does not
+    // expose a bare "claude-haiku-4-5" id — only the datestamped one
+    // resolves (verified against a live models-list fetch; see
+    // packages/model-catalog/src/llm/context-windows.generated.ts). Do not
+    // "fix" this to match the other entries — that would 404 upstream.
+    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
     'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
   },
 };

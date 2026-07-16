@@ -132,12 +132,14 @@ describe('anthropicPack', () => {
     }
   });
 
-  it('routes haiku key to the consistent model id (no datestamp divergence)', () => {
-    expect(anthropicPack.models['claude-haiku-4-5']?.model).toBe('claude-haiku-4-5');
+  it('routes haiku key to the live datestamped model id (Anthropic has no bare alias for it)', () => {
+    expect(anthropicPack.models['claude-haiku-4-5']?.model).toBe('claude-haiku-4-5-20251001');
   });
 
-  it('key and model id match for every entry', () => {
+  it('key and model id match for every entry except the documented haiku exception', () => {
+    const datestampExceptions = new Set(['claude-haiku-4-5']);
     for (const [key, route] of Object.entries(anthropicPack.models)) {
+      if (datestampExceptions.has(key)) continue;
       expect(route.model, `key "${key}" should match its routed model id`).toBe(key);
     }
   });
