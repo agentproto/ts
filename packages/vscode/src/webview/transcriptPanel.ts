@@ -22,6 +22,8 @@ import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 
 import { registerOutputDocuments, type OutputDocuments } from "../services/outputDocument.js"
+import { activityFor, TREE_REPAINT_INTERVAL_MS, type SessionActivity } from "../views/sessionsTree.logic.js"
+import { TAB_ICON_DIR, tabIconFor } from "./tabIcon.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
@@ -50,6 +52,33 @@ export function registerTranscriptPanels(
   // session/segment/field.
   const outputDocs = registerOutputDocuments(ctx)
 
+  /** Last activity each tab's icon was painted for — assigning iconPath makes
+   *  VS Code re-render the tab, so only a real state CHANGE should do it. */
+  const painted = new Map<string, SessionActivity>()
+
+  const paintTabIcon = (panel: vscode.WebviewPanel, session: SessionDescriptor): void => {
+    const activity = activityFor(session, Date.now())
+    if (painted.get(session.id) === activity) return
+    painted.set(session.id, activity)
+    const icon = tabIconFor(activity)
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(ctx.extensionUri, ...TAB_ICON_DIR, icon.light),
+      dark: vscode.Uri.joinPath(ctx.extensionUri, ...TAB_ICON_DIR, icon.dark),
+    }
+  }
+
+  // Repaint every open tab on a clock as well as on change. `stalled` is a
+  // function of elapsed silence, so the one state a wedged tab needs to reach
+  // is the one no event will ever announce — same reasoning, same interval, as
+  // the sessions tree.
+  const repaintTimer = setInterval(() => {
+    for (const [id, panel] of panels) {
+      const session = store.sessions.find(s => s.id === id)
+      if (session) paintTabIcon(panel, session)
+    }
+  }, TREE_REPAINT_INTERVAL_MS)
+  ctx.subscriptions.push(new vscode.Disposable(() => clearInterval(repaintTimer)))
+
   return {
     open(session: SessionDescriptor): void {
       const existing = panels.get(session.id)
@@ -68,19 +97,13 @@ export function registerTranscriptPanels(
           retainContextWhenHidden: true,
         },
       )
-      // Wear agentproto's mark in the tab strip. With no iconPath VS Code
-      // falls back to a generic document glyph, so a transcript is
-      // indistinguishable from every other open editor at a glance — and
-      // these tabs stay open for hours.
-      //
-      // Deliberately the extension's mark rather than the session's activity
-      // icon: WebviewPanel.iconPath takes a Uri, NOT a ThemeIcon, so the
-      // tree's codicon alphabet (●/spinner/✓) cannot be rendered here at all.
-      // A per-state SVG set would be a second, hand-drawn copy of that
-      // alphabet, free to drift from it. One mark, always true.
-      panel.iconPath = vscode.Uri.joinPath(ctx.extensionUri, "media", "activitybar.svg")
       panels.set(session.id, panel)
       activeId = session.id
+      // The tab wears the session's state, and keeps wearing it: without this
+      // a transcript was a generic document glyph, indistinguishable from
+      // every other open editor — and these tabs stay open for hours while
+      // the thing behind them changes.
+      paintTabIcon(panel, session)
 
       const nonce = randomNonce()
 
@@ -99,7 +122,9 @@ export function registerTranscriptPanels(
       disposables.push(
         store.onDidChange(() => {
           const updated = store.sessions.find(s => s.id === session.id)
-          if (updated) controller.onSessionUpdate(updated)
+          if (!updated) return
+          controller.onSessionUpdate(updated)
+          paintTabIcon(panel, updated)
         }),
       )
 
@@ -130,6 +155,10 @@ export function registerTranscriptPanels(
       panel.onDidDispose(() => {
         for (const d of disposables) d.dispose()
         panels.delete(session.id)
+        // Forget the painted state too: a reopened tab is a fresh panel with
+        // no icon, so a stale entry here would suppress its first paint and
+        // leave it wearing VS Code's generic glyph.
+        painted.delete(session.id)
         if (activeId === session.id) activeId = undefined
       })
 
