@@ -27,7 +27,7 @@ import type {
   PresentedToolSegment,
 } from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
-import type { DomWindow, DomDocument, DomElement } from "jsdom"
+import type { DomWindow, DomDocument, DomElement, DomEvent } from "jsdom"
 
 interface Panel {
   window: DomWindow
@@ -811,6 +811,116 @@ describe("transcriptPanel webview — a step is a row, not a box", () => {
     expect(summary?.querySelector(".seg-badge")?.textContent).toBe("✗")
     expect(summary?.querySelector(".seg-label")?.textContent).toBe("2 steps · 1 failed")
     expect(summary?.querySelector(".seg-chev")).not.toBeNull()
+  })
+})
+
+describe("transcriptPanel webview — pasting an image", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  // Build a paste event carrying clipboard items — jsdom has no ClipboardEvent
+  // or DataTransfer, so we hand the handler the same shape a browser would:
+  // `clipboardData.items` with `kind`/`type`/`getAsFile()`. cancelable so the
+  // handler's preventDefault is observable via defaultPrevented.
+  function pasteEvent(
+    panel: Panel,
+    items: Array<{ kind: string; type: string; file?: unknown }>,
+  ): DomEvent {
+    const ev = new panel.window.Event("paste", { cancelable: true })
+    ev.clipboardData = {
+      items: items.map(it => ({ kind: it.kind, type: it.type, getAsFile: () => it.file ?? null })),
+    }
+    return ev
+  }
+  const flush = async (): Promise<void> => {
+    // file.arrayBuffer() resolves on a later microtask; give it a real tick.
+    await new Promise(res => setTimeout(res, 0))
+    await new Promise(res => setTimeout(res, 0))
+  }
+
+  it("reads a pasted image to bytes and posts attachImage, preventing the garbage-text paste", async () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    const input = el(panel, "input")
+    const file = new panel.window.File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" })
+    const ev = pasteEvent(panel, [{ kind: "file", type: "image/png", file }])
+
+    input.dispatchEvent(ev)
+    // The binary must not ALSO land as text — that was the whole reason to
+    // intercept the paste.
+    expect(ev.defaultPrevented).toBe(true)
+    await flush()
+
+    const attach = posted.filter(m => (m as { type?: string }).type === "attachImage") as Array<{
+      type: string
+      mime: string
+      bytes: { byteLength: number }
+    }>
+    expect(attach).toHaveLength(1)
+    expect(attach[0]!.mime).toBe("image/png")
+    // Real bytes crossed the boundary — 4 of them — not a base64 string.
+    expect(attach[0]!.bytes.byteLength).toBe(4)
+  })
+
+  it("ignores a plain-text paste — no attachImage, and the normal paste is left alone", async () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    const input = el(panel, "input")
+    const ev = pasteEvent(panel, [{ kind: "string", type: "text/plain" }])
+
+    input.dispatchEvent(ev)
+    await flush()
+
+    expect(posted.filter(m => (m as { type?: string }).type === "attachImage")).toEqual([])
+    // Not intercepted — the browser's own text paste proceeds.
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  it("inserts an uploaded path into the composer as text, spaced off from what's already there", () => {
+    const panel = renderPanel()
+    init(panel)
+    const input = el(panel, "input")
+    input.value = "look at"
+
+    panel.send({ type: "attachmentUploaded", path: "/home/.agentproto/.agentproto-attachments/paste.png" })
+
+    // Space-separated from the existing words, and a trailing space to keep
+    // typing after it.
+    expect(input.value).toBe("look at /home/.agentproto/.agentproto-attachments/paste.png ")
+  })
+
+  it("does not prepend a leading space when the composer was empty", () => {
+    const panel = renderPanel()
+    init(panel)
+    const input = el(panel, "input")
+
+    panel.send({ type: "attachmentUploaded", path: "/a/b.png" })
+
+    expect(input.value).toBe("/a/b.png ")
+  })
+
+  it("shows an upload failure in the error banner rather than dropping it silently", () => {
+    const panel = renderPanel()
+    init(panel)
+
+    panel.send({ type: "attachError", title: "Attachment upload failed", message: "HTTP 413 file_too_large" })
+
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Attachment upload failed")
+    expect(el(panel, "eb-message").textContent).toBe("HTTP 413 file_too_large")
   })
 })
 

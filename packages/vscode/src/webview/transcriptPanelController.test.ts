@@ -1,6 +1,9 @@
+import { homedir } from "node:os"
+
 import { describe, expect, it, vi } from "vitest"
 
 import { TranscriptPanelController } from "./transcriptPanelController.js"
+import { resolveAttachmentsCwd } from "./attachments.logic.js"
 import { NoTranscriptError } from "../client/daemonClient.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
@@ -55,6 +58,7 @@ type MockClient = DaemonClient & {
   preview: ReturnType<typeof vi.fn>
   getSession: ReturnType<typeof vi.fn>
   getSessionEvents: ReturnType<typeof vi.fn>
+  uploadFile: ReturnType<typeof vi.fn>
   resolveToken: ReturnType<typeof vi.fn>
 }
 
@@ -67,6 +71,7 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
     preview: vi.fn().mockResolvedValue({ id: "s1", lines: ["line"], bytes: null }),
     getSession: vi.fn().mockResolvedValue(session()),
     getSessionEvents: vi.fn().mockResolvedValue(page([])),
+    uploadFile: vi.fn().mockResolvedValue({ path: "/home/.agentproto/.agentproto-attachments/paste.png", bytes: 3 }),
     // Rejected by default so SseRecordFeed (transcriptPanelController.ts)
     // falls back to PollingRecordFeed immediately in every test that
     // doesn't explicitly opt into exercising the SSE path — same fallback
@@ -628,5 +633,47 @@ describe("TranscriptPanelController — ready & send safety", () => {
     await controller.onSend("third", true)
     expect(client.prompt).toHaveBeenCalledTimes(2)
     expect(client.prompt).toHaveBeenLastCalledWith("s1", "third", { interrupt: true, wait: false })
+  })
+})
+
+describe("TranscriptPanelController — pasted image attachments", () => {
+  it("uploads to the agentproto home (NOT the session cwd) and posts the path back", async () => {
+    const client = createMockClient({
+      uploadFile: vi.fn().mockResolvedValue({ path: "/home/.agentproto/.agentproto-attachments/paste.png", bytes: 3 }),
+    })
+    // A session whose cwd is a real repo — the upload must NOT land there.
+    const { controller, messenger } = make(client, {
+      initialSession: session({ cwd: "/work/my-repo" }),
+    })
+    const bytes = new Uint8Array([1, 2, 3]).buffer
+
+    await controller.onAttachImage(bytes, "image/png")
+
+    const call = client.uploadFile.mock.calls[0]!
+    expect(call[0]).toBe(resolveAttachmentsCwd(process.env, homedir())) // the home, not /work/my-repo
+    expect(call[0]).not.toBe("/work/my-repo")
+    expect(call[1]).toMatch(/^paste-\d{8}-\d{6}-[0-9a-f]{6}\.png$/) // deterministic-shaped name
+    expect(call[2]).toBe(bytes) // bytes passed through untouched, no copy/encode
+    expect(call[3]).toBe("image/png")
+    expect(messenger.messages).toContainEqual({
+      type: "attachmentUploaded",
+      path: "/home/.agentproto/.agentproto-attachments/paste.png",
+    })
+  })
+
+  it("surfaces an upload failure as attachError instead of dropping it silently", async () => {
+    const client = createMockClient({
+      uploadFile: vi.fn().mockRejectedValue(new Error("HTTP 413 file_too_large")),
+    })
+    const { controller, messenger } = make(client)
+
+    await controller.onAttachImage(new Uint8Array([0]).buffer, "image/png")
+
+    expect(messenger.messages.some(m => m.type === "attachmentUploaded")).toBe(false)
+    expect(messenger.messages).toContainEqual({
+      type: "attachError",
+      title: "Attachment upload failed",
+      message: "HTTP 413 file_too_large",
+    })
   })
 })

@@ -47,4 +47,16 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "openToolIo", segmentId: "tool-t1" })).toBe(false)
     expect(isWebviewMessage({ type: "openToolIo", field: "input" })).toBe(false)
   })
+
+  it("accepts attachImage carrying real bytes (ArrayBuffer or a view)", () => {
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: "image/png" })).toBe(true)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new Uint8Array([1, 2]), mime: "image/jpeg" })).toBe(true)
+  })
+
+  it("rejects attachImage whose bytes are base64 text — the exact thing that must not pass as bytes", () => {
+    expect(isWebviewMessage({ type: "attachImage", bytes: "iVBORw0KGgo=", mime: "image/png" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: [1, 2, 3], mime: "image/png" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4) })).toBe(false)
+    expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: 5 })).toBe(false)
+  })
 })
