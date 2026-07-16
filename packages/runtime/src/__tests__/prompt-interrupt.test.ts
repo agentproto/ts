@@ -19,7 +19,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  INTERRUPT_SETTLE_TIMEOUT_MS,
+  type AgentSessionLike,
+} from "../sessions.js"
 
 /** `runAgentTurn` auto-wraps a raw string prompt into a single ACP
  *  text content block before handing it to `agentSession.send()` — the
@@ -70,6 +74,29 @@ function interruptibleAgentSession(): {
     async close() {},
   }
   return { agent, events }
+}
+
+/** A fake session that models a genuinely wedged mid-tool-call turn:
+ *  `cancel()` returns immediately (mirrors ACP `session/cancel` being a
+ *  fire-and-forget notification), but the turn itself only actually
+ *  ends `settleDelayMs` later (mirrors the adapter needing its own
+ *  force-cancel grace period + a stdio round-trip before it yields). */
+function wedgedThenSettlesAgentSession(settleDelayMs: number): AgentSessionLike {
+  let releaseFirstTurn!: () => void
+  const gate = new Promise<void>(resolve => {
+    releaseFirstTurn = resolve
+  })
+  return {
+    sessionId: "wedged-then-settles-session",
+    async *send() {
+      await gate
+      yield { kind: "turn-end", reason: "cancelled" }
+    },
+    async cancel() {
+      setTimeout(releaseFirstTurn, settleDelayMs)
+    },
+    async close() {},
+  }
 }
 
 /** A fake session that never settles — `cancel()` resolves but the
@@ -263,8 +290,40 @@ describe("enqueuePrompt({interrupt: true}) — registry", () => {
       const assertion = expect(interruptPromise).rejects.toThrow(
         /did not settle after interrupt/
       )
-      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.advanceTimersByTimeAsync(INTERRUPT_SETTLE_TIMEOUT_MS)
       await assertion
+
+      reg.kill(desc.id)
+      reg.shutdown()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not spuriously time out when a genuinely wedged mid-tool-call turn takes tens of seconds to settle", async () => {
+    vi.useFakeTimers()
+    try {
+      const reg = createSessionsRegistry({ persist: false })
+      // Longer than the OLD 30s bound this regression-tests against,
+      // but comfortably inside INTERRUPT_SETTLE_TIMEOUT_MS.
+      const settleDelayMs = 45_000
+      const agent = wedgedThenSettlesAgentSession(settleDelayMs)
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: agent,
+        adapterSlug: "fake",
+      })
+
+      void reg.sendPrompt(desc.id, "first")
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reg.get(desc.id)?.busy).toBe(true)
+
+      const interruptPromise = reg.enqueuePrompt(desc.id, "second", {
+        interrupt: true,
+      })
+      await vi.advanceTimersByTimeAsync(settleDelayMs)
+      await expect(interruptPromise).resolves.toBeUndefined()
 
       reg.kill(desc.id)
       reg.shutdown()
