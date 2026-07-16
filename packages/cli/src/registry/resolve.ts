@@ -44,6 +44,13 @@ export interface ResolvedAdapter {
   readonly handle: AgentCliHandle
   readonly source: "npm" | "file" | "bundled" | "acp-config" | "acp-catalog"
   readonly packageName?: string
+  /** True when this resolution was served from the last-known-good cache
+   *  because the current import attempt failed (see `importFresh`'s doc
+   *  comment for why that happens mid-rebuild). Never present on an
+   *  actually-fresh successful resolution — callers that only care about
+   *  spawning don't need to check it, callers that surface status
+   *  (`listAdaptersWithCatalog`) must not report it as plain "ready". */
+  readonly stale?: true
 }
 
 /** Mode metadata surfaced in `adapter_list` — the UI-safe subset of an
@@ -203,6 +210,27 @@ function withResolvedProprietaryAdapter(
 }
 
 /**
+ * Thrown by `importFresh` when the specifier resolved to a real path on
+ * disk (the npm package IS installed) but the subsequent `import()` of
+ * that path still failed. Distinguishes "present but transiently broken"
+ * from "not resolvable at all" — see the incident writeup at
+ * `resolveAdapter`'s last-known-good fallback below. Empirically this is
+ * a NARROW window (a reproducible probe against a real `tsup` rebuild
+ * caught it in roughly 1 of 24 iterations): `tsup`'s `clean: true`
+ * deletes `dist/*` before rewriting it, so for most of a rebuild's
+ * duration the resolved path is genuinely ABSENT (plain `MODULE_NOT_FOUND`,
+ * not this error) — indistinguishable from "never installed" by resolution
+ * alone. This error only fires in the brief gap between the file being
+ * (re)created and its content finishing being written.
+ */
+export class AdapterImportFailedError extends Error {
+  constructor(message: string, readonly resolvedPath: string) {
+    super(message)
+    this.name = "AdapterImportFailedError"
+  }
+}
+
+/**
  * Dynamic-`import()` a bare specifier without inheriting Node's process-
  * lifetime ESM module cache. In a long-running daemon, `resolveAdapter`
  * calls stack up over hours/days — a plain `import(packageName)` returns
@@ -217,6 +245,12 @@ function withResolvedProprietaryAdapter(
  * An unchanged file (same mtime) hits the exact same cache entry every call
  * — no unbounded growth of the module registry — but a rebuild changes the
  * mtime, producing a new URL and thus a genuinely fresh import.
+ *
+ * That same re-import-every-request behavior is also why a build makes an
+ * adapter briefly vanish: mid-rebuild, `dist/*.js` is momentarily deleted
+ * or half-written, so the import genuinely throws. `resolveAdapter`'s
+ * last-known-good fallback is what keeps that throw from being reported as
+ * "not installed" — see there for the rest of the story.
  */
 async function importFresh(specifier: string): Promise<Record<string, unknown>> {
   let resolvedPath: string
@@ -234,10 +268,66 @@ async function importFresh(specifier: string): Promise<Record<string, unknown>> 
   } catch {
     /* stat failed — import without a cache-buster rather than fail resolution */
   }
-  return (await import(pathToFileURL(resolvedPath).href + cacheBuster)) as Record<
-    string,
-    unknown
-  >
+  try {
+    return (await import(pathToFileURL(resolvedPath).href + cacheBuster)) as Record<
+      string,
+      unknown
+    >
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err)
+    throw new AdapterImportFailedError(
+      `resolved '${specifier}' to '${resolvedPath}' but the import failed: ${cause}`,
+      resolvedPath
+    )
+  }
+}
+
+interface LastKnownGoodEntry {
+  readonly resolved: ResolvedAdapter
+  readonly resolvedAt: number
+}
+
+/**
+ * Per-process memory of the last successful resolution for each slug.
+ * Deliberately NOT persisted across restarts: a genuinely-uninstalled
+ * adapter must eventually be reported as such, and "eventually" has to
+ * include "the daemon restarted" — a fresh process has no history to trust,
+ * which is exactly the behavior a never-resolved adapter needs. Persisting
+ * this would let an uninstalled adapter keep reporting "ready" forever
+ * across restarts, silently defeating the whole point of the status.
+ */
+const lastKnownGood = new Map<string, LastKnownGoodEntry>()
+
+/**
+ * How long a last-known-good resolution is trusted after its most recent
+ * successful import. `tsup`'s `clean: true` deletes `dist/*` before
+ * rewriting it (confirmed by reading `packages/tooling/tsup/base.js` and by
+ * a live probe: see `AdapterImportFailedError`'s doc comment) — during that
+ * window the resolved path is genuinely absent, not just unreadable, so
+ * "does the path still exist" cannot bound this the way an earlier draft of
+ * this fix assumed. A bounded TTL is the only sound fallback. 5 minutes is
+ * a wide margin over what was actually measured in this repo: a full
+ * `pnpm build` across every package and adapter took ~42s wall-clock
+ * (cold, no turbo-cache hits) on ordinary dev hardware; a single adapter's
+ * own rebuild is under 2s. The margin covers a slower machine or a cold
+ * cache without leaving a truly-uninstalled adapter reporting "ready" for
+ * an unreasonable stretch after removal.
+ */
+let lastKnownGoodTtlMs = 5 * 60 * 1000
+
+/** Test-only: drop every last-known-good entry so tests start clean. */
+export function _resetLastKnownGoodForTests(): void {
+  lastKnownGood.clear()
+}
+
+/** Test-only: override the last-known-good TTL so expiry is testable
+ *  without a real multi-minute wait. Returns a restore function. */
+export function _setLastKnownGoodTtlMsForTests(ms: number): () => void {
+  const prev = lastKnownGoodTtlMs
+  lastKnownGoodTtlMs = ms
+  return () => {
+    lastKnownGoodTtlMs = prev
+  }
 }
 
 export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
@@ -268,12 +358,14 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
           typeof parentCandidate === "object" &&
           "name" in parentCandidate
         ) {
-          return {
+          const resolved: ResolvedAdapter = {
             slug,
             handle: withResolvedProprietaryAdapter(parentCandidate, parentPkg),
             source: "npm",
             packageName: parentPkg,
           }
+          lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
+          return resolved
         }
       } catch {
         /* parent also missing — fall through to original error */
@@ -287,14 +379,42 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     // that already speaks ACP.
     const generic = await resolveAcpSpec(slug)
     if (generic) {
-      return {
+      const resolved: ResolvedAdapter = {
         slug,
         handle: acpHandleFromSpec(generic.spec),
         source: generic.source,
       }
+      lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
+      return resolved
+    }
+
+    // Every live resolution path missed. The daemon re-imports on every
+    // call (see `importFresh`'s doc comment) precisely so a rebuilt
+    // adapter is picked up without a restart — the unavoidable side effect
+    // is that mid-rebuild, this import genuinely throws. An adapter this
+    // process has already resolved successfully gets the benefit of the
+    // doubt for `lastKnownGoodTtlMs`: prefer the last-known-good handle
+    // over reporting an installed adapter as gone.
+    const cached = lastKnownGood.get(slug)
+    if (cached && Date.now() - cached.resolvedAt <= lastKnownGoodTtlMs) {
+      return { ...cached.resolved, stale: true }
     }
 
     const cause = primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
+    if (primaryErr instanceof AdapterImportFailedError) {
+      // The package IS present on disk (resolution to a path succeeded) —
+      // only the import itself failed just now. Never seen resolve before
+      // (no last-known-good above), so we can't call this "rebuilding" with
+      // certainty, but we CAN say it's wrong to call it "not installed":
+      // that advice sends the operator to reinstall something that's
+      // already there.
+      throw new Error(
+        `agentproto: adapter '${packageName}' resolves on disk but could not be ` +
+          `imported just now — is something rebuilding it (tsup / tsup --watch)? ` +
+          `If a build is in progress, wait for it to finish and retry; this is not ` +
+          `a sign the package needs reinstalling.\n  cause: ${cause}`
+      )
+    }
     throw new Error(
       `agentproto: could not load adapter '${slug}'. ` +
         `Tried '${packageName}'. Install it with: npm i -g ${packageName}\n  cause: ${cause}`
@@ -313,12 +433,14 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
-  return {
+  const resolved: ResolvedAdapter = {
     slug,
     handle: withResolvedProprietaryAdapter(candidate, resolvedPackageName),
     source: "npm",
     packageName: resolvedPackageName,
   }
+  lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
+  return resolved
 }
 
 /**
@@ -441,13 +563,18 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
   readonly modelDetails: AdapterModelInfo[]
   readonly packageName: string
   readonly originalHandle: AgentCliHandle
+  /** Mirrors `ResolvedAdapter.stale` — set when this handle came from the
+   *  last-known-good cache rather than a resolution that just succeeded.
+   *  `listAdaptersWithCatalog` reads this to keep a stale resolution from
+   *  reporting status "ready". */
+  readonly stale?: true
 }
 
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
 type AgentCliInfo = Pick<
   AdapterInfo,
   "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails"
->
+> & { stale?: true }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
   return {
@@ -457,6 +584,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     models: h.models,
     modes: h.modes,
     modelDetails: h.modelDetails,
+    ...(h.stale ? { stale: true } : {}),
   }
 }
 
@@ -464,7 +592,8 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
 export function wrapCliHandle(
   slug: string,
   handle: AgentCliHandle,
-  packageName: string
+  packageName: string,
+  stale?: true
 ): AgentCliWrappedHandle {
   const h = handle as Record<string, unknown>
   const modelsField = (h.models as { allowed?: unknown } | undefined)?.allowed
@@ -484,6 +613,7 @@ export function wrapCliHandle(
     modes: toAdapterModes(handle.modes),
     modelDetails,
     originalHandle: handle,
+    ...(stale ? { stale: true as const } : {}),
   }
 }
 
@@ -505,7 +635,14 @@ async function discoverExtraHandles(
       seen.add(slug)
       try {
         const resolved = await resolveAdapter(slug)
-        out.push(wrapCliHandle(slug, resolved.handle, resolved.packageName ?? `@agentproto/adapter-${slug}`))
+        out.push(
+          wrapCliHandle(
+            slug,
+            resolved.handle,
+            resolved.packageName ?? `@agentproto/adapter-${slug}`,
+            resolved.stale
+          )
+        )
       } catch { /* not importable */ }
     }
   }
@@ -525,14 +662,34 @@ async function discoverExtraHandles(
  *
  * Status is derived via the kit's `computeStatus`: resolved × requiresSetup ×
  * ledger-exists — never via `handle.check()` (per OQ-5).
+ *
+ * A fourth status, `"unresolvable"`, sits outside that kit-owned vocabulary:
+ * when `resolveAdapter` falls back to its last-known-good cache (see there),
+ * the kit sees a normally-resolved handle and would compute "ready" — which
+ * would silently hide the fact that the CURRENT import attempt just failed.
+ * `resolved.stale` (threaded through `wrapCliHandle` → `AgentCliInfo`) is
+ * checked below and overrides whatever the kit computed, so a rebuilding
+ * adapter reads as neither "ready" (a lie — a spawn against a half-written
+ * dist would still fail) nor "supported" (equally wrong — it tells the
+ * operator to reinstall something that's already there).
  */
 export async function listAdaptersWithCatalog(
   catalog: readonly AdapterCatalogEntry[]
-): Promise<(AdapterInfo & { status: "supported" | "available" | "ready"; hint?: string })[]> {
+): Promise<
+  (AdapterInfo & {
+    status: "supported" | "available" | "ready" | "unresolvable"
+    hint?: string
+  })[]
+> {
   const resolver = makeAdapterResolver<AgentCliWrappedHandle>({
     load: async (slug: string) => {
       const resolved = await resolveAdapter(slug)
-      return wrapCliHandle(slug, resolved.handle, resolved.packageName ?? `@agentproto/adapter-${slug}`)
+      return wrapCliHandle(
+        slug,
+        resolved.handle,
+        resolved.packageName ?? `@agentproto/adapter-${slug}`,
+        resolved.stale
+      )
     },
   })
 
@@ -548,28 +705,39 @@ export async function listAdaptersWithCatalog(
   })
 
   const entries = await lister()
-  return entries.map((e) => ({
-    slug: e.slug,
-    name: e.name,
-    version: e.version,
-    description: e.description,
-    protocol: e.info?.protocol ?? "unknown",
-    streaming: e.info?.streaming ?? false,
-    packageName: e.packageName,
-    commands: e.info?.commands ?? [],
-    models: e.info?.models ?? [],
-    modes: e.info?.modes ?? [],
-    modelDetails: e.info?.modelDetails ?? [],
-    status: e.status,
-    ...(e.hint !== undefined ? { hint: e.hint } : {}),
-  }))
+  return entries.map((e) => {
+    const stale = e.info?.stale === true
+    return {
+      slug: e.slug,
+      name: e.name,
+      version: e.version,
+      description: e.description,
+      protocol: e.info?.protocol ?? "unknown",
+      streaming: e.info?.streaming ?? false,
+      packageName: e.packageName,
+      commands: e.info?.commands ?? [],
+      models: e.info?.models ?? [],
+      modes: e.info?.modes ?? [],
+      modelDetails: e.info?.modelDetails ?? [],
+      status: stale ? ("unresolvable" as const) : e.status,
+      ...(stale
+        ? {
+            hint:
+              "resolved successfully before, but the last import attempt just failed — " +
+              "likely mid-rebuild. Not reinstallable advice: the package is present.",
+          }
+        : e.hint !== undefined
+          ? { hint: e.hint }
+          : {}),
+    }
+  })
 }
 
 /** A single row of the merged adapter listing — npm/native catalog
  *  entries and generic ACP entries share this shape (the latter also
  *  carry a `source`). */
 export type AdapterListing = AdapterInfo & {
-  status: "supported" | "available" | "ready"
+  status: "supported" | "available" | "ready" | "unresolvable"
   hint?: string
   source?: "acp-config" | "acp-catalog"
 }
