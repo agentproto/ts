@@ -93,6 +93,20 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "gpt-4.1",
     homepage: "https://openai.com/docs",
   },
+  "openai-direct": {
+    id: "openai-direct",
+    label: "OpenAI (direct)",
+    description:
+      "OpenAI models routed directly to api.openai.com (OpenAI-compatible). " +
+      "Use model option with real upstream ids: gpt-4.1, gpt-5, etc. " +
+      "Set OPENAI_API_KEY in env. No local proxy — direct to OpenAI.",
+    schemaFlavor: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    keyEnv: "OPENAI_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "gpt-4.1",
+    homepage: "https://platform.openai.com",
+  },
 } as const satisfies Record<string, ProviderPreset>
 
 export type AnthropicGatewayPresetId = keyof typeof ANTHROPIC_GATEWAY_PRESETS

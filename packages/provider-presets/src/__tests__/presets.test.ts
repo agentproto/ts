@@ -7,11 +7,12 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, deepseek, xai and openai", () => {
+  it("exposes moonshot, openrouter, deepseek, xai, openai and openai-direct", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "moonshot",
       "openai",
+      "openai-direct",
       "openrouter",
       "xai",
     ])
@@ -82,7 +83,8 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     expect(openai.defaultModel).toBe("gpt-4.1")
   })
 
-  it("external gateways (moonshot, openrouter, deepseek) point at distinct base URLs", () => {
+  it("external gateways (non-proxy) point at distinct base URLs", () => {
+    // xai and openai go through the local llm-endpoint proxy — they share a baseUrl
     const externalPresets = anthropicGatewayPresetList.filter(
       (p) => p.id !== "xai" && p.id !== "openai"
     )
