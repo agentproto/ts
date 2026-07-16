@@ -84,4 +84,32 @@ describe("deriveSessionTitle", () => {
     expect(title).not.toMatch(/[\uD800-\uDFFF]/u) // no lone surrogate anywhere
     expect(title).toContain("🎉")
   })
+
+  // A coding agent's prompts are full of periods that aren't sentence ends —
+  // filenames, versions — so the sentence-end regex must require trailing
+  // whitespace/EOS, not just any '.', '?', or '!'.
+  it("does not cut a filename's dot as a sentence end", () => {
+    expect(deriveSessionTitle("Read PLAN.md in your cwd")).toBe("Read PLAN.md in your cwd")
+  })
+
+  it("does not cut a dotted version number as a sentence end", () => {
+    expect(deriveSessionTitle("Update to v1.2.3 and rebuild")).toBe("Update to v1.2.3 and rebuild")
+  })
+
+  it("does not cut a trailing filename before a real sentence-ending '?'", () => {
+    expect(deriveSessionTitle("why does agentproto-vscode-0.1.0.vsix fail to install?")).toBe(
+      "why does agentproto-vscode-0.1.0.vsix fail to install",
+    )
+  })
+
+  it("still cuts at a real sentence end (terminator followed by whitespace)", () => {
+    expect(deriveSessionTitle("Refactor the store. Then add tests.")).toBe(
+      "Refactor the store",
+    )
+    expect(deriveSessionTitle("Hello world. This is the second.")).toBe("Hello world")
+  })
+
+  it("returns undefined for a prompt that collapses to pure punctuation", () => {
+    expect(deriveSessionTitle("...")).toBeUndefined()
+  })
 })

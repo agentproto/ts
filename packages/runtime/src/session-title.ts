@@ -61,7 +61,13 @@ export function deriveSessionTitle(message: unknown): string | undefined {
   // Cut at the first sentence end — precedent: session-story.ts's
   // `classifyRoute` does the same for chapter titles, at 42 chars; a tree
   // row and a tab have more room than a story chapter, so this uses 60.
-  const sentence = collapsed.replace(/[.?!].*$/, "").trim()
-  if (sentence === "") return undefined
+  // UNLIKE that precedent, the terminator must be followed by whitespace
+  // or end-of-string: a coding agent's prompts are full of periods that
+  // aren't sentence ends — filenames (`PLAN.md`), versions (`v1.2.3`) — and
+  // a bare `[.?!].*$` (session-story.ts's rule) guillotines those at the
+  // first dot, e.g. "Read PLAN.md" → "Read PLAN". Don't copy that pattern
+  // here without this anchor.
+  const sentence = collapsed.replace(/[.?!](\s.*)?$/, "").trim()
+  if (sentence === "" || !/[\p{L}\p{N}]/u.test(sentence)) return undefined
   return Array.from(sentence).length > MAX_LENGTH ? truncate(sentence, MAX_LENGTH) : sentence
 }
