@@ -27,7 +27,11 @@ import { registerCommandTools } from "./command-tools.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
-import { registerSessionTools, registerExportSessionTool } from "./session-tools.js"
+import {
+  registerSessionTools,
+  registerExportSessionTool,
+  registerConversationReadTool,
+} from "./session-tools.js"
 import {
   registerBrowserTools,
   type BrowserAdapterResolver,
@@ -935,6 +939,11 @@ export async function createGateway(
     // JSON transcript. Co-located with the session tools; registry access
     // mirrors the summarise_session pattern above.
     registerExportSessionTool(server, { registry: sessions })
+    // Conversation reader — works on ANY session kind (agent-cli or PTY):
+    // discovers the provider-native conversation behind a session instead
+    // of requiring one already recorded on the descriptor. Co-located with
+    // the tools above; same registry-access pattern.
+    registerConversationReadTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit

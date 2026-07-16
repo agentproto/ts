@@ -60,6 +60,7 @@ import {
   removeImport,
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
+import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream } from "node:fs"
 import { createInterface } from "node:readline"
@@ -2317,13 +2318,37 @@ async function handleSessions(
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/preview|\/export|\/events|\/wait)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/preview|\/export|\/conversation|\/events|\/wait)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
   if (!rawIdOrName) return false
   const resolvedDesc = registry.findByIdOrName(rawIdOrName)
   const id = resolvedDesc?.id ?? rawIdOrName
+
+  if (suffix === "/conversation" && req.method === "GET") {
+    // Provider-native conversation behind this session, on ANY session kind
+    // (agent-cli or PTY) — see conversation-read.ts. `conversation: null`
+    // with a `reason` (no conversation, or ambiguous with `candidates`) is a
+    // normal outcome, not an error — only an unresolvable session id is a
+    // 404. Read-only GET, no auth gate (same policy as /preview / /export).
+    if (!resolvedDesc) {
+      json(404, {
+        error: "session_not_found",
+        message: `session "${rawIdOrName}" not found`,
+        sessionId: rawIdOrName,
+      })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const fmt = qs.get("format") === "json" ? "json" as const : "markdown" as const
+    const result = await readConversation(registry, { idOrName: rawIdOrName, format: fmt })
+    json(200, result)
+    return true
+  }
 
   if (suffix === "/export" && req.method === "GET") {
     // Transcript export — reads the adapter's native persistence layer

@@ -26,6 +26,7 @@ import { createInterface } from "node:readline"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
+import type { ConversationCandidate } from "./conversation-store.js"
 
 // ── Common model ──────────────────────────────────────────────────────
 
@@ -218,7 +219,7 @@ const IGNORED_CLAUDE_TYPES = new Set([
   "last-prompt",
 ])
 
-async function exportClaudeCodeSession(
+export async function exportClaudeCodeSession(
   adapterSessionId: string,
   cwd?: string,
 ): Promise<ExportedSession> {
@@ -372,9 +373,12 @@ interface HermesMessageRow {
   timestamp?: number
 }
 
-async function exportHermesSession(adapterSessionId: string): Promise<ExportedSession> {
-  const dbPath = join(homedir(), ".hermes", "state.db")
+// Shared by exportHermesSession AND discoverHermesSessions (below) — the
+// open + SQLITE_BUSY-retry handling lives in exactly one place so the two
+// callers can never drift.
+type HermesDb = InstanceType<(typeof import("node:sqlite"))["DatabaseSync"]>
 
+async function openHermesDb(dbPath: string): Promise<HermesDb> {
   // Dynamic import isolates the experimental module warning and lets
   // callers on older Node get a clear error instead of a crash at load time.
   let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
@@ -382,14 +386,11 @@ async function exportHermesSession(adapterSessionId: string): Promise<ExportedSe
     const sqlite = await import("node:sqlite")
     DatabaseSync = sqlite.DatabaseSync
   } catch {
-    throw new Error(
-      "hermes exporter: node:sqlite unavailable. Requires Node.js ≥22.5.0.",
-    )
+    throw new Error("hermes: node:sqlite unavailable. Requires Node.js ≥22.5.0.")
   }
 
-  let db: InstanceType<typeof DatabaseSync>
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true })
+    return new DatabaseSync(dbPath, { readOnly: true })
   } catch (err) {
     const msg = String(err)
     if (
@@ -409,25 +410,30 @@ async function exportHermesSession(adapterSessionId: string): Promise<ExportedSe
     }
     throw err
   }
+}
 
-  const withRetryOnBusy = <T>(fn: () => T): T => {
-    try {
-      return fn()
-    } catch (err) {
-      const msg = String(err)
-      if (msg.includes("SQLITE_BUSY") || msg.includes("database is locked")) {
-        // One brief retry — the lock is usually transient
-        try {
-          return fn()
-        } catch {
-          throw new Error(
-            `hermes: database is locked. Hermes may be actively writing. Try again.`,
-          )
-        }
+function withRetryOnBusy<T>(fn: () => T): T {
+  try {
+    return fn()
+  } catch (err) {
+    const msg = String(err)
+    if (msg.includes("SQLITE_BUSY") || msg.includes("database is locked")) {
+      // One brief retry — the lock is usually transient
+      try {
+        return fn()
+      } catch {
+        throw new Error(
+          `hermes: database is locked. Hermes may be actively writing. Try again.`,
+        )
       }
-      throw err
     }
+    throw err
   }
+}
+
+export async function exportHermesSession(adapterSessionId: string): Promise<ExportedSession> {
+  const dbPath = join(homedir(), ".hermes", "state.db")
+  const db = await openHermesDb(dbPath)
 
   const session = withRetryOnBusy(
     () =>
@@ -548,6 +554,86 @@ async function exportHermesSession(adapterSessionId: string): Promise<ExportedSe
   void crossValidateHermesExport(adapterSessionId, messages.length).catch(() => {})
 
   return { meta, messages }
+}
+
+// ── hermes discovery (SQLite, cwd-scoped) ─────────────────────────────
+//
+// Reuses openHermesDb/withRetryOnBusy above — the SAME open + BUSY-retry
+// path exportHermesSession uses — so there is one sqlite plumbing to
+// maintain, not two. Called from conversation-store.ts's hermes `discover`
+// via a dynamic import (see that file for why it's dynamic, not static).
+
+function hermesRowToCandidate(row: HermesSessionRow): ConversationCandidate {
+  const startedAtIso =
+    row.started_at !== undefined ? new Date(row.started_at * 1000).toISOString() : undefined
+  // "Last activity" is when the conversation was last written to — ended_at
+  // if it has one, else fall back to started_at (a still-open session).
+  const lastActivitySec = row.ended_at ?? row.started_at
+  const lastActivityIso =
+    lastActivitySec !== undefined ? new Date(lastActivitySec * 1000).toISOString() : undefined
+  return {
+    conversationId: row.id,
+    ...(startedAtIso ? { startedAt: startedAtIso } : {}),
+    ...(lastActivityIso ? { lastActivityAt: lastActivityIso } : {}),
+    ...(row.message_count !== undefined ? { messageCount: row.message_count } : {}),
+    ...(row.title ? { preview: row.title } : {}),
+    ...(row.source ? { lastWriter: row.source } : {}),
+  }
+}
+
+export async function discoverHermesSessions(
+  cwd: string,
+  since?: string,
+  expectedId?: string,
+): Promise<ConversationCandidate[]> {
+  const dbPath = join(homedir(), ".hermes", "state.db")
+
+  let db: HermesDb
+  try {
+    db = await openHermesDb(dbPath)
+  } catch (err) {
+    // "state.db not found" == hermes has never run on this box — a normal,
+    // empty store, not a discovery error. Anything else (locked, node:sqlite
+    // missing) is a genuinely unreadable store and propagates — see the
+    // ConversationStore.discover contract in conversation-store.ts.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("state.db not found")) return []
+    throw err
+  }
+
+  try {
+    // Ground truth beats heuristic: bind to exactly the conversation we
+    // were asked about. Binding is by `id`, which is cwd-independent, so
+    // this never even looks at `cwd` — never falls through to the cwd-scan
+    // below. See the exact-bind invariant in conversation-store.ts.
+    if (expectedId) {
+      const row = withRetryOnBusy(
+        () =>
+          db.prepare("SELECT * FROM sessions WHERE id = ?").get(expectedId) as unknown as
+            | HermesSessionRow
+            | undefined,
+      )
+      return row ? [hermesRowToCandidate(row)] : []
+    }
+
+    const rows = withRetryOnBusy(
+      () =>
+        db
+          .prepare("SELECT * FROM sessions WHERE cwd = ?")
+          .all(cwd) as unknown as HermesSessionRow[],
+    )
+    const sinceMs = since ? Date.parse(since) : NaN
+    return rows
+      .filter(row => {
+        if (!Number.isFinite(sinceMs)) return true
+        const lastActivitySec = row.ended_at ?? row.started_at
+        if (lastActivitySec === undefined) return true
+        return lastActivitySec * 1000 >= sinceMs - 1000
+      })
+      .map(hermesRowToCandidate)
+  } finally {
+    db.close()
+  }
 }
 
 // ── Hermes cross-validation via native CLI ────────────────────────────
