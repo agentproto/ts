@@ -283,46 +283,73 @@ export function buildHtml(nonce: string): string {
       display: flex;
       flex-direction: column;
     }
+    /* One row: the conversation's name on the left, two detail buttons on
+       the right. Everything this used to carry (status chip, blocked-on
+       chip, token totals) either repeats the tab icon or is a number you
+       consult in a popover, not one you monitor in a strip. */
     #header {
       flex: 0 0 auto;
-      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 14px;
       border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-contrastBorder, rgba(128,128,128,0.3)));
       background-color: var(--vscode-sideBar-background);
     }
     #header-title {
       font-weight: 600;
       font-size: 1.1em;
-      margin-bottom: 4px;
       color: var(--vscode-sideBarTitle-foreground);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    #header-meta {
+    #header-actions {
+      flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      font-size: 0.9em;
-      color: var(--vscode-descriptionForeground);
+      gap: 4px;
     }
-    .chip {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 10px;
+    .header-action { position: relative; }
+    .header-btn { font-size: 0.85em; }
+    .header-btn:empty { display: none; }
+    /* A webview has no VS Code popover API — this is our own
+       absolutely-positioned element, anchored to its button so it never
+       reflows the transcript underneath it. */
+    .popover {
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      z-index: 30;
+      min-width: 200px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.3)));
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       font-size: 0.85em;
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
     }
-    .chip-running { background: var(--vscode-testing-iconPassed); color: var(--vscode-editor-background); }
-    /* chip-busy kept for any descriptor path still reporting it; working/
-       waiting/stalled are what computeStatusChip actually emits now. */
-    .chip-busy, .chip-working { background: var(--vscode-progressBar-background); color: var(--vscode-editor-background); }
-    .chip-waiting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
-    .chip-stalled { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    .chip-awaiting-input { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    .chip-exited { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
-    .chip-starting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
-    .chip-blocked { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    #header-blocked:empty { display: none; }
+    .popover[hidden] { display: none; }
+    .popover-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 2px 0;
+    }
+    .popover-label { color: var(--vscode-descriptionForeground); }
+    /* Delayed and low-key on purpose — see BLOCKED_NOTE_DELAY_MS in the
+       script. Sits in the conversation body, next to the tool call it
+       describes, not the header: the tab icon already carries the states
+       that deserve a permanent glyph. */
+    #blocked-note {
+      flex: 0 0 auto;
+      padding: 4px 14px 0;
+      font-size: 0.85em;
+      color: var(--vscode-editorWarning-foreground);
+    }
+    #blocked-note[hidden] { display: none; }
     #transcript {
       flex: 1 1 auto;
       overflow-y: auto;
@@ -749,14 +776,28 @@ export function buildHtml(nonce: string): string {
 <body>
   <div id="header">
     <div id="header-title"></div>
-    <div id="header-meta">
-      <span id="status-chip" class="chip chip-starting"></span>
-      <span id="header-blocked" class="chip chip-blocked"></span>
-      <span id="cost"></span>
-      <span id="conv-usage"></span>
+    <div id="header-actions">
+      <div class="header-action">
+        <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="cost-popover" class="popover" hidden>
+          <div class="popover-row"><span class="popover-label">Tokens in</span><span id="popover-tokens-in"></span></div>
+          <div class="popover-row"><span class="popover-label">Tokens out</span><span id="popover-tokens-out"></span></div>
+          <div class="popover-row"><span class="popover-label">Model</span><span id="popover-model"></span></div>
+          <div class="popover-row"><span class="popover-label">Harness</span><span id="popover-harness"></span></div>
+          <div class="popover-row"><span class="popover-label">Auth</span><span id="popover-auth"></span></div>
+        </div>
+      </div>
+      <div class="header-action">
+        <button id="context-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <div id="context-popover" class="popover" hidden>
+          <div class="popover-row"><span class="popover-label">Used</span><span id="popover-context-used"></span></div>
+          <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
+        </div>
+      </div>
     </div>
   </div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
+  <div id="blocked-note" hidden></div>
   <div id="working" hidden>
     <span id="working-glyph">✳</span>
     <span id="working-text"></span>
@@ -797,11 +838,19 @@ export function buildHtml(nonce: string): string {
       // are on screen, so "N more" is always arithmetic the user can trust.
       const MAX_IO_LINES = ${TOOL_IO_MAX_LINES};
       const headerTitle = document.getElementById('header-title');
-      const statusChip = document.getElementById('status-chip');
-      const headerBlocked = document.getElementById('header-blocked');
-      const costEl = document.getElementById('cost');
+      const costBtn = document.getElementById('cost-btn');
+      const costPopover = document.getElementById('cost-popover');
+      const popoverTokensIn = document.getElementById('popover-tokens-in');
+      const popoverTokensOut = document.getElementById('popover-tokens-out');
+      const popoverModel = document.getElementById('popover-model');
+      const popoverHarness = document.getElementById('popover-harness');
+      const popoverAuth = document.getElementById('popover-auth');
+      const contextBtn = document.getElementById('context-btn');
+      const contextPopover = document.getElementById('context-popover');
+      const popoverContextUsed = document.getElementById('popover-context-used');
+      const popoverContextSize = document.getElementById('popover-context-size');
+      const blockedNote = document.getElementById('blocked-note');
       const transcript = document.getElementById('transcript');
-      const convUsage = document.getElementById('conv-usage');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
       const composer = document.getElementById('composer');
@@ -823,9 +872,17 @@ export function buildHtml(nonce: string): string {
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
       // this panel must not disagree about whether a session is stalled.
       const STALL_AFTER_MS = 10 * 60 * 1000;
+      // A different, much shorter signal — not a replacement for the stall
+      // check above. Almost every blocked-on-tool note clears in a second or
+      // two, so showing it instantly just flashes; only a block that outlasts
+      // this delay is worth a note in the conversation body.
+      const BLOCKED_NOTE_DELAY_MS = 20 * 1000;
 
       let exited = false;
       let busy = false;
+      /** Wall-clock ms when the current turn's blockedOn note started being
+       *  true (0 when not currently blocked) — see refreshBlockedNote. */
+      let blockedSince = 0;
       /** Wall-clock ms when the current turn started (0 when idle). */
       let busySince = 0;
       let lastTokensOut;
@@ -908,8 +965,18 @@ export function buildHtml(nonce: string): string {
         refreshComposer();
       }
 
-      // "Working…" plus how long and how much — the three things a user
-      // waiting on a reply actually wants, without expanding anything.
+      // "busy" said nothing: it covered an agent writing a reply and an agent
+      // wedged for 20h alike. working/waiting/stalled differ in what the user
+      // should DO, so they get three words — this is the only remaining
+      // renderer of that vocabulary now that the header's status chip is gone:
+      //   working — generating right now. Wait.
+      //   waiting — mid-turn but parked on a background command/sub-agent
+      //             (blockedOn). It is not the model that is slow.
+      //   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
+      //             coming; the agent stopped emitting without a turn-end and
+      //             the daemon is still awaiting a turn that will never end.
+      // Plus how long and how much — the three things a user waiting on a
+      // reply actually wants, without expanding anything.
       function refreshWorking() {
         working.hidden = !busy;
         if (!busy) return;
@@ -947,6 +1014,7 @@ export function buildHtml(nonce: string): string {
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
         refreshComposer();
         refreshWorking();
+        refreshBlockedNote();
         // The turn just ended — the daemon will accept a prompt again, so hand
         // over whatever was typed during it. This is the whole point of the
         // queue: the user types when they think of it, not when the agent is ready.
@@ -985,31 +1053,50 @@ export function buildHtml(nonce: string): string {
         return Math.floor(hours / 24) + 'd';
       }
 
-      /**
-       * "busy" said nothing: it covered an agent writing a reply and an agent
-       * wedged for 20h alike. The three states differ in what the user should
-       * DO, so they get three words:
-       *   working — generating right now. Wait.
-       *   waiting — mid-turn but parked on a background command/sub-agent
-       *             (blockedOn). It is not the model that is slow.
-       *   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
-       *             coming; the agent stopped emitting without a turn-end and
-       *             the daemon is still awaiting a turn that will never end.
-       */
-      function computeStatusChip(session, now) {
-        if (isTerminal(session)) return 'exited';
-        if (session.awaitingInput) return 'awaiting-input';
-        if (session.busy) {
-          const silent = silentForMs(session, now);
-          if (silent !== undefined && silent > STALL_AFTER_MS) return 'stalled';
-          return session.blockedOn ? 'waiting' : 'working';
+      // blockedOn describes an IN-FLIGHT turn, so only claim it while the
+      // session is actually taking one. A session killed mid-tool-call keeps
+      // a stale blockedOn/busy forever (the daemon clears them in the turn's
+      // finally, which never runs for a generator that is never resumed), and
+      // rendering that verbatim told the user a dead session was blocked on a
+      // command. isTerminal already governs busy/exited elsewhere — this must
+      // not contradict it.
+      function refreshBlockedNote() {
+        const session = lastSession;
+        const live = Boolean(session) && !isTerminal(session) && Boolean(session.busy) && Boolean(session.blockedOn);
+        if (!live) {
+          blockedSince = 0;
+          blockedNote.hidden = true;
+          blockedNote.textContent = '';
+          return;
         }
-        if (session.status === 'running') return 'running';
-        return session.status || 'starting';
+        if (!blockedSince) blockedSince = Date.now();
+        // Almost every block clears in a second or two — showing it instantly
+        // just flashes and means nothing. Only a block that outlasts the
+        // delay is worth a note, and it clears the instant live goes false.
+        if (Date.now() - blockedSince < BLOCKED_NOTE_DELAY_MS) {
+          blockedNote.hidden = true;
+          blockedNote.textContent = '';
+          return;
+        }
+        blockedNote.hidden = false;
+        blockedNote.textContent = 'blocked on ' + session.blockedOn +
+          (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '');
+      }
+
+      function renderCostPopover(session) {
+        popoverTokensIn.textContent = typeof session.tokensIn === 'number' ? String(session.tokensIn) : '—';
+        popoverTokensOut.textContent = typeof session.tokensOut === 'number' ? String(session.tokensOut) : '—';
+        popoverModel.textContent = session.model || '—';
+        popoverHarness.textContent = session.adapterSlug || '—';
+        popoverAuth.textContent = session.auth ? session.auth.mode : '—';
       }
 
       function updateHeader(session) {
-        headerTitle.textContent = session.label || session.id || '';
+        // Mirrors formatTitle in transcript.logic.ts — this inline script has
+        // no module system to import it from, so the fallback order (label,
+        // then the derived title, then id) is duplicated here and the two
+        // must stay in sync.
+        headerTitle.textContent = session.label ?? session.title ?? session.id ?? '';
         // What will answer, shown where you type to it — the header no longer
         // repeats any of it. Each chip is omitted when the daemon doesn't
         // report the field (CSS :empty), rather than rendering "undefined".
@@ -1017,30 +1104,14 @@ export function buildHtml(nonce: string): string {
         composerModel.textContent = session.model || '';
         composerAuth.textContent = session.auth ? session.auth.mode : '';
 
-        const chip = computeStatusChip(session, Date.now());
-        statusChip.textContent = chip;
-        statusChip.className = 'chip chip-' + chip;
-
-        // blockedOn describes an IN-FLIGHT turn, so only claim it while the
-        // session is actually taking one. A session killed mid-tool-call keeps
-        // a stale blockedOn/busy forever (the daemon clears them in the turn's
-        // finally, which never runs for a generator that is never resumed), and
-        // rendering that verbatim told the user a dead session was blocked on a
-        // command. The chip already reads "exited" in that state — the two must
-        // not contradict each other.
-        const live = !isTerminal(session) && Boolean(session.busy);
-        headerBlocked.textContent = live && session.blockedOn
-          ? 'blocked on ' + session.blockedOn + (session.pendingToolCallId ? ' · ' + session.pendingToolCallId.slice(0, 8) : '')
-          : '';
-
-        // Cost only. The token counts used to render HERE and again in
-        // #conv-usage — the same two numbers, twice in one header — and
-        // neither instance was actionable: raw in/out isn't comparable across
-        // sessions and isn't a budget. Cost and ctx% are the numbers with a
-        // decision attached; the totals stay in the tree tooltip.
-        costEl.textContent = typeof session.costUsd === 'number'
+        // Cost only, on the button — the full in/out breakdown plus what
+        // decides the rate (model/harness/auth) lives one click away, in the
+        // popover, rather than crowding the header with numbers nobody acts
+        // on at a glance.
+        costBtn.textContent = typeof session.costUsd === 'number'
           ? '$' + session.costUsd.toFixed(4)
           : '—';
+        renderCostPopover(session);
       }
 
       function appendLines(lines) {
@@ -1279,6 +1350,9 @@ export function buildHtml(nonce: string): string {
         // The working row's elapsed must keep moving on a quiet poll too — a
         // frozen counter is exactly what "is it stuck?" looks like.
         refreshWorking();
+        // The blocked note's delay must elapse on a quiet poll too — nothing
+        // else re-renders it while the session sits unchanged mid-block.
+        refreshBlockedNote();
       }, 1000);
 
       // Marks runs of consecutive tool segments so CSS can merge them into
@@ -1395,20 +1469,19 @@ export function buildHtml(nonce: string): string {
       }
 
       function renderUsage(usage) {
-        if (!usage) { convUsage.textContent = ''; convUsage.title = ''; return; }
-        const parts = [];
         // Context fill only — "ctx 206115/1000000" was two numbers the reader
         // had to divide, and the in/out totals that used to trail it merely
-        // repeated what the cost element already showed, in the same header.
-        const used = typeof usage.contextUsed === 'number' ? usage.contextUsed : usage.used;
-        const size = typeof usage.contextSize === 'number' ? usage.contextSize : usage.size;
-        if (typeof used === 'number' && typeof size === 'number' && size > 0) {
-          parts.push('ctx ' + Math.round((used / size) * 100) + '%');
-          convUsage.title = 'context ' + used + ' / ' + size;
-        } else {
-          convUsage.title = '';
-        }
-        convUsage.textContent = parts.join(' · ');
+        // repeated what the cost button already shows. The raw counts move
+        // to the popover — a title= tooltip is not a surface anyone finds.
+        const used = usage && typeof usage.contextUsed === 'number' ? usage.contextUsed : usage && usage.used;
+        const size = usage && typeof usage.contextSize === 'number' ? usage.contextSize : usage && usage.size;
+        const hasFill = typeof used === 'number' && typeof size === 'number' && size > 0;
+        contextBtn.textContent = hasFill ? 'ctx ' + Math.round((used / size) * 100) + '%' : '';
+        popoverContextUsed.textContent = typeof used === 'number' ? String(used) : '—';
+        popoverContextSize.textContent = typeof size === 'number' ? String(size) : '—';
+        // A button reading "undefined" is worse than a button that isn't
+        // there — and there's nothing to open a popover onto either.
+        if (!hasFill) contextPopover.hidden = true;
       }
 
       // Full resync — used by 'init' (and a hypothetical future 'conversation'
@@ -1483,6 +1556,35 @@ export function buildHtml(nonce: string): string {
         refreshComposer();
       });
       ebDismiss.addEventListener('click', clearError);
+
+      // ── Header popovers ─────────────────────────────────────────────
+      // A webview has no VS Code popover API, so this is plain DOM: toggle
+      // on the button, dismiss on Escape or a click outside, and never more
+      // than one open — opening either one closes the other first.
+      const popovers = [costPopover, contextPopover];
+      function closeAllPopovers() {
+        for (const p of popovers) p.hidden = true;
+      }
+      function togglePopover(popover) {
+        const wasOpen = !popover.hidden;
+        closeAllPopovers();
+        popover.hidden = wasOpen;
+      }
+      costBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(costPopover);
+      });
+      contextBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        togglePopover(contextPopover);
+      });
+      document.addEventListener('click', function(e) {
+        if (!costPopover.contains(e.target) && e.target !== costBtn) costPopover.hidden = true;
+        if (!contextPopover.contains(e.target) && e.target !== contextBtn) contextPopover.hidden = true;
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeAllPopovers();
+      });
 
       window.addEventListener('message', function(e) {
         const msg = e.data;

@@ -450,6 +450,41 @@ describe("transcriptPanel webview — composer", () => {
   })
 })
 
+describe("transcriptPanel webview — header title", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("renders the derived title when label is absent — the header used to show the raw session id instead", () => {
+    const panel = renderPanel()
+    init(panel, { label: undefined, title: "Fix the auth bug", id: "sess_09ed741a" })
+    expect(el(panel, "header-title").textContent).toBe("Fix the auth bug")
+  })
+
+  it("still prefers label over the derived title when both are present", () => {
+    const panel = renderPanel()
+    init(panel, { label: "My renamed session", title: "Fix the auth bug" })
+    expect(el(panel, "header-title").textContent).toBe("My renamed session")
+  })
+
+  it("falls back to the id when neither label nor title exist yet — pre-#390 sessions self-heal on their next prompt", () => {
+    const panel = renderPanel()
+    init(panel, { label: undefined, title: undefined, id: "sess_09ed741a" })
+    expect(el(panel, "header-title").textContent).toBe("sess_09ed741a")
+  })
+})
+
 describe("transcriptPanel webview — honest session state", () => {
   function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
     panel.send({
@@ -466,23 +501,7 @@ describe("transcriptPanel webview — honest session state", () => {
     return node
   }
 
-  it("shows blocked-on while a turn is actually in flight", () => {
-    const panel = renderPanel()
-    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
-    expect(el(panel, "header-blocked").textContent).toBe("blocked on command · toolu_01")
-  })
-
-  it("does NOT claim a killed session is blocked (stale blockedOn survives the kill)", () => {
-    const panel = renderPanel()
-    // The real descriptor a killed-mid-tool-call session carries: the daemon
-    // clears blockedOn in the turn's finally, which never runs here.
-    init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
-    expect(el(panel, "header-blocked").textContent).toBe("")
-    // ...and the chip must not contradict it either.
-    expect(el(panel, "status-chip").textContent).toBe("exited")
-  })
-
-  it("renders context as an integer percent, keeping the raw counts in the tooltip", () => {
+  it("renders the context percent on the context button, keeping the raw counts for the popover", () => {
     const panel = renderPanel()
     panel.send({
       type: "init",
@@ -496,14 +515,12 @@ describe("transcriptPanel webview — honest session state", () => {
         usage: { seq: 1, contextUsed: 206_115, contextSize: 1_000_000, tokensIn: 5, tokensOut: 7 },
       },
     })
-    const usage = el(panel, "conv-usage")
-    // in/out dropped: they repeated the cost element in the same header, and a
+    // in/out dropped: they repeated the cost button in the same header, and a
     // raw token total isn't a number anyone acts on.
-    expect(usage.textContent).toBe("ctx 21%")
-    expect(usage.title).toBe("context 206115 / 1000000")
+    expect(el(panel, "context-btn").textContent).toBe("ctx 21%")
   })
 
-  it("omits the context percent rather than dividing by zero", () => {
+  it("hides the context button rather than dividing by zero", () => {
     const panel = renderPanel()
     panel.send({
       type: "init",
@@ -512,7 +529,8 @@ describe("transcriptPanel webview — honest session state", () => {
       mode: "structured",
       conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 5, contextSize: 0 } },
     })
-    expect(el(panel, "conv-usage").textContent).toBe("")
+    // A button reading "undefined" is worse than a button that isn't there.
+    expect(el(panel, "context-btn").textContent).toBe("")
   })
 
   it("shows the working row with a ticking elapsed only while busy", () => {
@@ -535,6 +553,65 @@ describe("transcriptPanel webview — honest session state", () => {
     const panel = renderPanel()
     init(panel, { status: "killed", busy: true })
     expect(el(panel, "working").hidden).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — blocked-on note", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("stays absent the instant a turn touches a tool — almost every block clears in a second or two", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+  })
+
+  it("appears once the block outlasts the ~20s delay", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+
+    vi.advanceTimersByTime(19_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+
+    vi.advanceTimersByTime(1_000) // total 20s
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+    expect(el(panel, "blocked-note").textContent).toBe("blocked on command · toolu_01")
+  })
+
+  it("clears the instant the tool returns, without waiting", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    init(panel, { status: "running", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    vi.advanceTimersByTime(20_000)
+    expect(el(panel, "blocked-note").hidden).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: true, blockedOn: undefined }) })
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+  })
+
+  it("does NOT claim a killed session is blocked, even past the delay (stale blockedOn survives the kill)", () => {
+    vi.useFakeTimers()
+    const panel = renderPanel({ fakeTimers: true })
+    // The real descriptor a killed-mid-tool-call session carries: the daemon
+    // clears blockedOn in the turn's finally, which never runs here.
+    init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
+    vi.advanceTimersByTime(30_000)
+    expect(el(panel, "blocked-note").hidden).toBe(true)
+    expect(el(panel, "blocked-note").textContent).toBe("")
   })
 })
 
@@ -683,14 +760,12 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
   it("says WORKING, not BUSY, while the agent is generating", () => {
     const panel = renderPanel()
     init(panel, { busy: true, lastActivityAt: fresh() })
-    expect(el(panel, "status-chip").textContent).toBe("working")
     expect(el(panel, "working-text").textContent).toContain("Working…")
   })
 
   it("says WAITING when the turn is parked on a background command — not the model being slow", () => {
     const panel = renderPanel()
     init(panel, { busy: true, blockedOn: "command", lastActivityAt: fresh() })
-    expect(el(panel, "status-chip").textContent).toBe("waiting")
     expect(el(panel, "working-text").textContent).toContain("Waiting on command…")
   })
 
@@ -700,7 +775,6 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
     const longAgo = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
     init(panel, { busy: true, lastActivityAt: longAgo, lastOutputAt: longAgo })
 
-    expect(el(panel, "status-chip").textContent).toBe("stalled")
     const text = el(panel, "working-text").textContent ?? ""
     expect(text).toContain("Stalled")
     expect(text).toContain("no output for 20h")
@@ -712,9 +786,9 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
   it("shows cost WITHOUT repeating the token counts", () => {
     const panel = renderPanel()
     init(panel, { costUsd: 0.03, tokensIn: 68694, tokensOut: 141 })
-    // in/out used to render here AND again in #conv-usage, in the same header.
-    expect(el(panel, "cost").textContent).toBe("$0.0300")
-    expect(el(panel, "cost").textContent).not.toContain("in ")
+    // in/out used to render here AND again in #context-btn, in the same header.
+    expect(el(panel, "cost-btn").textContent).toBe("$0.0300")
+    expect(el(panel, "cost-btn").textContent).not.toContain("in ")
   })
 
   it("shows context fill WITHOUT the token counts trailing it", () => {
@@ -731,7 +805,7 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
         usage: { seq: 1, contextUsed: 60_000, contextSize: 1_000_000, tokensIn: 68_694, tokensOut: 141 },
       },
     })
-    expect(el(panel, "conv-usage").textContent).toBe("ctx 6%")
+    expect(el(panel, "context-btn").textContent).toBe("ctx 6%")
   })
 })
 
@@ -889,5 +963,108 @@ describe("transcriptPanel webview — tool IO opens in an editor", () => {
     // If this ever fails, the clamp has regressed into a CSS trick and the
     // full payload is sitting in the webview.
     expect(segNode(panel, "tool-t1")?.textContent).not.toContain("line 4")
+  })
+})
+
+describe("transcriptPanel webview — header detail popovers", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+
+  function initWithUsageAndSession(panel: Panel): void {
+    panel.send({
+      type: "init",
+      session: session({
+        adapterSlug: "claude-code",
+        model: "sonnet-5",
+        auth: { mode: "subscription", fingerprint: "abc" },
+        costUsd: 0.03,
+        tokensIn: 68694,
+        tokensOut: 141,
+      }),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [],
+        usage: { seq: 1, contextUsed: 206_115, contextSize: 1_000_000 },
+      },
+    })
+  }
+
+  it("keeps both popovers closed until their button is clicked", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+    expect(el(panel, "cost-popover").hidden).toBe(true)
+    expect(el(panel, "context-popover").hidden).toBe(true)
+  })
+
+  it("opens the cost popover with the tokens/model/harness/auth breakdown", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+
+    expect(el(panel, "cost-popover").hidden).toBe(false)
+    expect(el(panel, "popover-tokens-in").textContent).toBe("68694")
+    expect(el(panel, "popover-tokens-out").textContent).toBe("141")
+    expect(el(panel, "popover-model").textContent).toBe("sonnet-5")
+    expect(el(panel, "popover-harness").textContent).toBe("claude-code")
+    expect(el(panel, "popover-auth").textContent).toBe("subscription")
+  })
+
+  it("opens the context popover with the raw used/size counts, not just the percent", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+
+    el(panel, "context-btn").dispatchEvent(new panel.window.Event("click"))
+
+    expect(el(panel, "context-popover").hidden).toBe(false)
+    expect(el(panel, "popover-context-used").textContent).toBe("206115")
+    expect(el(panel, "popover-context-size").textContent).toBe("1000000")
+  })
+
+  it("closes on a second click of the same button", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "cost-popover").hidden).toBe(false)
+
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "cost-popover").hidden).toBe(true)
+  })
+
+  it("never shows two popovers at once — opening one closes the other", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "cost-popover").hidden).toBe(false)
+
+    el(panel, "context-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "context-popover").hidden).toBe(false)
+    expect(el(panel, "cost-popover").hidden).toBe(true)
+  })
+
+  it("dismisses on Escape", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "cost-popover").hidden).toBe(false)
+
+    panel.document.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "Escape" }))
+    expect(el(panel, "cost-popover").hidden).toBe(true)
+  })
+
+  it("dismisses on a click outside", () => {
+    const panel = renderPanel()
+    initWithUsageAndSession(panel)
+    el(panel, "context-btn").dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "context-popover").hidden).toBe(false)
+
+    panel.document.dispatchEvent(new panel.window.Event("click"))
+    expect(el(panel, "context-popover").hidden).toBe(true)
   })
 })

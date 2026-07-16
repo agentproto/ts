@@ -46,6 +46,7 @@ declare module "jsdom" {
 
   export interface DomDocument {
     getElementById(id: string): DomElement | null
+    dispatchEvent(event: DomEvent): boolean
   }
 
   export interface DomMutationObserverInit {
@@ -75,6 +76,7 @@ declare module "jsdom" {
     dispatchEvent(event: DomEvent): boolean
     Event: new (type: string) => DomEvent
     MessageEvent: new (type: string, init?: { data?: unknown }) => DomEvent
+    KeyboardEvent: new (type: string, init?: { key?: string }) => DomEvent
     MutationObserver: new (callback: (records: unknown[]) => void) => DomMutationObserver
   }
 
