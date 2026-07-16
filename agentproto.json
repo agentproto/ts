@@ -1,6 +1,6 @@
 {
   "worktree": {
-    "setup": "pnpm install --prefer-offline"
+    "setup": ["pnpm install --prefer-offline", "pnpm build"]
   },
   "scripts": {
     "build": { "command": "pnpm build" },

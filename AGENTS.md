@@ -72,6 +72,21 @@ Each rung has exactly one owner — don't reach into the next one.
    you intend to run the full gate, do a full install. Before blaming a
    failure in a package your diff doesn't touch, re-run it on `main`: if it
    passes there, the fault is your tree.
+
+   `agentproto worktree new` now does both for you — `worktree.setup` in
+   `agentproto.json` runs the install *and* the build, so a worktree it
+   provisions arrives gate-ready. A worktree made by bare `git worktree add`
+   still needs both by hand.
+
+   **Share the build cache across worktrees: export `TURBO_CACHE_DIR`.**
+   `pnpm build` runs through turbo, whose filesystem cache otherwise lives in
+   each worktree's own `.turbo/` — so every worktree rebuilds all ~103 tasks
+   from cold (~53s) even when another worktree already built the identical
+   inputs. Pointing every worktree at one directory turns that into a cache
+   restore, and a hit needs no `node_modules` at all: turbo just unpacks
+   `dist/`. CI shares the same artifacts over the remote cache
+   (`TURBO_API`/`TURBO_TEAM`/`TURBO_TOKEN`, see `.github/workflows/ci.yml`);
+   `TURBO_CACHE_DIR` is the local, offline, zero-credential equivalent.
 2. **Open the PR.** `gh pr create` — ready, not draft. A ready PR is the
    point: it hands off into the declared flow (agentic review → `APPROVED` →
    maintainer judge → `alwaysEscalateGlobs` escalating migrations/auth/

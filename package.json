@@ -14,7 +14,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" build",
+    "build": "turbo run build --filter=\"./packages/**\" --filter=\"./adapters/**\"",
     "pretest": "node scripts/agentflow/docs.mjs --check",
     "test": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" test",
     "check-types": "pnpm -r --filter \"./packages/**\" --filter \"./adapters/**\" check-types",
