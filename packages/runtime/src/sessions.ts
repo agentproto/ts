@@ -237,6 +237,24 @@ function classifyBlockedOn(toolName?: string): "subagent" | "command" | undefine
 }
 
 /**
+ * Release `blockedOn` — the thing the turn was waiting on is no longer
+ * pending.
+ *
+ * `blockedOn` is a claim about the PRESENT ("this turn is waiting on a
+ * command right now"), so every path that disproves the claim has to clear
+ * it. Keying the release solely on a tool-result whose `toolCallId` matches
+ * made the flag latch: a tool that FAILS emits `error`, never a tool-result,
+ * so the session kept advertising "blocked on command · <id>" for the rest of
+ * the turn while the agent had long since recovered and moved on. The turn's
+ * `finally` did eventually clear it, which is why the lie was invisible on
+ * short turns and glaring on long ones.
+ */
+function releaseBlockedOn(desc: SessionDescriptor): void {
+  desc.blockedOn = undefined
+  desc.pendingToolCallId = undefined
+}
+
+/**
  * True when a thrown value represents a turn ABORT rather than a genuine
  * error — a cancelled/killed turn surfaces as a DOMException-style
  * `AbortError` (`name`) or Node's `ABORT_ERR` (`code`). Lets the turn
@@ -460,8 +478,12 @@ export interface SessionDescriptor {
    *  from the pending tool call: a spawned sub-agent (`agent_start`) or a
    *  shell/terminal command. Deliberately NO "user" variant — waiting on
    *  the user is already covered by `awaitingInput`/`awaitingQuestion`.
-   *  Set on tool-call, cleared on the MATCHING tool-result (guarded by
-   *  `pendingToolCallId`), at turn start, and in the turn's finally. */
+   *
+   *  Set on tool-call; released (see `releaseBlockedOn`) on the MATCHING
+   *  tool-result, on `error` (a failing tool never emits a result), on the
+   *  next assistant `text-delta` (the model has the floor, so nothing is
+   *  pending), at turn start, and in the turn's finally. A claim about the
+   *  present tense — anything that disproves it must clear it. */
   blockedOn?: "subagent" | "command"
   /** toolCallId of the tool-call that set `blockedOn`. A tool-result only
    *  clears `blockedOn` when its toolCallId matches — so a nested or
@@ -1425,6 +1447,11 @@ export function createSessionsRegistry(opts?: {
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
+        // Assistant text means the model has the floor again, so it cannot
+        // still be waiting on the tool that blocked it — the result landed
+        // (whether or not the adapter bothered to emit one; several don't).
+        // This is the catch-all behind the explicit releases below.
+        releaseBlockedOn(rt.desc)
         if (evt.text) {
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
@@ -1451,9 +1478,10 @@ export function createSessionsRegistry(opts?: {
         }
         break
       case "tool-call": {
-        // Surface what the turn is now blocked on (sub-agent / command)
-        // when the tool name classifies. The toolCallId is remembered so
-        // only the MATCHING result clears it (nested tools can't).
+        // Surface what the turn is now blocked on (sub-agent / command) when
+        // the tool name classifies. The toolCallId is remembered so a nested
+        // tool's result can't clear an outer tool's block — but a matching
+        // result is only ONE of the ways the block ends; see releaseBlockedOn.
         const blocked = classifyBlockedOn(evt.toolName)
         if (blocked) {
           rt.desc.blockedOn = blocked
@@ -1468,8 +1496,7 @@ export function createSessionsRegistry(opts?: {
       }
       case "tool-result": {
         if (rt.desc.blockedOn && evt.toolCallId === rt.desc.pendingToolCallId) {
-          rt.desc.blockedOn = undefined
-          rt.desc.pendingToolCallId = undefined
+          releaseBlockedOn(rt.desc)
         }
         // Keep this to ONE line per result — some drivers stream huge
         // payloads (file dumps, search hits) and the ring buffer is a
@@ -1532,6 +1559,11 @@ export function createSessionsRegistry(opts?: {
         break
       }
       case "error": {
+        // A failing tool reports `error`, NOT a tool-result — so this is the
+        // only signal that the thing we were blocked on is done. Without this
+        // release the flag survived the failure and the session advertised
+        // "blocked on command · <toolCallId>" while the agent worked on.
+        releaseBlockedOn(rt.desc)
         const code =
           typeof evt.error?.code === "number" ? ` (code ${evt.error.code})` : ""
         appendLine(
@@ -1846,8 +1878,7 @@ export function createSessionsRegistry(opts?: {
     rt.emitter.emit("busy", true)
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
-    rt.desc.blockedOn = undefined  // clear stale blocked-on from prior turn
-    rt.desc.pendingToolCallId = undefined
+    releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
     let turnCompleted = false
     // Whether the adapter itself emitted a `turn-end` during this turn.
     // Drives the P5 guarantee: when the event stream ends WITHOUT one
@@ -1929,8 +1960,7 @@ export function createSessionsRegistry(opts?: {
       // Safety net: a tool-call that never receives its tool-result (child
       // crashed, stream ended early) must not leave the session flagged
       // blocked forever — the turn is over, nothing is pending anymore.
-      rt.desc.blockedOn = undefined
-      rt.desc.pendingToolCallId = undefined
+      releaseBlockedOn(rt.desc)
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator

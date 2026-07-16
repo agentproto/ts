@@ -152,6 +152,70 @@ describe("SessionDescriptor.blockedOn", () => {
     registry.shutdown()
   })
 
+  /**
+   * Replays sess_79ef158f, which latched the flag in the wild:
+   *   tool-call Terminal → error → (agent recovers, turn continues)
+   * A failing tool reports `error` and NEVER a tool-result, so keying the
+   * release on a matching tool-result left the session advertising
+   * "blocked on command · toolu_01…" for the rest of the turn.
+   */
+  it("releases blockedOn when the blocking tool FAILS (error, never a tool-result)", async () => {
+    const gate = deferred()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scriptedAgentSession([
+        { kind: "tool-call", toolName: "Terminal", toolCallId: "toolu_01Buvi" },
+        { kind: "error", error: { message: "spawn failed" } },
+        // Park mid-turn: the turn's finally has NOT run yet, so anything
+        // still claiming "blocked" here is the latch, not the safety net.
+        { gate: gate.promise },
+        { kind: "turn-end", reason: "completed" },
+      ]),
+      adapterSlug: "claude-code",
+    })
+
+    const turn = registry.sendPrompt(desc.id, "go")
+    await new Promise(r => setTimeout(r, 25))
+    const mid = registry.get(desc.id)
+    expect(mid?.busy).toBe(true)
+    expect(mid?.blockedOn).toBeUndefined()
+    expect(mid?.pendingToolCallId).toBeUndefined()
+
+    gate.resolve()
+    await turn
+    registry.shutdown()
+  })
+
+  it("releases blockedOn on the next assistant text-delta (adapters that never emit a tool-result)", async () => {
+    const gate = deferred()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: scriptedAgentSession([
+        { kind: "tool-call", toolName: "command_execute", toolCallId: "tc-1" },
+        // The model has the floor again — whatever the adapter did or didn't
+        // emit, it is provably not still waiting on tc-1.
+        { kind: "text-delta", text: "that failed, trying another way\n" },
+        { gate: gate.promise },
+        { kind: "turn-end", reason: "completed" },
+      ]),
+      adapterSlug: "claude-code",
+    })
+
+    const turn = registry.sendPrompt(desc.id, "go")
+    await new Promise(r => setTimeout(r, 25))
+    const mid = registry.get(desc.id)
+    expect(mid?.busy).toBe(true)
+    expect(mid?.blockedOn).toBeUndefined()
+
+    gate.resolve()
+    await turn
+    registry.shutdown()
+  })
+
   it("non-regression: unclassified tools leave the descriptor untouched and list() JSON keeps its shape", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const desc = registry.spawnAgent({
