@@ -43,6 +43,18 @@ function fakeSession() {
   }
 }
 
+/** A fake session that records exactly what was passed to `send()`. */
+function recordingSession(sent: unknown[]) {
+  return {
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async *send(message: unknown) {
+      sent.push(message)
+      yield { kind: "turn-end", reason: "completed" as const }
+    },
+    async close() {},
+  }
+}
+
 describe("agentproto run — --model / --effort", () => {
   beforeEach(() => {
     startSpy.mockReset()
@@ -72,6 +84,21 @@ describe("agentproto run — --model / --effort", () => {
     expect(code).toBe(0)
     const opts = startSpy.mock.calls[0]?.[0]
     expect(opts?.config).toBeUndefined()
+  })
+
+  it("wraps --prompt into a ContentBlock, not a bare string", async () => {
+    // The ACP arm's `send(message)` expects a ContentBlock (or array of
+    // them) — a bare string gets wrapped into `[promptArg]` on the wire,
+    // an array containing a plain string, which claude-agent-acp rejects
+    // with "Invalid params" (issue: `agentproto run claude-code --prompt
+    // "kikoo"` failing outright). `sessions start` / `agent_start` already
+    // wrap correctly (packages/runtime/src/sessions.ts); this pins `run`
+    // doing the same.
+    const sent: unknown[] = []
+    startSpy.mockResolvedValue(recordingSession(sent))
+    const code = await runRun(["claude-code", "--prompt", "kikoo"])
+    expect(code).toBe(0)
+    expect(sent).toEqual([{ type: "text", text: "kikoo" }])
   })
 
   it("reports an unknown flag with exit 2 instead of throwing", async () => {

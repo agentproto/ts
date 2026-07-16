@@ -22,9 +22,13 @@ const sentPrompts: string[] = []
 function fakeSession() {
   let turn = 0
   return {
+    // `run.ts` sends a ContentBlock (`{type:"text", text}`), matching the
+    // wire shape `AcpProtocolArm.send` expects — see the fix for the bare
+    // string it used to send (rejected by claude-agent-acp as "Invalid
+    // params").
     // eslint-disable-next-line @typescript-eslint/require-await
-    async *send(prompt: string) {
-      sentPrompts.push(prompt)
+    async *send(prompt: { type: "text"; text: string }) {
+      sentPrompts.push(prompt.text)
       const events = turns[turn] ?? []
       turn += 1
       for (const ev of events) yield ev
