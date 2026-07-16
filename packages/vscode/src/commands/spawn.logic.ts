@@ -210,18 +210,6 @@ export function resolveWorkspaceSlug(config: WorkspacesConfig, cwd: string | und
   return findWorkspaceByPath(config, cwd)?.slug
 }
 
-/**
- * placeHolder for the collapsed spawn picker. The resolved default must be
- * visible up front — autodetection that silently applies a cwd/workspace is
- * the exact complaint this wizard exists to fix.
- */
-export function buildSpawnPlaceHolder(config: WorkspacesConfig, cwd: string | undefined): string {
-  if (!cwd) return "No workspace folder open — select adapter · model (Configure… to set a working directory)"
-  const slug = resolveWorkspaceSlug(config, cwd)
-  const where = slug ? `${workspaceLabel(config, slug)} (${cwd})` : cwd
-  return `Spawning in ${where} — select adapter · model`
-}
-
 export interface SpawnWizardAnswers {
   adapter: string
   model?: string
@@ -230,6 +218,62 @@ export interface SpawnWizardAnswers {
   workspaceSlug?: string
   label?: string
   prompt?: string
+  /** Park each tool-permission request for a human decision — see PermissionQuickPickItem. */
+  permissionHold?: boolean
+}
+
+/**
+ * Permission picker. The whole approve/deny chain already exists — the
+ * permissions inbox, the badge, the toast with Approve/Deny/Show, the
+ * `POST /permissions/:id` round-trip — and none of it could ever fire,
+ * because a session only PARKS a `session/request_permission` when it was
+ * spawned with `permissionHold` (see packages/acp's client: hold intercepts
+ * before the auto-answer handler). The extension never sent the flag, so the
+ * adapter auto-answered every request and `GET /permissions` stayed `[]`
+ * forever. This picker is the missing switch, not a new feature.
+ */
+export interface PermissionQuickPickItem {
+  label: string
+  description?: string
+  hold: boolean
+}
+
+export function mapPermissionQuickPickItems(current: boolean): PermissionQuickPickItem[] {
+  const items: PermissionQuickPickItem[] = [
+    {
+      label: "Unattended",
+      description: "the agent decides for itself — nothing to approve",
+      hold: false,
+    },
+    {
+      label: "Ask me before each tool",
+      description: "parks every request in the Permissions view and notifies you",
+      hold: true,
+    },
+  ]
+  // Lead with whatever the setting already says, so Enter re-picks the
+  // current default instead of silently flipping it.
+  return current ? [items[1]!, items[0]!] : items
+}
+
+/**
+ * placeHolder for the collapsed spawn picker. The resolved default must be
+ * visible up front — autodetection that silently applies a cwd/workspace is
+ * the exact complaint this wizard exists to fix, and a spawn that will stop
+ * and ask permission for every tool is exactly as surprising after the fact.
+ */
+export function buildSpawnPlaceHolder(
+  config: WorkspacesConfig,
+  cwd: string | undefined,
+  permissionHold = false,
+): string {
+  const hold = permissionHold ? " · asking before each tool" : ""
+  if (!cwd) {
+    return `No workspace folder open — select adapter · model${hold} (Configure… to set a working directory)`
+  }
+  const slug = resolveWorkspaceSlug(config, cwd)
+  const where = slug ? `${workspaceLabel(config, slug)} (${cwd})` : cwd
+  return `Spawning in ${where} — select adapter · model${hold}`
 }
 
 /** Assemble the POST /sessions/agent body, omitting unset optional fields. */
@@ -241,5 +285,6 @@ export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOpt
   if (answers.workspaceSlug) opts.workspaceSlug = answers.workspaceSlug
   if (answers.label) opts.label = answers.label
   if (answers.prompt) opts.prompt = answers.prompt
+  if (answers.permissionHold) opts.permissionHold = true
   return opts
 }

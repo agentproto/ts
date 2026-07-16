@@ -25,12 +25,23 @@ import {
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
+  mapPermissionQuickPickItems,
   mapSpawnQuickPickItems,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
   type SpawnWizardAnswers,
 } from "./spawn.logic.js"
+
+/**
+ * Whether new sessions park their tool-permission requests for a human.
+ * Read fresh on every spawn rather than cached: it's a setting the user
+ * flips between spawns, and the collapsed picker has no other way to hear
+ * about it.
+ */
+function holdPermissionsSetting(): boolean {
+  return vscode.workspace.getConfiguration("agentproto").get<boolean>("holdPermissions", false)
+}
 
 export function registerSpawnCommand(
   ctx: vscode.ExtensionContext,
@@ -68,18 +79,19 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
     workspaceConfig = EMPTY_WORKSPACES
   }
 
+  const holdDefault = holdPermissionsSetting()
   const picked = await vscode.window.showQuickPick(mapSpawnQuickPickItems(adapters), {
-    placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd),
+    placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
   })
   if (!picked) return
 
   let answers: SpawnWizardAnswers
   if (picked.configure) {
-    const configured = await runConfigureWizard(adapters, defaultCwd)
+    const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
     if (!configured) return
     answers = configured
   } else if (picked.adapter) {
-    answers = { adapter: picked.adapter.slug }
+    answers = { adapter: picked.adapter.slug, permissionHold: holdDefault }
     if (picked.custom) {
       const custom = await vscode.window.showInputBox({
         prompt: "Custom model id (leave empty for adapter default)",
@@ -132,10 +144,11 @@ async function resolveWizardDefaultCwd(): Promise<string | undefined> {
   return picked?.folder.uri.fsPath
 }
 
-/** The pre-existing full chain: adapter → model → mode → cwd → label → prompt, reached only via the Configure… row. */
+/** The full chain: adapter → model → mode → permissions → cwd → label → prompt, reached only via the Configure… row. */
 async function runConfigureWizard(
   adapters: SpawnAdapterInfo[],
   defaultCwd: string,
+  holdDefault: boolean,
 ): Promise<SpawnWizardAnswers | undefined> {
   const adapterPick = await vscode.window.showQuickPick(mapAdapterQuickPickItems(adapters), {
     placeHolder: "Select an agent adapter to spawn",
@@ -165,6 +178,13 @@ async function runConfigureWizard(
     if (!modePick) return undefined
     answers.mode = modePick.mode
   }
+
+  const permissionPick = await vscode.window.showQuickPick(
+    mapPermissionQuickPickItems(holdDefault),
+    { placeHolder: "Tool permissions" },
+  )
+  if (!permissionPick) return undefined
+  answers.permissionHold = permissionPick.hold
 
   const cwd = await vscode.window.showInputBox({ prompt: "Working directory", value: defaultCwd })
   if (cwd === undefined) return undefined

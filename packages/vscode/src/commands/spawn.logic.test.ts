@@ -10,6 +10,7 @@ import {
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
+  mapPermissionQuickPickItems,
   mapSpawnQuickPickItems,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
@@ -215,6 +216,29 @@ describe("buildSpawnPlaceHolder", () => {
       "No workspace folder open — select adapter · model (Configure… to set a working directory)",
     )
   })
+
+  it("announces permission-hold up front — a session that stops at every tool must not be a surprise", () => {
+    expect(buildSpawnPlaceHolder(workspaces, "/repo/app", true)).toBe(
+      "Spawning in Agentik Studio (/repo/app) — select adapter · model · asking before each tool",
+    )
+    expect(buildSpawnPlaceHolder(workspaces, undefined, true)).toBe(
+      "No workspace folder open — select adapter · model · asking before each tool (Configure… to set a working directory)",
+    )
+  })
+})
+
+describe("mapPermissionQuickPickItems", () => {
+  it("offers both modes and leads with the current default", () => {
+    const unattended = mapPermissionQuickPickItems(false)
+    expect(unattended.map(i => i.hold)).toEqual([false, true])
+    expect(unattended[0]?.label).toBe("Unattended")
+
+    // Leading with the current setting means Enter re-picks it rather than
+    // silently flipping the user's default.
+    const holding = mapPermissionQuickPickItems(true)
+    expect(holding.map(i => i.hold)).toEqual([true, false])
+    expect(holding[0]?.label).toBe("Ask me before each tool")
+  })
 })
 
 describe("assembleSpawnOptions", () => {
@@ -241,6 +265,19 @@ describe("assembleSpawnOptions", () => {
       workspaceSlug: "studio",
       label: "my-session",
       prompt: "hello",
+    })
+  })
+
+  it("sends permissionHold only when held — the flag is what makes the permission inbox fire at all", () => {
+    // Without it the adapter auto-answers every request and GET /permissions
+    // stays empty forever, so the whole approve/deny chain is dead code.
+    expect(assembleSpawnOptions({ adapter: "claude-code", permissionHold: true })).toEqual({
+      adapter: "claude-code",
+      permissionHold: true,
+    })
+    // false is the daemon's own default — say nothing rather than assert it.
+    expect(assembleSpawnOptions({ adapter: "claude-code", permissionHold: false })).toEqual({
+      adapter: "claude-code",
     })
   })
 

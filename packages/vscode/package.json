@@ -248,6 +248,11 @@
           "default": 5000,
           "minimum": 1000,
           "description": "Fallback poll interval (ms) when the session_events_poll loop is unhealthy."
+        },
+        "agentproto.holdPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Spawn sessions in permission-hold mode: every tool-permission request is parked for your decision, listed in the Permissions view, and announced with an Approve/Deny notification. When off, the agent answers its own permission requests and there is nothing to approve. Override per spawn under Spawn Agent → Configure…"
         }
       }
     }
