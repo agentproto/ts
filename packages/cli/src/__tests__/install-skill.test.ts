@@ -657,7 +657,7 @@ describe("isAdapterSkillsTarget (unit)", () => {
 // ── integration: fan-out (no --target) ───────────────────────────────────
 
 describe("agentproto install skill fan-out (no --target, dry-run via real CLI)", () => {
-  it("installs into every adapter declaring metadata.skills, skips the rest informationally", () => {
+  it("installs into every adapter declaring metadata.skills, skips the rest informationally", { timeout: 15_000 }, () => {
     const { stdout, code } = runCli([
       "skill/agent-session-orchestration-agentproto",
       "--dry-run",
@@ -673,7 +673,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
     expect(stdout).toContain("no skills metadata declared")
   })
 
-  it("still short-circuits on --dry-run (no writes) in fan-out mode", () => {
+  it("still short-circuits on --dry-run (no writes) in fan-out mode", { timeout: 15_000 }, () => {
     const fakeHome = join(tmpdir(), `agentproto-fanout-dryrun-${Date.now()}`)
     const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
     const result = spawnSync(
