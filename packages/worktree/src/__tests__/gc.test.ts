@@ -14,7 +14,7 @@
  * never rides along on a reclaim removal.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath, readFile } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, readFile, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -101,10 +101,11 @@ afterEach(async () => {
 
 describe("classifyForGc", () => {
   const CLEAN = { state: "clean" as const }
-  const DIRTY = { state: "dirty" as const, modified: 1, staged: 0, untracked: 0 }
+  const DIRTY = { state: "dirty" as const, modified: 1, staged: 0, untracked: 0, newestMtimeMs: null }
   const IDLE = { state: "idle" as const, sessions: [] as never[], services: [] as never[] }
   const DETACHED: IntegrationState = { state: "detached", checkedAt: "t" }
-  const MERGED_ANCESTRY: IntegrationState = { state: "merged", via: "ancestry", checkedAt: "t" }
+  const MERGED_SQUASH: IntegrationState = { state: "merged", via: "squash", pr: 1, checkedAt: "t", offline: false }
+  const FRESH: IntegrationState = { state: "fresh", checkedAt: "t" }
 
   it("delegates to classify() when --include-detached is absent: clean+idle detached is hold", () => {
     expect(classifyForGc(CLEAN, DETACHED, IDLE)).toBe("hold")
@@ -119,7 +120,11 @@ describe("classifyForGc", () => {
   })
 
   it("--include-detached has no effect on non-detached classes", () => {
-    expect(classifyForGc(CLEAN, MERGED_ANCESTRY, IDLE, { includeDetached: true })).toBe("reclaim")
+    expect(classifyForGc(CLEAN, MERGED_SQUASH, IDLE, { includeDetached: true })).toBe("reclaim")
+  })
+
+  it("fresh + dirty is hold regardless of --include-detached — ancestry alone never licenses salvage", () => {
+    expect(classifyForGc(DIRTY, FRESH, IDLE, { includeDetached: true })).toBe("hold")
   })
 })
 
@@ -181,6 +186,53 @@ describe("gc — the 84f4c06 regression: an unmerged commit ahead of a merged PR
     const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
     expect(wtList.stdout).toContain(wtPath)
     expect(await headSha(repo, "docs-check-on-release")).toBe(localTip)
+    expect(worktreeRemoveCalls()).toHaveLength(0)
+  })
+})
+
+// ── the 2026-07-15 incident: a fresh, zero-commit branch must never salvage ──
+
+describe("gc — the 2026-07-15 incident: a fresh worktree with uncommitted work must never be reclaimed or salvaged", () => {
+  it("reconstructs the exact shape that got a live worktree destroyed: `worktree new`'s branch (zero commits, tip == main), dirty tree", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+
+    // Exactly what `worktree new` (#357) produces: a branch cut straight off
+    // main with no commits of its own. `fix/blocked-latch-and-stop`'s tip
+    // was `origin/main`'s own current commit (#369) — this is that shape.
+    const wtPath = join(repo, "..", `fresh-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, ["-b", "wt/fresh-incident"], "main")
+
+    // The agent's in-flight work-in-progress — never committed.
+    await writeFile(join(wtPath, "session-notes.md"), "17.5 KB of uncommitted work\n")
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies this, and must never authorize salvage")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.integration).toEqual({ state: "fresh", checkedAt: FROZEN_NOW() })
+    expect(entry?.class).toBe("hold")
+
+    for (const salvageDirty of [false, true]) {
+      const outcomes = await applyGc(plan, {
+        repoRoot: repo,
+        repoName: "test-repo",
+        forge,
+        memo,
+        defaultBranchRef: "main",
+        salvageDirty,
+        now: FROZEN_NOW,
+      })
+      const outcome = outcomes.find((o) => o.path === wtPath)
+      expect(outcome?.result).toBe("held")
+    }
+
+    // Never touched, with or without --salvage-dirty: still on disk, still a
+    // real worktree, the uncommitted file untouched.
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+    expect(await readFile(join(wtPath, "session-notes.md"), "utf8")).toBe("17.5 KB of uncommitted work\n")
     expect(worktreeRemoveCalls()).toHaveLength(0)
   })
 })
@@ -277,25 +329,48 @@ describe("gc reclaim — the argv passed to git", () => {
 // ── salvage: merged + dirty ──────────────────────────────────────────────
 
 describe("gc salvage — a merged, dirty worktree", () => {
-  it("is left completely untouched without --salvage-dirty", async () => {
-    const repo = await makeRepo()
-    cleanupPaths.push(repo)
-    await execGit(repo, ["checkout", "-b", "feat/salvage-me"])
+  // A GENUINE merge (forge-confirmed squash, not a local ff-merge): step 1's
+  // ancestry check can't tell "real commits, fast-forwarded" from "never had
+  // any commits of its own" apart (see `fresh` on `reconcileIntegration`), so
+  // it never licenses salvage. Only a forge-confirmed `merged` does. Main
+  // advances with an unrelated commit so the local ancestry check (step 1)
+  // fails and the (fake) forge lookup actually runs.
+  async function makeSquashMergedBranch(repo: string, branch: string): Promise<void> {
+    await execGit(repo, ["checkout", "-b", branch])
     await writeFile(join(repo, "a.txt"), "a\n")
     await execGit(repo, ["add", "a.txt"])
     await execGit(repo, ["commit", "-m", "feat commit"])
     await execGit(repo, ["checkout", "main"])
-    await execGit(repo, ["merge", "--ff-only", "feat/salvage-me"])
+    await writeFile(join(repo, "unrelated.txt"), "u\n")
+    await execGit(repo, ["add", "unrelated.txt"])
+    await execGit(repo, ["commit", "-m", "squash commit standing in for the PR merge"])
+  }
+
+  // Backdated well past `RECENT_WRITE_HOLD_WINDOW_MS` — realistic "leftover
+  // scratch from a session that ended a while ago", not "written moments
+  // ago", which is the other thing that holds instead of salvaging.
+  async function backdate(path: string): Promise<void> {
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000)
+    await utimes(path, longAgo, longAgo)
+  }
+
+  it("is left completely untouched without --salvage-dirty", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await makeSquashMergedBranch(repo, "feat/salvage-me")
+    const tip = await headSha(repo, "feat/salvage-me")
 
     const wtPath = join(repo, "..", `salvage-${Math.random().toString(36).slice(2)}`)
     cleanupPaths.push(wtPath)
     await addWorktree(repo, wtPath, [], "feat/salvage-me")
     await writeFile(join(wtPath, "scratch.txt"), "stray output\n")
+    await backdate(join(wtPath, "scratch.txt"))
 
-    const forge = new UnreachableForgeClient("must not be called")
+    const forge = new FakeForgeClient([pr({ number: 501, headRefOid: tip, headRefName: "feat/salvage-me" })])
     const memo = new InMemoryVerdictMemoStore()
     const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
     const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.integration).toMatchObject({ state: "merged", via: "squash" })
     expect(entry?.class).toBe("salvage")
 
     const outcomes = await applyGc(plan, {
@@ -319,23 +394,21 @@ describe("gc salvage — a merged, dirty worktree", () => {
   it("with --salvage-dirty: the snapshot is written and durable before the worktree is removed", async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)
-    await execGit(repo, ["checkout", "-b", "feat/salvage-me-2"])
-    await writeFile(join(repo, "a.txt"), "a\n")
-    await execGit(repo, ["add", "a.txt"])
-    await execGit(repo, ["commit", "-m", "feat commit"])
-    await execGit(repo, ["checkout", "main"])
-    await execGit(repo, ["merge", "--ff-only", "feat/salvage-me-2"])
+    await makeSquashMergedBranch(repo, "feat/salvage-me-2")
+    const tip = await headSha(repo, "feat/salvage-me-2")
 
     const wtPath = join(repo, "..", `salvage2-${Math.random().toString(36).slice(2)}`)
     cleanupPaths.push(wtPath)
     await addWorktree(repo, wtPath, [], "feat/salvage-me-2")
     await writeFile(join(wtPath, "README.md"), "edited\n") // modified tracked file
     await writeFile(join(wtPath, "scratch.txt"), "stray output\n") // untracked file
+    await backdate(join(wtPath, "README.md"))
+    await backdate(join(wtPath, "scratch.txt"))
 
     const salvageRoot = await mkdtemp(join(tmpdir(), "wt-gc-salvage-root-"))
     cleanupPaths.push(salvageRoot)
 
-    const forge = new UnreachableForgeClient("must not be called")
+    const forge = new FakeForgeClient([pr({ number: 502, headRefOid: tip, headRefName: "feat/salvage-me-2" })])
     const memo = new InMemoryVerdictMemoStore()
     const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
     const entry = plan.find((e) => e.path === wtPath)
@@ -370,6 +443,44 @@ describe("gc salvage — a merged, dirty worktree", () => {
     expect(wtList.stdout).not.toContain(wtPath)
     const branches = await execGit(repo, ["branch", "--list", "feat/salvage-me-2"])
     expect(branches.stdout.trim()).toBe("")
+  })
+
+  it("a genuinely merged branch is still held, not salvaged, while its dirty scratch was written moments ago", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await makeSquashMergedBranch(repo, "feat/salvage-me-3")
+    const tip = await headSha(repo, "feat/salvage-me-3")
+
+    const wtPath = join(repo, "..", `salvage3-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "feat/salvage-me-3")
+    await writeFile(join(wtPath, "scratch.txt"), "still being written\n") // NOT backdated — written just now
+
+    const forge = new FakeForgeClient([pr({ number: 503, headRefOid: tip, headRefName: "feat/salvage-me-3" })])
+    const memo = new InMemoryVerdictMemoStore()
+    // No `nowMs` override: planGc/applyGc default to the real clock, exactly
+    // like production — this proves the guard fires without a test needing
+    // to hand-tune "now" to line up with a frozen `checkedAt`.
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.integration).toMatchObject({ state: "merged", via: "squash" })
+    expect(entry?.class).toBe("hold")
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      salvageDirty: true,
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath)
+    expect(outcome?.result).toBe("held")
+
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+    expect(worktreeRemoveCalls()).toHaveLength(0)
   })
 })
 
@@ -441,7 +552,7 @@ describe("gc apply — re-check immediately before touching anything", () => {
     cleanupPaths.push(wtPath)
     await addWorktree(repo, wtPath, [], "feat/reclaim-me")
 
-    const forge = new UnreachableForgeClient("must not be called for the ancestry-merged branch")
+    const forge = new UnreachableForgeClient("must not be called for the fresh (ancestry-proven) branch")
     const memo = new InMemoryVerdictMemoStore()
     const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
     const entry = plan.find((e) => e.path === wtPath)
@@ -477,7 +588,7 @@ describe("gc apply — re-check immediately before touching anything", () => {
 // ── the main worktree is never part of the plan ─────────────────────────
 
 describe("gc plan — the main worktree is structurally excluded", () => {
-  it("never appears in the plan, even though it's trivially merged(ancestry) + clean", async () => {
+  it("never appears in the plan, even though it's trivially fresh + clean", async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)
     const forge = new UnreachableForgeClient("must not be called")
