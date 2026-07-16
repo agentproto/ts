@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { defineGenerator, type GeneratedFiles, type GeneratorContext } from "../types.js"
+import { defineGenerator, type CatalogSource, type GeneratedFiles, type GeneratorContext } from "../types.js"
 
 /**
  * Context window (max input tokens) + max output tokens, live per model id,
@@ -158,7 +158,7 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
   return { [OUTPUT_PATH]: serializeFile(entries) }
 }
 
-const sources = [
+const sources: CatalogSource[] = [
   {
     id: "llm-anthropic",
     url: "https://api.anthropic.com/v1/models?limit=1000",
