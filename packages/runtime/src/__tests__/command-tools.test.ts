@@ -48,10 +48,21 @@ function textOf(result: unknown): string {
 /** `recordCommand`'s JSONL body write is fire-and-forget — the session
  *  descriptor (and its id) is available the instant command_execute
  *  returns, but the on-disk write it kicked off may not have landed yet.
- *  Tests that immediately read it back via command_log_tail poll a tick
- *  first, same as `agent_output`-style tests do elsewhere in this suite. */
-async function flush(): Promise<void> {
-  await new Promise(res => setTimeout(res, 20))
+ *  Tests that immediately read it back via command_log_tail poll until
+ *  `isReady` accepts the result, instead of a fixed delay — a fixed 20ms
+ *  sleep flakes under CI load (the write genuinely hasn't landed yet). */
+async function pollUntil<T>(
+  read: () => Promise<T>,
+  isReady: (value: T) => boolean,
+  timeoutMs = 2000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = await read()
+    if (isReady(value)) return value
+    if (Date.now() >= deadline) throw new Error("pollUntil timed out")
+    await new Promise(res => setTimeout(res, 5))
+  }
 }
 
 describe("command_execute → session-based persistence", () => {
@@ -112,13 +123,17 @@ describe("command_execute → session-based persistence", () => {
       arguments: { command: "node", args: ["-e", "console.log('full-result')"] },
     })
     const { sessionId } = JSON.parse(textOf(exec))
-    await flush()
 
-    const tail = await client.callTool({
-      name: "command_log_tail",
-      arguments: { sessionId },
-    })
-    const { entry } = JSON.parse(textOf(tail))
+    const { entry } = await pollUntil(
+      async () => {
+        const tail = await client.callTool({
+          name: "command_log_tail",
+          arguments: { sessionId },
+        })
+        return JSON.parse(textOf(tail))
+      },
+      result => result.entry !== null,
+    )
     expect(entry).toMatchObject({ command: "node", exitCode: 0 })
     expect(entry.stdout).toContain("full-result")
 
@@ -143,15 +158,18 @@ describe("command_execute → session-based persistence", () => {
         arguments: { command: "node", args: ["-e", `console.log(${n})`] },
       })
     }
-    await flush()
-
-    const result = await client.callTool({
-      name: "command_log_tail",
-      arguments: { lastN: 2 },
-    })
-    const { entries } = JSON.parse(textOf(result)) as { entries: Array<{ stdout: string }> }
+    const { entries } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "command_log_tail",
+          arguments: { lastN: 2 },
+        })
+        return JSON.parse(textOf(result)) as { entries: Array<{ stdout?: string }> }
+      },
+      result => result.entries.every(e => typeof e.stdout === "string"),
+    )
     expect(entries).toHaveLength(2)
-    expect(entries.map(e => e.stdout.trim())).toEqual(["2", "3"])
+    expect(entries.map(e => e.stdout!.trim())).toEqual(["2", "3"])
 
     await close()
   })
