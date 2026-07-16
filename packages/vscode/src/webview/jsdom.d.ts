@@ -19,6 +19,12 @@ declare module "jsdom" {
     /** Present on a `paste` event only; shaped by the test to mirror a
      *  browser's `DataTransfer` (items with kind/type/getAsFile). */
     clipboardData?: unknown
+    /** Present on drag/drop events; shaped by the test to mirror a browser's
+     *  `DataTransfer` (getData + files + dropEffect). */
+    dataTransfer?: unknown
+    /** Set by the test on a synthetic keydown to drive @mention navigation. */
+    key?: string
+    shiftKey?: boolean
   }
 
   /** A jsdom File — the paste handler reads its bytes and mime. */
@@ -47,6 +53,8 @@ declare module "jsdom" {
     open?: boolean
     /** Only meaningful on <textarea>/<input>. */
     value?: string
+    /** Caret position on <textarea>/<input> — drives @mention detection. */
+    selectionStart?: number | null
     /** Only meaningful on form controls (<button>, <textarea>). */
     disabled?: boolean
     hidden?: boolean

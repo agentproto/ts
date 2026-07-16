@@ -2,8 +2,13 @@ import { homedir } from "node:os"
 
 import { describe, expect, it, vi } from "vitest"
 
+// The @mention file source shells out to git — mock it so the controller test
+// stays hermetic (mentionSource.test.ts covers the real IO against a temp repo).
+vi.mock("./mentionSource.js", () => ({ listRepoFiles: vi.fn().mockResolvedValue([]) }))
+
 import { TranscriptPanelController } from "./transcriptPanelController.js"
 import { resolveAttachmentsCwd } from "./attachments.logic.js"
+import { listRepoFiles } from "./mentionSource.js"
 import { NoTranscriptError } from "../client/daemonClient.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
@@ -675,5 +680,47 @@ describe("TranscriptPanelController — pasted image attachments", () => {
       title: "Attachment upload failed",
       message: "HTTP 413 file_too_large",
     })
+  })
+
+  it("stores a DRAGGED file under a name derived from its own, keeping the human stem", async () => {
+    const client = createMockClient({
+      uploadFile: vi.fn().mockResolvedValue({ path: "/home/.agentproto/.agentproto-attachments/report-ab12.pdf", bytes: 3 }),
+    })
+    const { controller, messenger } = make(client)
+
+    await controller.onAttachFile(new Uint8Array([1, 2, 3]).buffer, "application/pdf", "report.pdf")
+
+    const call = client.uploadFile.mock.calls[0]!
+    expect(call[1]).toMatch(/^report-[0-9a-f]{6}\.pdf$/) // human stem + uniqueness suffix
+    expect(messenger.messages).toContainEqual({
+      type: "attachmentUploaded",
+      path: "/home/.agentproto/.agentproto-attachments/report-ab12.pdf",
+    })
+  })
+})
+
+describe("TranscriptPanelController — @file mention candidates", () => {
+  it("scopes to the session cwd and returns absolute paths with relative labels", async () => {
+    vi.mocked(listRepoFiles).mockResolvedValueOnce(["src/a.ts", "src/webview/b.ts", "README.md"])
+    const { controller, messenger } = make(createMockClient(), { initialSession: session({ cwd: "/repo" }) })
+
+    await controller.onRequestMentions("b")
+
+    expect(vi.mocked(listRepoFiles)).toHaveBeenCalledWith("/repo")
+    expect(messenger.messages).toContainEqual({
+      type: "mentionCandidates",
+      query: "b",
+      items: [{ path: "/repo/src/webview/b.ts", label: "src/webview/b.ts" }],
+    })
+  })
+
+  it("returns an empty list (never crashes) when the session has no cwd", async () => {
+    vi.mocked(listRepoFiles).mockClear() // shared module mock — forget the prior test's call
+    const { controller, messenger } = make(createMockClient(), { initialSession: session({ cwd: undefined }) })
+
+    await controller.onRequestMentions("x")
+
+    expect(messenger.messages).toContainEqual({ type: "mentionCandidates", query: "x", items: [] })
+    expect(vi.mocked(listRepoFiles)).not.toHaveBeenCalled()
   })
 })

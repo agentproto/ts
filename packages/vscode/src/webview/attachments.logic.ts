@@ -106,3 +106,82 @@ export function toUint8(payload: ArrayBuffer | ArrayBufferView): Uint8Array {
   if (payload instanceof ArrayBuffer) return new Uint8Array(payload)
   return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
 }
+
+/** The daemon route's own hard cap — sending more just earns a 413, so the
+ *  extension pre-checks and refuses with a friendly message instead. */
+export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
+/** Above this a single paste/drop is almost always a mistake (a huge file
+ *  landing in the attachments dir) — warn, but don't block. */
+export const WARN_ATTACHMENT_BYTES = 10 * 1024 * 1024
+/** More than this many attachments in one turn is nearly always accidental and
+ *  turns the prompt into path soup. Soft cap: the (N+1)th is refused with a
+ *  message, the first N stay. */
+export const ATTACHMENT_COUNT_CAP = 10
+
+export type SizeVerdict = { verdict: "ok" | "warn" | "reject"; message?: string }
+
+/** Decide what to do with a blob before uploading it — reject over the route's
+ *  cap (Decision G: don't eat a 413), warn over the practical ceiling, else ok.
+ *  Pure so the thresholds are asserted, not guessed. */
+export function classifyAttachmentSize(byteLength: number): SizeVerdict {
+  if (byteLength > MAX_ATTACHMENT_BYTES) {
+    return {
+      verdict: "reject",
+      message: `That file is ${formatMiB(byteLength)} — over the ${formatMiB(MAX_ATTACHMENT_BYTES)} limit. It was not attached.`,
+    }
+  }
+  if (byteLength > WARN_ATTACHMENT_BYTES) {
+    return {
+      verdict: "warn",
+      message: `That file is ${formatMiB(byteLength)} — large for an attachment, but it was attached.`,
+    }
+  }
+  return { verdict: "ok" }
+}
+
+function formatMiB(bytes: number): string {
+  const mib = bytes / (1024 * 1024)
+  return `${mib >= 10 ? Math.round(mib) : Math.round(mib * 10) / 10} MiB`
+}
+
+/**
+ * Parse a drag-drop `text/uri-list` (or VS Code's `application/vnd.code.uri-list`)
+ * into absolute file paths. A file dragged FROM the VS Code Explorer arrives as
+ * a `file://` URI with a real, already-on-disk path — so it needs no upload
+ * (Decision A1), unlike a file dragged from the OS which arrives as raw bytes.
+ * Comment lines (`#…`) and non-`file:` schemes are skipped.
+ */
+export function parseUriList(text: string): string[] {
+  const out: string[] = []
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith("#")) continue
+    let url: URL
+    try {
+      url = new URL(line)
+    } catch {
+      continue
+    }
+    if (url.protocol !== "file:") continue
+    // decodeURIComponent turns %20 etc. back into a real path; url.pathname is
+    // already percent-decoded per the URL spec on read, but be explicit.
+    out.push(decodeURIComponent(url.pathname))
+  }
+  return out
+}
+
+/**
+ * Storage name for a file dragged from the OS (which DOES carry its own name,
+ * unlike a clipboard paste). Keeps the human stem so the attachments dir stays
+ * legible, but appends a short suffix so two drops of `photo.png` don't clobber
+ * each other on disk. Extension comes from the name, falling back to the mime.
+ */
+export function buildDroppedName(originalName: string, mime: string, suffix: string): string {
+  const base = originalName.split(/[\\/]/).pop() ?? originalName
+  const dot = base.lastIndexOf(".")
+  const rawStem = dot > 0 ? base.slice(0, dot) : base
+  const rawExt = dot > 0 ? base.slice(dot + 1) : ""
+  const stem = rawStem.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 100) || "file"
+  const ext = (rawExt.replace(/[^A-Za-z0-9]/g, "") || mimeToExtension(mime)).slice(0, 12)
+  return `${stem}-${suffix}.${ext}`
+}

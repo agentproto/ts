@@ -963,7 +963,7 @@ describe("transcriptPanel webview — pasting an image", () => {
     expect(ev.defaultPrevented).toBe(false)
   })
 
-  it("inserts an uploaded path into the composer as text, spaced off from what's already there", () => {
+  it("turns an uploaded path into a removable chip (basename label, full path in the title), not raw text", () => {
     const panel = renderPanel()
     init(panel)
     const input = el(panel, "input")
@@ -971,19 +971,12 @@ describe("transcriptPanel webview — pasting an image", () => {
 
     panel.send({ type: "attachmentUploaded", path: "/home/.agentproto/.agentproto-attachments/paste.png" })
 
-    // Space-separated from the existing words, and a trailing space to keep
-    // typing after it.
-    expect(input.value).toBe("look at /home/.agentproto/.agentproto-attachments/paste.png ")
-  })
-
-  it("does not prepend a leading space when the composer was empty", () => {
-    const panel = renderPanel()
-    init(panel)
-    const input = el(panel, "input")
-
-    panel.send({ type: "attachmentUploaded", path: "/a/b.png" })
-
-    expect(input.value).toBe("/a/b.png ")
+    // The typed prose is untouched — the attachment rides as a chip, not text.
+    expect(input.value).toBe("look at")
+    const chips = [...el(panel, "composer-attachments").querySelectorAll(".attach-chip")]
+    expect(chips).toHaveLength(1)
+    expect(chips[0]?.querySelector(".attach-chip-label")?.textContent).toBe("paste.png")
+    expect(chips[0]?.title).toBe("/home/.agentproto/.agentproto-attachments/paste.png")
   })
 
   it("shows an upload failure in the error banner rather than dropping it silently", () => {
@@ -995,6 +988,231 @@ describe("transcriptPanel webview — pasting an image", () => {
     expect(el(panel, "error-banner").hidden).toBe(false)
     expect(el(panel, "eb-title").textContent).toBe("Attachment upload failed")
     expect(el(panel, "eb-message").textContent).toBe("HTTP 413 file_too_large")
+  })
+})
+
+describe("transcriptPanel webview — attachment chips → prompt", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  const chips = (panel: Panel): DomElement[] => [...el(panel, "composer-attachments").querySelectorAll(".attach-chip")]
+
+  it("appends the chip path to the typed prose in the sent prompt, then clears the chips", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    const input = el(panel, "input")
+    input.value = "what is this"
+    input.dispatchEvent(new panel.window.Event("input"))
+    panel.send({ type: "attachmentUploaded", path: "/ap/.agentproto-attachments/a.png" })
+
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "send", text: "what is this /ap/.agentproto-attachments/a.png" })
+    expect(chips(panel)).toHaveLength(0) // cleared after send
+    expect(input.value).toBe("")
+  })
+
+  it("lets you send an attachment with no typed words at all", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    // no text — send is inert until the chip arrives
+    expect(el(panel, "send").disabled).toBe(true)
+    panel.send({ type: "attachmentUploaded", path: "/ap/.agentproto-attachments/a.png" })
+    expect(el(panel, "send").disabled).toBe(false)
+
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toContainEqual({ type: "send", text: "/ap/.agentproto-attachments/a.png" })
+  })
+
+  it("removes a chip when its ✕ is clicked", () => {
+    const panel = renderPanel()
+    init(panel)
+    panel.send({ type: "attachmentUploaded", path: "/ap/x/a.png" })
+    panel.send({ type: "attachmentUploaded", path: "/ap/x/b.png" })
+    expect(chips(panel)).toHaveLength(2)
+
+    chips(panel)[0]?.querySelector(".attach-chip-remove")?.dispatchEvent(new panel.window.Event("click"))
+
+    const labels = chips(panel).map(c => c.querySelector(".attach-chip-label")?.textContent)
+    expect(labels).toEqual(["b.png"])
+  })
+
+  it("de-dupes the same path and caps the count at 10, refusing the 11th with a message", () => {
+    const panel = renderPanel()
+    init(panel)
+    // same path twice → one chip
+    panel.send({ type: "attachmentUploaded", path: "/ap/x/dup.png" })
+    panel.send({ type: "attachmentUploaded", path: "/ap/x/dup.png" })
+    expect(chips(panel)).toHaveLength(1)
+
+    for (let i = 0; i < 10; i++) panel.send({ type: "attachmentUploaded", path: `/ap/x/f${i}.png` })
+    // 1 dup + 9 more fit (total 10); the 10th extra is the 11th overall → refused
+    expect(chips(panel).length).toBe(10)
+    expect(el(panel, "error-banner").hidden).toBe(false)
+    expect(el(panel, "eb-title").textContent).toBe("Too many attachments")
+  })
+})
+
+describe("transcriptPanel webview — drag and drop", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel): void {
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function dropEvent(panel: Panel, opts: { uriList?: string; files?: unknown[] }): DomEvent {
+    const ev = new panel.window.Event("drop", { cancelable: true })
+    ev.dataTransfer = {
+      getData: (type: string) => (type.includes("uri-list") ? opts.uriList ?? "" : ""),
+      files: opts.files ?? [],
+      dropEffect: "",
+    }
+    return ev
+  }
+  const flush = async (): Promise<void> => {
+    await new Promise(res => setTimeout(res, 0))
+    await new Promise(res => setTimeout(res, 0))
+  }
+  const chips = (panel: Panel): DomElement[] => [...el(panel, "composer-attachments").querySelectorAll(".attach-chip")]
+
+  it("attaches a file dragged from the VS Code Explorer BY PATH — no upload (A1)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+
+    el(panel, "composer").dispatchEvent(dropEvent(panel, { uriList: "file:///work/repo/src/x.ts" }))
+
+    // A ready path becomes a chip directly; nothing was uploaded.
+    expect(posted.filter(m => (m as { type?: string }).type === "attachFile")).toEqual([])
+    expect(chips(panel).map(c => c.querySelector(".attach-chip-label")?.textContent)).toEqual(["x.ts"])
+  })
+
+  it("uploads a file dragged from the OS (raw bytes, carries its own name)", async () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    const file = new panel.window.File([new Uint8Array([1, 2, 3])], "report.pdf", { type: "application/pdf" })
+
+    el(panel, "composer").dispatchEvent(dropEvent(panel, { files: [file] }))
+    await flush()
+
+    const attach = posted.filter(m => (m as { type?: string }).type === "attachFile") as Array<{
+      name: string
+      mime: string
+      bytes: { byteLength: number }
+    }>
+    expect(attach).toHaveLength(1)
+    expect(attach[0]!.name).toBe("report.pdf")
+    expect(attach[0]!.mime).toBe("application/pdf")
+    expect(attach[0]!.bytes.byteLength).toBe(3)
+  })
+})
+
+describe("transcriptPanel webview — @file mentions", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel): void {
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+  function type(panel: Panel, text: string): void {
+    const input = el(panel, "input")
+    input.value = text
+    input.selectionStart = text.length
+    input.dispatchEvent(new panel.window.Event("input"))
+  }
+  function keydown(panel: Panel, key: string): DomEvent {
+    const ev = new panel.window.Event("keydown", { cancelable: true })
+    ev.key = key
+    el(panel, "input").dispatchEvent(ev)
+    return ev
+  }
+  const items = (panel: Panel): DomElement[] => [...el(panel, "mention-popup").querySelectorAll(".mention-item")]
+
+  it("asks the host for candidates when an @ token is typed", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+
+    type(panel, "see @src/we")
+
+    expect(posted).toContainEqual({ type: "requestMentions", query: "src/we" })
+  })
+
+  it("renders the candidate list and inserts the chosen path as a chip on Enter", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    type(panel, "@men")
+    panel.send({
+      type: "mentionCandidates",
+      query: "men",
+      items: [
+        { path: "/repo/src/webview/mentions.logic.ts", label: "src/webview/mentions.logic.ts" },
+        { path: "/repo/src/webview/mentionSource.ts", label: "src/webview/mentionSource.ts" },
+      ],
+    })
+    expect(items(panel)).toHaveLength(2)
+
+    keydown(panel, "ArrowDown") // move to 2nd
+    keydown(panel, "Enter") // choose it
+
+    const chips = [...el(panel, "composer-attachments").querySelectorAll(".attach-chip")]
+    expect(chips.map(c => c.querySelector(".attach-chip-label")?.textContent)).toEqual(["mentionSource.ts"])
+    expect(el(panel, "mention-popup").hidden).toBe(true)
+    // The @token was consumed out of the textarea.
+    expect(el(panel, "input").value).toBe("")
+  })
+
+  it("ignores a stale candidate response for a query the user has moved past", () => {
+    const panel = renderPanel()
+    init(panel)
+    type(panel, "@zzz")
+    // A response for an OLDER query must not paint over the current one.
+    panel.send({ type: "mentionCandidates", query: "old", items: [{ path: "/x/a.ts", label: "a.ts" }] })
+    expect(el(panel, "mention-popup").querySelector(".mention-item")).toBeNull()
+  })
+
+  it("closes the popup on Escape without sending", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel)
+    type(panel, "@a")
+    panel.send({ type: "mentionCandidates", query: "a", items: [{ path: "/x/a.ts", label: "a.ts" }] })
+
+    keydown(panel, "Escape")
+
+    expect(el(panel, "mention-popup").hidden).toBe(true)
+    expect(posted.filter(m => (m as { type?: string }).type === "send")).toEqual([])
   })
 })
 

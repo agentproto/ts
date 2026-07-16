@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  ATTACHMENT_COUNT_CAP,
+  MAX_ATTACHMENT_BYTES,
+  WARN_ATTACHMENT_BYTES,
   buildAttachmentName,
+  buildDroppedName,
+  classifyAttachmentSize,
   isBinaryPayload,
   mimeToExtension,
+  parseUriList,
   resolveAttachmentsCwd,
   toUint8,
 } from "./attachments.logic.js"
@@ -85,5 +91,58 @@ describe("toUint8", () => {
     const backing = new Uint8Array([0, 1, 2, 3, 4, 5])
     const view = new Uint8Array(backing.buffer, 2, 3) // [2,3,4]
     expect([...toUint8(view)]).toEqual([2, 3, 4])
+  })
+})
+
+describe("classifyAttachmentSize", () => {
+  it("accepts an ordinary attachment", () => {
+    expect(classifyAttachmentSize(1024).verdict).toBe("ok")
+    expect(classifyAttachmentSize(WARN_ATTACHMENT_BYTES).verdict).toBe("ok")
+  })
+
+  it("warns (but does not block) above the practical ceiling", () => {
+    const v = classifyAttachmentSize(WARN_ATTACHMENT_BYTES + 1)
+    expect(v.verdict).toBe("warn")
+    expect(v.message).toMatch(/attached/)
+  })
+
+  it("rejects over the daemon's hard cap rather than eating a 413", () => {
+    const v = classifyAttachmentSize(MAX_ATTACHMENT_BYTES + 1)
+    expect(v.verdict).toBe("reject")
+    expect(v.message).toMatch(/not attached/)
+  })
+
+  it("has a count cap", () => {
+    expect(ATTACHMENT_COUNT_CAP).toBe(10)
+  })
+})
+
+describe("parseUriList", () => {
+  it("extracts on-disk paths from a file:// uri-list, decoding percent-escapes", () => {
+    const list = "file:///work/my%20repo/a.png\nfile:///work/b.txt"
+    expect(parseUriList(list)).toEqual(["/work/my repo/a.png", "/work/b.txt"])
+  })
+
+  it("skips comment lines and non-file schemes", () => {
+    const list = "# comment\nhttps://example.com/x.png\nfile:///ok.png\n"
+    expect(parseUriList(list)).toEqual(["/ok.png"])
+  })
+
+  it("returns nothing for junk", () => {
+    expect(parseUriList("not a uri\n\n")).toEqual([])
+  })
+})
+
+describe("buildDroppedName", () => {
+  it("keeps the human stem and appends a uniqueness suffix", () => {
+    expect(buildDroppedName("Screenshot 2026.png", "image/png", "ab12")).toBe("Screenshot_2026-ab12.png")
+  })
+
+  it("takes the extension from the mime when the name has none", () => {
+    expect(buildDroppedName("clip", "image/gif", "zz")).toBe("clip-zz.gif")
+  })
+
+  it("strips any directory prefix a uri-list path might carry", () => {
+    expect(buildDroppedName("/a/b/c.pdf", "application/pdf", "99")).toBe("c-99.pdf")
   })
 })
