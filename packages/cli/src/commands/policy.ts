@@ -49,6 +49,7 @@ import {
   httpPostJson,
 } from "./_daemon-helpers.js"
 import { waitForPolicy } from "./_policy-wait.js"
+import { parseDuration, type ParsedDuration } from "../util/duration.js"
 import type { GateSpec, PolicyRunState } from "@agentproto/runtime"
 
 const USAGE = `agentproto policy — attach and drive completion-policy gates
@@ -57,21 +58,25 @@ Usage:
   agentproto policy attach (--session <id> | --sessions <id,id,…>)
                            [--then emit|commit]                (default: emit)
                            [-- <gate-cmd> [args...]]            shell gate argv
-                           [--gate-cwd <dir>] [--gate-timeout <ms>]
+                           [--gate-cwd <dir>] [--gate-timeout <duration>]
                            [--judge-adapter <slug> --judge-prompt <text>
-                              [--judge-model <id>] [--judge-timeout <ms>]]
+                              [--judge-model <id>] [--judge-timeout <duration>]]
                            [--gate-json <json|@file>]           full GateSpec
                            [--commit-path <path>]... [--commit-message <text>]
                            [--ack | --no-ack]                   (default: ack)
                            [--on-fail-nudge <text>] [--on-fail-max-retries <n>]
                            [--attach-json <json|@file>]         full request body
-                           [--wait] [--timeout <ms>] [--json]
+                           [--wait] [--timeout <duration>] [--json]
   agentproto policy status <policyId> [--json]
-  agentproto policy wait   <policyId> [--timeout <ms>] [--json]
+  agentproto policy wait   <policyId> [--timeout <duration>] [--json]
   agentproto policy ack    <policyId> (--approve | --reject) [--json]
   agentproto policy ls     [--json]
   agentproto policy cancel <policyId> [--json]
   agentproto policy --help
+
+  <duration>: bare integer = milliseconds (unchanged), or an explicit unit —
+              500ms, 30s, 5m, 2h. A bare number under 1000 is rejected as an
+              ambiguous units slip; say \`30s\` or \`30ms\` explicitly.
 
 attach:
   Exactly one gate form: \`-- <cmd> [args...]\` (shell, exit 0 = pass),
@@ -94,7 +99,9 @@ status vs wait:
   nudging/acting, chaining calls across the route's ~55s per-call ceiling.
   Default --timeout: 900000ms/15m (a gate can be a full test suite or a judge
   turn, not a quick check). Exit codes: 0 done/awaiting-ack, 2 blocked/
-  cancelled/CLI-timeout, 3 not found/daemon too old.
+  cancelled/CLI-timeout, 3 not found/daemon too old. On CLI-timeout, the
+  message states the resolved duration it waited (e.g. "timed out after
+  15m") so a wrong unit is obvious rather than looking like a stuck gate.
 
 ack:
   Operator gesture — see this file's docblock. Never invoke from a delegated
@@ -258,11 +265,11 @@ async function runAttach(args: readonly string[]): Promise<number> {
       if (!values["judge-adapter"] || !values["judge-prompt"]) {
         return fail("--judge-adapter and --judge-prompt are both required for a judge gate")
       }
-      const judgeTimeout = values["judge-timeout"]
-        ? Number.parseInt(values["judge-timeout"], 10)
-        : undefined
-      if (judgeTimeout !== undefined && (!Number.isFinite(judgeTimeout) || judgeTimeout <= 0)) {
-        return fail(`invalid --judge-timeout "${values["judge-timeout"]}"`)
+      let judgeTimeout: number | undefined
+      if (values["judge-timeout"]) {
+        const parsed = parseDuration(values["judge-timeout"], "--judge-timeout")
+        if (!parsed.ok) return fail(parsed.error)
+        judgeTimeout = parsed.ms
       }
       gate = {
         judge: {
@@ -273,11 +280,11 @@ async function runAttach(args: readonly string[]): Promise<number> {
         },
       }
     } else if (hasShellGate) {
-      const gateTimeout = values["gate-timeout"]
-        ? Number.parseInt(values["gate-timeout"], 10)
-        : undefined
-      if (gateTimeout !== undefined && (!Number.isFinite(gateTimeout) || gateTimeout <= 0)) {
-        return fail(`invalid --gate-timeout "${values["gate-timeout"]}"`)
+      let gateTimeout: number | undefined
+      if (values["gate-timeout"]) {
+        const parsed = parseDuration(values["gate-timeout"], "--gate-timeout")
+        if (!parsed.ok) return fail(parsed.error)
+        gateTimeout = parsed.ms
       }
       gate = {
         command: gateArgv[0]!,
@@ -363,12 +370,12 @@ async function runAttach(args: readonly string[]): Promise<number> {
   } else {
     process.stdout.write(`agentproto policy attach: ${state.policyId} → ${state.status}\n`)
   }
-  const totalTimeout = parseTimeout(values.timeout, 900_000)
-  if (totalTimeout === null) return fail(`invalid --timeout "${values.timeout}"`)
+  const parsedTimeout = resolveTimeout(values.timeout, 900_000)
+  if (!parsedTimeout.ok) return fail(parsedTimeout.error)
   return waitForPolicy({
     endpoint,
     policyId: state.policyId,
-    totalTimeoutMs: totalTimeout,
+    totalTimeoutMs: parsedTimeout.ms,
     json: Boolean(values.json),
     verb: "agentproto policy attach",
   })
@@ -383,11 +390,12 @@ function printPolicyResult(state: PolicyRunState, json: boolean, verb: string): 
   return 0
 }
 
-function parseTimeout(raw: string | undefined, fallback: number): number | null {
-  if (!raw) return fallback
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n <= 0) return null
-  return n
+/** Resolve `--timeout <duration>` against a fallback default, via the shared
+ *  parser — bare = ms unchanged, explicit `500ms`/`30s`/`5m`/`2h`, sub-1000
+ *  bare numbers rejected as an ambiguous units slip. */
+function resolveTimeout(raw: string | undefined, fallback: number): ParsedDuration {
+  if (!raw) return { ok: true, ms: fallback }
+  return parseDuration(raw, "--timeout")
 }
 
 // ── status ───────────────────────────────────────────────────────────────
@@ -444,9 +452,9 @@ async function runWait(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto policy wait: missing <policyId>.\n  Try: agentproto policy ls\n")
     return 2
   }
-  const totalTimeout = parseTimeout(values.timeout, 900_000)
-  if (totalTimeout === null) {
-    process.stderr.write(`agentproto policy wait: invalid --timeout "${values.timeout}".\n`)
+  const parsedTimeout = resolveTimeout(values.timeout, 900_000)
+  if (!parsedTimeout.ok) {
+    process.stderr.write(`agentproto policy wait: ${parsedTimeout.error}\n`)
     return 2
   }
 
@@ -459,7 +467,7 @@ async function runWait(args: readonly string[]): Promise<number> {
   return waitForPolicy({
     endpoint: report.found,
     policyId,
-    totalTimeoutMs: totalTimeout,
+    totalTimeoutMs: parsedTimeout.ms,
     json: Boolean(values.json),
     verb: "agentproto policy wait",
   })

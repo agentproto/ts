@@ -10,6 +10,7 @@
  * daemon.
  */
 import { httpGetJson, type DaemonEndpoint } from "./_daemon-helpers.js"
+import { formatDuration } from "../util/duration.js"
 
 /**
  * Blocks until the policy resolves (leaves watching/gating/queued/nudging/
@@ -37,15 +38,37 @@ export async function waitForPolicy(opts: {
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
 
+  // Stated BEFORE blocking, not just on timeout — see the matching comment
+  // in sessions.ts's runWaitSession for why. Suppressed under --json: a
+  // JSON caller gets timeoutMs/timeout back as fields on every branch below
+  // instead of a stray prose line on stderr.
+  if (!json) {
+    process.stderr.write(
+      `${verb}: waiting up to ${formatDuration(totalTimeoutMs)} (${totalTimeoutMs}ms) ` +
+        `for policy "${policyId}"…\n`,
+    )
+  }
+
   for (;;) {
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
       if (json) {
-        process.stdout.write(JSON.stringify({ timedOut: true, policyId }, null, 2) + "\n")
+        process.stdout.write(
+          JSON.stringify(
+            {
+              timedOut: true,
+              policyId,
+              timeoutMs: totalTimeoutMs,
+              timeout: formatDuration(totalTimeoutMs),
+            },
+            null,
+            2,
+          ) + "\n",
+        )
       } else {
         process.stdout.write(
-          `${verb}: policy "${policyId}" timed out. ` +
-            `Pass --timeout <ms> for a longer budget if the gate is still running.\n`,
+          `${verb}: policy "${policyId}" timed out after ${formatDuration(totalTimeoutMs)}. ` +
+            `Pass a longer --timeout (e.g. --timeout 30m) if the gate is still running.\n`,
         )
       }
       return 2
@@ -72,7 +95,13 @@ export async function waitForPolicy(opts: {
     if (result.timedOut === true) continue
     const status = typeof result.status === "string" ? result.status : ""
     if (json) {
-      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      process.stdout.write(
+        JSON.stringify(
+          { ...result, timeoutMs: totalTimeoutMs, timeout: formatDuration(totalTimeoutMs) },
+          null,
+          2,
+        ) + "\n",
+      )
     } else {
       process.stdout.write(`${verb}: policy ${policyId} → ${status}\n`)
     }
