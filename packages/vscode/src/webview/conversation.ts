@@ -550,7 +550,23 @@ function buildActivity(children: PresentedActivityChild[]): PresentedActivitySeg
     (c): c is PresentedToolSegment => c.kind === "tool" && c.status === "pending",
   )
   const failed = children.filter(c => c.kind === "tool" && c.status === "error").length
-  const status: PresentedActivitySegment["status"] = pending ? "pending" : failed > 0 ? "error" : "ok"
+  // The badge answers "how did this run END", not "did anything in it ever
+  // fail". An agent running a command, having it fail, and adapting is not a
+  // failed run — it is the normal shape of agent work, and stamping ✗ on six
+  // steps because one of them was recovered from reports a failure that
+  // didn't happen. The run only ends badly if its LAST step is the one that
+  // failed and nothing followed it.
+  //
+  // Nothing is hidden by this: activitySummary still appends "· N failed", so
+  // a settled run reads "6 steps · 1 failed" with a ✓ — the run finished, and
+  // one step along the way went wrong. Both facts, in their right places.
+  const last = children[children.length - 1]
+  const endedOnFailure = last !== undefined && last.kind === "tool" && last.status === "error"
+  const status: PresentedActivitySegment["status"] = pending
+    ? "pending"
+    : endedOnFailure
+      ? "error"
+      : "ok"
   return {
     kind: "activity",
     // Derived from the first child's id, which is seq-derived and stable — so

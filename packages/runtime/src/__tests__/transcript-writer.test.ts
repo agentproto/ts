@@ -297,4 +297,99 @@ describe("createTranscriptWriter", () => {
     expect(readLines("sess_a")[0]?.text).toBe("partial a")
     expect(readLines("sess_b")[0]?.text).toBe("partial b")
   })
+
+  describe("tool-call enrichments coalesce", () => {
+    /**
+     * The real shape, captured off the wire from the claude-code bridge: it
+     * announces the call with an empty input, then streams `rawInput` as the
+     * model types it. Each frame is a superseding SNAPSHOT, not an increment.
+     */
+    const streamOneCall = (writer: ReturnType<typeof createTranscriptWriter>): void => {
+      writer.recordEvent("s1", { kind: "tool-call", toolCallId: "t1", toolName: "Terminal", arguments: {} })
+      for (const args of [
+        { adapter: "claude-code" },
+        { adapter: "claude-code", cwd: "/tmp" },
+        { adapter: "claude-code", cwd: "/tmp", role: "executor" },
+        { adapter: "claude-code", cwd: "/tmp", role: "executor", prompt: "go" },
+      ]) {
+        writer.recordEvent("s1", {
+          kind: "tool-call",
+          toolCallId: "t1",
+          toolName: "wc -l f.txt",
+          arguments: args,
+          isUpdate: true,
+        })
+      }
+    }
+
+    it("writes ONE enrichment per call, carrying the final input", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      streamOneCall(writer)
+      writer.recordEvent("s1", { kind: "tool-result", toolCallId: "t1", result: "ok" })
+      await writer.close("s1")
+
+      const calls = readLines("s1").filter(r => r.kind === "tool-call")
+      // Announcement + one enrichment. Writing every frame put six records on
+      // disk for one call, and only the last of them was true.
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toMatchObject({ toolName: "Terminal", arguments: {} })
+      expect(calls[1]).toMatchObject({
+        isUpdate: true,
+        toolName: "wc -l f.txt",
+        arguments: { adapter: "claude-code", cwd: "/tmp", role: "executor", prompt: "go" },
+      })
+    })
+
+    it("puts the input on disk BEFORE the result it belongs to", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      streamOneCall(writer)
+      writer.recordEvent("s1", { kind: "tool-result", toolCallId: "t1", result: "ok" })
+      await writer.close("s1")
+
+      expect(readLines("s1").map(r => r.kind)).toEqual(["tool-call", "tool-call", "tool-result"])
+    })
+
+    it("never loses a held input when the call ends without a result", async () => {
+      // A failing tool reports `error` and never a tool-result; a crashed
+      // stream gets only the synthesized turn-end. Both must still flush.
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      streamOneCall(writer)
+      writer.recordEvent("s1", { kind: "turn-end", reason: "completed" })
+      await writer.close("s1")
+
+      const calls = readLines("s1").filter(r => r.kind === "tool-call")
+      expect(calls).toHaveLength(2)
+      expect(calls[1]).toMatchObject({ arguments: { prompt: "go" } })
+      expect(readLines("s1").at(-1)?.kind).toBe("turn-end")
+    })
+
+    it("keeps calls apart — one enrichment each, in order", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("s1", { kind: "tool-call", toolCallId: "a", toolName: "A", arguments: {} })
+      writer.recordEvent("s1", { kind: "tool-call", toolCallId: "a", toolName: "A", arguments: { x: 1 }, isUpdate: true })
+      // A second call's announcement forces the first's input out, in order.
+      writer.recordEvent("s1", { kind: "tool-call", toolCallId: "b", toolName: "B", arguments: {} })
+      writer.recordEvent("s1", { kind: "tool-call", toolCallId: "b", toolName: "B", arguments: { y: 2 }, isUpdate: true })
+      writer.recordEvent("s1", { kind: "turn-end", reason: "completed" })
+      await writer.close("s1")
+
+      const calls = readLines("s1").filter(r => r.kind === "tool-call")
+      expect(calls.map(r => [r.toolCallId, r.isUpdate ?? false])).toEqual([
+        ["a", false],
+        ["a", true],
+        ["b", false],
+        ["b", true],
+      ])
+    })
+
+    it("flushes a held input on close, not only on a lifecycle event", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      streamOneCall(writer)
+      await writer.closeAll()
+
+      const calls = readLines("s1").filter(r => r.kind === "tool-call")
+      expect(calls).toHaveLength(2)
+      expect(calls[1]).toMatchObject({ arguments: { prompt: "go" } })
+    })
+  })
 })

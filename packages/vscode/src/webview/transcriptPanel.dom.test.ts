@@ -146,7 +146,9 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     expect(after).toBe(before) // same node — never replaced
     expect(after?.open).toBe(true) // <details open> survived the content update
     expect(after?.className).toContain("tool-ok")
-    expect(after?.querySelector(".tool-pending-row")).toBeNull()
+    // The live dot lives in the summary now, and a settled step has none.
+    expect(after?.querySelector(".seg-dot")).toBeNull()
+    expect(after?.querySelector(".seg-badge")?.textContent).toBe("✓")
     expect(after?.querySelector(".tool-result")).not.toBeNull()
   })
 
@@ -252,7 +254,7 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
 
     const node = segNode(panel, "tool-t1")
-    const labelBefore = node?.querySelector(".tool-elapsed")?.textContent ?? ""
+    const labelBefore = node?.querySelector(".seg-elapsed")?.textContent ?? ""
     // The pending row paints its elapsed time immediately on creation, ahead
     // of the first tick — must not need a full second before showing anything.
     expect(labelBefore).toMatch(/^running · \d+s$/)
@@ -260,7 +262,7 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
 
     vi.advanceTimersByTime(8_000) // total elapsed now ~11s — past the 10s threshold
 
-    const labelAfter = node?.querySelector(".tool-elapsed")?.textContent ?? ""
+    const labelAfter = node?.querySelector(".seg-elapsed")?.textContent ?? ""
     expect(labelAfter).toMatch(/^still running · \d+s$/)
     expect(node?.classList.contains("tool-still-running")).toBe(true)
   })
@@ -296,8 +298,8 @@ describe("transcriptPanel webview — activity group folding", () => {
     expect(node?.tagName).toBe("DETAILS")
     // The whole point: a long run must not spam a user waiting on the answer.
     expect(node?.open).toBeFalsy()
-    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps")
-    expect(node?.querySelector(".act-badge")?.textContent).toBe("✓")
+    expect(node?.querySelector(".seg-label")?.textContent).toBe("2 steps")
+    expect(node?.querySelector(".seg-badge")?.textContent).toBe("✓")
   })
 
   it("nests the folded steps as a tree the user can open", () => {
@@ -345,7 +347,7 @@ describe("transcriptPanel webview — activity group folding", () => {
     expect(segNode(panel, "tool-t1")).toBe(child) // untouched child untouched
     expect(segNode(panel, "tool-t1")?.open).toBe(true)
     // ...and the summary tracks the step now actually running.
-    expect(groupAfter?.querySelector(".act-label")?.textContent).toBe("grep · 3 steps")
+    expect(groupAfter?.querySelector(".seg-label")?.textContent).toBe("grep · 3 steps")
     expect(segNode(panel, "tool-t2")).toBeDefined()
   })
 
@@ -361,12 +363,12 @@ describe("transcriptPanel webview — activity group folding", () => {
       }),
     )
     const node = segNode(panel, "act-seg-1")
-    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^running · \d+s$/)
+    expect(node?.querySelector(".seg-elapsed")?.textContent).toMatch(/^running · \d+s$/)
     expect(node?.classList.contains("tool-still-running")).toBe(false)
 
     vi.advanceTimersByTime(8_000) // ~11s total — past the escalation threshold
 
-    expect(node?.querySelector(".act-elapsed")?.textContent).toMatch(/^still running · \d+s$/)
+    expect(node?.querySelector(".seg-elapsed")?.textContent).toMatch(/^still running · \d+s$/)
     // A fold that is quietly stuck must still say so from the collapsed row.
     expect(node?.classList.contains("tool-still-running")).toBe(true)
   })
@@ -376,8 +378,8 @@ describe("transcriptPanel webview — activity group folding", () => {
     initWith(panel, activity({ status: "error", summary: "2 steps · 1 failed" }))
     const node = segNode(panel, "act-seg-1")
     expect(node?.className).toContain("activity-error")
-    expect(node?.querySelector(".act-badge")?.textContent).toBe("✗")
-    expect(node?.querySelector(".act-label")?.textContent).toBe("2 steps · 1 failed")
+    expect(node?.querySelector(".seg-badge")?.textContent).toBe("✗")
+    expect(node?.querySelector(".seg-label")?.textContent).toBe("2 steps · 1 failed")
   })
 })
 
@@ -730,6 +732,85 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
       },
     })
     expect(el(panel, "conv-usage").textContent).toBe("ctx 6%")
+  })
+})
+
+describe("transcriptPanel webview — a step is a row, not a box", () => {
+  function initRow(panel: Panel, seg: PresentedToolSegment | PresentedActivitySegment): void {
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: {
+        version: 1,
+        sessionId: "s1",
+        turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+      },
+    })
+  }
+
+  const step = (over: Partial<PresentedToolSegment> = {}): PresentedToolSegment => ({
+    kind: "tool",
+    id: "tool-t1",
+    toolName: "Terminal",
+    isError: false,
+    status: "ok",
+    ...over,
+  })
+
+  it("puts status on the left and the chevron last, on the right", () => {
+    const panel = renderPanel()
+    initRow(panel, step())
+    const summary = segNode(panel, "tool-t1")?.querySelector("summary")
+    const order = [...(summary?.querySelectorAll("span") ?? [])].map(n => n.className)
+    expect(order[0]).toContain("seg-badge")
+    expect(order[1]).toContain("seg-label")
+    // Last, and CSS pushes it right with margin-left:auto. The native
+    // <details> triangle is gone — it was stuck on the left, fighting the
+    // status glyph for the first thing the eye lands on.
+    expect(order[order.length - 1]).toContain("seg-chev")
+  })
+
+  it("marks the running step with a dot and ticks its elapsed in the SUMMARY", () => {
+    const panel = renderPanel()
+    initRow(panel, step({ status: "pending", ts: new Date(Date.now() - 35_000).toISOString() }))
+    const summary = segNode(panel, "tool-t1")?.querySelector("summary")
+    // A dot, not a glyph: the eye finds the live step without reading a word.
+    expect(summary?.querySelector(".seg-dot")).not.toBeNull()
+    // In the summary, because the body is exactly what a collapsed card hides.
+    expect(summary?.querySelector(".seg-elapsed")?.textContent).toMatch(/\d+s$/)
+  })
+
+  it("reports a failure with a red cross and nothing else", () => {
+    const panel = renderPanel()
+    initRow(panel, step({ status: "error", isError: true }))
+    const node = segNode(panel, "tool-t1")
+    const badge = node?.querySelector(".seg-badge")
+    expect(badge?.textContent).toBe("✗")
+    // The cross IS the failure report. It used to draw a red border around
+    // its own row, inside a group that drew a red border too — one failure
+    // shouting twice in nested boxes, while the ✗ itself was uncoloured.
+    expect(badge?.className).toContain("badge-error")
+  })
+
+  it("gives a group the same row grammar as the steps inside it", () => {
+    const panel = renderPanel()
+    initRow(panel, {
+      kind: "activity",
+      id: "act-seg-1",
+      summary: "2 steps · 1 failed",
+      count: 2,
+      status: "error",
+      children: [
+        { kind: "tool", id: "tool-a", toolName: "Terminal", isError: true, status: "error" },
+        { kind: "tool", id: "tool-b", toolName: "Read File", isError: false, status: "ok" },
+      ],
+    })
+    const summary = segNode(panel, "act-seg-1")?.querySelector("summary")
+    expect(summary?.querySelector(".seg-badge")?.textContent).toBe("✗")
+    expect(summary?.querySelector(".seg-label")?.textContent).toBe("2 steps · 1 failed")
+    expect(summary?.querySelector(".seg-chev")).not.toBeNull()
   })
 })
 

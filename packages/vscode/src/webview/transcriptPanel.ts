@@ -342,67 +342,96 @@ export function buildHtml(nonce: string): string {
     .seg:last-child { margin-bottom: 0; }
     .seg.text > :first-child { margin-top: 0; }
     .seg.text > :last-child { margin-bottom: 0; }
-    details.reasoning, details.tool {
-      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
-      border-radius: 5px;
-      padding: 3px 8px;
-      background: var(--vscode-textCodeBlock-background);
-    }
-    details.reasoning > summary, details.tool > summary {
-      cursor: pointer;
-      font-size: 0.9em;
-      color: var(--vscode-descriptionForeground);
-      user-select: none;
-      list-style: revert;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    details.reasoning[open] > summary, details.tool[open] > summary { margin-bottom: 6px; white-space: normal; }
-    .reasoning-body {
-      color: var(--vscode-descriptionForeground);
-      font-style: italic;
-    }
-    details.tool > summary { font-family: var(--vscode-editor-font-family); }
-    details.tool-error { border-color: var(--vscode-errorForeground); }
-    /* ── Activity group (folded reasoning/tool run) ────────────────── */
+    /* A GROUP is a box (it contains things). A STEP is a row. Nesting a
+       bordered card inside a bordered group drew two frames around one fact
+       and left no quiet surface to read. */
     details.activity {
       border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
       border-radius: 5px;
       background: var(--vscode-textCodeBlock-background);
       padding: 3px 8px;
     }
-    details.activity > summary {
+    details.reasoning, details.tool {
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    /* A top-level step still needs an edge to sit against the chat bubbles;
+       inside a group the tree line already does that job. */
+    .turn > details.reasoning, .turn > details.tool {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      padding: 3px 8px;
+      background: var(--vscode-textCodeBlock-background);
+    }
+    .reasoning-body {
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
+    /* ── One disclosure row: status ─ name ─────────────── chevron ── */
+    details.reasoning > summary, details.tool > summary, details.activity > summary {
       cursor: pointer;
       user-select: none;
-      list-style: revert;
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 6px;
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
+      /* The native triangle is stuck on the left, where it fights the status
+         glyph for the first thing the eye lands on. */
+      list-style: none;
     }
+    details > summary::-webkit-details-marker { display: none; }
+    details.reasoning[open] > summary,
+    details.tool[open] > summary,
     details.activity[open] > summary { margin-bottom: 6px; }
-    .act-badge { flex: 0 0 auto; }
-    .act-label {
+    details.tool > summary { font-family: var(--vscode-editor-font-family); }
+    .seg-badge {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1em;
+    }
+    /* The cross IS the failure report — the container stays quiet. */
+    .seg-badge.badge-error { color: var(--vscode-errorForeground); }
+    .seg-badge.badge-ok { opacity: 0.55; }
+    /* The live step: a pulsing dot, so the eye finds the one thing happening
+       now without reading a word. */
+    .seg-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--vscode-editorWarning-foreground);
+      animation: agentproto-pulse 1.1s ease-in-out infinite;
+    }
+    .seg-label {
       font-family: var(--vscode-editor-font-family);
       color: var(--vscode-editor-foreground);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .act-elapsed:empty { display: none; }
+    .seg-elapsed {
+      flex: 0 0 auto;
+      color: var(--vscode-editorWarning-foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    .seg-elapsed:empty { display: none; }
+    /* Faint on purpose: it's an affordance, not information. It only has to
+       be findable once you're already looking at the row. */
+    .seg-chev {
+      flex: 0 0 auto;
+      margin-left: auto;
+      padding-left: 8px;
+      opacity: 0.32;
+      transition: transform 0.12s ease;
+    }
+    details[open] > summary > .seg-chev { transform: rotate(90deg); }
+    summary:hover > .seg-chev { opacity: 0.7; }
     /* The fold's children indent under the summary so the run reads as a tree. */
     .act-children {
       border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
       margin-left: 4px;
       padding-left: 8px;
-    }
-    details.activity-error { border-color: var(--vscode-errorForeground); }
-    details.activity.tool-still-running { border-color: var(--vscode-editorWarning-foreground); }
-    .tool-still-running > summary > .act-elapsed {
-      color: var(--vscode-editorWarning-foreground);
-      font-weight: 600;
     }
     /* Consecutive tool segments read as one compact group instead of N
        separately-bordered cards — see markToolRuns() in the script. */
@@ -454,33 +483,14 @@ export function buildHtml(nonce: string): string {
       user-select: none;
     }
     .tool-io-open:hover { text-decoration: underline; }
-    .tool-pending-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 4px;
-      font-size: 0.85em;
-      color: var(--vscode-descriptionForeground);
-    }
-    .tool-spinner {
-      flex: 0 0 auto;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--vscode-progressBar-background);
-      animation: agentproto-pulse 1.1s ease-in-out infinite;
-    }
     @keyframes agentproto-pulse {
       0%, 100% { opacity: 0.35; transform: scale(0.85); }
       50% { opacity: 1; transform: scale(1); }
     }
-    details.tool.tool-still-running {
-      border-color: var(--vscode-editorWarning-foreground);
-    }
-    .tool-still-running .tool-elapsed {
-      color: var(--vscode-editorWarning-foreground);
-      font-weight: 600;
-    }
+    /* A step that has outrun the stall threshold. Deliberately only weight:
+       the elapsed is already warning-coloured while a step runs, so the
+       escalation is "this number is now shouting", not another border. */
+    .tool-still-running > summary > .seg-elapsed { font-weight: 600; }
     .seg.plan {
       border-left: 3px solid var(--vscode-progressBar-background);
       padding: 4px 0 4px 10px;
@@ -531,7 +541,10 @@ export function buildHtml(nonce: string): string {
     /* Honour the OS "reduce motion" setting — this thing spins for minutes. */
     @media (prefers-reduced-motion: reduce) {
       #working-glyph { animation: none; }
-      .tool-spinner { animation: none; }
+      /* The dot stays — solid and warning-coloured it still marks the live
+         step; only the pulsing goes. */
+      .seg-dot { animation: none; }
+      .seg-chev { transition: none; }
     }
     /* ── Composer ─────────────────────────────────────────────────────
        One bordered box that OWNS the textarea and its action row, rather
@@ -1025,6 +1038,36 @@ export function buildHtml(nonce: string): string {
         return e;
       }
 
+      // Lay out one disclosure row: status on the LEFT, the open/close
+      // chevron pushed to the RIGHT and kept faint.
+      //
+      //   [●|✓|✗]  name .................................  ›
+      //
+      // Status lives in the GLYPH, never in the container. A failed step used
+      // to draw a red border around itself — inside a group that had drawn a
+      // red border of its own — so one failure shouted twice in nested boxes
+      // while the ✗ that actually says "failed" was uncoloured. Now the cross
+      // is red and the box says nothing. Same for a running step: the dot
+      // pulses, the border stays quiet.
+      //
+      // The native <details> triangle is dropped (list-style: none) because it
+      // is stuck on the left, where it competes with the status glyph for the
+      // one position the eye reads first.
+      //
+      // Returns the elapsed <span> so a live row can tick it.
+      function buildRowSummary(summary, status, label) {
+        summary.textContent = '';
+        const badge = el('span', 'seg-badge badge-' + status);
+        if (status === 'pending') badge.appendChild(el('span', 'seg-dot'));
+        else badge.textContent = status === 'error' ? '✗' : '✓';
+        summary.appendChild(badge);
+        summary.appendChild(el('span', 'seg-label', label));
+        const elapsed = el('span', 'seg-elapsed');
+        summary.appendChild(elapsed);
+        summary.appendChild(el('span', 'seg-chev', '›'));
+        return elapsed;
+      }
+
       // One side (input/output) of a tool card: a clamped <pre> that opens
       // the FULL value in a read-only editor tab when clicked.
       //
@@ -1100,10 +1143,9 @@ export function buildHtml(nonce: string): string {
             return;
           }
           case 'tool': {
-            const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
             node.className = 'seg tool tool-' + seg.status;
             const summary = node.querySelector(':scope > summary');
-            summary.textContent = badge + ' ' + (seg.toolName || 'tool');
+            const elapsed = buildRowSummary(summary, seg.status, seg.toolName || 'tool');
             // Rebuild everything after <summary> — cheap (a handful of
             // nodes) and simpler than diffing input/pending/output fields
             // individually; the shell (and its open state) is untouched.
@@ -1113,13 +1155,11 @@ export function buildHtml(nonce: string): string {
               appendToolIo(node, seg, 'input', 'tool-args', seg.argsText, seg.argsClamped, seg.argsLines);
             }
             if (seg.status === 'pending') {
-              const row = el('div', 'tool-pending-row');
-              row.appendChild(el('span', 'tool-spinner'));
-              const label = el('span', 'tool-elapsed');
-              row.appendChild(label);
-              node.appendChild(row);
+              // The ticker writes into the SUMMARY, not a row in the body:
+              // a running step is the one you most need to read while the
+              // card is collapsed, and the body is exactly what's hidden.
               const startedMs = seg.ts ? Date.parse(seg.ts) : NaN;
-              const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label, node };
+              const entry = { startedMs: isNaN(startedMs) ? Date.now() : startedMs, label: elapsed, node };
               pendingTools.set(seg.id, entry);
               paintElapsed(entry);
             } else {
@@ -1167,12 +1207,9 @@ export function buildHtml(nonce: string): string {
             // tree it STAYS open as steps stream in underneath.
             node.className = 'seg activity activity-' + seg.status;
             const summary = node.querySelector(':scope > summary');
-            summary.textContent = '';
-            const badge = seg.status === 'error' ? '✗' : seg.status === 'ok' ? '✓' : '…';
-            summary.appendChild(el('span', 'act-badge', badge));
-            summary.appendChild(el('span', 'act-label', seg.summary || ''));
-            const elapsed = el('span', 'act-elapsed');
-            summary.appendChild(elapsed);
+            // Same row shape as a tool card — a group is a step that happens
+            // to contain steps, so it reads with the same grammar.
+            const elapsed = buildRowSummary(summary, seg.status, seg.summary || '');
             let kids = node.querySelector(':scope > .act-children');
             if (!kids) {
               kids = el('div', 'act-children');
