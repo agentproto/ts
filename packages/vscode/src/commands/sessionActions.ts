@@ -124,22 +124,34 @@ async function interruptSessionCommand(
   vscode.window.showInformationMessage(`agentproto: interrupt queued for ${describeSession(session)}`)
 }
 
+/**
+ * "Stop", not "Kill" — every other button in this UI is named for what the
+ * user wants (prompt, interrupt, restart), and only this one was named for
+ * the signal the daemon happens to send. `SIGTERM session foo?` asked the
+ * user to know Unix to end an agent. The command id, the client method and
+ * the daemon's `killed` status keep the old vocabulary: that's the wire, and
+ * it isn't what's on screen.
+ */
 async function killSessionCommand(
   client: DaemonClient,
   store: SessionStore,
   arg: unknown,
 ): Promise<void> {
-  const session = await resolveSessionArg(arg, store, "Select a session to kill")
+  const session = await resolveSessionArg(arg, store, "Select a session to stop")
   if (!session) return
   const label = describeSession(session)
-  const confirm = await vscode.window.showWarningMessage(`SIGTERM session ${label}?`, { modal: true }, "Kill")
-  if (confirm !== "Kill") return
+  const confirm = await vscode.window.showWarningMessage(
+    `Stop session ${label}?`,
+    { modal: true, detail: "The agent is terminated. Its transcript stays readable, and Restart can revive it." },
+    "Stop",
+  )
+  if (confirm !== "Stop") return
   try {
     await client.kill(session.id)
-    vscode.window.showInformationMessage(`agentproto: killed ${label}`)
+    vscode.window.showInformationMessage(`agentproto: stopped ${label}`)
     await store.refreshAll()
   } catch (err) {
-    vscode.window.showErrorMessage(`agentproto: kill failed — ${describeError(err)}`)
+    vscode.window.showErrorMessage(`agentproto: stop failed — ${describeError(err)}`)
   }
 }
 

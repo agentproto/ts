@@ -108,6 +108,23 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
  */
 export const STALL_AFTER_MS = 10 * 60_000
 
+/**
+ * How often the tree must repaint itself with no input from the daemon.
+ *
+ * Everything time-derived here — the relative timestamp in `descriptionFor`,
+ * the recent/older split in `buildSessionRows`, and above all `isStalled` —
+ * is a function of `now`, not of any event. The store only fires onDidChange
+ * when a session actually CHANGED, so without a tick, a session that goes
+ * quiet is exactly the session the tree never re-renders: stall detection,
+ * whose entire trigger is silence, would surface only when some UNRELATED
+ * session happened to emit an event. Self-defeating — and the reason the
+ * view needed a manual refresh before it would tell the truth.
+ *
+ * 30s keeps the coarsest unit `formatDuration` prints honest and sits far
+ * below STALL_AFTER_MS.
+ */
+export const TREE_REPAINT_INTERVAL_MS = 30_000
+
 /** ms of silence for a busy session, or undefined when idle/terminal/unknown. */
 export function silentForMs(session: SessionDescriptor, now: number): number | undefined {
   if (!session.busy || TERMINAL_STATUSES.has(session.status)) return undefined
