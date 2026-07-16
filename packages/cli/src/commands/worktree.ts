@@ -94,14 +94,16 @@ Usage:
             ~/.agentproto/worktree-salvage/ (changes.patch + a copy of every
             untracked file + MANIFEST.json), then run the same removal as
             \`rm\` with both discard flags granted — nothing on disk is lost.
-  gc        Classify every linked worktree into reclaim (merged+clean+idle) /
-            salvage (merged+dirty) / hold (everything else), then print the
-            plan. DRY RUN by default — nothing is touched without --apply.
-            --apply removes every reclaim-class worktree (plain, non-force
-            \`git worktree remove\` — refuses if the tree turned dirty since
-            the plan was made) and deletes its now-merged branch.
-            --salvage-dirty additionally archives every salvage-class
-            worktree (salvage snapshot, then remove — same as \`archive\`).
+  gc        Classify every linked worktree into reclaim ((merged|fresh)+clean+idle) /
+            salvage (merged+dirty, and not written to in the last 15m) /
+            hold (everything else — including a fresh or merged branch with
+            uncommitted work), then print the plan. DRY RUN by default —
+            nothing is touched without --apply. --apply removes every
+            reclaim-class worktree (plain, non-force \`git worktree remove\`
+            — refuses if the tree turned dirty since the plan was made) and
+            deletes its branch. --salvage-dirty additionally archives every
+            salvage-class worktree (salvage snapshot, then remove — same as
+            \`archive\`).
             hold-class worktrees are never touched, with or without flags.
             --include-detached also reclaims clean, idle detached worktrees.
 `
@@ -257,7 +259,7 @@ function formatIntegration(integration: WorktreeStatusEntry["integration"]): str
   const offlineSuffix = "offline" in integration && integration.offline ? ",offline" : ""
   switch (integration.state) {
     case "merged":
-      return integration.via === "squash" ? `merged(squash,#${integration.pr}${offlineSuffix})` : "merged(ancestry)"
+      return `merged(squash,#${integration.pr}${offlineSuffix})`
     case "partial":
       return `partial(#${integration.pr},+${integration.aheadBy}${offlineSuffix})`
     case "open":
