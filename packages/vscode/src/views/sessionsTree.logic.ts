@@ -72,9 +72,10 @@ export function isAwaiting(session: SessionDescriptor): boolean {
   return Boolean(session.awaitingInput || session.awaitingPermission)
 }
 
-/** Item label: `label ?? command`. */
+/** Item label: `label ?? title ?? command`. `label` is spawner-supplied and
+ *  always wins; `title` is derived from the session's first prompt. */
 export function labelFor(session: SessionDescriptor): string {
-  return session.label ?? session.command
+  return session.label ?? session.title ?? session.command
 }
 
 /**

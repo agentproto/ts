@@ -45,6 +45,21 @@ describe("labelFor", () => {
   it("falls back to command when label is unset", () => {
     expect(labelFor(session({ label: undefined }))).toBe("claude-code --print")
   })
+  it("prefers label over title", () => {
+    expect(
+      labelFor(session({ label: "sales-analysis", title: "Fix the login bug" })),
+    ).toBe("sales-analysis")
+  })
+  it("falls back to title when label is unset", () => {
+    expect(labelFor(session({ label: undefined, title: "Fix the login bug" }))).toBe(
+      "Fix the login bug",
+    )
+  })
+  it("falls back to command when both label and title are unset", () => {
+    expect(labelFor(session({ label: undefined, title: undefined }))).toBe(
+      "claude-code --print",
+    )
+  })
 })
 
 describe("descriptionFor", () => {

@@ -127,8 +127,16 @@ describe("formatTitle", () => {
     expect(formatTitle({ label: "abc", id: "s1" })).toBe("abc")
   })
 
-  it("falls back to id", () => {
+  it("falls back to id when neither label nor title is set", () => {
     expect(formatTitle({ id: "s1" })).toBe("s1")
+  })
+
+  it("prefers label over title", () => {
+    expect(formatTitle({ label: "abc", title: "Fix the login bug", id: "s1" })).toBe("abc")
+  })
+
+  it("falls back to title when label is unset", () => {
+    expect(formatTitle({ title: "Fix the login bug", id: "s1" })).toBe("Fix the login bug")
   })
 })
 
