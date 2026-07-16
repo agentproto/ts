@@ -602,6 +602,81 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
   })
 })
 
+describe("spawnAgentSession — title derives from the caller's prompt, not the composed role preamble", () => {
+  // Each of these must fail before the fix: pre-fix, the descriptor title
+  // is derived from `effectivePrompt` (role disposition + promptAppend +
+  // prompt, composed), so `deriveSessionTitle` stops at the disposition's
+  // first sentence — e.g. every executor spawn titled "You are the leaf",
+  // regardless of what the caller actually asked for.
+
+  it("role: executor — titles from the caller's prompt, not the executor disposition", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      prompt: "Fix the markdown renderer.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Fix the markdown renderer")
+  })
+
+  it("role: supervisor — titles from the caller's prompt, not the supervisor disposition", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      prompt: "Triage these two gaps.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Triage these two gaps")
+  })
+
+  it("role: executor + promptAppend — the appended text doesn't become the title either", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      promptAppend: "be terse",
+      prompt: "Add a test.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Add a test")
+  })
+
+  it("no role — still titles from the prompt (regression guard: both ternary branches must title identically)", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "Update the docs.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Update the docs")
+  })
+
+  it("no prompt at spawn — titles later from the session's first real prompt (#390 self-heal, regression guard)", async () => {
+    const { registry, deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBeUndefined()
+
+    await registry.sendPrompt(result.descriptor.id, "Do the thing.")
+    expect(registry.get(result.descriptor.id)?.title).toBe("Do the thing")
+  })
+})
+
 describe("spawnAgentSession — privilege-lattice spawn gate (role-registry-extensible)", () => {
   const PLANNER_ROLE = {
     name: "planner",

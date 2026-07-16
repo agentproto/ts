@@ -33,6 +33,7 @@ import { getModelProvider } from "@agentproto/model-catalog/llm"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import { deriveSessionTitle } from "./session-title.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
@@ -647,6 +648,15 @@ export async function spawnAgentSession(
   const effectivePrompt = input.prompt
     ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
     : input.prompt
+  // The session's title must name the CALLER's ask, not whatever text
+  // happens to be first in the composed prompt above. `deriveSessionTitle`
+  // just takes the first sentence of what it's given — and the composed
+  // prompt's first sentence is the role's disposition (e.g. executor's
+  // "You are the leaf…"), not `input.prompt`. Derive from `input.prompt`
+  // ITSELF, before role/promptAppend composition, so every future prepended
+  // block (a skill header, a memory dump, another role field) can't
+  // re-introduce this bug by ending up ahead of the caller's actual ask.
+  const initialTitle = input.prompt ? deriveSessionTitle(input.prompt) : undefined
 
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
   // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.
@@ -789,6 +799,17 @@ export async function spawnAgentSession(
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
     })
+    // Stamp the title from the caller's ask BEFORE anything else can name
+    // this session from the composed prompt instead: `spawnAgent` above,
+    // when `initialPrompt` was passed, already ran the first turn's
+    // synchronous prelude (including `sessions.ts`'s own `if (!title)`
+    // derivation) before returning — so without this, the composed
+    // prompt's disposition text would already have claimed the title by
+    // the time control gets here. Assigning unconditionally overwrites
+    // that; assigning here (rather than relying on the `wait`-mode
+    // `sendPrompt` below) also covers the non-`wait` path, which never
+    // calls `sendPrompt` at all.
+    if (initialTitle) desc.title = initialTitle
     liveSessionId = desc.id
     // Bind the scope-token's lifetime to the child session — once
     // it exits, the token is revoked so it can't outlive its child.
