@@ -62,10 +62,99 @@ export const xaiPack: ModelPack = {
   },
 };
 
+// Source: OpenRouter /api/v1/models (fetched 2026-07-16), filtered to openai/*
+export const openaiPack: ModelPack = {
+  id: 'openai',
+  label: 'OpenAI',
+  description: 'OpenAI models via the OpenAI-compatible API — synced from OpenRouter catalog',
+  models: {
+    // ── GPT-5.6 series ──
+    'gpt-5.6-luna': { provider: 'openai', model: 'gpt-5.6-luna' },
+    'gpt-5.6-luna-pro': { provider: 'openai', model: 'gpt-5.6-luna-pro' },
+    'gpt-5.6-terra': { provider: 'openai', model: 'gpt-5.6-terra' },
+    'gpt-5.6-terra-pro': { provider: 'openai', model: 'gpt-5.6-terra-pro' },
+    'gpt-5.6-sol': { provider: 'openai', model: 'gpt-5.6-sol' },
+    'gpt-5.6-sol-pro': { provider: 'openai', model: 'gpt-5.6-sol-pro' },
+    // ── GPT-5.5 ──
+    'gpt-5.5': { provider: 'openai', model: 'gpt-5.5' },
+    'gpt-5.5-pro': { provider: 'openai', model: 'gpt-5.5-pro' },
+    // ── GPT-5.4 ──
+    'gpt-5.4': { provider: 'openai', model: 'gpt-5.4' },
+    'gpt-5.4-mini': { provider: 'openai', model: 'gpt-5.4-mini' },
+    'gpt-5.4-nano': { provider: 'openai', model: 'gpt-5.4-nano' },
+    'gpt-5.4-pro': { provider: 'openai', model: 'gpt-5.4-pro' },
+    'gpt-5.4-image-2': { provider: 'openai', model: 'gpt-5.4-image-2' },
+    // ── GPT-5.3 ──
+    'gpt-5.3-chat': { provider: 'openai', model: 'gpt-5.3-chat' },
+    'gpt-5.3-codex': { provider: 'openai', model: 'gpt-5.3-codex' },
+    // ── GPT-5.2 ──
+    'gpt-5.2': { provider: 'openai', model: 'gpt-5.2' },
+    'gpt-5.2-pro': { provider: 'openai', model: 'gpt-5.2-pro' },
+    'gpt-5.2-chat': { provider: 'openai', model: 'gpt-5.2-chat' },
+    'gpt-5.2-codex': { provider: 'openai', model: 'gpt-5.2-codex' },
+    // ── GPT-5.1 ──
+    'gpt-5.1': { provider: 'openai', model: 'gpt-5.1' },
+    'gpt-5.1-chat': { provider: 'openai', model: 'gpt-5.1-chat' },
+    'gpt-5.1-codex': { provider: 'openai', model: 'gpt-5.1-codex' },
+    'gpt-5.1-codex-mini': { provider: 'openai', model: 'gpt-5.1-codex-mini' },
+    'gpt-5.1-codex-max': { provider: 'openai', model: 'gpt-5.1-codex-max' },
+    // ── GPT-5 ──
+    'gpt-5': { provider: 'openai', model: 'gpt-5' },
+    'gpt-5-pro': { provider: 'openai', model: 'gpt-5-pro' },
+    'gpt-5-mini': { provider: 'openai', model: 'gpt-5-mini' },
+    'gpt-5-nano': { provider: 'openai', model: 'gpt-5-nano' },
+    'gpt-5-chat': { provider: 'openai', model: 'gpt-5-chat' },
+    'gpt-5-codex': { provider: 'openai', model: 'gpt-5-codex' },
+    'gpt-chat-latest': { provider: 'openai', model: 'gpt-chat-latest' },
+    // ── GPT-5 image ──
+    'gpt-5-image': { provider: 'openai', model: 'gpt-5-image' },
+    'gpt-5-image-mini': { provider: 'openai', model: 'gpt-5-image-mini' },
+    // ── GPT-4.x ──
+    'gpt-4.1': { provider: 'openai', model: 'gpt-4.1' },
+    'gpt-4.1-mini': { provider: 'openai', model: 'gpt-4.1-mini' },
+    'gpt-4.1-nano': { provider: 'openai', model: 'gpt-4.1-nano' },
+    'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
+    'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+    'gpt-4o-2024-05-13': { provider: 'openai', model: 'gpt-4o-2024-05-13' },
+    'gpt-4o-2024-08-06': { provider: 'openai', model: 'gpt-4o-2024-08-06' },
+    'gpt-4o-2024-11-20': { provider: 'openai', model: 'gpt-4o-2024-11-20' },
+    'gpt-4o-mini-2024-07-18': { provider: 'openai', model: 'gpt-4o-mini-2024-07-18' },
+    'gpt-4o-mini-search-preview': { provider: 'openai', model: 'gpt-4o-mini-search-preview' },
+    'gpt-4o-search-preview': { provider: 'openai', model: 'gpt-4o-search-preview' },
+    'gpt-4': { provider: 'openai', model: 'gpt-4' },
+    'gpt-4-turbo': { provider: 'openai', model: 'gpt-4-turbo' },
+    'gpt-4-turbo-preview': { provider: 'openai', model: 'gpt-4-turbo-preview' },
+    // ── GPT-3.5 (legacy) ──
+    'gpt-3.5-turbo': { provider: 'openai', model: 'gpt-3.5-turbo' },
+    'gpt-3.5-turbo-16k': { provider: 'openai', model: 'gpt-3.5-turbo-16k' },
+    'gpt-3.5-turbo-0613': { provider: 'openai', model: 'gpt-3.5-turbo-0613' },
+    'gpt-3.5-turbo-instruct': { provider: 'openai', model: 'gpt-3.5-turbo-instruct' },
+    // ── Audio ──
+    'gpt-audio': { provider: 'openai', model: 'gpt-audio' },
+    'gpt-audio-mini': { provider: 'openai', model: 'gpt-audio-mini' },
+    // ── o-series (reasoning) ──
+    o1: { provider: 'openai', model: 'o1' },
+    'o1-pro': { provider: 'openai', model: 'o1-pro' },
+    o3: { provider: 'openai', model: 'o3' },
+    'o3-pro': { provider: 'openai', model: 'o3-pro' },
+    'o3-mini': { provider: 'openai', model: 'o3-mini' },
+    'o3-mini-high': { provider: 'openai', model: 'o3-mini-high' },
+    'o3-deep-research': { provider: 'openai', model: 'o3-deep-research' },
+    'o4-mini': { provider: 'openai', model: 'o4-mini' },
+    'o4-mini-high': { provider: 'openai', model: 'o4-mini-high' },
+    'o4-mini-deep-research': { provider: 'openai', model: 'o4-mini-deep-research' },
+    // ── OSS ──
+    'gpt-oss-20b': { provider: 'openai', model: 'gpt-oss-20b' },
+    'gpt-oss-20b:free': { provider: 'openai', model: 'gpt-oss-20b:free' },
+    'gpt-oss-120b': { provider: 'openai', model: 'gpt-oss-120b' },
+    'gpt-oss-safeguard-20b': { provider: 'openai', model: 'gpt-oss-safeguard-20b' },
+  },
+};
+
 export const anthropicPack: ModelPack = {
   id: 'anthropic',
   label: 'Anthropic (direct)',
-  description: 'Claude models routed directly to api.anthropic.com',
+  description: 'Claude models routed directly to api.anthropic.com via ANTHROPIC_API_KEY',
   models: {
     'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
     'claude-sonnet-5': { provider: 'anthropic', model: 'claude-sonnet-5' },
@@ -107,6 +196,7 @@ export const openrouterPack: ModelPack = {
 export const PACK_REGISTRY: Record<string, ModelPack> = {
   [defaultPack.id]: defaultPack,
   [xaiPack.id]: xaiPack,
+  [openaiPack.id]: openaiPack,
   [openrouterPack.id]: openrouterPack,
   [anthropicPack.id]: anthropicPack,
 };

@@ -7,10 +7,12 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, deepseek and xai", () => {
+  it("exposes moonshot, openrouter, deepseek, xai, openai and openai-direct", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "moonshot",
+      "openai",
+      "openai-direct",
       "openrouter",
       "xai",
     ])
@@ -33,7 +35,12 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       })
 
       it("scrubs the ambient ANTHROPIC_API_KEY so it can't leak to the gateway", () => {
-        expect(preset.scrubEnv).toContain("ANTHROPIC_API_KEY")
+        // Only Anthropic-flavored gateways need to scrub the ambient key.
+        // OpenAI-flavored presets (xai, openai, openai-direct) route to
+        // their own provider and have no risk of leaking ANTHROPIC_API_KEY.
+        if (preset.schemaFlavor === "anthropic") {
+          expect(preset.scrubEnv).toContain("ANTHROPIC_API_KEY")
+        }
       })
 
       it("satisfies the ProviderPreset type (compile-time shape guard)", () => {
@@ -59,6 +66,10 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("grok-4.5")
   })
 
+  it("openai pins the conventional default model", () => {
+    expect(getAnthropicGatewayPreset("openai").defaultModel).toBe("gpt-4.1")
+  })
+
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
   })
@@ -70,8 +81,19 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     expect(xai.defaultModel).toBe("grok-4.5")
   })
 
-  it("moonshot and openrouter point at distinct base URLs", () => {
-    const urls = anthropicGatewayPresetList.map((p) => p.baseUrl)
+  it("openai uses the intentional local OpenAI-compatible proxy", () => {
+    const openai = getAnthropicGatewayPreset("openai")
+    expect(openai.baseUrl).toBe("http://localhost:18090/v1")
+    expect(openai.schemaFlavor).toBe("openai")
+    expect(openai.defaultModel).toBe("gpt-4.1")
+  })
+
+  it("external gateways (non-proxy) point at distinct base URLs", () => {
+    // xai and openai go through the local llm-endpoint proxy — they share a baseUrl
+    const externalPresets = anthropicGatewayPresetList.filter(
+      (p) => p.id !== "xai" && p.id !== "openai"
+    )
+    const urls = externalPresets.map((p) => p.baseUrl)
     expect(new Set(urls).size).toBe(urls.length)
   })
 })
