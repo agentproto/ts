@@ -12,7 +12,6 @@ import {
   formatTitle,
   isExited,
   sendFailureTitle,
-  statusChip,
   toolIoDocumentName,
 } from "./transcript.logic.js"
 
@@ -104,31 +103,6 @@ describe("isExited", () => {
   it("returns false for live statuses", () => {
     expect(isExited("running")).toBe(false)
     expect(isExited("starting")).toBe(false)
-  })
-})
-
-describe("statusChip", () => {
-  it("shows exited for terminal statuses", () => {
-    expect(statusChip({ status: "exited", busy: false, awaitingInput: false })).toBe("exited")
-    expect(statusChip({ status: "killed", busy: false, awaitingInput: false })).toBe("exited")
-  })
-
-  it("prioritises busy over awaiting-input and running", () => {
-    expect(statusChip({ status: "running", busy: true, awaitingInput: false })).toBe("busy")
-  })
-
-  it("shows awaiting-input when not busy", () => {
-    expect(statusChip({ status: "running", busy: false, awaitingInput: true })).toBe(
-      "awaiting-input",
-    )
-  })
-
-  it("shows running otherwise", () => {
-    expect(statusChip({ status: "running", busy: false, awaitingInput: false })).toBe("running")
-  })
-
-  it("falls back to status for starting", () => {
-    expect(statusChip({ status: "starting", busy: false, awaitingInput: false })).toBe("starting")
   })
 })
 

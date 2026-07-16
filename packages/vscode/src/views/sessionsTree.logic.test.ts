@@ -12,6 +12,7 @@ import {
   contextPercent,
   descriptionFor,
   formatDuration,
+  activityFor,
   iconFor,
   isStalled,
   labelFor,
@@ -115,32 +116,54 @@ describe("relativeTime", () => {
   })
 })
 
+describe("activityFor", () => {
+  it("names what a session is doing, not whether its process is up", () => {
+    expect(activityFor(session())).toBe("idle")
+    expect(activityFor(session({ busy: true }))).toBe("working")
+    expect(activityFor(session({ awaitingInput: true }))).toBe("needs-you")
+    expect(activityFor(session({ awaitingPermission: true }))).toBe("needs-you")
+    expect(activityFor(session({ status: "exited", exitCode: 0 }))).toBe("done")
+    expect(activityFor(session({ status: "error" }))).toBe("failed")
+    expect(activityFor(session({ status: "exited", exitCode: 7 }))).toBe("failed")
+  })
+
+  it("being STOPPED is not failing — SIGTERM's exit code must not read as a crash", () => {
+    // Stop sends SIGTERM, so a stopped session carries exitCode 143 and the
+    // old isErrored() check painted it red. Two sessions on a real daemon
+    // were marked as failures purely because the user pressed Stop.
+    expect(activityFor(session({ status: "killed", exitCode: 143 }))).toBe("stopped")
+    expect(activityFor(session({ status: "killed", exitCode: 137 }))).toBe("stopped")
+    expect(activityFor(session({ status: "killed" }))).toBe("stopped")
+  })
+
+  it("ranks what needs a human above everything else", () => {
+    expect(activityFor(session({ busy: true, awaitingInput: true }))).toBe("needs-you")
+  })
+})
+
 describe("iconFor", () => {
-  it("busy -> sync~spin", () => {
-    expect(iconFor(session({ busy: true }))).toEqual({ id: "sync~spin" })
+  it("solid at rest, spinning outline in motion", () => {
+    // `play` (▷) is an ACTION glyph — it read "press me to run" on the most
+    // common row on screen. A dot is a state.
+    expect(iconFor(session())).toEqual({ id: "circle-filled" })
+    // One agent thinking, not two things being reconciled (`sync~spin`).
+    expect(iconFor(session({ busy: true }))).toEqual({ id: "loading~spin" })
   })
-  it("awaitingInput -> question (warning)", () => {
-    expect(iconFor(session({ awaitingInput: true }))).toEqual({ id: "question", color: "warning" })
+
+  it("a finished session gets a check, not a prohibition sign", () => {
+    // circle-slash (⊘) read "forbidden" on a session that did exactly its job.
+    expect(iconFor(session({ status: "exited", exitCode: 0 }))).toEqual({ id: "check" })
   })
-  it("awaitingPermission -> question (warning)", () => {
-    expect(iconFor(session({ awaitingPermission: true }))).toEqual({ id: "question", color: "warning" })
+
+  it("⊘ now means what it looks like: you stopped this", () => {
+    expect(iconFor(session({ status: "killed", exitCode: 143 }))).toEqual({ id: "circle-slash" })
   })
-  it("running idle -> play", () => {
-    expect(iconFor(session())).toEqual({ id: "play" })
-  })
-  it("exited cleanly -> circle-slash", () => {
-    expect(iconFor(session({ status: "exited", exitCode: 0 }))).toEqual({ id: "circle-slash" })
-  })
-  it("killed -> circle-slash", () => {
-    expect(iconFor(session({ status: "killed" }))).toEqual({ id: "circle-slash" })
-  })
-  it("status error -> error", () => {
+
+  it("keeps failure and attention loud", () => {
     expect(iconFor(session({ status: "error" }))).toEqual({ id: "error", color: "error" })
-  })
-  it("exitCode > 0 -> error even if status is exited", () => {
     expect(iconFor(session({ status: "exited", exitCode: 1 }))).toEqual({ id: "error", color: "error" })
-  })
-  it("awaiting takes priority over busy", () => {
+    expect(iconFor(session({ awaitingInput: true }))).toEqual({ id: "question", color: "warning" })
+    expect(iconFor(session({ awaitingPermission: true }))).toEqual({ id: "question", color: "warning" })
     expect(iconFor(session({ busy: true, awaitingInput: true }))).toEqual({
       id: "question",
       color: "warning",
@@ -447,10 +470,10 @@ describe("stall detection", () => {
   it("swaps the spinner for a warning — the spinner claiming a wedged session works IS the bug", () => {
     expect(iconFor(stuck(), now)).toEqual({ id: "warning", color: "warning" })
     // Without `now`, behavior is unchanged for existing call sites.
-    expect(iconFor(stuck())).toEqual({ id: "sync~spin" })
+    expect(iconFor(stuck())).toEqual({ id: "loading~spin" })
     // A healthy busy session still spins.
     expect(iconFor(stuck({ lastActivityAt: new Date(now - 1_000).toISOString() }), now)).toEqual({
-      id: "sync~spin",
+      id: "loading~spin",
     })
   })
 
