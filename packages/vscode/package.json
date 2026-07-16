@@ -193,7 +193,7 @@
         },
         {
           "command": "agentproto.openTranscript",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
           "group": "inline@4"
         },
         {
@@ -203,12 +203,12 @@
         },
         {
           "command": "agentproto.openTerminal",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
           "group": "inline@6"
         },
         {
           "command": "agentproto.openTranscriptChannel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
           "group": "transcript@1"
         },
         {

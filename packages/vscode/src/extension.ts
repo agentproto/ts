@@ -21,6 +21,7 @@ import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
+import { SeenTracker } from "./services/seen.js"
 import { SessionStore } from "./services/sessionStore.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
@@ -49,7 +50,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // renders through it.
   const filter = registerSessionFilter(ctx, client, store)
   ctx.subscriptions.push(filter)
-  registerSessionsView(ctx, store, filter)
+  // Read-receipts are per workspace and survive a reload: which sessions you
+  // have looked at is a property of your working context, not of the daemon.
+  const seen = new SeenTracker(ctx.workspaceState)
+  ctx.subscriptions.push(seen)
+  registerSessionsView(ctx, store, filter, seen)
   registerPermissionsView(ctx, store)
   registerStatusBar(ctx, store)
 
@@ -64,7 +69,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerPermissionCommands(ctx, client, store)
   registerSessionRestart(ctx, client, store) // agentproto.restartSession
 
-  const transcriptPanels = registerTranscriptPanels(ctx, client, store)
+  const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   ctx.subscriptions.push(
     vscode.commands.registerCommand("agentproto.showHealth", () =>

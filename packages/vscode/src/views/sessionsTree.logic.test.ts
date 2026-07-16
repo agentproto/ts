@@ -207,12 +207,45 @@ describe("activityFor", () => {
 })
 
 describe("iconFor", () => {
-  it("solid at rest, spinning outline in motion", () => {
+  it("a dot at rest, spinning outline in motion", () => {
     // `play` (▷) is an ACTION glyph — it read "press me to run" on the most
     // common row on screen. A dot is a state.
-    expect(iconFor(session())).toEqual({ id: "circle-filled" })
+    expect(iconFor(session()).id).toMatch(/^circle-(filled|outline)$/)
     // One agent thinking, not two things being reconciled (`sync~spin`).
     expect(iconFor(session({ busy: true }))).toEqual({ id: "loading~spin" })
+  })
+
+  it("fills the idle dot only while the session's output is unread", () => {
+    // Weight is the read-receipt: filled = "something here you haven't seen".
+    // Every idle session used to be filled, which made the loudest mark on
+    // screen the one carrying no information.
+    const idle = session()
+    expect(iconFor(idle, undefined, true)).toEqual({ id: "circle-filled" })
+    expect(iconFor(idle, undefined, false)).toEqual({ id: "circle-outline" })
+  })
+
+  it("fills the dot when there is no receipt at all", () => {
+    // Unknown must not read as read: hiding new output is the worse failure.
+    expect(iconFor(session(), undefined, undefined)).toEqual({ id: "circle-filled" })
+  })
+
+  it("keeps unread off every state that already asks a louder question", () => {
+    // A spinner claiming novelty, or a ✗ going hollow because you read it,
+    // would both be lies about a different axis.
+    expect(iconFor(session({ busy: true }), undefined, true)).toEqual({ id: "loading~spin" })
+    expect(iconFor(session({ status: "error" }), undefined, true)).toEqual({ id: "error", color: "error" })
+    expect(iconFor(session({ status: "exited", exitCode: 0 }), undefined, false)).toEqual({ id: "check" })
+    expect(iconFor(session({ awaitingInput: true }), undefined, false)).toEqual({
+      id: "question",
+      color: "warning",
+    })
+  })
+
+  it("spins a starting session instead of parking it", () => {
+    // Coming up is motion. `starting` isn't `busy`, so it fell through to the
+    // idle dot and a booting adapter looked identical to an agent parked for
+    // an hour — including the one the spawn wizard has just put on screen.
+    expect(iconFor(session({ status: "starting" }))).toEqual({ id: "loading~spin" })
   })
 
   it("a finished session gets a check, not a prohibition sign", () => {
@@ -239,6 +272,11 @@ describe("iconFor", () => {
 describe("contextValueFor", () => {
   it("session-live for running, non-awaiting", () => {
     expect(contextValueFor(session())).toBe("session-live")
+  })
+  it("session-pending for an optimistic row, so no menu offers to act on it", () => {
+    // Prompt/stop/restart against an id the daemon has never heard of can only
+    // 404. The row exists to say "this is coming up", nothing more.
+    expect(contextValueFor(session({ id: "pending:1", status: "starting" }))).toBe("session-pending")
   })
   it("session-awaiting when awaitingInput", () => {
     expect(contextValueFor(session({ awaitingInput: true }))).toBe("session-awaiting")
