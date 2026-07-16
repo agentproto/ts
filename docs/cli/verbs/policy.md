@@ -16,7 +16,7 @@ agentproto policy attach (--session <id> | --sessions <id,id,…>)
 agentproto policy status <policyId> [--json]
 agentproto policy wait   <policyId> [--timeout <ms>] [--json]
 agentproto policy ack    <policyId> (--approve | --reject) [--json]
-agentproto policy ls     [--json]                       (alias: list)
+agentproto policy ls     [--session <id>] [--json]      (alias: list)
 agentproto policy cancel <policyId> [--json]
 ```
 
@@ -84,6 +84,21 @@ a gate can be a full test suite or a judge turn, not a quick check.
 | `2` | `blocked` / `cancelled` / CLI timeout |
 | `3` | Not found, or the daemon is too old for the route |
 
+## `ls`
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session <id>` | — | Only policies watching this session — its single `sessionId`, or any member of a fan-in `sessionIds` group. |
+| `--json` | `false` | Emit the `PolicyRunState[]` as JSON. |
+
+The link a policy declares runs policy → session; `--session` reads it back
+the other way, answering *what is gating this session?* without eyeballing the
+whole list. It narrows server-side (`GET /policies?sessionId=`), the same
+filter the `policy_list` MCP tool applies for its own optional `sessionId` —
+one definition of "watches this session" across both transports. Nothing is
+indexed on disk for it: the filter is a pass over the live list, so there's no
+second source of truth to drift.
+
 ## `ack`
 
 Resolves a commit parked in awaiting-ack. Exactly one of `--approve` or
@@ -129,6 +144,10 @@ agentproto policy attach --attach-json @policy.json
 
 # Drive it
 agentproto policy ls
+
+# What's gating this session? (matches --session and fan-in --sessions members)
+agentproto policy ls --session ses_abc12
+
 agentproto policy status pol_xyz789
 agentproto policy wait   pol_xyz789 --timeout 1800000
 agentproto policy ack    pol_xyz789 --approve

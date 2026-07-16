@@ -23,6 +23,7 @@ import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import { collectSubtree } from "./session-tools.js"
+import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { CronScheduler } from "./cron-scheduler.js"
@@ -1169,9 +1170,20 @@ export function registerOrchestrationTools(
 
     server.tool(
       "policy_list",
-      "List all completion policies (watching, gating, done, blocked, cancelled).",
-      {},
-      async () => {
+      "List completion policies (watching, gating, done, blocked, cancelled). " +
+        "Pass `sessionId` to answer the reverse question — which policies are " +
+        "attached to this session — instead of scanning the whole list.",
+      {
+        sessionId: z
+          .string()
+          .optional()
+          .describe(
+            "Only list policies watching this session — matches its single " +
+              "`sessionId` or any member of its fan-in `sessionIds` group. " +
+              "Omit to list everything in scope.",
+          ),
+      },
+      async input => {
         if (!supervisor) {
           return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
         }
@@ -1186,6 +1198,12 @@ export function registerOrchestrationTools(
             const ownerId = callerScope.ownerSessionId
             policies = policies.filter(p => isPolicyInSubtree(p, ownerId))
           }
+        }
+        // Narrowing only, and applied AFTER the subtree scoping above — the
+        // filter never widens what a scoped caller can see.
+        if (input.sessionId !== undefined) {
+          const wanted = input.sessionId
+          policies = policies.filter(p => policyWatchesSession(p, wanted))
         }
         return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
       },

@@ -263,6 +263,10 @@ export type {
   PolicyRunStatus,
   ShellGateSpec,
 } from "./supervisor.js"
+// The policy→session link read backwards — shared by the `policy_list`
+// MCP filter and the `GET /policies?sessionId=` route so both transports
+// agree on what "attached to this session" means.
+export { policyWatchesSession } from "./supervisor.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>

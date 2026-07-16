@@ -74,6 +74,7 @@ import type {
   SessionEventType,
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
+import { policyWatchesSession } from "./supervisor.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import type {
   DeclaredAdapterOption,
@@ -3109,6 +3110,8 @@ async function handleWorkflows(
  *
  *   POST /policies              → attach a policy (PolicyRunState)
  *   GET  /policies              → { policies: PolicyRunState[] }
+ *        ?sessionId=<id>        → only policies watching that session
+ *                                 (its `sessionId` or any fan-in member)
  *   POST /policies/:id/cancel   → { policyId, status }
  *   POST /policies/:id/ack      → { policyId, status, sha?, error? }
  *   GET  /policies/:id/wait     → block until the policy resolves, then
@@ -3135,7 +3138,22 @@ async function handlePolicies(
   }
 
   if (path === "/policies" && req.method === "GET") {
-    json(200, { policies: supervisor.list() })
+    // `?sessionId=<id>` answers the reverse question — which policies are
+    // attached to this session — matching its single `sessionId` or any
+    // member of its fan-in `sessionIds` group. Absent → the full list,
+    // unchanged.
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const sessionId = qs.get("sessionId")
+    const policies = supervisor.list()
+    json(200, {
+      policies:
+        sessionId === null
+          ? policies
+          : policies.filter(p => policyWatchesSession(p, sessionId)),
+    })
     return true
   }
 

@@ -277,6 +277,22 @@ export interface PolicyRunState {
   error?: string
 }
 
+/**
+ * Does `policy` watch `sessionId`? True when the id is the representative
+ * `sessionId` or appears anywhere in the fan-in `sessionIds` group — the two
+ * ways `AttachPolicyInput` can name a session.
+ *
+ * This is the reverse of the policy→session link, and it is deliberately
+ * computed on demand over `list()` rather than persisted: a session→policy
+ * index in policies.json (or a `policies` field on the session record) would
+ * be a second source of truth to keep in sync across attach, fan-in nudges,
+ * `next` chaining, and snapshot reload. A filtered pass is O(policies) on a
+ * set the daemon already holds in memory.
+ */
+export function policyWatchesSession(policy: PolicyRunState, sessionId: string): boolean {
+  return policy.sessionId === sessionId || policy.sessionIds.includes(sessionId)
+}
+
 export interface CompletionPolicySupervisor {
   /**
    * Attach a completion policy to an already-running session.

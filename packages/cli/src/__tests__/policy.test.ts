@@ -411,6 +411,37 @@ describe("agentproto policy", () => {
       const code = await runPolicy(["ls"])
       expect(code).toBe(0)
       expect(stdoutChunks.join("")).toContain("pol_1")
+      // No --session → no query param, same request as before.
+      expect((httpGetJson.mock.calls[0] as [string])[0]).toBe("http://127.0.0.1:18790/policies")
+    })
+
+    it("--session narrows server-side via ?sessionId=", async () => {
+      httpGetJson.mockResolvedValue({
+        policies: [
+          { policyId: "pol_1", status: "watching", sessionIds: ["ses_abc12"], startedAt: "2026-07-15T00:00:00.000Z" },
+        ],
+      })
+      const code = await runPolicy(["ls", "--session", "ses_abc12"])
+      expect(code).toBe(0)
+      expect((httpGetJson.mock.calls[0] as [string])[0]).toBe(
+        "http://127.0.0.1:18790/policies?sessionId=ses_abc12",
+      )
+      expect(stdoutChunks.join("")).toContain("pol_1")
+    })
+
+    it("--session encodes the id (it lands in a query string)", async () => {
+      httpGetJson.mockResolvedValue({ policies: [] })
+      await runPolicy(["ls", "--session", "a&b=c"])
+      expect((httpGetJson.mock.calls[0] as [string])[0]).toBe(
+        "http://127.0.0.1:18790/policies?sessionId=a%26b%3Dc",
+      )
+    })
+
+    it("names the session in the empty-list message so a typo is obvious", async () => {
+      httpGetJson.mockResolvedValue({ policies: [] })
+      const code = await runPolicy(["ls", "--session", "ses_typo"])
+      expect(code).toBe(0)
+      expect(stdoutChunks.join("")).toContain('No policies for session "ses_typo".')
     })
   })
 
