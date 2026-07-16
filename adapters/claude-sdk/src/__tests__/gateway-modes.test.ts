@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import type { AgentCliModelEntry } from "@agentproto/driver-agent-cli"
 import { claudeSdk } from "../index.js"
 import { buildQueryOptions, type ClaudeSdkConfig } from "../options.js"
 
@@ -54,11 +55,23 @@ describe("claude-sdk gateway modes", () => {
     expect(modeById("default")?.env).toBeUndefined()
   })
 
-  it("advertises the gateway models alongside native Claude in allowed", () => {
+  it("advertises the gateway models alongside native Claude in allowed, each bound to its mode", () => {
     const allowed = claudeSdk.models?.allowed ?? []
-    expect(allowed).toContain("claude-opus-4-8") // native still there
-    expect(allowed).toContain("kimi-k2.7-code") // moonshot
-    expect(allowed).toContain("z-ai/glm-5.2") // openrouter
+    const ids = allowed.map((m) => (typeof m === "string" ? m : m.id))
+    expect(ids).toContain("claude-opus-4-8") // native still there
+    expect(ids).toContain("kimi-k2.7-code") // moonshot
+    expect(ids).toContain("z-ai/glm-5.2") // openrouter
+
+    const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
+    const byId = (id: string) => entries.find((e) => e.id === id)
+
+    // THE bug this PR fixes: a gateway model with no mode binding spawns in
+    // this adapter's default mode (native Anthropic), sending its id to the
+    // wrong provider. Every gateway entry must carry the mode that pre-wires
+    // ANTHROPIC_BASE_URL to reach it; a native entry needs no mode switch.
+    expect(byId("kimi-k2.7-code")).toEqual({ id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" })
+    expect(byId("z-ai/glm-5.2")).toEqual({ id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" })
+    expect(byId("claude-opus-4-8")).toEqual({ id: "claude-opus-4-8", provider: "anthropic" })
   })
 })
 

@@ -285,6 +285,11 @@ export async function listAcpGenericAdapters(opts?: {
       commands: [],
       models: spec.models?.allowed ?? [],
       modes: [],
+      // Generic ACP config entries (`~/.agentproto/config.json`) declare only
+      // bare id strings (AcpAgentConfigEntry.models.allowed) — no
+      // provider/mode binding surface, so every entry states an unstated
+      // provider, same as a bare string in an AIP-45 manifest would.
+      modelDetails: (spec.models?.allowed ?? []).map((id) => ({ id })),
       status: present ? "available" : "supported",
       source,
       ...(spec.install_hint ? { hint: spec.install_hint } : {}),

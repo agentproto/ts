@@ -113,6 +113,7 @@ export type {
   AgentCliSetupPersist,
   AgentCliSession,
   AgentCliModels,
+  AgentCliModelEntry,
   AgentCliMcpBlock,
   AgentCliMode,
   AgentCliOption,

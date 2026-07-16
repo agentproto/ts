@@ -84,12 +84,14 @@ export const pi: AgentCliHandle = defineAgentCli({
   },
   models: {
     // Pi's `--model <pattern>` accepts `provider/id` (verified against pi
-    // 0.80.x cli/args.ts + core/model-resolver.ts).
+    // 0.80.x cli/args.ts + core/model-resolver.ts). `provider` below is
+    // read straight off that same prefix — pi routes on it directly, no
+    // adapter mode needed.
     default: "anthropic/claude-sonnet-4-5",
     allowed: [
-      "anthropic/claude-sonnet-4-5",
-      "openai/gpt-5.1",
-      "google/gemini-2.5-flash",
+      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+      { id: "openai/gpt-5.1", provider: "openai" },
+      { id: "google/gemini-2.5-flash", provider: "google" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

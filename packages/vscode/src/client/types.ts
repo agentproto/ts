@@ -101,6 +101,23 @@ export interface PendingPermission {
   requestedAt: string
 }
 
+/**
+ * One entry of `models`, carrying the provider/mode a manifest's structured
+ * `models.allowed` entry states (AIP-45 — see the daemon's
+ * `packages/cli/src/registry/resolve.ts` `AdapterModelInfo`). `provider`/
+ * `mode` are undefined for a bare-string entry — an unstated provider is
+ * never guessed here, only projected as-is.
+ */
+export interface AdapterModelInfo {
+  id: string
+  /** Who serves/bills this model (a ProviderPreset id, or a direct
+   *  provider like "anthropic"). Undefined when unstated. */
+  provider?: string
+  /** The adapter's own mode id that routes to `provider`. Undefined when
+   *  the adapter routes on its own or needs no mode switch. */
+  mode?: string
+}
+
 /** One entry in the daemon's adapter registry (MCP-only: mcpCall("adapter_list"), no HTTP route). */
 export interface AdapterInfo {
   slug: string
@@ -118,6 +135,10 @@ export interface AdapterInfo {
   }>
   /** Conventional model ids the adapter advertises. */
   models?: string[]
+  /** Same models as `models`, in the same order, each carrying the
+   *  provider/mode a structured `models.allowed` entry states. Absent on
+   *  an older daemon that predates this projection. */
+  modelDetails?: AdapterModelInfo[]
   /** Install/readiness state: ready = installed, available = installable. */
   status?: "supported" | "available" | "ready"
   /** Short human hint shown in pickers (e.g. "anthropic · ACP · resumable"). */

@@ -6,13 +6,16 @@ import {
   buildSpawnPlaceHolder,
   CONFIGURE_LABEL,
   CUSTOM_MODEL_LABEL,
+  CUSTOM_MODEL_SECTION_LABEL,
   mapAdapterQuickPickItems,
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
   mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
+  mapProviderQuickPickItems,
   mapSpawnQuickPickItems,
+  modelEntriesOf,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
@@ -86,15 +89,17 @@ describe("mapModeQuickPickItems", () => {
 })
 
 describe("mapSpawnQuickPickItems", () => {
-  it("flattens declared models to 'slug · model' rows plus a trailing custom row", () => {
+  it("groups a bare model list (no modelDetails) under the adapter's own name — never a fabricated 'unknown'", () => {
     const items = mapSpawnQuickPickItems([adapter({ slug: "claude-code", models: ["opus", "sonnet"] })])
     expect(items).toEqual([
-      { label: "claude-code · opus", description: undefined, adapter: items[0]!.adapter, model: "opus" },
-      { label: "claude-code · sonnet", description: undefined, adapter: items[0]!.adapter, model: "sonnet" },
+      { label: "claude-code", kind: -1 },
+      { label: "opus", description: "claude-code", adapter: items[1]!.adapter, model: "opus" },
+      { label: "sonnet", description: "claude-code", adapter: items[2]!.adapter, model: "sonnet" },
+      { label: CUSTOM_MODEL_SECTION_LABEL, kind: -1 },
       {
         label: `claude-code · ${CUSTOM_MODEL_LABEL}`,
         description: undefined,
-        adapter: items[0]!.adapter,
+        adapter: items[4]!.adapter,
         custom: true,
       },
       { label: CONFIGURE_LABEL, configure: true },
@@ -104,7 +109,8 @@ describe("mapSpawnQuickPickItems", () => {
   it("emits a bare adapter row with no custom row when no models are declared", () => {
     const items = mapSpawnQuickPickItems([adapter({ slug: "aider", hint: "needs setup" })])
     expect(items).toEqual([
-      { label: "aider", description: "needs setup", adapter: items[0]!.adapter },
+      { label: "aider", kind: -1 },
+      { label: "aider", description: "needs setup", adapter: items[1]!.adapter },
       { label: CONFIGURE_LABEL, configure: true },
     ])
   })
@@ -113,7 +119,116 @@ describe("mapSpawnQuickPickItems", () => {
     const a = adapter({ slug: "a", status: "supported" })
     const b = adapter({ slug: "b", status: "ready", models: ["m1"] })
     const items = mapSpawnQuickPickItems([a, b])
-    expect(items.map(i => i.label)).toEqual(["b · m1", `b · ${CUSTOM_MODEL_LABEL}`, "a", CONFIGURE_LABEL])
+    expect(items.map(i => i.label)).toEqual([
+      "b",
+      "m1",
+      "a",
+      "a",
+      CUSTOM_MODEL_SECTION_LABEL,
+      `b · ${CUSTOM_MODEL_LABEL}`,
+      CONFIGURE_LABEL,
+    ])
+  })
+
+  // Regression coverage for the operator-visible bug this PR fixes: the
+  // collapsed picker used to flatten every model to a bare "slug · model"
+  // row with no mode, so picking claude-sdk's kimi-k2.7-code silently
+  // spawned in the adapter's default mode — native Anthropic — sending a
+  // Moonshot model id to the wrong provider. A model whose manifest entry
+  // binds a `mode` must carry that mode on its row so spawn.ts can apply
+  // it; this covers the mapping half of the fix (spawn.ts's use of
+  // `picked.mode` is the other half, wired but not independently unit
+  // tested — see the file header on why only this pure-logic layer is).
+  describe("provider grouping + mode binding (claude-sdk-shaped fixture)", () => {
+    const claudeSdk = adapter({
+      slug: "claude-sdk",
+      status: "ready",
+      modelDetails: [
+        { id: "claude-sonnet-5", provider: "anthropic" },
+        { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+        { id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" },
+      ],
+    })
+
+    it("groups rows under a provider heading — the provider is the heading, not a label prefix", () => {
+      const items = mapSpawnQuickPickItems([claudeSdk])
+      const headings = items.filter(i => i.kind !== undefined).map(i => i.label)
+      expect(headings).toEqual(["anthropic", "moonshot", "openrouter", CUSTOM_MODEL_SECTION_LABEL])
+    })
+
+    it("picking the kimi-k2.7-code row carries its bound moonshot mode through to spawn options", () => {
+      const items = mapSpawnQuickPickItems([claudeSdk])
+      const kimiRow = items.find(i => i.model === "kimi-k2.7-code")
+      expect(kimiRow).toBeDefined()
+      expect(kimiRow?.label).toBe("kimi-k2.7-code")
+      expect(kimiRow?.description).toBe("claude-sdk") // description carries the adapter now — label carries the model
+      expect(kimiRow?.mode).toBe("moonshot")
+
+      const options = assembleSpawnOptions({ adapter: "claude-sdk", model: kimiRow!.model!, mode: kimiRow!.mode })
+      expect(options).toEqual({ adapter: "claude-sdk", model: "kimi-k2.7-code", mode: "moonshot" })
+    })
+
+    it("a native model with no bound mode carries none — never forces an unrelated mode switch", () => {
+      const items = mapSpawnQuickPickItems([claudeSdk])
+      const sonnetRow = items.find(i => i.model === "claude-sonnet-5")
+      expect(sonnetRow?.mode).toBeUndefined()
+    })
+  })
+
+  it("back-compat: a bare-string model list still lists every model, with no provider guessed", () => {
+    const items = mapSpawnQuickPickItems([
+      adapter({ slug: "codex", status: "ready", models: ["gpt-5-codex", "gpt-5"] }),
+    ])
+    const heading = items.find(i => i.kind !== undefined)
+    expect(heading?.label).toBe("codex")
+    const row = items.find(i => i.model === "gpt-5-codex")
+    expect(row?.label).toBe("gpt-5-codex")
+    expect(row?.description).toBe("codex")
+    expect(row?.mode).toBeUndefined()
+  })
+})
+
+describe("mapProviderQuickPickItems", () => {
+  it("lists distinct providers in first-appearance order", () => {
+    const items = mapProviderQuickPickItems(
+      adapter({
+        slug: "claude-sdk",
+        modelDetails: [
+          { id: "claude-sonnet-5", provider: "anthropic" },
+          { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+          { id: "claude-opus-4-8", provider: "anthropic" },
+        ],
+      }),
+    )
+    expect(items).toEqual([
+      { label: "anthropic", provider: "anthropic" },
+      { label: "moonshot", provider: "moonshot" },
+    ])
+  })
+
+  it("groups an unstated-provider model under the adapter's own name, not a fabricated 'unknown'", () => {
+    const items = mapProviderQuickPickItems(adapter({ slug: "codex", models: ["gpt-5-codex"] }))
+    expect(items).toEqual([{ label: "codex", provider: undefined }])
+  })
+
+  it("returns an empty list when the adapter declares no models", () => {
+    expect(mapProviderQuickPickItems(adapter({ slug: "aider" }))).toEqual([])
+  })
+})
+
+describe("modelEntriesOf", () => {
+  it("prefers the structured modelDetails projection when present", () => {
+    const a = adapter({ modelDetails: [{ id: "x", provider: "p" }], models: ["x"] })
+    expect(modelEntriesOf(a)).toEqual([{ id: "x", provider: "p" }])
+  })
+
+  it("falls back to the flat models list, provider left unstated — never guessed", () => {
+    const a = adapter({ models: ["x", "y"] })
+    expect(modelEntriesOf(a)).toEqual([{ id: "x" }, { id: "y" }])
+  })
+
+  it("is empty when the adapter declares neither", () => {
+    expect(modelEntriesOf(adapter({}))).toEqual([])
   })
 })
 
