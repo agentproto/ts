@@ -34,9 +34,7 @@
  * graduate into the adapter packages.
  */
 
-import { promises as fs } from "node:fs"
-import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { CONVERSATION_STORES } from "./conversation-store.js"
 
 /** Where on disk the resume id ends up on the session descriptor. */
 export type ResumeMetadataKey =
@@ -83,14 +81,28 @@ export interface ResumeStrategy {
   spawnArgs?(id: string): string[]
 }
 
+// claude-code's entry is PROJECTED from `CONVERSATION_STORES` (conversation-
+// store.ts) rather than declared standalone, so this table and the
+// conversation store can never drift apart again. `fsProbe` adapts the old
+// (cwd, prevStartedAt, expectedId) => id|null shape onto `store.discover`:
+// with an expectedId it's the single bound candidate (or none); without one
+// it's the newest candidate in `discover`'s mtime-desc order (or none) —
+// byte-for-byte the same answers the old mtime-latest probe gave.
+const claudeCodeStore = CONVERSATION_STORES["claude-code"]!
+
 export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = {
   "claude-code": {
-    // Printed by claude on graceful exit when session persistence
-    // is on (default). Example: `claude --resume 0e483f81-1a44-4bec-9667-b37158450296`
-    outputHint: /claude\s+--resume\s+([0-9a-f-]{8,})/i,
-    storeAs: "claudeResumeId",
-    fsProbe: probeMtimeLatestJsonl(".claude/projects"),
-    spawnArgs: id => ["claude", "--resume", id],
+    outputHint: claudeCodeStore.outputHint,
+    storeAs: claudeCodeStore.storeAs,
+    fsProbe: async (cwd, prevStartedAt, expectedId) => {
+      const candidates = await claudeCodeStore.discover({
+        cwd,
+        since: prevStartedAt,
+        expectedId,
+      })
+      return candidates[0]?.conversationId ?? null
+    },
+    spawnArgs: claudeCodeStore.attachArgv,
   },
 
   // Stubs for other shipped adapters — fill in as we learn each
@@ -101,68 +113,6 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = {
   //   codex: { storeAs: "codexResumeId", ... }
   //   openclaw: { storeAs: "openClawResumeId", ... }
   //   opencode: { storeAs: "openCodeResumeId", ... }
-}
-
-/**
- * Build an `fsProbe` for adapters that store one `.jsonl` per session
- * inside `~/<storeRel>/<cwd-encoded>/`. The encoded cwd is the
- * absolute path with `/` → `-` (claude's convention; others tend to
- * use the same scheme).
- *
- * When `expectedId` is supplied the caller already knows this session's
- * own conversation id, so the probe binds to exactly `<expectedId>.jsonl`
- * (returning the id iff that file exists) rather than guessing. This is
- * the fix for a silent cross-session resume: the old mtime-latest path
- * would, when several claude sessions share a cwd, hand back a DIFFERENT
- * (often concurrent, still-active) session's transcript — dropping the
- * caller into unrelated work with no error. Only when `expectedId` is
- * absent do we fall back to the UUID of the most-recently modified
- * `.jsonl`, filtered to files at-or-after `prevStartedAt`.
- */
-function probeMtimeLatestJsonl(
-  storeRel: string,
-): (
-  cwd: string,
-  prevStartedAt: string,
-  expectedId?: string,
-) => Promise<string | null> {
-  return async (cwd, prevStartedAt, expectedId) => {
-    const encoded = cwd.replace(/\//g, "-")
-    const dir = resolve(homedir(), storeRel, encoded)
-    // Ground truth beats heuristic: resume the session we were actually
-    // asked to, never whichever transcript happens to be newest.
-    if (expectedId) {
-      try {
-        await fs.stat(join(dir, `${expectedId}.jsonl`))
-        return expectedId
-      } catch {
-        return null
-      }
-    }
-    let entries: string[]
-    try {
-      entries = await fs.readdir(dir)
-    } catch {
-      return null
-    }
-    const jsonl = entries.filter(e => e.endsWith(".jsonl"))
-    if (jsonl.length === 0) return null
-    const startedAtMs = Date.parse(prevStartedAt)
-    const candidates: { name: string; mtime: number }[] = []
-    for (const f of jsonl) {
-      try {
-        const st = await fs.stat(join(dir, f))
-        if (!Number.isFinite(startedAtMs) || st.mtimeMs >= startedAtMs - 1000) {
-          candidates.push({ name: f, mtime: st.mtimeMs })
-        }
-      } catch {
-        // ignore unreadable entry
-      }
-    }
-    if (candidates.length === 0) return null
-    candidates.sort((a, b) => b.mtime - a.mtime)
-    return candidates[0]!.name.replace(/\.jsonl$/, "")
-  }
 }
 
 /**

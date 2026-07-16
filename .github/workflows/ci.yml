@@ -494,18 +494,38 @@ jobs:
         run: |
           SHA=$(git rev-parse HEAD)
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f context="Agentic review" \
-            -f state="${{ steps.gate.outputs.state }}" \
-            -f target_url="$RUN_URL" \
-            -f description="decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}"
+          # A transient GitHub 5xx on either POST used to fail the step outright,
+          # which reds an already-APPROVED review and — worse — leaves the PR
+          # half-statused (first context posted, second never), so the merge gate
+          # blocks a PR that actually passed. Retry with backoff, and always
+          # attempt both contexts before failing. Reposting is safe: statuses are
+          # keyed by context and the latest one wins.
+          post_status() {
+            local context="$1" state="$2" description="$3" attempt out
+            for attempt in 1 2 3; do
+              if out=$(gh api "repos/${{ github.repository }}/statuses/$SHA" \
+                  -f context="$context" \
+                  -f state="$state" \
+                  -f target_url="$RUN_URL" \
+                  -f description="$description" 2>&1); then
+                echo "posted '$context' = $state"
+                return 0
+              fi
+              # Truncated: a 5xx body is a full HTML error page.
+              echo "  attempt $attempt/3 failed for '$context': $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
+            done
+            echo "::error::failed to post '$context' status after 3 attempts — merge gate may block until this run is re-run"
+            return 1
+          }
+          rc=0
+          post_status "Agentic review" \
+            "${{ steps.gate.outputs.state }}" \
+            "decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}" || rc=1
           # Mirror "Changeset present?" so the merge gate stays green after a
           # [skip ci] changeset commit (which suppresses the changeset-check job).
-          gh api "repos/${{ github.repository }}/statuses/$SHA" \
-            -f context="Changeset present?" \
-            -f state="success" \
-            -f target_url="$RUN_URL" \
-            -f description="written by agentic reviewer"
+          post_status "Changeset present?" "success" "written by agentic reviewer" || rc=1
+          exit $rc
         env:
           # Commit statuses are checks, not authored content — no bot identity
           # to gain here. Keep the default GITHUB_TOKEN, which carries this

@@ -1332,3 +1332,11 @@ export function registerSessionTools(
  */
 export { registerExportSessionTool, collectSubtree } from "./agent-tools.js"
 export type { ExportSessionOps } from "./agent-tools.js"
+
+/**
+ * Re-exported from conversation-read.ts so callers of session-tools.ts
+ * (e.g. index.ts, which registers `agent_export` from this module too)
+ * have one import site for both. The canonical definition lives there.
+ */
+export { registerConversationReadTool, readConversation } from "./conversation-read.js"
+export type { ConversationReadOps, ConversationReadInput, ConversationReadResult } from "./conversation-read.js"

@@ -30,6 +30,19 @@ function makeTmpWorkspace() {
   return mkdtempSync(join(tmpdir(), "cron-test-"))
 }
 
+/** Poll a fire-and-forget read until it resolves non-null, instead of a
+ *  fixed sleep-then-read — a single 20ms sleep flakes under CI load
+ *  (the write genuinely hasn't landed yet), this doesn't. */
+async function pollUntil<T>(read: () => Promise<T | null>, timeoutMs = 2000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const value = await read()
+    if (value !== null) return value
+    if (Date.now() >= deadline) throw new Error("pollUntil timed out")
+    await new Promise(res => setTimeout(res, 5))
+  }
+}
+
 // ── tests ──────────────────────────────────────────────────────────
 
 describe("CronScheduler", () => {
@@ -134,8 +147,7 @@ describe("CronScheduler", () => {
       expect(desc.status).toBe("exited")
       expect(desc.label).toBe(`cron:${job.id}`)
 
-      await new Promise(res => setTimeout(res, 20)) // fire-and-forget write
-      const entry = await registry.readCommandLog(desc.id)
+      const entry = await pollUntil(() => registry.readCommandLog(desc.id))
       expect(entry).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })
     } finally {
       scheduler.shutdown()
