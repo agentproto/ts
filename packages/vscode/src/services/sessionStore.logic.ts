@@ -25,12 +25,21 @@ export interface StoreSnapshot {
 export interface SessionStoreState {
   sessions: Map<string, SessionDescriptor>
   permissions: Map<string, PendingPermission>
+  /**
+   * Optimistic rows for spawns asked for but not yet acknowledged. Held apart
+   * from `sessions` on purpose: that map is daemon truth, replaced wholesale by
+   * every listSessions() snapshot, so a pending row living in it would be
+   * erased by the very next poll — and, worse, would be indistinguishable from
+   * a session the daemon actually reported.
+   */
+  pending: Map<string, SessionDescriptor>
 }
 
 export function createStoreState(): SessionStoreState {
   return {
     sessions: new Map(),
     permissions: new Map(),
+    pending: new Map(),
   }
 }
 
@@ -198,7 +207,7 @@ export function applyLifecycleEvent(
 /** Snapshot the current state into plain arrays (stable order: insertion). */
 export function snapshot(state: SessionStoreState): StoreSnapshot {
   return {
-    sessions: [...state.sessions.values()],
+    sessions: [...state.pending.values(), ...state.sessions.values()],
     permissions: [...state.permissions.values()],
   }
 }

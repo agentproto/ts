@@ -4,9 +4,14 @@
  * so the mapping rules stay unit-testable under plain vitest.
  */
 
+import { isPendingSession } from "../services/pending.logic.js"
 import type { SessionDescriptor } from "../client/types.js"
 
-export type SessionContextValue = "session-live" | "session-awaiting" | "session-done"
+export type SessionContextValue =
+  | "session-pending"
+  | "session-live"
+  | "session-awaiting"
+  | "session-done"
 
 export interface SessionIcon {
   /** Codicon id (e.g. "play", "sync~spin") — no leading "$()". */
@@ -195,6 +200,12 @@ export function activityFor(session: SessionDescriptor, now?: number): SessionAc
   }
   if (isAwaiting(session)) return "needs-you"
   if (typeof now === "number" && isStalled(session, now)) return "stalled"
+  // Coming up IS in motion. A starting session isn't busy yet — there's no turn
+  // in flight, because there's no agent yet to run one — so it fell through to
+  // `idle` and a booting adapter painted the same resting dot as a session
+  // parked for an hour. It also outranks `stalled`'s silence check by sitting
+  // below it: a session that hasn't started can't have gone quiet.
+  if (session.status === "starting") return "working"
   // `blockedOn` splits this into working/waiting in the transcript header,
   // where there's room to say so. Here both mean the same thing to the reader
   // — in flight, leave it alone — and a 16px glyph is the wrong place to
@@ -222,18 +233,46 @@ const ACTIVITY_ICONS: Record<SessionActivity, SessionIcon> = {
   // The outline spinner, not `sync~spin`'s two chasing arrows: this is one
   // agent thinking, not two things being reconciled.
   working: { id: "loading~spin" },
-  idle: { id: "circle-filled" },
+  // The at-rest default. Weight is the read-receipt — see IDLE_UNREAD_ICON and
+  // iconFor: hollow is "parked, nothing new".
+  idle: { id: "circle-outline" },
   failed: { id: "error", color: "error" },
   stopped: { id: "circle-slash" },
   done: { id: "check" },
 }
 
-export function iconFor(session: SessionDescriptor, now?: number): SessionIcon {
-  return ACTIVITY_ICONS[activityFor(session, now)]
+/**
+ * A parked session sitting on output nobody has read yet.
+ *
+ * Weight is the only difference from the read dot, and that's the point: both
+ * rows mean "parked", so they must read as the same KIND of thing — a filled
+ * glyph is louder without being a different alphabet. The tree used to paint
+ * every idle session filled, which made the loudest mark on screen the one
+ * carrying no information at all.
+ */
+const IDLE_UNREAD_ICON: SessionIcon = { id: "circle-filled" }
+
+/**
+ * Icon for a session's current activity.
+ *
+ * `unread` only reaches the idle dot — every other state already answers a more
+ * urgent question than "is there something new here?", and a working session's
+ * spinner would be a lie about novelty besides. Omitted (undefined) means "no
+ * read-receipt available", which paints filled: see isUnread on why unknown
+ * must not read as read.
+ */
+export function iconFor(session: SessionDescriptor, now?: number, unread?: boolean): SessionIcon {
+  const activity = activityFor(session, now)
+  if (activity === "idle") return unread === false ? ACTIVITY_ICONS.idle : IDLE_UNREAD_ICON
+  return ACTIVITY_ICONS[activity]
 }
 
-/** contextValue for menu gating: session-live / session-awaiting / session-done. */
+/** contextValue for menu gating: session-pending / session-live / session-awaiting / session-done. */
 export function contextValueFor(session: SessionDescriptor): SessionContextValue {
+  // An optimistic row is not a session yet — it has no daemon-side id, so every
+  // action on it (prompt, stop, restart) would 404. Its own contextValue means
+  // the menus simply never offer them.
+  if (isPendingSession(session)) return "session-pending"
   if (TERMINAL_STATUSES.has(session.status)) return "session-done"
   if (isAwaiting(session)) return "session-awaiting"
   return "session-live"

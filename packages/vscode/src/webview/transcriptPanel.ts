@@ -25,6 +25,7 @@ import { registerOutputDocuments, type OutputDocuments } from "../services/outpu
 import { activityFor, TREE_REPAINT_INTERVAL_MS, type SessionActivity } from "../views/sessionsTree.logic.js"
 import { TAB_ICON_DIR, tabIconFor } from "./tabIcon.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
+import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
 import { TranscriptPanelController } from "./transcriptPanelController.js"
@@ -44,6 +45,7 @@ export function registerTranscriptPanels(
   ctx: vscode.ExtensionContext,
   client: DaemonClient,
   store: SessionStore,
+  seen: SeenTracker,
 ): TranscriptPanels {
   const panels = new Map<string, vscode.WebviewPanel>()
   let activeId: string | undefined
@@ -79,12 +81,24 @@ export function registerTranscriptPanels(
   }, TREE_REPAINT_INTERVAL_MS)
   ctx.subscriptions.push(new vscode.Disposable(() => clearInterval(repaintTimer)))
 
+  /**
+   * The operator has eyes on this session — clear its unread dot. Re-read from
+   * the store rather than trusting a captured descriptor: the receipt is
+   * compared against `lastOutputAt`, so a stale copy would mark output read
+   * that arrived after it was captured.
+   */
+  const markSeenNow = (id: string): void => {
+    const session = store.sessions.find(s => s.id === id)
+    if (session) seen.markSeen(session)
+  }
+
   return {
     open(session: SessionDescriptor): void {
       const existing = panels.get(session.id)
       if (existing) {
         existing.reveal(vscode.ViewColumn.One, false)
         activeId = session.id
+        markSeenNow(session.id)
         return
       }
 
@@ -104,6 +118,7 @@ export function registerTranscriptPanels(
       // every other open editor — and these tabs stay open for hours while
       // the thing behind them changes.
       paintTabIcon(panel, session)
+      markSeenNow(session.id)
 
       const nonce = randomNonce()
 
@@ -125,6 +140,11 @@ export function registerTranscriptPanels(
           if (!updated) return
           controller.onSessionUpdate(updated)
           paintTabIcon(panel, updated)
+          // Watching output arrive IS reading it — while this tab is the
+          // focused one, new output must never mark the session unread behind
+          // the operator's back. A hidden or background tab gets no such
+          // credit: that output really is unread.
+          if (activeId === session.id) seen.markSeen(updated)
         }),
       )
 
@@ -146,8 +166,12 @@ export function registerTranscriptPanels(
       // the user is actually looking at (switching tabs doesn't re-run open()).
       disposables.push(
         panel.onDidChangeViewState(e => {
-          if (e.webviewPanel.active) activeId = session.id
-          else if (activeId === session.id) activeId = undefined
+          if (e.webviewPanel.active) {
+            activeId = session.id
+            // Switching TO a tab is the commonest way of looking at a session
+            // — open() only runs the first time.
+            markSeenNow(session.id)
+          } else if (activeId === session.id) activeId = undefined
         }),
       )
 

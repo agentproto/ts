@@ -26,6 +26,8 @@ import * as vscode from "vscode"
 import type { SessionFilterController } from "../commands/sessionFilter.js"
 import { workspaceLabelFor } from "../services/workspaces.logic.js"
 import type { SessionDescriptor } from "../client/types.js"
+import { isPendingSession } from "../services/pending.logic.js"
+import type { SeenTracker } from "../services/seen.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
@@ -50,6 +52,7 @@ function isSeparatorNode(node: TreeNode): node is SeparatorNode {
 export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable {
   private readonly store: SessionStore
   private readonly filter: SessionFilterController
+  private readonly seen: SeenTracker
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
   private nodes: TreeNode[] = []
@@ -57,12 +60,17 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
   private _hiddenCount = 0
   private readonly repaintTimer: ReturnType<typeof setInterval>
 
-  constructor(store: SessionStore, filter: SessionFilterController) {
+  constructor(store: SessionStore, filter: SessionFilterController, seen: SeenTracker) {
     this.store = store
     this.filter = filter
+    this.seen = seen
     this.rebuild()
     this.store.onDidChange(() => this.rebuild())
     this.filter.onDidChange(() => this.rebuild())
+    // A dot going hollow is a state change like any other — the operator read
+    // the session, and the row must say so without waiting for the daemon to
+    // happen to emit something.
+    this.seen.onDidChange(() => this.rebuild())
     // Rebuild on a clock as well as on change. Every row is rendered against
     // `now`, so the passage of time is itself a state change — one the store
     // can never report, because nothing happened. See TREE_REPAINT_INTERVAL_MS.
@@ -122,14 +130,21 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     })
     item.contextValue = contextValueFor(session)
     item.tooltip = buildTooltip(session, this.now)
-    item.iconPath = toThemeIcon(iconFor(session, this.now))
+    item.iconPath = toThemeIcon(iconFor(session, this.now, this.seen.isUnread(session)))
     // Single click opens the transcript — the inline $(open-preview) icon
     // (view/item/context menu, wired in package.json) remains as a second
     // way to trigger the same command.
-    item.command = {
-      command: "agentproto.openTranscript",
-      title: "Open Transcript",
-      arguments: [element],
+    //
+    // Except on an optimistic row: there is no session behind it yet, so a
+    // click could only open a transcript for an id the daemon has never heard
+    // of. Leaving `command` unset makes the row inert rather than a trap —
+    // it's there to say "coming up", and it'll be a real row in a moment.
+    if (!isPendingSession(session)) {
+      item.command = {
+        command: "agentproto.openTranscript",
+        title: "Open Transcript",
+        arguments: [element],
+      }
     }
     return item
   }
@@ -188,8 +203,9 @@ export function registerSessionsView(
   ctx: vscode.ExtensionContext,
   store: SessionStore,
   filter: SessionFilterController,
+  seen: SeenTracker,
 ): void {
-  const provider = new SessionsTreeProvider(store, filter)
+  const provider = new SessionsTreeProvider(store, filter, seen)
   const view = vscode.window.createTreeView("agentproto.sessions", {
     treeDataProvider: provider,
     showCollapseAll: true,

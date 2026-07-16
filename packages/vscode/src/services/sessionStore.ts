@@ -24,6 +24,7 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import { subscribeSse } from "../client/sse.js"
+import { makePendingSession, type PendingSessionDraft } from "./pending.logic.js"
 import type {
   PendingPermission,
   SessionDescriptor,
@@ -117,6 +118,9 @@ export class SessionStore {
   private refreshRetryMs = SESSION_REFRESH_DEBOUNCE_MS
   private needsSessionRefresh = false
 
+  private msSinceSnapshot = 0
+  private pendingSeq = 0
+
   constructor(
     client: DaemonClient,
     pollIntervalMs = 5000,
@@ -152,6 +156,30 @@ export class SessionStore {
     // Initial snapshot — always do this so the UI has data even if the
     // poll loop fails immediately.
     await this.refreshAll()
+  }
+
+  /**
+   * Show a row for a spawn that's been asked for but not yet acknowledged, and
+   * return its temp id for `resolvePending`.
+   *
+   * The wizard already refreshes the store the instant spawnAgent() returns —
+   * the wait people see is that call itself, which blocks while the daemon
+   * boots an adapter and completes an ACP handshake. Nothing can make that
+   * faster from here; this makes it VISIBLE, which is the actual complaint.
+   */
+  addPending(draft: PendingSessionDraft): string {
+    const row = makePendingSession(draft, ++this.pendingSeq, new Date().toISOString())
+    this.state.pending.set(row.id, row)
+    this._onDidChange.fire()
+    return row.id
+  }
+
+  /**
+   * Drop an optimistic row — the spawn either landed (the real descriptor is in
+   * the snapshot by now) or failed. Safe to call twice.
+   */
+  resolvePending(pendingId: string): void {
+    if (this.state.pending.delete(pendingId)) this._onDidChange.fire()
   }
 
   /**
@@ -252,6 +280,26 @@ export class SessionStore {
         const delay = Math.min(this.idleBackoff, this.pollIntervalMs)
         await this.sleep(delay)
         if (this.stopped) return
+        // A snapshot on a clock, independent of any event.
+        //
+        // The daemon announces turn-end/awaiting-input/exited/command-done and
+        // nothing else — there is no "session started". So a session spawned
+        // anywhere but here is, to this store, a thing that has never happened:
+        // the descriptor refresh above only ever runs off one of those four
+        // events, and a freshly-started session has emitted none of them. On a
+        // busy daemon some OTHER session's turn-end would refresh the whole
+        // list and the newcomer would appear as a side effect; on a quiet one,
+        // nothing ever fired and the tree stayed empty until a human clicked
+        // Refresh. Which is what people did, and reported as "the sidebar
+        // doesn't update".
+        //
+        // Paced by the loop's own sleep rather than a wall clock so the cadence
+        // stays deterministic under a fake scheduler in tests.
+        this.msSinceSnapshot += delay
+        if (this.msSinceSnapshot >= this.pollIntervalMs) {
+          this.msSinceSnapshot = 0
+          this.scheduleSessionRefresh()
+        }
         if (result.events.length === 0) {
           this.idleBackoff = Math.min(this.idleBackoff * 2, MAX_IDLE_BACKOFF_MS)
         } else {

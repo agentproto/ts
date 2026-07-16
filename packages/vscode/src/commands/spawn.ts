@@ -110,6 +110,19 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
   const slug = resolveWorkspaceSlug(workspaceConfig, answers.cwd)
   if (slug) answers.workspaceSlug = slug
 
+  // Show the row before asking, not after being answered: spawnAgent() blocks
+  // while the daemon boots an adapter and finishes an ACP handshake, and until
+  // it returns there is nothing to put in the tree — the daemon has no "session
+  // started" event to announce the session either. So the operator clicked, the
+  // list didn't move, and nothing said the request had even been heard.
+  const pendingId = store.addPending({
+    label: answers.label,
+    adapterSlug: answers.adapter,
+    model: answers.model,
+    cwd: answers.cwd,
+    workspaceSlug: answers.workspaceSlug,
+  })
+  await vscode.commands.executeCommand("agentproto.sessions.focus")
   try {
     const session = await client.spawnAgent(assembleSpawnOptions(answers))
     void vscode.window
@@ -119,10 +132,14 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
           void vscode.commands.executeCommand("agentproto.openTranscript", session.id)
         }
       })
-    await vscode.commands.executeCommand("agentproto.sessions.focus")
     await store.refreshAll()
   } catch (err) {
     vscode.window.showErrorMessage(`agentproto: spawn failed — ${describeError(err)}`)
+  } finally {
+    // In `finally` so a failed spawn can't strand a row that will never
+    // resolve. On the success path refreshAll() has already put the real
+    // descriptor in the tree, so this swap doesn't flicker.
+    store.resolvePending(pendingId)
   }
 }
 

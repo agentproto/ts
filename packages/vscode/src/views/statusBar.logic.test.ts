@@ -72,10 +72,15 @@ describe("summarizeLive", () => {
     expect(summary.costUsd).toBeCloseTo(1.75)
   })
 
-  it("treats a starting session as live", () => {
+  it("treats a starting session as live, and as working rather than idle", () => {
     const summary = summarizeLive([session({ status: "starting" })], NOW)
     expect(summary.live).toHaveLength(1)
-    expect(summary.idle).toBe(1)
+    // Booting is motion. It isn't `busy` — there's no turn in flight yet,
+    // because there's no agent yet to run one — so this used to land in `idle`
+    // and the status bar called a session that was coming up "parked". Same
+    // lie as counting nine parked agents as "9 running", one axis over.
+    expect(summary.working).toBe(1)
+    expect(summary.idle).toBe(0)
   })
 })
 
