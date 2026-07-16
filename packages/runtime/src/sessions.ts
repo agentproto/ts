@@ -643,10 +643,15 @@ const HISTORY_CAP = 200
 
 /** Bound on how long `enqueuePrompt({interrupt: true})` waits for a
  *  cancelled turn to actually settle (busy → false) before giving up.
- *  A well-behaved adapter settles within a few event-loop turns of
- *  `cancel()` resolving; this is a safety net against an adapter that
- *  never delivers the corresponding turn-end, not the normal path. */
-const INTERRUPT_SETTLE_TIMEOUT_MS = 30_000
+ *
+ *  This is NOT the "a few event-loop turns" happy path — ACP's
+ *  `session/cancel` is a fire-and-forget notification (resolves on
+ *  stdin flush, before the adapter has even seen it), and a genuinely
+ *  wedged mid-tool-call turn (the case this bound exists for) can take
+ *  the adapter's own full force-cancel grace period plus a stdio
+ *  round-trip to actually yield. Exported so tests assert against the
+ *  real value instead of a hardcoded duplicate. */
+export const INTERRUPT_SETTLE_TIMEOUT_MS = 60_000
 
 /** Compute `desc.processAlive` from `desc.pid` via the standard POSIX
  *  "signal 0" check — `process.kill(pid, 0)` throws `ESRCH` (or

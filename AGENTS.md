@@ -48,6 +48,21 @@ Each rung has exactly one owner — don't reach into the next one.
    the whole compound command, so end it with the real status
    (`echo "EXIT=$?"`) rather than trusting the completion notification.
 
+   **Never end your turn to "wait" for backgrounded work.** Backgrounding
+   the gate (`pnpm test &`, a detached Terminal/PTY) and then yielding so
+   you can "check back later" is a dead end, not a pause: a stopped
+   agent-cli session has no timer and no completion hook of its own, and
+   `policy_attach` can't rescue you either — a lone watched session's
+   `exited` event cancels a completion policy instead of completing it
+   (`packages/runtime/src/supervisor.ts:1028-1061`), so attaching one to
+   yourself before yielding doesn't wake you back up. The session sits
+   there indefinitely, looking alive in `session_list` but never
+   re-prompted, until a human happens to notice. Run the gate in the
+   foreground and block on its real exit code instead. If a gate is
+   genuinely too long for one turn, that's a job for whoever is
+   supervising you to gate on your turn-end from the outside, not for you
+   to background-and-hope.
+
    **A fresh worktree needs `pnpm install` AND `pnpm build` before the gate
    is meaningful.** Packages import each other's built `dist/`, so an
    unbuilt worktree fails in packages you never touched (`Failed to resolve
