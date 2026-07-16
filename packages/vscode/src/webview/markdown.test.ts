@@ -44,10 +44,62 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<code>npm install</code>")
   })
 
-  it("does not format inside inline code", () => {
+  it("lets bold span a code span", () => {
+    const html = renderMarkdown("**bold with `code` inside**")
+    expect(html).toContain("<strong>bold with <code>code</code> inside</strong>")
+  })
+
+  it("lets italic span a code span", () => {
+    const html = renderMarkdown("*italic with `code` inside*")
+    expect(html).toContain("<em>italic with <code>code</code> inside</em>")
+  })
+
+  it("renders multiple code spans inside one bold span", () => {
+    const html = renderMarkdown("**a `b` c `d` e**")
+    expect(html).toContain("<strong>a <code>b</code> c <code>d</code> e</strong>")
+  })
+
+  it("keeps code span contents literal even when they look like bold", () => {
     const html = renderMarkdown("`**not bold**`")
     expect(html).toContain("<code>**not bold**</code>")
-    expect(html).not.toContain("<strong>not bold</strong>")
+    expect(html).not.toContain("<strong>")
+  })
+
+  it("renders plain bold unchanged", () => {
+    const html = renderMarkdown("**plain bold, no code**")
+    expect(html).toContain("<strong>plain bold, no code</strong>")
+  })
+
+  it("renders code then bold unchanged", () => {
+    const html = renderMarkdown("`code` then **bold**")
+    expect(html).toContain("<code>code</code> then <strong>bold</strong>")
+  })
+
+  it("renders italic nested inside bold", () => {
+    const html = renderMarkdown("**bold *italic* nested**")
+    expect(html).toContain("<strong>bold <em>italic</em> nested</strong>")
+  })
+
+  it("falls back gracefully on an unterminated backtick", () => {
+    const html = renderMarkdown("unterminated ` backtick")
+    expect(html).toContain("unterminated ` backtick")
+    expect(html).not.toContain("<code>")
+  })
+
+  it("leaves unclosed bold markers literal", () => {
+    const html = renderMarkdown("**unclosed bold")
+    expect(html).toContain("**unclosed bold")
+    expect(html).not.toContain("<strong>")
+  })
+
+  it("renders the operator-reported agent question without leaking markers", () => {
+    const html = renderMarkdown(
+      "**To confirm: commit these three files (`AGENTS.md`, `sessions.ts`) on branch `fix/x`?**",
+    )
+    expect(html).toContain(
+      "<strong>To confirm: commit these three files (<code>AGENTS.md</code>, <code>sessions.ts</code>) on branch <code>fix/x</code>?</strong>",
+    )
+    expect(html).not.toContain("**")
   })
 
   it("renders fenced code blocks", () => {
