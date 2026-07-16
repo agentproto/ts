@@ -76,6 +76,7 @@ export interface LLMPricing {
 
 import { OPENROUTER_ROUTES } from "./openrouter-routes.generated.js"
 import { pricingRegistry, CC_USD_RATE } from "../pricing/index.js"
+import { CONTEXT_WINDOWS, type ContextWindowEntry } from "./context-windows.generated.js"
 
 export const LLM_PRICING_CATALOG = {
   // ── Anthropic ──────────────────────────────────────────────────────────
@@ -647,6 +648,28 @@ export function resolveAlias(modelId: string): string {
     if (modelId.includes(key)) return key
   }
   return modelId
+}
+
+/**
+ * Resolves a model id to its live context window (max input tokens) and max
+ * output tokens, sourced from `CONTEXT_WINDOWS`
+ * (`packages/catalog-sync/src/generators/llm-context-windows.ts` — re-synced
+ * from each provider's live `/v1/models` endpoint; never hand-maintain these
+ * numbers). Covers Anthropic, Groq, xAI, and Moonshot — the providers that
+ * publish this data live. Handles bare aliases the provider's own API doesn't
+ * use ("claude-haiku-4-5" vs. the dated live id "claude-haiku-4-5-20251001")
+ * via prefix match, then falls back through the pricing alias table for
+ * older aliases. Returns undefined for ids no synced provider carries.
+ */
+export function resolveContextWindow(modelId: string): ContextWindowEntry | undefined {
+  if (CONTEXT_WINDOWS[modelId]) return CONTEXT_WINDOWS[modelId]
+  const datedMatch = Object.keys(CONTEXT_WINDOWS)
+    .filter(key => key.startsWith(`${modelId}-2`))
+    .sort((a, b) => a.length - b.length)[0]
+  if (datedMatch) return CONTEXT_WINDOWS[datedMatch]
+  const alias = ALIAS_BY_ID[modelId]
+  if (alias && CONTEXT_WINDOWS[alias]) return CONTEXT_WINDOWS[alias]
+  return undefined
 }
 
 /**
