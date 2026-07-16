@@ -22,6 +22,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # turbo's --affected diffs origin/main...HEAD to scope work to
+          # changed packages + dependents. That range must be fully present
+          # in the checkout, or turbo safely (silently) falls back to
+          # treating every package as affected — fetch-depth: 0 is load
+          # bearing, not cosmetic.
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -41,14 +48,58 @@ jobs:
       # exist after `pnpm build`. Running `check-types` before `build`
       # produced "Cannot find module '@agentproto/<pkg>'" cascades on
       # every commit since the multi-package extraction.
+      #
+      # `vars.CI_AFFECTED_ONLY` (repo variable, Settings → Variables) is
+      # the quick on/off switch: "false" reverts these three steps to the
+      # full unscoped `pnpm build`/`check-types`/`test` — no code change,
+      # no redeploy, just flip the variable — if turbo's affected-scoping
+      # or the remote cache ever misbehaves.
       - name: Build all packages
-        run: pnpm build
+        run: |
+          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
+            pnpm build
+          else
+            pnpm exec turbo run build --affected --filter="./packages/**" --filter="./adapters/**"
+          fi
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
 
       - name: Type-check all packages
-        run: pnpm check-types
+        run: |
+          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
+            pnpm check-types
+          else
+            pnpm exec turbo run check-types --affected --filter="./packages/**" --filter="./adapters/**"
+          fi
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+
+      # `pnpm test`'s `pretest` hook (package.json) runs this doc-coverage
+      # check before the actual tests. The turbo path below calls `pnpm exec
+      # turbo run test` directly, which does NOT go through the `pnpm test`
+      # npm script and so would silently skip that hook — run it explicitly
+      # instead, unconditionally, so both paths carry the same gate.
+      - name: Check CLI docs coverage (pretest)
+        run: node scripts/agentflow/docs.mjs --check
 
       - name: Run tests
-        run: pnpm test
+        run: |
+          if [ "${{ vars.CI_AFFECTED_ONLY }}" = "false" ]; then
+            pnpm test
+          else
+            pnpm exec turbo run test --affected --filter="./packages/**" --filter="./adapters/**"
+          fi
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
 
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
