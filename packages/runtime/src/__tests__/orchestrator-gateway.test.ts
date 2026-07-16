@@ -13,6 +13,9 @@
 
 import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { AddressInfo } from "node:net"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -54,11 +57,18 @@ const FORBIDDEN_TOOLS = [
   "self_inspect",
 ]
 
+/** Transcripts are written whether or not `persist` is on, and default to a
+ *  sibling of the real `~/.agentproto/sessions.json` — so every registry here
+ *  needs an explicit tmp dir on top of `persist: false`. */
+function tmpTranscriptDir(): string {
+  return join(mkdtempSync(join(tmpdir(), "agentproto-orch-gw-")), "transcripts")
+}
+
 function makeFactoryDeps() {
   const sessionEvents = createSessionEventBus()
   const eventRing = createEventRing()
   eventRing.wire(sessionEvents)
-  const registry = createSessionsRegistry({ sessionEvents })
+  const registry = createSessionsRegistry({ sessionEvents, persist: false })
   return { registry, sessionEvents, eventRing }
 }
 
@@ -458,7 +468,11 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
     const sessionEvents = createSessionEventBus()
     const eventRing = createEventRing()
     eventRing.wire(sessionEvents)
-    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const registry = createSessionsRegistry({
+      sessionEvents,
+      persist: false,
+      transcriptDir: tmpTranscriptDir(),
+    })
 
     // Spawn owner + child so collectSubtree(owner.id) returns {owner.id, child.id}.
     const owner = registry.spawnAgent({
