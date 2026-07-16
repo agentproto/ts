@@ -37,6 +37,7 @@ import {
   labelFor,
   silentForMs,
   tooltipFieldsFor,
+  TREE_REPAINT_INTERVAL_MS,
   type SeparatorNode,
   type SessionNode,
   type TreeNode,
@@ -46,7 +47,7 @@ function isSeparatorNode(node: TreeNode): node is SeparatorNode {
   return "kind" in node && node.kind === "separator"
 }
 
-export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
+export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable {
   private readonly store: SessionStore
   private readonly filter: SessionFilterController
   private readonly _onDidChange = new vscode.EventEmitter<void>()
@@ -54,6 +55,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private nodes: TreeNode[] = []
   private now = Date.now()
   private _hiddenCount = 0
+  private readonly repaintTimer: ReturnType<typeof setInterval>
 
   constructor(store: SessionStore, filter: SessionFilterController) {
     this.store = store
@@ -61,6 +63,15 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     this.rebuild()
     this.store.onDidChange(() => this.rebuild())
     this.filter.onDidChange(() => this.rebuild())
+    // Rebuild on a clock as well as on change. Every row is rendered against
+    // `now`, so the passage of time is itself a state change — one the store
+    // can never report, because nothing happened. See TREE_REPAINT_INTERVAL_MS.
+    this.repaintTimer = setInterval(() => this.rebuild(), TREE_REPAINT_INTERVAL_MS)
+  }
+
+  dispose(): void {
+    clearInterval(this.repaintTimer)
+    this._onDidChange.dispose()
   }
 
   /** Sessions present in the store but excluded by the current filter. */
@@ -182,7 +193,9 @@ export function registerSessionsView(
     treeDataProvider: provider,
     showCollapseAll: true,
   })
-  ctx.subscriptions.push(view)
+  // The provider owns a repaint interval — it must be disposed, or the timer
+  // outlives deactivation and keeps rebuilding a tree nobody is watching.
+  ctx.subscriptions.push(view, provider)
 
   // The tree must never lie about hiding things: badge the count of
   // sessions the current filter excludes, and summarize the filter in the

@@ -18,6 +18,7 @@ import {
   relativeTime,
   silentForMs,
   tooltipFieldsFor,
+  TREE_REPAINT_INTERVAL_MS,
   type SeparatorNode,
   type SessionNode,
   type TreeNode,
@@ -420,6 +421,15 @@ describe("stall detection", () => {
   it("gives a long tool call room — silence under the threshold is not a stall", () => {
     const building = stuck({ lastActivityAt: new Date(now - (STALL_AFTER_MS - 1_000)).toISOString() })
     expect(isStalled(building, now)).toBe(false)
+  })
+
+  it("repaints far more often than it takes to stall — silence must not need an unrelated event to surface", () => {
+    // The tree renders every row against `now`, and the store only reports
+    // sessions that CHANGED. A stall is the absence of change, so detection
+    // rides entirely on this tick; if it were ever slower than the threshold,
+    // a wedged session could sit unflagged for a full repaint period.
+    expect(TREE_REPAINT_INTERVAL_MS).toBeLessThan(STALL_AFTER_MS)
+    expect(TREE_REPAINT_INTERVAL_MS).toBeGreaterThan(0)
   })
 
   it("reports nothing for an idle or terminal session — only a turn can stall", () => {
