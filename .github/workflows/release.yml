@@ -66,16 +66,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
 
-      # The vsix used to be built locally and committed straight into
-      # packages/vscode/ — a binary that any two branches touching the
-      # extension in the same window would conflict on merging. It's a
-      # build artifact now (gitignored). This step is deliberately gated on
-      # the same "actually published" condition as the steps below it, not
-      # on every push to main: publishing on every vscode-touching PR merge
-      # would spam a new release per PR instead of once per deliberate
-      # release. It further no-ops if packages/vscode hasn't changed since
-      # the last vscode-tagged release, so an unrelated package release
-      # doesn't produce a duplicate, identical vsix asset.
+      # packages/vscode also gets a dev-build VSIX on every push that touches
+      # it (.github/workflows/vscode-release.yml) — that one is a
+      # prerelease tagged by commit sha (vscode-dev-<sha>), for grabbing a
+      # bleeding-edge build. This step is the official counterpart: the
+      # same version-bump-driven release every other package gets, gated on
+      # the same "actually published" condition as the steps below it (true
+      # only for a deliberate release, not every PR merge), tagged by the
+      # real changesets-bumped version with no sha suffix. It no-ops if
+      # packages/vscode hasn't changed since the last such release, so a
+      # release batch that doesn't touch the extension doesn't produce a
+      # duplicate, identical vsix.
       - name: Package + publish VS Code extension
         if: steps.changesets.outputs.published == 'true'
         env:
@@ -89,12 +90,11 @@ jobs:
           fi
           pnpm --filter agentproto-vscode run package
           version=$(node -p "require('./packages/vscode/package.json').version")
-          sha=$(git rev-parse --short HEAD)
-          tag="vscode-v${version}-${sha}"
+          tag="vscode-v${version}"
           vsix=$(ls packages/vscode/*.vsix)
           gh release create "$tag" "$vsix" \
-            --title "agentproto VS Code extension v${version} (${sha})" \
-            --notes "Automated build from $(git rev-parse HEAD). Install with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
+            --title "agentproto VS Code extension v${version}" \
+            --notes "Official release, built from $(git rev-parse HEAD). Install with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
             --latest=false
 
       # Only runs when changesets/action actually published packages (not when

@@ -1,0 +1,62 @@
+name: VS Code extension dev build
+
+# Fast-moving companion to the official release step in release.yml: every
+# push to main that touches packages/vscode gets an immediately-installable
+# VSIX, tagged as a prerelease distinct from the versioned official release
+# (vscode-v<version>, built only when an actual changesets release includes
+# vscode changes). Skips the "chore(release): version packages" commit
+# itself so the two workflows don't publish twice for the same change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/vscode/**'
+  workflow_dispatch:  # manual (re)build, e.g. to recover from a failed run
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # create the release + tag
+
+jobs:
+  dev-build:
+    name: Build + publish dev VSIX
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): version packages') }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package the extension
+        run: pnpm --filter agentproto-vscode run package
+
+      - name: Publish dev VSIX as a GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse --short HEAD)
+          tag="vscode-dev-${sha}"
+          vsix=$(ls packages/vscode/*.vsix)
+          gh release create "$tag" "$vsix" \
+            --title "agentproto VS Code extension — dev build (${sha})" \
+            --notes "Untagged dev build from $(git rev-parse HEAD) on main — not an official release. For a versioned release see tags matching \`vscode-v<version>\`." \
+            --prerelease \
+            --latest=false
