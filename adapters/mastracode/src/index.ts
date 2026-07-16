@@ -67,11 +67,14 @@ export const mastracode: AgentCliHandle = defineAgentCli({
     // adapter's own default Claude model stays listed (repointing the default
     // is out of scope). The extra Sonnet + gateway dupe are dropped from the
     // menu; the free-form `model` option still accepts any id.
+    // `provider` is read straight off each id's own prefix — Mastra's model
+    // router resolves a bare `provider/model` string itself, no adapter mode
+    // needed.
     allowed: [
-      "anthropic/claude-sonnet-4-5",
-      "openai/gpt-5.1",
-      "openai/gpt-5.1-mini",
-      "google/gemini-2.5-flash",
+      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+      { id: "openai/gpt-5.1", provider: "openai" },
+      { id: "openai/gpt-5.1-mini", provider: "openai" },
+      { id: "google/gemini-2.5-flash", provider: "google" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

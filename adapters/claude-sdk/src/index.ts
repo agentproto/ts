@@ -103,23 +103,25 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
   models: {
     // A cheap Claude by default — this is the budget first-party arm.
     default: DEFAULT_MODEL,
-    // Native Anthropic models work out of the box (mode: default). The gateway
-    // models below only route when the matching mode is selected
-    // (mode: moonshot / openrouter) — that mode pre-wires ANTHROPIC_BASE_URL.
-    // The `model` option stays free-form, so any gateway id works even if it
-    // isn't listed here.
+    // Each entry states who serves it (`provider`) and, for a gateway model,
+    // which mode below routes there (`mode`) — the mode pre-wires
+    // ANTHROPIC_BASE_URL, so picking the model without it would send a
+    // gateway id straight to real Anthropic. Native models need no mode:
+    // `mode: default` is already this adapter's baseline. The `model`
+    // option stays free-form, so any gateway id works even if it isn't
+    // listed here.
     allowed: [
-      // Native Anthropic — mode: default
-      "claude-haiku-4-5-20251001",
-      "claude-sonnet-5",
-      "claude-opus-4-8",
-      "claude-fable-5",
+      // Native Anthropic — no mode switch needed
+      { id: "claude-haiku-4-5-20251001", provider: "anthropic" },
+      { id: "claude-sonnet-5", provider: "anthropic" },
+      { id: "claude-opus-4-8", provider: "anthropic" },
+      { id: "claude-fable-5", provider: "anthropic" },
       // Moonshot (Kimi) — mode: moonshot
-      "kimi-k2.7-code",
+      { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
       // OpenRouter — mode: openrouter
-      "z-ai/glm-5.2",
-      "deepseek/deepseek-v4-pro",
-      "moonshotai/kimi-k2",
+      { id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" },
+      { id: "deepseek/deepseek-v4-pro", provider: "openrouter", mode: "openrouter" },
+      { id: "moonshotai/kimi-k2", provider: "openrouter", mode: "openrouter" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",

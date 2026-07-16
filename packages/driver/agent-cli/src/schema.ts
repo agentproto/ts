@@ -221,9 +221,21 @@ const sessionSchema = z.object({
   context_carryover: z.boolean().default(true),
 }).strict()
 
+// A `models.allowed` entry: a bare id (provider unstated, adapter default)
+// or a { id, provider?, mode? } binding stating who serves it and which
+// adapter mode reaches it. See AgentCliModelEntry (types.ts).
+const modelEntrySchema = z.union([
+  z.string(),
+  z.object({
+    id: z.string(),
+    provider: z.string().optional(),
+    mode: z.string().optional(),
+  }).strict(),
+])
+
 const modelsSchema = z.object({
   default: z.string().optional(),
-  allowed: z.array(z.string()).optional(),
+  allowed: z.array(modelEntrySchema).optional(),
   // Model-id patterns the adapter must never route to (case-insensitive,
   // trailing `*` = prefix match). Enforced at compose time — see
   // AgentCliModels.deny. Reserves premium providers for dedicated adapters.

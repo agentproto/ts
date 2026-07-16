@@ -233,8 +233,23 @@
         "default": { "type": "string", "description": "Default model id passed to the agent." },
         "allowed": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Model ids the host MAY route to."
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "description": "A model id annotated with who serves/bills it and how this adapter reaches it. A bare string (still legal) leaves provider unstated — the projector MUST NOT guess one.",
+                "properties": {
+                  "id": { "type": "string", "description": "Model id, unchanged on the wire — this is annotation, not renaming." },
+                  "provider": { "type": "string", "description": "ProviderPreset id (or direct provider, e.g. \"anthropic\") — who serves and bills this model. Omit when unstated." },
+                  "mode": { "type": "string", "description": "This adapter's mode id that routes to `provider` (e.g. \"moonshot\"). Omit when the adapter routes on its own (e.g. a model-id prefix) or needs no mode switch." }
+                }
+              }
+            ]
+          },
+          "description": "Model ids the host MAY route to. Each entry is either a bare id (provider unstated, adapter default) or a { id, provider?, mode? } binding declaring who serves it and which adapter mode reaches it."
         },
         "env": {
           "type": "object",

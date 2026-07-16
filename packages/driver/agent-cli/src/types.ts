@@ -201,9 +201,37 @@ export interface AgentCliSession {
   context_carryover?: boolean
 }
 
+/**
+ * A `models.allowed` entry that states who serves/bills a model and how
+ * this adapter reaches it — the structured alternative to a bare id
+ * string. `provider` is *who* (a `ProviderPreset` id, or a direct
+ * provider like "anthropic"); `mode` is *how this adapter* gets there
+ * (its own `modes[].id`), which is NOT redundant with `provider`: an
+ * adapter that routes by id prefix (opencode) needs no mode at all,
+ * while one that needs `ANTHROPIC_BASE_URL` pre-wired (claude-sdk,
+ * claude-code) does. Omit `mode` when the adapter routes on its own.
+ */
+export interface AgentCliModelEntry {
+  /** Model id, unchanged on the wire — this annotates, never renames. */
+  id: string
+  /** Who serves/bills this model. Omit when unstated — an unstated
+   *  provider must never be guessed downstream (a wrong-but-confident
+   *  guess would bill the wrong account). */
+  provider?: string
+  /** This adapter's mode id that routes to `provider`. Omit when the
+   *  adapter routes on its own or the model needs no mode switch. */
+  mode?: string
+}
+
 export interface AgentCliModels {
   default?: string
-  allowed?: string[]
+  /**
+   * Model ids the host MAY route to. A bare string keeps meaning exactly
+   * what it means today (provider unstated, adapter default) — additive,
+   * so no existing manifest breaks. A structured entry additionally
+   * states `provider`/`mode` (see {@link AgentCliModelEntry}).
+   */
+  allowed?: Array<string | AgentCliModelEntry>
   /**
    * Model-id patterns this adapter must NEVER route to, even when a caller
    * passes the id explicitly (the `model` option is free-form, so `allowed`

@@ -86,13 +86,70 @@ export interface AdapterInfo {
    *  adapter manifest's `models.allowed` field. Empty when the adapter
    *  doesn't declare a model list (accepts whatever the underlying
    *  binary accepts). Pass one of these as `model` in `agent_start`
-   *  to avoid trial-and-error validation errors. */
+   *  to avoid trial-and-error validation errors. Flat id list — kept
+   *  exactly as before so every existing consumer of this field keeps
+   *  working untouched; see `modelDetails` for the provider/mode a
+   *  structured entry additionally states. */
   models: string[]
   /** AIP-45 `modes[]` the adapter declares, projected to the UI-safe
    *  subset (id + description + honest status). Empty when the adapter
    *  declares no modes. `status` defaults to "active" when the manifest
    *  omits it, so a declared mode is never silently statusless. */
   modes: AdapterMode[]
+  /** Same models as `models`, in the same order, each carrying the
+   *  `provider`/`mode` a structured `models.allowed` entry states.
+   *  `provider`/`mode` are undefined for a bare-string entry — an
+   *  unstated provider is never guessed here (see AdapterModelInfo). */
+  modelDetails: AdapterModelInfo[]
+}
+
+/** One entry of an adapter's declared model menu, projected from a
+ *  `models.allowed` item — bare string or {@link AgentCliModelEntry}.
+ *  `provider`/`mode` stay undefined for a bare-string entry: an unstated
+ *  provider must never be guessed downstream (a wrong-but-confident
+ *  guess would bill the wrong account). See AGENTS.md / AIP-45 for the
+ *  three-facts-in-one-string problem this splits apart. */
+export interface AdapterModelInfo {
+  id: string
+  /** Who serves/bills this model (a ProviderPreset id, or a direct
+   *  provider like "anthropic"). Undefined when unstated. */
+  provider?: string
+  /** This adapter's mode id that routes to `provider`. Undefined when
+   *  the adapter routes on its own or needs no mode switch. */
+  mode?: string
+}
+
+/** Narrows an `unknown` array element to the shape a structured
+ *  `models.allowed` object entry must have — `id` present and a string.
+ *  The one unavoidable cast in this module: reading a property off
+ *  `unknown` to validate it requires it, same as every other loosely-typed
+ *  handle-field check in this file (e.g. `handle.commands as
+ *  AgentCliCommand[]` below). Nothing past this guard is unchecked. */
+function hasStringId(value: unknown): value is { id: string; provider?: unknown; mode?: unknown } {
+  if (typeof value !== "object" || value === null) return false
+  return typeof (value as { id?: unknown }).id === "string"
+}
+
+/** Normalise a raw `models.allowed` field (bare strings and/or
+ *  `{id, provider?, mode?}` objects — see AgentCliModelEntry) to
+ *  `AdapterModelInfo[]`. Anything not a string and not an object with a
+ *  string `id` is dropped rather than guessed at. Accepts `unknown`
+ *  because callers pull this off a loosely-typed handle field. */
+function toModelDetails(allowed: unknown): AdapterModelInfo[] {
+  if (!Array.isArray(allowed)) return []
+  const out: AdapterModelInfo[] = []
+  for (const entry of allowed) {
+    if (typeof entry === "string") {
+      out.push({ id: entry })
+    } else if (hasStringId(entry)) {
+      out.push({
+        id: entry.id,
+        ...(typeof entry.provider === "string" ? { provider: entry.provider } : {}),
+        ...(typeof entry.mode === "string" ? { mode: entry.mode } : {}),
+      })
+    }
+  }
+  return out
 }
 
 const slugToCamel = (slug: string): string =>
@@ -314,6 +371,7 @@ export async function listInstalledAdapters(opts?: {
         const resolved = await resolveAdapter(slug)
         const handle = resolved.handle as Record<string, unknown>
         const modelsField = (handle.models as { allowed?: unknown } | undefined)?.allowed
+        const modelDetails = toModelDetails(modelsField)
         const info: AdapterInfo = {
           slug,
           name: typeof handle.name === "string" ? handle.name : slug,
@@ -326,10 +384,9 @@ export async function listInstalledAdapters(opts?: {
             ?.streaming,
           packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
           commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
-          models: Array.isArray(modelsField)
-            ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
-            : [],
+          models: modelDetails.map((m) => m.id),
           modes: toAdapterModes(resolved.handle.modes),
+          modelDetails,
         }
         out.push(info)
       } catch (err) {
@@ -381,12 +438,16 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
   readonly commands: AgentCliCommand[]
   readonly models: string[]
   readonly modes: AdapterMode[]
+  readonly modelDetails: AdapterModelInfo[]
   readonly packageName: string
   readonly originalHandle: AgentCliHandle
 }
 
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
-type AgentCliInfo = Pick<AdapterInfo, "protocol" | "streaming" | "commands" | "models" | "modes">
+type AgentCliInfo = Pick<
+  AdapterInfo,
+  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails"
+>
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
   return {
@@ -395,6 +456,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     commands: h.commands,
     models: h.models,
     modes: h.modes,
+    modelDetails: h.modelDetails,
   }
 }
 
@@ -406,6 +468,7 @@ export function wrapCliHandle(
 ): AgentCliWrappedHandle {
   const h = handle as Record<string, unknown>
   const modelsField = (h.models as { allowed?: unknown } | undefined)?.allowed
+  const modelDetails = toModelDetails(modelsField)
   return {
     slug,
     name: typeof h.name === "string" ? h.name : slug,
@@ -417,10 +480,9 @@ export function wrapCliHandle(
     streaming: !!(h.capabilities as { streaming?: boolean })?.streaming,
     packageName,
     commands: Array.isArray(h.commands) ? (h.commands as AgentCliCommand[]) : [],
-    models: Array.isArray(modelsField)
-      ? (modelsField as unknown[]).filter((m): m is string => typeof m === "string")
-      : [],
+    models: modelDetails.map((m) => m.id),
     modes: toAdapterModes(handle.modes),
+    modelDetails,
     originalHandle: handle,
   }
 }
@@ -497,6 +559,7 @@ export async function listAdaptersWithCatalog(
     commands: e.info?.commands ?? [],
     models: e.info?.models ?? [],
     modes: e.info?.modes ?? [],
+    modelDetails: e.info?.modelDetails ?? [],
     status: e.status,
     ...(e.hint !== undefined ? { hint: e.hint } : {}),
   }))

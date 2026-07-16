@@ -8,7 +8,7 @@
  */
 
 import type { SpawnAgentOptions } from "../client/daemonClient.js"
-import type { AdapterInfo, WorkspacesConfig } from "../client/types.js"
+import type { AdapterInfo, AdapterModelInfo, WorkspacesConfig } from "../client/types.js"
 import { findWorkspaceByPath, workspaceLabel } from "../services/workspaces.logic.js"
 
 /**
@@ -23,6 +23,19 @@ export interface SpawnAdapterInfo extends AdapterInfo {
   models?: string[]
   status?: "supported" | "available" | "ready"
   hint?: string
+}
+
+/**
+ * An adapter's declared models, normalised to `AdapterModelInfo[]` — the
+ * daemon's structured projection when present, or each bare `models` id
+ * lifted to `{id}` (provider unstated) for an older daemon / a test
+ * fixture that only set the flat list. Every model-menu builder in this
+ * module (the collapsed picker, the Configure… chain's provider step)
+ * reads models through this so both stay in sync automatically.
+ */
+export function modelEntriesOf(adapter: SpawnAdapterInfo): AdapterModelInfo[] {
+  if (adapter.modelDetails && adapter.modelDetails.length > 0) return adapter.modelDetails
+  return (adapter.models ?? []).map((id) => ({ id }))
 }
 
 export interface AdapterQuickPickItem {
@@ -77,13 +90,31 @@ export function mapModeQuickPickItems(modes: SpawnAdapterInfo["modes"]): ModeQui
 }
 
 export const CONFIGURE_LABEL = "$(gear) Configure…"
+export const CUSTOM_MODEL_SECTION_LABEL = "Custom model…"
+
+/**
+ * Mirrors `vscode.QuickPickItemKind.Separator` (`-1`) without importing
+ * `vscode` — this module is deliberately vscode-free so it stays directly
+ * unit-testable. A plain `number` is structurally assignable to the real
+ * enum (TypeScript's numeric-enum leniency), so `spawn.ts` can pass this
+ * array straight to `showQuickPick` unchanged.
+ */
+const SEPARATOR_KIND = -1
 
 export interface SpawnQuickPickItem {
   label: string
   description?: string
-  /** Absent only on the trailing Configure… row. */
+  /** Set only on a group-heading row (`SEPARATOR_KIND`) — vscode ignores
+   *  every other field when this is set, and the row can't be picked. */
+  kind?: number
+  /** Absent on a heading row and on the trailing Configure… row. */
   adapter?: SpawnAdapterInfo
   model?: string
+  /** The model's bound adapter mode (AIP-45 `models.allowed[].mode`), so
+   *  picking a gateway model applies its routing mode automatically —
+   *  without this a gateway model id spawns in the adapter's default mode
+   *  (i.e. against the wrong provider). Absent for a native/unbound model. */
+  mode?: string
   /** Row asks for a typed-in model id instead of spawning immediately. */
   custom?: boolean
   /** The row opens the full mode/cwd/label/prompt chain unchanged. */
@@ -91,31 +122,95 @@ export interface SpawnQuickPickItem {
 }
 
 /**
- * The collapsed spawn picker: every adapter's declared models flattened to
- * "slug · model" rows (plus a trailing "slug · custom…" row per adapter that
- * declares models), so picking one row is enough to spawn — mode/cwd/label/
- * prompt all default. An adapter with no declared models gets a single
- * bare-slug row (model omitted, adapter default applies) rather than a
- * custom row, since there is nothing to override. A trailing Configure… row
- * opens the untouched full chain for anyone who needs to change a default.
- * Adapter order matches mapAdapterQuickPickItems (ready adapters first).
+ * The collapsed spawn picker: every adapter's declared models grouped under
+ * a provider heading (`vscode.QuickPickItemKind.Separator`) — the provider
+ * is the heading, not a label prefix, because "which brain" (the model) and
+ * "who serves it" (the adapter, shown in the row's description) are
+ * different questions. A model whose manifest entry binds a `mode` (a
+ * gateway model) carries that mode on the row, so picking it applies the
+ * mode automatically instead of silently spawning in the adapter's default
+ * (== native == wrong provider for a gateway id). A model with no stated
+ * provider is grouped under its adapter's own name instead — an unstated
+ * provider is never guessed. An adapter with no declared models gets a
+ * single bare-slug row of its own (model omitted, adapter default applies)
+ * instead of a custom row, since there is nothing to override; every other
+ * model-declaring adapter's "type any id" row is collected under one
+ * trailing custom-model section. A trailing Configure… row opens the full
+ * chain unchanged. Adapter order matches mapAdapterQuickPickItems (ready
+ * adapters first); group order follows first appearance in that order.
  */
 export function mapSpawnQuickPickItems(adapters: SpawnAdapterInfo[]): SpawnQuickPickItem[] {
-  const items: SpawnQuickPickItem[] = []
+  const groups = new Map<string, { heading: string; rows: SpawnQuickPickItem[] }>()
+  const customRows: SpawnQuickPickItem[] = []
+
+  function groupFor(key: string, heading: string): { heading: string; rows: SpawnQuickPickItem[] } {
+    const existing = groups.get(key)
+    if (existing) return existing
+    const created = { heading, rows: [] as SpawnQuickPickItem[] }
+    groups.set(key, created)
+    return created
+  }
+
   for (const { adapter } of mapAdapterQuickPickItems(adapters)) {
     const description = adapter.hint ?? adapter.status ?? adapter.name
-    const models = adapter.models ?? []
-    if (models.length === 0) {
-      items.push({ label: adapter.slug, description, adapter })
+    const entries = modelEntriesOf(adapter)
+    if (entries.length === 0) {
+      groupFor(`adapter:${adapter.slug}`, adapter.slug).rows.push({ label: adapter.slug, description, adapter })
       continue
     }
-    for (const model of models) {
-      items.push({ label: `${adapter.slug} · ${model}`, description, adapter, model })
+    for (const entry of entries) {
+      const key = entry.provider ?? `adapter:${adapter.slug}`
+      groupFor(key, entry.provider ?? adapter.slug).rows.push({
+        label: entry.id,
+        description: adapter.slug,
+        adapter,
+        model: entry.id,
+        ...(entry.mode ? { mode: entry.mode } : {}),
+      })
     }
-    items.push({ label: `${adapter.slug} · ${CUSTOM_MODEL_LABEL}`, description, adapter, custom: true })
+    customRows.push({ label: `${adapter.slug} · ${CUSTOM_MODEL_LABEL}`, description, adapter, custom: true })
+  }
+
+  const items: SpawnQuickPickItem[] = []
+  for (const group of groups.values()) {
+    items.push({ label: group.heading, kind: SEPARATOR_KIND })
+    items.push(...group.rows)
+  }
+  if (customRows.length > 0) {
+    items.push({ label: CUSTOM_MODEL_SECTION_LABEL, kind: SEPARATOR_KIND })
+    items.push(...customRows)
   }
   items.push({ label: CONFIGURE_LABEL, configure: true })
   return items
+}
+
+export interface ProviderQuickPickItem {
+  label: string
+  description?: string
+  /** Filter key for the model step — undefined means "this adapter's own
+   *  unstated-provider models" (there's no real provider to narrow by, so
+   *  the row is labelled with the adapter's name instead of a provider id,
+   *  mirroring mapSpawnQuickPickItems' own-name grouping). */
+  provider?: string
+}
+
+/**
+ * Provider picker for the Configure… chain — the step the plan adds ahead
+ * of model selection. Options are the distinct `provider` values across the
+ * adapter's declared models (unstated entries collapse to one "adapter's
+ * own name" option), in first-appearance order. Empty when the adapter
+ * declares no models at all, so the caller can skip straight to the
+ * existing (custom-only) model step.
+ */
+export function mapProviderQuickPickItems(adapter: SpawnAdapterInfo): ProviderQuickPickItem[] {
+  const seen = new Map<string | undefined, ProviderQuickPickItem>()
+  for (const entry of modelEntriesOf(adapter)) {
+    const key = entry.provider
+    if (!seen.has(key)) {
+      seen.set(key, { label: key ?? adapter.slug, provider: key })
+    }
+  }
+  return [...seen.values()]
 }
 
 /** Mirrors vscode's `WorkspaceFolder` — only the fields this module needs. */
