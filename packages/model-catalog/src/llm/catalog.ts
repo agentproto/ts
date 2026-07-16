@@ -364,6 +364,202 @@ export const LLM_PRICING_CATALOG = {
     vendor: "openai",
     provider: "openai",
   },
+  // ── OpenAI GPT-5.6 series ──────────────────────────────────────────────
+  // Source: OpenRouter pricing (fetched 2026-07-16)
+  "gpt-5.6-luna": {
+    // $1.00 in / $6.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.0,
+    outputPer1M: 6.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.6-luna-pro": {
+    // $1.00 in / $6.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.0,
+    outputPer1M: 6.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.6-terra": {
+    // $2.50 in / $15.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 2.5,
+    outputPer1M: 15.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.6-terra-pro": {
+    // $2.50 in / $15.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 2.5,
+    outputPer1M: 15.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.6-sol": {
+    // $5.00 in / $30.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 5.0,
+    outputPer1M: 30.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.6-sol-pro": {
+    // $5.00 in / $30.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 5.0,
+    outputPer1M: 30.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT-5 min/nano (lite variants) ──────────────────────────────
+  "gpt-5-mini": {
+    // $0.25 in / $2.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 0.25,
+    outputPer1M: 2.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5-nano": {
+    // $0.05 in / $0.40 out per 1M. Cache read 0.1x.
+    inputPer1M: 0.05,
+    outputPer1M: 0.4,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT-5 codex (coding specialist) ─────────────────────────────
+  "gpt-5-codex": {
+    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.25,
+    outputPer1M: 10.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT-5 pro (reasoning-enhanced) ──────────────────────────────
+  "gpt-5-pro": {
+    // $15.00 in / $120.00 out per 1M. No cache discount.
+    inputPer1M: 15.0,
+    outputPer1M: 120.0,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT-5 image generation ──────────────────────────────────────
+  "gpt-5-image": {
+    // $10.00 in / $10.00 out (+ $40/1M image output). Cache read 0.125x.
+    inputPer1M: 10.0,
+    outputPer1M: 10.0,
+    cacheReadMultiplier: 0.125,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5-image-mini": {
+    // $2.50 in / $2.00 out (+ $8/1M image output). Cache read 0.1x.
+    inputPer1M: 2.5,
+    outputPer1M: 2.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT audio (multimodal) ──────────────────────────────────────
+  "gpt-audio": {
+    // $2.50 in / $10.00 out (+ audio in $32/1M, audio out $64/1M).
+    inputPer1M: 2.5,
+    outputPer1M: 10.0,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-audio-mini": {
+    // $0.60 in / $2.40 out (+ audio in $0.60/1M, audio out $2.40/1M).
+    inputPer1M: 0.6,
+    outputPer1M: 2.4,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI o-series (reasoning models) ─────────────────────────────────
+  // Extended reasoning variants with cache support.
+  "o3-pro": {
+    // $20.00 in / $80.00 out per 1M. No cache discount.
+    inputPer1M: 20.0,
+    outputPer1M: 80.0,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "o3-deep-research": {
+    // $10.00 in / $40.00 out per 1M. Cache read 0.25x.
+    inputPer1M: 10.0,
+    outputPer1M: 40.0,
+    cacheReadMultiplier: 0.25,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "o4-mini-high": {
+    // $1.10 in / $4.40 out per 1M. Cache read 0.25x.
+    inputPer1M: 1.1,
+    outputPer1M: 4.4,
+    cacheReadMultiplier: 0.25,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "o4-mini-deep-research": {
+    // $2.00 in / $8.00 out per 1M. Cache read 0.25x.
+    inputPer1M: 2.0,
+    outputPer1M: 8.0,
+    cacheReadMultiplier: 0.25,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "o1-pro": {
+    // $150.00 in / $600.00 out per 1M. No cache discount.
+    inputPer1M: 150.0,
+    outputPer1M: 600.0,
+    vendor: "openai",
+    provider: "openai",
+  },
+  // ── OpenAI GPT-5.1/5.2 codex (code specialist) ─────────────────────────
+  "gpt-5.1-codex": {
+    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.25,
+    outputPer1M: 10.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.1-codex-mini": {
+    // $0.25 in / $2.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 0.25,
+    outputPer1M: 2.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.1-codex-max": {
+    // $1.25 in / $10.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.25,
+    outputPer1M: 10.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.2-codex": {
+    // $1.75 in / $14.00 out per 1M. Cache read 0.1x.
+    inputPer1M: 1.75,
+    outputPer1M: 14.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "openai",
+    provider: "openai",
+  },
+  "gpt-5.2-pro": {
+    // $21.00 in / $168.00 out per 1M. No cache discount.
+    inputPer1M: 21.0,
+    outputPer1M: 168.0,
+    vendor: "openai",
+    provider: "openai",
+  },
 
   // ── MiniMax (direct SDK) ───────────────────────────────────────────────
   // Bare ids match what the MiniMax SDK expects on the wire (PascalCase

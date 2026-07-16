@@ -79,6 +79,20 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "grok-4.5",
     homepage: "https://docs.x.ai",
   },
+  openai: {
+    id: "openai",
+    label: "OpenAI",
+    description:
+      "OpenAI models via the local LLM endpoint proxy (OpenAI-compatible). " +
+      "Use model option with real upstream ids: gpt-4.1, gpt-4o, gpt-5, etc. " +
+      "Set OPENAI_API_KEY in env.",
+    schemaFlavor: "openai",
+    baseUrl: "http://localhost:18090/v1", // Routed through llm-endpoint proxy
+    keyEnv: "OPENAI_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "gpt-4.1",
+    homepage: "https://openai.com/docs",
+  },
 } as const satisfies Record<string, ProviderPreset>
 
 export type AnthropicGatewayPresetId = keyof typeof ANTHROPIC_GATEWAY_PRESETS
