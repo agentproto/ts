@@ -30,7 +30,7 @@ import {
 import { getModel } from "../registry/index.js"
 import { shouldDebit } from "../byok/index.js"
 import type { ResolvedModel } from "../registry/index.js"
-import { resolvePricing, resolveModelRoute } from "../llm/catalog.js"
+import { resolvePricing, resolveModelRoute, resolveContextWindow } from "../llm/catalog.js"
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -653,5 +653,27 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
 
     const route = resolveModelRoute(id)
     expect(route?.provider).toBe("anthropic")
+  })
+})
+
+describe("resolveContextWindow", () => {
+  it.each([
+    ["claude-opus-4-8", 1000000, 128000, "anthropic"],
+    ["claude-sonnet-5", 1000000, 128000, "anthropic"],
+    // Bare alias vs. the dated id the live Anthropic API actually returns.
+    ["claude-haiku-4-5", 200000, 64000, "anthropic"],
+    ["llama-3.3-70b-versatile", 131072, 32768, "groq"],
+    ["kimi-k2.6", 262144, undefined, "moonshot"],
+  ])("%s resolves to a live context window", (id, contextWindow, maxOutput, provider) => {
+    const entry = resolveContextWindow(id)
+    expect(entry).toBeDefined()
+    expect(entry?.contextWindow).toBe(contextWindow)
+    expect(entry?.maxOutput).toBe(maxOutput)
+    expect(entry?.provider).toBe(provider)
+  })
+
+  it("returns undefined for a non-synced provider", () => {
+    expect(resolveContextWindow("gpt-4o")).toBeUndefined()
+    expect(resolveContextWindow("glm-4.6")).toBeUndefined()
   })
 })

@@ -10,6 +10,7 @@ export {
   DEFAULT_PRICING,
   resolvePricing,
   resolveAlias,
+  resolveContextWindow,
   getModelProvider,
   resolveModelRoute,
   calculateLLMCreditCost,
@@ -26,6 +27,7 @@ export type {
   KnownLlmId,
   ModelRoute,
 } from "./catalog.js"
+export type { ContextWindowEntry } from "./context-windows.generated.js"
 export {
   WORKFLOW_FAST_MODEL,
   WORKFLOW_PREMIUM_MODEL,
