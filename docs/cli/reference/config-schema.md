@@ -98,6 +98,17 @@ agentproto config set daemon.port 18791
       "resumable": true,
       "install_hint": "npm i -g my-agent"
     }
+  },
+
+  // Where `agentproto worktree new` creates worktrees. See "worktrees" below.
+  "worktrees": {
+    "root": "~/.agentproto/worktrees"
+  },
+
+  // Named terminal/TUI launch presets for `agentproto sessions terminal
+  // --preset <name>`. See "terminalPresets" below.
+  "terminalPresets": {
+    "terra": { "argv": ["bash", "-l"], "env": { "TERM": "xterm-256color" } }
   }
 }
 ```
@@ -147,6 +158,7 @@ Defaults for `agentproto daemon` and `agentproto serve`:
 | `port`           | number   | Listen port (default `18791`).                         |
 | `bind`           | string   | Bind address (default `127.0.0.1` — loopback-only).    |
 | `allowedOrigins` | string[] | CORS allow-list for browser callers of the daemon API. |
+| `authToken`      | string   | Stable bearer token for `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route — survives restarts, unlike the per-boot `runtime.json` token. Overridden inline by `agentproto serve --auth-token <token>`. Loopback callers with no `X-Forwarded-For` header are still exempt. Unset ⇒ those routes stay open. |
 
 Verb flags override config; config overrides hard-coded defaults.
 
@@ -196,6 +208,29 @@ same slug, and both lose to a real `@agentproto/adapter-<slug>` npm package
 A malformed entry (no string `bin`) is dropped on load with a warning rather
 than failing the whole config. See
 [`concepts/adapters.md`](../concepts/adapters.md#generic-acp-agents-zero-code).
+
+### `worktrees: object`
+
+Where `agentproto worktree new` provisions new git worktrees.
+
+| Field  | Type   | Meaning                                                                                                     |
+| ------ | ------ | ------------------------------------------------------------------------------------------------------------- |
+| `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
+
+### `terminalPresets: Record<string, object>`
+
+User-defined named terminal/TUI launch recipes for `agentproto sessions
+terminal --preset <name>` — local-only, never packaged in shared adapter
+manifests or `defaults`.
+
+| Field       | Type                      | Meaning                                                              |
+| ----------- | ------------------------- | ----------------------------------------------------------------------- |
+| `argv`      | `string[]`                | Command + args to spawn. When provided, `sessions terminal` can be used without `-- <argv...>`. |
+| `env`       | `Record<string, string>`  | Extra environment variables layered on top of the daemon's inherited `process.env`. |
+| `cwd`       | `string`                  | Working directory for the PTY session. Relative paths resolve against the CLI's cwd. |
+| `workspace` | `string`                  | Workspace slug used for `cwd` fallback when `cwd` is omitted.           |
+| `name`      | `string`                  | Stable session name passed to the registry.                            |
+| `label`     | `string`                  | Human-readable label surfaced in session listings.                     |
 
 ### `tunnel: object`
 

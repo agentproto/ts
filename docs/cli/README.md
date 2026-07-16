@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.5.0`). See
+> **Status:** alpha. The package is pre-1.0 (`0.6.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 
@@ -47,6 +47,7 @@ Pick whichever matches what you're trying to do:
 - `agentproto pack skill --manifest <path> [--source <dir>] [--bump patch|minor|major] [--dry-run] [--out <dir>]` — generate a versioned skill pack
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — approve/deny held tool-permission requests (permission-hold inbox)
+- `agentproto policy <attach|status|wait|ack|ls|cancel>` — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - `agentproto presets` — list provider gateway presets + key-env status
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
@@ -56,6 +57,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
+- `agentproto worktree <ls|new|rm|archive|gc>` — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal)
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
 
 ### Concepts
