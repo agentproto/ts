@@ -60,11 +60,19 @@ const DRY_RUN = args.includes('--dry-run')
 // we ended up with releases tagged `release/2025-07` and titled "July 2025" for
 // batches that shipped in 2026. Anything date-shaped is computed here and either
 // handed to the model as fact or enforced on its output. Never asked for.
+//
+// The title used to be month-granular ("agentproto — July 2026 release"), on
+// the unstated assumption that a batch like this ships about once a month. It
+// doesn't — this repo cuts release batches multiple times a month, sometimes
+// same-day, and month-granular titles collapsed distinct releases into
+// identical, indistinguishable titles (two "July 2026 release"s, three "June
+// 2026 release"s, before this was caught and the existing ones retitled).
+// RELEASE_DATE_LONG matches the tag's own per-day granularity instead.
 
 const NOW = new Date()
 const TODAY = NOW.toISOString().slice(0, 10) // YYYY-MM-DD
 const THIS_YEAR = String(NOW.getUTCFullYear())
-const MONTH_YEAR = NOW.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+const RELEASE_DATE_LONG = NOW.toLocaleString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 const CONSOLIDATED_TAG = `release/${TODAY}`
 
 // ── logging ───────────────────────────────────────────────────────────────────
@@ -275,7 +283,7 @@ function tool_post_consolidated_release({ title, body }) {
     log(`   ⚠️  title said ${wrongYear[1]}, correcting to ${THIS_YEAR}`)
     safeTitle = safeTitle.replace(wrongYear[1], THIS_YEAR)
   }
-  if (!safeTitle) safeTitle = `agentproto — ${MONTH_YEAR} release`
+  if (!safeTitle) safeTitle = `agentproto — ${RELEASE_DATE_LONG} release`
 
   if (DRY_RUN) {
     log(`\n[dry-run] would create consolidated release "${safeTitle}" (${releaseTag}) — body on stdout`)
@@ -386,7 +394,7 @@ const TOOL_DEFS = [
       type: 'object',
       required: ['title', 'body'],
       properties: {
-        title: { type: 'string', description: `Release title. Must be "agentproto — ${MONTH_YEAR} release".` },
+        title: { type: 'string', description: `Release title. Must be "agentproto — ${RELEASE_DATE_LONG} release".` },
         body: { type: 'string', description: 'Full markdown announcement' },
         // No `tag` property, on purpose: the tag is computed from the system
         // clock. See tool_post_consolidated_release.
@@ -403,13 +411,17 @@ Your job: compose a **consolidated, human-readable release announcement** for th
 
 ## Today's date
 
-Today is **${TODAY}**. This release is the **${MONTH_YEAR}** release, and the
-current year is **${THIS_YEAR}**.
+Today is **${TODAY}** (**${RELEASE_DATE_LONG}**), and the current year is
+**${THIS_YEAR}**.
 
 Use those values verbatim wherever the announcement needs a date. Do not infer
 the date from your own training, from version numbers, or from anything you read
-in the repo — you will get it wrong. The title must read exactly:
-\`agentproto — ${MONTH_YEAR} release\`.
+in the repo — you will get it wrong. This project ships release batches far
+more often than monthly, sometimes more than once in the same week — never
+describe this as "the ${NOW.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })} release"
+or imply it is the only release of its month; it is one dated batch among
+several. The title must read exactly:
+\`agentproto — ${RELEASE_DATE_LONG} release\`.
 
 ## Workflow
 
@@ -422,7 +434,7 @@ in the repo — you will get it wrong. The title must read exactly:
 ## Release announcement format
 
 \`\`\`markdown
-# agentproto — ${MONTH_YEAR} release
+# agentproto — ${RELEASE_DATE_LONG} release
 
 > [One-sentence hook about the most significant thing in this release]
 
@@ -569,4 +581,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await runAgenticLoop()
 }
 
-export { assertPublishable, TRACE_MARKERS, CONSOLIDATED_TAG, MONTH_YEAR, THIS_YEAR, TODAY }
+export { assertPublishable, TRACE_MARKERS, CONSOLIDATED_TAG, RELEASE_DATE_LONG, THIS_YEAR, TODAY }
