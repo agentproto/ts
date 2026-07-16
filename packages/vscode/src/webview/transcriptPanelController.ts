@@ -22,6 +22,7 @@
 
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
+import { join } from "node:path"
 
 import * as vscode from "vscode"
 
@@ -42,7 +43,9 @@ import {
   stringifyToolValue,
   type PresentedConversation,
 } from "./conversation.js"
-import { buildAttachmentName, resolveAttachmentsCwd } from "./attachments.logic.js"
+import { buildAttachmentName, buildDroppedName, resolveAttachmentsCwd } from "./attachments.logic.js"
+import { filterMentionCandidates, type MentionCandidate } from "./mentions.logic.js"
+import { listRepoFiles } from "./mentionSource.js"
 import { diffConversation } from "./conversationPatch.js"
 import { ansiToHtml } from "./ansi.js"
 import { escapeHtml, renderMarkdown } from "./markdown.js"
@@ -245,6 +248,13 @@ export class TranscriptPanelController {
   private isSending = false
   private disposed = false
   private exited = false
+  /** Latest known descriptor — the source of the session cwd used to scope
+   *  @mention listing (attachment STORAGE deliberately uses the agentproto home,
+   *  not this). Seeded from the initial descriptor, refreshed on every update. */
+  private currentSession: SessionDescriptor
+  /** Cached @mention file list, recomputed when a fresh mention opens (empty
+   *  query) so a new file shows up without re-spawning git on every keystroke. */
+  private mentionFiles: string[] | undefined
 
   // Structured-mode state.
   private readonly records: SessionEventRecord[] = []
@@ -261,6 +271,7 @@ export class TranscriptPanelController {
     this.client = opts.client
     this.messenger = opts.messenger
     this.initialSession = opts.initialSession
+    this.currentSession = opts.initialSession
     this.pollIntervalMs = opts.pollIntervalMs ?? 250
     this.autoPoll = opts.autoPoll ?? true
     this.fetchImpl = opts.fetchImpl ?? fetch
@@ -274,6 +285,7 @@ export class TranscriptPanelController {
 
   onSessionUpdate(session: SessionDescriptor): void {
     this.exited = isExited(session.status)
+    this.currentSession = session
     if (!this.initSent) {
       this.pendingSessionUpdate = session
       return
@@ -315,6 +327,7 @@ export class TranscriptPanelController {
     ])
     const session = currentSession ?? this.pendingSessionUpdate ?? this.initialSession
     this.exited = isExited(session.status)
+    this.currentSession = session
     this.mode = loaded.mode
     // `init` ships this same snapshot, so the first live update diffs
     // against what the webview actually has instead of treating every turn
@@ -543,17 +556,57 @@ export class TranscriptPanelController {
    * verified empirically against a live claude-code session before this shipped.
    */
   async onAttachImage(bytes: ArrayBuffer | ArrayBufferView, mime: string): Promise<void> {
+    // A clipboard paste has no name of its own → a timestamped one.
+    await this.uploadAttachment(bytes, mime, buildAttachmentName(mime, new Date(), shortSuffix()))
+  }
+
+  /**
+   * A file dragged from the OS filesystem (not the VS Code Explorer) — same
+   * store-then-path flow as a paste, but it carries its own name so we keep the
+   * human stem (with a uniqueness suffix) instead of a `paste-…` timestamp.
+   */
+  async onAttachFile(bytes: ArrayBuffer | ArrayBufferView, mime: string, name: string): Promise<void> {
+    await this.uploadAttachment(bytes, mime, buildDroppedName(name, mime, shortSuffix()))
+  }
+
+  private async uploadAttachment(
+    bytes: ArrayBuffer | ArrayBufferView,
+    mime: string,
+    storedName: string,
+  ): Promise<void> {
     const cwd = resolveAttachmentsCwd(process.env, homedir())
-    const name = buildAttachmentName(mime, new Date(), randomBytes(3).toString("hex"))
     try {
-      const { path } = await this.client.uploadFile(cwd, name, bytes, mime)
+      const { path } = await this.client.uploadFile(cwd, storedName, bytes, mime)
       this.messenger.postMessage({ type: "attachmentUploaded", path })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      // Never a silent drop — the whole point of the feature is that a paste the
-      // agent can't get is SAID, not swallowed.
+      // Never a silent drop — the whole point of the feature is that an
+      // attachment the agent can't get is SAID, not swallowed.
       this.messenger.postMessage({ type: "attachError", title: "Attachment upload failed", message })
     }
+  }
+
+  /**
+   * Answer an `@file` mention query with candidates scoped to the SESSION's cwd
+   * (not the editor window — they can differ), honoring `.gitignore`. The list
+   * is cached and only recomputed when a fresh mention opens (empty query), so
+   * a keystroke-per-request never re-spawns git; the newest query's results are
+   * tagged so the webview can drop a stale response.
+   */
+  async onRequestMentions(query: string): Promise<void> {
+    const cwd = this.currentSession.cwd
+    if (!cwd) {
+      this.messenger.postMessage({ type: "mentionCandidates", query, items: [] })
+      return
+    }
+    if (query.length === 0 || this.mentionFiles === undefined) {
+      this.mentionFiles = await listRepoFiles(cwd).catch(() => [])
+    }
+    const items: MentionCandidate[] = filterMentionCandidates(this.mentionFiles, query, 50).map(rel => ({
+      path: join(cwd, rel),
+      label: rel,
+    }))
+    this.messenger.postMessage({ type: "mentionCandidates", query, items })
   }
 
   dispose(): void {
@@ -589,6 +642,13 @@ async function fetchRawContent(client: DaemonClient, id: string): Promise<RawCon
       return { kind: "markdown", text: "" }
     }
   }
+}
+
+/** A short random token that keeps two same-second/same-name attachments from
+ *  colliding on one storage filename. Hex from a CSPRNG — collision-resistant
+ *  enough for a filename suffix without pulling in a uuid dep. */
+function shortSuffix(): string {
+  return randomBytes(3).toString("hex")
 }
 
 /**

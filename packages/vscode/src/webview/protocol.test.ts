@@ -59,4 +59,16 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4) })).toBe(false)
     expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: 5 })).toBe(false)
   })
+
+  it("accepts attachFile only with bytes, mime AND a name", () => {
+    expect(isWebviewMessage({ type: "attachFile", bytes: new Uint8Array([1]), mime: "application/pdf", name: "x.pdf" })).toBe(true)
+    expect(isWebviewMessage({ type: "attachFile", bytes: new Uint8Array([1]), mime: "application/pdf" })).toBe(false)
+    expect(isWebviewMessage({ type: "attachFile", bytes: "nope", mime: "application/pdf", name: "x.pdf" })).toBe(false)
+  })
+
+  it("accepts requestMentions with a string query (empty is valid — the initial list)", () => {
+    expect(isWebviewMessage({ type: "requestMentions", query: "" })).toBe(true)
+    expect(isWebviewMessage({ type: "requestMentions", query: "src/" })).toBe(true)
+    expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
+  })
 })

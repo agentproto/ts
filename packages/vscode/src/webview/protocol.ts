@@ -7,6 +7,7 @@
 import type { SessionDescriptor } from "../client/types.js"
 import { isBinaryPayload } from "./attachments.logic.js"
 import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
+import type { MentionCandidate } from "./mentions.logic.js"
 import type { SendFailureKind } from "./transcript.logic.js"
 
 /**
@@ -117,6 +118,13 @@ export type ExtMessage =
    * silent drop is the exact failure mode this feature is built to avoid.
    */
   | { type: "attachError"; title: string; message: string }
+  /**
+   * The `@file` candidate list for a mention query, scoped to the session's cwd
+   * (honoring `.gitignore`). `query` is echoed back so the webview can discard a
+   * response that arrived after the user typed on — only the newest query's
+   * results should paint.
+   */
+  | { type: "mentionCandidates"; query: string; items: MentionCandidate[] }
 
 /**
  * Messages sent from the webview to the extension host.
@@ -148,6 +156,18 @@ export type WebviewMessage =
    * boundary, and a base64 STRING never sneaks through as if it were bytes.
    */
   | { type: "attachImage"; bytes: ArrayBuffer | ArrayBufferView; mime: string }
+  /**
+   * A file dragged from the OS (not the VS Code Explorer) — it carries its own
+   * `name` but, like a paste, exists only as bytes the host must store. A file
+   * dragged FROM the Explorer never comes this way: it has a real on-disk path
+   * and the webview inserts that directly (Decision A1), no upload.
+   */
+  | { type: "attachFile"; bytes: ArrayBuffer | ArrayBufferView; mime: string; name: string }
+  /**
+   * Ask the host for `@file` candidates matching `query`, scoped to the
+   * session's cwd. The host replies with `mentionCandidates`.
+   */
+  | { type: "requestMentions"; query: string }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -164,6 +184,10 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.segmentId === "string" && (m.field === "input" || m.field === "output")
     case "attachImage":
       return isBinaryPayload(m.bytes) && typeof m.mime === "string"
+    case "attachFile":
+      return isBinaryPayload(m.bytes) && typeof m.mime === "string" && typeof m.name === "string"
+    case "requestMentions":
+      return typeof m.query === "string"
     default:
       return false
   }

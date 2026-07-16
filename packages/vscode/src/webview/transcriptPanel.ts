@@ -24,6 +24,13 @@ import type { SessionStore } from "../services/sessionStore.js"
 import { registerOutputDocuments, type OutputDocuments } from "../services/outputDocument.js"
 import { activityFor, TREE_REPAINT_INTERVAL_MS, type SessionActivity } from "../views/sessionsTree.logic.js"
 import { TAB_ICON_DIR, tabIconFor } from "./tabIcon.logic.js"
+import {
+  ATTACHMENT_COUNT_CAP,
+  MAX_ATTACHMENT_BYTES,
+  WARN_ATTACHMENT_BYTES,
+  parseUriList,
+} from "./attachments.logic.js"
+import { mentionQueryAt } from "./mentions.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -226,6 +233,12 @@ async function handleWebviewMessage(
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
       return
+    case "attachFile":
+      await controller.onAttachFile(msg.bytes, msg.mime, msg.name)
+      return
+    case "requestMentions":
+      await controller.onRequestMentions(msg.query)
+      return
     case "openToolIo": {
       const doc = controller.resolveToolIo(msg.segmentId, msg.field)
       if (!doc) {
@@ -259,6 +272,15 @@ export function buildHtml(nonce: string): string {
     "style-src 'unsafe-inline'",
     `script-src 'nonce-${nonce}'`,
   ].join("; ")
+
+  // Two pure helpers must run INSIDE the webview (caret detection for @mentions,
+  // uri-list parsing for drops). The webview script is a string with no import
+  // mechanism, so rather than hand-copy them — and risk a copy that silently
+  // drifts from the tested source — we inject them BY VALUE from the very
+  // functions the logic-module unit tests pin. Safe because both are
+  // self-contained (no module-scope references) and the build isn't minified,
+  // so `.toString()` yields a clean, named, hoistable declaration.
+  const injectedHelpers = [mentionQueryAt, parseUriList].map(fn => fn.toString()).join("\n      ")
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -677,6 +699,7 @@ export function buildHtml(nonce: string): string {
     }
     #queued-cancel { flex: 0 0 auto; }
     #composer {
+      position: relative;
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -687,6 +710,82 @@ export function buildHtml(nonce: string): string {
     }
     #composer:focus-within { border-color: var(--vscode-focusBorder); }
     #composer.disabled { opacity: 0.6; }
+    /* Drop affordance: the composer is the drop target, so it lights up while a
+       file is dragged over the panel. */
+    #composer.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
+    /* ── Attachment chips ─────────────────────────────────────────────
+       A pasted/dragged/mentioned path becomes a removable chip here, not
+       raw text in the box — the path still rides along in the sent prompt
+       (composePrompt appends it), this is just the editable pre-send view. */
+    #composer-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #composer-attachments[hidden] { display: none; }
+    .attach-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 260px;
+      padding: 2px 4px 2px 8px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128,128,128,0.35)));
+      border-radius: 10px;
+      background: var(--vscode-badge-background, rgba(128,128,128,0.18));
+      color: var(--vscode-badge-foreground, var(--vscode-editor-foreground));
+      font-size: 0.85em;
+    }
+    .attach-chip-label {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attach-chip-remove {
+      flex: 0 0 auto;
+      cursor: pointer;
+      opacity: 0.6;
+      padding: 0 3px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .attach-chip-remove:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.25)); }
+    /* ── @mention popup ───────────────────────────────────────────────
+       Floats above the composer; the webview renders it itself (a VS Code
+       CompletionProvider isn't available inside a webview). */
+    #mention-popup {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: calc(100% + 4px);
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 5;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.4));
+      border-radius: 6px;
+      background: var(--vscode-editorSuggestWidget-background, var(--vscode-input-background));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+    #mention-popup[hidden] { display: none; }
+    .mention-item {
+      padding: 4px 10px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.9em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+    }
+    .mention-item.active,
+    .mention-item:hover {
+      background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground));
+      color: var(--vscode-list-activeSelectionForeground, var(--vscode-editor-foreground));
+    }
+    .mention-empty {
+      padding: 4px 10px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
     #input {
       width: 100%;
       resize: none;
@@ -820,7 +919,9 @@ export function buildHtml(nonce: string): string {
       <button id="queued-cancel" title="Discard the queued message">✕</button>
     </div>
     <div id="composer">
-      <textarea id="input" rows="1" placeholder="Reply to the agent…"></textarea>
+      <div id="mention-popup" hidden></div>
+      <div id="composer-attachments" hidden></div>
+      <textarea id="input" rows="1" placeholder="Reply to the agent… (paste, drop, or @-mention a file)"></textarea>
       <div id="composer-bar">
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip"></span>
@@ -840,6 +941,14 @@ export function buildHtml(nonce: string): string {
       // performs the clamp — the two can never disagree about how many lines
       // are on screen, so "N more" is always arithmetic the user can trust.
       const MAX_IO_LINES = ${TOOL_IO_MAX_LINES};
+      // Attachment caps — interpolated from attachments.logic.ts so the webview
+      // and the host can never disagree about the limits (same reasoning as
+      // MAX_IO_LINES above).
+      const MAX_ATTACHMENT_BYTES = ${MAX_ATTACHMENT_BYTES};
+      const WARN_ATTACHMENT_BYTES = ${WARN_ATTACHMENT_BYTES};
+      const ATTACHMENT_COUNT_CAP = ${ATTACHMENT_COUNT_CAP};
+      // Injected by value from the tested logic modules — see buildHtml.
+      ${injectedHelpers}
       const headerTitle = document.getElementById('header-title');
       const costBtn = document.getElementById('cost-btn');
       const costPopover = document.getElementById('cost-popover');
@@ -871,6 +980,8 @@ export function buildHtml(nonce: string): string {
       const queuedRow = document.getElementById('queued');
       const queuedLabel = document.getElementById('queued-label');
       const queuedCancel = document.getElementById('queued-cancel');
+      const attachmentsRow = document.getElementById('composer-attachments');
+      const mentionPopup = document.getElementById('mention-popup');
 
       // Mirrors STALL_AFTER_MS in views/sessionsTree.logic.ts — the tree and
       // this panel must not disagree about whether a session is stalled.
@@ -898,6 +1009,14 @@ export function buildHtml(nonce: string): string {
        * ends — or immediately, if they choose to interrupt.
        */
       let queuedText = null;
+      // Pending attachments: { path, label }. Their paths are appended to the
+      // prompt by composePrompt() at send time, so the queue keeps storing a
+      // plain string and nothing here has to survive a mid-turn queue.
+      let attachments = [];
+      // Active @mention: { start, end, query, items, active } or null. start/end
+      // bracket the @token in the textarea so a selection replaces exactly it;
+      // active is the index of the highlighted item.
+      let mention = null;
       let isScrolledUp = false;
       let isSending = false;
       let mode = 'raw';
@@ -921,7 +1040,8 @@ export function buildHtml(nonce: string): string {
       // dead session, no killing an already-dead one, no interrupting an agent
       // that isn't working.
       function refreshComposer() {
-        const hasText = Boolean(input.value.trim());
+        // An attachment alone is sendable — "here, look at this" with no words.
+        const hasText = Boolean(input.value.trim()) || attachments.length > 0;
         const live = !exited && !isSending;
         input.disabled = !live;
         sendBtn.disabled = !live || !hasText;
@@ -1520,25 +1640,122 @@ export function buildHtml(nonce: string): string {
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
 
+      // The wire prompt is text + every attachment path, space-joined: v1 hands
+      // the agent readable PATHS (Decision A), so a chip collapses back into the
+      // prompt string here. Keeping it a plain string is what lets the mid-turn
+      // queue (which stores one string) carry attachments for free.
+      function composePrompt() {
+        const parts = [];
+        const typed = input.value.trim();
+        if (typed) parts.push(typed);
+        for (let i = 0; i < attachments.length; i++) parts.push(attachments[i].path);
+        return parts.join(' ');
+      }
+
       function send(interrupt) {
-        const text = input.value;
-        if (!text || !text.trim()) return;
-        const trimmed = text.trim();
+        const composed = composePrompt();
+        if (!composed) return;
         input.value = '';
+        attachments = [];
+        renderAttachments();
+        closeMention();
         autoGrow();
         clearError();
         // Mid-turn and not explicitly interrupting: hold it rather than POST a
         // prompt the daemon will refuse with a 409. It goes out on turn-end.
         if (busy && !interrupt) {
-          queuedText = trimmed;
+          queuedText = composed;
           refreshComposer();
           return;
         }
-        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: trimmed });
+        vscode.postMessage({ type: interrupt ? 'interruptSend' : 'send', text: composed });
         refreshComposer();
       }
 
+      // ── Attachment chips ──────────────────────────────────────────────
+      function attachmentLabel(path) {
+        const parts = path.split(/[\\/]/);
+        return parts[parts.length - 1] || path;
+      }
+
+      function renderAttachments() {
+        attachmentsRow.textContent = '';
+        attachmentsRow.hidden = attachments.length === 0;
+        for (let i = 0; i < attachments.length; i++) {
+          const att = attachments[i];
+          const chip = document.createElement('span');
+          chip.className = 'attach-chip';
+          chip.title = att.path;
+          const label = document.createElement('span');
+          label.className = 'attach-chip-label';
+          label.textContent = att.label;
+          chip.appendChild(label);
+          const remove = document.createElement('span');
+          remove.className = 'attach-chip-remove';
+          remove.textContent = '✕';
+          remove.title = 'Remove attachment';
+          // Bind the path, not the index — the row is rebuilt on every change,
+          // so an index would go stale the moment an earlier chip is removed.
+          const path = att.path;
+          remove.addEventListener('click', function() { removeAttachment(path); });
+          chip.appendChild(remove);
+          attachmentsRow.appendChild(chip);
+        }
+      }
+
+      // Add a ready path (already on disk) as a chip. Enforces the count cap and
+      // de-dupes, so mentioning or dropping the same file twice is a no-op.
+      function addAttachment(path) {
+        if (!path) return;
+        for (let i = 0; i < attachments.length; i++) {
+          if (attachments[i].path === path) { refreshComposer(); return; }
+        }
+        if (attachments.length >= ATTACHMENT_COUNT_CAP) {
+          showError('Too many attachments',
+            'Up to ' + ATTACHMENT_COUNT_CAP + ' attachments per message. Remove one to add another.');
+          return;
+        }
+        attachments.push({ path: path, label: attachmentLabel(path) });
+        renderAttachments();
+        refreshComposer();
+        input.focus();
+      }
+
+      function removeAttachment(path) {
+        attachments = attachments.filter(function(a) { return a.path !== path; });
+        renderAttachments();
+        refreshComposer();
+      }
+
+      // Read a File to bytes and hand it to the host to store. Pre-checks the
+      // size so an oversize file is refused HERE with a friendly message rather
+      // than eating the route's 413 (Decision G). kind: 'image' (paste, no
+      // name) or 'file' (drop, named).
+      function uploadFile(file, kind) {
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          const mib = Math.round(file.size / (1024 * 1024));
+          showError('File too large', 'That file is ' + mib + ' MiB — over the 32 MiB limit. It was not attached.');
+          return;
+        }
+        if (file.size > WARN_ATTACHMENT_BYTES) {
+          const mib = Math.round(file.size / (1024 * 1024));
+          showError('Large attachment', 'That file is ' + mib + ' MiB — large for an attachment, but it was attached.');
+        }
+        file.arrayBuffer().then(function(buf) {
+          if (kind === 'image') {
+            vscode.postMessage({ type: 'attachImage', bytes: buf, mime: file.type });
+          } else {
+            vscode.postMessage({ type: 'attachFile', bytes: buf, mime: file.type, name: file.name || 'file' });
+          }
+        }).catch(function() {
+          showError('Attachment failed', 'Could not read the file.');
+        });
+      }
+
       input.addEventListener('keydown', function(e) {
+        // While the @mention popup is open it owns the arrow/enter/tab/escape
+        // keys — otherwise Enter would send instead of picking a file.
+        if (mention && handleMentionKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           send(false);
@@ -1548,23 +1765,11 @@ export function buildHtml(nonce: string): string {
       input.addEventListener('input', function() {
         autoGrow();
         refreshComposer();
+        updateMention();
       });
 
-      // Drop the agent-readable path into the composer as TEXT, not a chip:
-      // v1 hands over a path (Decision A) and lets the user edit the prompt
-      // around it before sending. A space is inserted only when the composer
-      // doesn't already end in whitespace, so consecutive pastes don't run the
-      // paths together.
-      function insertAttachmentPath(path) {
-        if (!path) return;
-        const cur = input.value;
-        const last = cur.charAt(cur.length - 1);
-        const sep = cur.length > 0 && last !== ' ' && last !== '\\n' ? ' ' : '';
-        input.value = cur + sep + path + ' ';
-        autoGrow();
-        refreshComposer();
-        input.focus();
-      }
+      // Clicking elsewhere in the textarea moves the caret out of an @token.
+      input.addEventListener('click', updateMention);
 
       // Paste an image → the agent reads it. The webview can't touch disk, so
       // it reads the pasted image to bytes and ships them to the host, which
@@ -1583,15 +1788,124 @@ export function buildHtml(nonce: string): string {
         }
         if (images.length === 0) return; // no image → let the normal text paste run
         e.preventDefault();
-        for (let j = 0; j < images.length; j++) {
-          const file = images[j];
-          file.arrayBuffer().then(function(buf) {
-            vscode.postMessage({ type: 'attachImage', bytes: buf, mime: file.type });
-          }).catch(function() {
-            showError('Attachment failed', 'Could not read the pasted image from the clipboard.');
-          });
+        for (let j = 0; j < images.length; j++) uploadFile(images[j], 'image');
+      });
+
+      // ── Drag and drop ─────────────────────────────────────────────────
+      // A file dragged from the VS Code Explorer arrives as a uri-list with a
+      // REAL on-disk path → attach it directly, no upload (Decision A1). A file
+      // dragged from the OS arrives as raw bytes in dataTransfer.files → upload
+      // it like a paste (A2).
+      composer.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+        composer.classList.add('drag-over');
+      });
+      composer.addEventListener('dragleave', function() { composer.classList.remove('drag-over'); });
+      composer.addEventListener('drop', function(e) {
+        e.preventDefault();
+        composer.classList.remove('drag-over');
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        const uriList = (dt.getData && (dt.getData('application/vnd.code.uri-list') || dt.getData('text/uri-list'))) || '';
+        const paths = parseUriList(uriList);
+        if (paths.length > 0) {
+          for (let i = 0; i < paths.length; i++) addAttachment(paths[i]);
+          return;
+        }
+        const files = dt.files;
+        if (files && files.length > 0) {
+          for (let j = 0; j < files.length; j++) uploadFile(files[j], 'file');
         }
       });
+
+      // ── @mention popup ────────────────────────────────────────────────
+      function closeMention() {
+        mention = null;
+        mentionPopup.hidden = true;
+        mentionPopup.textContent = '';
+      }
+
+      // Recompute the active @token from the caret; ask the host for candidates.
+      function updateMention() {
+        const found = mentionQueryAt(input.value, input.selectionStart == null ? input.value.length : input.selectionStart);
+        if (!found) { closeMention(); return; }
+        // Keep any already-fetched items so the popup doesn't flicker empty
+        // between the request and the response; correlate the response by query.
+        mention = { start: found.start, end: found.end, query: found.query, items: mention ? mention.items : [], active: 0 };
+        renderMention();
+        vscode.postMessage({ type: 'requestMentions', query: found.query });
+      }
+
+      function renderMention() {
+        if (!mention) return;
+        mentionPopup.textContent = '';
+        if (mention.items.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'mention-empty';
+          empty.textContent = 'No matching files';
+          mentionPopup.appendChild(empty);
+          mentionPopup.hidden = false;
+          return;
+        }
+        for (let i = 0; i < mention.items.length; i++) {
+          const item = mention.items[i];
+          const row = document.createElement('div');
+          row.className = 'mention-item' + (i === mention.active ? ' active' : '');
+          row.textContent = item.label;
+          row.title = item.path;
+          const idx = i;
+          row.addEventListener('mousedown', function(ev) {
+            // mousedown, not click: click fires after the textarea blurs, which
+            // would tear the mention state down before the handler runs.
+            ev.preventDefault();
+            chooseMention(idx);
+          });
+          mentionPopup.appendChild(row);
+        }
+        mentionPopup.hidden = false;
+      }
+
+      // Returns true if it consumed the key (popup navigation), false otherwise.
+      function handleMentionKey(e) {
+        if (!mention) return false;
+        if (e.key === 'Escape') { e.preventDefault(); closeMention(); return true; }
+        if (mention.items.length === 0) return false;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          mention.active = (mention.active + 1) % mention.items.length;
+          renderMention();
+          return true;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          mention.active = (mention.active - 1 + mention.items.length) % mention.items.length;
+          renderMention();
+          return true;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          chooseMention(mention.active);
+          return true;
+        }
+        return false;
+      }
+
+      // Replace the @token with the chosen file — as a chip, and the leftover
+      // text keeps the caret. The path rides in composePrompt at send time.
+      function chooseMention(index) {
+        if (!mention || !mention.items[index]) return;
+        const chosen = mention.items[index];
+        const before = input.value.slice(0, mention.start);
+        const after = input.value.slice(mention.end);
+        const sep = after.length > 0 && after.charAt(0) !== ' ' ? ' ' : '';
+        input.value = before + after.replace(/^\\s*/, sep ? '' : '');
+        // Trim a leading space we might have left where the @token was.
+        if (before.length === 0) input.value = input.value.replace(/^\\s+/, '');
+        closeMention();
+        addAttachment(chosen.path);
+        autoGrow();
+      }
 
       sendBtn.addEventListener('click', function() { send(false); });
       // Interrupt only ever acts on the queued message — it's the only thing
@@ -1666,10 +1980,19 @@ export function buildHtml(nonce: string): string {
             setSending(false);
             break;
           case 'attachmentUploaded':
-            insertAttachmentPath(msg.path);
+            addAttachment(msg.path);
             break;
           case 'attachError':
             showError(msg.title || 'Attachment failed', msg.message || '');
+            break;
+          case 'mentionCandidates':
+            // Ignore a response that arrived after the user typed on — only the
+            // query currently in the box should paint (see updateMention).
+            if (mention && msg.query === mention.query) {
+              mention.items = msg.items || [];
+              if (mention.active >= mention.items.length) mention.active = 0;
+              renderMention();
+            }
             break;
           case 'sendError':
             setSending(false);
