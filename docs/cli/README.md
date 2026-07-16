@@ -40,16 +40,19 @@ Pick whichever matches what you're trying to do:
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
 - [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
+- [`agentproto cron`](./verbs/cron.md) — durable cron jobs on the daemon (command, fresh agent, or re-prompt a live session)
 - [`agentproto daemon`](./verbs/daemon.md) — install/start/stop the background service
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile
+- [`agentproto install-mcp`](./verbs/install-mcp.md) — register the daemon's MCP server with installed coding CLIs
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
-- `agentproto pack skill --manifest <path> [--source <dir>] [--bump patch|minor|major] [--dry-run] [--out <dir>]` — generate a versioned skill pack
+- [`agentproto onboard`](./verbs/onboard.md) — first-run: register MCP + install the skill pack in one pass
+- [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — approve/deny held tool-permission requests (permission-hold inbox)
-- `agentproto policy <attach|status|wait|ack|ls|cancel>` — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
-- `agentproto presets` — list provider gateway presets + key-env status
+- [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
+- [`agentproto presets`](./verbs/presets.md) — list provider gateway presets + key-env status
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop
@@ -57,8 +60,8 @@ Pick whichever matches what you're trying to do:
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
 - [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
-- `agentproto worktree <ls|new|rm|archive|gc>` — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal)
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
+- [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
 
 ### Concepts
 

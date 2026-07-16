@@ -34,6 +34,13 @@ Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → def
   offered a y/n auto-fix, or `--fix-auto` to apply without asking.
 - `pnpm review:loop`    — review → fix → re-review until approve or `maxLoops`
   (`--max N` to override). Fixes edit the working tree (uncommitted).
+- `pnpm cli-docs:check` — deterministic. A verb with no `docs/cli/verbs/` page
+  is an **error** (exits non-zero) — wired as `pretest`, so it gates `pnpm test`.
+  A drifted `agentproto <ver>` example is an **advisory warning** (never fails
+  the gate, so a version bump can't strand CI); `cli-docs:ai` fixes it.
+- `pnpm cli-docs:ai`    — the fix flow: the detector's gaps become a goal the
+  `code` actor writes (new verb pages, version fixes), then it re-checks
+  coverage. Edits are uncommitted — commit, then `pnpm review:ai` (or CI) judges.
 - On `git commit` / `git push` — the husky hooks (`.husky/pre-commit`,
   `.husky/pre-push`) call `scripts/agentflow/hook.mjs <trigger>`, which runs
   any feature whose `stage` matches. Failures warn but don't block (a
@@ -112,6 +119,7 @@ The loop keeps the *actor* on one session (continuity) but the *judge* fresh
 | `primitives/review.mjs`       | review primitive — `gatherDiff` + `reviewDiff` (judge)      |
 | `primitives/code.mjs`         | code primitive — `runCode` (actor, session-carrying)        |
 | `loop.mjs`                    | review→fix→re-review loop (composes the two primitives)     |
+| `docs.mjs`                    | cli-docs flow — deterministic coverage detector + `code` (+ `review`) |
 | `hook.mjs`                    | git-hook dispatcher (`commit`/`push` → matching features)   |
 | `review.mjs`                  | single-shot review CLI (uses the primitives) + bypass marker|
 | `../auto-changeset.mjs`       | changeset engine (engine-routed via `llm.mjs`)              |
@@ -122,4 +130,7 @@ The loop keeps the *actor* on one session (continuity) but the *judge* fresh
   it in `config.mjs#resolveEngine`.
 - **New flow** (e.g. `describe` = PR-body generator, or `lint`): compose the
   primitives — `review` for read-only analysis, `code` to act — keyed off config.
-  CI and local share the engine + primitives; that's the point.
+  CI and local share the engine + primitives; that's the point. `docs.mjs` is a
+  worked example: a **deterministic** detector (verb-set ↔ pages, version drift)
+  finds the gap and feeds the goal, `code` writes the fix, and the detector
+  doubles as a `--check` gate so the same drift can't return.
