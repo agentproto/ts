@@ -87,9 +87,9 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
       "Use model option with real upstream ids: gpt-4.1, gpt-4o, gpt-5, etc. " +
       "Set OPENAI_API_KEY in env.",
     schemaFlavor: "openai",
-    baseUrl: "http://localhost:18090/v1", // Routed through llm-endpoint proxy
+    baseUrl: "http://localhost:18090/v1",
     keyEnv: "OPENAI_API_KEY",
-    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    scrubEnv: [],
     defaultModel: "gpt-4.1",
     homepage: "https://openai.com/docs",
   },
@@ -103,7 +103,7 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     schemaFlavor: "openai",
     baseUrl: "https://api.openai.com/v1",
     keyEnv: "OPENAI_API_KEY",
-    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    scrubEnv: [],
     defaultModel: "gpt-4.1",
     homepage: "https://platform.openai.com",
   },

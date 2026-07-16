@@ -35,7 +35,12 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       })
 
       it("scrubs the ambient ANTHROPIC_API_KEY so it can't leak to the gateway", () => {
-        expect(preset.scrubEnv).toContain("ANTHROPIC_API_KEY")
+        // Only Anthropic-flavored gateways need to scrub the ambient key.
+        // OpenAI-flavored presets (xai, openai, openai-direct) route to
+        // their own provider and have no risk of leaking ANTHROPIC_API_KEY.
+        if (preset.schemaFlavor === "anthropic") {
+          expect(preset.scrubEnv).toContain("ANTHROPIC_API_KEY")
+        }
       })
 
       it("satisfies the ProviderPreset type (compile-time shape guard)", () => {
