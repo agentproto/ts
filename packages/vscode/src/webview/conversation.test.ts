@@ -560,13 +560,35 @@ describe("groupActivity", () => {
     expect(group.summary).toBe("2 steps")
   })
 
-  it("surfaces a failure count so a fold never buries a failed step", () => {
+  it("does not call a run failed for a step it recovered from", () => {
+    // A command failing and the agent adapting is the normal shape of agent
+    // work, not a failed run. Stamping ✗ across six steps because one of them
+    // was recovered from reports a failure that did not happen.
     const group = groupActivity([
       tool("a", { status: "error", isError: true }),
       tool("b", { status: "ok" }),
     ])[0] as PresentedActivitySegment
+    expect(group.status).toBe("ok")
+    // The failure is still stated, so the fold buries nothing: the row reads
+    // "✓ 2 steps · 1 failed" — it finished, and one step along the way broke.
+    expect(group.summary).toBe("2 steps · 1 failed")
+  })
+
+  it("calls a run failed when the LAST step is the one that failed", () => {
+    const group = groupActivity([
+      tool("a", { status: "ok" }),
+      tool("b", { status: "error", isError: true }),
+    ])[0] as PresentedActivitySegment
     expect(group.status).toBe("error")
     expect(group.summary).toBe("2 steps · 1 failed")
+  })
+
+  it("is simply running while a step is in flight, whatever failed before it", () => {
+    const group = groupActivity([
+      tool("a", { status: "error", isError: true }),
+      tool("b", { status: "pending" }),
+    ])[0] as PresentedActivitySegment
+    expect(group.status).toBe("pending")
   })
 
   it("keeps a stable group id as steps stream in, so the expanded tree stays open", () => {
