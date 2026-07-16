@@ -46,6 +46,8 @@ export type TreeNode = SeparatorNode | SessionNode
 export interface DescriptionContext {
   workspaceLabel?: string
   now?: number
+  /** Direct children in the RENDERED tree — drives the "N subagents" suffix. */
+  childCount?: number
 }
 
 const TERMINAL_STATUSES = new Set<SessionDescriptor["status"]>(["exited", "killed", "error"])
@@ -94,6 +96,14 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
   const parts: string[] = []
   if (ctx.workspaceLabel) parts.push(ctx.workspaceLabel)
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
+  // A spawner says so on its own row. Indentation already nests the children,
+  // but indentation is invisible the moment the row is collapsed or its
+  // children scroll past — and "this session spawned 3 agents" is the whole
+  // reason to look at it. Counted from the rendered subtree rather than the
+  // descriptor, so it can never claim children the tree isn't showing.
+  if (ctx.childCount && ctx.childCount > 0) {
+    parts.push(`${ctx.childCount} subagent${ctx.childCount === 1 ? "" : "s"}`)
+  }
   return parts.join(" · ")
 }
 
@@ -144,28 +154,82 @@ export function isStalled(session: SessionDescriptor, now: number): boolean {
 }
 
 /**
- * Icon by state (brief order):
- *  - terminal status (exited/killed/error) → error icon if errored, else
- *    circle-slash ("ok" exit).
- *  - non-terminal + awaiting input/permission → question (warn).
- *  - non-terminal + busy but long silent → warning: the spinner was the whole
- *    problem, telling the user a wedged session was hard at work.
- *  - non-terminal + busy → sync~spin.
- *  - non-terminal + idle → play.
+ * What a session IS, as one word — the single vocabulary the tree icons, the
+ * status bar and the transcript chip all render.
+ *
+ * A session has two orthogonal axes and the UI kept rendering the wrong one.
+ * `status` is LIFECYCLE ("is the process up?": starting/running/exited/…),
+ * while what a person actually wants to know is ACTIVITY ("is it doing
+ * anything, and does it need me?"). Reporting lifecycle where the reader
+ * expects activity is what let the status bar say "9 running" about nine
+ * agents that were parked doing nothing. This type is the activity axis;
+ * `status` stays what it is, underneath.
+ *
+ * Ordered by urgency, because every consumer resolves the same way — the most
+ * demanding true state wins:
+ *   needs-you > stalled > working > idle > failed > stopped > done
+ */
+export type SessionActivity =
+  | "needs-you" // awaiting input or a permission decision — blocked ON THE HUMAN
+  | "stalled" // mid-turn but silent past STALL_AFTER_MS — busy in name only
+  | "working" // a turn is in flight (model generating, or a tool running)
+  | "idle" // alive, no turn — parked, ready for a prompt
+  | "failed" // ended badly: status "error", or a non-zero exit it wasn't asked for
+  | "stopped" // ended because someone stopped it
+  | "done" // ended cleanly, on its own
+
+/**
+ * Classify a session onto the activity axis.
  *
  * `now` is optional so existing call sites keep their behavior; without it a
  * stalled session is simply indistinguishable from a working one, as before.
  */
-export function iconFor(session: SessionDescriptor, now?: number): SessionIcon {
+export function activityFor(session: SessionDescriptor, now?: number): SessionActivity {
   if (TERMINAL_STATUSES.has(session.status)) {
-    return isErrored(session) ? { id: "error", color: "error" } : { id: "circle-slash" }
+    // "killed" wins over the exit code, and must: SIGTERM is HOW stopping
+    // works, so a stopped session carries exitCode 143 and `isErrored` calls
+    // it a failure. Two sessions on a real daemon were painted red purely
+    // because the user pressed Stop. Being stopped is not failing.
+    if (session.status === "killed") return "stopped"
+    return isErrored(session) ? "failed" : "done"
   }
-  if (isAwaiting(session)) return { id: "question", color: "warning" }
-  if (typeof now === "number" && isStalled(session, now)) {
-    return { id: "warning", color: "warning" }
-  }
-  if (session.busy) return { id: "sync~spin" }
-  return { id: "play" }
+  if (isAwaiting(session)) return "needs-you"
+  if (typeof now === "number" && isStalled(session, now)) return "stalled"
+  // `blockedOn` splits this into working/waiting in the transcript header,
+  // where there's room to say so. Here both mean the same thing to the reader
+  // — in flight, leave it alone — and a 16px glyph is the wrong place to
+  // spend a distinction nobody acts on.
+  if (session.busy) return "working"
+  return "idle"
+}
+
+/**
+ * Icon per activity. The alphabet is deliberately small, and shaped so weight
+ * carries meaning rather than decoration:
+ *
+ *   ● solid   = at rest        ○ spinning outline = in motion
+ *   ✓ done    ⊘ stopped        ✗ failed
+ *
+ * Two of the old choices were actively misleading. `play` (▷) for an idle
+ * session is an ACTION glyph used as a state — it reads "press me to run",
+ * and it was the most common row on screen. `circle-slash` (⊘) for a clean
+ * exit reads "forbidden": a session that did exactly its job got a
+ * prohibition sign. ⊘ now means what it looks like — you stopped this.
+ */
+const ACTIVITY_ICONS: Record<SessionActivity, SessionIcon> = {
+  "needs-you": { id: "question", color: "warning" },
+  stalled: { id: "warning", color: "warning" },
+  // The outline spinner, not `sync~spin`'s two chasing arrows: this is one
+  // agent thinking, not two things being reconciled.
+  working: { id: "loading~spin" },
+  idle: { id: "circle-filled" },
+  failed: { id: "error", color: "error" },
+  stopped: { id: "circle-slash" },
+  done: { id: "check" },
+}
+
+export function iconFor(session: SessionDescriptor, now?: number): SessionIcon {
+  return ACTIVITY_ICONS[activityFor(session, now)]
 }
 
 /** contextValue for menu gating: session-live / session-awaiting / session-done. */

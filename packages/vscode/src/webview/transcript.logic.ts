@@ -70,23 +70,14 @@ export function isExited(status: SessionDescriptor["status"]): boolean {
   return status === "exited" || status === "killed" || status === "error"
 }
 
-/**
- * Live status chip label. Priority:
- *   exited/killed/error → "exited"
- *   busy → "busy"
- *   awaitingInput → "awaiting-input"
- *   running → "running"
- *   otherwise the raw status
- */
-export function statusChip(
-  session: Pick<SessionDescriptor, "status" | "busy" | "awaitingInput">,
-): string {
-  if (isExited(session.status)) return "exited"
-  if (session.busy) return "busy"
-  if (session.awaitingInput) return "awaiting-input"
-  if (session.status === "running") return "running"
-  return session.status
-}
+// `statusChip()` used to live here, emitting "busy" / "running". It was dead
+// code: the chip actually on screen is computeStatusChip() inside
+// transcriptPanel.ts's webview script, which has emitted working / waiting /
+// stalled since the stall work landed. Nothing but its own test still called
+// this one — so it survived purely as a second, contradictory answer to "what
+// state is this session in", which is the exact confusion this pass exists to
+// remove. That vocabulary now has one home: SessionActivity, in
+// views/sessionsTree.logic.ts.
 
 export function formatCostLine(
   session: Pick<SessionDescriptor, "costUsd" | "tokensIn" | "tokensOut">,

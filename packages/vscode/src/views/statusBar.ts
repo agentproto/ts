@@ -1,38 +1,38 @@
 /**
- * Status bar item (WP1): one item showing daemon-wide running/busy counts
- * and the total cost of live sessions. Click runs `agentproto.showHealth`.
- * Updates on store.onDidChange; hides itself when there's nothing cached
- * AND the live-update loop is unhealthy (daemon unreachable) — the store
- * has no explicit lastError, so `healthy` (session_events_poll loop state)
- * plus an empty session list is the best available "unreachable" signal.
+ * Status bar item (WP1): one line summarising what the daemon's live sessions
+ * are DOING, and what they have cost. Click runs `agentproto.showHealth`.
+ *
+ * The counting and the wording live in statusBar.logic.ts (no vscode import,
+ * so the one line that is on screen permanently is unit-testable); this file
+ * only paints it.
+ *
+ * Repaints on store.onDidChange AND on a timer. Everything here is computed
+ * against `now` — a stall is the ABSENCE of events — so a change-driven
+ * repaint alone can never notice a session going quiet (same reasoning, and
+ * the same interval, as the sessions tree).
+ *
+ * Hides itself when there's nothing cached AND the live-update loop is
+ * unhealthy (daemon unreachable) — the store has no explicit lastError, so
+ * `healthy` (session_events_poll loop state) plus an empty session list is the
+ * best available "unreachable" signal.
  */
 
 import * as vscode from "vscode"
 
-import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import { TREE_REPAINT_INTERVAL_MS } from "./sessionsTree.logic.js"
+import {
+  buildStatusText,
+  statusBarIcon,
+  summarizeLive,
+  type LiveSummary,
+} from "./statusBar.logic.js"
 
 const STATUS_BAR_PRIORITY = 49
 
-interface LiveSummary {
-  runningCount: number
-  busyCount: number
-  costUsd: number
-  live: SessionDescriptor[]
-}
-
-function summarizeLive(sessions: readonly SessionDescriptor[]): LiveSummary {
-  const live = sessions.filter(s => s.status === "running" || s.status === "starting")
-  const busyCount = live.filter(s => s.busy).length
-  const costUsd = live.reduce((sum, s) => sum + (s.costUsd ?? 0), 0)
-  return { runningCount: live.length, busyCount, costUsd, live }
-}
-
 function buildTooltip(summary: LiveSummary): vscode.MarkdownString {
   const md = new vscode.MarkdownString()
-  md.appendMarkdown(
-    `**agentproto** — ${summary.runningCount} running, ${summary.busyCount} busy\n\n`,
-  )
+  md.appendMarkdown(`**agentproto** — ${buildStatusText(summary).replace(/^agentproto: /, "")}\n\n`)
   if (summary.live.length === 0) {
     md.appendMarkdown("_No live sessions._")
   } else {
@@ -55,13 +55,16 @@ export function registerStatusBar(ctx: vscode.ExtensionContext, store: SessionSt
       item.hide()
       return
     }
-    const summary = summarizeLive(sessions)
-    item.text = `$(pulse) agentproto: ${summary.runningCount} running ▸ ${summary.busyCount} busy · $${summary.costUsd.toFixed(2)}`
+    const summary = summarizeLive(sessions, Date.now())
+    item.text = `$(${statusBarIcon(summary)}) ${buildStatusText(summary)}`
     item.tooltip = buildTooltip(summary)
     item.show()
   }
 
+  const timer = setInterval(update, TREE_REPAINT_INTERVAL_MS)
+
   ctx.subscriptions.push(item)
+  ctx.subscriptions.push(new vscode.Disposable(() => clearInterval(timer)))
   ctx.subscriptions.push(store.onDidChange(update))
   update()
 }

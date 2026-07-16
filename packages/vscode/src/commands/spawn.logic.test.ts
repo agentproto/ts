@@ -10,6 +10,7 @@ import {
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
+  mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
   mapSpawnQuickPickItems,
   resolveDefaultCwd,
@@ -227,6 +228,19 @@ describe("buildSpawnPlaceHolder", () => {
   })
 })
 
+describe("mapOrchestratorQuickPickItems", () => {
+  it("defaults to standalone and says what orchestrating costs", () => {
+    const items = mapOrchestratorQuickPickItems()
+    expect(items.map(i => i.orchestrator)).toEqual([false, true])
+    // Enter keeps today's behaviour: a plain session, no caps.
+    expect(items[0]?.label).toBe("Standalone")
+    // Choosing it is not free — it also brings depth/child caps and
+    // subtree-only visibility. The row has to say so before you pick it.
+    expect(items[1]?.description).toContain("nest under it")
+    expect(items[1]?.description).toContain("caps")
+  })
+})
+
 describe("mapPermissionQuickPickItems", () => {
   it("offers both modes and leads with the current default", () => {
     const unattended = mapPermissionQuickPickItems(false)
@@ -265,6 +279,21 @@ describe("assembleSpawnOptions", () => {
       workspaceSlug: "studio",
       label: "my-session",
       prompt: "hello",
+    })
+  })
+
+  it("sends orchestrator only when asked — the flag is what makes subagents nest at all", () => {
+    // The tree nests children under their spawner and always has. It never had
+    // anything to nest: parentSessionId comes from callerScope, callerScope
+    // comes from the scoped gateway, and the gateway is minted only for an
+    // orchestrator spawn. Without this the option was unreachable from the
+    // editor and every subagent was recorded as a root.
+    expect(assembleSpawnOptions({ adapter: "claude-code", orchestrator: true })).toEqual({
+      adapter: "claude-code",
+      orchestrator: true,
+    })
+    expect(assembleSpawnOptions({ adapter: "claude-code", orchestrator: false })).toEqual({
+      adapter: "claude-code",
     })
   })
 

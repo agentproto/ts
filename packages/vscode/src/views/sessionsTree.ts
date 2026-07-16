@@ -118,6 +118,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     item.description = descriptionFor(session, {
       workspaceLabel: workspaceLabelFor(this.filter.workspaces, session),
       now: this.now,
+      childCount: element.children.length,
     })
     item.contextValue = contextValueFor(session)
     item.tooltip = buildTooltip(session, this.now)

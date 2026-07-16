@@ -12,6 +12,7 @@ import {
   contextPercent,
   descriptionFor,
   formatDuration,
+  activityFor,
   iconFor,
   isStalled,
   labelFor,
@@ -115,32 +116,119 @@ describe("relativeTime", () => {
   })
 })
 
+describe("subagents nest under their spawner", () => {
+  const now = Date.parse("2026-07-16T12:00:00Z")
+  const at = (iso: string) => iso
+
+  it("puts children under the session that spawned them, at any depth", () => {
+    const rows = buildSessionRows(
+      [
+        session({ id: "leaf", parentSessionId: "worker", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "worker", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    // One top-level row: the spawner. The chain hangs off it.
+    expect(rows).toHaveLength(1)
+    const root = rows[0] as SessionNode
+    expect(root.session.id).toBe("root")
+    expect(root.children.map(c => c.session.id)).toEqual(["worker"])
+    expect(root.children[0]!.children.map(c => c.session.id)).toEqual(["leaf"])
+  })
+
+  it("says how many subagents a spawner has, so a collapsed row still tells you", () => {
+    const rows = buildSessionRows(
+      [
+        session({ id: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "a", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "b", parentSessionId: "root", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    const root = rows[0] as SessionNode
+    expect(descriptionFor(root.session, { now, childCount: root.children.length })).toBe(
+      "1 hr ago · 2 subagents",
+    )
+    // A leaf claims nothing.
+    expect(descriptionFor(root.children[0]!.session, { now, childCount: 0 })).toBe("1 hr ago")
+  })
+
+  it("keeps a subtree with its spawner across the 24h divider", () => {
+    // A child started today under a parent started last week must not float
+    // up to the recent side on its own — the subtree belongs to its root.
+    const rows = buildSessionRows(
+      [
+        session({ id: "old-root", startedAt: at("2026-07-09T11:00:00Z") }),
+        session({ id: "fresh-child", parentSessionId: "old-root", startedAt: at("2026-07-16T11:00:00Z") }),
+        session({ id: "recent", startedAt: at("2026-07-16T11:00:00Z") }),
+      ],
+      now,
+    )
+    const ids = rows.map(r => ("kind" in r ? r.id : r.session.id))
+    expect(ids).toEqual(["recent", SEPARATOR_ID, "old-root"])
+    const oldRoot = rows[2] as SessionNode
+    expect(oldRoot.children.map(c => c.session.id)).toEqual(["fresh-child"])
+  })
+
+  it("never orphans a child whose spawner is gone — it becomes a root, not a dropped row", () => {
+    const rows = buildSessionRows(
+      [session({ id: "orphan", parentSessionId: "reaped", startedAt: at("2026-07-16T11:00:00Z") })],
+      now,
+    )
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as SessionNode).session.id).toBe("orphan")
+  })
+})
+
+describe("activityFor", () => {
+  it("names what a session is doing, not whether its process is up", () => {
+    expect(activityFor(session())).toBe("idle")
+    expect(activityFor(session({ busy: true }))).toBe("working")
+    expect(activityFor(session({ awaitingInput: true }))).toBe("needs-you")
+    expect(activityFor(session({ awaitingPermission: true }))).toBe("needs-you")
+    expect(activityFor(session({ status: "exited", exitCode: 0 }))).toBe("done")
+    expect(activityFor(session({ status: "error" }))).toBe("failed")
+    expect(activityFor(session({ status: "exited", exitCode: 7 }))).toBe("failed")
+  })
+
+  it("being STOPPED is not failing — SIGTERM's exit code must not read as a crash", () => {
+    // Stop sends SIGTERM, so a stopped session carries exitCode 143 and the
+    // old isErrored() check painted it red. Two sessions on a real daemon
+    // were marked as failures purely because the user pressed Stop.
+    expect(activityFor(session({ status: "killed", exitCode: 143 }))).toBe("stopped")
+    expect(activityFor(session({ status: "killed", exitCode: 137 }))).toBe("stopped")
+    expect(activityFor(session({ status: "killed" }))).toBe("stopped")
+  })
+
+  it("ranks what needs a human above everything else", () => {
+    expect(activityFor(session({ busy: true, awaitingInput: true }))).toBe("needs-you")
+  })
+})
+
 describe("iconFor", () => {
-  it("busy -> sync~spin", () => {
-    expect(iconFor(session({ busy: true }))).toEqual({ id: "sync~spin" })
+  it("solid at rest, spinning outline in motion", () => {
+    // `play` (▷) is an ACTION glyph — it read "press me to run" on the most
+    // common row on screen. A dot is a state.
+    expect(iconFor(session())).toEqual({ id: "circle-filled" })
+    // One agent thinking, not two things being reconciled (`sync~spin`).
+    expect(iconFor(session({ busy: true }))).toEqual({ id: "loading~spin" })
   })
-  it("awaitingInput -> question (warning)", () => {
-    expect(iconFor(session({ awaitingInput: true }))).toEqual({ id: "question", color: "warning" })
+
+  it("a finished session gets a check, not a prohibition sign", () => {
+    // circle-slash (⊘) read "forbidden" on a session that did exactly its job.
+    expect(iconFor(session({ status: "exited", exitCode: 0 }))).toEqual({ id: "check" })
   })
-  it("awaitingPermission -> question (warning)", () => {
-    expect(iconFor(session({ awaitingPermission: true }))).toEqual({ id: "question", color: "warning" })
+
+  it("⊘ now means what it looks like: you stopped this", () => {
+    expect(iconFor(session({ status: "killed", exitCode: 143 }))).toEqual({ id: "circle-slash" })
   })
-  it("running idle -> play", () => {
-    expect(iconFor(session())).toEqual({ id: "play" })
-  })
-  it("exited cleanly -> circle-slash", () => {
-    expect(iconFor(session({ status: "exited", exitCode: 0 }))).toEqual({ id: "circle-slash" })
-  })
-  it("killed -> circle-slash", () => {
-    expect(iconFor(session({ status: "killed" }))).toEqual({ id: "circle-slash" })
-  })
-  it("status error -> error", () => {
+
+  it("keeps failure and attention loud", () => {
     expect(iconFor(session({ status: "error" }))).toEqual({ id: "error", color: "error" })
-  })
-  it("exitCode > 0 -> error even if status is exited", () => {
     expect(iconFor(session({ status: "exited", exitCode: 1 }))).toEqual({ id: "error", color: "error" })
-  })
-  it("awaiting takes priority over busy", () => {
+    expect(iconFor(session({ awaitingInput: true }))).toEqual({ id: "question", color: "warning" })
+    expect(iconFor(session({ awaitingPermission: true }))).toEqual({ id: "question", color: "warning" })
     expect(iconFor(session({ busy: true, awaitingInput: true }))).toEqual({
       id: "question",
       color: "warning",
@@ -447,10 +535,10 @@ describe("stall detection", () => {
   it("swaps the spinner for a warning — the spinner claiming a wedged session works IS the bug", () => {
     expect(iconFor(stuck(), now)).toEqual({ id: "warning", color: "warning" })
     // Without `now`, behavior is unchanged for existing call sites.
-    expect(iconFor(stuck())).toEqual({ id: "sync~spin" })
+    expect(iconFor(stuck())).toEqual({ id: "loading~spin" })
     // A healthy busy session still spins.
     expect(iconFor(stuck({ lastActivityAt: new Date(now - 1_000).toISOString() }), now)).toEqual({
-      id: "sync~spin",
+      id: "loading~spin",
     })
   })
 
