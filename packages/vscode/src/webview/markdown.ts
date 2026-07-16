@@ -3,8 +3,10 @@
  *
  * Supported subset:
  *   - Headings (# … ######)
- *   - Bold (**text**) and italic (*text*)
- *   - Inline code (`text`)
+ *   - Bold (**text**) and italic (*text*), which compose: either can span an
+ *     inline code span, and can nest inside each other
+ *   - Inline code (`text`), whose contents are always literal — never
+ *     re-scanned for bold/italic markers, even `**this**`
  *   - Fenced code blocks (``` optionally with language)
  *   - Unordered lists (-, *, +) and ordered lists (1.)
  *   - Blockquotes (>)
@@ -158,39 +160,77 @@ export function renderMarkdown(text: string): string {
   return out.join("\n")
 }
 
-function inlineFormat(text: string): string {
-  let out = ""
-  let buf = ""
-  let inCode = false
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (ch === "`") {
-      if (inCode) {
-        out += `<code>${buf}</code>`
-        buf = ""
-        inCode = false
-      } else {
-        out += formatSegment(buf)
-        buf = ""
-        inCode = true
-      }
-      continue
-    }
-    buf += ch
-  }
-
-  if (inCode) {
-    out += "`" + formatSegment(buf)
-  } else {
-    out += formatSegment(buf)
-  }
-
-  return out
+interface Cursor {
+  pos: number
 }
 
-function formatSegment(text: string): string {
-  return text
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+interface ScanResult {
+  html: string
+  closed: boolean
+}
+
+function inlineFormat(text: string): string {
+  return scanInline(text, { pos: 0 }, null).html
+}
+
+/**
+ * Splitting on backticks before formatting (the previous approach) leaves
+ * `**bold with ` and ` inside**` as two fragments, neither of which contains
+ * a full `**…**` pair, so the markers survive as literal text. Formatting
+ * before splitting has the opposite failure: it emphasizes text inside a
+ * code span's contents, which must stay literal.
+ *
+ * A single scan avoids both: it walks the string once, and whichever of
+ * {code span, bold, italic} starts first is resolved on the spot. A code
+ * span's content is sliced out verbatim (never recursed into); bold/italic
+ * recurse on their inner text so nesting and code-span-spanning fall out for
+ * free instead of needing another pass.
+ */
+function scanInline(text: string, cursor: Cursor, closer: "**" | "*" | null): ScanResult {
+  let out = ""
+
+  while (cursor.pos < text.length) {
+    if (closer === "**" && text.startsWith("**", cursor.pos)) {
+      cursor.pos += 2
+      return { html: out, closed: true }
+    }
+    if (closer === "*" && text[cursor.pos] === "*" && text[cursor.pos + 1] !== "*") {
+      cursor.pos += 1
+      return { html: out, closed: true }
+    }
+
+    if (text[cursor.pos] === "`") {
+      const close = text.indexOf("`", cursor.pos + 1)
+      if (close === -1) {
+        // No closing backtick anywhere ahead: this backtick can't start a
+        // code span, so treat it as a literal character and keep scanning
+        // normally (bold/italic still apply to what follows).
+        out += "`"
+        cursor.pos += 1
+        continue
+      }
+      out += `<code>${text.slice(cursor.pos + 1, close)}</code>`
+      cursor.pos = close + 1
+      continue
+    }
+
+    if (text.startsWith("**", cursor.pos)) {
+      cursor.pos += 2
+      const inner = scanInline(text, cursor, "**")
+      out += inner.closed ? `<strong>${inner.html}</strong>` : `**${inner.html}`
+      continue
+    }
+
+    if (text[cursor.pos] === "*") {
+      cursor.pos += 1
+      const inner = scanInline(text, cursor, "*")
+      out += inner.closed ? `<em>${inner.html}</em>` : `*${inner.html}`
+      continue
+    }
+
+    out += text[cursor.pos]
+    cursor.pos += 1
+  }
+
+  return { html: out, closed: false }
 }
