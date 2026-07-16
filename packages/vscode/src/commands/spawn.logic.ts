@@ -220,6 +220,52 @@ export interface SpawnWizardAnswers {
   prompt?: string
   /** Park each tool-permission request for a human decision — see PermissionQuickPickItem. */
   permissionHold?: boolean
+  /** Give this session a scoped gateway so ITS spawns are attributed to it — see OrchestratorQuickPickItem. */
+  orchestrator?: boolean
+}
+
+/**
+ * Orchestrator picker — the switch that makes subagents visible.
+ *
+ * The sessions tree already nests children under the session that spawned
+ * them, at any depth, and keeps a subtree with its root across the recency
+ * divider. It has simply never had anything to nest: the daemon attributes
+ * `parentSessionId` from `callerScope?.ownerSessionId`, and `callerScope`
+ * exists only on the scoped sub-gateway minted for an `orchestrator: true`
+ * spawn (session-spawn.ts: "no callerScope is a root: depth 0, no parent, no
+ * caps"). Every spawn through the root `/mcp` is a root. `SpawnAgentOptions`
+ * has carried the `orchestrator` field all along; the wizard just never sent
+ * it, so an orchestrator was unspawnable from the editor.
+ *
+ * That the daemon needs a scoped gateway to attribute is not arbitrary: an
+ * MCP client on the root `/mcp` is anonymous, and the daemon cannot record a
+ * parent it cannot identify. The token IS the identity.
+ *
+ * Deliberately a per-spawn step and NOT a setting, unlike holdPermissions.
+ * "Approve my tools" is a standing preference; "this agent supervises others"
+ * is a fact about one job. A default-on setting would also silently subject
+ * every spawn to the depth cap, the child quota and subtree-only
+ * list/kill — see the description below, which says so up front.
+ */
+export interface OrchestratorQuickPickItem {
+  label: string
+  description?: string
+  orchestrator: boolean
+}
+
+export function mapOrchestratorQuickPickItems(): OrchestratorQuickPickItem[] {
+  return [
+    {
+      label: "Standalone",
+      description: "anything it spawns is listed as its own top-level session",
+      orchestrator: false,
+    },
+    {
+      label: "Orchestrator",
+      description: "its subagents nest under it — adds depth/child caps and subtree-only list & stop",
+      orchestrator: true,
+    },
+  ]
 }
 
 /**
@@ -286,5 +332,9 @@ export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOpt
   if (answers.label) opts.label = answers.label
   if (answers.prompt) opts.prompt = answers.prompt
   if (answers.permissionHold) opts.permissionHold = true
+  // Both flags are sent ONLY when true: false is the daemon's own default, so
+  // saying it adds nothing and asserting it would be a claim we don't need to
+  // make.
+  if (answers.orchestrator) opts.orchestrator = true
   return opts
 }

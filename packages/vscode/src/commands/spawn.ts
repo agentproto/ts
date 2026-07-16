@@ -25,6 +25,7 @@ import {
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
+  mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
   mapSpawnQuickPickItems,
   resolveDefaultCwd,
@@ -144,7 +145,7 @@ async function resolveWizardDefaultCwd(): Promise<string | undefined> {
   return picked?.folder.uri.fsPath
 }
 
-/** The full chain: adapter → model → mode → permissions → cwd → label → prompt, reached only via the Configure… row. */
+/** The full chain: adapter → model → mode → orchestrator → permissions → cwd → label → prompt, reached only via the Configure… row. */
 async function runConfigureWizard(
   adapters: SpawnAdapterInfo[],
   defaultCwd: string,
@@ -178,6 +179,14 @@ async function runConfigureWizard(
     if (!modePick) return undefined
     answers.mode = modePick.mode
   }
+
+  // Asked before permissions: this decides what the session IS (does it
+  // supervise others?), while permissions decide how it's governed.
+  const orchestratorPick = await vscode.window.showQuickPick(mapOrchestratorQuickPickItems(), {
+    placeHolder: "Will this session spawn subagents?",
+  })
+  if (!orchestratorPick) return undefined
+  answers.orchestrator = orchestratorPick.orchestrator
 
   const permissionPick = await vscode.window.showQuickPick(
     mapPermissionQuickPickItems(holdDefault),
