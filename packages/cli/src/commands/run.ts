@@ -202,7 +202,7 @@ export async function runRun(args: readonly string[]): Promise<number> {
 
     const printer = values.json ? printJson : printPretty
     let exit = 0
-    for await (const ev of session.send(promptArg)) {
+    for await (const ev of session.send({ type: "text", text: promptArg })) {
       printer(ev)
       if (ev.kind === "turn-end" && ev.reason !== "completed") exit = 1
       if (ev.kind === "error") exit = 1
@@ -232,7 +232,7 @@ async function runSchemaMode(
   for (let attempt = 0; attempt <= SCHEMA_MAX_RETRIES; attempt++) {
     let finalText = ""
     let turnBroke = false
-    for await (const ev of session.send(prompt)) {
+    for await (const ev of session.send({ type: "text", text: prompt })) {
       // Never touch stdout here — it's reserved for the validated JSON.
       logToStderr(ev)
       if (ev.kind === "text-delta") finalText += ev.text
