@@ -75,11 +75,50 @@ describe("tabIconFor", () => {
   })
 
   it("matches the tree's alphabet — same states, same meanings", () => {
-    // idle is solid, working is a ring, done is a check, stopped is a slash.
+    // idle is a dot, working is a ring, done is a check, stopped is a slash.
     expect(tabIconFor("idle").dark).toContain("idle")
     expect(tabIconFor("working").dark).toContain("working")
     expect(tabIconFor("done").dark).toContain("done")
     expect(tabIconFor("stopped").dark).toContain("stopped")
     expect(tabIconFor("failed").dark).toBe("failed.svg")
+  })
+
+  it("wears the read-receipt too, so a tab and its tree row never disagree", () => {
+    expect(tabIconFor("idle", true)).toEqual({
+      light: "idle-unread-light.svg",
+      dark: "idle-unread-dark.svg",
+    })
+    expect(tabIconFor("idle", false)).toEqual({ light: "idle-light.svg", dark: "idle-dark.svg" })
+    // No receipt paints filled — hiding new output is the worse failure.
+    expect(tabIconFor("idle")).toEqual(tabIconFor("idle", true))
+  })
+
+  it("keeps unread off every other state, exactly as the tree does", () => {
+    for (const activity of ["working", "done", "stopped", "needs-you", "stalled", "failed"] as const) {
+      expect(tabIconFor(activity, true), activity).toEqual(tabIconFor(activity, false))
+    }
+  })
+
+  it("draws the read dot hollow and the unread dot filled", () => {
+    // Weight is the entire signal, so it has to actually be in the file: the
+    // read dot is a stroke with no fill, the unread one is a solid fill.
+    const read = readFileSync(iconPath(tabIconFor("idle", false).dark), "utf8")
+    expect(read).toContain('fill="none"')
+    expect(read).toContain("stroke=")
+
+    const unread = readFileSync(iconPath(tabIconFor("idle", true).dark), "utf8")
+    expect(unread).toMatch(/<circle[^>]*fill="#/)
+    expect(unread).not.toContain("stroke=")
+  })
+
+  it("keeps both dots the same size, so weight is the only difference", () => {
+    // r 3.4 + a 1.2 stroke straddling it = an outer radius of 4, which is the
+    // filled dot's r. A read dot that changed footprint would read as a
+    // different KIND of thing rather than a quieter one.
+    const read = readFileSync(iconPath(tabIconFor("idle", false).dark), "utf8")
+    const unread = readFileSync(iconPath(tabIconFor("idle", true).dark), "utf8")
+    const radius = (svg: string): number => Number(/r="([\d.]+)"/.exec(svg)![1])
+    const strokeWidth = (svg: string): number => Number(/stroke-width="([\d.]+)"/.exec(svg)?.[1] ?? 0)
+    expect(radius(read) + strokeWidth(read) / 2).toBeCloseTo(radius(unread))
   })
 })

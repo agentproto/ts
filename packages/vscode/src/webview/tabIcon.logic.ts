@@ -32,7 +32,7 @@ export const TAB_ICON_DIR = ["media", "session"] as const
 
 /**
  * Mirrors ACTIVITY_ICONS, glyph for glyph:
- *   ● solid = at rest · ○ spinning = in motion · ✓ done · ⊘ stopped · ✗ failed
+ *   ○ hollow = at rest · ○ spinning = in motion · ✓ done · ⊘ stopped · ✗ failed
  * Warning-coloured states ship one file (they read on either theme); neutral
  * ones ship two, because nothing themes an <img>.
  */
@@ -46,14 +46,36 @@ const TAB_ICONS: Record<SessionActivity, TabIconPaths> = {
   failed: { light: "failed.svg", dark: "failed.svg" },
 }
 
-export function tabIconFor(activity: SessionActivity): TabIconPaths {
+/**
+ * The filled dot — same footprint as `idle`, more weight (idle-*.svg is r 3.4
+ * plus a 1.2 stroke, which lands on the filled dot's r 4).
+ *
+ * A tab and a tree row are the same session, so they must not disagree about
+ * whether it's holding anything new. This earns its keep where the tree can't
+ * help: a BACKGROUND transcript tab, open for hours, is exactly where "has
+ * this said anything since I looked?" is worth a glyph. The focused tab is
+ * read by definition, so its dot stays hollow — which is the honest answer,
+ * not a special case.
+ */
+const IDLE_UNREAD_ICON: TabIconPaths = {
+  light: "idle-unread-light.svg",
+  dark: "idle-unread-dark.svg",
+}
+
+/**
+ * Icon for a tab wearing this activity. `unread` reaches the idle dot only,
+ * and an absent receipt paints filled — same rules as the tree's iconFor, for
+ * the same reasons.
+ */
+export function tabIconFor(activity: SessionActivity, unread?: boolean): TabIconPaths {
+  if (activity === "idle") return unread === false ? TAB_ICONS.idle : IDLE_UNREAD_ICON
   return TAB_ICONS[activity]
 }
 
 /** Every distinct file this module can point at — the test's shipping list. */
 export function allTabIconFiles(): string[] {
   const files = new Set<string>()
-  for (const paths of Object.values(TAB_ICONS)) {
+  for (const paths of [...Object.values(TAB_ICONS), IDLE_UNREAD_ICON]) {
     files.add(paths.light)
     files.add(paths.dark)
   }
