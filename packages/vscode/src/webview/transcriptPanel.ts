@@ -319,7 +319,13 @@ export function buildHtml(nonce: string): string {
     .chip-waiting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
     .chip-stalled { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
     .chip-awaiting-input { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
-    .chip-exited { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
+    /* Terminal states — see computeStatusChip. "done" reuses the running
+       (pass) color: a clean exit or a reap-after-finish is not a problem.
+       "stopped" is neutral, not alarming: SIGTERM is how stopping works.
+       Only "failed" gets the failure color. */
+    .chip-done { background: var(--vscode-testing-iconPassed); color: var(--vscode-editor-background); }
+    .chip-stopped { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
+    .chip-failed { background: var(--vscode-testing-iconFailed); color: var(--vscode-editor-background); }
     .chip-starting { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
     .chip-blocked { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
     #header-blocked:empty { display: none; }
@@ -995,9 +1001,31 @@ export function buildHtml(nonce: string): string {
        *   stalled — mid-turn and silent past STALL_AFTER_MS. Nothing is
        *             coming; the agent stopped emitting without a turn-end and
        *             the daemon is still awaiting a turn that will never end.
+       *
+       * Terminal sessions used to collapse to a bare 'exited' here — wrong
+       * independently of everything else, since a killed session did not
+       * exit. Mirrors killedActivityFor in views/sessionsTree.logic.ts (the
+       * one vocabulary the tree, the status bar, and this chip all render):
+       * 'killed' alone can't tell a human's Stop mid-turn apart from a
+       * supervisor reaping a child that had already finished — both leave
+       * exitCode null. killedMidTurn, captured by the daemon at the
+       * instant kill() ran (before busy can go stale), is what tells them
+       * apart; turnsCompleted alone would call a mid-SECOND-turn stop
+       * "done" just as wrongly as reading stale busy would.
        */
+      function isErrored(session) {
+        return session.status === 'error' || (typeof session.exitCode === 'number' && session.exitCode > 0);
+      }
+      function killedChip(session) {
+        const finishedBeforeKill = session.killedMidTurn !== true &&
+          typeof session.turnsCompleted === 'number' && session.turnsCompleted > 0;
+        return finishedBeforeKill ? 'done' : 'stopped';
+      }
       function computeStatusChip(session, now) {
-        if (isTerminal(session)) return 'exited';
+        if (isTerminal(session)) {
+          if (session.status === 'killed') return killedChip(session);
+          return isErrored(session) ? 'failed' : 'done';
+        }
         if (session.awaitingInput) return 'awaiting-input';
         if (session.busy) {
           const silent = silentForMs(session, now);

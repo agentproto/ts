@@ -761,6 +761,61 @@ describe("createSessionsRegistry", () => {
     reg.shutdown()
   })
 
+  it("kill() records killedMidTurn honestly — the signal the vscode UI reads to tell a reaped-after-finishing child apart from a mid-turn stop", async () => {
+    // This is the actual mechanism the "killed" status can't carry alone:
+    // status/exitCode look identical for a turn interrupted mid-flight and a
+    // turn that had already finished before something killed the session.
+    // kill() must capture `busy` at the instant it flips status — not leave a
+    // reader to infer it later, since `busy` itself goes stale forever the
+    // moment a mid-turn kill's `finally` never runs (see killedMidTurn's
+    // docblock on SessionDescriptor).
+    const reg = createSessionsRegistry({ persistPath, persist: false })
+
+    const midTurnAgent: AgentSessionLike = {
+      sessionId: "acp-mid-turn",
+      async *send() {
+        await new Promise(() => {}) // never resolves — the turn stays in flight
+        yield { kind: "turn-end" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const midTurn = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: midTurnAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+    await new Promise(res => setTimeout(res, 20))
+    expect(reg.get(midTurn.id)?.busy).toBe(true) // sanity: the turn really is in flight
+    reg.kill(midTurn.id)
+    expect(reg.get(midTurn.id)?.killedMidTurn).toBe(true)
+
+    const finishedAgent: AgentSessionLike = {
+      sessionId: "acp-finished",
+      async *send() {
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const finished = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: finishedAgent,
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+    await new Promise(res => setTimeout(res, 20))
+    expect(reg.get(finished.id)?.busy).toBe(false) // sanity: the turn already finished
+    expect(reg.get(finished.id)?.turnsCompleted).toBe(1)
+    reg.kill(finished.id) // the supervisor-reap-after-success case
+    expect(reg.get(finished.id)?.killedMidTurn).toBe(false)
+
+    reg.shutdown()
+  })
+
   it("WP0: awaitingInput is cleared at the start of each new turn", async () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })

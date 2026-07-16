@@ -475,11 +475,44 @@ describe("transcriptPanel webview — honest session state", () => {
   it("does NOT claim a killed session is blocked (stale blockedOn survives the kill)", () => {
     const panel = renderPanel()
     // The real descriptor a killed-mid-tool-call session carries: the daemon
-    // clears blockedOn in the turn's finally, which never runs here.
+    // clears blockedOn in the turn's finally, which never runs here. `busy`
+    // is equally stale — killedMidTurn is absent (never captured as false),
+    // so this reads as "stopped", not the "done" a merely-stale `busy: true`
+    // must never earn.
     init(panel, { status: "killed", busy: true, blockedOn: "command", pendingToolCallId: "toolu_01ABCDEF" })
     expect(el(panel, "header-blocked").textContent).toBe("")
     // ...and the chip must not contradict it either.
-    expect(el(panel, "status-chip").textContent).toBe("exited")
+    expect(el(panel, "status-chip").textContent).toBe("stopped")
+  })
+
+  it("reads a supervisor's reap of an already-finished child as done, not stopped", () => {
+    const panel = renderPanel()
+    // Exactly the daemon's real descriptor for the reported bug: a child
+    // that reported back, then got reaped — busy false and killedMidTurn
+    // false (captured honestly at kill time), turnsCompleted > 0.
+    init(panel, { status: "killed", busy: false, killedMidTurn: false, turnsCompleted: 1 })
+    expect(el(panel, "status-chip").textContent).toBe("done")
+  })
+
+  it("still reads a human's mid-turn Stop as stopped, even after a prior turn completed", () => {
+    const panel = renderPanel()
+    // turnsCompleted: 1 alone can't tell this apart from the reap-after-
+    // finish case above — killedMidTurn: true (captured at the instant
+    // kill() ran, mid-SECOND-turn) is what does.
+    init(panel, { status: "killed", busy: true, killedMidTurn: true, turnsCompleted: 1 })
+    expect(el(panel, "status-chip").textContent).toBe("stopped")
+  })
+
+  it("still reads a non-zero exit as failed", () => {
+    const panel = renderPanel()
+    init(panel, { status: "exited", exitCode: 7, busy: false })
+    expect(el(panel, "status-chip").textContent).toBe("failed")
+  })
+
+  it("regression: a stopped session carrying exitCode 143 is not painted as failed", () => {
+    const panel = renderPanel()
+    init(panel, { status: "killed", exitCode: 143, busy: false, killedMidTurn: true })
+    expect(el(panel, "status-chip").textContent).toBe("stopped")
   })
 
   it("renders context as an integer percent, keeping the raw counts in the tooltip", () => {

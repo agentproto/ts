@@ -45,6 +45,15 @@ export interface SessionDescriptor {
   startedAt: string
   endedAt?: string
   exitCode?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.killedMidTurn: whether a
+   *  turn was actually in flight the instant `status` flipped to "killed" —
+   *  captured by the daemon at kill time, before `busy` can go stale (a
+   *  killed session's `busy` is never cleared by the turn's own `finally`
+   *  if that turn's generator is never resumed). `true` means interrupted;
+   *  `false`/absent alongside `turnsCompleted > 0` means the session had
+   *  already finished its work before something tore it down — see
+   *  activityFor in sessionsTree.logic.ts for the read. */
+  killedMidTurn?: boolean
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
