@@ -24,7 +24,7 @@
  * `AGENTPROTO_DAEMON_URL` when the file is missing or stale.
  */
 import { parseArgs } from "node:util"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import http from "node:http"
 import https from "node:https"
 import WebSocket from "ws"
@@ -1232,15 +1232,34 @@ async function fetchSessions(baseUrl: string): Promise<SessionDescriptor[]> {
   return (body as { sessions: SessionDescriptor[] }).sessions
 }
 
+/** Wide enough for a realistic branch-shaped worktree name
+ *  (`session-worktree-identity`, 25) without letting one outlier push COMMAND
+ *  off the terminal. The column sizes to its widest row, so this is only a
+ *  ceiling, not the usual width. */
+const WORKTREE_COL_MAX = 32
+
+/** A session's worktree as a table cell: the leaf directory name, which is
+ *  what identifies a worktree to a human (`session-worktree-identity`) —
+ *  the full path and the generation id are in the DETAIL pane and `--json`.
+ *  See `SessionDescriptor.worktreePath`. */
+function worktreeCell(s: SessionDescriptor): string {
+  return s.worktreePath ? truncate(basename(s.worktreePath), WORKTREE_COL_MAX) : "—"
+}
+
 function printTable(rows: SessionDescriptor[]): void {
   if (rows.length === 0) {
     process.stdout.write("No sessions.\n")
     return
   }
+  // The WORKTREE column earns its width only when something is actually in a
+  // worktree — a column of em-dashes is noise for the (common) case of a
+  // daemon whose sessions all run in plain checkouts.
+  const showWorktree = rows.some(r => r.worktreePath !== undefined)
   const widths = {
     id: Math.max(...rows.map(r => r.id.length), 4),
     kind: Math.max(...rows.map(r => r.kind.length), 4),
     workspace: Math.max(...rows.map(r => r.workspaceSlug.length), 9),
+    worktree: Math.max(...rows.map(r => worktreeCell(r).length), 8),
     status: Math.max(...rows.map(r => statusLabel(r).length), 8),
     age: 8,
   }
@@ -1251,6 +1270,7 @@ function printTable(rows: SessionDescriptor[]): void {
     "  " +
     pad("WORKSPACE", widths.workspace) +
     "  " +
+    (showWorktree ? pad("WORKTREE", widths.worktree) + "  " : "") +
     pad("STATUS", widths.status) +
     "  " +
     pad("AGE", widths.age) +
@@ -1267,6 +1287,7 @@ function printTable(rows: SessionDescriptor[]): void {
         "  " +
         pad(r.workspaceSlug, widths.workspace) +
         "  " +
+        (showWorktree ? pad(worktreeCell(r), widths.worktree) + "  " : "") +
         `${tone}${pad(statusLabel(r), widths.status)}\x1b[0m` +
         "  " +
         pad(age, widths.age) +
@@ -2268,6 +2289,18 @@ export function renderDetail(
       out.push(`  ${kw("usage")} ${c.dim}${usageParts.join(" · ")}${c.reset}`)
     }
     out.push(`  ${kw("workspace")} ${s.workspaceSlug}`)
+    if (s.cwd) out.push(`  ${kw("cwd")} ${c.dim}${truncate(s.cwd, width - 14)}${c.reset}`)
+    // Which worktree the agent is in — the edge recorded at spawn (see
+    // SessionDescriptor.worktreePath), not re-derived from `cwd` here: the
+    // worktree may already be gone. The id pins the generation and is absent
+    // for a worktree made by a bare `git worktree add`; `cwd` above carries
+    // the exact directory when it's a subdir of the root shown here.
+    if (s.worktreePath) {
+      out.push(
+        `  ${kw("worktree")} ${truncate(basename(s.worktreePath), width - 14)}` +
+          (s.worktreeId ? ` ${c.dim}${s.worktreeId}${c.reset}` : ""),
+      )
+    }
     out.push(`  ${kw("command")} ${c.dim}${truncate(s.command, width - 14)}${c.reset}`)
     out.push(`  ${kw("pid")} ${s.pid ?? "—"}`)
     out.push(`  ${kw("started")} ${humaniseDelta(now - new Date(s.startedAt).getTime())} ago`)

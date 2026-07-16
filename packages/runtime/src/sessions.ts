@@ -37,6 +37,7 @@ import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
+import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -399,6 +400,25 @@ export interface SessionDescriptor {
   argv?: readonly string[]
   /** Working directory the session was spawned in. Cloned by restart. */
   cwd?: string
+  /** Root of the git worktree the session was spawned in — the session→
+   *  worktree edge, resolved from `cwd` at spawn time
+   *  (`resolveWorktreeIdentity`). Distinct from `cwd`, which may be a
+   *  subdirectory of it. Absent when `cwd` isn't inside a linked worktree (a
+   *  plain checkout, a non-repo dir) and for every session persisted before
+   *  this field existed.
+   *
+   *  Recorded rather than computed at read time because it can't be
+   *  recovered later: a worktree removed after the session ran leaves nothing
+   *  on disk to re-resolve. */
+  worktreePath?: string
+  /** Generation id of that worktree, read at spawn from the provision marker
+   *  (`agentproto-worktree.json` in the worktree's private gitdir, written by
+   *  `worktree.provision`). Absent whenever `worktreePath` is, and also for a
+   *  worktree created by a bare `git worktree add` — nothing writes a marker
+   *  there. The marker is what distinguishes generations, so a
+   *  `worktreePath` without an id identifies a PATH, which a later worktree
+   *  may reuse; the pair identifies one specific worktree. */
+  worktreeId?: string
   /** Adapter slug for agent-cli sessions — restart uses this with
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
@@ -693,6 +713,21 @@ function findPriorCommandSessionId(
     if (!best || candidateTs > bestTs!) best = rt
   }
   return best?.desc.id
+}
+
+/** Spread-ready worktree identity for a spawn path's `cwd` — see
+ *  `SessionDescriptor.worktreePath`. Returns `{}` (not `{worktreePath:
+ *  undefined}`) for the common case of a cwd outside any worktree, so the
+ *  descriptor keeps the keys absent rather than persisting nulls into
+ *  sessions.json. */
+function worktreeFields(
+  cwd: string,
+): Pick<SessionDescriptor, "worktreePath" | "worktreeId"> {
+  const identity = resolveWorktreeIdentity(cwd)
+  if (!identity) return {}
+  return identity.worktreeId === undefined
+    ? { worktreePath: identity.worktreePath }
+    : { worktreePath: identity.worktreePath, worktreeId: identity.worktreeId }
 }
 
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
@@ -2230,6 +2265,7 @@ export function createSessionsRegistry(opts?: {
         startedAt: new Date().toISOString(),
         argv: input.argv,
         cwd: input.cwd,
+        ...worktreeFields(input.cwd),
         ...(input.label ? { label: input.label } : {}),
       }
       const rt: SessionRuntime = {
@@ -2343,6 +2379,7 @@ export function createSessionsRegistry(opts?: {
         status: "running", // driver already started the session
         startedAt: new Date().toISOString(),
         cwd: input.cwd,
+        ...worktreeFields(input.cwd),
         adapterSlug: input.adapterSlug,
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as
@@ -2462,6 +2499,7 @@ export function createSessionsRegistry(opts?: {
         pty: true,
         argv: input.argv,
         cwd: input.cwd,
+        ...worktreeFields(input.cwd),
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
