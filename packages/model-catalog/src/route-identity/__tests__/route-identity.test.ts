@@ -159,6 +159,45 @@ describe("resolveLlmModelRoute", () => {
     expect(route).toBeUndefined()
   })
 
+  it("resolves distinct Requesty route for openai/gpt-4.1@requesty", () => {
+    const direct = resolveLlmModelRoute("openai/gpt-4.1")
+    const requesty = resolveLlmModelRoute("openai/gpt-4.1@requesty")
+    expect(requesty).toBeDefined()
+    expect(requesty!.route).toBe("requesty")
+    expect(requesty!.transport.flavor).toBe("requesty")
+    expect(requesty!.pricing.provider).toBe("requesty")
+    expect(requesty!.pricing).not.toBe(direct!.pricing)
+  })
+
+  it("prices a Requesty-only model that has no direct vendor route", () => {
+    // sference/* is served only via Requesty, so the bare ref is unresolvable
+    // while the routed ref prices — the case the @route suffix exists for.
+    expect(
+      resolveLlmModelRoute("sference/thinkingcap-qwen3.6-27b")
+    ).toBeUndefined()
+    const routed = resolveLlmModelRoute(
+      "sference/thinkingcap-qwen3.6-27b@requesty"
+    )
+    expect(routed).toBeDefined()
+    expect(routed!.pricing.inputPer1M).toBe(0.4)
+    expect(routed!.pricing.outputPer1M).toBe(3)
+  })
+
+  it("keeps the direct vendor route unchanged by the Requesty table", () => {
+    // Regression guard: REQUESTY_ROUTES must not be spread into
+    // LLM_PRICING_CATALOG, or a bare openai/gpt-4.1 would silently pick up
+    // Requesty's router pricing.
+    const direct = resolveLlmModelRoute("openai/gpt-4.1")
+    expect(direct).toBeDefined()
+    expect(direct!.route).toBe("openai")
+    expect(direct!.pricing.provider).not.toBe("requesty")
+  })
+
+  it("returns undefined for unknown Requesty route", () => {
+    const route = resolveLlmModelRoute("openai/nonexistent-model@requesty")
+    expect(route).toBeUndefined()
+  })
+
   it("resolves registered custom route", () => {
     const config: CustomRouteConfig = {
       label: "Operator proxy",

@@ -7,13 +7,14 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, deepseek, xai, openai and openai-direct", () => {
+  it("exposes moonshot, openrouter, requesty, deepseek, xai, openai and openai-direct", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
       "moonshot",
       "openai",
       "openai-direct",
       "openrouter",
+      "requesty",
       "xai",
     ])
   })
@@ -46,6 +47,20 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       it("satisfies the ProviderPreset type (compile-time shape guard)", () => {
         const _check: ProviderPreset = preset
         expect(_check).toBe(preset)
+      })
+
+      it("carries no /v1 suffix on an Anthropic-flavored base URL", () => {
+        // The Anthropic client (claude binary + Agent SDK) appends
+        // `/v1/messages` to ANTHROPIC_BASE_URL itself, so a /v1 already on the
+        // preset produces `…/v1/v1/messages` → 404. The gateway then reports
+        // that as "model may not exist or you may not have access to it",
+        // which reads as a model/credential problem and hides the real cause —
+        // exactly how the openrouter preset shipped broken. OpenAI-flavored
+        // presets are exempt: those base URLs are used as-is by an
+        // OpenAI-style client and legitimately end in /v1.
+        if (preset.schemaFlavor === "anthropic") {
+          expect(preset.baseUrl).not.toMatch(/\/v1\/?$/)
+        }
       })
     })
   }

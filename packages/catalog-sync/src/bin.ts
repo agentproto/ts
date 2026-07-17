@@ -12,6 +12,7 @@
  */
 
 import { llmOpenRouterGenerator } from "./generators/llm-openrouter.js"
+import { llmRequestyGenerator } from "./generators/llm-requesty.js"
 import { llmContextWindowsGenerator } from "./generators/llm-context-windows.js"
 import { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 import { voiceMinimax } from "./generators/voice-minimax.js"
@@ -41,6 +42,7 @@ const refresh = flags.has("--refresh")
 const check = flags.has("--check")
 const generators = [
   llmOpenRouterGenerator,
+  llmRequestyGenerator,
   llmContextWindowsGenerator,
   voiceElevenlabs,
   voiceMinimax,

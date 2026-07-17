@@ -86,7 +86,9 @@ describe("listPresets", () => {
   it("includes openrouter with no defaultModel (model chosen via the model option)", () => {
     const entries = listPresets({})
     const openrouter = entries.find((e) => e.slug === "openrouter")
-    expect(openrouter?.info?.baseUrl).toBe("https://openrouter.ai/api/v1")
+    // No /v1 suffix: the client appends /v1/messages itself (a /v1 here made
+    // every openrouter-mode spawn 404 against /api/v1/v1/messages).
+    expect(openrouter?.info?.baseUrl).toBe("https://openrouter.ai/api")
     expect(openrouter?.info?.keyEnv).toBe("OPENROUTER_API_KEY")
     expect(openrouter?.info?.defaultModel).toBeUndefined()
   })

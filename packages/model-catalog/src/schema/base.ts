@@ -49,6 +49,7 @@ export const CatalogProviderSchema = z.enum([
   "openai-realtime",
   "openrouter",
   "replicate",
+  "requesty",
   "xai",
 ])
 export type CatalogProvider = z.infer<typeof CatalogProviderSchema>
@@ -84,6 +85,7 @@ export const PROVIDER_KEY_ENV: Record<CatalogProvider, string> = {
   "openai-realtime": "OPENAI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
   replicate: "REPLICATE_API_TOKEN",
+  requesty: "REQUESTY_API_KEY",
   xai: "XAI_API_KEY",
 }
 

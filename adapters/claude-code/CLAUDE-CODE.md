@@ -99,7 +99,7 @@ modes:
       (e.g. 'z-ai/glm-5.2', 'moonshotai/kimi-k2') and supply the OpenRouter
       key via `auth_token`.
     env:
-      ANTHROPIC_BASE_URL: https://openrouter.ai/api/v1
+      ANTHROPIC_BASE_URL: https://openrouter.ai/api
     env_unset:
       - ANTHROPIC_API_KEY
       - CLAUDE_CODE_USE_BEDROCK

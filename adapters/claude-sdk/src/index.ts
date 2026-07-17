@@ -188,6 +188,22 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       },
     },
     {
+      id: ANTHROPIC_GATEWAY_PRESETS.requesty.id,
+      description:
+        "Requesty gateway. Pre-wires ANTHROPIC_BASE_URL to Requesty's " +
+        "Anthropic-compatible endpoint. Pick a model via the `model` option " +
+        "(e.g. 'sference/thinkingcap-qwen3.6-27b', 'sference/glm-5.2') and " +
+        "supply the Requesty key via `auth_token` (or ANTHROPIC_AUTH_TOKEN). " +
+        "buildQueryOptions pins every model tier — including " +
+        "ANTHROPIC_SMALL_FAST_MODEL — to that one model, since Requesty serves " +
+        "no Claude-named tiers.",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.requesty.baseUrl,
+        // Conventional credential source for this gateway (see moonshot above).
+        CLAUDE_SDK_GATEWAY_KEY_ENV: ANTHROPIC_GATEWAY_PRESETS.requesty.keyEnv,
+      },
+    },
+    {
       id: ANTHROPIC_GATEWAY_PRESETS.deepseek.id,
       description:
         "DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's " +
