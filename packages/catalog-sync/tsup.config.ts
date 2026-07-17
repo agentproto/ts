@@ -18,6 +18,7 @@ export default createTsupConfig({
     runner: "src/runner.ts",
     bin: "src/bin.ts",
     "generators/llm-openrouter": "src/generators/llm-openrouter.ts",
+    "generators/llm-requesty": "src/generators/llm-requesty.ts",
     "refresh-workflow": "src/refresh-workflow.ts",
     "sources/openai": "src/sources/openai.ts",
   },
