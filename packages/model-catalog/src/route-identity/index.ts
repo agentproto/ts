@@ -30,6 +30,7 @@ import {
   DEFAULT_PRICING,
 } from "../llm/catalog.js"
 import { OPENROUTER_ROUTES } from "../llm/openrouter-routes.generated.js"
+import { REQUESTY_ROUTES } from "../llm/requesty-routes.generated.js"
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 
@@ -226,6 +227,7 @@ export function clearCustomRoutes(): void {
  *
  *   openai/gpt-4o            → direct OpenAI pricing / transport
  *   openai/gpt-4o@openrouter → OpenRouter route pricing / transport
+ *   openai/gpt-4o@requesty   → Requesty route pricing / transport
  *   openai/gpt-4o@agentik-proxy → custom route config (if registered)
  *
  * Bare legacy ids (e.g. `gpt-4o`, `claude-sonnet-4-5`) are also accepted and
@@ -263,6 +265,22 @@ export function resolveLlmModelRoute(
     if (!pricing) return undefined
     return buildLlmRoute(modelRef, canonicalProductId, pricing, {
       flavor: "openrouter",
+    })
+  }
+
+  // ── Requesty route ──────────────────────────────────────────────────────
+  // Same shape as the OpenRouter branch: the router's own price table is keyed
+  // by bare vendor/product, and the route lives in the ref rather than the key,
+  // so `openai/gpt-4.1` (direct) and `openai/gpt-4.1@requesty` price
+  // independently. REQUESTY_ROUTES is deliberately NOT spread into
+  // LLM_PRICING_CATALOG — that map is the legacy bare-id path, and spreading a
+  // second router into it would repoint direct-vendor ids at router pricing.
+  if (modelRef.route === "requesty") {
+    const key = `${modelRef.vendor}/${modelRef.product}`
+    const pricing = REQUESTY_ROUTES[key]
+    if (!pricing) return undefined
+    return buildLlmRoute(modelRef, canonicalProductId, pricing, {
+      flavor: "requesty",
     })
   }
 
