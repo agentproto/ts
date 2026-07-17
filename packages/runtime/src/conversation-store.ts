@@ -40,6 +40,22 @@ export interface DiscoverInput {
   cwd: string
   /** Only consider conversations active at-or-after this ISO ts. */
   since?: string
+  /** Only consider conversations that STARTED at-or-before this ISO ts —
+   *  an upper bound, typically a dead session's `endedAt`. A conversation
+   *  whose own first message postdates it provably belongs to some other,
+   *  later session. Omit for a live/ongoing session (no `endedAt` yet) —
+   *  it must keep matching conversations that started after `since` with
+   *  no upper bound. Conservative: a candidate with no discoverable
+   *  `startedAt` is never dropped by this filter. */
+  until?: string
+  /** The requesting session's attachment mode, in ABSTRACT (provider-
+   *  agnostic) vocabulary — `"native"` for a real PTY/TUI attach,
+   *  `"acp"` for the agent-cli/ACP arm. When set, drops candidates whose
+   *  `lastWriter` is present and maps to the OPPOSITE mode (a native PTY's
+   *  conversation is never written by the ACP arm, and vice versa).
+   *  Conservative: a candidate with no `lastWriter` is never dropped, and
+   *  omitting this field applies no mode filtering at all. */
+  attachmentMode?: "native" | "acp"
   /** When set, bind to EXACTLY this conversation or return [].
    *  MUST NOT fall back to a recency guess — see invariants. */
   expectedId?: string
@@ -164,8 +180,15 @@ async function buildClaudeCandidate(
   return { conversationId, ...scanned }
 }
 
+/** Maps an abstract `attachmentMode` to claude's own jsonl `entrypoint`
+ *  vocabulary. Kept local to this store — callers deal only in
+ *  `"native" | "acp"`, never `"cli" | "sdk-ts"`. */
+function claudeEntrypointFor(mode: "native" | "acp"): string {
+  return mode === "native" ? "cli" : "sdk-ts"
+}
+
 async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCandidate[]> {
-  const { cwd, since, expectedId } = input
+  const { cwd, since, until, attachmentMode, expectedId } = input
   const dir = claudeCodeProjectDir(cwd)
 
   // Ground truth beats heuristic: bind to exactly the conversation we were
@@ -191,6 +214,8 @@ async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCan
   if (jsonlFiles.length === 0) return []
 
   const sinceMs = since ? Date.parse(since) : NaN
+  const untilMs = until ? Date.parse(until) : NaN
+  const wantEntrypoint = attachmentMode ? claudeEntrypointFor(attachmentMode) : undefined
   const scored: { candidate: ConversationCandidate; mtimeMs: number }[] = []
   for (const f of jsonlFiles) {
     const filePath = join(dir, f)
@@ -203,6 +228,19 @@ async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCan
     if (Number.isFinite(sinceMs) && mtimeMs < sinceMs - 1000) continue
     const conversationId = f.replace(/\.jsonl$/, "")
     const candidate = await buildClaudeCandidate(filePath, conversationId)
+    // `until` is an upper bound on the conversation's own first message —
+    // provably not this session's if it started after the session ended.
+    // Conservative: no discoverable startedAt ⇒ never dropped.
+    if (Number.isFinite(untilMs) && candidate.startedAt !== undefined) {
+      const startedMs = Date.parse(candidate.startedAt)
+      if (Number.isFinite(startedMs) && startedMs > untilMs) continue
+    }
+    // Attachment-mode match: a native PTY's conversation is never written
+    // by the ACP arm and vice versa. Conservative: no lastWriter ⇒ never
+    // dropped, and an unset attachmentMode applies no filtering at all.
+    if (wantEntrypoint !== undefined && candidate.lastWriter !== undefined && candidate.lastWriter !== wantEntrypoint) {
+      continue
+    }
     scored.push({ candidate, mtimeMs })
   }
 

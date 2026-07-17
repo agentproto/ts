@@ -258,6 +258,134 @@ describe("claude-code discover", () => {
     const found = await store.discover({ cwd, since: "2026-05-14T00:00:00Z" })
     expect(found).toEqual([])
   })
+
+  // ── `until` / `attachmentMode` narrowing (the sess_fea9b4f3 shape) ────
+
+  it("narrows the sess_fea9b4f3 shape (1 real + 4 unrelated siblings) to exactly 1 via `until` OR `attachmentMode`, but not with neither", async () => {
+    const cwd = "/repo/agentproto"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const real = "c618de81-1016-45f7-bfe4-e24e2121f025"
+    writeJsonl(
+      sessionsDir,
+      real,
+      [
+        {
+          type: "user",
+          timestamp: "2026-07-15T02:51:07.987Z",
+          entrypoint: "cli",
+          message: { role: "user", content: [{ type: "text", text: "hi" }] },
+        },
+      ],
+      new Date("2026-07-15T02:51:07.987Z"),
+    )
+
+    const siblings = [
+      "11111111-0000-0000-0000-000000000001",
+      "22222222-0000-0000-0000-000000000002",
+      "33333333-0000-0000-0000-000000000003",
+      "44444444-0000-0000-0000-000000000004",
+    ]
+    for (const sib of siblings) {
+      writeJsonl(
+        sessionsDir,
+        sib,
+        [
+          {
+            type: "user",
+            timestamp: "2026-07-16T09:00:00.000Z",
+            entrypoint: "sdk-ts",
+            message: { role: "user", content: [{ type: "text", text: "unrelated, written a day later" }] },
+          },
+        ],
+        new Date("2026-07-16T09:00:00.000Z"),
+      )
+    }
+
+    const store = CONVERSATION_STORES["claude-code"]!
+
+    // Neither filter: still ambiguous — proves narrowing isn't hardcoded.
+    const withNeither = await store.discover({ cwd })
+    expect(withNeither.map(c => c.conversationId).sort()).toEqual([real, ...siblings].sort())
+
+    // `until` = the dead session's endedAt: the 4 siblings started AFTER
+    // the session ended, so they're provably not its conversation.
+    const withUntil = await store.discover({ cwd, until: "2026-07-15T03:17:21.000Z" })
+    expect(withUntil.map(c => c.conversationId)).toEqual([real])
+
+    // `attachmentMode: "native"` alone: the 4 siblings are sdk-ts (ACP),
+    // a native PTY's conversation can't be one of them.
+    const withMode = await store.discover({ cwd, attachmentMode: "native" })
+    expect(withMode.map(c => c.conversationId)).toEqual([real])
+  })
+
+  it("`until` never drops a candidate with no discoverable startedAt (conservative)", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const noTimestamp = "dddddddd-0000-0000-0000-000000000004"
+    // No `timestamp` field on the line at all — scanClaudeJsonl can't
+    // derive a startedAt for it.
+    writeJsonl(
+      sessionsDir,
+      noTimestamp,
+      [{ type: "user", message: { role: "user", content: [{ type: "text", text: "no ts" }] } }],
+      new Date("2026-05-13T10:00:00Z"),
+    )
+    const store = CONVERSATION_STORES["claude-code"]!
+    const found = await store.discover({ cwd, until: "2020-01-01T00:00:00.000Z" })
+    expect(found.map(c => c.conversationId)).toEqual([noTimestamp])
+  })
+
+  it("`attachmentMode` never drops a candidate with no lastWriter (conservative)", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const noEntrypoint = "eeeeeeee-0000-0000-0000-000000000005"
+    writeJsonl(
+      sessionsDir,
+      noEntrypoint,
+      [
+        {
+          type: "user",
+          timestamp: "2026-05-13T10:00:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "no entrypoint" }] },
+        },
+      ],
+      new Date("2026-05-13T10:00:00Z"),
+    )
+    const store = CONVERSATION_STORES["claude-code"]!
+    const found = await store.discover({ cwd, attachmentMode: "acp" })
+    expect(found.map(c => c.conversationId)).toEqual([noEntrypoint])
+  })
+
+  it("exact-bind (expectedId) ignores `until`/`attachmentMode` entirely", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000009"
+    writeJsonl(
+      sessionsDir,
+      own,
+      [
+        {
+          type: "user",
+          timestamp: "2026-07-16T09:00:00.000Z",
+          entrypoint: "sdk-ts",
+          message: { role: "user", content: [{ type: "text", text: "own, would fail both filters" }] },
+        },
+      ],
+      new Date("2026-07-16T09:00:00Z"),
+    )
+    const store = CONVERSATION_STORES["claude-code"]!
+    // startedAt is AFTER `until`, and lastWriter is the opposite of
+    // `attachmentMode` — either filter alone would drop this candidate if
+    // it applied to the expectedId path. It must not.
+    const found = await store.discover({
+      cwd,
+      expectedId: own,
+      until: "2020-01-01T00:00:00.000Z",
+      attachmentMode: "native",
+    })
+    expect(found).toHaveLength(1)
+    expect(found[0]?.conversationId).toBe(own)
+  })
 })
 
 // ── read ──────────────────────────────────────────────────────────────

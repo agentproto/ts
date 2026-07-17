@@ -38,6 +38,18 @@ function knownStoreKey(desc: Pick<SessionDescriptor, "adapterSlug" | "argv">): s
   return key !== undefined && CONVERSATION_STORES[key] ? key : undefined
 }
 
+/** The requesting session's attachment mode, in the abstract vocabulary
+ *  `ConversationStore.discover` expects — provider-native `"cli"`/`"sdk-ts"`
+ *  stays encapsulated inside each store. A real PTY/TUI attach (`kind:
+ *  "terminal"` + `pty: true`) is native; an agent-cli session is the ACP
+ *  arm. Anything else (a `command`/`browser` session, or a `terminal` that
+ *  isn't a real PTY) is unknown — no mode filtering applies. */
+function deriveAttachmentMode(desc: Pick<SessionDescriptor, "kind" | "pty">): "native" | "acp" | undefined {
+  if (desc.kind === "agent-cli") return "acp"
+  if (desc.kind === "terminal" && desc.pty) return "native"
+  return undefined
+}
+
 /** Pulls the id out of `--resume <id>` / `-r <id>` in a PTY's launch argv —
  *  the ONLY link back to its conversation for a PTY that was hand-resumed
  *  outside agentproto (e.g. `claude --resume <uuid>` typed directly). */
@@ -99,7 +111,15 @@ async function resolveConversationId(desc: SessionDescriptor): Promise<LadderRes
     return { kind: "none", reason: "session has no recorded cwd; cannot search the conversation store" }
   }
   const store = CONVERSATION_STORES[storeKey]!
-  const candidates = await store.discover({ cwd: desc.cwd, since: desc.startedAt })
+  const attachmentMode = deriveAttachmentMode(desc)
+  const candidates = await store.discover({
+    cwd: desc.cwd,
+    since: desc.startedAt,
+    // A live/ongoing session has no endedAt yet and must keep matching
+    // with no upper bound — only a dead session's endedAt narrows.
+    ...(desc.endedAt ? { until: desc.endedAt } : {}),
+    ...(attachmentMode ? { attachmentMode } : {}),
+  })
   if (candidates.length === 0) {
     return {
       kind: "none",
