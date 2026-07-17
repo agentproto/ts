@@ -338,30 +338,6 @@ export function createAgentCliRuntime(
          * NOTHING: that controller is the CONNECTION-level signal, handed to
          * `arm.connect({abortSignal})` at spawn, and no arm reads it. So the
          * abort fired into the void while the agent kept working — a turn
-         * "cancelled" this way ran happily to completion, and the host's
-         * 60s settle-wait then timed out on a turn that was never asked to
-         * stop. It only ever LOOKED like it worked for turns that happened
-         * to end naturally inside the wait.
-         *
-         * Both arms have always implemented the real thing — the ACP arm
-         * sends `session/cancel`, the print arm SIGTERMs the child — it was
-         * simply never called. Call it.
-         *
-         * Connection-level abort deliberately stays out of this: aborting the
-         * connection would end the SESSION, and cancelling a turn must leave
-         * it alive and idle for the next prompt. That distinction is the
-         * whole point of interrupt-vs-kill.
-         */
-        /**
-         * Cancel the in-flight turn — the wire equivalent of Ctrl-C at the
-         * agent's own TUI, and the primitive the host's interrupt path
-         * (`SessionsRegistry.interruptSession`, `{interrupt: true}`) is built
-         * on.
-         *
-         * This used to be `abortController.abort()` alone, which cancelled
-         * NOTHING: that controller is the CONNECTION-level signal, handed to
-         * `arm.connect({abortSignal})` at spawn, and no arm reads it. So the
-         * abort fired into the void while the agent kept working — a turn
          * "cancelled" this way ran happily to completion, and the host's 60s
          * settle-wait then timed out on a turn that was never asked to stop.
          * It only ever LOOKED like it worked for turns that happened to end
