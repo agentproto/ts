@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import { AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -342,6 +343,192 @@ describe("DaemonClient.uploadFile — raw binary transport", () => {
     await expect(
       client().uploadFile("/home/.agentproto", "big.png", new Uint8Array([0]), "image/png"),
     ).rejects.toThrow(/413/)
+  })
+})
+
+interface GatedState {
+  /** Rotate mid-test to replay what a daemon restart looks like to a client. */
+  expectedToken: string
+  workspace: string
+  /** Fires as a 401 goes out — the hook a test uses to land a new token on disk. */
+  onReject?: () => void
+}
+
+/**
+ * A mock daemon that gates everything but /health on `state.expectedToken`,
+ * rejecting with the runtime's REAL `sessions_unauthorized` 401 body
+ * (http-server.ts:581) so the client's retry trigger is exercised against the
+ * exact shape it matches on.
+ */
+async function gatedMock(state: GatedState): Promise<{
+  url: string
+  port: number
+  server: Server
+  requests: Array<{ url: string; method: string; authorization: string | undefined }>
+}> {
+  const requests: Array<{ url: string; method: string; authorization: string | undefined }> = []
+  const server = createServer((req, res) => {
+    req.resume()
+    req.on("end", () => {
+      const raw = req.headers.authorization
+      const authorization = typeof raw === "string" ? raw : undefined
+      requests.push({ url: req.url ?? "/", method: req.method ?? "GET", authorization })
+      const json = (status: number, body: unknown): void => {
+        res.writeHead(status, { "content-type": "application/json" })
+        res.end(JSON.stringify(body))
+      }
+      // /health is the daemon's public, ungated liveness probe — and how the
+      // client learns which workspace to read runtime.json from.
+      if (req.url === "/health") {
+        json(200, { status: "ok", workspace: state.workspace, registered: [] })
+        return
+      }
+      if (authorization !== `Bearer ${state.expectedToken}`) {
+        state.onReject?.()
+        json(401, {
+          error: "sessions_unauthorized",
+          message: "Invalid bearer token.",
+          receivedAuthHeader: authorization !== undefined,
+        })
+        return
+      }
+      json(200, { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" })
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => resolve())
+  })
+  const { port } = server.address() as AddressInfo
+  return { url: `http://127.0.0.1:${port}`, port, server, requests }
+}
+
+describe("DaemonClient — bearer refresh across a daemon restart", () => {
+  let home: string
+  let workspace: string
+  let daemon: Awaited<ReturnType<typeof gatedMock>>
+  let state: GatedState
+
+  beforeEach(async () => {
+    const { mkdir } = await import("node:fs/promises")
+    const { tmpdir } = await import("node:os")
+    const { join } = await import("node:path")
+    home = await mkdtemp(join(tmpdir(), "agentproto-vscode-home-"))
+    workspace = await mkdtemp(join(tmpdir(), "agentproto-vscode-ws-"))
+    await mkdir(join(home, ".agentproto", "daemons"), { recursive: true })
+    await mkdir(join(workspace, ".agentproto"), { recursive: true })
+    state = { expectedToken: "boot-2-token", workspace }
+    daemon = await gatedMock(state)
+  })
+
+  afterEach(async () => {
+    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    const { rm } = await import("node:fs/promises")
+    await rm(home, { recursive: true, force: true })
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  function client(tokenPath = ""): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath, pollIntervalMs: 5000 }, fetch, home)
+  }
+
+  async function writeJson(path: string, value: unknown): Promise<void> {
+    const { writeFile } = await import("node:fs/promises")
+    await writeFile(path, JSON.stringify(value), "utf8")
+  }
+
+  async function registryPath(): Promise<string> {
+    const { join } = await import("node:path")
+    return join(home, ".agentproto", "daemons", `${daemon.port}.json`)
+  }
+
+  async function workspaceMetaPath(): Promise<string> {
+    const { join } = await import("node:path")
+    return join(workspace, ".agentproto", "runtime.json")
+  }
+
+  it("re-resolves and replays once when the daemon rebooted behind a cached token", async () => {
+    const registry = await registryPath()
+    await writeJson(registry, { token: "boot-1-token", pid: process.pid, port: daemon.port })
+    const c = client()
+    // Prime the cache on the pre-restart token, as a long-lived extension host does.
+    expect(await c.resolveToken()).toBe("boot-1-token")
+    // The daemon reboots: fresh token in RAM, and rewritten on disk.
+    state.onReject = () =>
+      writeFileSync(
+        registry,
+        JSON.stringify({ token: "boot-2-token", pid: process.pid, port: daemon.port }),
+        "utf8",
+      )
+
+    const session = await c.spawnAgent({ adapter: "claude-code" })
+
+    expect(session.id).toBe("s2")
+    expect(daemon.requests.map(r => r.authorization)).toEqual([
+      "Bearer boot-1-token",
+      "Bearer boot-2-token",
+    ])
+  })
+
+  it("surfaces the 401 and retries EXACTLY once when the re-resolved token is also rejected", async () => {
+    // No pid on this entry: a pid-less registry file must stay trusted.
+    await writeJson(await registryPath(), { token: "stale-token", port: daemon.port })
+
+    await expect(client().spawnAgent({ adapter: "claude-code" })).rejects.toThrow(/401/)
+
+    const gated = daemon.requests.filter(r => r.url === "/sessions/agent")
+    expect(gated).toHaveLength(2)
+    expect(gated.map(r => r.authorization)).toEqual(["Bearer stale-token", "Bearer stale-token"])
+  })
+
+  it("prefers the port-keyed registry over a workspace runtime.json holding another daemon's token", async () => {
+    await writeJson(await registryPath(), {
+      token: "boot-2-token",
+      pid: process.pid,
+      port: daemon.port,
+    })
+    // A short-lived second daemon on the same workspace root clobbered the
+    // (not port-keyed) workspace file with a token that isn't ours.
+    await writeJson(await workspaceMetaPath(), {
+      token: "other-daemon-token",
+      pid: process.pid,
+      port: daemon.port + 1,
+    })
+    const c = client()
+
+    expect(await c.resolveToken()).toBe("boot-2-token")
+    expect((await c.spawnAgent({ adapter: "claude-code" })).id).toBe("s2")
+  })
+
+  it("falls back to the workspace runtime.json when it names the daemon's own port", async () => {
+    await writeJson(await workspaceMetaPath(), {
+      token: "boot-2-token",
+      pid: process.pid,
+      port: daemon.port,
+    })
+
+    expect(await client().resolveToken()).toBe("boot-2-token")
+  })
+
+  it("keeps config.tokenPath ahead of both the registry and the workspace file", async () => {
+    const { join } = await import("node:path")
+    const explicit = join(home, "explicit.json")
+    // No port field: an explicit override is the user's word, not port-matched.
+    await writeJson(explicit, { token: "boot-2-token" })
+    await writeJson(await registryPath(), { token: "registry-token", pid: process.pid, port: daemon.port })
+    await writeJson(await workspaceMetaPath(), { token: "workspace-token", pid: process.pid, port: daemon.port })
+    const c = client(explicit)
+
+    expect(await c.resolveToken()).toBe("boot-2-token")
+    expect((await c.spawnAgent({ adapter: "claude-code" })).id).toBe("s2")
+  })
+
+  it("ignores a registry entry whose daemon is gone instead of replaying its token", async () => {
+    // A daemon that died without cleaning up leaves its entry behind.
+    await writeJson(await registryPath(), { token: "dead-daemon-token", pid: 0x7fffffff, port: daemon.port })
+    await writeJson(await workspaceMetaPath(), { token: "boot-2-token", pid: process.pid, port: daemon.port })
+
+    expect(await client().resolveToken()).toBe("boot-2-token")
   })
 })
 
