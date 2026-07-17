@@ -80,6 +80,13 @@ export interface AdapterHandle {
   readonly description: string
   /** True when the adapter requires a creds/setup pass before use. */
   readonly requiresSetup: boolean
+  /** True when a spawn HARD-FAILS without a billing credential — independent
+   *  of `requiresSetup` (an adapter can need no setup[] pass and still
+   *  refuse every spawn, e.g. claude-code's `authEnforce: "always"`).
+   *  Omitted/undefined for families with no auth notion. When true, the
+   *  lister calls the family's `authProbe` to resolve `authConfigured`
+   *  before classifying status. */
+  readonly authRequired?: boolean
   /**
    * Probe whether the adapter is locally operational (binary present,
    * API reachable, etc.) without requiring creds to be present.

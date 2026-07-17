@@ -244,6 +244,7 @@ export {
   type ProviderEntry,
   type ProvidersFile,
 } from "./providers-store.js"
+export { isAgentCliAuthConfigured } from "./auth-probe.js"
 export {
   resolveSpawnDefaults,
   normalizeSkillsOption,
