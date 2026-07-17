@@ -66,3 +66,18 @@ Source: `https://openrouter.ai/api/v1/models` (pinned snapshot:
   (P3 spec: "plus cache fields if the source has them") — additive and
   `LLMPricing`-compatible.
 - Unpriced routes (`openrouter/auto`) are skipped.
+
+### `llm:context-windows`
+
+Sources: Anthropic, Groq, xAI, and Moonshot models-list endpoints (pinned
+snapshots: `snapshots/llm-anthropic.json`, `snapshots/llm-groq.json`,
+`snapshots/llm-xai.json`, `snapshots/llm-moonshot.json`). Emits
+`packages/model-catalog/src/llm/context-windows.generated.ts` — a drop-in
+`CONTEXT_WINDOWS: Record<string, ContextWindowEntry>`.
+
+- `contextWindow` maps to each provider's max-input/context-length field.
+- `maxOutput` is captured when the source publishes one.
+- This is **not pricing**; billing data still comes from `llm:openrouter` and
+  hand-maintained pricing entries in `model-catalog`.
+- OpenAI and ZAI/Zhipu are excluded because they don't publish a stable,
+  machine-readable context-window list.

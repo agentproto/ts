@@ -130,8 +130,10 @@ Newly shipped manifest fields (this release):
   `bin_args_append_when_true`, `env`, and `env_unset`.
 - `models.deny?: string[]` reserves provider/model patterns (e.g. hermes
   denies Anthropic ids so a dedicated claude-code adapter owns them).
-- `presets[]` declares adapter-contributed gateway presets, merged into the
-  provider-preset catalog.
+- `models.allowed` entries can be bare id strings (back-compat) or structured
+  objects `{ id, provider?, mode? }` that bind a model to its billing provider
+  and adapter mode. This is what lets model pickers (e.g. the VS Code extension)
+  pin gateway mode when a user selects a model.
 
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.
