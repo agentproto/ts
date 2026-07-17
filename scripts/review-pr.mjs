@@ -111,6 +111,8 @@ const userPrompt = PR_NUMBER
 console.log(`\n🔍 PR Reviewer starting${DRY_RUN ? ' (dry-run)' : ''}…  model=${cmd.model}  skills=[${skills.map((s) => s.name).join(', ')}]`)
 if (PR_NUMBER) console.log(`   PR: #${PR_NUMBER}`)
 
+const MAX_TURNS = cmd.maxReviewTurns ?? 50
+
 const result = await runAgentLoop({
   apiKey,
   model: cmd.model,
@@ -119,7 +121,14 @@ const result = await runAgentLoop({
   toolImpls: impls,
   userPrompt,
   maxTokens: 4096,
-  maxTurns: 30,
+  maxTurns: MAX_TURNS,
+  // Warn the reviewer to stop exploring and post while it still has turns left,
+  // so it never runs out mid-Phase-1 without ever calling gh_pr_review (#437).
+  wrapUpMargin: 8,
+  wrapUpMessage:
+    `⚠️ You are approaching the turn limit (${MAX_TURNS}). Stop exploring now and ` +
+    'take your Phase 2 actions immediately: call gh_pr_review FIRST (mandatory), ' +
+    'then write_changeset. Do not read any more files.',
   onTurn: (t) => console.log(`\n⟳  Turn ${t}`),
   onToolCall: (name, input) => console.log(`   🔧 ${name}(${Object.keys(input).join(', ')})`),
 })

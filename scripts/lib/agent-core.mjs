@@ -64,6 +64,11 @@ export const CONFIG_DEFAULTS = {
   botMention: '@agentproto-bot',
   /** Max consecutive auto-fix iterations before escalating to a human. */
   maxFixIterations: 3,
+  /** Max agent-loop turns the PR reviewer may take before it is force-stopped.
+   *  The reviewer MUST post its review before this cap (review-pr.mjs fails the
+   *  gate if it doesn't), so this is headroom, not a target. Overridable
+   *  per-command via commands.review.maxReviewTurns. */
+  maxReviewTurns: 50,
   /** Per-command overrides: { review: { model?, skills?, ... }, fix: {...} }. */
   commands: {},
 }
@@ -204,10 +209,17 @@ export async function runAgentLoop({
   maxTurns = 24,
   onTurn,
   onToolCall,
+  // When set, inject `wrapUpMessage` once, as a text block appended to the tool
+  // results, as soon as `maxTurns - turn <= wrapUpMargin`. Gives a flow with a
+  // mandatory final action (e.g. the reviewer must call gh_pr_review) a chance
+  // to stop exploring and act before the turn budget runs out. No-op by default.
+  wrapUpMargin = 0,
+  wrapUpMessage = null,
 }) {
   if (!apiKey) throw new Error('runAgentLoop: apiKey is required')
   const messages = [{ role: 'user', content: userPrompt }]
   let turn = 0
+  let wrappedUp = false
 
   while (turn < maxTurns) {
     turn++
@@ -247,6 +259,14 @@ export async function runAgentLoop({
         tool_use_id: use.id,
         content: String(result),
       })
+    }
+
+    // Nudge the model to wrap up and take its mandatory final action while it
+    // still has turns left. Injected once, after the tool_result blocks (which
+    // must come first in the user turn).
+    if (wrapUpMessage && !wrappedUp && maxTurns - turn <= wrapUpMargin) {
+      toolResults.push({ type: 'text', text: wrapUpMessage })
+      wrappedUp = true
     }
 
     messages.push({ role: 'user', content: toolResults })
