@@ -1,5 +1,16 @@
 # @agentproto/driver-agent-cli
 
+## 1.2.0
+
+### Minor Changes
+
+- 68d3093: Add models.apply:"arg" for CLI-argument model selection; fix codex-acp model spawn crash
+
+### Patch Changes
+
+- dd3386d: Fix session.cancel() to delegate to arm.cancel(turnId) instead of aborting the connection-level controller
+- 2f8ba2d: Stop misdirecting zero-credential agent-cli users to buy a subscription
+
 ## 1.1.0
 
 ### Minor Changes

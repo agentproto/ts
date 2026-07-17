@@ -1,5 +1,11 @@
 # agentproto-vscode
 
+## 0.1.2
+
+### Patch Changes
+
+- d29d7fb: Re-resolve daemon bearer on stale-token 401 and fix token resolution order
+
 ## 0.1.1
 
 ### Minor Changes

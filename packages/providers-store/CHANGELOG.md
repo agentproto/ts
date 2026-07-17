@@ -1,5 +1,17 @@
 # @agentproto/providers-store
 
+## 0.3.0
+
+### Minor Changes
+
+- 719771e: Inject provider-key env aliases (google → GOOGLE_API_KEY) at serve boot
+
+### Patch Changes
+
+- Updated dependencies [719771e]
+- Updated dependencies [9c2cec0]
+  - @agentproto/model-catalog@0.5.0
+
 ## 0.2.1
 
 ### Patch Changes

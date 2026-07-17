@@ -1,5 +1,29 @@
 # @agentproto/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- c271e80: Add skill-pack packages and extract shared zip helper with path fix
+- a4d091d: Add policy-driven git-worktree isolation on agent_start
+- d717e01: Add `permissions watch` — rule-based auto-resolution of held permission requests
+
+### Patch Changes
+
+- f392877: Sync docs with latest release features (interrupt, conversation_read, WORKTREE column, llm:context-windows, duration flags)
+- 719771e: Inject provider-key env aliases (google → GOOGLE_API_KEY) at serve boot
+- 2f8ba2d: Stop misdirecting zero-credential agent-cli users to buy a subscription
+- Updated dependencies [dd3386d]
+- Updated dependencies [719771e]
+- Updated dependencies [a116fd6]
+- Updated dependencies [9c2cec0]
+- Updated dependencies [2f8ba2d]
+- Updated dependencies [68d3093]
+  - @agentproto/driver-agent-cli@1.2.0
+  - @agentproto/model-catalog@0.5.0
+  - @agentproto/worktree@0.4.1
+  - @agentproto/provider-kit@0.3.0
+
 ## 0.7.0
 
 ### Minor Changes

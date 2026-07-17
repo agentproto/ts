@@ -1,5 +1,21 @@
 # @agentproto/adapter-claude-code
 
+## 1.1.0
+
+### Minor Changes
+
+- 9c2cec0: Add Requesty gateway preset and fix openrouter's double-/v1 base URL bug
+
+### Patch Changes
+
+- cae6a45: Pin @agentclientprotocol/claude-agent-acp spawn to 0.59.0 for reproducibility
+- Updated dependencies [dd3386d]
+- Updated dependencies [9c2cec0]
+- Updated dependencies [2f8ba2d]
+- Updated dependencies [68d3093]
+  - @agentproto/driver-agent-cli@1.2.0
+  - @agentproto/provider-presets@0.4.0
+
 ## 1.0.1
 
 ### Patch Changes

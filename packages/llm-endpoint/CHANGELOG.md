@@ -1,5 +1,17 @@
 # @agentproto/llm-endpoint
 
+## 0.3.0
+
+### Minor Changes
+
+- d4187ca: Route requesty through the llm-endpoint proxy with a committed transparent pack
+- e4a5527: Replay a turn once when a stripped-thinking provider returns an empty turn
+
+### Patch Changes
+
+- Updated dependencies [719771e]
+  - @agentproto/providers-store@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

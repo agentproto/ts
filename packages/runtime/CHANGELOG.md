@@ -1,5 +1,27 @@
 # @agentproto/runtime
 
+## 0.8.0
+
+### Minor Changes
+
+- a4d091d: Add policy-driven git-worktree isolation on agent_start
+- 2f8ba2d: Stop misdirecting zero-credential agent-cli users to buy a subscription
+
+### Patch Changes
+
+- f392877: Sync docs with latest release features (interrupt, conversation_read, WORKTREE column, llm:context-windows, duration flags)
+- 9c2cec0: Add Requesty gateway preset and fix openrouter's double-/v1 base URL bug
+- Updated dependencies [719771e]
+- Updated dependencies [9c2cec0]
+- Updated dependencies [9c2cec0]
+- Updated dependencies [2f8ba2d]
+  - @agentproto/model-catalog@0.5.0
+  - @agentproto/providers-store@0.3.0
+  - @agentproto/provider-presets@0.4.0
+  - @agentproto/provider-kit@0.3.0
+  - @agentproto/sandbox@0.1.3
+  - @agentproto/eval-reporters@0.2.2
+
 ## 0.7.0
 
 ### Minor Changes
