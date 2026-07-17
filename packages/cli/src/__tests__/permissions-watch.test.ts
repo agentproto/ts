@@ -131,7 +131,7 @@ describe("agentproto permissions watch", () => {
 
     expect(code).toBe(0)
     expect(httpPostJson).toHaveBeenCalledTimes(1)
-    const [url, body, token] = httpPostJson.mock.calls[0] as [string, unknown, string]
+    const [url, body, token] = httpPostJson.mock.calls[0]!
     expect(url).toContain("/permissions/perm_1")
     expect(body).toEqual({ decision: "approve" }) // no optionId/scope → daemon maps
     expect(token).toBe("tok")
@@ -144,7 +144,7 @@ describe("agentproto permissions watch", () => {
   it("--always adds scope:\"always\" to the POST body", async () => {
     httpGetJson.mockResolvedValue({ permissions: [inboxEntry()] })
     await runPermissions(["watch", "--allow-tool", "ExitPlanMode", "--always", "--once"])
-    expect((httpPostJson.mock.calls[0] as [string, unknown])[1]).toEqual({
+    expect(httpPostJson.mock.calls[0]![1]).toEqual({
       decision: "approve",
       scope: "always",
     })
@@ -163,7 +163,7 @@ describe("agentproto permissions watch", () => {
 
     expect(code).toBe(0)
     expect(httpPostJson).toHaveBeenCalledTimes(1)
-    expect((httpPostJson.mock.calls[0] as [string])[0]).toContain("/permissions/perm_match")
+    expect(httpPostJson.mock.calls[0]![0]).toContain("/permissions/perm_match")
   })
 
   it("--session scopes flag rules: only that session's entries are touched", async () => {
@@ -177,7 +177,7 @@ describe("agentproto permissions watch", () => {
     await runPermissions(["watch", "--session", "s-abc", "--allow-tool", "*", "--once"])
 
     expect(httpPostJson).toHaveBeenCalledTimes(1)
-    expect((httpPostJson.mock.calls[0] as [string])[0]).toContain("/permissions/perm_in")
+    expect(httpPostJson.mock.calls[0]![0]).toContain("/permissions/perm_in")
   })
 
   it("a deny rule POSTs {decision:\"deny\"}", async () => {
@@ -186,7 +186,7 @@ describe("agentproto permissions watch", () => {
 
     await runPermissions(["watch", "--deny-tool", "Bash", "--once"])
 
-    expect((httpPostJson.mock.calls[0] as [string, unknown])[1]).toEqual({ decision: "deny" })
+    expect(httpPostJson.mock.calls[0]![1]).toEqual({ decision: "deny" })
     expect(stdoutChunks.join("")).toContain("denied perm_1")
   })
 
