@@ -899,6 +899,16 @@ export interface ResolvedAuthSpec {
   explicit: boolean
   /** The adapter's enforcement policy — the other half of engage. */
   enforce: "always" | "when-configured"
+  /** True when NEITHER subscription nor api-key had any credential
+   *  available and `mode` above is an arbitrary fallback pick, not a real
+   *  signal. The fail-fast message reads this to enumerate BOTH auth paths
+   *  instead of presenting the fallback mode as though it were chosen. */
+  neitherConfigured?: boolean
+  /** Non-authenticating hint: true when `providers.json` has a key for the
+   *  resolved provider that's currently being ignored for want of a
+   *  `defaults.adapters.<slug>.auth` block. Never used to authenticate —
+   *  only read by the fail-fast message. */
+  ignoredApiKeyInStore?: boolean
 }
 
 /**

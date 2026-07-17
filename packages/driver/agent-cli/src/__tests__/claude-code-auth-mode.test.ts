@@ -78,8 +78,15 @@ const CC_SUBSCRIPTION_UNSET = [
 // identical SET to #312's api_key.unset_env.
 const CC_APIKEY_UNSET = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]
 
+interface SpecOpts {
+  credential?: string
+  explicit?: boolean
+  neitherConfigured?: boolean
+  ignoredApiKeyInStore?: boolean
+}
+
 /** claude-code's resolved subscription spec (enforce "always"). */
-function subSpec(opts: { credential?: string; explicit?: boolean }): ResolvedAuthSpec {
+function subSpec(opts: SpecOpts): ResolvedAuthSpec {
   return {
     mode: "subscription",
     ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
@@ -87,11 +94,13 @@ function subSpec(opts: { credential?: string; explicit?: boolean }): ResolvedAut
     unsetEnv: CC_SUBSCRIPTION_UNSET,
     explicit: opts.explicit ?? true,
     enforce: "always",
+    ...(opts.neitherConfigured ? { neitherConfigured: true } : {}),
+    ...(opts.ignoredApiKeyInStore ? { ignoredApiKeyInStore: true } : {}),
   }
 }
 
 /** claude-code's resolved api-key spec (enforce "always"). */
-function apiKeySpec(opts: { credential?: string; explicit?: boolean }): ResolvedAuthSpec {
+function apiKeySpec(opts: SpecOpts): ResolvedAuthSpec {
   return {
     mode: "api-key",
     ...(opts.credential !== undefined ? { credential: opts.credential } : {}),
@@ -99,6 +108,8 @@ function apiKeySpec(opts: { credential?: string; explicit?: boolean }): Resolved
     unsetEnv: CC_APIKEY_UNSET,
     explicit: opts.explicit ?? true,
     enforce: "always",
+    ...(opts.neitherConfigured ? { neitherConfigured: true } : {}),
+    ...(opts.ignoredApiKeyInStore ? { ignoredApiKeyInStore: true } : {}),
   }
 }
 
@@ -228,7 +239,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
       ).rejects.toThrow(RuntimeConfigError)
       await expect(
         runtime.start({ cwd: "/scratch", auth: subSpec({}) }),
-      ).rejects.toThrow(/auth mode "subscription" requires an explicit credential/)
+      ).rejects.toThrow(/run `claude setup-token`/)
       expect(spawnCalls).toHaveLength(0)
     } finally {
       if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY
@@ -243,6 +254,40 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
       runtime.start({ cwd: "/scratch", auth: apiKeySpec({}) }),
     ).rejects.toThrow(RuntimeConfigError)
     expect(spawnCalls).toHaveLength(0)
+  })
+
+  it("fail-fast: neitherConfigured names BOTH auth paths + the config.json block, never claims subscription was chosen", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    await expect(
+      runtime.start({
+        cwd: "/scratch",
+        auth: subSpec({ explicit: false, neitherConfigured: true }),
+      }),
+    ).rejects.toThrow(
+      /claude setup-token.*agentproto auth provider set anthropic.*defaults.*claude-code.*auth.*mode/s,
+    )
+    expect(spawnCalls).toHaveLength(0)
+  })
+
+  it("fail-fast: ignoredApiKeyInStore adds the 'already have a key' hint", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    await expect(
+      runtime.start({
+        cwd: "/scratch",
+        auth: subSpec({ explicit: false, neitherConfigured: true, ignoredApiKeyInStore: true }),
+      }),
+    ).rejects.toThrow(/providers\.json already has a stored key for anthropic — ignored until that block exists/)
+    expect(spawnCalls).toHaveLength(0)
+  })
+
+  it("fail-fast: api-key mode with no credential (not neitherConfigured) keeps the mode-specific message + config.json block", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    await expect(
+      runtime.start({ cwd: "/scratch", auth: apiKeySpec({}) }),
+    ).rejects.toThrow(/agentproto auth provider set anthropic.*defaults.*claude-code.*auth.*mode/s)
   })
 
   it("does not scrub ANTHROPIC_BASE_URL when a gateway mode explicitly sets it", async () => {

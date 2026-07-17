@@ -137,21 +137,34 @@ export function createAgentCliRuntime(
         // refuse the spawn rather than silently falling back to another or an
         // ambient credential. Checked against the RESOLVED credential, not the
         // merged env, so an unrelated `opts.env` key can't paper over a
-        // genuinely missing one.
+        // genuinely missing one. Message NAMES the fix instead of reciting
+        // prose (kept short — the old wall-of-text overflowed the VS Code
+        // notification box): when `neitherConfigured` is set, `mode` above is
+        // an arbitrary fallback pick, not a real signal — a zero-credential
+        // user must see BOTH paths, not just the one preference[0] happened
+        // to land on (that was the bug: an api-key-only user told to buy a
+        // subscription).
         if (!authSpec.credential) {
-          throw new RuntimeConfigError(
-            "missing_auth_credential",
-            "opts.auth.credential",
-            `agent-cli '${definition.id}': auth mode "${authSpec.mode}" requires ` +
-              `an explicit credential (resolved from a named config/store ref), ` +
-              `but none was provided.` +
-              (authSpec.mode === "subscription"
-                ? ` Mint one via \`claude setup-token\` (bills the Max/Pro ` +
-                  `subscription, not API credits) and configure it — never ` +
-                  `inherited from the shell.`
-                : ` Configure an API key (\`agentproto auth provider set …\` or ` +
-                  `per-spawn) — never inherited from the shell.`),
-          )
+          const slug = definition.id
+          const providerLabel = definition.provider ?? "<provider>"
+          const configBlock =
+            `{"defaults":{"adapters":{"${slug}":{"auth":{"mode":"api-key"}}}}}` +
+            ` in ~/.agentproto/config.json`
+          const storeHint = authSpec.ignoredApiKeyInStore
+            ? ` (providers.json already has a stored key for ${providerLabel} — ignored until that block exists)`
+            : ""
+          const supportsSub = !!definition.authSubscription
+          const message =
+            authSpec.neitherConfigured && supportsSub
+              ? `agent-cli '${slug}': no billing auth. Subscription → \`claude setup-token\`. ` +
+                `Api-key → \`agentproto auth provider set ${providerLabel} sk-…\`${storeHint}. ` +
+                `Add ${configBlock}. Never inherited from the shell.`
+              : authSpec.mode === "subscription"
+                ? `agent-cli '${slug}': run \`claude setup-token\` and configure the result — ` +
+                  `bills the Max/Pro subscription, not API credits. Never inherited from the shell.`
+                : `agent-cli '${slug}': run \`agentproto auth provider set ${providerLabel} sk-…\`` +
+                  `${storeHint}, then add ${configBlock}. Never inherited from the shell.`
+          throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
         env[authSpec.setEnv] = authSpec.credential
       }

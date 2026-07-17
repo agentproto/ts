@@ -719,6 +719,25 @@ export async function spawnAgentSession(
       }
       throw err
     }
+    // Non-authenticating hint for the driver's fail-fast message — NEVER fed
+    // back into resolution. Only checked when the spec is about to hard-fail
+    // (enforce "always", no credential) AND auth wasn't explicit — i.e. the
+    // store was never consulted for real above (the #321 gate). An operator
+    // who already ran `agentproto auth provider set` deserves to be told
+    // their key is sitting there unused, not pointed at a subscription they
+    // don't have.
+    if (
+      authSpec &&
+      authSpec.enforce === "always" &&
+      authSpec.credential === undefined &&
+      !spawnDefaults.auth.explicit &&
+      resolvedProvider !== undefined
+    ) {
+      const ignored = await getProviderKey(resolvedProvider)
+      if (ignored !== undefined) {
+        authSpec = { ...authSpec, ignoredApiKeyInStore: true }
+      }
+    }
   }
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,

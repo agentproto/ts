@@ -148,6 +148,62 @@ describe("makeAdapterLister", () => {
     expect(extraCheck).not.toHaveBeenCalled()
   })
 
+  describe("authProbe", () => {
+    it("is called only for a handle with authRequired: true, and its result feeds computeStatus", async () => {
+      const probe = vi.fn(async () => false)
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!, CATALOG[1]!],
+        resolver: async (slug) =>
+          makeHandle({ slug, requiresSetup: false, authRequired: slug === "alpha" }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        authProbe: probe,
+      })
+      const out = await lister()
+      // alpha: authRequired, probe says false ⇒ available (not the false "ready"
+      // !requiresSetup would otherwise give it).
+      expect(out[0]!.status).toBe("available")
+      // bravo: no authRequired ⇒ probe never called for it, normal ready.
+      expect(out[1]!.status).toBe("ready")
+      expect(probe).toHaveBeenCalledTimes(1)
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ slug: "alpha" }))
+    })
+
+    it("reports ready when the probe resolves true", async () => {
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async (slug) => makeHandle({ slug, requiresSetup: false, authRequired: true }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        authProbe: async () => true,
+      })
+      expect((await lister())[0]!.status).toBe("ready")
+    })
+
+    it("never pays for the probe I/O when authRequired is not set (default false/undefined)", async () => {
+      const probe = vi.fn(async () => true)
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async (slug) => makeHandle({ slug, requiresSetup: false }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+        authProbe: probe,
+      })
+      await lister()
+      expect(probe).not.toHaveBeenCalled()
+    })
+
+    it("authRequired with no authProbe supplied leaves authConfigured undefined ⇒ available, never a false ready", async () => {
+      const lister = makeAdapterLister<TestHandle, TestInfo>({
+        catalog: [CATALOG[0]!],
+        resolver: async (slug) => makeHandle({ slug, requiresSetup: false, authRequired: true }),
+        ledger: fakeLedger(new Set()),
+        toInfo,
+      })
+      expect((await lister())[0]!.status).toBe("available")
+    })
+  })
+
   describe("checkDuringListing", () => {
     it("calls check() on each resolved handle when flag is on", async () => {
       const checkSpy = vi.fn(async () => true)
