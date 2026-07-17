@@ -4,12 +4,21 @@
  * the extension goes through a DaemonClient instance.
  *
  * Auth (recon §Auth): the daemon's per-boot bearer token is auto-resolved
- * from (in order): an explicit config.tokenPath override → the active
- * workspace's `<cwd>/.agentproto/runtime.json` → the global
- * `~/.agentproto/daemons/<port>.json` keyed by the daemon's listen port.
- * Loopback requests without a token are accepted by the daemon in its
- * default "none" auth mode, so a missing token is non-fatal — methods
- * still work, they just don't send the Authorization header.
+ * from (in order): an explicit config.tokenPath override → the global
+ * `~/.agentproto/daemons/<port>.json` keyed by the daemon's listen port →
+ * the active workspace's `<cwd>/.agentproto/runtime.json`, and only when
+ * that file's own `port` matches the daemon we're dialling. The workspace
+ * file is keyed by workspace, not by port, so a second daemon booted on
+ * the same root overwrites it with another process's token — hence the
+ * port-keyed registry outranks it. Loopback requests without a token are
+ * accepted by the daemon in its default "none" auth mode, so a missing
+ * token is non-fatal — methods still work, they just don't send the
+ * Authorization header.
+ *
+ * The token is regenerated on every daemon boot, so a cached one goes
+ * stale the moment the daemon restarts. Gated requests therefore go
+ * through authedFetch(), which re-resolves and replays ONCE on the
+ * daemon's `sessions_unauthorized` 401.
  *
  * Every method throws on a non-2xx response. JSON-RPC 2.0 `tools/call`
  * results (POST /mcp) are unwrapped from the MCP content envelope into a
@@ -92,11 +101,17 @@ export interface RespondPermissionInput {
 export class DaemonClient {
   private readonly config: DaemonConfig
   private readonly fetchImpl: typeof fetch
+  private readonly homeDir: string
   private tokenPromise: Promise<string | undefined> | undefined
 
-  constructor(config: DaemonConfig, fetchImpl: typeof fetch = fetch) {
+  constructor(
+    config: DaemonConfig,
+    fetchImpl: typeof fetch = fetch,
+    homeDir: string = homedir(),
+  ) {
     this.config = config
     this.fetchImpl = fetchImpl
+    this.homeDir = homeDir
   }
 
   /** Base daemon URL, trailing slash stripped. */
@@ -158,21 +173,19 @@ export class DaemonClient {
       bytes instanceof ArrayBuffer
         ? new Uint8Array(bytes)
         : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    const token = await this.resolveToken()
     const path = `/files/upload?cwd=${encodeURIComponent(cwd)}&name=${encodeURIComponent(name)}`
-    const res = await this.fetchImpl(`${this.url}${path}`, {
+    const res = await this.authedFetch(path, {
       method: "POST",
       headers: {
         // The route ignores the content-type (it reads the raw stream) but a
         // truthful one keeps proxies/logs honest. Default when the paste has no
         // mime rather than sending an empty header.
         "content-type": mime || "application/octet-stream",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body,
       // Binary, and up to the route's 32 MiB cap — give it more headroom than
       // the 30s JSON default even though loopback makes it near-instant.
-      signal: AbortSignal.timeout(60_000),
+      timeoutMs: 60_000,
     })
     if (!res.ok) {
       throw new Error(`POST /files/upload failed: HTTP ${res.status} ${await describeError(res)}`)
@@ -238,14 +251,10 @@ export class DaemonClient {
     if (typeof opts.limit === "number") params.set("limit", String(opts.limit))
     const qs = params.toString()
     const path = `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`
-    const token = await this.resolveToken()
-    const res = await this.fetchImpl(`${this.url}${path}`, {
+    const res = await this.authedFetch(path, {
       method: "GET",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      signal: AbortSignal.timeout(30_000),
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
     })
     if (res.status === 404) {
       // Distinguish "no structured transcript" from other 404s so callers
@@ -364,10 +373,11 @@ export class DaemonClient {
   // ── Token resolution (recon §Auth) ─────────────────────────────────
 
   /**
-   * Resolve the daemon bearer token. Cached per-instance. Resolution
-   * order: config.tokenPath override → workspace runtime.json →
-   * ~/.agentproto/daemons/<port>.json. Returns undefined when no token
-   * can be found (loopback daemons accept that).
+   * Resolve the daemon bearer token. Cached per-instance until
+   * invalidateToken(). Resolution order: config.tokenPath override →
+   * ~/.agentproto/daemons/<port>.json → workspace runtime.json (only if
+   * it names our port). Returns undefined when no token can be found
+   * (loopback daemons accept that).
    */
   resolveToken(): Promise<string | undefined> {
     if (!this.tokenPromise) {
@@ -376,7 +386,8 @@ export class DaemonClient {
     return this.tokenPromise
   }
 
-  /** Force re-resolution on the next call (e.g. after a config change). */
+  /** Force re-resolution on the next call (after a config change, or a
+   *  401 that says the daemon rebooted behind our cached token). */
   invalidateToken(): void {
     this.tokenPromise = undefined
   }
@@ -387,24 +398,31 @@ export class DaemonClient {
       const t = await readTokenFile(tokenPath)
       if (t) return t
     }
-    // Workspace-scoped runtime.json — best effort. /health is a public
-    // liveness probe (no auth), so fetch it DIRECTLY rather than through
-    // this.health() → request() → resolveToken(), which would cycle.
-    const wsToken = await this.readWorkspaceToken()
-    if (wsToken) return wsToken
-    // Global per-port registry.
-    return readPortRegistryToken(this.url, homedir())
+    const port = daemonPort(this.url)
+    // The per-port registry is the only file attributable to the daemon we
+    // are actually dialling, so it outranks the workspace file.
+    const fromRegistry = await readPortRegistryToken(port, this.homeDir)
+    if (fromRegistry) return fromRegistry
+    return this.readWorkspaceToken(port)
   }
 
-  private async readWorkspaceToken(): Promise<string | undefined> {
+  private async readWorkspaceToken(port: string | undefined): Promise<string | undefined> {
+    if (!port) return undefined
     try {
+      // /health is a public liveness probe (no auth), so fetch it DIRECTLY
+      // rather than through this.health() → request() → resolveToken(), which
+      // would cycle.
       const res = await this.fetchImpl(`${this.url}/health`, {
         signal: AbortSignal.timeout(5_000),
       })
       if (!res.ok) return undefined
       const health = (await res.json()) as { workspace?: unknown }
       if (typeof health.workspace !== "string" || !health.workspace) return undefined
-      return readTokenFile(join(health.workspace, ".agentproto", "runtime.json"))
+      const meta = await readTokenMeta(join(health.workspace, ".agentproto", "runtime.json"))
+      // This file is keyed by workspace, not port: a different daemon on the
+      // same root may have written it. Only trust it when it names our port.
+      if (metaPort(meta) !== Number(port)) return undefined
+      return metaToken(meta)
     } catch {
       return undefined
     }
@@ -424,20 +442,49 @@ export class DaemonClient {
     return this.request<T>("DELETE", path)
   }
 
+  /**
+   * Send a request with the resolved bearer, replaying it ONCE against a
+   * freshly re-resolved token when the daemon answers `sessions_unauthorized`
+   * — that 401 means it rebooted and minted a new token behind our cached
+   * one. A second 401 is returned as-is for the caller to surface; never
+   * loops. `body` is required to be already materialized so the replay can
+   * re-send the same bytes without double-consuming a stream.
+   */
+  private async authedFetch(
+    path: string,
+    init: {
+      method: string
+      headers: Record<string, string>
+      body?: string | Uint8Array
+      timeoutMs: number
+    },
+  ): Promise<Response> {
+    const send = async (token: string | undefined): Promise<Response> =>
+      this.fetchImpl(`${this.url}${path}`, {
+        method: init.method,
+        headers: {
+          ...init.headers,
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: init.body,
+        signal: AbortSignal.timeout(init.timeoutMs),
+      })
+    const res = await send(await this.resolveToken())
+    if (!(await isStaleTokenResponse(res))) return res
+    this.invalidateToken()
+    return send(await this.resolveToken())
+  }
+
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const token = await this.resolveToken()
-    const res = await this.fetchImpl(`${this.url}${path}`, {
+    const res = await this.authedFetch(path, {
       method,
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      timeoutMs: 30_000,
     })
     if (!res.ok) {
       throw new Error(`${method} ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
@@ -450,33 +497,82 @@ export class DaemonClient {
 
 // ── Token file helpers (no @agentproto/relay dep — hand-rolled, ~30 lines) ──
 
+/** The fields this client reads out of @agentproto/runtime's RuntimeMeta —
+ *  the one shape behind BOTH `<workspace>/.agentproto/runtime.json` and
+ *  `~/.agentproto/daemons/<port>.json`. */
 interface TokenFileMeta {
   token?: unknown
   pid?: unknown
+  port?: unknown
+}
+
+async function readTokenMeta(path: string): Promise<TokenFileMeta | undefined> {
+  try {
+    const raw = await readFile(path, "utf8")
+    const meta = JSON.parse(raw) as TokenFileMeta | null
+    return meta ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function metaToken(meta: TokenFileMeta | undefined): string | undefined {
+  if (!meta) return undefined
+  return typeof meta.token === "string" && meta.token ? meta.token : undefined
+}
+
+function metaPort(meta: TokenFileMeta | undefined): number | undefined {
+  if (!meta) return undefined
+  return typeof meta.port === "number" ? meta.port : undefined
 }
 
 async function readTokenFile(path: string): Promise<string | undefined> {
+  return metaToken(await readTokenMeta(path))
+}
+
+function daemonPort(daemonUrl: string): string | undefined {
   try {
-    const raw = await readFile(path, "utf8")
-    const meta = JSON.parse(raw) as TokenFileMeta
-    return typeof meta.token === "string" && meta.token ? meta.token : undefined
+    return new URL(daemonUrl).port || undefined
   } catch {
     return undefined
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM = the pid exists but is owned by another user — still alive.
+    return err instanceof Error && "code" in err && err.code === "EPERM"
   }
 }
 
 async function readPortRegistryToken(
-  daemonUrl: string,
+  port: string | undefined,
   homeDir: string,
 ): Promise<string | undefined> {
-  let port: string
-  try {
-    port = new URL(daemonUrl).port
-  } catch {
-    return undefined
-  }
   if (!port) return undefined
-  return readTokenFile(join(homeDir, ".agentproto", "daemons", `${port}.json`))
+  const meta = await readTokenMeta(join(homeDir, ".agentproto", "daemons", `${port}.json`))
+  // A registry entry outlives a daemon that died without cleaning up; a dead
+  // pid means its token is stale. A meta with no pid stays trusted.
+  if (typeof meta?.pid === "number" && !isPidAlive(meta.pid)) return undefined
+  return metaToken(meta)
+}
+
+/**
+ * True only for the daemon's stale/missing-bearer 401 — the one a token
+ * re-resolve can fix. Read through a clone so the caller's describeError()
+ * can still consume the original body.
+ */
+async function isStaleTokenResponse(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false
+  try {
+    const body = (await res.clone().json()) as { error?: unknown }
+    return body.error === "sessions_unauthorized"
+  } catch {
+    return false
+  }
 }
 
 // ── MCP response unwrapping ──────────────────────────────────────────
