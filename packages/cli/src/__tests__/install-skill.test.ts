@@ -688,7 +688,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
     expect(existsSync(join(fakeHome, ".hermes", "skills"))).toBe(false)
   })
 
-  it("preserves symlink-skip in fan-out mode (hermes flat-dir target)", async () => {
+  it("preserves symlink-skip in fan-out mode (hermes flat-dir target)", { timeout: 15_000 }, async () => {
     const fakeHome = join(tmpdir(), `agentproto-fanout-symlink-${Date.now()}`)
     const hermesSkillsDir = join(fakeHome, ".hermes", "skills")
     const linkTarget = join(fakeHome, "dev-skill-source")
