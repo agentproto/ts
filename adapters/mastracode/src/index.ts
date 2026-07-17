@@ -39,11 +39,16 @@ export const mastracode: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: {
+      // The env names mastracode actually consults per provider. For Google it
+      // is GOOGLE_API_KEY, not GOOGLE_GENERATIVE_AI_API_KEY: @mastra/core's
+      // PROVIDER_REGISTRY.google.apiKeyEnvVar is the alias array
+      // ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"], but @mastra/code-sdk
+      // collapses it to envVars[0] (GOOGLE_API_KEY) before the env-key check.
       env: [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
-        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GOOGLE_API_KEY",
       ],
     },
   },
@@ -80,7 +85,9 @@ export const mastracode: AgentCliHandle = defineAgentCli({
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
-      google: "GOOGLE_GENERATIVE_AI_API_KEY",
+      // mastracode reads GOOGLE_API_KEY for `google` (see the auth.state.env
+      // note above) — NOT GOOGLE_GENERATIVE_AI_API_KEY.
+      google: "GOOGLE_API_KEY",
     },
   },
   capabilities: {

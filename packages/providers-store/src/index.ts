@@ -20,7 +20,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { PROVIDER_KEY_ENV } from "@agentproto/model-catalog"
+import { PROVIDER_KEY_ENV, PROVIDER_KEY_ENV_ALIASES } from "@agentproto/model-catalog"
 
 /**
  * Canonical provider → environment-variable name. The spawned model gateways
@@ -46,6 +46,21 @@ export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
   // Vercel AI Gateway — a gateway provider, like openrouter, that fronts many
   // upstream model families behind one key.
   "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
+}
+
+/**
+ * Provider → ADDITIONAL env-var names its stored key also satisfies, beyond the
+ * canonical {@link PROVIDER_ENV_VARS} name. DERIVED from the catalog's
+ * {@link PROVIDER_KEY_ENV_ALIASES} (the single source of truth, same as
+ * `PROVIDER_ENV_VARS` derives from `PROVIDER_KEY_ENV`) so the alias facts live
+ * in one place. `injectProviderKeysIntoEnv` sets the canonical name AND every
+ * alias here, letting one `auth provider set` satisfy a consumer that reads a
+ * different env name (e.g. mastracode reads `GOOGLE_API_KEY`, not our canonical
+ * `GOOGLE_GENERATIVE_AI_API_KEY`). No non-catalog gateway provider has a known
+ * alias today; add them alongside the spread if one ever does.
+ */
+export const PROVIDER_ENV_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  ...PROVIDER_KEY_ENV_ALIASES,
 }
 
 export type KnownProvider = keyof typeof PROVIDER_ENV_VARS
@@ -81,6 +96,12 @@ export function providerEnvVar(provider: string): string {
     PROVIDER_ENV_VARS[provider] ??
     `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`
   )
+}
+
+/** Additional env-var names a provider's stored key also satisfies, beyond
+ *  {@link providerEnvVar}. Empty for providers with no verified alias. */
+export function providerEnvAliases(provider: string): readonly string[] {
+  return PROVIDER_ENV_ALIASES[provider] ?? []
 }
 
 export async function loadProviders(): Promise<ProvidersFile> {
@@ -158,8 +179,13 @@ export async function removeProviderKey(provider: string): Promise<boolean> {
  * Inject stored provider keys into a target env (default `process.env`).
  * **Explicit env always wins** — a var already set is never overwritten, so a
  * one-off `FOO_API_KEY=… serve` or a CI secret takes precedence over the
- * store. Returns the list of provider names actually injected (for a boot log
- * that names providers, never values).
+ * store. One provider key is written to its canonical env name AND every
+ * verified alias ({@link providerEnvAliases}) — so a consumer that reads a
+ * different env name for the same provider (e.g. mastracode reads
+ * `GOOGLE_API_KEY`, not our canonical `GOOGLE_GENERATIVE_AI_API_KEY`) is
+ * satisfied too. Returns the list of provider names actually injected (for a
+ * boot log that names providers, never values) — one entry per provider, not
+ * per env name.
  */
 export async function injectProviderKeysIntoEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -168,9 +194,16 @@ export async function injectProviderKeysIntoEnv(
   const injected: string[] = []
   for (const [provider, entry] of Object.entries(file.providers)) {
     if (!entry?.apiKey) continue
-    const name = providerEnvVar(provider)
-    if (env[name]) continue // explicit env wins
-    env[name] = entry.apiKey
+    // Canonical name first, then any verified aliases the same key satisfies.
+    // De-dupe defends against an alias that equals the canonical name.
+    const names = new Set([providerEnvVar(provider), ...providerEnvAliases(provider)])
+    let didInject = false
+    for (const name of names) {
+      if (env[name]) continue // explicit env wins — evaluated per env name
+      env[name] = entry.apiKey
+      didInject = true
+    }
+    if (!didInject) continue // every name for this provider is already set
     if (entry.baseUrl) env[`${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_BASE_URL`] = entry.baseUrl
     injected.push(provider)
   }

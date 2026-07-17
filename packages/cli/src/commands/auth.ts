@@ -56,8 +56,10 @@ import {
   setProviderKey,
   removeProviderKey,
   providerEnvVar,
+  providerEnvAliases,
   providersPath,
   PROVIDER_ENV_VARS,
+  PROVIDER_ENV_ALIASES,
 } from "@agentproto/runtime/providers-store"
 import {
   hasProviderCatalog,
@@ -125,9 +127,14 @@ Usage:
   agentproto auth provider rm  <provider>
 
 Known providers (env var): ${Object.entries(PROVIDER_ENV_VARS)
-  .map(([p, e]) => `${p} (${e})`)
+  .map(([p, e]) => {
+    const aliases = providerEnvAliases(p)
+    return aliases.length ? `${p} (${e}, +${aliases.join(", +")})` : `${p} (${e})`
+  })
   .join(", ")}.
 Any other name works too — it maps to <NAME>_API_KEY.
+A \`+ALIAS\` is an extra env name the same key is also injected as, for a
+consumer that reads a different name for that provider.
 `
 
 // ── provider keys ────────────────────────────────────────────────────
@@ -173,8 +180,12 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     return 2
   }
   const envVar = await setProviderKey(provider, apiKey, values["base-url"])
+  const aliases = providerEnvAliases(provider)
   process.stdout.write(
     `agentproto auth: ✓ stored ${provider} key → ${envVar}\n` +
+      (aliases.length
+        ? `  also injected as ${aliases.join(", ")} (alias some consumers read)\n`
+        : "") +
       `  saved to ${providersPath()} (mode 0600)\n` +
       `  the daemon injects it at \`serve\` boot; restart a running daemon to pick it up.\n`,
   )
