@@ -39,6 +39,14 @@ let capturedConnectOpts: AgentCliConnectOptions | undefined
 // `start()`'s `config.mode` down to the arm (see the plan-mode auto-allow
 // fix: the arm picks its default permission handler off this field).
 let capturedArmOptions: { requestedMode?: string } | undefined
+// Turn ids the arm's OWN cancel() was called with. `session.cancel()` used to
+// abort a connection-level AbortController no arm reads, so the arm's real
+// cancel — the one that sends ACP `session/cancel` / SIGTERMs the child —
+// never fired and nothing here recorded a thing.
+let armCancelCalls: string[] = []
+// Turn ids handed to the arm's send(), so a test can assert cancel() names the
+// turn actually in flight rather than some other id.
+let armSendTurnIds: string[] = []
 
 vi.mock("../protocol/acp-client.js", () => ({
   createAcpProtocolArm: vi.fn((armOpts: { requestedMode?: string }) => {
@@ -48,9 +56,13 @@ vi.mock("../protocol/acp-client.js", () => ({
       async connect(opts) {
         capturedConnectOpts = opts
       },
-      async send() {},
+      async send(turnId) {
+        armSendTurnIds.push(turnId)
+      },
       async *events() {},
-      async cancel() {},
+      async cancel(turnId) {
+        armCancelCalls.push(turnId)
+      },
       async close() {},
     }
     return arm
@@ -100,6 +112,53 @@ describe("createAgentCliRuntime(...).start() — pid + onActivity threading", ()
     const runtime = createAgentCliRuntime(minimalDef)
     await runtime.start({ cwd: "/tmp" })
     expect(capturedConnectOpts?.onActivity).toBeUndefined()
+  })
+})
+
+// `session.cancel()` is what the host's whole interrupt path bottoms out in
+// (SessionsRegistry.interruptSession, `{interrupt: true}`, the VS Code Stop
+// button). It used to call `abortController.abort()` and nothing else — but
+// that controller is the CONNECTION-level signal passed to arm.connect(), and
+// no arm reads it. So cancel() aborted into the void: the agent kept working,
+// and the host's 60s settle-wait timed out on a turn nobody had asked to stop.
+// Both arms already implemented the real cancel (ACP `session/cancel`; SIGTERM
+// for the print arm) — it was simply never called. These pin the call through.
+describe("createAgentCliRuntime(...) — session.cancel() reaches the arm", () => {
+  beforeEach(() => {
+    armCancelCalls = []
+    armSendTurnIds = []
+  })
+
+  it("delegates cancel() to the protocol arm's own cancel", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    const session = await runtime.start({ cwd: "/tmp" })
+    session.send("hello")
+    await session.cancel()
+    expect(armCancelCalls).toHaveLength(1)
+  })
+
+  it("cancels the turn actually in flight, not a stale or invented one", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    const session = await runtime.start({ cwd: "/tmp" })
+    // Drained, not just called: send() returns a LAZY async iterable, so the
+    // arm's own send() (and the turn id it records) only fires once someone
+    // iterates it. The mocked arm yields no events, so each drains at once.
+    for await (const _evt of session.send("first")) void _evt
+    for await (const _evt of session.send("second")) void _evt
+    await session.cancel()
+    // The id must be the LATEST turn's — cancelling the first turn while the
+    // second is running would leave the live turn untouched.
+    expect(armSendTurnIds).toHaveLength(2)
+    expect(armCancelCalls).toEqual([armSendTurnIds[1]])
+  })
+
+  it("is a no-op when no turn has ever been sent", async () => {
+    const runtime = createAgentCliRuntime(minimalDef)
+    const session = await runtime.start({ cwd: "/tmp" })
+    await session.cancel()
+    // Naming a turn that never existed would be a lie to the arm; the ACP arm
+    // would happily forward a `session/cancel` for nothing.
+    expect(armCancelCalls).toEqual([])
   })
 })
 
