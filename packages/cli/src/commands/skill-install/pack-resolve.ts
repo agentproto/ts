@@ -10,7 +10,13 @@
  *     `<repoRoot>/.skills/<name>/`, then the npm dual-naming convention
  *     (`@agentproto/skill-pack-<name>` / `@<scope>/agentproto-skill-pack-<name>`).
  *   - omitted — the legacy default: glob `.skills/agentproto-plugin-v*`
- *     from the repo root, picking the highest semver. UNCHANGED behavior.
+ *     from the repo root, picking the highest semver. UNCHANGED behavior —
+ *     but note that `.skills/` in THIS repo is no longer committed (it used
+ *     to be, hand-copied on every bump; see packages/skill-pack-*). This
+ *     path now only resolves something inside this repo's own worktree
+ *     after a local `agentproto pack skill --out .skills` dry run. Pass
+ *     `--pack agentproto-plugin` (resolves the real package, local or npm)
+ *     instead of relying on the bare default.
  */
 
 import { readdir, readFile, stat } from "node:fs/promises"

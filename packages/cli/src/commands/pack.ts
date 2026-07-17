@@ -7,7 +7,7 @@
  * {
  *   "name": "agentproto-plugin",
  *   "description": "Operate and supervise a fleet ...",
- *   "version": "0.3.0",
+ *   "version": "0.3.0",  // optional when --version is passed on the CLI
  *   "skills": ["slug1", "slug2", ...],
  *   "sourceDir": "${AGENTIK_STUDIO_ROOT}/.claude/skills",  // optional; use env-var form when source lives in a private/external repo
  *   "author": { "name": "Name" },
@@ -21,6 +21,11 @@
  * <outDir>/<name>-v<version>/skills/<skill>/, reads each SKILL.md's YAML
  * frontmatter, regenerates .claude-plugin/plugin.json and README.md, and
  * appends a changelog entry when the version is bumped.
+ *
+ * --version <semver> overrides manifest.version (which becomes optional when
+ * this is passed) — for a caller that drives the version from elsewhere,
+ * e.g. a monorepo package's own package.json version, bumped by changesets.
+ * Precedence mirrors --source: CLI flag wins over the manifest field.
  *
  * When the manifest's sourceDir lives in a *different* git repo from the
  * packager itself (e.g. agentik-studio/.claude/skills vs agentproto/ts),
@@ -71,7 +76,10 @@ function expandEnvVars(input: string): string {
 interface PackManifest {
   name: string
   description: string
-  version: string
+  // Optional: a caller driving the version from elsewhere (e.g. a package's
+  // own package.json, bumped by changesets) passes --version instead. See
+  // the --version flag below.
+  version?: string
   skills: string[]
   sourceDir?: string
   author: { name: string }
@@ -81,6 +89,7 @@ interface PackManifest {
 interface CliArgs {
   manifest: string
   source?: string
+  version?: string
   bump?: "patch" | "minor" | "major"
   dryRun: boolean
   out: string
@@ -104,7 +113,7 @@ export async function runPack(args: readonly string[]): Promise<number> {
   // No sub-verb or unknown sub-verb
   process.stderr.write(
       `agentproto pack: unknown sub-command${subVerb ? " '" + subVerb + "'" : ""}.\n` +
-      "Usage: agentproto pack skill --manifest <path> [--source <dir>] [--bump patch|minor|major] [--dry-run] [--out <dir>]\n",
+      "Usage: agentproto pack skill --manifest <path> [--source <dir>] [--version <semver>] [--bump patch|minor|major] [--dry-run] [--out <dir>]\n",
   )
   return 2
 }
@@ -117,6 +126,7 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
     options: {
       manifest: { type: "string" },
       source: { type: "string" },
+      version: { type: "string" },
       bump: { type: "string" },
       "dry-run": { type: "boolean" },
       out: { type: "string", default: ".skills" },
@@ -144,6 +154,13 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
   }
   const bump = bumpRaw as BumpKind | undefined
 
+  if (values.version !== undefined && !/^\d+\.\d+\.\d+/.test(values.version)) {
+    process.stderr.write(
+      `agentproto pack skill: --version '${values.version}' is not a valid semver (expected major.minor.patch).\n`,
+    )
+    return 2
+  }
+
   const dryRun = values["dry-run"] === true
 
   // Resolve manifest path relative to cwd
@@ -166,13 +183,22 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
     return 2
   }
 
+  if (!values.version && !manifest.version) {
+    process.stderr.write(
+      "agentproto pack skill: no version. " +
+        "Either add version to the manifest or pass --version <semver> (e.g. driven by the caller's own package.json).\n",
+    )
+    return 2
+  }
+  const baseVersion = (values.version ?? manifest.version) as string
+
   const sourceDir = values.source
     ? resolve(process.cwd(), expandHome(values.source))
     : resolve(manifestDir, expandEnvVars(manifest.sourceDir as string))
   const outDir = resolve(process.cwd(), values.out)
 
   // Determine the effective version
-  let version = manifest.version
+  let version = baseVersion
   const existingVersionDir = await resolveCurrentVersionDir(
     outDir,
     manifest.name,
@@ -184,10 +210,10 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
   }
 
   if (bump) {
-    version = bumpSemver(previousVersion ?? version, bump)
+    version = bumpSemver(previousVersion ?? baseVersion, bump)
   } else {
-    // Use the manifest's version; if there's already a same-version dir it's a resync
-    version = manifest.version
+    // Use the resolved base version; if there's already a same-version dir it's a resync
+    version = baseVersion
   }
 
   const packDirName = `${manifest.name}-v${version}`
@@ -222,7 +248,7 @@ export async function runPackSkill(args: readonly string[]): Promise<number> {
   process.stdout.write(
     `agentproto: pack written to ${packDir}\n` +
       `  ${skills.length} skill(s) copied\n` +
-      `  version ${version}${bump ? ` (bumped from ${previousVersion ?? manifest.version})` : existingVersionDir ? " (in-place resync)" : ""}\n`,
+      `  version ${version}${bump ? ` (bumped from ${previousVersion ?? baseVersion})` : existingVersionDir ? " (in-place resync)" : ""}\n`,
   )
 
   return 0
@@ -237,12 +263,13 @@ async function readManifest(path: string): Promise<PackManifest> {
   if (
     typeof data.name !== "string" ||
     typeof data.description !== "string" ||
-    typeof data.version !== "string" ||
+    (data.version !== undefined && typeof data.version !== "string") ||
     !Array.isArray(data.skills)
   ) {
     throw new Error(
       `pack manifest: missing or invalid required fields. ` +
-        "Required: name (string), description (string), version (string), skills (array).",
+        "Required: name (string), description (string), skills (array). " +
+        "version (string) is optional in the manifest when --version is passed on the CLI.",
     )
   }
 
@@ -269,7 +296,7 @@ async function readManifest(path: string): Promise<PackManifest> {
   return {
     name: data.name,
     description: data.description,
-    version: data.version,
+    ...(typeof data.version === "string" ? { version: data.version } : {}),
     skills: data.skills as string[],
     ...(typeof data.sourceDir === "string" ? { sourceDir: data.sourceDir } : {}),
     author,

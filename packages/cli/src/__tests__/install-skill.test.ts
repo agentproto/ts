@@ -12,7 +12,7 @@
  *    install can never touch the real `~/.hermes`.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -45,10 +45,12 @@ import { isAdapterSkillsTarget } from "../commands/skill-install/types.js"
 // ── repo root + pack resolution (test helpers) ─────────────────────────
 
 const REPO_ROOT = (() => {
-  // walk up from this test file to find the repo root (where .skills/ lives)
+  // walk up from this test file to find the repo root. pnpm-workspace.yaml
+  // is root-only and always committed — unlike .skills/, which is gitignored
+  // build output now (see packages/skill-pack-*) and may not exist at all.
   let dir = dirname(fileURLToPath(import.meta.url))
   for (let i = 0; i < 10; i++) {
-    if (existsSync(join(dir, ".skills"))) return dir
+    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir
     const parent = dirname(dir)
     if (parent === dir) break
     dir = parent
@@ -88,6 +90,36 @@ function runCli(args: string[]): {
     code: result.status,
   }
 }
+
+/**
+ * `.skills/` is no longer committed (see packages/skill-pack-agentproto) —
+ * the legacy "omitted --pack" default only ever resolves something after a
+ * local `agentproto pack skill --out .skills` run (documented in
+ * pack-resolve.ts). This whole file's fixture (and most of its `runCli`
+ * calls) assumes that pack exists, so build it once here from the real
+ * package's manifest + src/skills — the same fixture the old committed
+ * `.skills/agentproto-plugin-v0.4.0/` used to be, just generated instead
+ * of hand-copied — and remove it afterward so the gitignored scratch dir
+ * doesn't linger.
+ */
+beforeAll(() => {
+  const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
+  const manifest = join(REPO_ROOT, "packages/skill-pack-agentproto/manifest.json")
+  const result = spawnSync(
+    "node",
+    [cliEntry, "pack", "skill", "--manifest", manifest, "--version", "0.4.0", "--out", ".skills"],
+    { cwd: REPO_ROOT, timeout: 15_000 },
+  )
+  if (result.status !== 0) {
+    throw new Error(
+      `install-skill.test.ts: failed to build the .skills/ fixture pack: ${result.stderr?.toString("utf8")}`,
+    )
+  }
+})
+
+afterAll(async () => {
+  await rm(join(REPO_ROOT, ".skills"), { recursive: true, force: true }).catch(() => {})
+})
 
 // ── unit: pure helpers ─────────────────────────────────────────────────
 
