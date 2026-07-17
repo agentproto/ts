@@ -20,7 +20,7 @@
  * future fields go on top, never break v1 readers.
  */
 
-import { promises as fs } from "node:fs"
+import { promises as fs, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, resolve } from "node:path"
 
@@ -82,6 +82,40 @@ export async function loadWorkspacesConfig(
   let raw: string
   try {
     raw = await fs.readFile(path, "utf8")
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { version: WORKSPACES_CONFIG_VERSION, workspaces: [] }
+    }
+    throw err
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    throw new Error(
+      `agentproto: ${path} is not valid JSON (${
+        err instanceof Error ? err.message : String(err)
+      }). Delete the file or fix it manually.`
+    )
+  }
+  return normalizeConfig(parsed)
+}
+
+/** Sync twin of `loadWorkspacesConfig`, sharing its normalisation (and
+ *  therefore its slug sanitisation) exactly.
+ *
+ *  Exists because bucket resolution runs on paths that cannot await: the
+ *  sessions registry loads its history synchronously at construction so
+ *  the dashboard has rows immediately, and flushes synchronously on
+ *  `process.on("exit")` where Node won't await. Both need to know which
+ *  slugs are registered. The file is <1KB, so the sync read is cheaper
+ *  than the machinery to avoid it. */
+export function loadWorkspacesConfigSync(
+  path: string = DEFAULT_CONFIG_PATH()
+): WorkspacesConfig {
+  let raw: string
+  try {
+    raw = readFileSync(path, "utf8")
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return { version: WORKSPACES_CONFIG_VERSION, workspaces: [] }
