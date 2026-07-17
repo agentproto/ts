@@ -1,12 +1,24 @@
 /**
  * `corpus distill [workspace]` — raw sources → refined AIP-10 entries.
  *
- *   corpus distill <ws> [--engine id] [--source <id>] [--max n] [--throttle ms] [--model m]
+ *   corpus distill <ws> [--engine id] [--source <id>] [--max n] [--throttle ms]
+ *                       [--model m] [--lens <id> | --lens-file <path>]
  *
  * Reads sources/**​/*.md, distills each via the selected engine into refined
  * entries (principle/pattern/critique/summary/example) written under entries/,
  * each carrying `sources: [<sourceId>]` (provenance) + inherited `access`.
  * Resumable: skips sources that already have entries derived from them.
+ *
+ * LENSES (`--lens <id>` / `--lens-file <path>`):
+ *   Read every source THROUGH one aspect. The lens's prompt becomes the
+ *   extraction instruction, its kinds constrain the output, and each entry is
+ *   stamped with the `aspect:<value>` facet tag. `--lens <id>` resolves a
+ *   workspace-declared `lenses/<id>.md` (override) or a built-in (`craft`);
+ *   `--lens-file <path>` points at an ad-hoc lens declaration. Under a lens the
+ *   resume ledger is keyed by `(source, lens)` (the `_distill-index.yaml`
+ *   sidecar), so two lenses over one source never short-circuit each other.
+ *   Without a lens the behaviour is unchanged: the generic durable-insight pass,
+ *   resumed by scanning existing entries.
  *
  * Engines (`--engine`, default `anthropic-api`):
  *   anthropic-api  metered Messages API (needs ANTHROPIC_API_KEY)
@@ -21,6 +33,7 @@
 
 import { readFile, readdir } from "node:fs/promises"
 import type { Dirent } from "node:fs"
+import { createHash } from "node:crypto"
 import { basename, join } from "node:path"
 import { z } from "zod"
 
@@ -54,17 +67,21 @@ const ENTRY_SOURCES_FRONTMATTER = z
   .loose()
 import matter from "gray-matter"
 import {
+  DistillIndex,
   DistillRunner,
+  lensAspect,
   systemClock,
   type DistillSource,
   type DistillPort,
   type EntryLayout,
+  type Lens,
 } from "@agentproto/corpus"
 import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
 import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
 import { CLI_ENGINES } from "../ports/cli-engines.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
 import { createUsageSink, type DistillUsage } from "../ports/usage-telemetry.js"
+import { LensError, resolveLens, resolveLensFile } from "../lenses/resolve.js"
 import { fail, resolveWorkspacePath, type ExitCode } from "./_shared.js"
 
 const DEFAULT_ENGINE = "anthropic-api"
@@ -134,7 +151,7 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
   ),
 }
 
-interface ParsedArgs {
+export interface ParsedArgs {
   workspace: string | undefined
   sourceId: string | undefined
   max: number | undefined
@@ -142,9 +159,13 @@ interface ParsedArgs {
   model: string | undefined
   engine: string
   lang: string | undefined
+  /** `--lens <id>` — resolve a workspace-declared or built-in lens by id. */
+  lens: string | undefined
+  /** `--lens-file <path>` — an ad-hoc lens declaration, resolved by path. */
+  lensFile: string | undefined
 }
 
-function parse(args: readonly string[]): ParsedArgs {
+export function parse(args: readonly string[]): ParsedArgs {
   const out: ParsedArgs = {
     workspace: undefined,
     sourceId: undefined,
@@ -153,6 +174,8 @@ function parse(args: readonly string[]): ParsedArgs {
     model: undefined,
     engine: DEFAULT_ENGINE,
     lang: undefined,
+    lens: undefined,
+    lensFile: undefined,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -164,6 +187,8 @@ function parse(args: readonly string[]): ParsedArgs {
       case "--model": out.model = next(); break
       case "--engine": { const v = next(); if (v) out.engine = v; break }
       case "--lang": out.lang = next(); break
+      case "--lens": out.lens = next(); break
+      case "--lens-file": out.lensFile = next(); break
       default:
         if (!a.startsWith("-") && out.workspace === undefined) out.workspace = a
     }
@@ -173,6 +198,8 @@ function parse(args: readonly string[]): ParsedArgs {
 
 interface RawSource extends DistillSource {
   readonly path: string
+  /** sha256 of the source body — the `(source, lens)` ledger's change key. */
+  readonly contentHash: string
 }
 
 /** Parse every sources/**​/*.md into a DistillSource. */
@@ -192,11 +219,13 @@ async function readSources(root: string): Promise<RawSource[]> {
       const parsed = matter(await readFile(path, "utf-8"))
       const fm = SOURCE_FRONTMATTER.parse(parsed.data)
       if (!fm.id || !parsed.content.trim()) continue
+      const body = parsed.content.trim()
       out.push({
         path,
         id: fm.id,
         title: fm.title ?? fm.id,
-        body: parsed.content.trim(),
+        body,
+        contentHash: "sha256:" + createHash("sha256").update(body).digest("hex"),
         ...(fm.tags ? { tags: fm.tags } : {}),
         ...(fm.metadata?.corpus?.access ? { access: fm.metadata.corpus.access } : {}),
         ...(fm.metadata?.corpus?.domain ? { domain: fm.metadata.corpus.domain } : {}),
@@ -234,34 +263,99 @@ async function scanDistilledSourceIds(root: string): Promise<Set<string>> {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-export async function runDistill(args: readonly string[]): Promise<ExitCode> {
+/** Overlay a lens's extraction instruction / kinds / aspect onto a raw source. */
+function applyLens(src: RawSource, lens: Lens): DistillSource {
+  return {
+    ...src,
+    instruction: lens.prompt,
+    ...(lens.kinds ? { kinds: lens.kinds } : {}),
+    aspect: lensAspect(lens),
+  }
+}
+
+/** Injectable deps — the distiller is a test seam (bypasses the engine registry). */
+export interface RunDistillDeps {
+  /** Replace the engine-built DistillPort (tests inject a fake; no API key needed). */
+  readonly distiller?: DistillPort
+}
+
+export async function runDistill(
+  args: readonly string[],
+  deps: RunDistillDeps = {}
+): Promise<ExitCode> {
   const parsed = parse(args)
   const target = resolveWorkspacePath(parsed.workspace)
 
-  const engine = DISTILLER_ENGINES[parsed.engine]
-  if (!engine) {
-    return fail(
-      `unknown --engine "${parsed.engine}". Valid: ${Object.keys(DISTILLER_ENGINES).join(", ")}.`,
-      2
-    )
-  }
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (engine.needsApiKey && !apiKey) {
-    return fail(`distill engine "${engine.id}" needs ANTHROPIC_API_KEY in the environment.`, 2)
+  if (parsed.lens && parsed.lensFile) {
+    return fail("--lens and --lens-file are mutually exclusive.", 2)
   }
 
+  // Resolve the lens (if any) up front — a bad lens id fails before any LLM call.
+  let lens: Lens | undefined
+  if (parsed.lens || parsed.lensFile) {
+    try {
+      lens = parsed.lensFile
+        ? await resolveLensFile(parsed.lensFile)
+        : await resolveLens(parsed.lens!, target)
+    } catch (e) {
+      if (e instanceof LensError) return fail(e.message, 2)
+      throw e
+    }
+  }
+
+  // The distiller: an injected one (tests) or one built from the engine registry.
+  const usage = createUsageSink({ runName: basename(target) })
+  let distiller: DistillPort
+  let engineLabel: string
+  if (deps.distiller) {
+    distiller = deps.distiller
+    engineLabel = parsed.engine
+  } else {
+    const engine = DISTILLER_ENGINES[parsed.engine]
+    if (!engine) {
+      return fail(
+        `unknown --engine "${parsed.engine}". Valid: ${Object.keys(DISTILLER_ENGINES).join(", ")}.`,
+        2
+      )
+    }
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (engine.needsApiKey && !apiKey) {
+      return fail(`distill engine "${engine.id}" needs ANTHROPIC_API_KEY in the environment.`, 2)
+    }
+    distiller = engine.create({
+      ...(apiKey ? { apiKey } : {}),
+      ...(parsed.model ? { model: parsed.model } : {}),
+      onUsage: usage.record,
+      ...(parsed.lang ? { lang: parsed.lang } : {}),
+    })
+    engineLabel = engine.id
+  }
+
+  const fs = new NodeFsAdapter({ root: target })
   const all = await readSources(target)
   if (all.length === 0) return fail("no sources found under sources/ — run import-web first.", 2)
 
-  const done = await scanDistilledSourceIds(target)
-  const pool = parsed.sourceId
-    ? all.filter(s => s.id === parsed.sourceId)
-    : all.filter(s => !done.has(s.id))
+  // Resume set. Under a lens: the `(source, lens)` ledger (independent cadence
+  // per lens). Without a lens: the legacy entry-scan (unchanged back-compat).
+  const index = new DistillIndex({ fs })
+  let pool: RawSource[]
+  if (parsed.sourceId) {
+    pool = all.filter(s => s.id === parsed.sourceId)
+  } else if (lens) {
+    pool = []
+    for (const s of all) {
+      if (!(await index.isDistilled(s.id, s.contentHash, lens.id))) pool.push(s)
+    }
+  } else {
+    const done = await scanDistilledSourceIds(target)
+    pool = all.filter(s => !done.has(s.id))
+  }
   const batch = parsed.max !== undefined ? pool.slice(0, parsed.max) : pool
 
   process.stdout.write(
     `distill → ${target}\n` +
-      `  engine:   ${engine.id}\n` +
+      `  engine:   ${engineLabel}\n` +
+      (lens ? `  lens:     ${lens.id} (aspect:${lensAspect(lens)})\n` : "") +
       `  sources:  ${all.length} total · ${all.length - pool.length} already distilled · ${pool.length} to do\n` +
       `  this run: ${batch.length}${parsed.max !== undefined ? ` (--max ${parsed.max})` : ""}\n`
   )
@@ -270,30 +364,39 @@ export async function runDistill(args: readonly string[]): Promise<ExitCode> {
     return 0
   }
 
-  const usage = createUsageSink({ runName: basename(target) })
   const layout = await readEntryLayout(target)
   const runner = new DistillRunner({
-    fs: new NodeFsAdapter({ root: target }),
+    fs,
     clock: systemClock,
     ...(layout ? { layout } : {}),
-    distiller: engine.create({
-      ...(apiKey ? { apiKey } : {}),
-      ...(parsed.model ? { model: parsed.model } : {}),
-      onUsage: usage.record,
-      ...(parsed.lang ? { lang: parsed.lang } : {}),
-    }),
+    distiller,
   })
 
   let totalEntries = 0
   for (let i = 0; i < batch.length; i++) {
-    const src = batch[i]!
+    const raw = batch[i]!
+    const src = lens ? applyLens(raw, lens) : raw
     if (i > 0 && parsed.throttleMs > 0) await sleep(parsed.throttleMs)
     try {
       const report = await runner.run(src)
       totalEntries += report.entryPaths.length
-      process.stdout.write(`  ✓ ${src.id} → ${report.entryPaths.length} entries\n`)
+      // Under a lens, record the run in the `(source, lens)` ledger so a re-run
+      // of THIS lens skips the unchanged source without touching other lenses.
+      if (lens) {
+        await index.record({
+          sourceId: raw.id,
+          lensId: lens.id,
+          title: raw.title,
+          distilledAt: systemClock.now().toISOString(),
+          engine: engineLabel,
+          contentHash: raw.contentHash,
+          entryCount: report.entryPaths.length,
+          ...(report.entryPaths.length ? { entryPaths: report.entryPaths } : {}),
+        })
+      }
+      process.stdout.write(`  ✓ ${raw.id} → ${report.entryPaths.length} entries\n`)
     } catch (e) {
-      process.stdout.write(`  ! ${src.id} — ${e instanceof Error ? e.message : String(e)}\n`)
+      process.stdout.write(`  ! ${raw.id} — ${e instanceof Error ? e.message : String(e)}\n`)
     }
   }
   process.stdout.write(`\n${totalEntries} refined entries written (each with sources:[<id>] provenance).\n`)

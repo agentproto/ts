@@ -70,9 +70,16 @@ Commands:
                                          walled/JS pages, ahead of plain readability.
                                          --diarize: AssemblyAI speaker labels (interviews).
   distill [path] [--source id --max n --throttle ms --model m --lang l --engine e]
+                 [--lens <id> | --lens-file <path>]
                                          Distill raw sources → refined entries
                                          (principle/pattern/…) with sources:[id] provenance.
                                          Resumable: skips already-distilled sources.
+                                         --lens reads every source THROUGH one aspect:
+                                         its prompt drives extraction, its kinds constrain
+                                         output, entries are tagged aspect:<value>, and the
+                                         resume ledger keys by (source, lens). Resolves a
+                                         workspace lenses/<id>.md (override) or a built-in
+                                         (craft); --lens-file points at an ad-hoc lens doc.
   knowledge [path] --tags a,b [--kind k --access scope --max n]
                                          Preview what a skill's knowledge: binding resolves to
                                          — refined entries + their provenance (filesystem).
