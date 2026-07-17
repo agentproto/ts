@@ -132,6 +132,81 @@ function assertPublishable(body, what) {
   }
 }
 
+// ── batch identity ────────────────────────────────────────────────────────────
+//
+// A release batch is identified by the sha of the `chore(release): version
+// packages` commit it was cut from — the same commit tool_list_published_packages
+// reads its package list out of, so the identity and the contents can't drift
+// apart. Computed here, never supplied by the model, for the same reason the tag
+// and the year are.
+//
+// The marker rides in the published body as an HTML comment (invisible on
+// GitHub). The model writes the prose; this code appends the marker, so it can't
+// be forged, omitted, or hallucinated.
+
+const BATCH_MARKER_RE = /<!--\s*agentproto-batch:\s*([0-9a-f]{7,40})\s*-->/i
+
+const batchMarker = (sha) => `<!-- agentproto-batch: ${sha} -->`
+
+/** The batch sha a published body claims, or null (legacy body, or no marker). */
+function bodyBatchSha(body) {
+  const m = BATCH_MARKER_RE.exec(typeof body === 'string' ? body : '')
+  return m ? m[1] : null
+}
+
+/** Append the marker to a model-written body. No sha ⇒ nothing to stamp. */
+function appendBatchMarker(body, sha) {
+  if (!sha || typeof body !== 'string') return body
+  if (bodyBatchSha(body) === sha) return body
+  return `${body.replace(/\s+$/, '')}\n\n${batchMarker(sha)}\n`
+}
+
+/** The sha of the version-bump commit this run is publishing notes for. */
+function currentBatchSha() {
+  return run('git log --grep="chore(release): version packages" -1 --format=%H') || null
+}
+
+/**
+ * Pick which tag this batch gets written to, and whether that's a create or an
+ * edit. Walks `release/<date>`, `release/<date>.2`, `.3`, … until it finds a tag
+ * that is either free or already carries *this* batch's marker.
+ *
+ * The distinction this draws is the one the old code missed: re-running the same
+ * batch (the `force_post_release_steps` backfill, a reconcile-driven re-run) is
+ * idempotent and must edit in place; publishing a *different* batch on the same
+ * day is a new release and must get its own tag. Both used to land in the same
+ * `catch` and overwrite.
+ *
+ * A legacy release with no marker — every consolidated release published before
+ * this fix — reads as "not this batch" and so falls through to `.2`. That is the
+ * deliberately safe direction: a spurious `.2` is trivially recoverable by hand,
+ * a wiped release is not. It self-heals within a day, once every release on the
+ * current date carries a marker.
+ *
+ * `fetchBody(tag)` returns the existing release body, or null if no release
+ * exists at that tag.
+ */
+function selectReleaseTarget({ baseTag, batchSha, fetchBody, maxAttempts = 20 }) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const tag = attempt === 1 ? baseTag : `${baseTag}.${attempt}`
+    const existing = fetchBody(tag)
+    if (existing === null || existing === undefined) return { tag, attempt, mode: 'create' }
+    // No batchSha ⇒ this run can't prove which batch it is, so it never claims
+    // someone else's release. It mints a fresh tag instead of editing blind.
+    if (batchSha && bodyBatchSha(existing) === batchSha) return { tag, attempt, mode: 'edit' }
+  }
+  // Cap the walk: a pathological state must fail loudly, not spin.
+  throw new Error(
+    `refusing to publish: ${maxAttempts} same-day tags from ${baseTag} are all held by other batches`,
+  )
+}
+
+/** The model writes the title; it doesn't get to number it. Same rule as the tag. */
+function suffixTitle(title, attempt) {
+  const base = String(title ?? '').replace(/\s*\(\d+\)\s*$/, '')
+  return attempt <= 1 ? base : `${base} (${attempt})`
+}
+
 // ── tool implementations ──────────────────────────────────────────────────────
 
 /**
@@ -263,20 +338,36 @@ function tool_post_release_notes({ tag, body }) {
   }
 }
 
+/** Existing release body for a tag, or null when no release exists there. */
+function fetchReleaseBody(tag) {
+  try {
+    return execFileSync('gh', ['release', 'view', tag, '--json', 'body', '--jq', '.body'], {
+      cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
+    })
+  } catch {
+    // Non-zero exit = no release at this tag. (A bare git tag with no release
+    // also lands here, which is correct: `gh release create` handles that.)
+    return null
+  }
+}
+
 function tool_post_consolidated_release({ title, body }) {
   // The tag is computed, never supplied. The model used to be able to pass one
   // and it picked from its own sense of the date — `release/2025-07` for a batch
   // published in July 2026. There is no reason the author of the prose should
   // also get to name the tag.
-  const releaseTag = CONSOLIDATED_TAG
+  const batchSha = currentBatchSha()
   try {
-    assertPublishable(body, `consolidated release ${releaseTag}`)
+    assertPublishable(body, `consolidated release ${CONSOLIDATED_TAG}`)
   } catch (e) {
     return `(${e.message})`
   }
-  // Same reasoning for the title: the model writes it, so it can still smuggle a
-  // hallucinated year into the prose. Correct it rather than reject — the year is
-  // knowable, and a retry loop over a fact we already hold is waste.
+  // Stamp the batch identity onto the body *after* the gate, so what gets
+  // published is exactly what was inspected plus a marker this code controls.
+  const markedBody = appendBatchMarker(body, batchSha)
+  // Same reasoning as the tag for the title: the model writes it, so it can still
+  // smuggle a hallucinated year into the prose. Correct it rather than reject —
+  // the year is knowable, and a retry loop over a fact we already hold is waste.
   let safeTitle = title
   const wrongYear = /\b(20\d{2})\b/.exec(safeTitle ?? '')
   if (wrongYear && wrongYear[1] !== THIS_YEAR) {
@@ -286,35 +377,47 @@ function tool_post_consolidated_release({ title, body }) {
   if (!safeTitle) safeTitle = `agentproto — ${RELEASE_DATE_LONG} release`
 
   if (DRY_RUN) {
-    log(`\n[dry-run] would create consolidated release "${safeTitle}" (${releaseTag}) — body on stdout`)
-    process.stdout.write(body)
-    return `dry-run: consolidated release not posted (tag: ${releaseTag})`
+    log(`\n[dry-run] would post consolidated release "${safeTitle}" (${CONSOLIDATED_TAG}) — body on stdout`)
+    process.stdout.write(markedBody)
+    return `dry-run: consolidated release not posted (tag: ${CONSOLIDATED_TAG})`
   }
-  // `--latest=true`: this is the one release a human should land on. changesets
-  // publishes ~37 per-package releases per batch, and GitHub was picking whichever
-  // sorted last as "Latest" — it settled on `runtime-profile-standard@0.1.1`, a
-  // package nobody installs, while the real notes sat on an unlinked tag. The
-  // consolidated release exists on every run regardless of which packages shipped,
-  // so it is the only stable thing to point at.
+
+  // Which tag, and create or edit? Not "create, and overwrite whatever's there
+  // on failure" — that conflated an idempotent re-run of *this* batch with a
+  // second, different batch publishing the same day, and the second one silently
+  // replaced the first one's title and body. See selectReleaseTarget.
+  let target
   try {
-    execFileSync('gh', ['release', 'create', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
+    target = selectReleaseTarget({ baseTag: CONSOLIDATED_TAG, batchSha, fetchBody: fetchReleaseBody })
+  } catch (e) {
+    return `Error: ${e.message}`
+  }
+  const finalTitle = suffixTitle(safeTitle, target.attempt)
+  if (target.attempt > 1) {
+    log(`   ⚠️  ${CONSOLIDATED_TAG} holds another batch's release — publishing to ${target.tag}`)
+  }
+
+  // `--latest=true` on whichever release this batch writes: this is the one a
+  // human should land on. changesets publishes ~37 per-package releases per batch,
+  // and GitHub was picking whichever sorted last as "Latest" — it settled on
+  // `runtime-profile-standard@0.1.1`, a package nobody installs, while the real
+  // notes sat on an unlinked tag. The consolidated release exists on every run
+  // regardless of which packages shipped, so it is the only stable thing to point
+  // at; the newest batch of the day should win it.
+  const verb = target.mode === 'create' ? 'create' : 'edit'
+  try {
+    execFileSync('gh', ['release', verb, target.tag, '--title', finalTitle, '--notes', markedBody, '--latest=true'], {
       cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
     })
-    return `✓ Created consolidated GitHub Release: ${releaseTag}`
   } catch (e) {
-    // Tag already exists — same date, re-run or a second publish. Update in place.
-    // (Under the old model-chosen tags this branch also fired across *different*
-    // batches that were handed the same invented tag, silently overwriting the
-    // earlier batch's notes. A computed per-day tag makes that collision honest.)
-    try {
-      execFileSync('gh', ['release', 'edit', releaseTag, '--title', safeTitle, '--notes', body, '--latest=true'], {
-        cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
-      })
-      return `✓ Updated consolidated GitHub Release: ${releaseTag}`
-    } catch (e2) {
-      return `Error: ${e2.message}`
-    }
+    // Deliberately no create→edit fallback. A create that fails here means the
+    // state moved under us (a concurrent run took the tag) — the safe answer is
+    // to fail and let a human look, not to overwrite a release we never read.
+    return `Error posting consolidated release ${target.tag}: ${e.message}`
   }
+  return target.mode === 'create'
+    ? `✓ Created consolidated GitHub Release: ${target.tag}`
+    : `✓ Updated consolidated GitHub Release: ${target.tag} (same batch, in place)`
 }
 
 // ── tool dispatch ─────────────────────────────────────────────────────────────
@@ -581,4 +684,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await runAgenticLoop()
 }
 
-export { assertPublishable, TRACE_MARKERS, CONSOLIDATED_TAG, RELEASE_DATE_LONG, THIS_YEAR, TODAY }
+export {
+  assertPublishable,
+  TRACE_MARKERS,
+  CONSOLIDATED_TAG,
+  RELEASE_DATE_LONG,
+  THIS_YEAR,
+  TODAY,
+  appendBatchMarker,
+  batchMarker,
+  bodyBatchSha,
+  selectReleaseTarget,
+  suffixTitle,
+}
