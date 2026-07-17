@@ -5,6 +5,7 @@ import { join } from "node:path"
 import {
   injectProviderKeysIntoEnv,
   loadProviders,
+  providerEnvAliases,
   providerEnvVar,
   providersPath,
   removeProviderKey,
@@ -81,5 +82,63 @@ describe("providers store", () => {
   it("returns empty when no store exists", async () => {
     const file = await loadProviders()
     expect(file).toEqual({ version: 1, providers: {} })
+  })
+
+  // ── env-name aliases (one stored key → several env names) ──────────────
+
+  it("exposes verified aliases for a provider, none for the rest", () => {
+    // google is the first real case: mastracode reads GOOGLE_API_KEY, our
+    // canonical name is GOOGLE_GENERATIVE_AI_API_KEY.
+    expect(providerEnvVar("google")).toBe("GOOGLE_GENERATIVE_AI_API_KEY")
+    expect(providerEnvAliases("google")).toEqual(["GOOGLE_API_KEY"])
+    // Providers with no verified alias return an empty list.
+    expect(providerEnvAliases("anthropic")).toEqual([])
+    expect(providerEnvAliases("openrouter")).toEqual([])
+    expect(providerEnvAliases("acme-llm")).toEqual([])
+  })
+
+  it("injects the canonical name AND every alias for one stored key", async () => {
+    await setProviderKey("google", "sk-goog-from-store")
+    const env: NodeJS.ProcessEnv = {}
+    const injected = await injectProviderKeysIntoEnv(env)
+    // Canonical + alias both carry the same key.
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("sk-goog-from-store")
+    expect(env.GOOGLE_API_KEY).toBe("sk-goog-from-store")
+    // The boot log names the provider once, not once per env name.
+    expect(injected).toEqual(["google"])
+  })
+
+  it("does not fabricate extra env names for a provider with no alias", async () => {
+    await setProviderKey("anthropic", "sk-ant-solo")
+    const env: NodeJS.ProcessEnv = {}
+    await injectProviderKeysIntoEnv(env)
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-solo")
+    // Only the one canonical name — no phantom alias keys.
+    expect(Object.keys(env)).toEqual(["ANTHROPIC_API_KEY"])
+  })
+
+  it("explicit env wins PER NAME — an explicit alias is never clobbered", async () => {
+    await setProviderKey("google", "sk-goog-from-store")
+    // Operator exported the alias explicitly; canonical is unset.
+    const env: NodeJS.ProcessEnv = { GOOGLE_API_KEY: "sk-goog-explicit" }
+    const injected = await injectProviderKeysIntoEnv(env)
+    // Explicit alias preserved; canonical filled from the store.
+    expect(env.GOOGLE_API_KEY).toBe("sk-goog-explicit")
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("sk-goog-from-store")
+    // Something was injected (the canonical), so the provider is reported once.
+    expect(injected).toEqual(["google"])
+  })
+
+  it("skips a provider whose canonical AND every alias are already set", async () => {
+    await setProviderKey("google", "sk-goog-from-store")
+    const env: NodeJS.ProcessEnv = {
+      GOOGLE_GENERATIVE_AI_API_KEY: "sk-canonical-explicit",
+      GOOGLE_API_KEY: "sk-alias-explicit",
+    }
+    const injected = await injectProviderKeysIntoEnv(env)
+    // Nothing overwritten, provider not reported as injected.
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("sk-canonical-explicit")
+    expect(env.GOOGLE_API_KEY).toBe("sk-alias-explicit")
+    expect(injected).not.toContain("google")
   })
 })

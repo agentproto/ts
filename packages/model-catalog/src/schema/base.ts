@@ -87,6 +87,36 @@ export const PROVIDER_KEY_ENV: Record<CatalogProvider, string> = {
   xai: "XAI_API_KEY",
 }
 
+/**
+ * ADDITIONAL env-var names that carry the *same* provider key, beyond the one
+ * canonical name in {@link PROVIDER_KEY_ENV}. Some consumers read a different
+ * alias for a provider than the name we canonically inject, so a key set once
+ * (`agentproto auth provider set <provider> <key>`) must be able to satisfy
+ * every alias, not just the canonical name. `providers-store` derives its
+ * `PROVIDER_ENV_ALIASES` from this and injects the canonical name PLUS every
+ * alias at `serve` boot (explicit env still wins, per env name).
+ *
+ * Aliases are VERIFIED against a real consumer, never guessed — an alias we
+ * cannot prove a consumer reads does not belong here:
+ *
+ * - `google: ["GOOGLE_API_KEY"]` — mastracode / `@mastra/core`. Its
+ *   `PROVIDER_REGISTRY.google.apiKeyEnvVar` is the alias array
+ *   `["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]`, but
+ *   `@mastra/code-sdk`'s `getApiKeyEnvVar()` collapses it to `envVars[0]`
+ *   (`GOOGLE_API_KEY`) before testing `Boolean(process.env[…])`. So mastracode
+ *   consults ONLY `GOOGLE_API_KEY`; our canonical `GOOGLE_GENERATIVE_AI_API_KEY`
+ *   is invisible to it. (Confirmed in the installed mastracode 0.26.x tree.)
+ *
+ * `gemini-live` is deliberately absent: no consumer of that provider is known
+ * to read `GOOGLE_API_KEY`, so per the verify-not-guess rule it stays out.
+ *
+ * `Partial` because most providers have no known alias — a provider absent
+ * here just gets its single canonical name injected.
+ */
+export const PROVIDER_KEY_ENV_ALIASES = {
+  google: ["GOOGLE_API_KEY"],
+} satisfies Partial<Record<CatalogProvider, readonly string[]>>
+
 export const baseEntryShape = {
   id: z.string().min(1),
   name: z.string().min(1),
