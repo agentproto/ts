@@ -1,5 +1,11 @@
 # @agentproto/worktree
 
+## 0.4.0
+
+### Minor Changes
+
+- 98bbebf: Partition session state per workspace (AIP-46 §State partitioning)
+
 ## 0.3.0
 
 ### Minor Changes

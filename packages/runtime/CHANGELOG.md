@@ -1,5 +1,28 @@
 # @agentproto/runtime
 
+## 0.7.0
+
+### Minor Changes
+
+- 0d74b1e: Add SessionDescriptor.title derived from first prompt text
+- 8aec010: Add ConversationStore abstraction, hermes attach support, and conversation_read MCP verb
+- e5d55a7: Record worktreePath and worktreeId on SessionDescriptor at spawn time
+- 8778b9d: Add optional sessionId filter to policy_list, GET /policies, and policy ls
+- 98bbebf: Partition session state per workspace (AIP-46 §State partitioning)
+- bbc5070: Add interruptSession registry method, POST /sessions/:id/interrupt route, and agent_interrupt MCP verb
+
+### Patch Changes
+
+- 7b80d00: Add last-known-good fallback so a rebuilding adapter isn't reported as uninstalled
+- a571bf9: Fix flaky command-log tests by polling instead of a fixed 20ms sleep
+- 45ee7ef: Stop test gateways persisting fake session rows into the real ~/.agentproto/
+- 5d2b869: Redact client slug from fixtures and drop machine-specific comment framing
+- e0b4b85: Widen interrupt-settle timeout to 60s to avoid false timeouts on slow adapters
+- Updated dependencies [b531fd1]
+  - @agentproto/model-catalog@0.4.0
+  - @agentproto/providers-store@0.2.1
+  - @agentproto/sandbox@0.1.2
+
 ## 0.6.0
 
 ### Minor Changes
