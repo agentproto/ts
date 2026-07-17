@@ -2,10 +2,24 @@
 
 ## 0.1.1
 
+### Minor Changes
+
+- bbc5070: Composer: stop button, and prompt history on ↑/↓
+- 702cb00: Composer: drag-and-drop, `@file` mentions, and attachment chips
+- 67dda1f: Composer: paste an image straight into the transcript
+- 9cf0cd8: Collapse the transcript header to one line
+- 90bc763: Render a step as a row rather than a box
+- dee0923: Let the stop confirmation be dismissed for good
+- 41e46b7: The transcript tab wears the read-receipt too
+
 ### Patch Changes
 
 - 6a8b548: Fix Stop painted as crash; replace lifecycle with activity axis in tree icons and status bar
 - 6fda931: Fix sidebar: auto-refresh on clock, unread dot read-receipt, optimistic spawn row
+- 5a7ed25: Fix a reaped-after-finishing subagent reading as stopped rather than complete
+- 9cec8c5: Fix picking claude-sdk's kimi-k2.7-code spawning against real Anthropic
+- bf23320: Fix emphasis failing to span a code span in the transcript renderer
+- 8f8d048: Fix VSIX packaging and auto-publish to the Marketplace
 
 ## 0.1.0
 
