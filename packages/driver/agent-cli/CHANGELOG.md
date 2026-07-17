@@ -1,5 +1,15 @@
 # @agentproto/driver-agent-cli
 
+## 1.1.0
+
+### Minor Changes
+
+- 9cec8c5: Add structured models.allowed entries to fix gateway model mode binding in VS Code picker
+
+### Patch Changes
+
+- 8d73291: Fix permission-mode test env leak by isolating CLAUDE_CONFIG_DIR in beforeEach/afterEach
+
 ## 1.0.0
 
 ### Major Changes

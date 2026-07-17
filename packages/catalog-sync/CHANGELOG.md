@@ -1,5 +1,16 @@
 # @agentproto/catalog-sync
 
+## 0.4.0
+
+### Minor Changes
+
+- b531fd1: Add llm:context-windows generator and resolveContextWindow to model-catalog
+
+### Patch Changes
+
+- Updated dependencies [b531fd1]
+  - @agentproto/model-catalog@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

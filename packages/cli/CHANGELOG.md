@@ -1,5 +1,32 @@
 # @agentproto/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 9cec8c5: Add structured models.allowed entries to fix gateway model mode binding in VS Code picker
+- 7b80d00: Add last-known-good fallback so a rebuilding adapter isn't reported as uninstalled
+- e5d55a7: Record worktreePath and worktreeId on SessionDescriptor at spawn time
+- 8778b9d: Add optional sessionId filter to policy_list, GET /policies, and policy ls
+
+### Patch Changes
+
+- b63bd5f: Backfill docs for release #289: policy/worktree verbs, config keys, sessions story
+- 1dfba23: fix(cli): wrap --prompt string into a ContentBlock before calling session.send()
+- 166b42c: Validate and echo resolved duration for all CLI timeout/interval flags
+- a8be39e: Fix flaky CLI subprocess tests by adding explicit vitest timeouts
+- 45ee7ef: Stop test gateways persisting fake session rows into the real ~/.agentproto/
+- 9bae7bb: Fix node-pty spawn-helper exec bit + enrich PTY spawn error messages
+- 97e08f0: give fan-out symlink-skip test the 15s timeout its siblings have
+- d285a81: Fix install-skill test timeout: align vi.setConfig with runCli's 15s spawn budget
+- Updated dependencies [b531fd1]
+- Updated dependencies [9cec8c5]
+- Updated dependencies [98bbebf]
+- Updated dependencies [8d73291]
+  - @agentproto/model-catalog@0.4.0
+  - @agentproto/driver-agent-cli@1.1.0
+  - @agentproto/worktree@0.4.0
+
 ## 0.6.0
 
 ### Minor Changes

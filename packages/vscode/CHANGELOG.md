@@ -1,5 +1,12 @@
 # agentproto-vscode
 
+## 0.1.1
+
+### Patch Changes
+
+- 6a8b548: Fix Stop painted as crash; replace lifecycle with activity axis in tree icons and status bar
+- 6fda931: Fix sidebar: auto-refresh on clock, unread dot read-receipt, optimistic spawn row
+
 ## 0.1.0
 
 ### Minor Changes

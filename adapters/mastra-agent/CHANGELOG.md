@@ -1,5 +1,14 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.1.4
+
+### Patch Changes
+
+- 9cec8c5: Add structured models.allowed entries to fix gateway model mode binding in VS Code picker
+- Updated dependencies [9cec8c5]
+- Updated dependencies [8d73291]
+  - @agentproto/driver-agent-cli@1.1.0
+
 ## 0.1.3
 
 ### Patch Changes

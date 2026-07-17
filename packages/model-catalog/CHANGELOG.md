@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.4.0
+
+### Minor Changes
+
+- b531fd1: Add llm:context-windows generator and resolveContextWindow to model-catalog
+
 ## 0.3.0
 
 ### Minor Changes
