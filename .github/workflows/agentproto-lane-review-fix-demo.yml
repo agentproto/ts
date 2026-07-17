@@ -33,13 +33,21 @@ jobs:
     timeout-minutes: 360
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BASE_REF: ${{ inputs.base-ref }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Ensure origin/${{ inputs.base-ref }} is available
-        run: git fetch origin ${{ inputs.base-ref }}
+      - name: Ensure origin/base-ref is available
+        # $BASE_REF via env:, never interpolated directly into the shell
+        # command — a workflow_dispatch input is operator-supplied, not
+        # attacker-controlled, but this repo's own convention (see
+        # .github/actions/agentproto-run/write-config.mjs) is to route
+        # any input through env rather than string-interpolate it into a
+        # run: block, so this mirrors that discipline rather than being
+        # the one exception to it.
+        run: git fetch origin "$BASE_REF"
 
       - name: Configure git identity
         run: |
