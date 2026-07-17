@@ -1700,6 +1700,10 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    event=turn-end|awaiting-input|exited|any (default any),
  *                                    since=<cursor>, timeoutMs=<n> (default 25000, cap 55000).
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
+ *   POST   /sessions/:id/interrupt → cancel the in-flight turn, leave the
+ *                                    session alive and idle; returns
+ *                                    {ok, id, wasBusy}. No-op (wasBusy:
+ *                                    false) on an idle or terminal session.
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
  *   POST   /sessions/browser      → start a browser adapter and register
@@ -2259,6 +2263,33 @@ async function handleSessions(
             ? 409
             : 500
       json(status, { error: "send_prompt_failed", message: msg })
+    }
+    return true
+  }
+
+  // Cancel the in-flight turn on a live agent session and leave the
+  // session itself alive and idle — the bare "interrupt, no next prompt"
+  // primitive `POST /sessions/:id/prompt`'s own `interrupt` option lacks,
+  // since that option always redirects onto a NEW prompt. See
+  // `SessionsRegistry.interruptSession`'s doc comment for the full
+  // idempotency contract (idle/terminal/unknown-but-alive all no-op).
+  const interruptMatch = path.match(/^\/sessions\/([^/]+)\/interrupt$/)
+  if (interruptMatch && req.method === "POST") {
+    const id = interruptMatch[1]
+    if (!id) return false
+    try {
+      const { wasBusy } = await registry.interruptSession(id)
+      json(200, { ok: true, id, wasBusy })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // "does not support interrupt" is a state/capability refusal (the
+      // adapter's cancel() itself rejected) — not a server fault.
+      const status = msg.includes("no session")
+        ? 404
+        : msg.includes("does not support interrupt")
+          ? 409
+          : 500
+      json(status, { error: "interrupt_failed", message: msg })
     }
     return true
   }

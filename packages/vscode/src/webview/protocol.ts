@@ -54,6 +54,18 @@ export type ExtMessage =
        * unescaped daemon text here.
        */
       initialHtml?: string
+      /**
+       * Seeded prompt history for ↑/↓ (oldest → newest) — the last 100
+       * `user-prompt` record texts from this session, so history survives a
+       * panel reload or a daemon restart. Deliberately RAW user text, not
+       * daemon output: it is exactly what the user themselves typed, going
+       * back into the composer textarea via `.value` and never `innerHTML`.
+       * That is why it is exempt from the escape-before-webview rule that
+       * governs every other text field in this protocol. Raw mode has no
+       * records to seed from — the host sends `[]` and lets the webview's
+       * own local pushes carry it from there.
+       */
+      history?: string[]
     }
   | {
       type: "conversation"
@@ -125,6 +137,12 @@ export type ExtMessage =
    * results should paint.
    */
   | { type: "mentionCandidates"; query: string; items: MentionCandidate[] }
+  /**
+   * A `stop` POST was refused. Deliberately NOT `attachError`: a failed stop
+   * is not a failed attachment, and the banner copy differs — this earns its
+   * own arm rather than overloading one that means something else.
+   */
+  | { type: "stopError"; title: string; message: string }
 
 /**
  * Messages sent from the webview to the extension host.
@@ -132,13 +150,17 @@ export type ExtMessage =
  * No `kill`: the composer dropped its Kill button (a permanently-red slab
  * under the user's eyes, for the one action they least often want), and
  * killing a session remains available from the sessions tree via
- * `agentproto.killSession`. Nothing else could ever send this message, so the
- * arm went with the button rather than lingering as unreachable code.
+ * `agentproto.killSession`. `stop` is NOT `kill` — it cancels the in-flight
+ * turn and leaves the session alive, which is exactly why it earns a place
+ * under the user's eyes where a red Kill slab did not: the worst case of
+ * pressing it by accident is losing the current turn's progress, not the
+ * whole session.
  */
 export type WebviewMessage =
   | { type: "ready" }
   | { type: "send"; text: string }
   | { type: "interruptSend"; text: string }
+  | { type: "stop" }
   /**
    * Open a tool call's full input/output in a read-only editor tab.
    *
@@ -176,6 +198,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof type !== "string") return false
   switch (type) {
     case "ready":
+    case "stop":
       return true
     case "send":
     case "interruptSend":

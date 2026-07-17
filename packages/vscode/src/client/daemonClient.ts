@@ -184,6 +184,12 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }
 
+  /** Cancel the in-flight turn on a live agent session and leave the
+   *  session itself alive and idle — unlike `kill()`, which ends it. */
+  async interrupt(id: string): Promise<{ ok: boolean; id: string; wasBusy: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/interrupt`, {})
+  }
+
   async deleteSession(id: string): Promise<{ ok: boolean; id: string }> {
     return this.deleteJson(`/sessions/${encodeURIComponent(id)}`)
   }

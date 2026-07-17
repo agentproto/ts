@@ -59,6 +59,7 @@ function createMockMessenger(): {
 type MockClient = DaemonClient & {
   prompt: ReturnType<typeof vi.fn>
   kill: ReturnType<typeof vi.fn>
+  interrupt: ReturnType<typeof vi.fn>
   exportSession: ReturnType<typeof vi.fn>
   preview: ReturnType<typeof vi.fn>
   getSession: ReturnType<typeof vi.fn>
@@ -72,6 +73,7 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
     url: "http://127.0.0.1:18790",
     prompt: vi.fn().mockResolvedValue(undefined),
     kill: vi.fn().mockResolvedValue(undefined),
+    interrupt: vi.fn().mockResolvedValue({ ok: true, id: "s1", wasBusy: true }),
     exportSession: vi.fn().mockResolvedValue({ content: "# hello", format: "markdown" }),
     preview: vi.fn().mockResolvedValue({ id: "s1", lines: ["line"], bytes: null }),
     getSession: vi.fn().mockResolvedValue(session()),
@@ -251,6 +253,36 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
     expect(htmls[1]).toContain("Hi there")
     // The raw stream is never used in structured mode.
     expect(client.exportSession).not.toHaveBeenCalled()
+  })
+
+  it("seeds init.history from the raw user-prompt record texts, oldest to newest", async () => {
+    seq = 0
+    const client = createMockClient({
+      getSessionEvents: vi.fn().mockResolvedValue(
+        page([
+          ev({ kind: "user-prompt", text: "first" }),
+          ev({ kind: "text-delta", text: "reply 1\n" }),
+          ev({ kind: "turn-end", reason: "completed" }),
+          ev({ kind: "user-prompt", text: "second" }),
+          ev({ kind: "text-delta", text: "reply 2\n" }),
+          ev({ kind: "turn-end", reason: "completed" }),
+        ]),
+      ),
+    })
+    const { controller, messenger } = make(client)
+
+    await controller.onReady()
+
+    expect(initMsg(messenger.messages).history).toEqual(["first", "second"])
+  })
+
+  it("seeds an empty init.history in raw mode — there are no records to mine it from", async () => {
+    const client = createMockClient({ getSession: vi.fn().mockResolvedValue(session({ kind: "terminal" })) })
+    const { controller, messenger } = make(client, { initialSession: session({ kind: "terminal" }) })
+
+    await controller.onReady()
+
+    expect(initMsg(messenger.messages).history).toEqual([])
   })
 
   it("paginates hydration when a page is capped (complete=false)", async () => {
@@ -638,6 +670,23 @@ describe("TranscriptPanelController — ready & send safety", () => {
     await controller.onSend("third", true)
     expect(client.prompt).toHaveBeenCalledTimes(2)
     expect(client.prompt).toHaveBeenLastCalledWith("s1", "third", { interrupt: true, wait: false })
+  })
+})
+
+describe("TranscriptPanelController — stop", () => {
+  it("calls interrupt and posts nothing on success", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client)
+    await controller.onStop()
+    expect(client.interrupt).toHaveBeenCalledWith("s1")
+    expect(messenger.messages).toEqual([])
+  })
+
+  it("posts stopError with the daemon's message on failure", async () => {
+    const client = createMockClient({ interrupt: vi.fn().mockRejectedValue(new Error("boom")) })
+    const { controller, messenger } = make(client)
+    await controller.onStop()
+    expect(messenger.messages).toEqual([{ type: "stopError", title: "Stop failed", message: "boom" }])
   })
 })
 

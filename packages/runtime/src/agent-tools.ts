@@ -10,6 +10,7 @@
  *   agent_prompt  send a follow-up turn to a live session
  *   agent_output  tail the ring buffer
  *   agent_kill    SIGTERM the session
+ *   agent_interrupt   cancel the in-flight turn, leave the session alive
  *   agent_export  export a clean transcript
  *   agent_sessions_list   browse alive + recent agent sessions
  */
@@ -797,6 +798,46 @@ export function registerAgentTools(
             text: JSON.stringify({ ok, sessionId }, null, 2),
           },
         ],
+      }
+    }
+  )
+
+  // ── agent_interrupt ─────────────────────────────────────
+  server.tool(
+    "agent_interrupt",
+    "Cancel the in-flight turn on a live agent session and leave the session " +
+      "alive and idle. Unlike `agent_kill` (ends the session entirely), the " +
+      "session stays alive and ready for the next `agent_prompt`. Unlike " +
+      "`agent_prompt({interrupt: true})` (which requires a next prompt to " +
+      "redirect onto), this takes no prompt — it's just stop. No-op " +
+      "(`wasBusy: false`) on an already-idle or terminal session.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+    },
+    async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_interrupt")
+      try {
+        const { wasBusy } = await registry.interruptSession(sessionId)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: true, sessionId, wasBusy }, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_interrupt: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
       }
     }
   )

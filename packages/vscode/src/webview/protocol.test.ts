@@ -20,6 +20,12 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "interruptSend", text: "now" })).toBe(true)
   })
 
+  it("accepts stop", () => {
+    // stop is NOT kill — it cancels the in-flight turn and leaves the
+    // session alive, which is exactly why it earns a button (see WebviewMessage).
+    expect(isWebviewMessage({ type: "stop" })).toBe(true)
+  })
+
   it("rejects send without text", () => {
     expect(isWebviewMessage({ type: "send" })).toBe(false)
   })
