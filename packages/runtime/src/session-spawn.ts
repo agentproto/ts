@@ -44,6 +44,13 @@ import {
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import {
+  decideWorktreeIsolation,
+  loadWorktreeIsolation,
+  type WorktreeField,
+  type WorktreeIsolationMode,
+  type WorktreeProvisioner,
+} from "./worktree-isolation.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -180,6 +187,18 @@ export interface SpawnAgentSessionDeps {
    *  `.provider`) to a concrete sandbox provider handle. Required for
    *  `input.sandbox` — omitted ⇒ `sandbox_provider_not_found`. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Provision a git worktree and return the cwd the spawn should land in —
+   *  the injected port behind `agent_start.worktree` (see
+   *  `worktree-isolation.ts`). Wired at the composition root by a host that
+   *  depends on `@agentproto/worktree` (the CLI). Omitted ⇒ a spawn the
+   *  policy says to isolate fails with `worktree_provisioner_not_enabled`
+   *  rather than silently spawning unisolated. */
+  provisionWorktree?: WorktreeProvisioner
+  /** Resolves the effective `worktrees.isolation` policy (env > config >
+   *  `on-request`). Defaults to reading the real `~/.agentproto/config.json`
+   *  via `loadWorktreeIsolation` when omitted; tests inject a stub to pin the
+   *  mode without touching the real file or env. */
+  resolveWorktreeIsolation?: () => Promise<WorktreeIsolationMode>
 }
 
 export interface SpawnAgentSessionInput {
@@ -252,6 +271,17 @@ export interface SpawnAgentSessionInput {
    *  `SandboxAgentSessionProxy` in place of the local `resolveAgentAdapter`
    *  path — see `sandbox-agent-session-proxy.ts`. */
   sandbox?: string | SandboxSpecInput
+  /** Isolate this session into its own git worktree instead of spawning in
+   *  `cwd` directly. `true` provisions a worktree with an auto-minted branch/
+   *  slug; `{ slug?, base? }` pins the slug and/or the base ref it's cut from.
+   *  Honoured only at spawn depth 0 (a nested spawn inherits the parent's
+   *  ground) and only for a `cwd` inside a git repo (nothing to isolate
+   *  otherwise ⇒ spawns plain). The daemon's `worktrees.isolation` policy can
+   *  force this on (`always`) or off (`never`) regardless — see
+   *  `worktree-isolation.ts`. Ignored entirely for a `sandbox` spawn (the box
+   *  already isolates). Cleanup is the human's job (`agentproto worktree
+   *  rm|archive|gc`); the tree is never auto-removed on session exit. */
+  worktree?: WorktreeField
   /** Start this session in permission-hold mode: every ACP permission request
    *  is surfaced + parked in the cross-session inbox (`permissions_list` /
    *  `permissions_respond`) instead of auto-answered. Threaded to the driver's
@@ -295,6 +325,9 @@ export type SpawnAgentSessionResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
+        | "worktree_disabled"
+        | "worktree_provisioner_not_enabled"
+        | "worktree_provision_failed"
       message: string
       details?: Record<string, unknown>
     }
@@ -312,6 +345,8 @@ export async function spawnAgentSession(
     webhookNotifier,
     loadDefaultsConfig,
     resolveSandboxProvider,
+    provisionWorktree,
+    resolveWorktreeIsolation,
   } = deps
 
   // cwd resolution mirrors the HTTP route: explicit cwd wins,
@@ -429,6 +464,43 @@ export async function spawnAgentSession(
           maxChildren: callerScope.maxChildren,
         },
       }
+    }
+  }
+  // ── Worktree isolation decision (policy-driven) ─────────────────
+  // Resolve the daemon's `worktrees.isolation` policy and decide WHETHER to
+  // isolate this spawn into its own git worktree — a pure decision here; the
+  // actual `git worktree add` runs later, inside the fork's try block, so a
+  // deduped idempotency retry never provisions a second tree. Skipped for a
+  // sandbox spawn: a remote box already isolates, and a local worktree there
+  // would be meaningless. Validation-class rejects (`never` + explicit
+  // request, or a provision with no provisioner wired) fail LOUD here, before
+  // any side effect — mirroring the role/depth gates above.
+  let worktreeRequest: { slug?: string; base?: string } | undefined
+  if (input.sandbox === undefined) {
+    const mode = resolveWorktreeIsolation
+      ? await resolveWorktreeIsolation()
+      : await loadWorktreeIsolation()
+    const decision = decideWorktreeIsolation({
+      mode,
+      field: input.worktree,
+      depth: childDepth,
+    })
+    if (decision.action === "reject") {
+      return { ok: false, code: "worktree_disabled", message: decision.message }
+    }
+    if (decision.action === "provision") {
+      if (!provisionWorktree) {
+        return {
+          ok: false,
+          code: "worktree_provisioner_not_enabled",
+          message:
+            "agent_start: `worktree` isolation is required (by request or the " +
+            `"${mode}" policy) but this daemon has no worktree provisioner wired ` +
+            "(createGateway needs `provisionWorktree`, injected by the CLI over " +
+            "@agentproto/worktree).",
+        }
+      }
+      worktreeRequest = decision.request
     }
   }
   // Config-level defaults (WP: session-skills-defaults) — auto-apply
@@ -706,6 +778,34 @@ export async function spawnAgentSession(
     return result
   }
   try {
+    // ── Worktree provisioning (side-effecting half) ─────────────────
+    // Runs AFTER the idempotency dedup above (a deduped retry returned
+    // early, so it never reaches here — one logical spawn ⇒ at most one
+    // worktree). Reassigns `cwd` to the freshly-created worktree so every
+    // downstream step — `startSession`, `registry.spawnAgent`, and the
+    // descriptor's own `worktreeFields(cwd)` edge — sees the worktree as the
+    // session's ground with no extra bookkeeping. `isolated: false` means
+    // `cwd` sits in no git repo (nothing to isolate) ⇒ spawn plain, unchanged.
+    if (worktreeRequest && provisionWorktree) {
+      let outcome: Awaited<ReturnType<WorktreeProvisioner>>
+      try {
+        outcome = await provisionWorktree({
+          cwd,
+          ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+          ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+          ...(input.label ? { labelHint: input.label } : {}),
+        })
+      } catch (err) {
+        return finish({
+          ok: false,
+          code: "worktree_provision_failed",
+          message: `agent_start: worktree provisioning failed — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        })
+      }
+      if (outcome.isolated) cwd = outcome.cwd
+    }
     // The registry doesn't assign a session id until `spawnAgent`
     // returns below, but `onActivity` can start firing as soon as
     // `startSession` connects — this box lets the closure defer

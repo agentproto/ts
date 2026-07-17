@@ -160,6 +160,7 @@ import {
   type SandboxProviderResolver,
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
+import type { WorktreeProvisioner } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -169,6 +170,23 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export {
+  decideWorktreeIsolation,
+  loadWorktreeIsolation,
+  normalizeWorktreeField,
+  parseWorktreeIsolationMode,
+  WORKTREE_ISOLATION_ENV,
+  DEFAULT_WORKTREE_ISOLATION,
+} from "./worktree-isolation.js"
+export type {
+  WorktreeField,
+  WorktreeIsolationMode,
+  WorktreeProvisioner,
+  WorktreeProvisionRequest,
+  WorktreeProvisionOutcome,
+  WorktreeDecision,
+  WorktreeRequest,
+} from "./worktree-isolation.js"
 export {
   createPairingRegistry,
   PAIRINGS_VERSION,
@@ -397,6 +415,16 @@ export interface CreateGatewayOptions {
   /** Optional sandbox provider lister — mirrors `listAgentAdapters`.
    *  Overrides the default catalog-driven lister behind `list_sandbox_providers`. */
   listSandboxProviders?: SandboxProviderLister
+  /**
+   * Optional git-worktree provisioner powering `agent_start.worktree` and the
+   * `worktrees.isolation` policy. Injected here (rather than defaulted inside
+   * the runtime like `resolveSandboxProvider`) because provisioning runs the
+   * `@agentproto/worktree` TOOL, a dependency the runtime deliberately does
+   * NOT take — see `worktree-identity.ts` / `worktree-isolation.ts`. The CLI
+   * wires it. Omitted → a spawn the policy says to isolate is rejected with
+   * `worktree_provisioner_not_enabled` (never silently spawned unisolated).
+   */
+  provisionWorktree?: WorktreeProvisioner
   /**
    * Optional E2E pairing registry (see `createPairingRegistry`). When wired,
    * the gateway mounts the `/pairings/*` REST routes and the `pair_*` MCP
@@ -882,6 +910,7 @@ export async function createGateway(
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
+      ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
         : {}),
@@ -1085,6 +1114,7 @@ export async function createGateway(
     // `agent_start` tool gets (session-spawn.ts is the shared logic).
     buildOrchestratorMcp: orchestratorInjector,
     daemonMcpUrl,
+    ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),

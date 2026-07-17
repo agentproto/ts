@@ -100,9 +100,11 @@ agentproto config set daemon.port 18791
     }
   },
 
-  // Where `agentproto worktree new` creates worktrees. See "worktrees" below.
+  // Where `agentproto worktree new` creates worktrees + whether the daemon
+  // isolates spawned agents into one. See "worktrees" below.
   "worktrees": {
-    "root": "~/.agentproto/worktrees"
+    "root": "~/.agentproto/worktrees",
+    "isolation": "on-request"
   },
 
   // Named terminal/TUI launch presets for `agentproto sessions terminal
@@ -211,11 +213,13 @@ than failing the whole config. See
 
 ### `worktrees: object`
 
-Where `agentproto worktree new` provisions new git worktrees.
+Where `agentproto worktree new` provisions new git worktrees, and the daemon's
+policy for isolating spawned agent sessions into one.
 
 | Field  | Type   | Meaning                                                                                                     |
 | ------ | ------ | ------------------------------------------------------------------------------------------------------------- |
 | `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
+| `isolation` | `"always"` \| `"on-request"` \| `"never"` | Policy for `agent_start`'s `worktree` field. `on-request` (default) isolates only when a spawn passes `worktree`; `always` isolates every **root** spawn whose cwd is inside a git repo (a spawn made through an orchestrator inherits its parent's tree; a cwd outside any repo spawns plain); `never` turns it off and **rejects** an explicit `worktree` rather than silently ignoring it. Resolution order: `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the default `on-request`. The worktree is **not** auto-removed on session exit — reclaim it with `agentproto worktree rm\|archive\|gc`. |
 
 ### `terminalPresets: Record<string, object>`
 

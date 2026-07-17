@@ -46,6 +46,7 @@ field is parsed as `provider/model`:
 | :--- | :--- | :--- |
 | Moonshot | `moonshot/kimi-k2.7-code` | `api.moonshot.ai/v1/chat/completions` |
 | OpenRouter | `openrouter/anthropic/claude-3-5-sonnet-20241022` | `openrouter.ai/api/v1/chat/completions` |
+| Requesty | `requesty/sference/thinkingcap-qwen3.6-27b` | `router.requesty.ai/v1/chat/completions` |
 | ZAI | `zai/glm-5.2` | `open.bigmodel.cn/api/paas/v4/chat/completions` |
 | Groq | `groq/llama-3.3-70b-versatile` | `api.groq.com/openai/v1/chat/completions` |
 | xAI | `xai/grok-4.5` | `api.x.ai/v1/chat/completions` |
@@ -94,6 +95,30 @@ Then select the pack via header (`X-Proxy-Pack: local-claude`), query param
 (`?pack=local-claude`), or URL path (`/v1/local-claude/messages`). The alias
 `claude-opus-4-8` will route to `moonshot/kimi-k2.7-code` **only** on the
 Messages path and **only** when `local-claude` is active.
+
+### Driving the `claude` CLI through a local pack
+
+Use the **header**, not the URL path. The claude binary appends `/v1/messages`
+to `ANTHROPIC_BASE_URL` itself, so a base of `…/v1/local-claude` becomes
+`/v1/local-claude/v1/messages`, which matches no pack route — the request
+silently falls back to the default pack and 400s with "Unable to resolve model".
+Point the base at the proxy root and select the pack by header:
+
+```bash
+env -u ANTHROPIC_API_KEY \
+  ANTHROPIC_BASE_URL="http://localhost:18090" \
+  ANTHROPIC_CUSTOM_HEADERS="X-Proxy-Pack: local-claude" \
+  ANTHROPIC_AUTH_TOKEN="unused-the-proxy-holds-the-real-key" \
+  ANTHROPIC_MODEL="claude-opus-4-8" \
+  ANTHROPIC_SMALL_FAST_MODEL="claude-haiku-4-5" \
+  claude -p "…"
+```
+
+Pin `ANTHROPIC_SMALL_FAST_MODEL` too, or the harness's background calls request
+a Claude tier the pack does not alias. Give reasoning models real `max_tokens`
+headroom: a thinking model can spend a small budget entirely inside its thinking
+block, and since those blocks are stripped (see below) the client then sees an
+empty `content` with `stop_reason: max_tokens`.
 
 ---
 

@@ -25,6 +25,11 @@ import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
+import type {
+  WorktreeIsolationMode,
+  WorktreeProvisioner,
+  WorktreeProvisionOutcome,
+} from "../worktree-isolation.js"
 
 function fakeAgentSession(): AgentSessionLike {
   return {
@@ -1123,5 +1128,208 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
     )
     expect(result.ok).toBe(true)
     expect(captured[0]?.auth).toBeUndefined()
+  })
+})
+
+// ── worktree isolation (agent_start.worktree + worktrees.isolation) ─────────
+// Drives the side-effecting half through a STUB provisioner, so these stay
+// git-free: they assert WHICH decision `spawnAgentSession` reached and WHERE
+// the session ended up landing, not that git actually forked a tree. The pure
+// decision matrix + config resolution is covered in worktree-isolation.test.ts.
+
+/** A spy provisioner recording every request and returning `outcome` (or, for
+ *  the failure case, throwing). */
+function spyProvisioner(
+  outcome: WorktreeProvisionOutcome | (() => Promise<never>),
+): { provisionWorktree: WorktreeProvisioner; calls: Parameters<WorktreeProvisioner>[0][] } {
+  const calls: Parameters<WorktreeProvisioner>[0][] = []
+  const provisionWorktree: WorktreeProvisioner = vi.fn(async (req) => {
+    calls.push(req)
+    if (typeof outcome === "function") return outcome()
+    return outcome
+  })
+  return { provisionWorktree, calls }
+}
+
+const pinMode =
+  (mode: WorktreeIsolationMode): (() => Promise<WorktreeIsolationMode>) =>
+  async () =>
+    mode
+
+describe("spawnAgentSession — worktree isolation", () => {
+  const ORIGINAL = "/repo/checkout"
+  const WORKTREE = "/root/repo/agent-abcd1234"
+  const isolated: WorktreeProvisionOutcome = {
+    isolated: true,
+    cwd: WORKTREE,
+    branch: "wt/agent-abcd1234",
+  }
+
+  it("on-request + worktree:true → provisions and lands the session in the worktree", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true, label: "fix login" },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ cwd: ORIGINAL, labelHint: "fix login" })
+    expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+  })
+
+  it("on-request + no field → never touches the provisioner, spawns in place", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(0)
+    expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
+  })
+
+  it("always → provisions even with no field", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(registry.list()[0]?.cwd).toBe(WORKTREE)
+  })
+
+  it("always + a cwd that is not in a git repo → spawns plain at the original cwd", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner({
+      isolated: false,
+      reason: "not-a-git-repo",
+    })
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1) // the provisioner ran and reported "nothing to isolate"
+    expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
+  })
+
+  it("never + explicit worktree → rejects loud, spawns nothing", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("never") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_disabled")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("nested spawn (depth > 0) inherits the parent's ground — no second worktree even under always", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId: "parent",
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+    const result = await spawnAgentSession(
+      { ...deps, callerScope, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(0)
+    expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
+  })
+
+  it("provision required but no provisioner wired → worktree_provisioner_not_enabled", async () => {
+    const { registry, deps } = baseDeps()
+    const result = await spawnAgentSession(
+      { ...deps, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_provisioner_not_enabled")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("a throwing provisioner → worktree_provision_failed, no session", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree } = spyProvisioner(async () => {
+      throw new Error("git worktree add exploded")
+    })
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_provision_failed")
+    expect(result.message).toContain("git worktree add exploded")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("forwards an explicit slug + base to the provisioner", async () => {
+    const { deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      {
+        adapter: "mock",
+        cwd: ORIGINAL,
+        worktree: { slug: "my-slug", base: "origin/dev" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls[0]).toMatchObject({ slug: "my-slug", base: "origin/dev" })
+  })
+
+  it("an idempotent retry provisions exactly once (dedup happens on the original cwd)", async () => {
+    const { deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const shared = {
+      ...deps,
+      provisionWorktree,
+      resolveWorktreeIsolation: pinMode("on-request"),
+    }
+    const input = {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: true as const,
+      idempotencyKey: "same-spawn",
+    }
+    const first = await spawnAgentSession(shared, input)
+    const second = await spawnAgentSession(shared, input)
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (second.ok) expect(second.deduped).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
+  it("is skipped entirely for a sandbox spawn (the box already isolates)", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    // No `resolveSandboxProvider` wired ⇒ the sandbox branch fails — but the
+    // point is the worktree provisioner was NEVER consulted despite `always`.
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+      { adapter: "mock", cwd: ORIGINAL, sandbox: "local" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("sandbox_provider_not_found")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
   })
 })

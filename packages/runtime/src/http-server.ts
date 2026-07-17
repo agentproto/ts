@@ -82,6 +82,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
 
@@ -329,6 +330,12 @@ export interface RuntimeHttpServerOptions {
    *  no caller-supplied `mcpServers` defaults to mounting this gateway
    *  (same hermes safety net as the MCP tool). */
   daemonMcpUrl?: string
+  /** Optional — mirrors `RegisterAgentToolsOptions.provisionWorktree`. When
+   *  wired, a `POST /sessions/agent` spawn honours `agent_start.worktree` and
+   *  the daemon's `worktrees.isolation` policy, exactly as the MCP tool does
+   *  (both share `spawnAgentSession`). Omitted → a spawn the policy says to
+   *  isolate is rejected with `worktree_provisioner_not_enabled`. */
+  provisionWorktree?: WorktreeProvisioner
   /** Optional — when wired, enables `GET /adapters` route + the
    *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
@@ -1019,6 +1026,7 @@ export async function startHttpServer(
             opts.eventRing,
             opts.buildOrchestratorMcp,
             opts.daemonMcpUrl,
+            opts.provisionWorktree,
           )
           if (handled) return
         }
@@ -1740,6 +1748,27 @@ function parseOrchestratorField(
   return undefined
 }
 
+/** Parse the `worktree` body field — the same `boolean | { slug?, base? }`
+ *  shape the MCP tool accepts, tolerant of a JSON-stringified value and a
+ *  stringified boolean (see `parseOrchestratorField`). An object is reduced
+ *  to only its recognised string keys; anything unparseable ⇒ undefined. */
+function parseWorktreeField(raw: unknown): WorktreeField | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
+  if (typeof value === "boolean") return value
+  if (value === "true") return true
+  if (value === "false") return false
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>
+    const slug = typeof obj.slug === "string" ? obj.slug : undefined
+    const base = typeof obj.base === "string" ? obj.base : undefined
+    return {
+      ...(slug !== undefined ? { slug } : {}),
+      ...(base !== undefined ? { base } : {}),
+    }
+  }
+  return undefined
+}
+
 /** Parse the `mcpServers` body field — the same `AcpMcpServer[]` shape
  *  the MCP tool accepts, tolerant of a JSON-stringified array (see
  *  `parseOrchestratorField`). Entries missing a valid `name`/`transport`
@@ -1839,6 +1868,7 @@ async function handleSessions(
   eventRing?: EventRing,
   buildOrchestratorMcp?: BuildOrchestratorMcp,
   daemonMcpUrl?: string,
+  provisionWorktree?: WorktreeProvisioner,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -1880,7 +1910,13 @@ async function handleSessions(
       return true
     }
     const result = await spawnAgentSession(
-      { registry, resolveAgentAdapter, buildOrchestratorMcp, daemonMcpUrl },
+      {
+        registry,
+        resolveAgentAdapter,
+        buildOrchestratorMcp,
+        daemonMcpUrl,
+        ...(provisionWorktree ? { provisionWorktree } : {}),
+      },
       {
         adapter,
         ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
@@ -1955,6 +1991,16 @@ async function handleSessions(
                       ? false
                       : undefined
               return h ? { permissionHold: true } : {}
+            })()
+          : {}),
+        // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
+        // `worktree` field. Same `spawnAgentSession` core resolves the
+        // `worktrees.isolation` policy, so `always` bites here too and there's
+        // no policy-bypassing spawn path.
+        ...(b.worktree !== undefined
+          ? (() => {
+              const parsed = parseWorktreeField(b.worktree)
+              return parsed !== undefined ? { worktree: parsed } : {}
             })()
           : {}),
       },

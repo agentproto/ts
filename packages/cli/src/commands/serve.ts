@@ -47,6 +47,7 @@ import {
 } from "../util/credentials.js"
 import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
+import { makeWorktreeProvisioner } from "./worktree.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import {
@@ -597,6 +598,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // BOOT.md is silly for a tunnel daemon — skip it.
       boot: false,
       resolveAgentAdapter,
+      // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
+      // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
+      // runtime deliberately doesn't take (so it's wired here, at the daemon's
+      // composition root).
+      provisionWorktree: makeWorktreeProvisioner(),
       // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed, and
