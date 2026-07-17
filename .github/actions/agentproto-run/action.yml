@@ -1,0 +1,128 @@
+name: agentproto-run
+description: >
+  Generic agentflow lane — boots an `agentproto serve` daemon in the runner,
+  drives an arbitrary WORKFLOW.md through it over MCP (`workflow_run_file` /
+  `workflow_status` / `workflow_cancel`), and surfaces an honest exit code.
+  Additive to, and separate from, the hand-rolled `pr-review` loop in
+  `.github/workflows/ci.yml` — this lane exists so a future agentflow can be
+  carried without inventing a new bespoke Action per verb.
+
+  `agentproto run` (the one-shot CLI verb) is capped at one adapter session
+  dispatching one turn and has no flag for loading a WORKFLOW.md; the
+  `workflow_run_file`/`workflow_status` MCP tools that a WORKFLOW.md needs are
+  only registered on the daemon (`agentproto serve`), so this action drives
+  the daemon over MCP rather than shelling out to `agentproto run`.
+
+  IMPORTANT — composite actions cannot self-impose a job timeout. The
+  `timeout-minutes` input only bounds this action's OWN poll loop; the
+  CALLING JOB must ALSO set its own `timeout-minutes:` (matching or exceeding
+  this input) or GitHub's default 360-minute job timeout — or its own
+  shorter default — will kill the runner out from under this action first.
+
+  This action does not check out the repo itself — the calling job must run
+  `actions/checkout` before `uses: ./.github/actions/agentproto-run`.
+
+inputs:
+  adapter:
+    description: Agent adapter slug to spawn (e.g. "claude-code").
+    required: true
+  workflow-path:
+    description: Path to a WORKFLOW.md, relative to `cwd` (or absolute).
+    required: true
+  workflow-input:
+    description: JSON string bound to `$input` in the compiled workflow.
+    required: false
+    default: '{}'
+  cwd:
+    description: Working directory for the daemon's workspace AND for spawned agent sessions.
+    required: false
+    default: ${{ github.workspace }}
+  auth-mode:
+    description: Billing-auth mode for the adapter — "subscription" or "api-key".
+    required: false
+    default: subscription
+  oauth-token:
+    description: Subscription bearer token (secrets.CLAUDE_CODE_OAUTH_TOKEN). Required when auth-mode=subscription.
+    required: false
+    default: ''
+  api-key:
+    description: Provider API key (secrets.ANTHROPIC_API_KEY). Required when auth-mode=api-key.
+    required: false
+    default: ''
+  cli-version:
+    description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from.
+    required: false
+    default: 0.7.0
+  mcp-sdk-version:
+    description: Pinned @modelcontextprotocol/sdk npm version for the driver's MCP client (matches this repo's own ^1.29.0 pin).
+    required: false
+    default: 1.29.0
+  adapter-version:
+    description: >
+      Pinned npm version of @agentproto/adapter-<adapter> (e.g. "1.0.1" for
+      claude-code). `agentproto serve` resolves an adapter slug to this
+      SEPARATE npm package (@agentproto/cli does not bundle it) — verified by
+      running the daemon against an installed-but-adapter-less CLI, which
+      fails with "could not load adapter". Defaults to "latest"; pin
+      explicitly once you know the version you want for full reproducibility.
+    required: false
+    default: latest
+  timeout-minutes:
+    description: Hard ceiling on the driver's OWN poll loop. The calling job's `timeout-minutes` must independently cover this.
+    required: false
+    default: '360'
+
+outputs:
+  run-id:
+    description: The workflow run id returned by `workflow_run_file`.
+    value: ${{ steps.run.outputs.run-id }}
+  status:
+    description: Terminal workflow status — "done", "failed", or "cancelled".
+    value: ${{ steps.run.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v5
+      with:
+        node-version: 22
+
+    - name: Mask credentials (defense-in-depth)
+      shell: bash
+      env:
+        OAUTH_TOKEN: ${{ inputs.oauth-token }}
+        API_KEY: ${{ inputs.api-key }}
+      run: |
+        if [ -n "$OAUTH_TOKEN" ]; then echo "::add-mask::$OAUTH_TOKEN"; fi
+        if [ -n "$API_KEY" ]; then echo "::add-mask::$API_KEY"; fi
+
+    - name: Write ~/.agentproto/config.json adapter credentials
+      shell: bash
+      env:
+        ADAPTER: ${{ inputs.adapter }}
+        AUTH_MODE: ${{ inputs.auth-mode }}
+        OAUTH_TOKEN: ${{ inputs.oauth-token }}
+        API_KEY: ${{ inputs.api-key }}
+      run: node "${{ github.action_path }}/write-config.mjs"
+
+    - name: Install agentproto CLI + adapter + MCP SDK (pinned, standalone)
+      shell: bash
+      run: |
+        npm install --no-save --prefix "${{ github.action_path }}" \
+          "@agentproto/cli@${{ inputs.cli-version }}" \
+          "@agentproto/adapter-${{ inputs.adapter }}@${{ inputs.adapter-version }}" \
+          "@modelcontextprotocol/sdk@${{ inputs.mcp-sdk-version }}"
+
+    - name: Boot daemon and drive workflow over MCP
+      id: run
+      shell: bash
+      env:
+        ADAPTER: ${{ inputs.adapter }}
+        WORKFLOW_PATH: ${{ inputs.workflow-path }}
+        WORKFLOW_INPUT: ${{ inputs.workflow-input }}
+        RUN_CWD: ${{ inputs.cwd }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        PORT: '18790'
+        ACTION_PATH: ${{ github.action_path }}
+      run: node "${{ github.action_path }}/driver.mjs"

@@ -1,0 +1,38 @@
+name: Agentproto lane smoke test
+
+# Manual-only proving ground for the generic agentflow lane
+# (.github/actions/agentproto-run). Never runs on push/PR — the lane is
+# additive to the hand-rolled pr-review loop in ci.yml, not a replacement,
+# so it must not fire automatically until it has independent track record.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Boot daemon, drive smoke WORKFLOW.md over MCP
+    runs-on: ubuntu-latest
+    # Must independently cover the action's own `timeout-minutes` input —
+    # a composite action cannot self-impose a job timeout (see action.yml).
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run agentproto-run
+        id: agentproto
+        uses: ./.github/actions/agentproto-run
+        with:
+          adapter: claude-code
+          adapter-version: '1.0.1'
+          workflow-path: .github/agentproto-workflows/smoke/WORKFLOW.md
+          auth-mode: subscription
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          timeout-minutes: '360'
+
+      - name: Report result
+        run: |
+          echo "run-id: ${{ steps.agentproto.outputs.run-id }}"
+          echo "status: ${{ steps.agentproto.outputs.status }}"
