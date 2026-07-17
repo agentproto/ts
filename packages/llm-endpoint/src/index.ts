@@ -1175,6 +1175,70 @@ export function isAuthorized(headers: IncomingMessage['headers'], tokens: Set<st
   return presented !== null && tokens.has(presented);
 }
 
+// ── Edge/WAF token gate ─────────────────────────────────────────────────────
+// A SECOND, independent client→proxy auth layer meant to be checked by an
+// edge/WAF rule (Cloudflare custom rule) in front of the proxy, not just by
+// this process — see buildWafRuleExpression below. Deliberately separate from
+// the inbound access gate above: the two can be rotated/enabled independently
+// (e.g. a WAF-only token in front of a publicly reachable deployment, plus an
+// app-level token for direct callers). Unset/empty leaves this layer off.
+
+let _edgeTokens: Set<string> | null = null;
+/** Cached allow-list from LLM_ENDPOINT_EDGE_TOKENS (empty Set = layer off). */
+function edgeTokens(): Set<string> {
+  if (_edgeTokens === null) _edgeTokens = parseAccessTokens(process.env.LLM_ENDPOINT_EDGE_TOKENS);
+  return _edgeTokens;
+}
+
+/**
+ * Extract a presented edge token from the `X-Edge-Auth: <t>` header. Returns
+ * null when absent or blank.
+ */
+export function extractEdgeToken(headers: IncomingMessage['headers']): string | null {
+  const raw = headers['x-edge-auth'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v && v.trim()) return v.trim();
+  return null;
+}
+
+/**
+ * True when the request may proceed through the edge/WAF layer: layer
+ * disabled (empty allow-list), or the presented `X-Edge-Auth` token is in the
+ * allow-list.
+ */
+export function isEdgeAuthorized(headers: IncomingMessage['headers'], edgeTokensSet: Set<string>): boolean {
+  if (edgeTokensSet.size === 0) return true;
+  const presented = extractEdgeToken(headers);
+  return presented !== null && edgeTokensSet.has(presented);
+}
+
+/**
+ * Builds a Cloudflare custom-rule (wirefilter) expression that BLOCKS any
+ * request lacking a valid token, for the header (`authorization` or
+ * `x-edge-auth`) matching the layer being enforced at the edge. Intended to
+ * be pasted into a Cloudflare custom rule so the token check happens before
+ * traffic ever reaches this process — the `edgeTokens()`/`isEdgeAuthorized`
+ * pair above is the same policy enforced in-process as a fallback.
+ *
+ * CORS preflight (`OPTIONS`) is always allowed through so the browser's
+ * preflight — which cannot carry the token — isn't blocked.
+ */
+export function buildWafRuleExpression(opts: {
+  host?: string;
+  tokens: string[];
+  header: 'authorization' | 'x-edge-auth';
+}): string {
+  if (opts.tokens.length === 0) {
+    throw new Error('buildWafRuleExpression requires at least one token');
+  }
+  const headerName = opts.header.toLowerCase();
+  const values = opts.tokens.map((t) => (opts.header === 'authorization' ? `Bearer ${t}` : t));
+  const memberships = values.map((v) => `any(http.request.headers["${headerName}"][*] eq "${v}")`);
+  const notValid = memberships.length === 1 ? `not ${memberships[0]}` : `not (${memberships.join(' or ')})`;
+  const hostPrefix = opts.host ? `http.host eq "${opts.host}" and ` : '';
+  return `(${hostPrefix}http.request.method ne "OPTIONS" and ${notValid})`;
+}
+
 /**
  * Normalise an incoming request path so a redundant `/v1` an Anthropic client
  * appends to a base URL that already ends in `/v1` (optionally with a pack
@@ -1200,7 +1264,7 @@ const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Edge-Auth');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1214,6 +1278,15 @@ const server = createServer((req, res) => {
   if (!isAuthorized(req.headers, accessTokens())) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
+    return;
+  }
+
+  // Edge/WAF token gate — independent of the inbound access gate above. Off
+  // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
+  // for enforcing the same policy at the edge instead of in-process.
+  if (!isEdgeAuthorized(req.headers, edgeTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
     return;
   }
 

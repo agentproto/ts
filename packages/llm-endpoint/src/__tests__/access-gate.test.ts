@@ -4,6 +4,9 @@ import {
   extractInboundToken,
   isAuthorized,
   normalizeProxyPath,
+  extractEdgeToken,
+  isEdgeAuthorized,
+  buildWafRuleExpression,
 } from '../index.js';
 
 describe('parseAccessTokens', () => {
@@ -27,7 +30,10 @@ describe('extractInboundToken', () => {
     expect(extractInboundToken({ 'x-proxy-access': 'tok_3' })).toBe('tok_3');
   });
   it('handles array-valued headers', () => {
-    expect(extractInboundToken({ authorization: ['Bearer tok_4'] })).toBe('tok_4');
+    // `authorization` is narrowed to `string` in IncomingHttpHeaders; use an
+    // index-signature header (legitimately `string | string[]`) to exercise the
+    // Array.isArray branch without a type error.
+    expect(extractInboundToken({ 'x-proxy-access': ['tok_4'] })).toBe('tok_4');
   });
   it('returns null when absent or malformed', () => {
     expect(extractInboundToken({})).toBeNull();
@@ -71,5 +77,76 @@ describe('normalizeProxyPath', () => {
   });
   it('strips trailing slashes', () => {
     expect(normalizeProxyPath('/v1/models/')).toBe('/v1/models');
+  });
+});
+
+describe('extractEdgeToken', () => {
+  it('reads X-Edge-Auth', () => {
+    expect(extractEdgeToken({ 'x-edge-auth': 'edge_1' })).toBe('edge_1');
+  });
+  it('handles array-valued headers', () => {
+    expect(extractEdgeToken({ 'x-edge-auth': ['edge_2'] })).toBe('edge_2');
+  });
+  it('returns null when absent', () => {
+    expect(extractEdgeToken({})).toBeNull();
+  });
+  it('returns null when blank', () => {
+    expect(extractEdgeToken({ 'x-edge-auth': '   ' })).toBeNull();
+  });
+});
+
+describe('isEdgeAuthorized', () => {
+  const tokens = parseAccessTokens('edge_good_1,edge_good_2');
+  it('is OPEN when the allow-list is empty (layer disabled)', () => {
+    expect(isEdgeAuthorized({}, new Set())).toBe(true);
+    expect(isEdgeAuthorized({ 'x-edge-auth': 'anything' }, new Set())).toBe(true);
+  });
+  it('allows a request carrying a listed token', () => {
+    expect(isEdgeAuthorized({ 'x-edge-auth': 'edge_good_1' }, tokens)).toBe(true);
+  });
+  it('rejects a missing or unlisted token when the layer is on', () => {
+    expect(isEdgeAuthorized({}, tokens)).toBe(false);
+    expect(isEdgeAuthorized({ 'x-edge-auth': 'nope' }, tokens)).toBe(false);
+  });
+});
+
+describe('buildWafRuleExpression', () => {
+  it('builds a single-token authorization rule with host', () => {
+    expect(buildWafRuleExpression({ host: 'llm.example.com', tokens: ['abc'], header: 'authorization' })).toBe(
+      '(http.host eq "llm.example.com" and http.request.method ne "OPTIONS" and not any(http.request.headers["authorization"][*] eq "Bearer abc"))'
+    );
+  });
+  it('builds a single-token authorization rule without host', () => {
+    expect(buildWafRuleExpression({ tokens: ['abc'], header: 'authorization' })).toBe(
+      '(http.request.method ne "OPTIONS" and not any(http.request.headers["authorization"][*] eq "Bearer abc"))'
+    );
+  });
+  it('builds an OR chain for multiple tokens', () => {
+    const expr = buildWafRuleExpression({ tokens: ['t1', 't2'], header: 'authorization' });
+    expect(expr).toBe(
+      '(http.request.method ne "OPTIONS" and not (any(http.request.headers["authorization"][*] eq "Bearer t1") or any(http.request.headers["authorization"][*] eq "Bearer t2")))'
+    );
+  });
+  it('uses the raw token value (no Bearer prefix) for x-edge-auth', () => {
+    const expr = buildWafRuleExpression({ tokens: ['t1'], header: 'x-edge-auth' });
+    expect(expr).toBe(
+      '(http.request.method ne "OPTIONS" and not any(http.request.headers["x-edge-auth"][*] eq "t1"))'
+    );
+  });
+  it('always includes method ne "OPTIONS"', () => {
+    expect(buildWafRuleExpression({ tokens: ['t1'], header: 'authorization' })).toContain(
+      'http.request.method ne "OPTIONS"'
+    );
+    expect(buildWafRuleExpression({ host: 'h', tokens: ['t1', 't2'], header: 'x-edge-auth' })).toContain(
+      'http.request.method ne "OPTIONS"'
+    );
+  });
+  it('lowercases the header name in the output', () => {
+    expect(buildWafRuleExpression({ tokens: ['t1'], header: 'authorization' })).toContain(
+      '"authorization"'
+    );
+  });
+  it('throws on empty tokens', () => {
+    expect(() => buildWafRuleExpression({ tokens: [], header: 'authorization' })).toThrow();
   });
 });
