@@ -106,15 +106,28 @@ export const PROVIDER_KEY_ENV: Record<CatalogProvider, string> = {
  *   (`GOOGLE_API_KEY`) before testing `Boolean(process.env[…])`. So mastracode
  *   consults ONLY `GOOGLE_API_KEY`; our canonical `GOOGLE_GENERATIVE_AI_API_KEY`
  *   is invisible to it. (Confirmed in the installed mastracode 0.26.x tree.)
+ * - `moonshot: ["MOONSHOT_AI_API_KEY"]` — mastracode again, but via a HARDCODED
+ *   branch that bypasses the registry entirely:
+ *   `@mastra/code-sdk/dist/agents/mastracode-gateway.js:331-333` does
+ *   `if (args.providerId === "moonshotai") { if (!process.env.MOONSHOT_AI_API_KEY) throw … }`.
+ *   It reads `MOONSHOT_AI_API_KEY` (note the `_AI_`); we inject `MOONSHOT_API_KEY`
+ *   via {@link PROVIDER_KEY_ENV}. Because the name is hardcoded, not
+ *   registry-declared, the next reader cannot discover it from the registry —
+ *   hence this comment. (The provider slug drifts too: `moonshotai` upstream vs
+ *   our `moonshot`; the alias handles the env NAME, which is what matters here.)
  *
  * `gemini-live` is deliberately absent: no consumer of that provider is known
- * to read `GOOGLE_API_KEY`, so per the verify-not-guess rule it stays out.
+ * to read `GOOGLE_API_KEY`, so per the verify-not-guess rule it stays out. The
+ * drift set is capped: across the providers we share with mastracode, only
+ * `google` and `moonshot` diverge — anthropic / openai / openrouter / xai /
+ * mistral / minimax (and the non-catalog groq) all match, so none are added.
  *
  * `Partial` because most providers have no known alias — a provider absent
  * here just gets its single canonical name injected.
  */
 export const PROVIDER_KEY_ENV_ALIASES = {
   google: ["GOOGLE_API_KEY"],
+  moonshot: ["MOONSHOT_AI_API_KEY"],
 } satisfies Partial<Record<CatalogProvider, readonly string[]>>
 
 export const baseEntryShape = {

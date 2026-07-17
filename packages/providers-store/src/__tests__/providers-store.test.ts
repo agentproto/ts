@@ -87,10 +87,14 @@ describe("providers store", () => {
   // ── env-name aliases (one stored key → several env names) ──────────────
 
   it("exposes verified aliases for a provider, none for the rest", () => {
-    // google is the first real case: mastracode reads GOOGLE_API_KEY, our
-    // canonical name is GOOGLE_GENERATIVE_AI_API_KEY.
+    // google: mastracode reads GOOGLE_API_KEY, our canonical name is
+    // GOOGLE_GENERATIVE_AI_API_KEY.
     expect(providerEnvVar("google")).toBe("GOOGLE_GENERATIVE_AI_API_KEY")
     expect(providerEnvAliases("google")).toEqual(["GOOGLE_API_KEY"])
+    // moonshot: mastracode's hardcoded branch reads MOONSHOT_AI_API_KEY (_AI_),
+    // our canonical name is MOONSHOT_API_KEY.
+    expect(providerEnvVar("moonshot")).toBe("MOONSHOT_API_KEY")
+    expect(providerEnvAliases("moonshot")).toEqual(["MOONSHOT_AI_API_KEY"])
     // Providers with no verified alias return an empty list.
     expect(providerEnvAliases("anthropic")).toEqual([])
     expect(providerEnvAliases("openrouter")).toEqual([])
