@@ -91,20 +91,25 @@ side.
 
 Each participant declares:
 
-- `id` — slug used in mention text and state file naming
+- `id` — stable slug for the participant: it names the participant's
+  state file (`<id>.json`), keys its executor, and is what the
+  dispatcher returns and self-skips on (a participant never replies to
+  its own turn). Mentions target `displayName`, not `id`.
 - `executor` — kind that drives the participant (built-in `agent-cli`
   spawns a CLI binary; plugins add others like `db-operator`)
 - `displayName` — what mentions look like (`@<displayName>`)
-- `role` — inline string OR a `.md` path (e.g.
-  `../.claude/agents/reviewer.md`); the agent-cli executor reads
-  this and feeds it to the spawned agent as the system role
+- `role` — inline text OR a role-file path (`.md`/`.markdown`/`.txt`,
+  e.g. `../.claude/agents/reviewer.md`); the agent-cli executor loads
+  the file (stripping any YAML frontmatter) or takes the string as-is,
+  then prepends it under a `# Your role` heading in the prompt it pipes
+  to the spawned agent over stdin
 - `meta` — adapter-specific config (e.g. db-operator reads
   `meta.operatorId`)
 
-A participant's `role` is a swarm-manifest concept — the system
-prompt text/file fed to that participant — distinct from
+A participant's `role` is a swarm-manifest concept — the role text or
+file prepended to that participant's prompt — distinct from
 `agent_start`'s spawn-time `role` (`executor`/`supervisor`/…), which
-gates whether a spawned agent may itself delegate. See
+governs whether a spawned agent may itself delegate. See
 [concepts/roles.md](./roles.md).
 
 ## Dispatchers

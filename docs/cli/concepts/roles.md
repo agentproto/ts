@@ -19,12 +19,21 @@ A role bundles three things:
   do the work yourself" vs. "decompose, delegate, verify"), but
   nothing stops a capable model from ignoring it if the tools to
   disobey are still in its hands.
-- **`toolPolicy.delegation`** (`"allow"` | `"deny"`) — the HARD gate.
-  When `"deny"`, the daemon never injects `agent_start`/`agent_prompt`
-  into the child's toolset in the first place. This is enforced at
-  the spawn point, not by the child's own behavior.
-- **`skills[]`** — an optional role-specific skill set (the two
-  built-in roles ship empty; a pack-carried role can populate this).
+- **`toolPolicy.delegation`** (`"allow"` | `"deny"`) — the delegation
+  gate. When `"deny"`, the daemon tries to keep `agent_start`/
+  `agent_prompt` out of the child's toolset at spawn time — but this is
+  spawn-path-specific and, on the default gateway, not airtight. It's a
+  real gate on the orchestrator sub-gateway path and a best-effort
+  default elsewhere; see [below](#how-the-delegation-gate-works) for
+  which paths it covers and where it leaks.
+- **`skills[]`** — declared but currently inert. The field is typed on
+  `RoleProfile` (`role.ts:33`) and parsed from a role pack's `ROLE.md`
+  (`role-pack.ts:84`), but nothing in the spawn path reads
+  `role.skills` — `session-spawn.ts` only consults the `agent_start`
+  call's own `skills` and the config `defaults.skills`
+  (`session-spawn.ts:580,652`). `role.ts:12-13` flags it as intended
+  for "a future pack-carried role"; treat it as unimplemented, not a
+  working per-role skill set.
 
 Plus two fields that place the role in the spawn lattice:
 
@@ -33,18 +42,52 @@ Plus two fields that place the role in the spawn lattice:
   role names this role may spawn, by name. When set, it replaces the
   level comparison below for this role.
 
-## Why the gate lives daemon-side
+## How the delegation gate works
 
-A process can bring its own disposition and skills — those are
-portable, and a determined agent could talk itself past a prompt
-instruction. What it can't do is strip tools the daemon already put
-in its hands. That asymmetry is exactly why `toolPolicy` is resolved
-and enforced at the `agent_start` injection point rather than left to
-the prompt: an `executor` asked via `promptAppend` to "delegate
-anyway" still has no delegation tools to delegate with. `promptAppend`
-layers text on top of the resolved role's disposition — it can
-specialize it, never replace it, and it can never reopen the tool
-gate.
+`toolPolicy.delegation` is resolved at the `agent_start` injection
+point (`session-spawn.ts:510`), before the child runs — but it is not
+one universal, airtight gate. It acts through two separate spawn-time
+mechanisms, and a third path escapes it entirely:
+
+- **Orchestrator sub-gateway — genuinely gated.** A role that denies
+  delegation has its `orchestrator` request dropped outright, whatever
+  the caller asked for (`session-spawn.ts:547`, guarded on
+  `!delegationDenied`). The scoped sub-gateway (`/mcp/orchestrator`) is
+  the only path that mounts `agent_start`/`agent_prompt` for an
+  orchestrating child, and it demands a scope token — it deliberately
+  does *not* inherit the loopback bypass (`http-server.ts:668-675`). A
+  denied role never receives the sub-gateway, so it has nothing to
+  spawn with.
+- **hermes default gateway — best-effort, loopback-open.** Only when
+  the adapter is `hermes` *and* the caller passed no explicit
+  `mcpServers`, the daemon defaults the child to its own `/mcp` URL,
+  and for a denied role appends `?denyTools=agent_start,agent_prompt`
+  (`session-spawn.ts:538-542`; `DELEGATION_TOOL_NAMES`, `role.ts:64`).
+  The daemon reads that deny-list back from the requesting URL's own
+  query string (`parseDenyToolsQuery` → `handleMcp`,
+  `http-server.ts:652-666`), not from a trusted per-session registry.
+  And the bare `/mcp` endpoint is loopback-open: any request from
+  `127.0.0.1`/`::1` without an `X-Forwarded-For` header skips the token
+  check (`authorize`/`isLoopback`, `http-server.ts:479-491`). A
+  co-located child handed the gated URL can therefore reconnect to the
+  plain `/mcp` and get `agent_start`/`agent_prompt` back — on this path
+  the strip is a default, not a wall.
+- **Caller-supplied `mcpServers` / non-hermes adapters — not touched.**
+  If the caller passes explicit `mcpServers`, or the adapter isn't
+  `hermes`, the `denyTools` default never fires
+  (`session-spawn.ts:525,538`). Whatever delegation tools such a child
+  ends up with are whatever the caller wired; `toolPolicy.delegation`
+  does not reach in and remove them.
+
+The part that `toolPolicy` locks down hard is the orchestrator sub-gateway:
+`promptAppend` can't re-open it (it's never consulted at the drop,
+`session-spawn.ts:547`) and a child can't mint its own scope token.
+`promptAppend` layers text on top of the resolved role's disposition —
+it can specialize it, never replace it. Beyond that path,
+delegation-deny is a spawn-time default the child's own wiring can
+route around, not a universal sandbox — and the daemon still cannot
+strip a native CLI subagent/Task tool it never routed in the first
+place (see the built-ins below).
 
 ## The two built-ins
 
@@ -60,9 +103,12 @@ prompt. `executor` is told never to spawn or delegate; `supervisor` is
 told to delegate via `agent_start` so the caller gets an observable
 session.
 
-`executor` is the floor of the lattice — in practice it can't spawn
-even a peer at its own level, since `toolPolicy.delegation: "deny"`
-already strips `agent_start` before any level comparison happens.
+`executor` is the floor of the lattice — `canSpawn` short-circuits to
+`false` for any role whose own `delegation` is `"deny"`
+(`role.ts:192-194`), before the level comparison, so an `executor` may
+spawn nothing, not even a peer at its own level. Whether the child even
+holds `agent_start` to attempt it is the separate, weaker toolset
+question covered [above](#how-the-delegation-gate-works).
 
 ## `canSpawn`: the non-escalation rule
 
@@ -170,7 +216,9 @@ let the calling agent decide what to do with your findings.
 
 Required fields: `role` (the name), `level` (a finite number),
 `toolPolicy.delegation` (`allow` or `deny`). Optional: `skills`,
-`spawnableRoles` (both comma-separated). A malformed `ROLE.md` throws
+`spawnableRoles` (both comma-separated) — but `skills` is parsed and
+then ignored (see [the 3-layer profile](#the-3-layer-profile)); only
+`spawnableRoles` currently affects behavior. A malformed `ROLE.md` throws
 when parsed directly, but registry loading treats a broken pack as
 partial-discovery-safe — it's skipped, not fatal to the whole
 registry.
