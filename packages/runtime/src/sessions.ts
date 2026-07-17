@@ -35,6 +35,16 @@ import {
 } from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter } from "./transcript-writer.js"
+import {
+  BUCKETS_ROOT,
+  bucketSessionsFile,
+  listBuckets,
+  migrateLegacySessionsFile,
+  readRegisteredSlugs,
+  resolveBucketSlug,
+  writeBucketSnapshot,
+  writeBucketSnapshotSync,
+} from "./workspace-buckets.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
@@ -654,11 +664,25 @@ interface SessionRuntime {
 const RECENT_LINES_CAP = 500
 const RECENT_BYTES_CAP = 64 * 1024
 const PERSIST_DEBOUNCE_MS = 1_500
-/** Cap on the number of historical descriptors loaded from
+/** Cap on the number of historical descriptors loaded from ONE
  *  sessions.json at boot. Older entries (by startedAt) are dropped
  *  on overflow — newest history wins. Adjust upward if the file
  *  starts feeling sparse; downward if the dashboard takes too long
- *  to render. */
+ *  to render.
+ *
+ *  Per BUCKET, not per daemon (AIP-46 §Per-bucket bounds). That falls
+ *  out of the load path calling `loadHistorySnapshot` once per bucket
+ *  file rather than once over a pooled one, so this constant never has
+ *  to know buckets exist — but the distinction is the whole point of
+ *  the partition, so it is worth stating where the number lives.
+ *
+ *  When it WAS global, retention was a race between workspaces: the cap
+ *  was spent by whoever was busiest, and the workspace that lost history
+ *  was the one that had done nothing. Measured on the author's machine
+ *  at 201 rows from 4 slugs against this 200 — one workspace holding 8
+ *  rows, an afternoon away from losing all of them. Per-bucket, a
+ *  workspace's history is bounded by its own volume and nothing else's,
+ *  so this is now a readability bound rather than a budget to contest. */
 const HISTORY_CAP = 200
 
 /** Bound on how long `enqueuePrompt({interrupt: true})` waits for a
@@ -1177,8 +1201,25 @@ export type AgentSessionResumer = (input: {
 }) => Promise<AgentSessionLike | null>
 
 export function createSessionsRegistry(opts?: {
-  /** Override the persistence path — tests pin a tmpdir. */
+  /** Override the persistence path — tests pin a tmpdir.
+   *
+   *  Setting this also opts OUT of per-workspace partitioning: it names
+   *  one exact file, and one file is by definition unpartitioned. The
+   *  knob predates partitioning (it exists so a test can assert on the
+   *  file the gateway would have written) and keeping its meaning literal
+   *  is what lets those tests keep working unchanged. Production passes
+   *  neither this nor `bucketsRoot` and gets buckets. To exercise
+   *  partitioning in a test, pin `bucketsRoot` instead. */
   persistPath?: string
+  /** Root of the per-workspace state buckets — tests pin a tmpdir.
+   *  Defaults to `~/.agentproto/workspaces` (AIP-46 §State partitioning).
+   *  Ignored when `persistPath` is set. */
+  bucketsRoot?: string
+  /** Path to the workspaces registry that bucket resolution consults —
+   *  tests pin a tmpdir. Defaults to `~/.agentproto/workspaces.json`.
+   *  Only the registry's slugs are read; a slug that isn't in it lands
+   *  in the `default` bucket. */
+  workspacesConfigPath?: string
   /** Disable persistence entirely. */
   persist?: boolean
   /** PTY factory (node-pty wrapper). When omitted, `spawnPty()`
@@ -1208,9 +1249,25 @@ export function createSessionsRegistry(opts?: {
    *  omitted. Defaults to false (tracing off). */
   langfuseTracingDefault?: boolean
 }): SessionsRegistry {
-  const persistPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
+  // `persistPath` names one exact file, so passing it means "don't
+  // partition" (see its docblock). Absent it, state partitions per
+  // workspace under `bucketsRoot` — AIP-46 §State partitioning — and
+  // this path is only still consulted as the legacy artifact to migrate
+  // FROM, read-only, once.
+  const legacyPath = opts?.persistPath ?? SESSIONS_FILE_PATH()
+  const partitioned = !opts?.persistPath
+  const bucketsRoot = opts?.bucketsRoot ?? BUCKETS_ROOT()
+  const workspacesConfigPath = opts?.workspacesConfigPath
   const persist = opts?.persist ?? true
-  const transcriptBaseDir = opts?.transcriptDir ?? join(dirname(persistPath), "sessions")
+  // Unchanged in both modes: transcripts still live in the shared
+  // `~/.agentproto/sessions/`. AIP-46 §Layout makes them a per-bucket
+  // SHOULD rather than a MUST precisely because moving them is its own
+  // change — the read side has callers that ignore this base dir and
+  // resolve off `homedir()` directly (`http-server.ts`,
+  // `transcript-export.ts`), so a partial move loses transcripts rather
+  // than partitioning them. Tracked as follow-up; `bucketTranscriptDir`
+  // holds the path rule for it.
+  const transcriptBaseDir = opts?.transcriptDir ?? join(dirname(legacyPath), "sessions")
   const baseTranscriptWriter = createTranscriptWriter({ baseDir: transcriptBaseDir })
   // Sibling writer for PTY (`terminal`) sessions — same per-id directory,
   // a `terminal.jsonl` file instead of `events.jsonl` since raw bytes
@@ -1262,8 +1319,36 @@ export function createSessionsRegistry(opts?: {
   // session's `endedAt` is set to now when we infer a kill, so the
   // dashboard ages them from this boot rather than the daemon's last
   // life.
+  //
+  // Partitioned mode reads one snapshot PER BUCKET, which is what makes
+  // HISTORY_CAP a per-bucket bound (AIP-46 §Per-bucket bounds) without
+  // the cap itself having to know buckets exist: each call caps its own
+  // file, so a busy workspace can no longer spend a quiet one's budget.
+  //
+  // Buckets a workspace once had but has no live rows in are still
+  // tracked (`knownBuckets`) so a later persist rewrites them empty
+  // rather than leaving a stale file behind.
+  const knownBuckets = new Set<string>()
   if (persist) {
-    loadHistorySnapshot(persistPath, sessions, sessionEvents)
+    if (partitioned) {
+      // Read-only on the legacy artifact, once, guarded by its own
+      // marker — see `migrateLegacySessionsFile`.
+      migrateLegacySessionsFile({
+        root: bucketsRoot,
+        legacyFile: legacyPath,
+        registered: readRegisteredSlugs(workspacesConfigPath),
+      })
+      for (const slug of listBuckets(bucketsRoot)) {
+        knownBuckets.add(slug)
+        loadHistorySnapshot(
+          bucketSessionsFile(bucketsRoot, slug),
+          sessions,
+          sessionEvents,
+        )
+      }
+    } else {
+      loadHistorySnapshot(legacyPath, sessions, sessionEvents)
+    }
   }
 
   // Belt-and-suspenders: `process.on("exit")` runs even on uncaught
@@ -1394,21 +1479,52 @@ export function createSessionsRegistry(opts?: {
     }, PERSIST_DEBOUNCE_MS)
   }
 
+  /** Descriptors as they go to disk. `processAlive` is a live OS query
+   *  (see stampProcessAlive) — strip it before writing so a restored
+   *  descriptor is never seen with a stale value before the next
+   *  list()/get() call recomputes it fresh. */
+  const snapshotRows = (): SessionDescriptor[] =>
+    Array.from(sessions.values()).map(s => {
+      const { processAlive: _processAlive, ...rest } = s.desc
+      return rest
+    })
+
+  /** Group the live registry by bucket, re-reading the workspaces
+   *  registry each time so a workspace registered mid-run starts
+   *  bucketing without a daemon restart.
+   *
+   *  Every known bucket gets an entry even when it has no rows left —
+   *  otherwise forgetting a bucket's last session would leave its old
+   *  snapshot on disk to be re-loaded at the next boot. */
+  const groupRowsByBucket = (): Map<string, SessionDescriptor[]> => {
+    const registered = readRegisteredSlugs(workspacesConfigPath)
+    const groups = new Map<string, SessionDescriptor[]>()
+    for (const slug of knownBuckets) groups.set(slug, [])
+    for (const desc of snapshotRows()) {
+      const slug = resolveBucketSlug(desc.workspaceSlug, registered)
+      const list = groups.get(slug)
+      if (list) list.push(desc)
+      else groups.set(slug, [desc])
+    }
+    for (const slug of groups.keys()) knownBuckets.add(slug)
+    return groups
+  }
+
   const persistSnapshot = async (): Promise<void> => {
     try {
-      const snapshot = {
-        savedAt: new Date().toISOString(),
-        // `processAlive` is a live OS query (see stampProcessAlive) —
-        // strip it before writing so a restored descriptor is never
-        // seen with a stale value before the next list()/get() call
-        // recomputes it fresh.
-        sessions: Array.from(sessions.values()).map(s => {
-          const { processAlive: _processAlive, ...rest } = s.desc
-          return rest
-        }),
+      const savedAt = new Date().toISOString()
+      if (partitioned) {
+        for (const [slug, rows] of groupRowsByBucket()) {
+          await writeBucketSnapshot(bucketsRoot, slug, {
+            savedAt,
+            sessions: rows,
+          })
+        }
+        return
       }
-      await fs.mkdir(dirname(persistPath), { recursive: true })
-      await fs.writeFile(persistPath, JSON.stringify(snapshot, null, 2) + "\n")
+      const snapshot = { savedAt, sessions: snapshotRows() }
+      await fs.mkdir(dirname(legacyPath), { recursive: true })
+      await fs.writeFile(legacyPath, JSON.stringify(snapshot, null, 2) + "\n")
     } catch (err) {
       // Persistence is best-effort — log only, never throw.
       console.warn(
@@ -3034,17 +3150,18 @@ export function createSessionsRegistry(opts?: {
     // sync write at shutdown is cheap and the data needs to land.
     if (persist) {
       try {
-        const snapshot = {
-          savedAt: nowIso,
-          // Strip processAlive — see the matching comment in
-          // persistSnapshot(), same live-OS-query rationale applies here.
-          sessions: Array.from(sessions.values()).map(s => {
-            const { processAlive: _processAlive, ...rest } = s.desc
-            return rest
-          }),
+        if (partitioned) {
+          for (const [slug, rows] of groupRowsByBucket()) {
+            writeBucketSnapshotSync(bucketsRoot, slug, {
+              savedAt: nowIso,
+              sessions: rows,
+            })
+          }
+        } else {
+          const snapshot = { savedAt: nowIso, sessions: snapshotRows() }
+          mkdirSync(dirname(legacyPath), { recursive: true })
+          writeFileSync(legacyPath, JSON.stringify(snapshot, null, 2) + "\n")
         }
-        mkdirSync(dirname(persistPath), { recursive: true })
-        writeFileSync(persistPath, JSON.stringify(snapshot, null, 2) + "\n")
       } catch {
         // best-effort — same policy as the async path
       }

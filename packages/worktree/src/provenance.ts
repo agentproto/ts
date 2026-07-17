@@ -5,16 +5,37 @@
  * stranded these files?").
  *
  * The join is over the EXISTING sessions registry
- * (`~/.agentproto/sessions.json`, `packages/runtime/src/sessions.ts`) —
- * upholding the no-registry principle (PLAN.md §1.4): nothing new is
- * mirrored, this only reads a file another package already owns and
- * persists. Read directly off disk (not via a running daemon) so `worktree
- * ls --status` works with no daemon required, matching `worktree check`'s
- * posture (PLAN.md §3.3).
+ * (`packages/runtime/src/sessions.ts`) — upholding the no-registry
+ * principle (PLAN.md §1.4): nothing new is mirrored, this only reads
+ * files another package already owns and persists. Read directly off disk
+ * (not via a running daemon) so `worktree ls --status` works with no
+ * daemon required, matching `worktree check`'s posture (PLAN.md §3.3).
+ *
+ * ## Where the registry lives (AIP-46 §State partitioning)
+ *
+ * It is no longer one file. The runtime partitions per workspace —
+ * `~/.agentproto/workspaces/<slug>/sessions.json` — and leaves the old
+ * global `~/.agentproto/sessions.json` in place, frozen, as the
+ * pre-partition history. So the default read is the UNION of every bucket
+ * plus that legacy artifact.
+ *
+ * Reading only the legacy file would be quietly destructive here rather
+ * than merely stale: this feeds `computeWorktreeStatus` → the GC plan →
+ * `applyGc`, which REMOVES worktrees. A worktree whose sessions all live
+ * in a bucket would present as never-touched and become eligible for
+ * removal. Under-reporting provenance deletes work; over-reporting only
+ * keeps a worktree around. The union is the safe direction, and the
+ * legacy file stays in the union precisely because provenance's job is
+ * history.
+ *
+ * The bucket layout is duplicated here rather than imported, matching
+ * what this file already did with the sessions path: `@agentproto/worktree`
+ * does not depend on `@agentproto/runtime` and this join is not worth
+ * inverting that.
  *
  * Two known limits, both designed in rather than hidden (PLAN.md §1.5):
- *   - `sessions.json` is a recency window (`HISTORY_CAP = 200`,
- *     `packages/runtime/src/sessions.ts:583`), not an archive — an old
+ *   - each snapshot is a recency window (`HISTORY_CAP = 200` per bucket,
+ *     `packages/runtime/src/sessions.ts`), not an archive — an old
  *     worktree's sessions may already be evicted.
  *   - Without a per-worktree creation marker, the join can span
  *     generations (a worktree removed and recreated at the same path
@@ -24,14 +45,21 @@
  *     — when it's absent, which is every worktree today.
  */
 
-import { readFile, writeFile } from "node:fs/promises"
+import { readdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { sep } from "node:path"
 import { resolve } from "node:path"
 import { z } from "zod"
 import { execArgv } from "./exec.js"
 
+/** The pre-partition global snapshot. Still read — it holds every session
+ *  from before the split and the runtime leaves it intact — but no longer
+ *  written. See this file's header. */
 export const SESSIONS_FILE_PATH = (): string => resolve(homedir(), ".agentproto", "sessions.json")
+
+/** Root of the runtime's per-workspace state buckets (AIP-46 §Layout):
+ *  `<root>/<slug>/sessions.json`. */
+export const SESSIONS_BUCKETS_ROOT = (): string => resolve(homedir(), ".agentproto", "workspaces")
 
 /** The subset of `SessionDescriptor` (`packages/runtime/src/sessions.ts`) provenance needs. */
 const sessionRefSchema = z.object({
@@ -54,13 +82,55 @@ export interface ProvenanceInfo {
 }
 
 /**
- * Read the persisted sessions snapshot. Missing file (no daemon has ever
- * run) is a legitimate empty registry, not an error — mirrors
- * `loadHistorySnapshot`'s own ENOENT handling in `sessions.ts`. A malformed
- * file (present but unparseable) is surfaced by returning `null` so callers
- * can distinguish "no history" from "history is unreadable".
+ * Read the persisted sessions registry.
+ *
+ * With `path`: that exact file, nothing else — what callers pinning a
+ * fixture want.
+ *
+ * Without: the union of every per-workspace bucket plus the legacy global
+ * snapshot (see this file's header for why the union, and why
+ * under-reporting here is dangerous rather than merely lossy). Deduped by
+ * session id, buckets winning over the frozen legacy copy of the same row.
+ *
+ * Missing file (no daemon has ever run) is a legitimate empty registry,
+ * not an error — mirrors `loadHistorySnapshot`'s own ENOENT handling in
+ * `sessions.ts`. A malformed file (present but unparseable) is surfaced by
+ * returning `null` so callers can distinguish "no history" from "history
+ * is unreadable"; in the union that means null only when every source that
+ * exists is unreadable, since one corrupt bucket shouldn't blind the join
+ * to the rest.
  */
-export async function readSessionsRegistry(path: string = SESSIONS_FILE_PATH()): Promise<SessionRef[] | null> {
+export async function readSessionsRegistry(path?: string): Promise<SessionRef[] | null> {
+  if (path !== undefined) return readSessionsFile(path)
+
+  let buckets: string[] = []
+  try {
+    const root = SESSIONS_BUCKETS_ROOT()
+    buckets = (await readdir(root, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => resolve(root, e.name, "sessions.json"))
+  } catch {
+    buckets = [] // ENOENT — nothing partitioned yet.
+  }
+
+  // Buckets first: on an id present in both, the live bucket row wins
+  // over the frozen legacy one.
+  const results = await Promise.all(
+    [...buckets, SESSIONS_FILE_PATH()].map((p) => readSessionsFile(p)),
+  )
+  const readable = results.filter((r): r is SessionRef[] => r !== null)
+  if (readable.length === 0) return null
+
+  const byId = new Map<string, SessionRef>()
+  for (const list of readable) {
+    for (const session of list) {
+      if (!byId.has(session.id)) byId.set(session.id, session)
+    }
+  }
+  return Array.from(byId.values())
+}
+
+async function readSessionsFile(path: string): Promise<SessionRef[] | null> {
   let raw: string
   try {
     raw = await readFile(path, "utf8")
@@ -168,7 +238,10 @@ export async function computeProvenance(
   options: ComputeProvenanceOptions = {},
 ): Promise<ProvenanceInfo> {
   const [registry, marker] = await Promise.all([
-    readSessionsRegistry(options.sessionsPath ?? SESSIONS_FILE_PATH()),
+    // No `sessionsPath` ⇒ the bucket ∪ legacy union, NOT the legacy file
+    // alone — pinning it here would hide every partitioned session from
+    // the GC join. See this file's header.
+    readSessionsRegistry(options.sessionsPath),
     readWorktreeMarker(worktreePath),
   ])
   const sessions = registry ?? []

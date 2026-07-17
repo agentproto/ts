@@ -139,3 +139,138 @@ describe("computeProvenance", () => {
     expect(JSON.parse(raw)).toEqual(marker)
   })
 })
+
+describe("readSessionsRegistry — the partitioned registry (AIP-46 §State partitioning)", () => {
+  const realHome = process.env.HOME
+  const homes: string[] = []
+
+  afterEach(async () => {
+    if (realHome === undefined) delete process.env.HOME
+    else process.env.HOME = realHome
+    while (homes.length) await rm(homes.pop()!, { recursive: true, force: true })
+  })
+
+  async function isolatedHome(): Promise<string> {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-prov-"))
+    homes.push(home)
+    process.env.HOME = home
+    return home
+  }
+
+  const session = (id: string, cwd: string) => ({
+    id,
+    startedAt: "2026-07-01T00:00:00.000Z",
+    status: "exited",
+    cwd,
+  })
+
+  async function writeBucket(home: string, slug: string, sessions: unknown[]): Promise<void> {
+    const dir = join(home, ".agentproto", "workspaces", slug)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, "sessions.json"), JSON.stringify({ sessions }))
+  }
+
+  async function writeLegacy(home: string, sessions: unknown[]): Promise<void> {
+    await mkdir(join(home, ".agentproto"), { recursive: true })
+    await writeFile(join(home, ".agentproto", "sessions.json"), JSON.stringify({ sessions }))
+  }
+
+  it("unions every bucket with the legacy snapshot", async () => {
+    // The regression this guards: provenance feeds computeWorktreeStatus
+    // -> the GC plan -> applyGc, which REMOVES worktrees. Reading only
+    // the (now frozen) legacy file would hide every partitioned session,
+    // making an actively-used worktree look never-touched and eligible
+    // for deletion. Under-reporting here deletes work.
+    const home = await isolatedHome()
+    await writeBucket(home, "alpha", [session("a1", "/tmp/alpha")])
+    await writeBucket(home, "beta", [session("b1", "/tmp/beta")])
+    await writeLegacy(home, [session("old-1", "/tmp/legacy")])
+
+    const sessions = await readSessionsRegistry()
+    expect(sessions?.map((s) => s.id).sort()).toEqual(["a1", "b1", "old-1"])
+  })
+
+  it("dedupes by id, the live bucket row winning over the frozen legacy copy", async () => {
+    const home = await isolatedHome()
+    await writeBucket(home, "alpha", [session("dup", "/tmp/bucket-copy")])
+    await writeLegacy(home, [session("dup", "/tmp/legacy-copy")])
+
+    const sessions = await readSessionsRegistry()
+    expect(sessions).toHaveLength(1)
+    expect(sessions?.[0]?.cwd).toBe("/tmp/bucket-copy")
+  })
+
+  it("reads buckets even with no legacy file at all (a fresh install)", async () => {
+    const home = await isolatedHome()
+    await writeBucket(home, "alpha", [session("a1", "/tmp/alpha")])
+
+    expect((await readSessionsRegistry())?.map((s) => s.id)).toEqual(["a1"])
+  })
+
+  it("one corrupt bucket does not blind the join to the rest", async () => {
+    const home = await isolatedHome()
+    await writeBucket(home, "alpha", [session("a1", "/tmp/alpha")])
+    await mkdir(join(home, ".agentproto", "workspaces", "broken"), { recursive: true })
+    await writeFile(join(home, ".agentproto", "workspaces", "broken", "sessions.json"), "{ not json")
+
+    expect((await readSessionsRegistry())?.map((s) => s.id)).toEqual(["a1"])
+  })
+
+  it("returns null when every source that exists is unreadable", async () => {
+    const home = await isolatedHome()
+    await writeLegacy(home, [])
+    await writeFile(join(home, ".agentproto", "sessions.json"), "{ not json")
+
+    expect(await readSessionsRegistry()).toBeNull()
+  })
+
+  it("empty (not null) when nothing has ever run", async () => {
+    await isolatedHome()
+    expect(await readSessionsRegistry()).toEqual([])
+  })
+
+  it("an explicit path still means that one file, nothing else", async () => {
+    const home = await isolatedHome()
+    await writeBucket(home, "alpha", [session("a1", "/tmp/alpha")])
+    const pinned = await makeSessionsFile(home, [session("pinned", "/tmp/pinned")])
+
+    // The bucket row must NOT bleed into a pinned read — fixtures stay hermetic.
+    expect((await readSessionsRegistry(pinned))?.map((s) => s.id)).toEqual(["pinned"])
+  })
+})
+
+describe("computeProvenance — joins over buckets, not just the legacy file", () => {
+  const realHome = process.env.HOME
+  const dirs: string[] = []
+
+  afterEach(async () => {
+    if (realHome === undefined) delete process.env.HOME
+    else process.env.HOME = realHome
+    while (dirs.length) await rm(dirs.pop()!, { recursive: true, force: true })
+  })
+
+  it("finds a session recorded in a bucket for an unmarked worktree", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agentproto-prov-home-"))
+    dirs.push(home)
+    process.env.HOME = home
+
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "agentproto-prov-wt-")))
+    dirs.push(worktree)
+
+    const dir = join(home, ".agentproto", "workspaces", "alpha")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        sessions: [
+          { id: "in-bucket", startedAt: "2026-07-01T00:00:00.000Z", status: "exited", cwd: worktree },
+        ],
+      }),
+    )
+
+    // No `sessionsPath` — this is the production call shape, and before
+    // the union it would have found nothing here.
+    const provenance = await computeProvenance(worktree)
+    expect(provenance.sessions.map((s) => s.id)).toEqual(["in-bucket"])
+  })
+})

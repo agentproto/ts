@@ -123,6 +123,7 @@ export {
   writeWorktreeMarker,
   sessionInWorktree,
   SESSIONS_FILE_PATH,
+  SESSIONS_BUCKETS_ROOT,
   type ProvenanceInfo,
   type ProvenanceConfidence,
   type SessionRef,

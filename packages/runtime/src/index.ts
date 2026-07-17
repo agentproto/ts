@@ -186,6 +186,21 @@ export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
+export {
+  BUCKETS_ROOT,
+  DEFAULT_BUCKET,
+  LEGACY_SESSIONS_FILE,
+  bucketDir,
+  bucketSessionsFile,
+  bucketTranscriptDir,
+  isSafeBucketSlug,
+  listBuckets,
+  migrateLegacySessionsFile,
+  migrationMarkerPath,
+  readRegisteredSlugs,
+  resolveBucketSlug,
+  type MigrationMarker,
+} from "./workspace-buckets.js"
 export { createFileStepCache } from "./workflow-step-cache.js"
 export {
   sweepStaleRuntimeMetas,
