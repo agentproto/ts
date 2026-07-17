@@ -249,6 +249,25 @@ export interface ResolvedAuthSpec {
   unsetEnv: string[]
   explicit: boolean
   enforce: "always" | "when-configured"
+  /** True when NEITHER subscription nor api-key had any credential
+   *  available and `mode` above is therefore an arbitrary fallback pick —
+   *  never true when `mode` came from an explicit request or an actually-
+   *  available credential. Optional (undefined ⇒ false) so existing
+   *  callers/fixtures that predate this field keep working unchanged.
+   *  Exists so a fail-fast message can enumerate BOTH auth paths instead of
+   *  presenting the fallback mode as though the user configured it — the
+   *  root cause of a zero-credential user being told to buy a subscription
+   *  they never asked for. */
+  neitherConfigured?: boolean
+  /** Non-authenticating hint: true when `providers.json` HAS a key for the
+   *  resolved provider that is currently being ignored because auth isn't
+   *  explicitly configured (no `defaults.adapters.<slug>.auth` block — the
+   *  `explicit` gate above, PR #321). NEVER used to authenticate — set by
+   *  the caller (session-spawn.ts) as a read-only peek, purely so the
+   *  fail-fast message can say "you already have a key, it's just not
+   *  wired in" instead of staying silent about it. `resolveAuthSpec` itself
+   *  never sets this (it does no I/O). */
+  ignoredApiKeyInStore?: boolean
 }
 
 /** Where the resolved credential came from — the observable billing axis
@@ -334,8 +353,16 @@ export function resolveAuthSpec(
 
   // 2/3. Mode: explicit request (validated) OR ordered preference (DECISION
   //      10 — subscription first when supported; never silently pick api-key
-  //      while a subscription credential is present and preferred).
+  //      while a subscription credential is present and preferred). When
+  //      NEITHER credential is available, `mode` still needs a value (it
+  //      drives `setEnv`/scrub below) but is an ARBITRARY pick, not a real
+  //      signal — this used to silently fall back to `preference[0]`
+  //      ("subscription" for any adapter that supports it), which is exactly
+  //      how a zero-credential, api-key-only user got told to buy a
+  //      subscription. `neitherConfigured` flags that case so callers never
+  //      present the fallback mode as though it meant something.
   let mode: "subscription" | "api-key"
+  let neitherConfigured = false
   if (input.requestedMode) {
     if (input.requestedMode === "subscription" && !supportsSub) {
       throw new AuthResolutionError(
@@ -348,9 +375,11 @@ export function resolveAuthSpec(
     const preference: Array<"subscription" | "api-key"> = supportsSub
       ? ["subscription", "api-key"]
       : ["api-key"]
-    mode =
-      preference.find(m => (m === "subscription" ? subCredAvailable : apiCredAvailable)) ??
-      preference[0]!
+    const available = preference.find(m =>
+      m === "subscription" ? subCredAvailable : apiCredAvailable,
+    )
+    mode = available ?? preference[0]!
+    neitherConfigured = available === undefined
   }
 
   // 4/5. setEnv + credential + source for the resolved mode.
@@ -397,6 +426,7 @@ export function resolveAuthSpec(
     unsetEnv,
     explicit: input.explicit,
     enforce,
+    ...(neitherConfigured ? { neitherConfigured } : {}),
   }
   const echo: AuthEcho = {
     provider,

@@ -187,6 +187,22 @@ export async function restartAgentSession(
       authSpec = result.spec
       authEcho = result.echo
     }
+    // Same non-authenticating hint as session-spawn.ts (kept in sync by
+    // inspection, per this module's own doc comment above): only checked
+    // when about to hard-fail (enforce "always", no credential) and auth
+    // wasn't explicit, i.e. the store was never consulted for real above.
+    if (
+      authSpec &&
+      authSpec.enforce === "always" &&
+      authSpec.credential === undefined &&
+      !spawnDefaults.auth.explicit &&
+      resolvedProvider !== undefined
+    ) {
+      const ignored = await getProviderKey(resolvedProvider)
+      if (ignored !== undefined) {
+        authSpec = { ...authSpec, ignoredApiKeyInStore: true }
+      }
+    }
   }
 
   const spawnWithResume = async (

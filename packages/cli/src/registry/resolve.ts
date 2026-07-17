@@ -27,6 +27,8 @@ import {
   type AdapterHandle,
   type AdapterCatalogEntry,
 } from "@agentproto/provider-kit"
+import { isAgentCliAuthConfigured, type AdapterAuthDescriptor } from "@agentproto/runtime"
+import { CatalogProviderSchema } from "@agentproto/model-catalog"
 import {
   acpHandleFromSpec,
   resolveAcpSpec,
@@ -574,7 +576,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
 type AgentCliInfo = Pick<
   AdapterInfo,
   "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails"
-> & { stale?: true }
+> & { stale?: true; authRequired?: boolean; provider?: string }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
   return {
@@ -585,6 +587,26 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     modes: h.modes,
     modelDetails: h.modelDetails,
     ...(h.stale ? { stale: true } : {}),
+    ...(h.authRequired ? { authRequired: true } : {}),
+    ...(typeof h.originalHandle.provider === "string" ? { provider: h.originalHandle.provider } : {}),
+  }
+}
+
+/** Project a wrapped handle's manifest billing-auth fields into the runtime's
+ *  `AdapterAuthDescriptor` — the same projection `serve.ts`'s adapter
+ *  resolver does for a real spawn (`CatalogProviderSchema` narrows an
+ *  unrecognized `provider` string to undefined rather than guessing). Kept
+ *  local to this module rather than shared: it's a small field-by-field
+ *  read, not the money-critical precedence logic (that lives entirely in
+ *  `resolveAuthSpec`, reused as-is via `isAgentCliAuthConfigured`). */
+function toAuthDescriptor(handle: AgentCliHandle): AdapterAuthDescriptor {
+  const providerParse = handle.provider
+    ? CatalogProviderSchema.safeParse(handle.provider)
+    : undefined
+  return {
+    ...(providerParse?.success ? { provider: providerParse.data } : {}),
+    ...(handle.authEnforce ? { authEnforce: handle.authEnforce } : {}),
+    ...(handle.authSubscription ? { authSubscription: handle.authSubscription } : {}),
   }
 }
 
@@ -604,6 +626,10 @@ export function wrapCliHandle(
     version: typeof h.version === "string" ? h.version : "?",
     description: typeof h.description === "string" ? h.description : "",
     requiresSetup: Array.isArray(h.setup) && (h.setup as unknown[]).length > 0,
+    // Independent of requiresSetup — claude-code declares no setup[] but
+    // authEnforce:"always" hard-fails every spawn without a billing
+    // credential (the bug this axis exists to report honestly).
+    authRequired: h.authEnforce === "always",
     check: async () => false,
     protocol: typeof h.protocol === "string" ? h.protocol : "unknown",
     streaming: !!(h.capabilities as { streaming?: boolean })?.streaming,
@@ -654,14 +680,23 @@ async function discoverExtraHandles(
  * with its runtime availability status:
  *
  *   "supported" — known to agentproto, package not importable (not installed)
- *   "available" — package resolves; requiresSetup but no ledger yet
- *   "ready"     — package resolves + setup complete (or no setup needed)
+ *   "available" — package resolves; requiresSetup but no ledger yet, OR
+ *                 authRequired but no billing credential resolves
+ *   "ready"     — package resolves + setup complete (or no setup needed) AND
+ *                 (authRequired is false, or a credential DOES resolve)
  *
  * Also appends any adapters discovered in node_modules that aren't in the
  * catalog, so locally-installed custom adapters still appear.
  *
  * Status is derived via the kit's `computeStatus`: resolved × requiresSetup ×
- * ledger-exists — never via `handle.check()` (per OQ-5).
+ * ledger-exists × (authRequired × authConfigured) — never via `handle.check()`
+ * (per OQ-5). The auth axis is independent of `requiresSetup`: claude-code
+ * declares no `setup[]` at all (`requiresSetup` is always false for it) but
+ * `authEnforce:"always"` hard-fails every spawn without a billing credential
+ * — `authProbe` (wired to the runtime's `isAgentCliAuthConfigured`, which
+ * mirrors `resolveAuthSpec`'s exact precedence including the explicit-gate
+ * on the providers store, PR #321) is what makes that honest instead of the
+ * old `!requiresSetup` short-circuit reporting "ready" on zero credentials.
  *
  * A fourth status, `"unresolvable"`, sits outside that kit-owned vocabulary:
  * when `resolveAdapter` falls back to its last-known-good cache (see there),
@@ -701,12 +736,32 @@ export async function listAdaptersWithCatalog(
     resolver,
     ledger,
     toInfo: toAgentCliInfo,
+    authProbe: (handle) =>
+      isAgentCliAuthConfigured(
+        handle.slug,
+        toAuthDescriptor(handle.originalHandle),
+        handle.originalHandle.models?.default,
+      ),
     discoverExtras: () => discoverExtraHandles(catalogSlugs),
   })
 
   const entries = await lister()
   return entries.map((e) => {
     const stale = e.info?.stale === true
+    // "available" on a handle whose authRequired is true can ONLY be caused
+    // by a missing billing credential here: claude-code (the one adapter
+    // that sets authRequired) declares no setup[] at all, so requiresSetup
+    // is always false for it — the kit's computeStatus would otherwise force
+    // "ready" for a false requiresSetup, meaning the auth-required check is
+    // the only path left that can land it on "available". Give the operator
+    // something runnable instead of a bare status.
+    const authHint =
+      !stale && e.status === "available" && e.info?.authRequired === true
+        ? `no billing credential configured — run \`claude setup-token\` (subscription) or ` +
+          `\`agentproto auth provider set ${e.info?.provider ?? "<provider>"} sk-…\` (api-key), ` +
+          `then add {"defaults":{"adapters":{"${e.slug}":{"auth":{"mode":"api-key"}}}}} to ` +
+          `~/.agentproto/config.json`
+        : undefined
     return {
       slug: e.slug,
       name: e.name,
@@ -726,9 +781,11 @@ export async function listAdaptersWithCatalog(
               "resolved successfully before, but the last import attempt just failed — " +
               "likely mid-rebuild. Not reinstallable advice: the package is present.",
           }
-        : e.hint !== undefined
-          ? { hint: e.hint }
-          : {}),
+        : authHint !== undefined
+          ? { hint: authHint }
+          : e.hint !== undefined
+            ? { hint: e.hint }
+            : {}),
     }
   })
 }

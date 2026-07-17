@@ -53,6 +53,15 @@ export interface MakeAdapterListerOpts<THandle extends AdapterHandle, TInfo> {
   /** Extract the safe descriptor from a resolved handle. Never include secrets. */
   toInfo: (handle: THandle) => TInfo
   /**
+   * Optional; resolves whether a billing credential actually configures for
+   * a handle whose `authRequired` is true. Only called when
+   * `handle.authRequired === true` — an adapter that doesn't need one never
+   * pays for the I/O. Absent `authProbe` on an `authRequired` handle leaves
+   * `authConfigured` undefined, which `computeStatus` treats as "not
+   * configured" (⇒ "available", never a false "ready").
+   */
+  authProbe?: (handle: THandle) => Promise<boolean>
+  /**
    * Optional family-specific discovery of handles NOT in the catalog
    * (the agent-CLI node_modules walker, or the browser injected map).
    * Returned handles whose slug is already in the catalog are ignored;
@@ -71,16 +80,25 @@ export interface MakeAdapterListerOpts<THandle extends AdapterHandle, TInfo> {
 /**
  * Build the family's lister. The lister:
  *   1. Iterates the catalog in order.
- *   2. Resolves each slug, reads ledger.exists() + optional credsStore.exists(),
- *      and classifies via computeStatus(). When checkDuringListing is true,
- *      also calls handle.check() and sets checkFailed on the entry if false.
+ *   2. Resolves each slug, reads ledger.exists() + optional credsStore.exists()
+ *      + (when `handle.authRequired` is true) `authProbe(handle)`, and
+ *      classifies via computeStatus(). When checkDuringListing is true, also
+ *      calls handle.check() and sets checkFailed on the entry if false.
  *   3. Appends discovered extras (not in catalog) sorted by slug.
  */
 export function makeAdapterLister<THandle extends AdapterHandle, TInfo>(
   opts: MakeAdapterListerOpts<THandle, TInfo>
 ): AdapterLister<TInfo> {
-  const { catalog, resolver, ledger, credsStore, toInfo, discoverExtras, checkDuringListing } =
-    opts
+  const {
+    catalog,
+    resolver,
+    ledger,
+    credsStore,
+    toInfo,
+    authProbe,
+    discoverExtras,
+    checkDuringListing,
+  } = opts
 
   async function entryFor(
     handle: THandle,
@@ -96,11 +114,15 @@ export function makeAdapterLister<THandle extends AdapterHandle, TInfo>(
     const credsExist = credsStore
       ? await credsStore.exists(handle.slug)
       : undefined
+    const authConfigured =
+      handle.authRequired === true && authProbe ? await authProbe(handle) : undefined
     const status = computeStatus({
       resolved: true,
       requiresSetup: handle.requiresSetup,
       ledgerExists,
       credsExist,
+      authRequired: handle.authRequired,
+      authConfigured,
     })
     const entry: AdapterEntry<TInfo> = {
       slug: handle.slug,
