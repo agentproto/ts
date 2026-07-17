@@ -1,11 +1,51 @@
 name: VS Code extension dev build
 
 # Fast-moving companion to the official release step in release.yml: every
-# push to main that touches packages/vscode gets an immediately-installable
-# VSIX, tagged as a prerelease distinct from the versioned official release
-# (vscode-v<version>, built only when an actual changesets release includes
-# vscode changes). Skips the "chore(release): version packages" commit
-# itself so the two workflows don't publish twice for the same change.
+# push to main that touches packages/vscode ships to the Marketplace's
+# **pre-release channel** (users who opted in via "Switch to Pre-Release
+# Version"), and gets an immediately-installable VSIX attached to a GitHub
+# prerelease for anyone who'd rather grab the file. Skips the
+# "chore(release): version packages" commit itself so this and the stable
+# publish in release.yml don't both fire for the same change.
+#
+# This rail exists because the two cadences are an order of magnitude apart:
+# changesets releases land roughly weekly, while packages/vscode is pushed
+# several times a day. Without it, Marketplace users sit a week behind main.
+#
+# ---------------------------------------------------------------------------
+# Why the version below is synthesized rather than read from package.json
+# ---------------------------------------------------------------------------
+#
+#   * The Marketplace refuses to overwrite a version that already exists
+#     (409 -> "already exists"; @vscode/vsce publish.js:160). A per-push
+#     publish MUST therefore carry a fresh version every time — there is no
+#     "republish the same semver" mode to fall back on.
+#   * The Marketplace also rejects semver prerelease strings outright:
+#     `0.2.1-dev.5` is a hard error, not a pre-release (publish.js:258). A
+#     pre-release version is a plain major.minor.patch; what makes it a
+#     pre-release is the --pre-release flag, not the version string.
+#   * A version string can only ever live in ONE channel. So stable and
+#     pre-release must draw from disjoint version spaces or they will
+#     eventually collide — and a collision is quiet, since the stable
+#     publish uses --skip-duplicate.
+#
+# VS Code's published convention for that split is even minors for stable /
+# odd minors for pre-release. It does NOT work here: changesets owns this
+# package's version and bumps minors by one, so the first minor release
+# would move stable from an even lane straight into the odd one, on top of
+# pre-release versions already published there. Keeping parity would require
+# minor bumps of two, which changesets won't do.
+#
+# So the lane split rides the patch instead, where changesets can't reach:
+# pre-release keeps stable's major.minor and offsets its patch by
+# PRERELEASE_PATCH_BASE. Stable patches count 0, 1, 2… from changesets;
+# pre-release patches start six digits up and are driven by the workflow run
+# number, which is monotonic and needs no state. The two can never meet
+# unless stable ships a hundred thousand patch releases of one minor. Stable
+# is free to bump major/minor whenever it likes and the pre-release lane just
+# follows it up, still offset, still disjoint. A large patch number is also
+# the idiomatic shape for a VS Code pre-release build (cf. ms-python's
+# 2023.13.10711014), so this reads as intended rather than as a bug.
 
 on:
   push:
@@ -21,9 +61,18 @@ concurrency:
 permissions:
   contents: write  # create the release + tag
 
+env:
+  # Floor of the pre-release patch lane. Six digits keeps it unreachable by
+  # changesets' patch counter while staying well inside semver's integer
+  # range. Changing this is a one-way door: lowering it risks colliding with
+  # versions already published, and any new value must stay above every
+  # pre-release version already on the Marketplace, since versions are
+  # immutable there.
+  PRERELEASE_PATCH_BASE: 100000
+
 jobs:
   dev-build:
-    name: Build + publish dev VSIX
+    name: Build + publish pre-release VSIX
     if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): version packages') }}"
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -44,8 +93,54 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Package the extension
-        run: pnpm --filter agentproto-vscode run package
+      # Tracks stable's major.minor, offsets the patch into the pre-release
+      # lane. See the version note at the top of this file.
+      - name: Compute pre-release version
+        id: version
+        run: |
+          set -euo pipefail
+          stable=$(node -p "require('./packages/vscode/package.json').version")
+          major=${stable%%.*}
+          rest=${stable#*.}
+          minor=${rest%%.*}
+          version="${major}.${minor}.$((PRERELEASE_PATCH_BASE + ${{ github.run_number }}))"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Stable \`${stable}\` → pre-release \`${version}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # --no-git-tag-version: vsce shells out to `npm version` to write the
+      # synthesized version into package.json; without it, vsce would also
+      # commit and tag, which is not this workflow's job. The bump stays a
+      # throwaway working-tree edit and is never pushed.
+      - name: Package the extension as a pre-release
+        run: |
+          set -euo pipefail
+          cd packages/vscode
+          pnpm run build
+          mkdir -p output
+          pnpm dlx @vscode/vsce package \
+            --no-dependencies \
+            --pre-release \
+            --no-git-tag-version \
+            --out output/ \
+            "${{ steps.version.outputs.version }}"
+
+      # Soft-gated on the secret: without a PAT this warns and moves on, so
+      # the GitHub prerelease below still ships. Publishing a VSIX packaged
+      # with --pre-release requires the same flag here, or vsce refuses
+      # (publish.js:89). No --skip-duplicate: the run number makes every
+      # version unique, so a duplicate here would mean the lane scheme is
+      # broken and should be loud rather than swallowed.
+      - name: Publish to the Marketplace pre-release channel
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::warning::VSCE_PAT is not set — skipping the Marketplace publish; the VSIX still ships to the GitHub prerelease. Add an Azure DevOps PAT (scope: Marketplace → Manage) as the VSCE_PAT repo secret to enable this."
+            exit 0
+          fi
+          vsix=$(ls packages/vscode/output/*.vsix)
+          pnpm dlx @vscode/vsce publish --pre-release --packagePath "$vsix"
 
       - name: Publish dev VSIX as a GitHub prerelease
         env:
@@ -54,9 +149,9 @@ jobs:
           set -euo pipefail
           sha=$(git rev-parse --short HEAD)
           tag="vscode-dev-${sha}"
-          vsix=$(ls packages/vscode/*.vsix)
+          vsix=$(ls packages/vscode/output/*.vsix)
           gh release create "$tag" "$vsix" \
-            --title "agentproto VS Code extension — dev build (${sha})" \
-            --notes "Untagged dev build from $(git rev-parse HEAD) on main — not an official release. For a versioned release see tags matching \`vscode-v<version>\`." \
+            --title "agentproto VS Code extension — pre-release ${{ steps.version.outputs.version }} (${sha})" \
+            --notes "Pre-release build \`${{ steps.version.outputs.version }}\` from $(git rev-parse HEAD) on main. Also published to the Marketplace's pre-release channel — in VS Code, the extension's **Switch to Pre-Release Version** button tracks these automatically. For a versioned stable release see tags matching \`vscode-v<version>\`." \
             --prerelease \
             --latest=false
