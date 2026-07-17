@@ -149,6 +149,32 @@ describe("defineAgentCli (AIP-45)", () => {
     })
   })
 
+  describe("models.apply=\"arg\" cross-field rule", () => {
+    it("requires models.bin_args_template when models.apply=\"arg\"", () => {
+      expect(() =>
+        defineAgentCli(
+          minimal({
+            models: { default: "o3", apply: "arg" },
+          }),
+        ),
+      ).toThrow(/models.apply="arg" requires models.bin_args_template/)
+    })
+
+    it("accepts models.apply=\"arg\" with bin_args_template", () => {
+      const handle = defineAgentCli(
+        minimal({
+          models: {
+            default: "o3",
+            apply: "arg",
+            bin_args_template: ["-c", 'model="{model}"'],
+          },
+        }),
+      )
+      expect(handle.models?.apply).toBe("arg")
+      expect(handle.models?.bin_args_template).toEqual(["-c", 'model="{model}"'])
+    })
+  })
+
   describe("parseAgentCliManifest", () => {
     it("parses a minimal AGENT-CLI.md", () => {
       const md = `---

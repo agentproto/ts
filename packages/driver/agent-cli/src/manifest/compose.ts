@@ -16,7 +16,9 @@
  *   2. Manifest's default `bin_args` (from `handle.bin_args`).
  *   3. Every declared `bin_args_append` / `bin_args_append_when_true`
  *      / `bin_args_template` (mode's, then each present option's in
- *      declaration order).
+ *      declaration order), then finally `models.bin_args_template`
+ *      when `models.apply === "arg"` and a model was requested (e.g.
+ *      codex-acp's `-c model="<id>"` — a CLI arg, not an ACP config).
  * Final argv is `[...prepend, ...bin_args, ...append]`.
  *
  * Mode is applied before options because modes are coarse profile
@@ -185,6 +187,26 @@ export function composeSpawn(
         `Model '${requestedModel}' is denied by manifest '${handle.id}' (matches deny pattern '${denyHit}'). This adapter deliberately does not route to that provider — use a permitted model or a different adapter.`
       )
     }
+  }
+
+  // ── Model apply:"arg" — CLI-argument model selection ────────────
+  // For adapters whose wrapper takes its model as a CLI arg rather than
+  // an ACP session config (e.g. codex-acp's `-c model="<id>"`), compose
+  // the manifest's `models.bin_args_template` here with `{model}`
+  // interpolated. define-agent-cli.ts reads `models.apply` and only
+  // forwards `model` into the ACP connect() call for "config" — "arg"
+  // never reaches the ACP layer at all, so this is the only place the
+  // requested model is actually applied.
+  if (
+    typeof requestedModel === "string" &&
+    handle.models?.apply === "arg" &&
+    handle.models.bin_args_template
+  ) {
+    append.push(
+      ...handle.models.bin_args_template.map(token =>
+        token.replace("{model}", requestedModel)
+      )
+    )
   }
 
   // ── Continuation validation (no patch — strategy registry owns) ─

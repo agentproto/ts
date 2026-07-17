@@ -254,9 +254,24 @@ export interface AgentCliModels {
    *     this agent (e.g. hermes), so instead send a `/model <id>` control
    *     turn after `newSession` and drain it. The agent's reply is checked
    *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   *   - "arg" — this CLI takes its model as a CLI argument, not an ACP
+   *     session config or control turn (e.g. codex-acp's `-c model="<id>"`).
+   *     The requested model is composed into `bin_args` at spawn time via
+   *     `bin_args_template` (below) — no post-`newSession` ACP call is
+   *     made at all.
    * Omit → "config".
    */
-  apply?: "config" | "command"
+  apply?: "config" | "command" | "arg"
+  /**
+   * Argv template composed into `bin_args` at spawn time when
+   * `apply === "arg"` and a model was requested. The literal token
+   * `{model}` is replaced with the requested model id, one-for-one per
+   * array element (mirrors `AgentCliOption.bin_args_template`'s
+   * `{value}` token). Appended after the manifest's default `bin_args`,
+   * same position as an option's own `bin_args_template`. Required when
+   * `apply === "arg"`; ignored otherwise.
+   */
+  bin_args_template?: string[]
 }
 
 export interface AgentCliCapabilities {

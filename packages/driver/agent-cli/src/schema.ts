@@ -243,8 +243,13 @@ const modelsSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   // How a model is selected at session start: "config" (ACP
   // set_config_option, default) | "command" (a `/model <id>` control turn,
-  // for agents like hermes that ignore the ACP session model config).
-  apply: z.enum(["config", "command"]).optional(),
+  // for agents like hermes that ignore the ACP session model config) |
+  // "arg" (a CLI argument composed into bin_args at spawn, for agents
+  // like codex-acp that take their model as `-c model="<id>"`).
+  apply: z.enum(["config", "command", "arg"]).optional(),
+  // Argv template for apply:"arg" — {model} interpolates the requested
+  // model id. See AgentCliModels.bin_args_template.
+  bin_args_template: z.array(z.string()).optional(),
 }).strict()
 
 const capabilitiesSchema = z.object({
