@@ -1127,15 +1127,93 @@ class OpenAIToAnthropicStreamConverter {
   }
 }
 
+// ── Inbound access gate ─────────────────────────────────────────────────────
+// Optional CLIENT→proxy authentication, independent of the upstream provider
+// keys (proxy→provider), which are always server-side and never the client's.
+// Enabled by setting LLM_ENDPOINT_ACCESS_TOKENS to a comma-separated allow-list;
+// unset/empty leaves the proxy open (prior behaviour). Read once at boot like
+// the provider keys — changing it requires a restart.
+
+/** Parse a comma-separated token allow-list into a Set (trimmed, non-empty). */
+export function parseAccessTokens(raw: string | undefined): Set<string> {
+  return new Set((raw ?? '').split(',').map((t) => t.trim()).filter(Boolean));
+}
+
+let _accessTokens: Set<string> | null = null;
+/** Cached allow-list from LLM_ENDPOINT_ACCESS_TOKENS (empty Set = gate off). */
+function accessTokens(): Set<string> {
+  if (_accessTokens === null) _accessTokens = parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS);
+  return _accessTokens;
+}
+
+/**
+ * Extract a presented access token from `Authorization: Bearer <t>` or the
+ * `X-Proxy-Access: <t>` header (so a client that reserves Authorization for
+ * something else can still pass one). Returns null when neither is present.
+ */
+export function extractInboundToken(headers: IncomingMessage['headers']): string | null {
+  const auth = headers['authorization'];
+  const a = Array.isArray(auth) ? auth[0] : auth;
+  if (a) {
+    const m = /^Bearer\s+(.+)$/i.exec(a.trim());
+    if (m && m[1]!.trim()) return m[1]!.trim();
+  }
+  const xp = headers['x-proxy-access'];
+  const x = Array.isArray(xp) ? xp[0] : xp;
+  if (x && x.trim()) return x.trim();
+  return null;
+}
+
+/**
+ * True when the request may proceed: gate disabled (empty allow-list), or the
+ * presented token is in the allow-list. A high-entropy random token makes the
+ * Set membership check's non-constant time immaterial.
+ */
+export function isAuthorized(headers: IncomingMessage['headers'], tokens: Set<string>): boolean {
+  if (tokens.size === 0) return true;
+  const presented = extractInboundToken(headers);
+  return presented !== null && tokens.has(presented);
+}
+
+/**
+ * Normalise an incoming request path so a redundant `/v1` an Anthropic client
+ * appends to a base URL that already ends in `/v1` (optionally with a pack
+ * segment) doesn't break routing.
+ *
+ *   /v1/v1/messages                    → /v1/messages
+ *   /v1/stealth-requesty/v1/messages   → /v1/stealth-requesty/messages
+ *   /v1/stealth-requesty/v1/models     → /v1/stealth-requesty/models
+ *
+ * Without the pack-segment case the extra `/v1` breaks the `/v1/<pack>/<verb>`
+ * match, the pack is silently lost, and the request falls back to the default
+ * pack — the "no usable models" / "Unable to resolve model" failure a client
+ * configured with `base_url = .../v1/<pack>` hits.
+ */
+export function normalizeProxyPath(pathname: string): string {
+  return pathname
+    .replace(/\/+$/, '')
+    .replace(/^\/v1\/v1(\/|$)/, '/v1$1')
+    .replace(/^(\/v1\/[^/]+)\/v1(\/|$)/, '$1$2');
+}
+
 const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Inbound access gate — 401 any non-preflight request without a valid token
+  // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too, so pack config
+  // isn't readable unauthenticated. See parseAccessTokens/isAuthorized above.
+  if (!isAuthorized(req.headers, accessTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
     return;
   }
 
@@ -1147,7 +1225,7 @@ const server = createServer((req, res) => {
   // correctement plus bas, mais laisser le chemin brut dans les logs noie le
   // vrai souci (config base_url mal formée). Normalisé ici une fois pour
   // toutes — un `/v1/v1/...` redevient `/v1/...` pour le matching ET les logs.
-  const urlPath = parsedUrl.pathname.replace(/\/+$/, '').replace(/^\/v1\/v1(\/|$)/, '/v1$1');
+  const urlPath = normalizeProxyPath(parsedUrl.pathname);
 
   // ── Pack resolution ──────────────────────────────────────────────────────
   // Priority: header X-Proxy-Pack > URL path /v1/{pack}/messages > query param ?pack= > default
