@@ -170,6 +170,12 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveSandboxProvider`. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.provisionWorktree`. */
+  provisionWorktree?: RegisterAgentToolsOptions["provisionWorktree"]
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
+  resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").

@@ -37,11 +37,17 @@
  * disk is lost to the removal.
  */
 import { parseArgs } from "node:util"
+import { randomUUID } from "node:crypto"
 import { resolve, dirname, basename, join } from "node:path"
 import { homedir } from "node:os"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
 import { loadConfig } from "@agentproto/runtime/config"
+import type {
+  WorktreeProvisioner,
+  WorktreeProvisionRequest,
+  WorktreeProvisionOutcome,
+} from "@agentproto/runtime"
 import {
   provisionWorktreeTool,
   cleanupWorktreeTool,
@@ -309,6 +315,58 @@ export async function resolveWorktreesRoot(flag: string | undefined, configPath?
   const cfg = await loadConfig(configPath)
   if (cfg.worktrees?.root) return resolve(cfg.worktrees.root)
   return join(homedir(), ".agentproto", "worktrees")
+}
+
+/**
+ * Auto-mint a collision-free worktree slug from an optional label hint —
+ * `<slugified-label>-<8 hex>`, or `agent-<8 hex>` when the label yields
+ * nothing usable. The random suffix makes a collision astronomically
+ * unlikely; if one lands anyway, `git worktree add` fails LOUD (the dir /
+ * branch already exists) rather than silently reusing another agent's tree,
+ * so correctness never rests on the randomness alone. Kept ≤ the tool's
+ * `^[a-z0-9][a-z0-9-]*$` slug shape.
+ */
+export function mintWorktreeSlug(labelHint?: string): string {
+  const suffix = randomUUID().slice(0, 8)
+  const base = (labelHint ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 32)
+    .replace(/-+$/, "")
+  return base ? `${base}-${suffix}` : `agent-${suffix}`
+}
+
+/**
+ * Concrete `WorktreeProvisioner` for the daemon — the injected port behind
+ * `agent_start.worktree` and the `worktrees.isolation` policy. It lives in the
+ * CLI (not `@agentproto/runtime`) precisely because it runs the
+ * `worktree.provision` TOOL over `@agentproto/worktree`, the heavy dependency
+ * the runtime deliberately refuses to take (see runtime's
+ * `worktree-identity.ts` / `worktree-isolation.ts`). Resolves the owning repo
+ * from the spawn's cwd — returning `not-a-git-repo` when there is none, so the
+ * spawn lands plain — lands the worktree under the same `worktrees.root` as
+ * `worktree new`, and returns the worktree's cwd for the session to adopt.
+ */
+export function makeWorktreeProvisioner(): WorktreeProvisioner {
+  return async (req: WorktreeProvisionRequest): Promise<WorktreeProvisionOutcome> => {
+    const repoRoot = repoRootOf(resolve(req.cwd))
+    if (!repoRoot) return { isolated: false, reason: "not-a-git-repo" }
+    const slug = req.slug ?? mintWorktreeSlug(req.labelHint)
+    const root = await resolveWorktreesRoot(undefined)
+    const dir = join(root, repoLabel(repoRoot), slug)
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        slug,
+        dir,
+        ...(req.base !== undefined ? { base: req.base } : {}),
+      },
+    })
+    return { isolated: true, cwd: provisioned.cwd, branch: provisioned.branch }
+  }
 }
 
 async function runNew(args: readonly string[]): Promise<number> {
