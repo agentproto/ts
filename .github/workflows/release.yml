@@ -99,9 +99,11 @@ jobs:
         run: node scripts/reconcile-release-tags.mjs
 
       # packages/vscode also gets a dev-build VSIX on every push that touches
-      # it (.github/workflows/vscode-release.yml) — that one is a
-      # prerelease tagged by commit sha (vscode-dev-<sha>), for grabbing a
-      # bleeding-edge build. This step is the official counterpart: the
+      # it (.github/workflows/vscode-release.yml) — that one rides the
+      # Marketplace's *pre-release* channel on a synthesized high-patch
+      # version, and is mirrored to a GitHub prerelease tagged by commit sha
+      # (vscode-dev-<sha>), for grabbing a bleeding-edge build. This step is
+      # the *stable* counterpart: the
       # same version-bump-driven release every other package gets, gated on
       # the same "actually published" condition as the steps below it (true
       # only for a deliberate release, not every PR merge), tagged by the
@@ -113,6 +115,7 @@ jobs:
         if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
           set -euo pipefail
           last_tag=$(git tag --list 'vscode-v*' --sort=-creatordate | head -1 || true)
@@ -123,10 +126,26 @@ jobs:
           pnpm --filter agentproto-vscode run package
           version=$(node -p "require('./packages/vscode/package.json').version")
           tag="vscode-v${version}"
-          vsix=$(ls packages/vscode/*.vsix)
+          vsix=$(ls packages/vscode/output/*.vsix)
+
+          # The stable Marketplace channel. No --pre-release: this VSIX is
+          # packaged without it, and stable owns the low patch numbers that
+          # changesets counts up from, while the pre-release rail offsets
+          # itself six digits higher so the two lanes can't collide (see the
+          # version note atop vscode-release.yml). --skip-duplicate rather
+          # than a hard failure: this step can legitimately re-run against a
+          # version that's already live (the force_post_release_steps
+          # backfill, a reconcile-driven re-run), and a Marketplace 409 must
+          # not turn an otherwise-successful release red.
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::warning::VSCE_PAT is not set — skipping the Marketplace publish; the VSIX still ships to the GitHub release below. Add an Azure DevOps PAT (scope: Marketplace → Manage) as the VSCE_PAT repo secret to enable this."
+          else
+            pnpm dlx @vscode/vsce publish --skip-duplicate --packagePath "$vsix"
+          fi
+
           gh release create "$tag" "$vsix" \
             --title "agentproto VS Code extension v${version}" \
-            --notes "Official release, built from $(git rev-parse HEAD). Install with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
+            --notes "Official release, built from $(git rev-parse HEAD). Published to the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Agentproto.agentproto-vscode) — or install this VSIX directly with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
             --latest=false
 
       # Only runs when changesets/action actually published packages (not when
