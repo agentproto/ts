@@ -356,6 +356,12 @@ export function createAgentCliRuntime(
           // No turn has been sent yet — nothing to cancel, and naming a turn
           // that never existed would be a lie to the arm.
           if (currentTurnId === undefined) return
+          // Deliberately NOT cleared afterwards: a second cancel re-sends the
+          // same id, and both arms are idempotent on it (ACP `session/cancel`
+          // for a settled turn is a no-op; SIGTERM to an already-dead child
+          // does nothing). Clearing it would instead make a cancel racing a
+          // turn-end silently skip the arm — the exact no-op this whole fix
+          // exists to remove.
           await arm.cancel(currentTurnId)
         },
         ...(arm.respondPermission
