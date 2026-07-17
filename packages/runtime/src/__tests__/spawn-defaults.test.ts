@@ -299,6 +299,68 @@ describe("resolveAuthSpec — mode validation + ordered preference", () => {
     expect(r?.echo.credentialSource).toBe("none")
     // Single-credential provider → empty scrub.
     expect(r?.spec.unsetEnv).toEqual([])
+    // An explicit requestedMode is a real signal — never the fallback flag.
+    expect(r?.spec.neitherConfigured).toBeUndefined()
+  })
+})
+
+// The money bug (scope correction): an api-key-only, zero-credential user was
+// silently resolved to "subscription" (preference[0]) and told to buy one —
+// the api-key advice sat in an unreachable else branch. `neitherConfigured`
+// is the fix: it flags "mode above is an arbitrary pick, not a real signal"
+// so the driver's fail-fast message can enumerate BOTH paths honestly.
+describe("resolveAuthSpec — neitherConfigured (the money bug)", () => {
+  it("neither subscription nor api-key available ⇒ falls back to preference[0] but flags neitherConfigured", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: false,
+    })
+    // preference[0] for an adapter that supports subscription — but this is
+    // now a KNOWN-arbitrary pick, not a real signal.
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.neitherConfigured).toBe(true)
+  })
+
+  it("an adapter with no authSubscription and no api-key credential ⇒ neitherConfigured true (mode still api-key, the only option)", () => {
+    const r = resolveAuthSpec({
+      descriptor: { provider: "openai" }, // codex-like, no authSubscription
+      explicit: false,
+    })
+    expect(r?.spec.mode).toBe("api-key")
+    expect(r?.spec.neitherConfigured).toBe(true)
+  })
+
+  it("a subscription credential IS available ⇒ subscription-first preference unaffected, neitherConfigured unset", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.credential).toBe("sk-ant-oat01-sub")
+    expect(r?.spec.neitherConfigured).toBeUndefined()
+  })
+
+  it("only an api-key credential is available ⇒ neitherConfigured unset", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      apiKeyConfigCredential: "sk-ant-api03-key",
+    })
+    expect(r?.spec.mode).toBe("api-key")
+    expect(r?.spec.neitherConfigured).toBeUndefined()
+  })
+
+  it("an explicit requestedMode with no credential is a real signal, never neitherConfigured — even with nothing else configured", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.neitherConfigured).toBeUndefined()
   })
 })
 
