@@ -191,6 +191,24 @@ export const openrouterPack: ModelPack = {
   },
 };
 
+export const requestyPack: ModelPack = {
+  id: 'requesty',
+  label: 'Requesty',
+  description: 'Source-backed models available through the Requesty router',
+  models: {
+    // Requesty ids are already vendor-prefixed, so the pack code IS the
+    // upstream id — transparent, no aliasing. Claude-name compatibility for
+    // this router belongs in a local pack (see packs.local.example.ts).
+    'sference/thinkingcap-qwen3.6-27b': {
+      provider: 'requesty',
+      model: 'sference/thinkingcap-qwen3.6-27b',
+    },
+    'sference/glm-5.2': { provider: 'requesty', model: 'sference/glm-5.2' },
+    'openai/gpt-4.1': { provider: 'requesty', model: 'openai/gpt-4.1' },
+    'openai/gpt-4o': { provider: 'requesty', model: 'openai/gpt-4o' },
+  },
+};
+
 // ── Registry ──────────────────────────────────────────────────────────────
 // Start with official packs. Local packs are merged at runtime if present.
 export const PACK_REGISTRY: Record<string, ModelPack> = {
@@ -198,6 +216,7 @@ export const PACK_REGISTRY: Record<string, ModelPack> = {
   [xaiPack.id]: xaiPack,
   [openaiPack.id]: openaiPack,
   [openrouterPack.id]: openrouterPack,
+  [requestyPack.id]: requestyPack,
   [anthropicPack.id]: anthropicPack,
 };
 
@@ -240,6 +259,7 @@ export const KNOWN_TRANSPARENT_PROVIDERS = new Set([
   'anthropic',
   'moonshot',
   'openrouter',
+  'requesty',
   'zai',
   'groq',
   'xai',
@@ -249,8 +269,10 @@ export const KNOWN_TRANSPARENT_PROVIDERS = new Set([
 /**
  * Parse a transparent model reference of the form `provider/model`.
  * Returns `{ provider, model }` when the prefix is a known provider, else null.
- * For `openrouter`, the remainder may contain additional slashes (e.g.
- * `openrouter/anthropic/claude-3-5-sonnet-20241022`).
+ * For `openrouter` and `requesty`, the remainder may contain additional slashes
+ * (e.g. `openrouter/anthropic/claude-3-5-sonnet-20241022`,
+ * `requesty/sference/thinkingcap-qwen3.6-27b`) — the split is on the FIRST
+ * slash only, so the router's own vendor prefix survives intact.
  */
 export function parseTransparentModel(model: string): { provider: string; model: string } | null {
   const slashIdx = model.indexOf('/');

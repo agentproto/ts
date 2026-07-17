@@ -194,6 +194,13 @@ describe('parseTransparentModel', () => {
     });
   });
 
+  it('preserves nested namespaces for requesty', () => {
+    expect(parseTransparentModel('requesty/sference/thinkingcap-qwen3.6-27b')).toEqual({
+      provider: 'requesty',
+      model: 'sference/thinkingcap-qwen3.6-27b',
+    });
+  });
+
   it('returns null for unknown provider prefixes', () => {
     expect(parseTransparentModel('unknown/gpt-4')).toBeNull();
   });
@@ -211,6 +218,7 @@ describe('listPackIds', () => {
     expect(ids).toContain('default');
     expect(ids).toContain('xai');
     expect(ids).toContain('openrouter');
+    expect(ids).toContain('requesty');
     expect(ids).toContain('anthropic');
   });
 
@@ -242,6 +250,20 @@ describe('PACK_REGISTRY', () => {
         expect(target.provider, `${pack.id}/${code}.provider`).toBeTruthy();
         expect(target.model, `${pack.id}/${code}.model`).toBeTruthy();
       }
+    }
+  });
+
+  it('requesty pack stays provider-transparent (no Claude aliases)', () => {
+    // The committed Requesty pack routes upstream ids as-is. Claude-name
+    // compatibility for this router is a local-pack concern — the alias
+    // resolution path only fires for local packs anyway (`allowAliases &&
+    // isLocalPack`), so an alias here would be inert as well as dishonest.
+    const pack = PACK_REGISTRY['requesty']!;
+    for (const [code, target] of Object.entries(pack.models)) {
+      expect(target.provider, `requesty/${code}.provider`).toBe('requesty');
+      expect(target.equivalentClaudeName, `requesty/${code} alias`).toBeUndefined();
+      // The pack code IS the upstream id — no rewriting.
+      expect(target.model, `requesty/${code}.model`).toBe(code);
     }
   });
 

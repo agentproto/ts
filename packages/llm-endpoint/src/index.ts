@@ -167,6 +167,7 @@ interface ProviderKeys {
   anthropic: string;
   moonshot: string;
   openrouter: string;
+  requesty: string;
   zai: string;
   groq: string;
   xai: string;
@@ -181,6 +182,7 @@ function resolveSecretKeys(): ProviderKeys {
     anthropic: process.env.ANTHROPIC_API_KEY || '',
     moonshot: process.env.MOONSHOT_API_KEY || '',
     openrouter: process.env.OPENROUTER_API_KEY || '',
+    requesty: process.env.REQUESTY_API_KEY || '',
     zai: process.env.ZHIPUAI_API_KEY || process.env.ZAI_API_KEY || '',
     groq: process.env.GROQ_API_KEY || '',
     xai: process.env.XAI_API_KEY || '',
@@ -202,6 +204,8 @@ function getChatCompletionsEndpoint(provider: string): { hostname: string; path:
       return null;
     case 'openrouter':
       return { hostname: 'openrouter.ai', path: '/api/v1/chat/completions' };
+    case 'requesty':
+      return { hostname: 'router.requesty.ai', path: '/v1/chat/completions' };
     case 'zai':
       return { hostname: 'open.bigmodel.cn', path: '/api/paas/v4/chat/completions' };
     case 'groq':
@@ -1323,6 +1327,18 @@ const server = createServer((req, res) => {
           headers['anthropic-version'] = '2023-06-01';
           break;
 
+        case 'requesty':
+          // Requesty expose aussi un endpoint Anthropic NATIF — servi à
+          // /v1/messages (et NON /anthropic/v1/messages comme l'annonce leur
+          // doc, qui 404). Même traitement qu'OpenRouter : aucune adaptation
+          // request/response, tools/system/thinking passent en natif.
+          hostname = 'router.requesty.ai';
+          path = '/v1/messages';
+          targetApiKey = getApiKey('requesty');
+          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          headers['anthropic-version'] = '2023-06-01';
+          break;
+
         case 'zai':
           hostname = 'open.bigmodel.cn';
           path = '/api/paas/v4/chat/completions'; // Zhipu AI standard path
@@ -1476,7 +1492,11 @@ const server = createServer((req, res) => {
         const isStreaming = (payload.stream === true) && /text\/event-stream/i.test(contentType);
         // OpenRouter renvoie des blocs thinking/redacted_thinking (signature vide) que le
         // CLI `claude` rejette pour les modèles courants → on les strip côté proxy.
-        const needsStrip = resolvedTarget.provider === 'openrouter';
+        // Requesty a le même défaut (vérifié live : sference/* renvoie
+        // {"type":"thinking",…,"signature":""}), et c'est précisément par le pack local —
+        // où le modèle porte un nom Claude — que le CLI applique ce rejet.
+        const needsStrip =
+          resolvedTarget.provider === 'openrouter' || resolvedTarget.provider === 'requesty';
         // Groq/ZAI/xAI/OpenAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
         const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai';
 
