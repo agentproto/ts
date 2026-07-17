@@ -1,5 +1,11 @@
 # @agentproto/worktree
 
+## 0.4.1
+
+### Patch Changes
+
+- a116fd6: Replace literal NUL bytes in memoKey with \\u0000 escape to restore UTF-8 text
+
 ## 0.4.0
 
 ### Minor Changes

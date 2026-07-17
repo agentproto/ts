@@ -1,5 +1,12 @@
 # @agentproto/eval-reporters
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [2f8ba2d]
+  - @agentproto/provider-kit@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes

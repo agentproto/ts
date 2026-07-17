@@ -1,5 +1,15 @@
 # @agentproto/adapter-codex
 
+## 0.2.2
+
+### Patch Changes
+
+- 68d3093: Add models.apply:"arg" for CLI-argument model selection; fix codex-acp model spawn crash
+- Updated dependencies [dd3386d]
+- Updated dependencies [2f8ba2d]
+- Updated dependencies [68d3093]
+  - @agentproto/driver-agent-cli@1.2.0
+
 ## 0.2.1
 
 ### Patch Changes

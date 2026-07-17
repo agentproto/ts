@@ -1,5 +1,15 @@
 # @agentproto/adapter-mastracode
 
+## 0.2.4
+
+### Patch Changes
+
+- 719771e: Inject provider-key env aliases (google → GOOGLE_API_KEY) at serve boot
+- Updated dependencies [dd3386d]
+- Updated dependencies [2f8ba2d]
+- Updated dependencies [68d3093]
+  - @agentproto/driver-agent-cli@1.2.0
+
 ## 0.2.3
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @agentproto/sandbox
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [a116fd6]
+  - @agentproto/worktree@0.4.1
+
 ## 0.1.2
 
 ### Patch Changes

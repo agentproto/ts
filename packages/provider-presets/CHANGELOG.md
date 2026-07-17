@@ -1,5 +1,11 @@
 # @agentproto/provider-presets
 
+## 0.4.0
+
+### Minor Changes
+
+- 9c2cec0: Add Requesty gateway preset and fix openrouter's double-/v1 base URL bug
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/provider-kit
 
+## 0.3.0
+
+### Minor Changes
+
+- 2f8ba2d: Stop misdirecting zero-credential agent-cli users to buy a subscription
+
 ## 0.2.1
 
 ### Patch Changes
