@@ -37,6 +37,10 @@ import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import type {
+  WorktreeIsolationMode,
+  WorktreeProvisioner,
+} from "./worktree-isolation.js"
 
 /** `SandboxSpecSchema` plus the PR3 reuse field — `{ provider, reuse: "<sandboxId>" }`
  *  reconnects to an existing box (via `SandboxProvider.connect`) instead of
@@ -192,6 +196,15 @@ export interface RegisterAgentToolsOptions {
    *  `spawnAgentSession`. Omitted → `sandbox` is rejected with
    *  `sandbox_provider_not_found`. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Provision a git worktree for an `agent_start.worktree` spawn — forwarded
+   *  to `spawnAgentSession`. Injected at the composition root by a host that
+   *  depends on `@agentproto/worktree` (the CLI). Omitted → a spawn the policy
+   *  says to isolate is rejected with `worktree_provisioner_not_enabled`. */
+  provisionWorktree?: WorktreeProvisioner
+  /** Resolves the `worktrees.isolation` policy — forwarded to
+   *  `spawnAgentSession`. Omitted → it reads `~/.agentproto/config.json`
+   *  (env > config > `on-request`) itself. */
+  resolveWorktreeIsolation?: () => Promise<WorktreeIsolationMode>
 }
 
 export function registerAgentTools(
@@ -208,6 +221,8 @@ export function registerAgentTools(
     daemonMcpUrl,
     loadRoleRegistry,
     resolveSandboxProvider,
+    provisionWorktree,
+    resolveWorktreeIsolation,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -522,6 +537,50 @@ export function registerAgentTools(
             "existing box instead — by default such a box is PAUSED (not killed) on " +
             "session close so it stays reusable; set `lifecycle.destroy_on` to always kill it."
         ),
+      worktree: jsonTolerant(
+        z.union([
+          mcpBool,
+          z
+            .object({
+              slug: z
+                .string()
+                .regex(
+                  /^[a-z0-9][a-z0-9-]*$/,
+                  "slug must be lowercase kebab-case (letters, digits, hyphens)",
+                )
+                .optional()
+                .describe(
+                  "Pin the worktree's slug (names its branch `wt/<slug>` and its " +
+                    "directory). Omit to auto-mint a collision-free one from the label."
+                ),
+              base: z
+                .string()
+                .min(1)
+                .optional()
+                .describe("Git ref the worktree branch is cut from. Default 'origin/main'."),
+            })
+            .strict(),
+        ])
+      )
+        .optional()
+        .describe(
+          "Isolate this session in its OWN git worktree instead of spawning " +
+            "directly in `cwd` — so a parallel agent can't collide on the working " +
+            "tree. `true` provisions a worktree on a fresh branch `wt/<slug>` cut " +
+            "from origin/main (slug auto-minted from `label`); pass `{ slug, base }` " +
+            "to pin either. The daemon boots the worktree (git worktree add + the " +
+            "repo's agentproto.json setup hooks) and spawns `adapter` THERE; the " +
+            "session's cwd, and every path it edits, live inside the worktree. " +
+            "Honoured only for a ROOT spawn (a spawn made THROUGH an orchestrator " +
+            "inherits its parent's tree — no second worktree) and only when `cwd` " +
+            "is inside a git repo (nothing to isolate otherwise ⇒ spawns plain, no " +
+            "error). The daemon's `worktrees.isolation` policy may force this ON " +
+            "for every root spawn (`always`) or OFF (`never`, which REJECTS an " +
+            "explicit `worktree`). Ignored for a `sandbox` spawn (the box already " +
+            "isolates). The worktree is NOT auto-removed on session close — it " +
+            "holds the agent's work; tear it down with `agentproto worktree " +
+            "rm|archive|gc`."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -548,6 +607,8 @@ export function registerAgentTools(
           webhookNotifier,
           loadRoleRegistry,
           resolveSandboxProvider,
+          ...(provisionWorktree ? { provisionWorktree } : {}),
+          ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
         },
         input,
       )

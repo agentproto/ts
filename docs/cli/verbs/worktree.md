@@ -133,7 +133,25 @@ agentproto worktree gc
 agentproto worktree gc --apply --salvage-dirty
 ```
 
+## Spawning an agent straight into a worktree
+
+`agent_start` takes a `worktree` field so a spawn isolates itself without a
+separate `worktree new` first: `worktree: true` provisions one (branch
+`wt/<slug>` cut from `origin/main`, slug auto-minted from the session label)
+and lands the session in it; `worktree: { slug, base }` pins either. It bites
+only for a **root** spawn whose cwd is inside a git repo — a spawn made through
+an orchestrator inherits its parent's tree, and a cwd outside any repo spawns
+plain.
+
+The daemon can force the behaviour with `worktrees.isolation` in
+`~/.agentproto/config.json` (or `AGENTPROTO_WORKTREES_ISOLATION`): `always`
+isolates every root spawn, `never` turns it off (and rejects an explicit
+`worktree`), `on-request` (default) honours the field. The provisioned tree is
+**not** auto-removed on session exit — it holds the agent's work; reclaim it
+with `rm` / `archive` / `gc` above.
+
 ## See also
 
 - [`workspace.md`](./workspace.md) — registering workspaces the daemon binds sessions to
 - [`sessions.md`](./sessions.md) — `--cwd` a session into a worktree
+- [`reference/config-schema.md`](../reference/config-schema.md#worktrees-object) — the `worktrees.isolation` policy knob

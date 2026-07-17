@@ -96,6 +96,22 @@ export interface FeaturesConfig {
  * worktrees across 6 different parent directories, because there was no
  * `worktree new` verb and therefore no convention to converge on.
  */
+/**
+ * How the daemon isolates a freshly-spawned agent session into its own git
+ * worktree (`agent_start.worktree`):
+ *   - `"always"`      — every depth-0 spawn is provisioned into a worktree,
+ *                       whether or not the caller asked. A cwd that is not in
+ *                       a git repo has nothing to isolate, so it spawns plain.
+ *   - `"on-request"`  — isolate ONLY when the caller passes `worktree`. This
+ *                       is the default and the back-compatible behaviour:
+ *                       today's callers pass nothing and spawn exactly where
+ *                       they asked.
+ *   - `"never"`       — isolation is off; an explicit `worktree` field is
+ *                       REJECTED (loud, not silently ignored) so a caller
+ *                       never believes it got an isolated tree it didn't.
+ */
+export type WorktreeIsolationMode = "always" | "on-request" | "never"
+
 export interface WorktreesConfig {
   /**
    * Absolute path new worktrees are created under. Layout:
@@ -108,6 +124,16 @@ export interface WorktreesConfig {
    * that exist today are 6 people each inventing a default by hand).
    */
   root?: string
+  /**
+   * Policy for `agent_start.worktree` isolation. Resolution order mirrors
+   * the module docblock (there is no CLI flag — this is a daemon-side
+   * policy read at spawn, not a per-invocation flag):
+   * `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the hardcoded
+   * default `"on-request"`. `"on-request"` is deliberately the default:
+   * any other would break back-compat by isolating callers that never
+   * asked (see `worktree-isolation.ts`).
+   */
+  isolation?: WorktreeIsolationMode
 }
 
 export interface PairingConfig {
