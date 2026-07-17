@@ -87,6 +87,15 @@ runs:
       uses: actions/setup-node@v5
       with:
         node-version: 22
+        # This action never runs `pnpm install` (it's standalone-npx-pinned,
+        # see the "Install agentproto CLI..." step below) — setup-node's
+        # auto-cache would still try to shell out to `pnpm` (detected from
+        # this repo's package.json `packageManager` field) to resolve the
+        # cache key, and fail with "Unable to locate executable file: pnpm"
+        # on a bare runner. Same trap .github/actions/agent-setup/action.yml
+        # already documents; verified by hitting it for real on PR #430's
+        # own pull_request-triggered smoke run.
+        package-manager-cache: false
 
     - name: Mask credentials (defense-in-depth)
       shell: bash
