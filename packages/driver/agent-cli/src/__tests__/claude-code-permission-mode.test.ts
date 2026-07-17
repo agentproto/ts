@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "node:stream"
 import { readFileSync, existsSync } from "node:fs"
 import type { ChildProcess } from "node:child_process"
@@ -75,8 +75,26 @@ const claudeCodeLike = (): AgentCliDefinition => ({
 })
 
 describe("claude-code CLAUDE_CONFIG_DIR permission-mode override", () => {
+  // The child env is built by spreading `process.env` (define-agent-cli.ts's
+  // `filterStringEnv(process.env)`), so an AMBIENT CLAUDE_CONFIG_DIR is
+  // inherited straight into `spawnCalls[].env` and the "does not set it"
+  // assertions below read the runner's environment instead of the override's
+  // behaviour. That is not hypothetical: the daemon implements claude-code's
+  // `mode:` by setting exactly this variable, so any agent session running
+  // the gate under a non-default mode failed these three tests — a red gate
+  // in a package the agent's diff never touched. Neutralise it here (same
+  // save/restore shape claude-code-auth-mode.test.ts uses for the
+  // ANTHROPIC_* vars) so the suite pins the override, not the shell.
+  let prevConfigDir: string | undefined
   beforeEach(() => {
     spawnCalls.length = 0
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+    delete process.env.CLAUDE_CONFIG_DIR
+  })
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
   })
 
   it("writes a temp CLAUDE_CONFIG_DIR/settings.json and points the child env at it for mode:plan", async () => {
