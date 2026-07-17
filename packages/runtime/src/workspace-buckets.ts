@@ -9,10 +9,11 @@
  *
  * What that costs is measurable rather than theoretical. `HISTORY_CAP`
  * bounds retention across the *union* of every workspace, so the cap is
- * spent by whoever was busiest: on the author's own machine, 201 rows
- * from 4 slugs against a 200 cap, where the workspace contributing 8 of
- * them was one busy afternoon away from losing all 8 — having done
- * nothing. The eviction is silent and lands on the quietest workspace.
+ * spent by whoever was busiest. A store pooling a few hundred rows from
+ * several workspaces sits at that ceiling in ordinary use, and the
+ * workspace contributing a handful of them is one busy afternoon in a
+ * NEIGHBOUR away from losing all of them — having done nothing itself.
+ * The eviction is silent and lands on the quietest workspace.
  *
  * This module is the slug→bucket rule and nothing more:
  *
@@ -233,9 +234,10 @@ interface LegacyRow {
  * exactly where it is — never deleted, truncated, or rewritten. It is
  * the user's data and their only rollback; the buckets are a derivative
  * until they decide otherwise. Reclaiming it is a separate, human-gated
- * call, and this module deliberately ships no GC: the author's own file
- * is 148 genuine rows against 155MB of transcripts, and a deleter that
- * guesses wrong there is unrecoverable.
+ * call, and this module deliberately ships no GC: a real store is backed
+ * by a transcript directory that can reach hundreds of megabytes and may
+ * be someone's only copy of months of work — a deleter that guesses
+ * wrong there is unrecoverable.
  *
  * Idempotent via the marker, not via the legacy file's absence — the
  * file stays, so absence would never fire and every boot would re-import

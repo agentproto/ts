@@ -678,11 +678,12 @@ const PERSIST_DEBOUNCE_MS = 1_500
  *
  *  When it WAS global, retention was a race between workspaces: the cap
  *  was spent by whoever was busiest, and the workspace that lost history
- *  was the one that had done nothing. Measured on the author's machine
- *  at 201 rows from 4 slugs against this 200 — one workspace holding 8
- *  rows, an afternoon away from losing all of them. Per-bucket, a
- *  workspace's history is bounded by its own volume and nothing else's,
- *  so this is now a readability bound rather than a budget to contest. */
+ *  was the one that had done nothing. A daemon pooling a few hundred rows
+ *  across several workspaces reaches this ceiling in ordinary use, at
+ *  which point a workspace holding a handful of rows loses them to a
+ *  neighbour's busy afternoon. Per-bucket, a workspace's history is
+ *  bounded by its own volume and nothing else's, so this is now a
+ *  readability bound rather than a budget to contest. */
 const HISTORY_CAP = 200
 
 /** Bound on how long `enqueuePrompt({interrupt: true})` waits for a
