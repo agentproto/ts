@@ -315,15 +315,54 @@ export function createAgentCliRuntime(
       // the field always-populated for downstream loggers.
       const sessionId = arm.sessionId ?? randomUUID()
 
+      // The turn `cancel()` acts on. `send()` mints a fresh id per turn and
+      // dropped it on the floor, which left `cancel()` with nothing to name —
+      // see its comment below.
+      let currentTurnId: string | undefined
+
       return {
         sessionId,
         pid: child?.pid,
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
+          currentTurnId = turnId
           return promptTurn(arm, turnId, message)
         },
+        /**
+         * Cancel the in-flight turn — the wire equivalent of Ctrl-C at the
+         * agent's own TUI, and the primitive the host's interrupt path
+         * (`SessionsRegistry.interruptSession`, `{interrupt: true}`) is built
+         * on.
+         *
+         * This used to be `abortController.abort()` alone, which cancelled
+         * NOTHING: that controller is the CONNECTION-level signal, handed to
+         * `arm.connect({abortSignal})` at spawn, and no arm reads it. So the
+         * abort fired into the void while the agent kept working — a turn
+         * "cancelled" this way ran happily to completion, and the host's 60s
+         * settle-wait then timed out on a turn that was never asked to stop.
+         * It only ever LOOKED like it worked for turns that happened to end
+         * naturally inside that wait.
+         *
+         * Both arms have always implemented the real thing — the ACP arm
+         * sends `session/cancel`, the print arm SIGTERMs the child — it was
+         * simply never called. Call it.
+         *
+         * Connection-level abort deliberately stays out of this: aborting the
+         * connection would end the SESSION, and cancelling a turn must leave
+         * it alive and idle for the next prompt. That distinction is the whole
+         * point of interrupt-vs-kill.
+         */
         async cancel() {
-          abortController.abort()
+          // No turn has been sent yet — nothing to cancel, and naming a turn
+          // that never existed would be a lie to the arm.
+          if (currentTurnId === undefined) return
+          // Deliberately NOT cleared afterwards: a second cancel re-sends the
+          // same id, and both arms are idempotent on it (ACP `session/cancel`
+          // for a settled turn is a no-op; SIGTERM to an already-dead child
+          // does nothing). Clearing it would instead make a cancel racing a
+          // turn-end silently skip the arm — the exact no-op this whole fix
+          // exists to remove.
+          await arm.cancel(currentTurnId)
         },
         ...(arm.respondPermission
           ? {
