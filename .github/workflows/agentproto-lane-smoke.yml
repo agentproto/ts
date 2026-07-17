@@ -1,0 +1,53 @@
+name: Agentproto lane smoke test
+
+# Proving ground for the generic agentflow lane (.github/actions/agentproto-run).
+# Additive to, and separate from, the hand-rolled pr-review loop in ci.yml —
+# this workflow only exercises the new lane, never the existing gate.
+#
+# `pull_request` is scoped to changes under the lane's own paths so it does
+# NOT run on every PR in this repo — only when the lane itself changes, which
+# is exactly when it needs re-proving. `workflow_dispatch` stays for ad-hoc
+# manual runs post-merge (e.g. against a different WORKFLOW.md later).
+#
+# Same-repo guard: a fork PR has no access to secrets.CLAUDE_CODE_OAUTH_TOKEN
+# (this repo is public), so the job would just fail on missing auth for no
+# reason — skip it outright rather than produce noise-red on every fork PR.
+
+on:
+  pull_request:
+    paths:
+      - .github/actions/agentproto-run/**
+      - .github/agentproto-workflows/**
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Boot daemon, drive smoke WORKFLOW.md over MCP
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Must independently cover the action's own `timeout-minutes` input —
+    # a composite action cannot self-impose a job timeout (see action.yml).
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run agentproto-run
+        id: agentproto
+        uses: ./.github/actions/agentproto-run
+        with:
+          adapter: claude-code
+          adapter-version: '1.0.1'
+          workflow-path: .github/agentproto-workflows/smoke/WORKFLOW.md
+          auth-mode: subscription
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          timeout-minutes: '360'
+
+      - name: Report result
+        run: |
+          echo "run-id: ${{ steps.agentproto.outputs.run-id }}"
+          echo "status: ${{ steps.agentproto.outputs.status }}"
