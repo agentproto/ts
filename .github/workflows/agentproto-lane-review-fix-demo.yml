@@ -1,0 +1,72 @@
+name: Agentproto lane review-fix-demo
+
+# Proof that the generic agentflow lane (.github/actions/agentproto-run) can
+# carry a REAL multi-step agentflow, not just the trivial one-step "reply OK"
+# smoke test (.github/agentproto-workflows/smoke). This flow's whole point is
+# `sessionRef` — reusing one claude-code session across two steps — which is
+# exactly the capability `agentproto run` (the one-shot CLI verb) structurally
+# lacks, and the reason the lane drives `agentproto serve` over MCP instead.
+#
+# `workflow_dispatch` ONLY: this flow makes real commits, pushes a real
+# branch, and opens a real PR. It must never fire automatically (no push, no
+# pull_request, no issue_comment) — a human triggers it deliberately.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base-ref:
+        description: Base ref to diff against and to open the resulting PR against.
+        required: false
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  review-fix-demo:
+    name: Boot daemon, drive review-fix-demo WORKFLOW.md over MCP
+    runs-on: ubuntu-latest
+    # Must independently cover the agentproto-run action's own
+    # `timeout-minutes` input — a composite action cannot self-impose a job
+    # timeout (see .github/actions/agentproto-run/action.yml).
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BASE_REF: ${{ inputs.base-ref }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Ensure origin/base-ref is available
+        # $BASE_REF via env:, never interpolated directly into the shell
+        # command — a workflow_dispatch input is operator-supplied, not
+        # attacker-controlled, but this repo's own convention (see
+        # .github/actions/agentproto-run/write-config.mjs) is to route
+        # any input through env rather than string-interpolate it into a
+        # run: block, so this mirrors that discipline rather than being
+        # the one exception to it.
+        run: git fetch origin "$BASE_REF"
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "agentproto-run[bot]"
+          git config --global user.email "agentproto-run[bot]@users.noreply.github.com"
+
+      - name: Run agentproto-run
+        id: agentproto
+        uses: ./.github/actions/agentproto-run
+        with:
+          adapter: claude-code
+          adapter-version: '1.0.1'
+          workflow-path: .github/agentproto-workflows/review-fix-demo/WORKFLOW.md
+          workflow-input: '{"baseRef": "${{ inputs.base-ref }}"}'
+          auth-mode: subscription
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          timeout-minutes: '360'
+
+      - name: Report result
+        run: |
+          echo "run-id: ${{ steps.agentproto.outputs.run-id }}"
+          echo "status: ${{ steps.agentproto.outputs.status }}"
