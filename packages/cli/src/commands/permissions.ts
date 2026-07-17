@@ -64,9 +64,14 @@ Usage:
 
 watch:
   --allow-tool/--deny-tool take an exact tool name or a \`*\` glob
-  (\`mcp__*\`). Deny rules are checked BEFORE allow rules; use --rules-json
-  for explicit ordering. A request with no tool name never matches a tool
-  pattern (even \`*\`) — only a session-only --rules-json rule can catch it.
+  (\`mcp__*\`). Patterns match the TOOL column \`permissions ls\` shows —
+  adapters surface the request's human-readable title there, which is not
+  always the internal tool identifier (claude-code's plan-mode exit
+  arrives as "Ready to code?", not ExitPlanMode). Check \`ls\` or rehearse
+  with --dry-run before trusting a pattern. Deny rules are checked BEFORE
+  allow rules; use --rules-json for explicit ordering. A request with no
+  tool name never matches a tool pattern (even \`*\`) — only a session-only
+  --rules-json rule can catch it.
   --session scopes every flag rule to one session (id or label, exact).
   --always makes approvals pick the allow-always option when offered.
   --rules-json <json|@file> takes a full rule array and is mutually
