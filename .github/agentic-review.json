@@ -1,6 +1,6 @@
 {
   "blocking": true,
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,

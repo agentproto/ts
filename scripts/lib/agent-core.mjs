@@ -49,7 +49,7 @@ export const CONFIG_DEFAULTS = {
   /** When true + reviewDecision is CHANGES_REQUESTED, the merge gate fails. */
   blocking: true,
   /** Anthropic model id for all agent flows. */
-  model: 'claude-sonnet-4-6',
+  model: 'claude-sonnet-5',
   /** How the auto-fixer delivers changes: "commit" (push to PR branch) or
    *  "pr" (push to bot/fix-<pr> and open a stacked PR against the PR branch). */
   fixDelivery: 'commit',
