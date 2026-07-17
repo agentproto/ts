@@ -55,7 +55,8 @@ agentproto presets list --json | jq -r '.[] | select(.status=="ready") | .slug'
 ```text
 ID            STATUS      SCHEMA      KEY ENV                 DEFAULT MODEL       BASE URL
 moonshot      ready       anthropic   MOONSHOT_API_KEY        kimi-k2.7-code      https://api.moonshot.ai/anthropic
-openrouter    available   anthropic   OPENROUTER_API_KEY      —                   https://openrouter.ai/api/v1
+openrouter    available   anthropic   OPENROUTER_API_KEY      —                   https://openrouter.ai/api
+requesty      available   anthropic   REQUESTY_API_KEY        —                   https://router.requesty.ai
 deepseek      available   anthropic   DEEPSEEK_API_KEY        deepseek-v4-pro     https://api.deepseek.com/anthropic
 xai           available   openai      XAI_API_KEY             grok-4.5            http://localhost:18090/v1
 ```

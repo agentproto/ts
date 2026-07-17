@@ -45,7 +45,7 @@ describe("claude-sdk gateway modes", () => {
 
   it("openrouter pre-wires only the endpoint (model is caller-picked)", () => {
     const m = modeById("openrouter")
-    expect(m?.env?.ANTHROPIC_BASE_URL).toBe("https://openrouter.ai/api/v1")
+    expect(m?.env?.ANTHROPIC_BASE_URL).toBe("https://openrouter.ai/api")
     expect(m?.env?.CLAUDE_SDK_MODEL).toBeUndefined()
     expect(m?.bin_args_append ?? []).not.toContain("--thinking")
     expect(m?.env?.CLAUDE_SDK_GATEWAY_KEY_ENV).toBe("OPENROUTER_API_KEY")

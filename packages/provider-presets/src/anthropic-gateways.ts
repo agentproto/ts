@@ -43,12 +43,32 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     description:
       "OpenRouter Anthropic-compatible gateway. Any OpenRouter model id " +
       "(e.g. z-ai/glm-5.2, deepseek/deepseek-v4-pro, moonshotai/kimi-k2) " +
-      "works via the model option.",
+      "works via the model option. Base URL carries NO /v1 suffix — the " +
+      "client appends /v1/messages itself.",
     schemaFlavor: "anthropic",
-    baseUrl: "https://openrouter.ai/api/v1",
+    // NOT ".../api/v1": the client appends /v1/messages, so a /v1 here yields
+    // /api/v1/v1/messages → 404, which OpenRouter surfaces to the harness as
+    // the misleading "model may not exist or you may not have access to it".
+    baseUrl: "https://openrouter.ai/api",
     keyEnv: "OPENROUTER_API_KEY",
     scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
     homepage: "https://openrouter.ai",
+  },
+  requesty: {
+    id: "requesty",
+    label: "Requesty",
+    description:
+      "Requesty router's Anthropic-compatible gateway. Any Requesty model id " +
+      "(e.g. sference/thinkingcap-qwen3.6-27b, sference/glm-5.2, " +
+      "openai/gpt-4.1) works via the model option — see GET /v1/models for " +
+      "the live list. Note the base URL has NO /v1 suffix: the client appends " +
+      "/v1/messages itself, and Requesty serves the Anthropic surface at " +
+      "/v1/messages (not the /anthropic/v1/messages the docs claim — that 404s).",
+    schemaFlavor: "anthropic",
+    baseUrl: "https://router.requesty.ai",
+    keyEnv: "REQUESTY_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    homepage: "https://requesty.ai",
   },
   deepseek: {
     id: "deepseek",

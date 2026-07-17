@@ -62,8 +62,17 @@ tier the harness might internally request — `ANTHROPIC_MODEL`,
 Native Anthropic (no `base_url`) leaves tier routing untouched.
 
 Verified live: Moonshot `https://api.moonshot.ai/anthropic` +
-`model=kimi-k2.7-code`, and OpenRouter `https://openrouter.ai/api/v1`, both
-return valid Anthropic Messages format under `Authorization: Bearer`.
+`model=kimi-k2.7-code`, OpenRouter `https://openrouter.ai/api`, and Requesty
+`https://router.requesty.ai` all return valid Anthropic Messages format under
+`Authorization: Bearer`.
+
+Note the base URLs carry no `/v1`: the SDK appends `/v1/messages` itself, so a
+`/v1` in the preset yields `…/v1/v1/messages` → 404. Verify a gateway by
+POSTing to `<base_url>/v1/messages` — NOT by curling the endpoint you think it
+serves. An earlier "verified live" note recorded OpenRouter as `…/api/v1` on
+the strength of a direct curl to `/api/v1/messages`, which left every
+openrouter-mode spawn 404ing behind the misleading gateway error "model may not
+exist or you may not have access to it".
 
 ### Gateway presets (modes)
 

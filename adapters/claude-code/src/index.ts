@@ -127,6 +127,13 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       { id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" },
       { id: "deepseek/deepseek-v4-pro", provider: "openrouter", mode: "openrouter" },
       { id: "moonshotai/kimi-k2", provider: "openrouter", mode: "openrouter" },
+      // Requesty — mode: requesty
+      {
+        id: "sference/thinkingcap-qwen3.6-27b",
+        provider: "requesty",
+        mode: "requesty",
+      },
+      { id: "sference/glm-5.2", provider: "requesty", mode: "requesty" },
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
@@ -252,6 +259,19 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "and supply the OpenRouter key via `auth_token`.",
       env: {
         ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.openrouter.baseUrl,
+      },
+      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+    },
+    {
+      id: ANTHROPIC_GATEWAY_PRESETS.requesty.id,
+      description:
+        "Requesty gateway. Pre-wires ANTHROPIC_BASE_URL to Requesty's " +
+        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
+        "(same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model " +
+        "via `model` (e.g. 'sference/thinkingcap-qwen3.6-27b', " +
+        "'sference/glm-5.2') and supply the Requesty key via `auth_token`.",
+      env: {
+        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.requesty.baseUrl,
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
     },
