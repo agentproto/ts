@@ -1800,13 +1800,20 @@ export function buildHtml(nonce: string): string {
         if (mention && handleMentionKey(e)) return;
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const noSelection = input.selectionStart === input.selectionEnd;
-          // ↑ only recalls once the caret is parked at the very start (index
-          // 0) — in a multi-line draft it walks up the lines normally first,
-          // same as VS Code's own chat. ↓ is the mirror at the very end, and
-          // only while actually navigating history.
+          // ↑ recalls once the caret is parked at the very start (index 0) —
+          // in a multi-line draft it walks up the lines normally first, same
+          // as VS Code's own chat — OR, once navigation is already underway,
+          // unconditionally: shells and Claude Code both let ↑/↓ own the
+          // keys for the rest of the walk, so a second ↑ steps to the NEXT
+          // older entry instead of just re-parking the caret it already
+          // placed at the end of the first recall. The accepted trade-off:
+          // while navigating a recalled MULTI-LINE entry, ↑/↓ step through
+          // history instead of moving between that entry's own lines.
+          // Typing or clicking into the box is the escape hatch back to
+          // normal caret movement (see the input/click listeners below).
           const eligible = e.key === 'ArrowUp'
-            ? noSelection && input.selectionStart === 0
-            : noSelection && historyState.index !== null && input.selectionStart === input.value.length;
+            ? noSelection && (input.selectionStart === 0 || historyState.index !== null)
+            : noSelection && historyState.index !== null;
           if (!eligible) return; // let the browser move the caret normally
           const recalled = recallHistory(historyState, e.key === 'ArrowUp' ? 'prev' : 'next', input.value);
           if (!recalled) return; // hit the end — don't consume the key
@@ -1836,7 +1843,13 @@ export function buildHtml(nonce: string): string {
       });
 
       // Clicking elsewhere in the textarea moves the caret out of an @token.
-      input.addEventListener('click', updateMention);
+      input.addEventListener('click', function() {
+        // A click means "I'm editing this now, not browsing" — exit history
+        // navigation, same escape hatch as typing. Only the cursor resets;
+        // entries/draft are untouched so history is still there next time.
+        historyState = { ...historyState, index: null };
+        updateMention();
+      });
 
       // Paste an image → the agent reads it. The webview can't touch disk, so
       // it reads the pasted image to bytes and ships them to the host, which

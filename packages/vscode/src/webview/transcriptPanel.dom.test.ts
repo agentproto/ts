@@ -565,7 +565,7 @@ describe("transcriptPanel webview — prompt history (↑/↓)", () => {
     expect(el(panel, "input").value).toBe("second prompt")
   })
 
-  it("does NOT recall when the caret is mid-text — falls through to normal caret movement", () => {
+  it("does NOT recall when the caret is mid-text and navigation hasn't started yet — falls through to normal caret movement", () => {
     const panel = renderPanel()
     init(panel, ["first prompt", "second prompt"])
     const input = el(panel, "input")
@@ -578,7 +578,27 @@ describe("transcriptPanel webview — prompt history (↑/↓)", () => {
     expect(input.value).toBe("typing something")
   })
 
-  it("walks older on repeated ↑ (caret returned to 0 between presses, as a real browser would), then back to the draft on ↓", () => {
+  it("REGRESSION: two consecutive ↑ from an empty box step back TWO entries, not one", () => {
+    // The caret rule alone (recall only when the caret sits at index 0)
+    // combined with parking the caret at the END after a recall meant a
+    // second ↑ just re-parked the caret at 0 and did nothing — walking
+    // back cost two presses per step. Once navigation is underway, ↑/↓
+    // must own the key regardless of where the recall landed the caret.
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt", "third prompt"])
+    const input = el(panel, "input")
+    setCaret(panel, 0)
+
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("third prompt")
+
+    // No caret reset in between — the caret is wherever the first recall
+    // parked it (the end of "third prompt"), not back at index 0.
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+  })
+
+  it("walks older on repeated ↑ with no caret reset in between, then back to the draft on ↓", () => {
     const panel = renderPanel()
     init(panel, ["first prompt", "second prompt"])
     const input = el(panel, "input")
@@ -587,19 +607,17 @@ describe("transcriptPanel webview — prompt history (↑/↓)", () => {
 
     keydown(panel, "ArrowUp")
     expect(input.value).toBe("second prompt")
-    setCaret(panel, 0)
     keydown(panel, "ArrowUp")
     expect(input.value).toBe("first prompt")
     // Oldest entry — one more ↑ does not wrap.
-    setCaret(panel, 0)
     const ev = keydown(panel, "ArrowUp")
     expect(ev.defaultPrevented).toBe(false)
     expect(input.value).toBe("first prompt")
 
-    setCaret(panel, input.value.length)
+    // ↓ walks back newer with no caret positioning needed either — it owns
+    // the key for the whole navigation, not just from the very end.
     keydown(panel, "ArrowDown")
     expect(input.value).toBe("second prompt")
-    setCaret(panel, input.value.length)
     keydown(panel, "ArrowDown")
     expect(input.value).toBe("unsent draft")
   })
@@ -633,6 +651,30 @@ describe("transcriptPanel webview — prompt history (↑/↓)", () => {
     const ev = keydown(panel, "ArrowDown")
     expect(ev.defaultPrevented).toBe(false)
     expect(input.value).toBe("second prompt!")
+  })
+
+  it("a click into the textarea exits navigation too, without clearing the history entries", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    const input = el(panel, "input")
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+
+    // A real click means "I'm editing this now, not browsing".
+    input.dispatchEvent(new panel.window.Event("click"))
+
+    // ↓ is a no-op now: navigation already exited, same as after typing.
+    setCaret(panel, input.value!.length)
+    const ev = keydown(panel, "ArrowDown")
+    expect(ev.defaultPrevented).toBe(false)
+    expect(input.value).toBe("second prompt")
+
+    // But the entries themselves survived the click — ↑ from index 0 still
+    // recalls, proving only the cursor (not the history) was reset.
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
   })
 
   it("the @mention popup still owns ↑/↓ while it is open — history does not steal the key", () => {
