@@ -450,6 +450,276 @@ describe("transcriptPanel webview — composer", () => {
   })
 })
 
+describe("transcriptPanel webview — stop button", () => {
+  const btn = (panel: Panel, id: string): DomElement => {
+    const el = panel.document.getElementById(id)
+    if (!el) throw new Error(id + " missing from buildHtml output")
+    return el
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("shows send, hides stop while idle", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false })
+    expect(btn(panel, "send").hidden).toBe(false)
+    expect(btn(panel, "stop").hidden).toBe(true)
+  })
+
+  it("swaps to stop the instant the session descriptor goes busy", () => {
+    const panel = renderPanel()
+    init(panel, { busy: false })
+
+    panel.send({ type: "sessionUpdate", session: session({ busy: true }) })
+
+    expect(btn(panel, "send").hidden).toBe(true)
+    expect(btn(panel, "stop").hidden).toBe(false)
+  })
+
+  it("hides stop once the session exits mid-turn", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
+    expect(btn(panel, "stop").hidden).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "exited", busy: false }) })
+
+    expect(btn(panel, "stop").hidden).toBe(true)
+  })
+
+  it("disables stop the instant it's clicked, until the turn actually settles", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+
+    btn(panel, "stop").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "stop" })
+    expect(btn(panel, "stop").disabled).toBe(true)
+
+    // The turn settles — busy flips false — and stop re-arms for next time.
+    panel.send({ type: "sessionUpdate", session: session({ busy: false }) })
+    expect(btn(panel, "stop").disabled).toBe(false)
+  })
+
+  it("re-arms stop on a stopError instead of leaving it stuck disabled", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { busy: true })
+
+    btn(panel, "stop").dispatchEvent(new panel.window.Event("click"))
+    expect(btn(panel, "stop").disabled).toBe(true)
+
+    panel.send({ type: "stopError", title: "Stop failed", message: "boom" })
+
+    expect(btn(panel, "stop").disabled).toBe(false)
+    expect(btn(panel, "error-banner").hidden).toBe(false)
+    expect(btn(panel, "eb-message").textContent).toBe("boom")
+  })
+})
+
+describe("transcriptPanel webview — prompt history (↑/↓)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  function init(panel: Panel, history: string[] = []): void {
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+      history,
+    })
+  }
+  function keydown(panel: Panel, key: string): DomEvent {
+    const ev = new panel.window.Event("keydown", { cancelable: true })
+    ev.key = key
+    el(panel, "input").dispatchEvent(ev)
+    return ev
+  }
+  // A real browser collapses the selection to `pos` on both ends; jsdom
+  // requires setting selectionStart/selectionEnd independently to reach
+  // the same collapsed state (see jsdom.d.ts).
+  function setCaret(panel: Panel, pos: number): void {
+    const input = el(panel, "input")
+    input.selectionStart = pos
+    input.selectionEnd = pos
+  }
+
+  it("recalls the newest entry on ↑ when the box is empty (caret at 0 for free)", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    setCaret(panel, 0)
+
+    keydown(panel, "ArrowUp")
+
+    expect(el(panel, "input").value).toBe("second prompt")
+  })
+
+  it("does NOT recall when the caret is mid-text and navigation hasn't started yet — falls through to normal caret movement", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    const input = el(panel, "input")
+    input.value = "typing something"
+    setCaret(panel, 5)
+
+    const ev = keydown(panel, "ArrowUp")
+
+    expect(ev.defaultPrevented).toBe(false)
+    expect(input.value).toBe("typing something")
+  })
+
+  it("REGRESSION: two consecutive ↑ from an empty box step back TWO entries, not one", () => {
+    // The caret rule alone (recall only when the caret sits at index 0)
+    // combined with parking the caret at the END after a recall meant a
+    // second ↑ just re-parked the caret at 0 and did nothing — walking
+    // back cost two presses per step. Once navigation is underway, ↑/↓
+    // must own the key regardless of where the recall landed the caret.
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt", "third prompt"])
+    const input = el(panel, "input")
+    setCaret(panel, 0)
+
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("third prompt")
+
+    // No caret reset in between — the caret is wherever the first recall
+    // parked it (the end of "third prompt"), not back at index 0.
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+  })
+
+  it("walks older on repeated ↑ with no caret reset in between, then back to the draft on ↓", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    const input = el(panel, "input")
+    input.value = "unsent draft"
+    setCaret(panel, 0)
+
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("first prompt")
+    // Oldest entry — one more ↑ does not wrap.
+    const ev = keydown(panel, "ArrowUp")
+    expect(ev.defaultPrevented).toBe(false)
+    expect(input.value).toBe("first prompt")
+
+    // ↓ walks back newer with no caret positioning needed either — it owns
+    // the key for the whole navigation, not just from the very end.
+    keydown(panel, "ArrowDown")
+    expect(input.value).toBe("second prompt")
+    keydown(panel, "ArrowDown")
+    expect(input.value).toBe("unsent draft")
+  })
+
+  it("parks the caret at the end after a recall", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "a longer second prompt"])
+    setCaret(panel, 0)
+
+    keydown(panel, "ArrowUp")
+
+    const input = el(panel, "input")
+    expect(input.selectionStart).toBe(input.value!.length)
+    expect(input.selectionEnd).toBe(input.value!.length)
+  })
+
+  it("typing exits history navigation", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    const input = el(panel, "input")
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+
+    // A real keystroke — the escape hatch back out of navigation.
+    input.value = "second prompt!"
+    input.dispatchEvent(new panel.window.Event("input"))
+    setCaret(panel, input.value.length)
+
+    // ↓ is a no-op now: navigation already exited, there is nothing to step to.
+    const ev = keydown(panel, "ArrowDown")
+    expect(ev.defaultPrevented).toBe(false)
+    expect(input.value).toBe("second prompt!")
+  })
+
+  it("a click into the textarea exits navigation too, without clearing the history entries", () => {
+    const panel = renderPanel()
+    init(panel, ["first prompt", "second prompt"])
+    const input = el(panel, "input")
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+
+    // A real click means "I'm editing this now, not browsing".
+    input.dispatchEvent(new panel.window.Event("click"))
+
+    // ↓ is a no-op now: navigation already exited, same as after typing.
+    setCaret(panel, input.value!.length)
+    const ev = keydown(panel, "ArrowDown")
+    expect(ev.defaultPrevented).toBe(false)
+    expect(input.value).toBe("second prompt")
+
+    // But the entries themselves survived the click — ↑ from index 0 still
+    // recalls, proving only the cursor (not the history) was reset.
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+    expect(input.value).toBe("second prompt")
+  })
+
+  it("the @mention popup still owns ↑/↓ while it is open — history does not steal the key", () => {
+    const panel = renderPanel()
+    init(panel, ["old prompt"])
+    const input = el(panel, "input")
+    input.value = "@men"
+    setCaret(panel, input.value.length)
+    input.dispatchEvent(new panel.window.Event("input"))
+    panel.send({
+      type: "mentionCandidates",
+      query: "men",
+      items: [
+        { path: "/repo/src/webview/mentions.logic.ts", label: "src/webview/mentions.logic.ts" },
+        { path: "/repo/src/webview/mentionSource.ts", label: "src/webview/mentionSource.ts" },
+      ],
+    })
+
+    keydown(panel, "ArrowUp")
+
+    // The popup consumed the key to move its own highlight — the textarea
+    // still holds the in-progress @token, not a recalled history entry.
+    expect(el(panel, "mention-popup").hidden).toBe(false)
+    expect(input.value).toBe("@men")
+  })
+
+  it("a just-sent prompt is recallable on the very next ↑", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, [])
+    const input = el(panel, "input")
+    input.value = "brand new message"
+    setCaret(panel, input.value.length)
+    input.dispatchEvent(new panel.window.Event("input"))
+
+    el(panel, "send").dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toContainEqual({ type: "send", text: "brand new message" })
+
+    setCaret(panel, 0)
+    keydown(panel, "ArrowUp")
+
+    expect(input.value).toBe("brand new message")
+  })
+})
+
 describe("transcriptPanel webview — header title", () => {
   const el = (panel: Panel, id: string): DomElement => {
     const node = panel.document.getElementById(id)

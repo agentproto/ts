@@ -931,6 +931,20 @@ export interface SessionsRegistry {
     message: unknown,
     opts?: { interrupt?: boolean }
   ): Promise<void>
+  /** Cancel the in-flight turn on a live agent-cli session and leave the
+   *  session itself alive and idle — the bare "interrupt, no next prompt"
+   *  primitive `sendPrompt`/`enqueuePrompt`'s `opts.interrupt` arm lacks
+   *  on its own, since that arm always exists to redirect onto a NEW
+   *  prompt. Reuses the same `interruptInFlightTurn` helper those two
+   *  share.
+   *
+   *  Idempotent by design: idle, unknown-alive (starting/running only —
+   *  same liveness `validateAgentTurn` checks), or already-terminal
+   *  (exited/killed/error) all resolve `{ wasBusy: false }` rather than
+   *  throwing — a no-op interrupt is not an error. Throws only when the
+   *  id is unknown, or when `cancel()` itself rejects ("does not support
+   *  interrupt", propagated from `interruptInFlightTurn`). */
+  interruptSession(id: string): Promise<{ wasBusy: boolean }>
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -2819,6 +2833,18 @@ export function createSessionsRegistry(opts?: {
           "stderr"
         )
       })
+    },
+    async interruptSession(id) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`interruptSession: no session "${id}"`)
+      // Same liveness definition as `validateAgentTurn` — a terminal
+      // session is a no-op even if `busy` hasn't been flipped false yet
+      // (kill() doesn't clear it; `runAgentTurn`'s finally does, and that
+      // may not have run yet for a session killed mid-turn).
+      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+      if (!isAlive || !rt.busy) return { wasBusy: false }
+      await interruptInFlightTurn(rt, id, "interruptSession")
+      return { wasBusy: true }
     },
     pulseActivity(id) {
       const rt = sessions.get(id)

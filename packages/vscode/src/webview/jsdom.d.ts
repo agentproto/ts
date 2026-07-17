@@ -55,6 +55,13 @@ declare module "jsdom" {
     value?: string
     /** Caret position on <textarea>/<input> — drives @mention detection. */
     selectionStart?: number | null
+    /** Selection end on <textarea>/<input> — equal to selectionStart when
+     *  there is no selection (a bare caret). Drives the ↑/↓ history recall
+     *  caret rule (no-selection-and-at-an-edge). */
+    selectionEnd?: number | null
+    /** Sets selectionStart/selectionEnd together — how a history recall
+     *  parks the caret at the end after painting the recalled text. */
+    setSelectionRange?(start: number, end: number): void
     /** Only meaningful on form controls (<button>, <textarea>). */
     disabled?: boolean
     hidden?: boolean

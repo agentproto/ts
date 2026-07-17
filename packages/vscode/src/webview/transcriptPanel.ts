@@ -31,6 +31,7 @@ import {
   parseUriList,
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
+import { recallHistory, pushHistoryEntry } from "./history.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -230,6 +231,9 @@ async function handleWebviewMessage(
     case "interruptSend":
       await controller.onSend(msg.text, true)
       return
+    case "stop":
+      await controller.onStop()
+      return
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
       return
@@ -280,7 +284,9 @@ export function buildHtml(nonce: string): string {
   // functions the logic-module unit tests pin. Safe because both are
   // self-contained (no module-scope references) and the build isn't minified,
   // so `.toString()` yields a clean, named, hoistable declaration.
-  const injectedHelpers = [mentionQueryAt, parseUriList].map(fn => fn.toString()).join("\n      ")
+  const injectedHelpers = [mentionQueryAt, parseUriList, recallHistory, pushHistoryEntry]
+    .map(fn => fn.toString())
+    .join("\n      ")
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -863,6 +869,21 @@ export function buildHtml(nonce: string): string {
       background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
       color: var(--vscode-button-foreground);
     }
+    /* Destructive-but-not-alarming: it abandons a turn, not the session, so
+       this stops short of the errorForeground/errorBackground pair #kill's
+       hover uses. */
+    #stop {
+      flex: 0 0 auto;
+      min-width: 26px;
+      font-size: 0.85em;
+      line-height: 1;
+      padding: 4px 8px;
+      background: var(--vscode-inputValidation-warningBackground, rgba(128,128,128,0.2));
+      color: var(--vscode-inputValidation-warningForeground, var(--vscode-editor-foreground));
+    }
+    #stop:hover:not(:disabled) {
+      background: var(--vscode-inputValidation-warningBorder, var(--vscode-toolbar-hoverBackground));
+    }
     #send-status {
       flex: 0 0 auto;
       color: var(--vscode-errorForeground);
@@ -931,6 +952,7 @@ export function buildHtml(nonce: string): string {
         <span id="send-status"></span>
         <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
         <button id="send" title="Send (Enter)">↵</button>
+        <button id="stop" hidden title="Stop the current turn">■</button>
       </div>
     </div>
   </div>
@@ -971,6 +993,7 @@ export function buildHtml(nonce: string): string {
       const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
+      const stopBtn = document.getElementById('stop');
       const interruptBtn = document.getElementById('interrupt-send');
       const sendStatus = document.getElementById('send-status');
       const errorBanner = document.getElementById('error-banner');
@@ -1009,6 +1032,10 @@ export function buildHtml(nonce: string): string {
        * ends — or immediately, if they choose to interrupt.
        */
       let queuedText = null;
+      // Prompt history for Up/Down (history.logic.ts). Seeded from init's
+      // history field (raw user-prompt texts, oldest to newest); extended
+      // locally by send() from then on.
+      let historyState = { entries: [], index: null, draft: '' };
       // Pending attachments: { path, label }. Their paths are appended to the
       // prompt by composePrompt() at send time, so the queue keeps storing a
       // plain string and nothing here has to survive a mid-turn queue.
@@ -1019,6 +1046,10 @@ export function buildHtml(nonce: string): string {
       let mention = null;
       let isScrolledUp = false;
       let isSending = false;
+      /** True from the Stop click until the turn actually settles (busy goes
+       *  false) or a stopError comes back — guards against a double-click
+       *  firing a second interrupt at an already-cancelling turn. */
+      let isStopping = false;
       let mode = 'raw';
       let lastUsage;
       // Turns/segments are addressed by stable id (data-turn-id/data-seg-id)
@@ -1046,6 +1077,12 @@ export function buildHtml(nonce: string): string {
         input.disabled = !live;
         sendBtn.disabled = !live || !hasText;
         sendBtn.classList.toggle('has-text', hasText && live);
+        // Send/Stop are mutually exclusive: mid-turn, there is nothing to
+        // send (Enter queues instead — see send()), so the button that
+        // fires is Stop, not Send.
+        sendBtn.hidden = busy && !exited;
+        stopBtn.hidden = !busy || exited;
+        stopBtn.disabled = isStopping;
         // "Interrupt & send" exists to force a message the agent hasn't taken
         // yet — so it appears only when there IS one waiting, not merely
         // whenever the agent is busy.
@@ -1134,6 +1171,8 @@ export function buildHtml(nonce: string): string {
         if (!nowBusy) busySince = 0;
         const wasBusy = busy;
         busy = nowBusy;
+        // The turn is over (however it ended) — Stop's job is done.
+        if (wasBusy && !nowBusy) isStopping = false;
         if (typeof session.tokensOut === 'number') lastTokensOut = session.tokensOut;
         refreshComposer();
         refreshWorking();
@@ -1661,6 +1700,9 @@ export function buildHtml(nonce: string): string {
         closeMention();
         autoGrow();
         clearError();
+        // Pushed here, not per-arm below: a queued message IS sent, just
+        // later, so it belongs in history the moment the user commits to it.
+        historyState = pushHistoryEntry(historyState, composed);
         // Mid-turn and not explicitly interrupting: hold it rather than POST a
         // prompt the daemon will refuse with a 409. It goes out on turn-end.
         if (busy && !interrupt) {
@@ -1756,6 +1798,34 @@ export function buildHtml(nonce: string): string {
         // While the @mention popup is open it owns the arrow/enter/tab/escape
         // keys — otherwise Enter would send instead of picking a file.
         if (mention && handleMentionKey(e)) return;
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          const noSelection = input.selectionStart === input.selectionEnd;
+          // ↑ recalls once the caret is parked at the very start (index 0) —
+          // in a multi-line draft it walks up the lines normally first, same
+          // as VS Code's own chat — OR, once navigation is already underway,
+          // unconditionally: shells and Claude Code both let ↑/↓ own the
+          // keys for the rest of the walk, so a second ↑ steps to the NEXT
+          // older entry instead of just re-parking the caret it already
+          // placed at the end of the first recall. The accepted trade-off:
+          // while navigating a recalled MULTI-LINE entry, ↑/↓ step through
+          // history instead of moving between that entry's own lines.
+          // Typing or clicking into the box is the escape hatch back to
+          // normal caret movement (see the input/click listeners below).
+          const eligible = e.key === 'ArrowUp'
+            ? noSelection && (input.selectionStart === 0 || historyState.index !== null)
+            : noSelection && historyState.index !== null;
+          if (!eligible) return; // let the browser move the caret normally
+          const recalled = recallHistory(historyState, e.key === 'ArrowUp' ? 'prev' : 'next', input.value);
+          if (!recalled) return; // hit the end — don't consume the key
+          e.preventDefault();
+          historyState = recalled.state;
+          input.value = recalled.value;
+          const len = input.value.length;
+          input.setSelectionRange(len, len);
+          autoGrow();
+          refreshComposer();
+          return;
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           send(false);
@@ -1763,13 +1833,23 @@ export function buildHtml(nonce: string): string {
       });
 
       input.addEventListener('input', function() {
+        // Setting .value programmatically (a recall) fires no input event, so
+        // this only ever runs on REAL typing — the intended escape hatch out
+        // of history navigation.
+        historyState = { ...historyState, index: null };
         autoGrow();
         refreshComposer();
         updateMention();
       });
 
       // Clicking elsewhere in the textarea moves the caret out of an @token.
-      input.addEventListener('click', updateMention);
+      input.addEventListener('click', function() {
+        // A click means "I'm editing this now, not browsing" — exit history
+        // navigation, same escape hatch as typing. Only the cursor resets;
+        // entries/draft are untouched so history is still there next time.
+        historyState = { ...historyState, index: null };
+        updateMention();
+      });
 
       // Paste an image → the agent reads it. The webview can't touch disk, so
       // it reads the pasted image to bytes and ships them to the host, which
@@ -1908,6 +1988,13 @@ export function buildHtml(nonce: string): string {
       }
 
       sendBtn.addEventListener('click', function() { send(false); });
+      // Abandon the in-flight turn, send nothing — distinct from "Interrupt &
+      // send" below, which takes the queued message NOW instead of waiting.
+      stopBtn.addEventListener('click', function() {
+        isStopping = true;
+        refreshComposer();
+        vscode.postMessage({ type: 'stop' });
+      });
       // Interrupt only ever acts on the queued message — it's the only thing
       // waiting, and it's what the button offers to stop waiting for.
       interruptBtn.addEventListener('click', function() { flushQueued(true); });
@@ -1959,6 +2046,7 @@ export function buildHtml(nonce: string): string {
               transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
               transcript.scrollTop = transcript.scrollHeight;
             }
+            historyState = { entries: msg.history || [], index: null, draft: '' };
             applySession(msg.session);
             break;
           case 'conversation':
@@ -2005,6 +2093,11 @@ export function buildHtml(nonce: string): string {
               break;
             }
             showError(msg.title || 'Send failed', msg.message || '');
+            break;
+          case 'stopError':
+            isStopping = false;
+            refreshComposer();
+            showError(msg.title || 'Stop failed', msg.message || '');
             break;
         }
       });

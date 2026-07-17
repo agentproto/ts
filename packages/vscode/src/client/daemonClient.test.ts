@@ -76,6 +76,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/s1") && req.method === "GET") return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
+      if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
@@ -152,6 +153,14 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("POST /sessions/:id/kill returns { ok, sessionId }", async () => {
     const res = await client().kill("s1")
     expect(res).toEqual({ ok: true, sessionId: "s1" })
+  })
+
+  it("POST /sessions/:id/interrupt returns { ok, id, wasBusy }", async () => {
+    const res = await client().interrupt("s1")
+    expect(res).toEqual({ ok: true, id: "s1", wasBusy: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    expect(last.url).toBe("/sessions/s1/interrupt")
   })
 
   it("throws on a non-2xx response", async () => {

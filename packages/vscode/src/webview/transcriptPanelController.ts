@@ -341,6 +341,7 @@ export class TranscriptPanelController {
       mode: loaded.mode,
       ...(loaded.conversation ? { conversation: loaded.conversation } : {}),
       ...(loaded.initialHtml !== undefined ? { initialHtml: loaded.initialHtml } : {}),
+      history: this.promptHistory(),
     })
     this.initSent = true
 
@@ -490,6 +491,22 @@ export class TranscriptPanelController {
   }
 
   /**
+   * Seed the webview's ↑/↓ prompt history from the raw `user-prompt`
+   * record texts accumulated in `this.records` — oldest→newest, capped at
+   * the same 100 entries `history.logic.ts`'s `pushHistoryEntry` caps at.
+   * Raw mode never populates `this.records` (hydrateStructured only runs
+   * for structured sessions), so this naturally returns `[]` there and the
+   * webview's own local pushes carry history from that point on.
+   */
+  private promptHistory(): string[] {
+    const texts: string[] = []
+    for (const rec of this.records) {
+      if (rec.kind === "user-prompt" && rec.text) texts.push(rec.text)
+    }
+    return texts.slice(-100)
+  }
+
+  /**
    * Resolve a tool call's full input/output for opening in an editor.
    *
    * Re-reduces from the accumulated records rather than reading anything the
@@ -539,6 +556,17 @@ export class TranscriptPanelController {
       })
     } finally {
       this.isSending = false
+    }
+  }
+
+  /** Cancel the in-flight turn — unlike a kill, the session stays alive
+   *  and ready for the next prompt. */
+  async onStop(): Promise<void> {
+    try {
+      await this.client.interrupt(this.sessionId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.messenger.postMessage({ type: "stopError", title: "Stop failed", message })
     }
   }
 
