@@ -76,7 +76,7 @@ exist or you may not have access to it".
 
 ### Gateway presets (modes)
 
-So you don't hand-type the base URL each spawn, three modes pre-wire the gateway
+So you don't hand-type the base URL each spawn, four modes pre-wire the gateway
 endpoint (`base_url`/`auth_token`/`thinking` still work manually for anything
 else):
 
@@ -85,6 +85,7 @@ else):
 | `default`   | nothing — native Anthropic                                       | `ANTHROPIC_API_KEY`                 |
 | `moonshot`  | `ANTHROPIC_BASE_URL` + `model=kimi-k2.7-code` + `--thinking`     | `auth_token` (Moonshot key)         |
 | `openrouter`| `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
+| `requesty`  | `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
 | `deepseek`  | `ANTHROPIC_BASE_URL` + `model=deepseek-v4-pro`                   | `auth_token` (DeepSeek key)         |
 
 `mode: moonshot` is a one-pick Kimi run; override `model` for another Moonshot

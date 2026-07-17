@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.5.0-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.8.0-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
@@ -129,7 +129,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |
 | `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
 | `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_status` | Public URL tunnels for local ports |
-| `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, DeepSeek, xAI) |
+| `list_provider_presets` | Gateway presets (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI) |
 | `list_sandbox_providers` / `setup_sandbox_provider` | Sandbox provider catalog and credentials |
 | `list_eval_reporters` / `setup_eval_reporter` | Eval-reporter backends (e.g. Langfuse) |
 | `start_browser` / `stop_browser` / `browser_status` | Manage browser sessions |
@@ -146,7 +146,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 
 ```
 packages/provider-kit/        @agentproto/provider-kit    Shared catalog, creds, setup-ledger, MCP tool primitives
-packages/provider-presets/    @agentproto/provider-presets   Shared gateway preset registry (Anthropic, Moonshot, OpenRouter, DeepSeek, xAI)
+packages/provider-presets/    @agentproto/provider-presets   Shared gateway preset registry (Anthropic, Moonshot, OpenRouter, Requesty, DeepSeek, xAI)
 
 adapters/claude-code/         @agentproto/adapter-claude-code   AIP-45 adapter for Claude Code
 adapters/claude-sdk/          @agentproto/adapter-claude-sdk    AIP-45 adapter for Claude SDK (Anthropic/Moonshot/OpenRouter gateway modes)

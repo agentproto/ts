@@ -130,6 +130,10 @@ Newly shipped manifest fields (this release):
   `bin_args_append_when_true`, `env`, and `env_unset`.
 - `models.deny?: string[]` reserves provider/model patterns (e.g. hermes
   denies Anthropic ids so a dedicated claude-code adapter owns them).
+- `models.apply?: "config" | "command" | "arg"` selects how the requested
+  model is applied at spawn time (`"config"` is the default; `"arg"` composes
+  it into `bin_args` via `models.bin_args_template`, e.g. codex-acp's
+  `-c model="<id>"`).
 - `models.allowed` entries can be bare id strings (back-compat) or structured
   objects `{ id, provider?, mode? }` that bind a model to its billing provider
   and adapter mode. This is what lets model pickers (e.g. the VS Code extension)

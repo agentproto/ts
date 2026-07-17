@@ -67,6 +67,21 @@ Source: `https://openrouter.ai/api/v1/models` (pinned snapshot:
   `LLMPricing`-compatible.
 - Unpriced routes (`openrouter/auto`) are skipped.
 
+### `llm:requesty`
+
+Source: `https://router.requesty.ai/v1/models` (pinned snapshot:
+`snapshots/llm-requesty.json`). Emits
+`packages/model-catalog/src/llm/requesty-routes.generated.ts` — a drop-in
+`REQUESTY_ROUTES: Record<string, LLMPricing>` plus the derived
+`REQUESTY_PROVIDERS` list.
+
+- Per-token USD prices (JSON numbers) → `inputPer1M` / `outputPer1M`.
+- `cached_price` is emitted as `cacheReadMultiplier` only when the source also
+  marks `supports_caching: true`; Requesty has no cache-write price, so
+  `cacheWriteMultiplier` is never emitted.
+- Live refresh requires `REQUESTY_API_KEY` to be set; without it the generator
+  reuses the committed snapshot.
+
 ### `llm:context-windows`
 
 Sources: Anthropic, Groq, xAI, and Moonshot models-list endpoints (pinned

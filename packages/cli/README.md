@@ -34,7 +34,7 @@ agentproto onboard      [--yes] [--no-skills] [--skills <slug>]     first-run se
 agentproto cron         <add|list|remove|run>                       recurring daemon jobs
 agentproto worktree     <ls|new|rm|archive|gc>                       git worktree lifecycle
 agentproto policy       <attach|status|wait|ack|ls|cancel>          completion-policy CLI (shell/judge gates)
-agentproto permissions  <ls|approve|deny>                           held tool-permission requests
+agentproto permissions  <ls|approve|deny|watch>                           held tool-permission requests
 agentproto acp          <ls|add|rm>                                 generic ACP agent registry
 agentproto pair         <offer|accept|ls|revoke|exec>               pairing over a rendezvous broker
 agentproto rendezvous   serve [--port <n>] [--host <ip>]           run a rendezvous broker

@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.7.0`). See
+> **Status:** alpha. The package is pre-1.0 (`0.8.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 
@@ -49,7 +49,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto onboard`](./verbs/onboard.md) — first-run: register MCP + install the skill pack in one pass
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
-- [`agentproto permissions`](./verbs/permissions.md) — approve/deny held tool-permission requests (permission-hold inbox)
+- [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto presets`](./verbs/presets.md) — list provider gateway presets + key-env status

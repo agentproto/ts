@@ -4,7 +4,7 @@ id: claude-code
 description: Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawns the wrapper as `npx @agentclientprotocol/claude-agent-acp` and drives Claude Code over stdio JSON-RPC. Use when an operator should run inside Claude Code's agent loop instead of in-process.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.59.0"]
 install:
   - method: npm
     package: "@agentclientprotocol/claude-agent-acp"
@@ -26,11 +26,18 @@ session:
   idle_timeout_ms: 1800000
   context_carryover: true
 models:
-  default: claude-sonnet-4-6
+  default: claude-sonnet-5
   allowed:
-    - claude-sonnet-4-6
-    - claude-opus-4-7
-    - claude-haiku-4-5
+    - { id: claude-sonnet-5, provider: anthropic }
+    - { id: claude-opus-4-8, provider: anthropic }
+    - { id: claude-haiku-4-5, provider: anthropic }
+    - { id: claude-fable-5, provider: anthropic }
+    - { id: kimi-k2.7-code, provider: moonshot, mode: moonshot }
+    - { id: z-ai/glm-5.2, provider: openrouter, mode: openrouter }
+    - { id: deepseek/deepseek-v4-pro, provider: openrouter, mode: openrouter }
+    - { id: moonshotai/kimi-k2, provider: openrouter, mode: openrouter }
+    - { id: sference/thinkingcap-qwen3.6-27b, provider: requesty, mode: requesty }
+    - { id: sference/glm-5.2, provider: requesty, mode: requesty }
   env:
     anthropic: ANTHROPIC_API_KEY
 capabilities:
@@ -108,6 +115,23 @@ modes:
       - CLAUDE_CODE_USE_ANTHROPIC_AWS
       - CLAUDE_CODE_USE_MANTLE
       - CLAUDE_CODE_USE_GATEWAY
+  - id: requesty
+    description: >-
+      Requesty gateway. Pre-wires ANTHROPIC_BASE_URL to Requesty's
+      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
+      (same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model
+      via `model` (e.g. 'sference/thinkingcap-qwen3.6-27b',
+      'sference/glm-5.2') and supply the Requesty key via `auth_token`.
+    env:
+      ANTHROPIC_BASE_URL: https://router.requesty.ai
+    env_unset:
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - CLAUDE_CODE_USE_ANTHROPIC_AWS
+      - CLAUDE_CODE_USE_MANTLE
+      - CLAUDE_CODE_USE_GATEWAY
   - id: deepseek
     description: >-
       DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's
@@ -134,7 +158,8 @@ options:
       created. An id the wrapper can't resolve is warned about and ignored
       (the session keeps the claude-code default). Omit to use the default.
       Required for non-Claude models reached through a gateway mode
-      (e.g. 'deepseek-v4-pro' under `deepseek`, 'kimi-k2.7-code' under `moonshot`).
+      (e.g. 'deepseek-v4-pro' under `deepseek`, 'kimi-k2.7-code' under `moonshot`,
+      'sference/glm-5.2' under `requesty`).
   - id: max_turns
     type: integer
     min: 1
@@ -149,7 +174,7 @@ options:
       Setting it auto-scrubs the ambient ANTHROPIC_API_KEY and all cloud-provider
       toggles (Bedrock/Vertex/Foundry/Mantle) so it can't leak to a third-party
       host — pair with `auth_token` to supply a per-spawn gateway key. The
-      `moonshot`/`openrouter`/`deepseek` modes are pre-wired presets over this
+      `moonshot`/`openrouter`/`requesty`/`deepseek` modes are pre-wired presets over this
       same shape.
     env:
       ANTHROPIC_BASE_URL: "{value}"
@@ -166,7 +191,7 @@ options:
     description: >-
       Bearer token for the Anthropic API or a compatible gateway, injected as
       ANTHROPIC_AUTH_TOKEN (sent as `Authorization: Bearer`). Pair with
-      `base_url` (or a `moonshot`/`openrouter`/`deepseek` mode) to target a
+      `base_url` (or a `moonshot`/`openrouter`/`requesty`/`deepseek` mode) to target a
       gateway with a per-spawn key instead of the ambient ANTHROPIC_API_KEY.
     env:
       ANTHROPIC_AUTH_TOKEN: "{value}"
