@@ -406,6 +406,52 @@ describe("composeSpawn model deny-list (AIP-45)", () => {
   })
 })
 
+describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
+  // A codex-shaped handle: the model is a CLI config override composed
+  // into bin_args, not an ACP session config — mirrors adapters/codex.
+  const argHandle = (): AgentCliHandle =>
+    handle({
+      id: "codex",
+      bin_args: ["-y", "@zed-industries/codex-acp"],
+      options: [
+        {
+          id: "model",
+          type: "enum" as const,
+          enum: ["gpt-5-codex", "gpt-5"],
+        },
+      ],
+      models: {
+        default: "gpt-5-codex",
+        allowed: ["gpt-5-codex", "gpt-5"],
+        apply: "arg",
+        bin_args_template: ["-c", 'model="{model}"'],
+      },
+    })
+
+  it("composes the model into bin_args via the template, {model} interpolated", () => {
+    const composed = composeSpawn(argHandle(), {
+      options: { model: "gpt-5-codex" },
+    })
+    expect(composed.binArgs).toEqual([
+      "-y",
+      "@zed-industries/codex-acp",
+      "-c",
+      'model="gpt-5-codex"',
+    ])
+  })
+
+  it("does not touch bin_args when no model is requested", () => {
+    const composed = composeSpawn(argHandle(), {})
+    expect(composed.binArgs).toEqual(["-y", "@zed-industries/codex-acp"])
+  })
+
+  it("still enforces the option's own enum before composing", () => {
+    expect(() =>
+      composeSpawn(argHandle(), { options: { model: "gpt-9-nonexistent" } })
+    ).toThrow(RuntimeConfigError)
+  })
+})
+
 describe("composeSpawn always-on env (AIP-45 top-level `env`)", () => {
   it("merges manifest-level env when there is no config", () => {
     const h = handle({ env: { STATIC: "1" } })

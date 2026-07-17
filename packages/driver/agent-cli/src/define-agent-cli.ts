@@ -60,6 +60,15 @@ export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
           "defineAgentCli (AIP-45): session.mode=resumable requires capabilities.resumable: true",
         )
       }
+
+      if (
+        data.models?.apply === "arg" &&
+        !data.models.bin_args_template?.length
+      ) {
+        throw new Error(
+          "defineAgentCli (AIP-45): models.apply=\"arg\" requires models.bin_args_template",
+        )
+      }
     },
     build(def: AgentCliDefinition) {
       return { ...def } as AgentCliHandle
@@ -263,6 +272,10 @@ export function createAgentCliRuntime(
       //               (e.g. hermes silently keeps its own default), so we
       //               DON'T pass model to connect; instead we send a
       //               `/model <id>` control turn after newSession (below).
+      //   "arg"     → this CLI takes its model as a CLI argument (e.g.
+      //               codex-acp's `-c model="<id>"`), already composed into
+      //               binArgs by compose.ts before spawn — we DON'T pass
+      //               model to connect() at all, same as "command".
       const modelApply = definition.models?.apply ?? "config"
       const configModel =
         optModel && modelApply === "config" ? String(optModel) : undefined

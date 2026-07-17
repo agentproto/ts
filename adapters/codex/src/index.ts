@@ -65,6 +65,13 @@ export const codex: AgentCliHandle = defineAgentCli({
     default: "gpt-5-codex",
     allowed: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
     env: { openai: "OPENAI_API_KEY", codex: "CODEX_API_KEY" },
+    // codex-acp takes its model as a CLI config override, not an ACP
+    // session config — `codex-acp --help` documents `-c model="o3"`.
+    // There is no `session/set_config_option` capability to fire at all
+    // (confirmed against v0.16.0's `initialize` response); the model must
+    // be composed into argv at spawn time instead.
+    apply: "arg",
+    bin_args_template: ["-c", 'model="{model}"'],
   },
   capabilities: {
     streaming: true,
@@ -105,7 +112,12 @@ export const codex: AgentCliHandle = defineAgentCli({
       type: "enum",
       enum: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
       description: "Override the default model for this operator binding.",
-      bin_args_template: ["--model", "{value}"],
+      // No bin_args_template here — codex-acp doesn't accept a bare
+      // `--model` flag (`error: unexpected argument '--model' found`,
+      // confirmed against v0.16.0; it crashes the process before the ACP
+      // handshake even starts). This option exists only so
+      // `config.options.model` validates; the real composition happens
+      // via `models.apply: "arg"` above.
     },
   ],
   continuation: {
