@@ -242,6 +242,7 @@ What `serve` exposes:
 | Adapter discovery | `GET /adapters`                           | Globally-installed `@agentproto/adapter-*` packages    |
 | Sessions (list)   | `GET /sessions` / `GET /sessions/:id`     | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                    | Long-lived ACP agent (multi-turn)                     |
+| Interrupt turn    | `POST /sessions/:id/interrupt`            | Cancel the in-flight turn and leave the session alive |
 | **PTY spawn**     | **`POST /sessions/terminal`**             | Real PTY under node-pty (alt-screen, ANSI, raw input) |
 | **PTY attach**    | **`WS /sessions/:id/pty`**                | JSON-framed duplex; multi-subscriber                  |
 | SSE attach        | `GET /sessions/:id/stream`                | Line-by-line text events                              |
@@ -357,6 +358,8 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | `agent_prompt`                | Send a follow-up turn to a live agent session             |
 | `agent_output`                | Tail the recent ring buffer (lines)                       |
 | `agent_kill`                  | SIGTERM an agent session                                  |
+| `agent_interrupt`             | Cancel the in-flight turn without killing the session     |
+| `conversation_read`           | Read the provider-native conversation behind any session  |
 | **`terminal_start`**          | Spawn a PTY-backed process (any argv)                     |
 | **`terminal_input`**          | Send keystrokes to a PTY's stdin                          |
 | **`terminal_output`**         | Snapshot the recent byte buffer (base64)                  |

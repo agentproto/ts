@@ -44,6 +44,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Adapter discovery | `GET /adapters`                          | When `listAgentAdapters` is wired                      |
 | Sessions list     | `GET /sessions` / `GET /sessions/:id`    | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                   | Long-lived ACP agent (needs `resolveAgentAdapter`)    |
+| Interrupt turn    | `POST /sessions/:id/interrupt`           | Cancel the in-flight turn; session stays alive        |
 | **PTY spawn**     | **`POST /sessions/terminal`**            | Needs `spawnPty` factory                              |
 | **PTY attach**    | **`WS /sessions/:id/pty`**               | JSON frames `{kind:data|input|resize|exit|ping|pong}`; multi-subscriber, min-size resize, ring-buffer replay |
 | SSE attach        | `GET /sessions/:id/stream`               | Line-by-line text events                              |

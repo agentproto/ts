@@ -2,7 +2,7 @@
 
 ```text
 agentproto cron add --schedule <cron-expr>
-                    (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <ms>]
+                    (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
                      | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                      | --target-session <id> --prompt <text>)
                     [--label <text>] [--once] [--json]
@@ -10,6 +10,10 @@ agentproto cron list   [--json]
 agentproto cron remove <id>                    (aliases: delete, rm)
 agentproto cron run    <id> [--json]
 ```
+
+`--timeout-ms` accepts a duration string. Because the flag name already declares
+milliseconds, the value must be a bare integer or carry an `ms` suffix (`30s`
+and `5m` are rejected).
 
 Manage durable cron jobs on the daemon — run a command, spawn an agent, or
 re-prompt a live session on a schedule. Jobs persist to
@@ -60,7 +64,7 @@ next run.
 | `--prompt <text>` | — | The turn to send. Required with `--adapter` or `--target-session`. |
 | `--cwd <dir>` | — | Working dir (command and agent kinds). |
 | `--model <id>` | — | Model override (agent kind). |
-| `--timeout-ms <ms>` | — | Command timeout (command kind). |
+| `--timeout-ms <duration>` | — | Command timeout (command kind). Bare integer or explicit `ms` suffix only; `s`/`m`/`h` are rejected because the flag name already declares milliseconds. |
 | `--label <text>` | — | Human-readable label, shown by `list`. |
 | `--once` | `false` | Fire once, then deactivate. |
 | `--json` | `false` | Emit the created job as JSON. |

@@ -11,7 +11,7 @@ This tree is **tool docs** — what the binary does, what flags it takes,
 what files it touches. For the protocol it implements, see the AIPs
 at <https://agentproto.sh/docs>.
 
-> **Status:** alpha. The package is pre-1.0 (`0.6.0`). See
+> **Status:** alpha. The package is pre-1.0 (`0.7.0`). See
 > [`../../VERSIONING.md`](../../VERSIONING.md) for what the alpha
 > guarantees and what may change between minor releases.
 

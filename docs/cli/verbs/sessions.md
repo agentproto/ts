@@ -76,6 +76,11 @@ ses_def34  pty        my-proj    running   1m        bash
 ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
 ```
 
+When any session was spawned inside a git worktree, a `WORKTREE` column is
+inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
+name. The full path and the worktree id are shown in the `--watch` detail pane
+and in `--json`.
+
 ### `--watch` (3-pane dashboard, default)
 
 ```bash

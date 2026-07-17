@@ -120,8 +120,9 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 
 | Tool | Purpose |
 |---|---|
-| `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` | Spawn, drive, and stop long-lived agent-CLI sessions |
+| `agent_start` / `agent_prompt` / `agent_output` / `agent_kill` / `agent_interrupt` | Spawn, drive, interrupt, and stop long-lived agent-CLI sessions |
 | `agent_sessions_list` / `agent_export` | List agent sessions; export a clean transcript |
+| `conversation_read` | Read the provider-native conversation behind any session (agent-cli or PTY) |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` | Canonical session list, hierarchy, usage, and resume |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Drive raw PTY sessions |
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |

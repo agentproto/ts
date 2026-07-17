@@ -1,7 +1,7 @@
 # `agentproto run-swarm`
 
 ```text
-agentproto run-swarm --manifest <path> [--once] [--interval <ms|Ns>]
+agentproto run-swarm --manifest <path> [--once] [--interval <duration>]
                                        [--verbose] [--plugin <module-id>]…
 ```
 
@@ -20,7 +20,7 @@ For port-by-port kernel details see
 |------|---------|---------|
 | `--manifest <path>`, `-m` | _required_ | Path to the manifest file (YAML-frontmatter markdown, as defined by `@agentproto/agent-runtime`). |
 | `--once` | off | Run exactly one cycle, then exit. Useful for cron-style polling. |
-| `--interval <ms\|Ns>` | `2000` | Delay between cycles. `500`, `500ms`, `2s` all parse. |
+| `--interval <duration>` | `2000` | Delay between cycles. Accepts `500ms`, `2s`, `5m`, `2h`; a bare integer is still interpreted as milliseconds, but bare integers <1000 are rejected as ambiguous. |
 | `--verbose`, `-v` | off | Log each cycle: idle / which participants ran / how many turns appended. Also prints the registered `kind` lists at startup. |
 | `--plugin <module-id>` (repeatable) | – | Additional plugin to load *for this invocation*. Loaded after `config.json#plugins` so flag-provided plugins can override config-listed ones. |
 

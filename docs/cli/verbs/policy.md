@@ -4,21 +4,25 @@
 agentproto policy attach (--session <id> | --sessions <id,id,…>)
                          [--then emit|commit]
                          [-- <gate-cmd> [args...]]
-                         [--gate-cwd <dir>] [--gate-timeout <ms>]
+                         [--gate-cwd <dir>] [--gate-timeout <duration>]
                          [--judge-adapter <slug> --judge-prompt <text>
-                            [--judge-model <id>] [--judge-timeout <ms>]]
+                            [--judge-model <id>] [--judge-timeout <duration>]]
                          [--gate-json <json|@file>]
                          [--commit-path <path>]... [--commit-message <text>]
                          [--ack | --no-ack]
                          [--on-fail-nudge <text>] [--on-fail-max-retries <n>]
                          [--attach-json <json|@file>]
-                         [--wait] [--timeout <ms>] [--json]
+                         [--wait] [--timeout <duration>] [--json]
 agentproto policy status <policyId> [--json]
-agentproto policy wait   <policyId> [--timeout <ms>] [--json]
+agentproto policy wait   <policyId> [--timeout <duration>] [--json]
 agentproto policy ack    <policyId> (--approve | --reject) [--json]
 agentproto policy ls     [--session <id>] [--json]      (alias: list)
 agentproto policy cancel <policyId> [--json]
 ```
+
+Timeout/interval-style flags accept a duration string: `500ms`, `30s`, `5m`, `2h`.
+A bare integer is still interpreted as milliseconds (back-compat), but a bare
+integer under 1000 is rejected as ambiguous — use `30s` or `30ms` explicitly.
 
 CLI surface for the daemon's **completion-policy engine** — shell/judge gates,
 commit + human-ack, retry-on-fail, DAG chaining. A policy attaches to a session
@@ -42,7 +46,8 @@ means the policy passes immediately at turn-end.
 | Verbatim | `--gate-json <json\|@file>` | Escape hatch: either shape, sent as-is. |
 
 `--gate-cwd` / `--gate-timeout` apply to a shell gate only — passing them
-without `-- <cmd>` exits `2`.
+without `-- <cmd>` exits `2`. `--gate-timeout` and `--judge-timeout` use the
+same duration format as `--timeout` (`30s`, `5m`, ...; bare integer = ms).
 
 ## `attach`
 
@@ -58,7 +63,7 @@ without `-- <cmd>` exits `2`.
 | `--on-fail-max-retries <n>` | — | Cap the retries. Must be ≥ 1. |
 | `--attach-json <json\|@file>` | — | Sent as the **entire** POST body, ignoring every other attach flag. The full recursive shape — fan-in `sessionIds`, `next` chaining, judge-gate detail — when flags get unwieldy. |
 | `--wait` | `false` | Block on the new policy (like `policy wait`) before returning. |
-| `--timeout <ms>` | `900000` | With `--wait`: total wait ceiling. |
+| `--timeout <duration>` | `900000` | With `--wait`: total wait ceiling. Accepts `500ms`, `30s`, `5m`, `2h`; bare integer = ms, but bare integers <1000 are rejected as ambiguous. |
 | `--json` | `false` | Emit the `PolicyRunState` as JSON. |
 
 The commit flags (`--commit-path`, `--commit-message`, `--ack`, `--no-ack`)
@@ -73,8 +78,8 @@ never blocks on a still-running policy.
 
 `wait` **long-polls** `GET /policies/:id/wait` until the policy leaves
 `watching`/`gating`/`queued`/`nudging`/`acting`, chaining calls across the
-route's ~55s per-call ceiling. `--timeout` defaults to `900000` ms (15 min) —
-a gate can be a full test suite or a judge turn, not a quick check.
+route's ~55s per-call ceiling. `--timeout` defaults to `15m` (`900000ms`); a
+gate can be a full test suite or a judge turn, not a quick check.
 
 `wait` exit codes:
 
