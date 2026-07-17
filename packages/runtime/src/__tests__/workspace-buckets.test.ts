@@ -2,11 +2,12 @@
  * AIP-46 §State partitioning — the slug→bucket rule and the additive
  * split of the legacy global snapshot.
  *
- * Fixture-driven and HOME-isolated throughout: the real
- * `~/.agentproto/sessions.json` is 148 genuine rows against 155MB of
- * transcripts, and a live daemon rewrites it continuously, so it is
- * neither safe nor byte-stable to test against. `os.homedir()` reads
- * `$HOME` on POSIX, which is the lever — same trick as
+ * Fixture-driven and HOME-isolated throughout. A developer's real
+ * `~/.agentproto/sessions.json` is their genuine history, backed by a
+ * transcript store that can reach hundreds of megabytes, and a live
+ * daemon rewrites it continuously — so it is neither safe to touch nor
+ * byte-stable enough to assert against. `os.homedir()` reads `$HOME` on
+ * POSIX, which is the lever — same trick as
  * `packages/cli/src/__tests__/install-skill.test.ts`.
  */
 
@@ -28,27 +29,28 @@ import {
   resolveBucketSlug,
 } from "../workspace-buckets.js"
 
-const REGISTERED = new Set(["agentik-studio", "choisir-service-public-app"])
+const REGISTERED = new Set(["agentik-studio", "client-app"])
 
 describe("resolveBucketSlug", () => {
   it("sends a registered slug to its own bucket", () => {
     expect(resolveBucketSlug("agentik-studio", REGISTERED)).toBe("agentik-studio")
-    expect(resolveBucketSlug("choisir-service-public-app", REGISTERED)).toBe(
-      "choisir-service-public-app",
+    expect(resolveBucketSlug("client-app", REGISTERED)).toBe(
+      "client-app",
     )
   })
 
   it("falls back to `default` for an unregistered slug", () => {
-    // `vitest-e2e` is a real example: 4 such rows sit in the author's
-    // sessions.json, left by test gateways before #411 closed that leak.
-    // Nothing registers it, so it pools rather than getting a bucket.
+    // `vitest-e2e` is the shape test gateways left behind before #411
+    // closed that leak. Nothing registers it, so it pools rather than
+    // getting a bucket of its own.
     expect(resolveBucketSlug("vitest-e2e", REGISTERED)).toBe(DEFAULT_BUCKET)
   })
 
   it("falls back to `default` for absent / empty slugs", () => {
     expect(resolveBucketSlug(undefined, REGISTERED)).toBe(DEFAULT_BUCKET)
     expect(resolveBucketSlug(null, REGISTERED)).toBe(DEFAULT_BUCKET)
-    // The author's real file carries exactly one row with `""`.
+    // An empty slug is a shape that occurs in practice, not a
+    // hypothetical — it must pool rather than become a bucket named "".
     expect(resolveBucketSlug("", REGISTERED)).toBe(DEFAULT_BUCKET)
   })
 
@@ -209,15 +211,16 @@ describe("migrateLegacySessionsFile", () => {
   })
 
   it("splits rows into buckets by slug, unregistered into `default`", () => {
-    // Shaped after the real distribution measured on the author's
-    // machine: 127 default / 61 agentik-studio / 8 choisir / 4 vitest-e2e
-    // / 1 empty-string, of which only two slugs are registered.
+    // A representative multi-workspace distribution: a large pooled
+    // `default`, one busy registered workspace, one quiet registered
+    // workspace, and a tail of rows whose slug nobody registered
+    // (a test-harness slug, an empty string, an absent field).
     writeLegacy([
       row("a1", "agentik-studio"),
       row("a2", "agentik-studio"),
-      row("c1", "choisir-service-public-app"),
+      row("c1", "client-app"),
       row("v1", "vitest-e2e"), // registered by nobody
-      row("e1", ""), // the real empty-slug row
+      row("e1", ""), // empty slug — occurs in practice
       row("u1"), // no slug at all
       row("d1", "default"),
     ])
@@ -232,12 +235,12 @@ describe("migrateLegacySessionsFile", () => {
     expect(marker?.rows).toBe(7)
     expect(marker?.byBucket).toEqual({
       "agentik-studio": 2,
-      "choisir-service-public-app": 1,
+      "client-app": 1,
       default: 4,
     })
 
     expect(readBucket("agentik-studio").sessions.map(s => s.id).sort()).toEqual(["a1", "a2"])
-    expect(readBucket("choisir-service-public-app").sessions.map(s => s.id)).toEqual(["c1"])
+    expect(readBucket("client-app").sessions.map(s => s.id)).toEqual(["c1"])
     expect(readBucket("default").sessions.map(s => s.id).sort()).toEqual(["d1", "e1", "u1", "v1"])
   })
 
@@ -251,9 +254,9 @@ describe("migrateLegacySessionsFile", () => {
   })
 
   it("is NON-DESTRUCTIVE — the legacy file is byte-identical afterwards", () => {
-    // The hard constraint. The author's real file is 148 genuine rows
-    // and the only rollback; a migration that mutates it is unacceptable
-    // regardless of how correct the split is.
+    // The hard constraint. A developer's real file is their genuine
+    // history and their only rollback; a migration that mutates it is
+    // unacceptable regardless of how correct the split is.
     writeLegacy([row("a1", "agentik-studio"), row("u1")])
     const before = readFileSync(legacy)
 
@@ -267,7 +270,7 @@ describe("migrateLegacySessionsFile", () => {
     // Stronger than "didn't happen to write": proves it CANNOT write,
     // i.e. the migration would fail loudly rather than silently mutating
     // a file it was only supposed to read.
-    writeLegacy([row("a1", "agentik-studio"), row("c1", "choisir-service-public-app")])
+    writeLegacy([row("a1", "agentik-studio"), row("c1", "client-app")])
     chmodSync(legacy, 0o444)
     try {
       const marker = migrateLegacySessionsFile({ root, legacyFile: legacy, registered: REGISTERED })

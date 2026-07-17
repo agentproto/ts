@@ -3,11 +3,11 @@
  * state actually land in its own workspace's bucket, and is HISTORY_CAP
  * now a per-bucket bound rather than a contested global budget?
  *
- * HOME-isolated (`os.homedir()` reads `$HOME` on POSIX). The real
- * `~/.agentproto/sessions.json` is off-limits: it holds 148 genuine rows
- * and a live daemon rewrites it continuously, so it is neither safe to
- * touch nor byte-stable enough to assert against. Isolation is proven by
- * an A/B here rather than by byte-comparing the real file.
+ * HOME-isolated (`os.homedir()` reads `$HOME` on POSIX). A developer's
+ * real `~/.agentproto/sessions.json` is off-limits: it is their genuine
+ * history, and a live daemon rewrites it continuously, so it is neither
+ * safe to touch nor byte-stable enough to assert against. Isolation is
+ * proven by an A/B here rather than by byte-comparing that file.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
@@ -124,9 +124,9 @@ describe("sessions registry — per-workspace partitioning", () => {
       row(`busy-${i}`, "busy", `2026-07-02T${String(i % 24).padStart(2, "0")}:00:00.000Z`),
     )
     const quiet = Array.from({ length: 8 }, (_, i) =>
-      // Oldest — the first thing a global cap discards. Eight rows is
-      // the real count the author's `choisir-service-public-app`
-      // workspace held when this was measured.
+      // Oldest — the first thing a global cap discards. A single-digit
+      // row count is a realistic size for a workspace someone touches
+      // occasionally, which is exactly the case a global cap punishes.
       row(`quiet-${i}`, "quiet", `2026-01-0${i + 1}T00:00:00.000Z`),
     )
     writeBucket("busy", busy)
@@ -174,7 +174,7 @@ describe("sessions registry — per-workspace partitioning", () => {
     const loaded = registry.list()
 
     // Every one of quiet's 8 rows is gone — evicted by a neighbour's
-    // busy afternoon, exactly as measured on the author's machine.
+    // busy afternoon.
     expect(loaded.filter(s => s.id.startsWith("quiet-"))).toHaveLength(0)
     // The global bound is spent entirely on the busiest workspace.
     expect(loaded).toHaveLength(HISTORY_CAP)
@@ -262,10 +262,10 @@ describe("isolated-HOME A/B — a workspace's state lands in its own bucket", ()
   })
 
   it("two HOMEs, same slug, zero cross-talk", async () => {
-    // The A/B the byte-identity oracle can't give us: rather than
-    // asserting the real sessions.json didn't change (it changes
-    // constantly — a live daemon owns it), run the same workspace slug
-    // under two independent HOMEs and prove neither sees the other.
+    // The A/B the byte-identity oracle can't give us: a real
+    // sessions.json changes constantly (a live daemon owns it), so
+    // "didn't change" is unassertable. Instead run the same workspace
+    // slug under two independent HOMEs and prove neither sees the other.
     vi.spyOn(console, "warn").mockImplementation(() => {})
     const homes = [
       mkdtempSync(join(tmpdir(), "agentproto-ab-a-")),
