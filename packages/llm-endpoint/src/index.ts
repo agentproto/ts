@@ -803,6 +803,52 @@ function stripThinkingFromAnthropicJson(jsonStr: string): string {
   }
 }
 
+// --- Empty-turn retry ---------------------------------------------------
+// Certains modèles "reasoning" servis derrière un routeur (vérifié : Requesty
+// sur sference/thinkingcap-qwen3.6-27b, ~12% des tours) raisonnent puis
+// n'émettent RIEN : que des blocs thinking, aucun text, aucun tool_use, et
+// stop_reason "end_turn". Le tour est un no-op silencieux — et comme on strip
+// justement les blocs thinking, le client reçoit un message vide.
+//
+// Le tour vide est un défaut MODÈLE, pas un défaut de traduction : mesuré
+// identique (12%) sur les deux surfaces de Requesty (Anthropic et OpenAI).
+// On rejoue donc une fois, ce qui ramène ~12% à ~1.4%.
+//
+// Portée volontairement étroite :
+//   - seulement les providers `needsStrip` (ceux qui présentent le défaut) ;
+//   - seulement sur HTTP 200 — une 429/500 n'est pas un tour vide ;
+//   - seulement sur stop_reason "end_turn" — un "max_tokens" signifie que le
+//     modèle a brûlé son budget dans le thinking, et rejouer à budget
+//     identique reproduirait le même résultat en facturant deux fois ;
+//   - 1 essai par défaut (`LLM_ENDPOINT_EMPTY_TURN_RETRY=0` désactive).
+// Chaque rejeu est loggé : un retry silencieux masquerait un vrai tour vide,
+// que @agentproto/runtime remonte justement comme `empty: true`.
+const DEFAULT_EMPTY_TURN_RETRIES = 1;
+
+function resolveEmptyTurnRetries(): number {
+  const raw = process.env.LLM_ENDPOINT_EMPTY_TURN_RETRY;
+  if (raw === undefined) return DEFAULT_EMPTY_TURN_RETRIES;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_EMPTY_TURN_RETRIES;
+}
+
+/**
+ * True when an Anthropic Messages JSON body is a "tour vide": ended normally
+ * (`end_turn`) but carries no client-visible content once thinking is stripped.
+ */
+function isEmptyAnthropicTurn(jsonStr: string): boolean {
+  try {
+    const obj = JSON.parse(jsonStr);
+    if (!obj || obj.type === 'error' || !Array.isArray(obj.content)) return false;
+    if (obj.stop_reason !== 'end_turn') return false;
+    return !obj.content.some(
+      (b: any) => b && b.type !== 'thinking' && b.type !== 'redacted_thinking'
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Transformeur SSE en flux : filtre les content_block_start/delta/stop des blocs
 // thinking/redacted_thinking et réindexe les blocs conservés (0,1,2…) pour que le
 // CLI voie des indices contigus. Garde message_start/message_delta/message_stop/ping.
@@ -811,6 +857,16 @@ class AnthropicThinkingStripper {
   private indexMap = new Map<number, number>();
   private nextOut = 0;
   private buffer = '';
+  /**
+   * True once a NON-thinking content block has started — i.e. the turn is
+   * producing something the client will actually see (text or tool_use).
+   * Read by the empty-turn retry: a turn that ends without this produced
+   * nothing but stripped thinking, so nothing has been written downstream yet
+   * and the attempt is still safely discardable.
+   */
+  hasMeaningfulContent = false;
+  /** stop_reason seen on message_delta, if any. */
+  stopReason: string | null = null;
 
   push(chunk: string): string[] {
     this.buffer += chunk;
@@ -860,6 +916,10 @@ class AnthropicThinkingStripper {
       const outIdx = this.nextOut++;
       this.indexMap.set(data.index, outIdx);
       data.index = outIdx;
+      this.hasMeaningfulContent = true;
+    } else if (type === 'message_delta') {
+      const sr = data.delta && data.delta.stop_reason;
+      if (typeof sr === 'string') this.stopReason = sr;
     } else if (type === 'content_block_delta') {
       if (this.skipIndices.has(data.index)) return null;
       const dt = data.delta && data.delta.type;
@@ -1486,10 +1546,31 @@ const server = createServer((req, res) => {
         headers
       };
 
+      // Budget de rejeu sur tour vide — voir isEmptyAnthropicTurn. Réservé aux
+      // providers needsStrip ; décrémenté à chaque rejeu, jamais réarmé.
+      let emptyTurnRetriesLeft =
+        (resolvedTarget.provider === 'openrouter' || resolvedTarget.provider === 'requesty')
+          ? resolveEmptyTurnRetries()
+          : 0;
+
+      const sendUpstream = (): void => {
       const proxyReq = request(options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
         const contentType = proxyRes.headers['content-type'] as string || '';
         const isStreaming = (payload.stream === true) && /text\/event-stream/i.test(contentType);
+        /** Rejoue le tour. Retourne false si le budget est épuisé. */
+        const retryEmptyTurn = (): boolean => {
+          if (status !== 200 || emptyTurnRetriesLeft <= 0) return false;
+          emptyTurnRetriesLeft--;
+          console.warn(
+            `\x1b[33m[Proxy] tour vide (end_turn sans texte ni tool_use) de ` +
+            `${resolvedTarget.provider}:${resolvedTarget.model} — rejeu ` +
+            `(${emptyTurnRetriesLeft} restant(s))\x1b[0m`
+          );
+          proxyRes.resume(); // libère le socket avant de renvoyer
+          sendUpstream();
+          return true;
+        };
         // OpenRouter renvoie des blocs thinking/redacted_thinking (signature vide) que le
         // CLI `claude` rejette pour les modèles courants → on les strip côté proxy.
         // Requesty a le même défaut (vérifié live : sference/* renvoie
@@ -1528,28 +1609,61 @@ const server = createServer((req, res) => {
           });
         } else if (needsStrip && !isStreaming) {
           // Non-streaming : bufferiser le body JSON, strip les blocs thinking, renvoyer.
-          const respHeaders = { ...proxyRes.headers };
-          delete respHeaders['content-length']; // on va reformer le body
-          delete respHeaders['transfer-encoding'];
-          res.writeHead(status, respHeaders);
+          // writeHead est différé jusqu'après la décision de rejeu : une fois les
+          // en-têtes envoyés, la réponse est engagée et le rejeu impossible.
           let body = '';
           proxyRes.setEncoding('utf8');
           proxyRes.on('data', (c: string) => { body += c; });
           proxyRes.on('end', () => {
+            if (isEmptyAnthropicTurn(body) && retryEmptyTurn()) return;
+            const respHeaders = { ...proxyRes.headers };
+            delete respHeaders['content-length']; // on va reformer le body
+            delete respHeaders['transfer-encoding'];
+            res.writeHead(status, respHeaders);
             res.end(stripThinkingFromAnthropicJson(body || '{}'));
           });
         } else if (needsStrip && isStreaming) {
           // Streaming SSE : filtrer les events thinking en flux (indices contigus).
-          const respHeaders = { ...proxyRes.headers };
-          delete respHeaders['content-length'];
-          res.writeHead(status, respHeaders);
+          //
+          // Les events sont retenus jusqu'au PREMIER bloc réellement visible
+          // (text/tool_use). Coût nul : les blocs thinking étant strippés, rien
+          // ne partait vers le client pendant la phase de raisonnement de toute
+          // façon — cette fenêtre est exactement celle où le tour vide se joue.
+          // Passé ce point on est engagé et on repasse en flux direct.
           const stripper = new AnthropicThinkingStripper();
+          const pending: string[] = [];
+          let committed = false;
+          const commit = (): void => {
+            if (committed) return;
+            committed = true;
+            const respHeaders = { ...proxyRes.headers };
+            delete respHeaders['content-length'];
+            res.writeHead(status, respHeaders);
+            for (const out of pending) res.write(out);
+            pending.length = 0;
+          };
           proxyRes.setEncoding('utf8');
           proxyRes.on('data', (c: string) => {
-            for (const out of stripper.push(c)) res.write(out);
+            for (const out of stripper.push(c)) {
+              if (committed) res.write(out);
+              else pending.push(out);
+            }
+            if (!committed && stripper.hasMeaningfulContent) commit();
           });
           proxyRes.on('end', () => {
-            for (const out of stripper.flush()) res.write(out);
+            for (const out of stripper.flush()) {
+              if (committed) res.write(out);
+              else pending.push(out);
+            }
+            if (!committed && stripper.hasMeaningfulContent) commit();
+            if (!committed) {
+              // Rien de visible n'a été produit. Rejouer si c'est la signature
+              // du tour vide ; sinon livrer le flux tel quel (message bien formé,
+              // fût-il vide) plutôt que de laisser le client pendre.
+              const emptyTurn = stripper.stopReason === 'end_turn';
+              if (emptyTurn && retryEmptyTurn()) return;
+              commit();
+            }
             res.end();
           });
         } else {
@@ -1561,12 +1675,18 @@ const server = createServer((req, res) => {
 
       proxyReq.on('error', (err) => {
         console.error('[Proxy SORTANT error]', err);
+        // Un rejeu peut échouer après qu'un essai précédent a engagé la réponse —
+        // n'écrire l'erreur que si rien n'est encore parti.
+        if (res.headersSent) { res.end(); return; }
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'api_error', message: err.message } }));
       });
 
       proxyReq.write(JSON.stringify(payload));
       proxyReq.end();
+      };
+
+      sendUpstream();
 
     } catch (e: any) {
       console.error('[Payload Error]', e);
@@ -1578,6 +1698,9 @@ const server = createServer((req, res) => {
 
 /** Le serveur HTTP du proxy (non démarré). Importable pour test/embed. */
 export { server };
+
+/** Exporté pour les tests — voir la note sur le rejeu de tour vide. */
+export { isEmptyAnthropicTurn, resolveEmptyTurnRetries };
 
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
