@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**", "skills/**", ".claude-plugin/**"]
     },
     "check-types": {
       "dependsOn": ["^build"],

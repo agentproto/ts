@@ -15,7 +15,8 @@
  */
 
 import { cp, mkdir } from "node:fs/promises"
-import { pathExists, promptOverwrite, spawnInherit } from "./shared.js"
+import { pathExists, promptOverwrite } from "./shared.js"
+import { zipPackDir } from "./zip-pack.js"
 import type { SkillInstallHandler } from "./types.js"
 
 export const installClaudePlugin: SkillInstallHandler = async (skill, opts, target) => {
@@ -60,19 +61,10 @@ export const installClaudePlugin: SkillInstallHandler = async (skill, opts, targ
   // Create a .zip of the plugin (best-effort — the plugin dir is the
   // canonical artifact; the archive is a convenience, and `zip` may be
   // absent on minimal/Windows environments).
-  const zipPath = `${outDir}.zip`
-  let zipped = false
-  try {
-    const zipCode = await spawnInherit("zip", ["-r", "-q", zipPath, outDir])
-    zipped = zipCode === 0
-    if (!zipped) {
-      process.stderr.write(
-        `agentproto install skill: warning — 'zip' exited ${zipCode}; emitted the plugin dir without an archive.\n`,
-      )
-    }
-  } catch {
+  const { zipped, zipPath } = await zipPackDir(outDir)
+  if (!zipped) {
     process.stderr.write(
-      "agentproto install skill: warning — 'zip' not found on PATH; emitted the plugin dir without an archive.\n",
+      "agentproto install skill: warning — 'zip' failed or is not on PATH; emitted the plugin dir without an archive.\n",
     )
   }
 

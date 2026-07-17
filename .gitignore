@@ -15,6 +15,19 @@ packages/corpus-presets/src/research/files.ts
 # Generated Claude Code hook — regenerated from the canonical parser source by prebuild hooks
 packages/runtime-profile-standard/files/.claude/hooks/user-prompt-submit.mjs
 
+# Skill packs — skills/ + .claude-plugin/ are `pnpm build` output from
+# src/skills/ + manifest.json (see packages/skill-pack-*/scripts/build.mjs).
+# Never hand-edit or commit them; edit src/skills/ instead.
+packages/skill-pack-agentproto/skills/
+packages/skill-pack-agentproto/.claude-plugin/
+packages/skill-pack-bureau/skills/
+packages/skill-pack-bureau/.claude-plugin/
+
+# `agentproto pack skill`'s default --out — a local dev/dry-run scratch dir
+# for building an arbitrary pack outside a package's own scripts/build.mjs.
+# Never commit its output (that was the disease this repo used to have).
+/.skills/
+
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 

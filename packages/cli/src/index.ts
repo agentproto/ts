@@ -10,6 +10,9 @@ export { runInstall } from "./commands/install.js"
 export { runRun } from "./commands/run.js"
 export { runServe } from "./commands/serve.js"
 export { runAcp } from "./commands/acp.js"
+export { runPackSkill } from "./commands/pack.js"
+export { zipPackDir } from "./commands/skill-install/zip-pack.js"
+export type { ZipPackResult } from "./commands/skill-install/zip-pack.js"
 export {
   resolveAdapter,
   listInstalledAdapters,

@@ -23,9 +23,12 @@ import { bumpSemver } from "../commands/pack.js"
 // ── repo root ────────────────────────────────────────────────────────────
 
 const REPO_ROOT = (() => {
+  // pnpm-workspace.yaml is root-only and always committed — unlike .skills/,
+  // which is gitignored build output now (see packages/skill-pack-*) and
+  // may not exist at all.
   let dir = dirname(fileURLToPath(import.meta.url))
   for (let i = 0; i < 10; i++) {
-    if (existsSync(join(dir, ".skills"))) return dir
+    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir
     const parent = dirname(dir)
     if (parent === dir) break
     dir = parent
@@ -495,6 +498,85 @@ description: "From real source"
 
     const readme = readFileSync(join(packDir, "README.md"), "utf8")
     expect(readme).toContain("From real source")
+  })
+})
+
+// ── integration: --version override ─────────────────────────────────────
+
+describe("agentproto pack skill --version override", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-version-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it("--version overrides manifest.version when the manifest omits it", async () => {
+    const { manifestPath, outDir, packName } = await createFixture(tmp)
+
+    // Drop `version` from the manifest to prove --version alone drives it.
+    const raw = JSON.parse(readFileSync(manifestPath, "utf8"))
+    delete raw.version
+    await writeFile(manifestPath, JSON.stringify(raw, null, 2), "utf8")
+
+    const { code, stdout } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir, "--version", "2.5.0"],
+      tmp,
+    )
+
+    expect(code).toBe(0)
+    expect(stdout).toContain("version 2.5.0")
+
+    const packDir = join(outDir, `${packName}-v2.5.0`)
+    const plugin = JSON.parse(
+      readFileSync(join(packDir, ".claude-plugin", "plugin.json"), "utf8"),
+    )
+    expect(plugin.version).toBe("2.5.0")
+  })
+
+  it("--version takes precedence over manifest.version when both are present", async () => {
+    const { manifestPath, outDir, packName } = await createFixture(tmp, { version: "1.0.0" })
+
+    const { code } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir, "--version", "3.0.0"],
+      tmp,
+    )
+
+    expect(code).toBe(0)
+    expect(existsSync(join(outDir, `${packName}-v3.0.0`))).toBe(true)
+    expect(existsSync(join(outDir, `${packName}-v1.0.0`))).toBe(false)
+  })
+
+  it("exits with code 2 when neither manifest.version nor --version is given", async () => {
+    const { manifestPath, outDir } = await createFixture(tmp)
+
+    const raw = JSON.parse(readFileSync(manifestPath, "utf8"))
+    delete raw.version
+    await writeFile(manifestPath, JSON.stringify(raw, null, 2), "utf8")
+
+    const { code, stderr } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir],
+      tmp,
+    )
+
+    expect(code).toBe(2)
+    expect(stderr).toContain("no version")
+    expect(stderr).toContain("--version")
+  })
+
+  it("exits with code 2 for a malformed --version", async () => {
+    const { manifestPath, outDir } = await createFixture(tmp)
+
+    const { code, stderr } = runPackCli(
+      ["skill", "--manifest", manifestPath, "--out", outDir, "--version", "not-a-version"],
+      tmp,
+    )
+
+    expect(code).toBe(2)
+    expect(stderr).toContain("not a valid semver")
   })
 })
 

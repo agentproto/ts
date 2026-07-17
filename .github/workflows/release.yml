@@ -148,6 +148,45 @@ jobs:
             --notes "Official release, built from $(git rev-parse HEAD). Published to the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Agentproto.agentproto-vscode) — or install this VSIX directly with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
             --latest=false
 
+      # Skill packs (packages/skill-pack-*) ship two ways from ONE build (see
+      # each package's scripts/build.mjs, already run by "Build all packages"
+      # above, before changesets bumped-and-published from this same
+      # checkout): the npm package itself (skills/ + .claude-plugin/, resolved
+      # by `agentproto install skill/<slug>` or `--pack <name>`), and a
+      # versioned .zip bundle at dist/<manifest-name>-v<version>.zip — the
+      # Claude Code / Anthropic-installable artifact, unzip-and-go, no
+      # agentproto required. npm publish is changesets' job like any other
+      # package; this step only attaches that already-built zip to the
+      # per-package GitHub release changesets/action creates (tag
+      # `<npm-name>@<version>`, reconciled by reconcile-release-tags.mjs same
+      # as any package). Guarded per-package on the release actually
+      # existing, since a given run may not have published either — or only
+      # one — of them.
+      - name: Attach skill-pack bundles to their GitHub releases
+        if: always() && (steps.changesets.outputs.published == 'true' || steps.reconcile.outputs.recovered == 'true' || inputs.force_post_release_steps == true)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for dir in packages/skill-pack-*; do
+            name=$(node -p "require('./${dir}/package.json').name")
+            version=$(node -p "require('./${dir}/package.json').version")
+            manifestName=$(node -p "require('./${dir}/manifest.json').name")
+            tag="${name}@${version}"
+            zip="${dir}/dist/${manifestName}-v${version}.zip"
+
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              echo "No GitHub release for $tag this run — skipping (package unchanged)."
+              continue
+            fi
+            if [ ! -f "$zip" ]; then
+              echo "::warning::$tag has a release but no built zip at $zip — was the build step skipped?"
+              continue
+            fi
+            gh release upload "$tag" "$zip" --clobber
+            echo "Attached $zip to release $tag"
+          done
+
       # Only runs when changesets/action actually published packages (not when
       # it just opened the "Version Packages" PR). The agent reads every
       # per-package CHANGELOG, greps the codebase for context, and posts a

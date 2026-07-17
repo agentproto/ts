@@ -65,9 +65,13 @@ export async function promptOverwrite(
   return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes"
 }
 
-export function spawnInherit(cmd: string, argv: string[]): Promise<number> {
+export function spawnInherit(
+  cmd: string,
+  argv: string[],
+  opts?: { cwd?: string },
+): Promise<number> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd, argv, { stdio: "inherit" })
+    const child = spawn(cmd, argv, { stdio: "inherit", cwd: opts?.cwd })
     child.once("error", reject)
     child.once("exit", (code) => resolvePromise(code ?? 0))
   })

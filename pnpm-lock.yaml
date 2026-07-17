@@ -2596,6 +2596,24 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
 
+  packages/skill-pack-agentproto:
+    devDependencies:
+      '@agentproto/cli':
+        specifier: workspace:*
+        version: link:../cli
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
+  packages/skill-pack-bureau:
+    devDependencies:
+      '@agentproto/cli':
+        specifier: workspace:*
+        version: link:../cli
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
   packages/storage:
     dependencies:
       '@agentproto/define-doctype':
