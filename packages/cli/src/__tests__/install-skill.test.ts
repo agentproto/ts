@@ -12,7 +12,7 @@
  *    install can never touch the real `~/.hermes`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -28,6 +28,17 @@ import {
   isSymlink,
   freshCopyDir,
 } from "../commands/install-skill.js"
+
+// `runCli` below gives each spawned CLI 15s (see its `timeout`), but vitest's
+// own per-test default is 5s — so a spawn the helper explicitly permits to
+// take 6s was killed by the test runner at 5s, and the budget on the spawn was
+// a lie. Locally these finish in ~2s and never notice; on a loaded CI runner
+// they cross 5s and the gate goes red in a package the author's diff never
+// touched. Two tests had already been patched one-by-one with
+// `{ timeout: 15_000 }`; that fixed the two that happened to bite and left
+// every other real-CLI test in this file latently flaky. Set the budget ONCE
+// here, matching runCli's, so the two numbers can't drift apart again.
+vi.setConfig({ testTimeout: 15_000 })
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
 import { isAdapterSkillsTarget } from "../commands/skill-install/types.js"
 
@@ -657,7 +668,7 @@ describe("isAdapterSkillsTarget (unit)", () => {
 // ── integration: fan-out (no --target) ───────────────────────────────────
 
 describe("agentproto install skill fan-out (no --target, dry-run via real CLI)", () => {
-  it("installs into every adapter declaring metadata.skills, skips the rest informationally", { timeout: 15_000 }, () => {
+  it("installs into every adapter declaring metadata.skills, skips the rest informationally", () => {
     const { stdout, code } = runCli([
       "skill/agent-session-orchestration-agentproto",
       "--dry-run",
@@ -673,7 +684,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
     expect(stdout).toContain("no skills metadata declared")
   })
 
-  it("still short-circuits on --dry-run (no writes) in fan-out mode", { timeout: 15_000 }, () => {
+  it("still short-circuits on --dry-run (no writes) in fan-out mode", () => {
     const fakeHome = join(tmpdir(), `agentproto-fanout-dryrun-${Date.now()}`)
     const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
     const result = spawnSync(
