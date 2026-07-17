@@ -1,108 +1,145 @@
 # Getting started
 
-A 5-minute walkthrough from `npm install` to a running swarm.
+One verified path from `npm install` to a project-scoped Claude Code
+integration: install → workspace → daemon → register the MCP server →
+verify → skills.
+
+> Looking for the other direction — agentproto **driving** Claude Code,
+> Codex, or Hermes as an adapter instead of being called by them — see
+> [`verbs/install.md`](./verbs/install.md) and
+> [`verbs/run.md`](./verbs/run.md). This walkthrough is: your existing
+> coding CLI calls **into** agentproto over MCP.
 
 ## 1. Install the CLI
 
 ```bash
 npm i -g @agentproto/cli
 agentproto --version
-# → agentproto 0.6.0
 ```
 
-The binary is named `agentproto`. `--help` (no args, or `-h`) prints
-the verb list.
+Requires Node.js ≥ 20.9.0. The binary is named `agentproto`; `--help`
+(no args, or `-h`) prints the full verb list.
 
-## 2. Install your first adapter
+## 2. Register your workspace
 
-Pick an adapter — the canonical set is `claude-code`, `hermes`,
-`opencode`, `codex`, `mastra-agent` (the first-party agent), `openclaw`.
-Each is published as `@agentproto/adapter-<slug>`.
+A workspace is a registered project directory other verbs can target
+by slug instead of by absolute path.
 
 ```bash
-agentproto install claude-code
+cd /path/to/your/project
+agentproto workspace add . --slug my-project
+agentproto workspace list
 ```
 
-What this does:
+See [`verbs/workspace.md`](./verbs/workspace.md).
 
-1. Resolves `@agentproto/adapter-claude-code` from npm (you can
-   install the adapter package separately first; otherwise the install
-   verb expects it on the resolution path).
-2. Runs the adapter's declared install pipeline — `npm i -g
-   @anthropic-ai/claude-code`, or a `brew`, `curl`, `download`, etc.
-   step depending on the manifest.
-3. Runs the adapter's post-install `setup[]` pipeline if it has one
-   (skip with `--skip-setup`).
+## 3. Start the daemon
 
-If the underlying CLI is already installed and the manifest's
-`version_check` answers, `install` short-circuits and reports
-`already installed`. Pass `--force` to re-run anyway.
-
-Full flag reference: [`verbs/install.md`](./verbs/install.md).
-
-## 3. Run a single turn
+The daemon boots a local HTTP gateway — sessions, MCP, events — bound
+to the workspace you just registered.
 
 ```bash
-agentproto run claude-code --prompt "Summarise the README in this repo."
+agentproto serve --workspace /path/to/your/project
 ```
 
-`run` spawns the adapter, sends one user turn, streams the response to
-stdout, then exits. Useful for scripting and smoke-testing.
+This runs in the foreground (Ctrl-C to stop) — good for a first run.
+It writes `<workspace>/.agentproto/runtime.json` with the live port and
+a per-boot bearer token; MCP tool calls from `127.0.0.1`/`localhost`
+don't need that token, it's only required for mutating HTTP routes
+called from a non-localhost origin.
 
-Pipe a prompt over stdin instead of `--prompt`:
+For an always-on background service instead (macOS launchd today), see
+[`verbs/daemon.md`](./verbs/daemon.md) — same binary, same flags, just
+supervised by the OS.
+
+Leave the daemon running and open a second terminal for the next steps.
+
+## 4. Register the MCP server in Claude Code (project-scoped)
+
+Claude Code speaks the MCP Streamable HTTP transport natively, so it
+can call the daemon directly at `http://127.0.0.1:18790/mcp` — no
+bridge process needed.
+
+Project scope means the config lives in the repo and applies to every
+contributor who opens it in Claude Code. Create `.mcp.json` at the
+project root:
+
+```json
+{
+  "mcpServers": {
+    "agentproto": {
+      "type": "http",
+      "url": "http://127.0.0.1:18790/mcp"
+    }
+  }
+}
+```
+
+Adjust the port if you passed `--port` to `serve`. Restart your Claude
+Code session — the `agentproto` server appears in its MCP panel and
+its tools become available immediately.
+
+For Codex, Cursor, Claude Desktop, or Hermes instead — including a
+user-scoped (not project-scoped) Claude Code registration — see the
+full guide: [`guides/mcp-in-coding-cli.md`](./guides/mcp-in-coding-cli.md).
+`agentproto install-mcp --yes` also automates this step (and the
+equivalent for every other coding CLI it detects on the machine) if
+you'd rather not hand-write the config.
+
+## 5. Verify — read-only checks
+
+Confirm the daemon is up and the tool surface is reachable before
+trusting an agent to use it. Neither command below mutates anything.
 
 ```bash
-git diff | agentproto run claude-code -p "Review this diff."
+curl -s http://127.0.0.1:18790/health | python3 -m json.tool
+# → { "status": "ok", "workspace": "...", "registered": [...], "uptimeMs": ... }
 ```
-
-Use `--json` for one JSON event per line (`text-delta`, `tool-call`,
-`tool-result`, `turn-end`, `error`). See [`verbs/run.md`](./verbs/run.md).
-
-## 4. Run your first swarm
-
-Swarms need a manifest. The reference `standard` profile drops one
-ready-to-edit example next to a Claude Code scaffolding:
 
 ```bash
-agentproto install runtime-profile/standard
+curl -s -X POST http://127.0.0.1:18790/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | grep -o '"name":"[a-z_]*"' | head -20
 ```
 
-This copies `.claude/agents/reviewer.md`, `.claude/hooks/…`,
-`.claude/commands/ap-swarm.md`, and an example manifest at
-`.claude/examples/swarm-local.md` into the cwd. Re-runs are idempotent
-via a ledger at `~/.agentproto/profiles/standard.json`.
+The MCP endpoint uses the Streamable HTTP transport — both
+`application/json` and `text/event-stream` must be present in `Accept`
+or it responds `406 Not Acceptable`.
 
-Adapt the example into a real manifest at `.runtime/multi-agent.yaml`,
-then:
+From inside Claude Code itself: type `/mcp` in the chat input and
+confirm `agentproto` is listed, or just prompt the agent — "List the
+MCP tools available from agentproto."
+
+## 6. Install the skill pack
+
+Skills teach the agent how to use the tools you just exposed —
+orchestration patterns, session supervision, delegation conventions.
 
 ```bash
-agentproto run-swarm --manifest .runtime/multi-agent.yaml --verbose
+# Preview what would install, no writes:
+agentproto install skill/agentproto-pack --list
+
+# Install it:
+agentproto install skill/agentproto-pack
 ```
 
-The kernel runs cycles — read substrate → dispatch → execute → append —
-until you Ctrl-C. See [`verbs/run-swarm.md`](./verbs/run-swarm.md) and
-[`concepts/swarms.md`](./concepts/swarms.md).
+Without `--target`, this fans out to every installed adapter that
+declares a `metadata.skills` block. See
+[`verbs/install.md`](./verbs/install.md#skill-install).
 
-## 5. Add a plugin
-
-Built-ins (`file`, `mention`, `fs`, `agent-cli`) cover local file-mode
-swarms. To use a transport-backed substrate (e.g. a hosted gateway),
-install its plugin:
-
-```bash
-agentproto plugins install <plugin-package>
-agentproto plugins list
-```
-
-A plugin extends the kernel's `kind` registry — new substrates,
-dispatchers, executors, or state stores. See
-[`verbs/plugins.md`](./verbs/plugins.md) and
-[`concepts/plugins.md`](./concepts/plugins.md).
+`agentproto onboard --yes` does steps 4 and 6 together in one
+non-interactive pass, for every coding CLI it detects — reach for it
+once you've done the manual path once and understand what it's doing.
 
 ## What's next
 
 - Persistent sessions you can detach + reattach:
   [`verbs/sessions.md`](./verbs/sessions.md)
+- Orchestrating a multi-agent swarm from a manifest:
+  [`concepts/swarms.md`](./concepts/swarms.md) +
+  [`verbs/run-swarm.md`](./verbs/run-swarm.md)
 - Gating whether a spawned agent may itself delegate to sub-agents:
   [`concepts/roles.md`](./concepts/roles.md)
 - What a session's transcript captures and how to export it:
@@ -110,5 +147,6 @@ dispatchers, executors, or state stores. See
 - Hosting your CLI for a remote agent over a tunnel:
   [`verbs/serve.md`](./verbs/serve.md) +
   [`verbs/auth.md`](./verbs/auth.md)
-- Running the daemon as a managed service:
-  [`verbs/daemon.md`](./verbs/daemon.md)
+- Driving an adapter directly instead of being called via MCP:
+  [`verbs/install.md`](./verbs/install.md) +
+  [`verbs/run.md`](./verbs/run.md)

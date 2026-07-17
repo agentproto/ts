@@ -47,7 +47,7 @@ To run the daemon as a background OS service instead, see
 
 ```bash
 curl -s http://127.0.0.1:18790/health | python3 -m json.tool
-# → { "status": "ok", "workspace": "...", "registered": [...], "uptime": ... }
+# → { "status": "ok", "workspace": "...", "registered": [...], "uptimeMs": ... }
 ```
 
 ---
@@ -85,8 +85,7 @@ contributors):
 ```
 
 Place this file at the project root.  Claude Code picks it up automatically
-when launched from that directory.  This is the exact entry used in the
-agentproto repo's own root `.mcp.json`.
+when launched from that directory.
 
 **Option B — `claude mcp add` (global or project scope)**:
 
@@ -102,11 +101,10 @@ After registration, restart the Claude Code session.  The `agentproto` server
 will appear in the MCP panel and its tools are immediately available to the
 agent.
 
-> **Note**: The `.mcp.json` snippet is verified from the repo's root config.
-> The `claude mcp add` flags above match the published Claude Code reference but
-> are not exercised in the agentproto repo — in particular `--scope user`
-> (not `--scope global`) is the likely flag for user-level registration; verify
-> against your installed version.
+> **Note**: The `claude mcp add` flags above match the published Claude Code
+> reference but are not exercised in the agentproto repo — in particular
+> `--scope user` (not `--scope global`) is the likely flag for user-level
+> registration; verify against your installed version.
 
 ---
 
@@ -197,9 +195,16 @@ Expected response: an array (possibly empty) of sessions.  Use
 ```bash
 curl -s -X POST http://127.0.0.1:18790/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-  | python3 -m json.tool | grep '"name"' | head -20
+  | grep -o '"name":"[a-z_]*"' | head -20
 ```
+
+The endpoint uses the MCP Streamable HTTP transport — both
+`application/json` and `text/event-stream` must be present in `Accept`, or
+it responds `406 Not Acceptable`. It also streams as SSE (`event: message`
+framing), which is why this pipes through `grep` rather than
+`python3 -m json.tool`.
 
 Expected: tool names including `start_agent_session`, `list_sessions`,
 `prompt_agent_session`, and others.
