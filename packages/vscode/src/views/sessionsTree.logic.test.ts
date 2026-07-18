@@ -7,6 +7,7 @@ import {
   bucketFor,
   buildSessionRows,
   buildSessionTree,
+  collapseResumeChains,
   compareSessions,
   contextValueFor,
   contextPercent,
@@ -457,6 +458,51 @@ describe("compareSessions", () => {
     const newer = session({ id: "b", startedAt: "2026-01-02T00:00:00Z" })
     expect(compareSessions(newer, older)).toBeLessThan(0)
     expect(compareSessions(older, newer)).toBeGreaterThan(0)
+  })
+})
+
+describe("collapseResumeChains", () => {
+  it("is the identity when no session has resumedFrom", () => {
+    const sessions = [session({ id: "a" }), session({ id: "b" })]
+    expect(collapseResumeChains(sessions)).toEqual(sessions)
+  })
+
+  it("hides a predecessor a still-listed session resumed from (two-hop)", () => {
+    const collapsed = collapseResumeChains([
+      session({ id: "a" }),
+      session({ id: "b", resumedFrom: "a" }),
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["b"])
+  })
+
+  it("transitively hides both predecessors of a three-hop chain (A→B→C)", () => {
+    const collapsed = collapseResumeChains([
+      session({ id: "a" }),
+      session({ id: "b", resumedFrom: "a" }),
+      session({ id: "c", resumedFrom: "b" }),
+    ])
+    expect(collapsed.map(s => s.id)).toEqual(["c"])
+  })
+
+  it("keeps a predecessor visible when its successor is absent from the list (filtered/archived)", () => {
+    // "b" (which resumed from "a") isn't in this list at all — e.g. it's
+    // archived and the caller's archived-filter already excluded it.
+    const collapsed = collapseResumeChains([session({ id: "a" })])
+    expect(collapsed.map(s => s.id)).toEqual(["a"])
+  })
+
+  it("ignores a resumedFrom pointing at an id not in the list — the tail stays", () => {
+    const collapsed = collapseResumeChains([session({ id: "b", resumedFrom: "ghost" })])
+    expect(collapsed.map(s => s.id)).toEqual(["b"])
+  })
+
+  it("does not touch unrelated sessions in a mixed list", () => {
+    const collapsed = collapseResumeChains([
+      session({ id: "a" }),
+      session({ id: "b", resumedFrom: "a" }),
+      session({ id: "unrelated" }),
+    ])
+    expect(collapsed.map(s => s.id).sort()).toEqual(["b", "unrelated"])
   })
 })
 

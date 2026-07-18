@@ -690,6 +690,84 @@ describe("transcriptPanel webview — resume-chain history", () => {
     expect(history.innerHTML).toBe(before)
     expect(panel.transcript.textContent).toContain("new live message")
   })
+
+  it("#resume-history lives INSIDE #transcript — one continuous scroll region, not a separate pane", () => {
+    const panel = renderPanel()
+    const ancestorConversation: PresentedConversation = {
+      version: 1,
+      sessionId: "s0",
+      turns: [{ id: "turn-1", role: "user", segments: [{ kind: "user", id: "seg-1", html: "ancestor" }] }],
+    }
+    initWithChain(panel, [{ sessionId: "s0", resumeVia: "resumed via ACP", conversation: ancestorConversation }])
+
+    // A separate sibling pane wouldn't be found by a query SCOPED to
+    // #transcript — this only passes when #resume-history is a descendant.
+    expect(panel.transcript.querySelector("#resume-history")).not.toBeNull()
+  })
+
+  it("suppresses the empty placeholder (structured mode) when ancestor history exists but the live conversation has no turns yet", () => {
+    const panel = renderPanel()
+    initWithChain(panel, [{ sessionId: "s0", resumeVia: "resumed via ACP", unavailable: "no-transcript" }])
+
+    // Stitched history is present, but the RESTARTED session (turns: [] in
+    // initWithChain) hasn't produced a live turn yet — the "No messages
+    // yet." placeholder must not appear underneath it.
+    expect(panel.document.getElementById("empty")).toBeNull()
+  })
+
+  it("raw mode: suppresses 'No transcript available' when a resumeChain is present but there's no initialHtml yet", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+      nonce: "n",
+      mode: "raw",
+      resumeChain: [{ sessionId: "s0", resumeVia: "resumed via ACP", unavailable: "no-transcript" }],
+    })
+
+    expect(panel.document.getElementById("empty")).toBeNull()
+    expect(panel.transcript.querySelector(".resume-unavailable")).not.toBeNull()
+  })
+
+  it("raw mode: still shows 'No transcript available' when there is genuinely nothing (no history, no raw content)", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "raw",
+    })
+
+    const empty = panel.document.getElementById("empty")
+    expect(empty).not.toBeNull()
+    expect(empty!.textContent).toContain("No transcript available.")
+  })
+
+  it("raw mode: ancestor history renders BEFORE the session's own raw content, in the same region", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+      nonce: "n",
+      mode: "raw",
+      initialHtml: '<div class="line">live raw output</div>',
+      resumeChain: [
+        {
+          sessionId: "s0",
+          resumeVia: "resumed via ACP",
+          conversation: {
+            version: 1,
+            sessionId: "s0",
+            turns: [{ id: "turn-1", role: "user", segments: [{ kind: "user", id: "seg-1", html: "ancestor turn" }] }],
+          },
+        },
+      ],
+    })
+
+    expect(panel.document.getElementById("empty")).toBeNull()
+    const text = panel.transcript.textContent ?? ""
+    expect(text.indexOf("ancestor turn")).toBeLessThan(text.indexOf("live raw output"))
+  })
 })
 
 describe("transcriptPanel webview — prompt history (↑/↓)", () => {
