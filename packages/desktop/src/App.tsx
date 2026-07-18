@@ -2,10 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { DEFAULT_DAEMON_URL, daemonHealth, daemonSessions } from "./data/daemon"
 import type { SessionDescriptor } from "./data/types"
+import { statusKind } from "./data/session-view"
 import { AppShell } from "./shell/AppShell"
 import { MainHeader } from "./shell/MainHeader"
 import { SessionRail, type DiffStat } from "./shell/SessionRail"
 import { Titlebar, type ConnState } from "./shell/Titlebar"
+import { Transcript } from "./transcript/Transcript"
+import { SubagentStrip, WorkingRow } from "./transcript/MainChrome"
+import { useSessionEvents } from "./transcript/useSessionEvents"
 import "./shell/shell.css"
 
 const POLL_MS = 5000
@@ -64,6 +68,17 @@ function App() {
   // WP4 will populate real diff stats; until then the rail simply omits them.
   const diffFor = useCallback((_session: SessionDescriptor): DiffStat | undefined => undefined, [])
 
+  const records = useSessionEvents(selectedId)
+
+  const subagents = useMemo(() => {
+    if (!selected) return { total: 0, running: 0 }
+    const children = sessions.filter((s) => s.parentSessionId === selected.id)
+    return {
+      total: children.length,
+      running: children.filter((c) => statusKind(c) === "run").length,
+    }
+  }, [sessions, selected])
+
   return (
     <AppShell
       titlebar={
@@ -86,7 +101,11 @@ function App() {
         selected ? (
           <>
             <MainHeader session={selected} />
-            <div className="pane-placeholder">Transcript pane (WP2)</div>
+            <div className="pane">
+              <Transcript sessionId={selected.id} records={records} />
+            </div>
+            <SubagentStrip total={subagents.total} running={subagents.running} />
+            <WorkingRow session={selected} />
           </>
         ) : (
           <div className="pane-placeholder">
