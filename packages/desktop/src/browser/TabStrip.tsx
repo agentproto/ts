@@ -3,7 +3,8 @@
 
 import type { BrowserTab } from "../data/types"
 
-export type ActiveTab = "transcript"
+// Fixed tab ids plus one per open browser tab (see browserTabsFor).
+export type ActiveTab = "transcript" | "files" | string
 
 interface TabStripProps {
   tabs: readonly BrowserTab[]

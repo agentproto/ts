@@ -68,13 +68,17 @@ function TreeLevel({ cwd }: { cwd: string }) {
 }
 
 export interface FilesPanelProps {
-  cwd: string
+  cwd?: string | undefined
 }
 
 export function FilesPanel({ cwd }: FilesPanelProps) {
   return (
     <div className="files-panel">
-      <TreeLevel cwd={cwd} />
+      {cwd ? (
+        <TreeLevel cwd={cwd} />
+      ) : (
+        <div className="files-msg">No working directory for this session.</div>
+      )}
     </div>
   )
 }

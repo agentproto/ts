@@ -3,8 +3,9 @@
  * falling back to the current text color where no accent is defined. */
 
 .resize-handle {
+  /* Sits in its own grid track (see .body in shell.css) between the rail and
+   * main panes — width here is a fallback only; the track width wins. */
   width: 4px;
-  flex: none;
   align-self: stretch;
   cursor: col-resize;
   background: transparent;
