@@ -1,11 +1,11 @@
 ---
 name: agentproto-llm-endpoint
 description:
-  Use the local LLM endpoint proxy (localhost:18090) or the public
-  https://llm-endpoint.clipgen.co/ to route Claude Code / Claude SDK through
-  custom providers (OpenRouter, Moonshot, Groq, ZAI) via Anthropic-compatible
-  gateway. Covers adapter-specific behaviors, auth patterns, proxy codenames,
-  and common failure modes.
+  Use the local LLM endpoint proxy (localhost:18090) — or your own gated public
+  deployment — to route Claude Code / Claude SDK through custom providers
+  (OpenRouter, Moonshot, Groq, ZAI) via an Anthropic-compatible gateway. Covers
+  adapter-specific behaviors, auth patterns, proxy codenames, and common failure
+  modes.
 metadata:
   tags:
     agentproto, llm-endpoint, proxy, gateway, openrouter, moonshot, groq, zai,
@@ -15,7 +15,7 @@ metadata:
 ## When to use
 
 - "Route Claude through OpenRouter / Moonshot / Groq / ZAI / xAI"
-- "Use the local LLM proxy" or "use llm-endpoint.clipgen.co"
+- "Use the local LLM proxy" or "point Claude at my gated LLM endpoint"
 - "Why is my model codename rejected?"
 - "Claude Code vs Claude SDK with custom endpoints"
 - Spawn failures: "Invalid API key", "model does not exist", empty turns
@@ -70,9 +70,12 @@ no adaptation.
 ### Client config
 
 ```
-Base URL:   http://localhost:18090/v1   (local)
-            https://llm-endpoint.clipgen.co/v1   (public)
-API key:    AAAA   (passthrough sentinel — real upstream key injected server-side)
+Base URL:   http://localhost:18090/v1   (local), or your own gated public origin
+API key:    local  → any non-empty value (e.g. AAAA); the proxy injects the real
+                     upstream key server-side and, ungated, does not check it
+            public → Authorization: Bearer <endpoint gate token>
+                     (set LLM_ENDPOINT_ACCESS_TOKENS on the proxy; a missing or
+                      unlisted token returns 401 — the upstream key stays server-side)
 ```
 
 The proxy accepts `?m=<code>` query param override and `?p=<provider>` override.
@@ -181,8 +184,15 @@ Subscription mode uses `CLAUDE_CODE_OAUTH_TOKEN` (bearer token from
 }
 ```
 
-The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` (Bearer auth). The proxy
-ignores this (uses its own upstream keys), but some gateways require it.
+The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` → `Authorization: Bearer`.
+
+- **Local** (`localhost:18090`): ungated — any value works (`AAAA`); the proxy
+  ignores it and uses its own upstream keys.
+- **Public** (a gated deployment): when `LLM_ENDPOINT_ACCESS_TOKENS` is set the
+  proxy enforces a bearer gate, so `auth_token` MUST be one of those gate tokens
+  — a shared secret you set **once** on the provider/adapter config (an unlisted
+  token → 401). The upstream provider key is still injected server-side; the gate
+  token is separate from it.
 
 ### Per-provider API keys
 

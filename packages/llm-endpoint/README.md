@@ -26,8 +26,8 @@ Point any Anthropic- or OpenAI-compatible client at the proxy:
 
 | Setting | Value |
 | :--- | :--- |
-| **Base URL** | `https://llm-endpoint.clipgen.co/v1` (public) or `http://localhost:18090/v1` (local) |
-| **API key** | `AAAA` — a passthrough sentinel; the proxy injects the *real* upstream key server-side |
+| **Base URL** | `http://localhost:18090/v1` (local), or your own public origin + `/v1` |
+| **API key** | The proxy injects the *real* upstream key server-side, so the client key is never your provider key. If the [inbound access gate](#securing-a-public-deployment) is enabled, send one of its tokens as the bearer; if it is not, any non-empty value passes. |
 
 The client asks for a model by its **provider-transparent reference**
 (`provider/model`, e.g. `moonshot/kimi-k2.7-code`, `openai/gpt-4.1`); the proxy
@@ -233,29 +233,28 @@ pnpm --filter @agentproto/llm-endpoint test:e2e
 
 ---
 
-## Public exposure (Cloudflare named tunnel)
+## Securing a public deployment
 
-The proxy is exposed publicly at `llm-endpoint.clipgen.co` via a **dedicated** Cloudflare
-named tunnel called `llm-endpoint` (tunnel id `6614ae24-…`), configured in
-`~/.cloudflared/llm-endpoint.yml`:
+The proxy holds **real upstream provider keys**, so any host that can reach it can
+spend your credits. Never expose it publicly without an inbound gate.
 
-```yaml
-tunnel: 6614ae24-3acc-4b6a-8c0f-ac81713f3186
-credentials-file: /Users/jeremy/.cloudflared/6614ae24-...json
+### Inbound access gate
 
-ingress:
-  - hostname: llm-endpoint.clipgen.co
-    service: http://localhost:18090
-  - service: http_status:404
-```
-
-Run the tunnel:
+Set `LLM_ENDPOINT_ACCESS_TOKENS` to a comma-separated allow-list of secret tokens.
+When it is set, every request must present a listed token as either
+`Authorization: Bearer <token>` **or** an `X-Proxy-Access: <token>` header — anything
+else gets `401`. When the variable is **unset the gate is open** (no inbound auth):
+fine for `localhost`, unsafe for a public origin.
 
 ```bash
-cloudflared tunnel --config /Users/jeremy/.cloudflared/llm-endpoint.yml run llm-endpoint
+LLM_ENDPOINT_ACCESS_TOKENS="$(openssl rand -hex 24)" \
+  pnpm --filter @agentproto/llm-endpoint start
 ```
 
-> **History note:** this hostname previously rode a shared tunnel named `postiz` (its
-> first tenant was a local Postiz instance). It has been moved onto its own dedicated
-> `llm-endpoint` tunnel so the naming reflects the service — `postiz` was never related
-> to this proxy.
+### Exposing the port
+
+Any HTTP tunnel or reverse proxy that forwards to `http://localhost:18090` works
+(Cloudflare Tunnel, ngrok, a VPS + nginx, …). Whichever you pick: keep the access
+gate enabled, and consider an **edge control** as defense-in-depth (e.g. a Cloudflare
+WAF rule or Cloudflare Access policy keyed on the same token) so unauthenticated
+traffic is rejected before it ever reaches the origin.

@@ -1127,11 +1127,164 @@ class OpenAIToAnthropicStreamConverter {
   }
 }
 
+// ── Inbound access gate ─────────────────────────────────────────────────────
+// Optional CLIENT→proxy authentication, independent of the upstream provider
+// keys (proxy→provider), which are always server-side and never the client's.
+// Enabled by setting LLM_ENDPOINT_ACCESS_TOKENS to a comma-separated allow-list;
+// unset/empty leaves the proxy open (prior behaviour). Read once at boot like
+// the provider keys — changing it requires a restart.
+
+/** Parse a comma-separated token allow-list into a Set (trimmed, non-empty). */
+export function parseAccessTokens(raw: string | undefined): Set<string> {
+  return new Set((raw ?? '').split(',').map((t) => t.trim()).filter(Boolean));
+}
+
+let _accessTokens: Set<string> | null = null;
+/** Cached allow-list from LLM_ENDPOINT_ACCESS_TOKENS (empty Set = gate off). */
+function accessTokens(): Set<string> {
+  if (_accessTokens === null) _accessTokens = parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS);
+  return _accessTokens;
+}
+
+/**
+ * Extract a presented access token from `Authorization: Bearer <t>` or the
+ * `X-Proxy-Access: <t>` header (so a client that reserves Authorization for
+ * something else can still pass one). Returns null when neither is present.
+ */
+export function extractInboundToken(headers: IncomingMessage['headers']): string | null {
+  const auth = headers['authorization'];
+  const a = Array.isArray(auth) ? auth[0] : auth;
+  if (a) {
+    const m = /^Bearer\s+(.+)$/i.exec(a.trim());
+    if (m && m[1]!.trim()) return m[1]!.trim();
+  }
+  const xp = headers['x-proxy-access'];
+  const x = Array.isArray(xp) ? xp[0] : xp;
+  if (x && x.trim()) return x.trim();
+  return null;
+}
+
+/**
+ * True when the request may proceed: gate disabled (empty allow-list), or the
+ * presented token is in the allow-list. A high-entropy random token makes the
+ * Set membership check's non-constant time immaterial.
+ */
+export function isAuthorized(headers: IncomingMessage['headers'], tokens: Set<string>): boolean {
+  if (tokens.size === 0) return true;
+  const presented = extractInboundToken(headers);
+  return presented !== null && tokens.has(presented);
+}
+
+// ── Edge/WAF token gate ─────────────────────────────────────────────────────
+// A SECOND, independent client→proxy auth layer meant to be checked by an
+// edge/WAF rule (Cloudflare custom rule) in front of the proxy, not just by
+// this process — see buildWafRuleExpression below. Deliberately separate from
+// the inbound access gate above: the two can be rotated/enabled independently
+// (e.g. a WAF-only token in front of a publicly reachable deployment, plus an
+// app-level token for direct callers). Unset/empty leaves this layer off.
+
+let _edgeTokens: Set<string> | null = null;
+/** Cached allow-list from LLM_ENDPOINT_EDGE_TOKENS (empty Set = layer off). */
+function edgeTokens(): Set<string> {
+  if (_edgeTokens === null) _edgeTokens = parseAccessTokens(process.env.LLM_ENDPOINT_EDGE_TOKENS);
+  return _edgeTokens;
+}
+
+/**
+ * Extract a presented edge token from the `X-Edge-Auth: <t>` header. Returns
+ * null when absent or blank.
+ */
+export function extractEdgeToken(headers: IncomingMessage['headers']): string | null {
+  const raw = headers['x-edge-auth'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (v && v.trim()) return v.trim();
+  return null;
+}
+
+/**
+ * True when the request may proceed through the edge/WAF layer: layer
+ * disabled (empty allow-list), or the presented `X-Edge-Auth` token is in the
+ * allow-list.
+ */
+export function isEdgeAuthorized(headers: IncomingMessage['headers'], edgeTokensSet: Set<string>): boolean {
+  if (edgeTokensSet.size === 0) return true;
+  const presented = extractEdgeToken(headers);
+  return presented !== null && edgeTokensSet.has(presented);
+}
+
+/**
+ * Builds a Cloudflare custom-rule (wirefilter) expression that BLOCKS any
+ * request lacking a valid token, for the header (`authorization` or
+ * `x-edge-auth`) matching the layer being enforced at the edge. Intended to
+ * be pasted into a Cloudflare custom rule so the token check happens before
+ * traffic ever reaches this process — the `edgeTokens()`/`isEdgeAuthorized`
+ * pair above is the same policy enforced in-process as a fallback.
+ *
+ * CORS preflight (`OPTIONS`) is always allowed through so the browser's
+ * preflight — which cannot carry the token — isn't blocked.
+ */
+export function buildWafRuleExpression(opts: {
+  host?: string;
+  tokens: string[];
+  header: 'authorization' | 'x-edge-auth';
+}): string {
+  if (opts.tokens.length === 0) {
+    throw new Error('buildWafRuleExpression requires at least one token');
+  }
+  const headerName = opts.header.toLowerCase();
+  const values = opts.tokens.map((t) => (opts.header === 'authorization' ? `Bearer ${t}` : t));
+  const memberships = values.map((v) => `any(http.request.headers["${headerName}"][*] eq "${v}")`);
+  const notValid = memberships.length === 1 ? `not ${memberships[0]}` : `not (${memberships.join(' or ')})`;
+  const hostPrefix = opts.host ? `http.host eq "${opts.host}" and ` : '';
+  return `(${hostPrefix}http.request.method ne "OPTIONS" and ${notValid})`;
+}
+
+/**
+ * Normalise an incoming request path so a redundant `/v1` an Anthropic client
+ * appends to a base URL that already ends in `/v1` (optionally with a pack
+ * segment) doesn't break routing.
+ *
+ *   /v1/v1/messages                    → /v1/messages
+ *   /v1/stealth-requesty/v1/messages   → /v1/stealth-requesty/messages
+ *   /v1/stealth-requesty/v1/models     → /v1/stealth-requesty/models
+ *
+ * Without the pack-segment case the extra `/v1` breaks the `/v1/<pack>/<verb>`
+ * match, the pack is silently lost, and the request falls back to the default
+ * pack — the "no usable models" / "Unable to resolve model" failure a client
+ * configured with `base_url = .../v1/<pack>` hits.
+ */
+export function normalizeProxyPath(pathname: string): string {
+  return pathname
+    .replace(/\/+$/, '')
+    .replace(/^\/v1\/v1(\/|$)/, '/v1$1')
+    .replace(/^(\/v1\/[^/]+)\/v1(\/|$)/, '$1$2');
+}
+
+let _publicModels: boolean | null = null;
+/** Whether the default model-list path may be read unauthenticated (LLM_ENDPOINT_PUBLIC_MODELS truthy). */
+function publicModels(): boolean {
+  if (_publicModels === null) {
+    const v = (process.env.LLM_ENDPOINT_PUBLIC_MODELS ?? '').trim().toLowerCase();
+    _publicModels = v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }
+  return _publicModels;
+}
+
+/**
+ * True only for the DEFAULT model-discovery path — `/v1/models` or `/models`,
+ * never a pack-scoped list (`/v1/<pack>/models`). Lets opt-in public discovery
+ * expose the default codename list without disclosing pack names.
+ */
+export function isPublicModelListPath(pathname: string): boolean {
+  const p = normalizeProxyPath(pathname);
+  return p === '/v1/models' || p === '/models';
+}
+
 const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Edge-Auth');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1147,7 +1300,31 @@ const server = createServer((req, res) => {
   // correctement plus bas, mais laisser le chemin brut dans les logs noie le
   // vrai souci (config base_url mal formée). Normalisé ici une fois pour
   // toutes — un `/v1/v1/...` redevient `/v1/...` pour le matching ET les logs.
-  const urlPath = parsedUrl.pathname.replace(/\/+$/, '').replace(/^\/v1\/v1(\/|$)/, '/v1$1');
+  const urlPath = normalizeProxyPath(parsedUrl.pathname);
+
+  // Discovery exemption — the DEFAULT model-list path may be read without a
+  // token when LLM_ENDPOINT_PUBLIC_MODELS is set, so OpenAI-compatible clients
+  // (e.g. Claude Desktop's launch-time model discovery) can populate their
+  // selector. Only `/v1/models` (`/models`) — pack lists stay gated.
+  const gateExempt = publicModels() && isPublicModelListPath(urlPath);
+
+  // Inbound access gate — 401 any non-preflight request without a valid token
+  // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too (unless exempt
+  // above), so pack config isn't readable unauthenticated.
+  if (!gateExempt && !isAuthorized(req.headers, accessTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
+    return;
+  }
+
+  // Edge/WAF token gate — independent of the inbound access gate above. Off
+  // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
+  // for enforcing the same policy at the edge instead of in-process.
+  if (!gateExempt && !isEdgeAuthorized(req.headers, edgeTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
+    return;
+  }
 
   // ── Pack resolution ──────────────────────────────────────────────────────
   // Priority: header X-Proxy-Pack > URL path /v1/{pack}/messages > query param ?pack= > default
