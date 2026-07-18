@@ -66,7 +66,7 @@ describe("emit — manifests round-trip through the loaders", () => {
     const { agentPaths, workflowPaths } = await app.emit(dir)
 
     expect(Object.keys(agentPaths).sort()).toEqual(["@agentik/reviewer", "fixer"])
-    expect(agentPaths["@agentik/reviewer"]).toMatch(/\.agents\/reviewer\/AGENT\.md$/)
+    expect(agentPaths["@agentik/reviewer"]).toMatch(/\.agentproto\/agents\/reviewer\/AGENT\.md$/)
     expect(workflowPaths).toHaveLength(1)
 
     const reviewer = parseAgentManifest(await readFile(agentPaths["@agentik/reviewer"]!, "utf8"))
@@ -84,7 +84,7 @@ describe("emit — manifests round-trip through the loaders", () => {
   it("writes a shared WORKFLOW.md that loadWorkflowHandle resolves with matching steps", async () => {
     const app = buildApp()
     const { workflowPaths } = await app.emit(dir)
-    expect(workflowPaths[0]).toMatch(/workflows\/review-and-fix\/WORKFLOW\.md$/)
+    expect(workflowPaths[0]).toMatch(/\.agentproto\/workflows\/review-and-fix\/WORKFLOW\.md$/)
 
     const handle = await loadWorkflowHandle(workflowPaths[0]!)
     expect(handle.id).toBe("review-and-fix")
