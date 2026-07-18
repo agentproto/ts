@@ -222,14 +222,32 @@ async function main() {
 
   console.log(`driver: run ${runId} reached terminal status=${run.status}`)
 
+  // A failed run must explain itself: surface run.error and every step error
+  // (the workflow-runner puts the failure reason there — e.g. an empty-turn or
+  // adapter/auth failure) so CI logs show WHY, not just that it failed.
+  if (run.status !== "done") {
+    if (run.error) console.error(`driver: run error: ${run.error}`)
+    for (const stage of Array.isArray(run.stages) ? run.stages : []) {
+      for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
+        if (step?.error) console.error(`driver: step '${step.id ?? "?"}' error: ${step.error}`)
+      }
+    }
+  }
+
   // A workflow can report status="done" even when its agent step spawned a
   // session that exited clean with ZERO work — a SILENT NO-OP that otherwise
   // reads as success and lets the calling gate pass a PR nobody reviewed. Read
   // the real session output, log it (the only place the agent's own stderr
   // surfaces in CI), and treat an empty "done" as a failure so the caller's
-  // fallback reviewer takes over.
-  const sessionIds = Array.isArray(run?.result?.sessionIds) ? run.result.sessionIds : []
-  console.log(`driver: run produced sessionIds=${JSON.stringify(sessionIds)}`)
+  // fallback reviewer takes over. On the failure path run.result isn't filled,
+  // so also harvest any session id the stages recorded during execution.
+  const sessionIds = new Set(Array.isArray(run?.result?.sessionIds) ? run.result.sessionIds : [])
+  for (const stage of Array.isArray(run.stages) ? run.stages : []) {
+    for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
+      if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
+    }
+  }
+  console.log(`driver: run produced sessionIds=${JSON.stringify([...sessionIds])}`)
   let sawAgentOutput = false
   for (const sid of sessionIds) {
     try {
@@ -247,7 +265,7 @@ async function main() {
     }
   }
 
-  const silentNoop = run.status === "done" && (sessionIds.length === 0 || !sawAgentOutput)
+  const silentNoop = run.status === "done" && (sessionIds.size === 0 || !sawAgentOutput)
   if (silentNoop) {
     console.error(
       "driver: run reached status=done but produced NO agent session output — treating " +
