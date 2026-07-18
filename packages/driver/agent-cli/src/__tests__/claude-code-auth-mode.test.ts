@@ -151,6 +151,15 @@ const claudeCodeLike = (): AgentCliDefinition => ({
       env_unset: ["ANTHROPIC_API_KEY"],
     },
   ],
+  options: [
+    {
+      id: "base_url",
+      type: "string",
+      description: "Custom Anthropic base URL.",
+      env: { ANTHROPIC_BASE_URL: "{value}" },
+      env_unset: ["ANTHROPIC_API_KEY"],
+    },
+  ],
 })
 
 describe("claude-code auth — mechanical resolved-spec application", () => {
@@ -354,5 +363,24 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
       else process.env.OPENAI_API_KEY = prevKey
     }
     expect(spawnCalls[0]!.env.OPENAI_API_KEY).toBe("sk-proj-ambient")
+  })
+
+  it("a base_url option with NO auth_token must not engage native Anthropic billing-auth — the gateway base_url survives, CLAUDE_CODE_OAUTH_TOKEN never leaks in", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    // No `auth_token` option, no ANTHROPIC_AUTH_TOKEN — only the base_url
+    // option targets a foreign gateway. The resolved spec below is exactly
+    // what claude-code's `authEnforce: "always"` produces regardless of the
+    // caller's intent (the adapter can't know a spawn is gateway-bound) —
+    // the driver must be the one place that refuses to engage it.
+    await runtime.start({
+      cwd: "/scratch",
+      config: { options: { base_url: "https://api.moonshot.ai/anthropic" } },
+      auth: subSpec({ credential: "sk-ant-oat01-real-token" }),
+    })
+    expect(spawnCalls[0]!.env.ANTHROPIC_BASE_URL).toBe(
+      "https://api.moonshot.ai/anthropic",
+    )
+    expect(spawnCalls[0]!.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
   })
 })

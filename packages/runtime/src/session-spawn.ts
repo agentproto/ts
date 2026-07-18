@@ -662,9 +662,28 @@ export async function spawnAgentSession(
   // fails LOUD right here (`unsupported_auth_mode`). No provider resolves ⇒
   // no spec ⇒ ambient (no injection). Skipped for a sandbox spawn — the box's
   // own daemon resolves its own credential independently.
+  // A `base_url` option targets this spawn at a non-Anthropic gateway
+  // explicitly — the driver-level fix (define-agent-cli.ts's `engageAuth`)
+  // already guarantees no native-Anthropic credential is ever injected into
+  // such a spawn, but resolving+echoing an auth spec here regardless is
+  // misleading: a caller reading the session descriptor's `auth` field would
+  // see a native-Anthropic subscription spec for a spawn that will never
+  // actually use it. Skip resolution entirely so the descriptor reflects
+  // reality. (A `mode`-based gateway selection, e.g. `mode: "moonshot"`, is
+  // not checked here — that would require introspecting the adapter's mode
+  // declarations for whichever env keys the mode sets; the driver-level fix
+  // covers that case regardless of whether the echo is accurate.)
+  const hasGatewayBaseUrlOption =
+    typeof spawnDefaults.options?.base_url === "string" &&
+    spawnDefaults.options.base_url.length > 0
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
-  if (resolved && input.sandbox === undefined && resolved.authDescriptor) {
+  if (
+    resolved &&
+    input.sandbox === undefined &&
+    resolved.authDescriptor &&
+    !hasGatewayBaseUrlOption
+  ) {
     const authModel = input.model ?? resolved.defaultModel
     const pinnedProvider = spawnDefaults.auth.provider
     const resolvedProvider =

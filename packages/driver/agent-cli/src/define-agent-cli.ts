@@ -127,10 +127,26 @@ export function createAgentCliRuntime(
       // either (composed.env's own keys are protected from the blanket
       // scrub below, by design). The gateway's Bearer token wins outright —
       // skip engagement rather than let two auth mechanisms collide.
+      //
+      // Symmetric case: a `base_url` option (or gateway mode) can also be
+      // set WITHOUT an `auth_token` — e.g. the caller forgot it, or it's
+      // supplied a different way. `hasGatewayAuthToken` alone doesn't catch
+      // this: `engageAuth` would still be true, and since the per-key scrub
+      // loop below only deletes keys NOT already in `composed.env` (this
+      // spawn's own base_url is protected there, by the same design as
+      // above), nothing stops `env[authSpec.setEnv] = authSpec.credential`
+      // from injecting a real Anthropic subscription credential
+      // (CLAUDE_CODE_OAUTH_TOKEN) into a spawn whose ANTHROPIC_BASE_URL
+      // points at a foreign host. An explicit gateway base_url must protect
+      // against native creds leaking IN, exactly as an explicit gateway auth
+      // token already protects against native creds leaking OUT — skip
+      // engagement in both directions.
       const hasGatewayAuthToken = "ANTHROPIC_AUTH_TOKEN" in composed.env
+      const hasGatewayBaseUrl = "ANTHROPIC_BASE_URL" in composed.env
       const engageAuth =
         !!authSpec &&
         !hasGatewayAuthToken &&
+        !hasGatewayBaseUrl &&
         (authSpec.enforce === "always" || authSpec.explicit === true)
       if (authSpec && engageAuth) {
         // Scrub the conflicting credential(s)/toggles BEFORE setting this
