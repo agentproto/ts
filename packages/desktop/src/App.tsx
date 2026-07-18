@@ -10,7 +10,11 @@ import { Titlebar, type ConnState } from "./shell/Titlebar"
 import { Transcript } from "./transcript/Transcript"
 import { SubagentStrip, WorkingRow } from "./transcript/MainChrome"
 import { useSessionEvents } from "./transcript/useSessionEvents"
+import { TabStrip } from "./browser/TabStrip"
+import { BrowserPane } from "./browser/BrowserPane"
+import { browserTabsFor } from "./browser/browser-view"
 import "./shell/shell.css"
+import "./browser/browser.css"
 
 const POLL_MS = 5000
 
@@ -20,6 +24,7 @@ function App() {
   const [sessions, setSessions] = useState<SessionDescriptor[]>([])
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<string>("transcript")
 
   const refresh = useCallback(async () => {
     try {
@@ -68,7 +73,18 @@ function App() {
   // WP4 will populate real diff stats; until then the rail simply omits them.
   const diffFor = useCallback((_session: SessionDescriptor): DiffStat | undefined => undefined, [])
 
+  // Reset to the transcript tab when the selected session changes.
+  useEffect(() => {
+    setActiveTab("transcript")
+  }, [selectedId])
+
   const records = useSessionEvents(selectedId)
+
+  const browserTabs = useMemo(
+    () => (selected ? browserTabsFor(selected, sessions) : []),
+    [selected, sessions],
+  )
+  const activeBrowserTab = browserTabs.find((t) => t.id === activeTab) ?? null
 
   const subagents = useMemo(() => {
     if (!selected) return { total: 0, running: 0 }
@@ -101,8 +117,13 @@ function App() {
         selected ? (
           <>
             <MainHeader session={selected} />
+            <TabStrip tabs={browserTabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div className="pane">
-              <Transcript sessionId={selected.id} records={records} />
+              {activeBrowserTab ? (
+                <BrowserPane tab={activeBrowserTab} />
+              ) : (
+                <Transcript sessionId={selected.id} records={records} />
+              )}
             </div>
             <SubagentStrip total={subagents.total} running={subagents.running} />
             <WorkingRow session={selected} />

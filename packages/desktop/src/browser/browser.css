@@ -1,0 +1,165 @@
+/* WP3 — tab strip + browser pane. Ported from MOCK.html; token vars only.
+ * The .bpreview chrome mimics a browser frame; it is a placeholder, not a live
+ * embed (deep embedding is out of scope). */
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px 10px 0;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-background) 40%, var(--color-surface));
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border-radius: var(--rounded-lg) var(--rounded-lg) 0 0;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  max-width: 200px;
+}
+.tab .ico {
+  font-size: 12px;
+  opacity: 0.8;
+}
+.tab .lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab .x {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  margin-left: 2px;
+}
+.tab:hover {
+  color: var(--color-ink-muted);
+  background: var(--color-surface-raised);
+}
+.tab.active {
+  color: var(--color-ink);
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  position: relative;
+}
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--color-surface);
+}
+.tab.newtab {
+  color: var(--color-ink-faint);
+  padding: 7px 10px;
+}
+
+/* browser pane */
+.bpane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.baddr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.baddr .nav {
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+}
+.baddr .url {
+  flex: 1;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: var(--rounded-full);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono-family);
+  font-size: 11.5px;
+  color: var(--color-ink-muted);
+}
+.baddr .url .lock {
+  color: var(--st-run);
+  font-size: 10px;
+}
+.bview {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--color-background);
+  color: var(--color-ink);
+}
+.bpreview {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+}
+.bpreview .frame {
+  width: 380px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-lg);
+  overflow: hidden;
+  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.35);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-mono-family);
+}
+.bpreview .fbar {
+  height: 26px;
+  background: var(--color-surface-hi);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+}
+.bpreview .fbar i {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--rounded-full);
+}
+.bpreview .fbar i:nth-child(1) {
+  background: #ff5f57;
+}
+.bpreview .fbar i:nth-child(2) {
+  background: #febc2e;
+}
+.bpreview .fbar i:nth-child(3) {
+  background: #28c840;
+}
+.bpreview .fbody {
+  padding: 16px;
+  font-size: 11px;
+}
+.bpreview .bp-title {
+  color: var(--color-accent);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.bpreview .bp-url {
+  color: var(--color-ink);
+  word-break: break-all;
+  margin-bottom: 12px;
+}
+.bpreview .bp-note {
+  color: var(--color-ink-faint);
+  font-family: var(--font-body-family);
+  line-height: 1.5;
+}
