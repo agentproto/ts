@@ -1260,6 +1260,26 @@ export function normalizeProxyPath(pathname: string): string {
     .replace(/^(\/v1\/[^/]+)\/v1(\/|$)/, '$1$2');
 }
 
+let _publicModels: boolean | null = null;
+/** Whether the default model-list path may be read unauthenticated (LLM_ENDPOINT_PUBLIC_MODELS truthy). */
+function publicModels(): boolean {
+  if (_publicModels === null) {
+    const v = (process.env.LLM_ENDPOINT_PUBLIC_MODELS ?? '').trim().toLowerCase();
+    _publicModels = v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }
+  return _publicModels;
+}
+
+/**
+ * True only for the DEFAULT model-discovery path — `/v1/models` or `/models`,
+ * never a pack-scoped list (`/v1/<pack>/models`). Lets opt-in public discovery
+ * expose the default codename list without disclosing pack names.
+ */
+export function isPublicModelListPath(pathname: string): boolean {
+  const p = normalizeProxyPath(pathname);
+  return p === '/v1/models' || p === '/models';
+}
+
 const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1272,24 +1292,6 @@ const server = createServer((req, res) => {
     return;
   }
 
-  // Inbound access gate — 401 any non-preflight request without a valid token
-  // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too, so pack config
-  // isn't readable unauthenticated. See parseAccessTokens/isAuthorized above.
-  if (!isAuthorized(req.headers, accessTokens())) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
-    return;
-  }
-
-  // Edge/WAF token gate — independent of the inbound access gate above. Off
-  // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
-  // for enforcing the same policy at the edge instead of in-process.
-  if (!isEdgeAuthorized(req.headers, edgeTokens())) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
-    return;
-  }
-
   const rawUrl = req.url || '';
   const parsedUrl = new URL(rawUrl, `http://localhost:${PORT}`);
   // Le binary `claude` ajoute lui-même `/v1/messages` à ANTHROPIC_BASE_URL —
@@ -1299,6 +1301,30 @@ const server = createServer((req, res) => {
   // vrai souci (config base_url mal formée). Normalisé ici une fois pour
   // toutes — un `/v1/v1/...` redevient `/v1/...` pour le matching ET les logs.
   const urlPath = normalizeProxyPath(parsedUrl.pathname);
+
+  // Discovery exemption — the DEFAULT model-list path may be read without a
+  // token when LLM_ENDPOINT_PUBLIC_MODELS is set, so OpenAI-compatible clients
+  // (e.g. Claude Desktop's launch-time model discovery) can populate their
+  // selector. Only `/v1/models` (`/models`) — pack lists stay gated.
+  const gateExempt = publicModels() && isPublicModelListPath(urlPath);
+
+  // Inbound access gate — 401 any non-preflight request without a valid token
+  // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too (unless exempt
+  // above), so pack config isn't readable unauthenticated.
+  if (!gateExempt && !isAuthorized(req.headers, accessTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
+    return;
+  }
+
+  // Edge/WAF token gate — independent of the inbound access gate above. Off
+  // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
+  // for enforcing the same policy at the edge instead of in-process.
+  if (!gateExempt && !isEdgeAuthorized(req.headers, edgeTokens())) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
+    return;
+  }
 
   // ── Pack resolution ──────────────────────────────────────────────────────
   // Priority: header X-Proxy-Pack > URL path /v1/{pack}/messages > query param ?pack= > default

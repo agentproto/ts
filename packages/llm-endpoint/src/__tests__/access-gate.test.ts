@@ -7,7 +7,22 @@ import {
   extractEdgeToken,
   isEdgeAuthorized,
   buildWafRuleExpression,
+  isPublicModelListPath,
 } from '../index.js';
+
+describe('isPublicModelListPath', () => {
+  it('is true only for the default model-list path', () => {
+    expect(isPublicModelListPath('/v1/models')).toBe(true);
+    expect(isPublicModelListPath('/models')).toBe(true);
+    expect(isPublicModelListPath('/v1/models/')).toBe(true); // trailing slash normalized
+    expect(isPublicModelListPath('/v1/v1/models')).toBe(true); // double /v1 normalized
+  });
+  it('is false for pack-scoped lists and non-model paths', () => {
+    expect(isPublicModelListPath('/v1/stealth-requesty/models')).toBe(false);
+    expect(isPublicModelListPath('/v1/messages')).toBe(false);
+    expect(isPublicModelListPath('/v1/models/foo')).toBe(false);
+  });
+});
 
 describe('parseAccessTokens', () => {
   it('is empty (gate off) for undefined/empty', () => {
