@@ -1876,7 +1876,12 @@ async function handleSessions(
   }
 
   if (path === "/sessions" && req.method === "GET") {
-    json(200, { sessions: registry.list() })
+    // ?includeArchived=true opts into the rows session_archive hides by
+    // default (the VSCode extension's "show archived" tree toggle).
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const includeArchived = new URLSearchParams(queryString).get("includeArchived") === "true"
+    json(200, { sessions: registry.list({ includeArchived }) })
     return true
   }
 

@@ -369,7 +369,10 @@ export function registerOrchestrationTools(
    * over all sessions — cheap relative to any surrounding I/O.
    */
   const isPolicyInSubtree = (policy: PolicyRunState, ownerId: string): boolean => {
-    const subtree = collectSubtree(ownerId, registry.list())
+    // includeArchived: true — an archived ancestor must not sever the
+    // parent→child graph collectSubtree's BFS walks (see session_list's
+    // docblock in session-tools.ts).
+    const subtree = collectSubtree(ownerId, registry.list({ includeArchived: true }))
     const ids = policy.sessionIds.length > 0 ? policy.sessionIds : [policy.sessionId]
     return ids.every(id => subtree.has(id))
   }
@@ -434,7 +437,11 @@ export function registerOrchestrationTools(
   const isSessionInScope = (sessionId: string): boolean => {
     if (!callerScope) return true
     if (!callerScope.ownerSessionId) return false
-    return collectSubtree(callerScope.ownerSessionId, registry.list()).has(sessionId)
+    // includeArchived: true — see isPolicyInSubtree's comment above.
+    return collectSubtree(
+      callerScope.ownerSessionId,
+      registry.list({ includeArchived: true }),
+    ).has(sessionId)
   }
 
   const enrichPermission = (
@@ -1003,7 +1010,11 @@ export function registerOrchestrationTools(
               : input.sessionId
                 ? [input.sessionId]
                 : []
-          const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+          // includeArchived: true — see isPolicyInSubtree's comment above.
+          const subtree = collectSubtree(
+            callerScope.ownerSessionId,
+            registry.list({ includeArchived: true }),
+          )
           const outside = targetIds.filter(id => !subtree.has(id))
           if (outside.length > 0) {
             return {

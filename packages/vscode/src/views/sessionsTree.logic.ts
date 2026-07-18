@@ -309,6 +309,31 @@ export function contextValueFor(session: SessionDescriptor): SessionContextValue
   return "session-live"
 }
 
+/**
+ * The tree-item `contextValue` a session actually renders with — `session-*`
+ * suffixed `-archived` when the row is archived. Archived rows only ever
+ * reach the tree when the "show archived" toggle is on (the daemon's
+ * default `list()` already excludes them), so in practice this only ever
+ * produces `session-done-archived` (archiving is guarded to terminal-status
+ * sessions). Every EXISTING `view/item/context` `when` clause in
+ * package.json is written `viewItem =~ /^session-(…)(-archived)?$/` so the
+ * suffix doesn't hide open-transcript/open-terminal/restart from an
+ * archived row — only `agentproto.archiveSession` (exact `session-done`)
+ * and `agentproto.unarchiveSession` (exact `session-done-archived`) care
+ * about the distinction.
+ */
+export function treeContextValueFor(session: SessionDescriptor): string {
+  return contextValueFor(session) + (session.archived ? "-archived" : "")
+}
+
+/** Appends an "archived" tag to a description string, e.g. "ws · 2h ago" →
+ *  "ws · 2h ago · archived" — or bare "archived" when there was nothing
+ *  else to show. */
+export function withArchivedTag(description: string, archived: boolean | undefined): string {
+  if (!archived) return description
+  return description ? `${description} · archived` : "archived"
+}
+
 /** contextUsed/contextSize as a rounded percentage string, e.g. "42%". */
 export function contextPercent(used?: number, size?: number): string | undefined {
   if (typeof used !== "number" || typeof size !== "number" || size <= 0) return undefined
