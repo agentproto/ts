@@ -143,19 +143,37 @@ export function resolveBucketSlug(
   return workspaceSlug
 }
 
+/** Outcome of a registry read — see `readRegisteredSlugs`. Callers that
+ *  would otherwise treat an unmatched slug as "not registered" MUST check
+ *  `ok` first: an empty `slugs` set is only meaningful when `ok` is true.
+ *  A `false` here means the read itself failed (missing/corrupt/racing a
+ *  concurrent `saveWorkspacesConfig` tmp+rename) — indistinguishable from
+ *  a genuinely empty registry unless this is threaded through, which is
+ *  exactly the bug this type exists to prevent (2026-07-18 bucket-clobber
+ *  incident: a transient read failure made every named bucket look
+ *  unregistered and its rows got relocated to `default`, emptying it on
+ *  write). */
+export interface RegisteredSlugsResult {
+  slugs: ReadonlySet<string>
+  ok: boolean
+}
+
 /** Registered slugs, read fresh. Cheap (the registry is <1KB) and read
  *  per persist rather than cached at boot, so a workspace registered
  *  while the daemon is up starts bucketing immediately instead of
  *  silently pooling into `default` until restart. Never throws: a
- *  missing/corrupt registry degrades to "nothing is registered", i.e.
- *  everything lands in `default` — today's pooled behaviour, which is
- *  the right failure direction. */
-export function readRegisteredSlugs(configPath?: string): ReadonlySet<string> {
+ *  missing/corrupt registry degrades to `{ slugs: new Set(), ok: false }`
+ *  — the caller decides what "failed" should mean for it. A resolver that
+ *  only has a slug to go on (a brand-new, never-persisted session) still
+ *  wants the historical fallback of `default`; a persist path rewriting
+ *  bucket FILES must not, because it would relocate rows that are already
+ *  correctly homed. */
+export function readRegisteredSlugs(configPath?: string): RegisteredSlugsResult {
   try {
     const config = loadWorkspacesConfigSync(configPath)
-    return new Set(config.workspaces.map(w => w.slug))
+    return { slugs: new Set(config.workspaces.map(w => w.slug)), ok: true }
   } catch {
-    return new Set()
+    return { slugs: new Set(), ok: false }
   }
 }
 
@@ -335,7 +353,11 @@ export function migrateLegacySessionsFile(opts: {
   return marker
 }
 
-function readBucketRows(root: string, slug: string): unknown[] {
+/** Rows currently on disk for a bucket. `[]` for a missing/corrupt/empty
+ *  file — same "degrade to nothing rather than throw" contract as every
+ *  other reader in this module. Exported so a persist path can consult
+ *  what's already there before writing — see `mergeBucketRows`. */
+export function readBucketRows(root: string, slug: string): unknown[] {
   try {
     const parsed = JSON.parse(
       readFileSync(bucketSessionsFile(root, slug), "utf8"),
@@ -344,4 +366,33 @@ function readBucketRows(root: string, slug: string): unknown[] {
   } catch {
     return []
   }
+}
+
+const rowId = (row: unknown): string | undefined =>
+  row && typeof row === "object" && "id" in row && typeof (row as { id?: unknown }).id === "string"
+    ? (row as { id: string }).id
+    : undefined
+
+/**
+ * Merge freshly-computed rows for a bucket with whatever is already on
+ * disk, deduped by id. `rows` wins for any id it carries (it reflects
+ * this process's more current view of that session — status, endedAt,
+ * etc.); an on-disk row whose id has no counterpart in `rows` is kept
+ * rather than dropped.
+ *
+ * Exists so a persist can never SHRINK a bucket purely because this
+ * daemon instance's in-memory registry doesn't hold every row that
+ * bucket's file holds — the case a daemon that never loaded a bucket at
+ * boot (a second/skewed-build instance, a workspace-scoped boot load)
+ * hits when a new session happens to resolve into it. Callers that DID
+ * authoritatively load a bucket at boot are expected to pass its rows
+ * through unmerged — this is a backstop for the buckets they didn't.
+ */
+export function mergeBucketRows(onDisk: readonly unknown[], rows: readonly unknown[]): unknown[] {
+  const incomingIds = new Set(rows.map(rowId).filter((id): id is string => id !== undefined))
+  const preserved = onDisk.filter(row => {
+    const id = rowId(row)
+    return id !== undefined && !incomingIds.has(id)
+  })
+  return [...rows, ...preserved]
 }

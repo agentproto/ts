@@ -39,7 +39,9 @@ import {
   BUCKETS_ROOT,
   bucketSessionsFile,
   listBuckets,
+  mergeBucketRows,
   migrateLegacySessionsFile,
+  readBucketRows,
   readRegisteredSlugs,
   resolveBucketSlug,
   writeBucketSnapshot,
@@ -1349,6 +1351,17 @@ export function createSessionsRegistry(opts?: {
   // tracked (`knownBuckets`) so a later persist rewrites them empty
   // rather than leaving a stale file behind.
   const knownBuckets = new Set<string>()
+  // The bucket each LOADED (historical) session's rows actually came
+  // from, keyed by session id. This is the authoritative home for a
+  // loaded row — `groupRowsByBucket` persists it back here regardless
+  // of whether `desc.workspaceSlug` still resolves against a (possibly
+  // transiently unreadable) registry. Sessions with no entry here are
+  // new this boot and resolve normally via `resolveBucketSlug`. See the
+  // 2026-07-18 bucket-clobber incident: without this, a registry read
+  // that failed for one persist cycle made every loaded row look
+  // unregistered, relocating it to `default` and emptying its real
+  // bucket on write.
+  const sourceBucketOf = new Map<string, string>()
   if (persist) {
     if (partitioned) {
       // Read-only on the legacy artifact, once, guarded by its own
@@ -1356,7 +1369,7 @@ export function createSessionsRegistry(opts?: {
       migrateLegacySessionsFile({
         root: bucketsRoot,
         legacyFile: legacyPath,
-        registered: readRegisteredSlugs(workspacesConfigPath),
+        registered: readRegisteredSlugs(workspacesConfigPath).slugs,
       })
       for (const slug of listBuckets(bucketsRoot)) {
         knownBuckets.add(slug)
@@ -1364,12 +1377,23 @@ export function createSessionsRegistry(opts?: {
           bucketSessionsFile(bucketsRoot, slug),
           sessions,
           sessionEvents,
+          slug,
+          sourceBucketOf,
         )
       }
     } else {
       loadHistorySnapshot(legacyPath, sessions, sessionEvents)
     }
   }
+  // Frozen at boot, deliberately never mutated again — distinct from
+  // `knownBuckets`, which keeps growing as new rows resolve into
+  // buckets over the daemon's life. This one answers "did THIS daemon
+  // instance actually read what was on disk for this bucket", which is
+  // exactly the question a merge-before-write needs: a bucket that
+  // shows up in `knownBuckets` later (a brand-new session resolved into
+  // it) was never read, so writing it verbatim would silently discard
+  // whatever another process already put there.
+  const bootLoadedBuckets = new Set(knownBuckets)
 
   // Belt-and-suspenders: `process.on("exit")` runs even on uncaught
   // throws, terminal-close (SIGHUP), and any termination path that
@@ -1513,15 +1537,24 @@ export function createSessionsRegistry(opts?: {
    *  registry each time so a workspace registered mid-run starts
    *  bucketing without a daemon restart.
    *
+   *  A row this daemon LOADED from disk (`sourceBucketOf`) goes back to
+   *  the bucket it came from, full stop — never recomputed from
+   *  `workspaceSlug` against the registry, so a registry read that fails
+   *  or races a concurrent writer for one persist cycle cannot relocate
+   *  rows that are already correctly homed (2026-07-18 bucket-clobber
+   *  incident). Only sessions with no recorded source — new this boot —
+   *  resolve via `resolveBucketSlug`, same as always: an unregistered new
+   *  session still lands in `default` (AIP-46 semantics, unchanged).
+   *
    *  Every known bucket gets an entry even when it has no rows left —
    *  otherwise forgetting a bucket's last session would leave its old
    *  snapshot on disk to be re-loaded at the next boot. */
   const groupRowsByBucket = (): Map<string, SessionDescriptor[]> => {
-    const registered = readRegisteredSlugs(workspacesConfigPath)
+    const registry = readRegisteredSlugs(workspacesConfigPath)
     const groups = new Map<string, SessionDescriptor[]>()
     for (const slug of knownBuckets) groups.set(slug, [])
     for (const desc of snapshotRows()) {
-      const slug = resolveBucketSlug(desc.workspaceSlug, registered)
+      const slug = sourceBucketOf.get(desc.id) ?? resolveBucketSlug(desc.workspaceSlug, registry.slugs)
       const list = groups.get(slug)
       if (list) list.push(desc)
       else groups.set(slug, [desc])
@@ -1530,6 +1563,24 @@ export function createSessionsRegistry(opts?: {
     return groups
   }
 
+  /** What to actually write for one bucket in a persist round.
+   *
+   *  A bucket this daemon authoritatively loaded at boot
+   *  (`bootLoadedBuckets`) is written exactly as computed — it may
+   *  legitimately shrink, e.g. the user forgot a session (`d` in the
+   *  TUI) and this daemon's in-memory view is the freshest truth there
+   *  is for it.
+   *
+   *  A bucket it never loaded gets merged against whatever is on disk
+   *  first. That's the case a daemon which never read a bucket at boot —
+   *  a second/skewed-build instance, one that only loaded its own
+   *  workspace — hits the moment ANY row (even a single brand-new
+   *  session) happens to resolve into it: without the merge, writing
+   *  `rows` verbatim would silently discard every row already on disk
+   *  that this process's memory never held. */
+  const rowsToWrite = (slug: string, rows: SessionDescriptor[]): unknown[] =>
+    bootLoadedBuckets.has(slug) ? rows : mergeBucketRows(readBucketRows(bucketsRoot, slug), rows)
+
   const persistSnapshot = async (): Promise<void> => {
     try {
       const savedAt = new Date().toISOString()
@@ -1537,7 +1588,7 @@ export function createSessionsRegistry(opts?: {
         for (const [slug, rows] of groupRowsByBucket()) {
           await writeBucketSnapshot(bucketsRoot, slug, {
             savedAt,
-            sessions: rows,
+            sessions: rowsToWrite(slug, rows),
           })
         }
         return
@@ -3193,7 +3244,7 @@ export function createSessionsRegistry(opts?: {
           for (const [slug, rows] of groupRowsByBucket()) {
             writeBucketSnapshotSync(bucketsRoot, slug, {
               savedAt: nowIso,
-              sessions: rows,
+              sessions: rowsToWrite(slug, rows),
             })
           }
         } else {
@@ -3262,6 +3313,13 @@ function loadHistorySnapshot(
   persistPath: string,
   sessions: Map<string, SessionRuntime>,
   sessionEvents?: SessionEventBus,
+  /** The bucket `persistPath` was read from, in partitioned mode. When
+   *  given alongside `sourceBucketOf`, every loaded row's id is recorded
+   *  against it — see `sourceBucketOf`'s docblock at its declaration in
+   *  `createSessionsRegistry` for why persist has to honor this instead
+   *  of recomputing the bucket from `workspaceSlug`. */
+  bucketSlug?: string,
+  sourceBucketOf?: Map<string, string>,
 ): void {
   let raw: string
   try {
@@ -3334,6 +3392,7 @@ function loadHistorySnapshot(
     }
     rt.emitter.setMaxListeners(50)
     sessions.set(desc.id, rt)
+    if (bucketSlug !== undefined) sourceBucketOf?.set(desc.id, bucketSlug)
     if (wasAlive) {
       sessionEvents?.emit({
         type: "session:exited",

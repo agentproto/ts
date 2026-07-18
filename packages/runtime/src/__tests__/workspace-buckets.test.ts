@@ -155,19 +155,29 @@ describe("HOME-isolated bucket paths", () => {
         ],
       }),
     )
-    expect([...readRegisteredSlugs()].sort()).toEqual(["alpha", "beta"])
+    const result = readRegisteredSlugs()
+    expect(result.ok).toBe(true)
+    expect([...result.slugs].sort()).toEqual(["alpha", "beta"])
   })
 
-  it("degrades to `nothing registered` when the registry is missing", () => {
-    // The safe failure direction: everything pools into `default`, i.e.
-    // today's behaviour, rather than the daemon refusing to persist.
-    expect(readRegisteredSlugs().size).toBe(0)
+  it("treats a MISSING registry as legitimately empty, not a failed read", () => {
+    // Distinct from corruption below: `loadWorkspacesConfigSync` treats
+    // ENOENT as the legitimate first-boot state and returns an empty
+    // config rather than throwing, so this is `ok: true` with zero
+    // slugs — everything still pools into `default`, but a persist path
+    // can trust that "nothing is registered" claim, unlike the corrupt
+    // case where it must not.
+    const result = readRegisteredSlugs()
+    expect(result.ok).toBe(true)
+    expect(result.slugs.size).toBe(0)
   })
 
-  it("degrades to `nothing registered` when the registry is corrupt", () => {
+  it("degrades to `nothing registered`, and signals the read failed, when the registry is corrupt", () => {
     mkdirSync(join(home, ".agentproto"), { recursive: true })
     writeFileSync(join(home, ".agentproto", "workspaces.json"), "{ not json")
-    expect(readRegisteredSlugs().size).toBe(0)
+    const result = readRegisteredSlugs()
+    expect(result.ok).toBe(false)
+    expect(result.slugs.size).toBe(0)
   })
 })
 
