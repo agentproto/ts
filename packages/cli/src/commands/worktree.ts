@@ -5,10 +5,10 @@
  *   ls        [--repo <dir>] [--status] [--json]     list this repo's git worktrees
  *   new       <slug> [--repo <dir>] [--base <ref>]    create a worktree under
  *             [--branch <name>] [--no-setup] [--json]  worktrees.root (PLAN.md §1.4/§4)
- *   rm        <path> [--repo <dir>] [--base <ref>]    the guarded destructive verb —
+ *   rm    <path|slug> [--repo <dir>] [--base <ref>]    the guarded destructive verb —
  *             [--keep-branch] [--discard-untracked]  refuses a dirty tree unless the
  *             [--discard-modified] [--json]           matching flag is given
- *   archive   <path> [--repo <dir>] [--base <ref>]    salvage-then-remove: snapshots
+ *   archive <path|slug> [--repo <dir>] [--base <ref>]  salvage-then-remove: snapshots
  *             [--keep-branch] [--json]                uncommitted state first
  *
  * Pure local shell over `@agentproto/worktree`: plain `ls` parses
@@ -19,13 +19,15 @@
  * `new` is a thin shell over the `worktree.provision` tool: it resolves
  * `worktrees.root` (§1.4) and passes `<root>/<repoName>/<slug>` as the
  * tool's `dir` input, so every worktree this verb creates lands under one
- * root regardless of where the repo itself lives. `rm`/`archive` are
- * deliberately root-agnostic on the other side: they take an explicit
- * `<path>` and derive everything from that path's own git metadata, never
- * from `worktrees.root` — required so they can also tear down the worktrees
- * `new` didn't create (every pre-existing one, scattered across whatever
- * root its own session picked; PLAN.md §5.3 drains those by attrition
- * through these same verbs, not a migration).
+ * root regardless of where the repo itself lives. `rm`/`archive` take a
+ * worktree `<path>` and derive everything from that path's own git metadata
+ * — so they can also tear down the worktrees `new` didn't create (every
+ * pre-existing one, scattered across whatever root its own session picked;
+ * PLAN.md §5.3 drains those by attrition through these same verbs, not a
+ * migration). When the positional isn't a path but a bare `<slug>` (or its
+ * `wt/<slug>` branch spelling), they fall back to the *same* `worktrees.root`
+ * `new` writes to — `<root>/<repoLabel>/<slug>` — so `rm <slug>` resolves the
+ * owning repo from a cwd outside it, not only from within.
  *
  * `rm` and `archive` are deliberately different verbs (PLAN.md §5.2): `rm`
  * is the honest plain-destructive one — it runs `worktree.cleanup` and
@@ -39,6 +41,7 @@
 import { parseArgs } from "node:util"
 import { randomUUID } from "node:crypto"
 import { resolve, dirname, basename, join } from "node:path"
+import { existsSync, readdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
@@ -72,9 +75,9 @@ Usage:
   agentproto worktree ls      [--repo <dir>] [--status] [--json]
   agentproto worktree new     <slug> [--repo <dir>] [--base <ref>]
                                      [--branch <name>] [--no-setup] [--json]
-  agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
+  agentproto worktree rm      <path|slug> [--repo <dir>] [--base <ref>] [--keep-branch]
                                      [--discard-untracked] [--discard-modified] [--json]
-  agentproto worktree archive <path> [--repo <dir>] [--base <ref>]
+  agentproto worktree archive <path|slug> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
   agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
                                      [--include-detached] [--json]
@@ -428,7 +431,7 @@ async function runNew(args: readonly string[]): Promise<number> {
   }
 }
 
-// ── shared: resolve a <path> positional to (repoRoot, cwd, branch) ────────
+// ── shared: resolve a <path|slug> positional to (repoRoot, cwd, branch) ────────
 
 interface ResolvedWorktreeTarget {
   repoRoot: string
@@ -437,31 +440,119 @@ interface ResolvedWorktreeTarget {
   branch: string | undefined
 }
 
-/** Resolves the shared `<path> [--repo <dir>]` positional both `rm` and `archive` take. Writes its own error and returns `null` on failure. */
-function resolveWorktreeTarget(target: string | undefined, repoFlag: string | undefined, cmdName: string): ResolvedWorktreeTarget | null {
+/** The branch a worktree at `cwd` is on, or `undefined` for a detached HEAD
+ * (git reports "HEAD" for `--abbrev-ref`), so cleanup knows what to delete. */
+function worktreeBranch(cwd: string): string | undefined {
+  const res = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
+  const raw = res.status === 0 ? res.stdout.trim() : undefined
+  return raw && raw !== "HEAD" ? raw : undefined
+}
+
+type SlugLookup =
+  | { kind: "found"; repoRoot: string; cwd: string }
+  | { kind: "ambiguous"; matches: string[] }
+  | { kind: "none"; searched: string[] }
+
+/**
+ * Resolve a worktree *slug* (`model-catalog-3axis`) — or its branch spelling
+ * (`wt/model-catalog-3axis`, as `ls` displays it) — to its on-disk worktree,
+ * independent of cwd. `worktree new` lays every worktree it creates down at
+ * `<worktrees.root>/<repoLabel>/<slug>` (dir named for the slug, branch
+ * `wt/<slug>`); scanning that root is how `rm <slug>` resolves the owning repo
+ * from a cwd *outside* it — which plain `resolve(<slug>)` (→ `<cwd>/<slug>`,
+ * not a git dir) never could. Honors the same `worktrees.root` precedence as
+ * `new` (env `AGENTPROTO_WORKTREES_ROOT` > config.json > default).
+ */
+async function lookupWorktreeSlug(slug: string, repoFlag: string | undefined): Promise<SlugLookup> {
+  const bare = slug.replace(/^wt\//, "")
+  const root = await resolveWorktreesRoot(undefined)
+
+  // --repo pins the owning repo, so only its label bucket can hold the slug.
+  // Otherwise scan every <root>/<repoLabel>/ bucket for a matching child.
+  let buckets: string[]
+  if (repoFlag) {
+    const pinned = repoRootOf(resolve(repoFlag))
+    buckets = pinned ? [repoLabel(pinned)] : []
+  } else {
+    try {
+      buckets = readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+    } catch {
+      buckets = []
+    }
+  }
+
+  const searched: string[] = []
+  const found: { repoRoot: string; cwd: string }[] = []
+  for (const bucket of buckets) {
+    const cwd = join(root, bucket, bare)
+    searched.push(cwd)
+    if (!existsSync(cwd)) continue
+    const repoRoot = repoRootOf(cwd)
+    if (repoRoot) found.push({ repoRoot, cwd })
+  }
+
+  if (found.length === 1) {
+    const only = found[0]!
+    return { kind: "found", repoRoot: only.repoRoot, cwd: only.cwd }
+  }
+  if (found.length > 1) return { kind: "ambiguous", matches: found.map((f) => f.cwd) }
+  return { kind: "none", searched }
+}
+
+/** Resolves the shared `<path|slug> [--repo <dir>]` positional both `rm` and `archive` take. Writes its own error and returns `null` on failure. */
+async function resolveWorktreeTarget(
+  target: string | undefined,
+  repoFlag: string | undefined,
+  cmdName: string,
+): Promise<ResolvedWorktreeTarget | null> {
   if (!target) {
     process.stderr.write(
       `agentproto worktree ${cmdName}: missing worktree path.\n` +
-        `  Try: agentproto worktree ${cmdName} <path>  (see \`agentproto worktree ls\`)\n`,
+        `  Try: agentproto worktree ${cmdName} <path|slug>  (see \`agentproto worktree ls\`)\n`,
     )
     return null
   }
-  const cwd = resolve(target)
 
-  // The repo root that owns the worktree — prefer --repo, else derive from the
-  // worktree's own git metadata (its main working tree).
-  const repoRoot = repoRootOf(resolve(repoFlag ?? cwd))
-  if (!repoRoot) {
-    process.stderr.write(`agentproto worktree ${cmdName}: could not resolve the git repo for "${target}".\n`)
+  // 1. An explicit path that exists on disk — `rm <abs>` / `rm ./rel` run from
+  //    anywhere, and `rm <slug>` when cwd already sits at the slug's parent.
+  //    Derive the owning MAIN repo from --repo, else the path's own git dir.
+  const asPath = resolve(target)
+  if (existsSync(asPath)) {
+    const repoRoot = repoRootOf(resolve(repoFlag ?? asPath))
+    if (repoRoot) return { repoRoot, cwd: asPath, branch: worktreeBranch(asPath) }
+  }
+
+  // 2. Otherwise treat `target` as a worktree slug placed under `worktrees.root`
+  //    — the same cwd-independent source `new` writes to and `ls` reflects —
+  //    so `rm <slug>` / `rm wt/<slug>` resolves from a cwd outside the repo.
+  const lookup = await lookupWorktreeSlug(target, repoFlag)
+  if (lookup.kind === "found") {
+    return { repoRoot: lookup.repoRoot, cwd: lookup.cwd, branch: worktreeBranch(lookup.cwd) }
+  }
+  if (lookup.kind === "ambiguous") {
+    process.stderr.write(
+      `agentproto worktree ${cmdName}: "${target}" matches worktrees under more than one repo:\n` +
+        lookup.matches.map((m) => `    ${m}`).join("\n") +
+        `\n  Pass the full path, or --repo <dir> to pick one.\n`,
+    )
     return null
   }
 
-  // The branch the worktree is on, so cleanup can delete it.
-  const branchRes = spawnSync("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
-  const rawBranch = branchRes.status === 0 ? branchRes.stdout.trim() : undefined
-  const branch = rawBranch && rawBranch !== "HEAD" ? rawBranch : undefined
-
-  return { repoRoot, cwd, branch }
+  // 3. Neither a path nor a known slug — say where we looked and how to recover.
+  const where =
+    lookup.searched.length > 0
+      ? `  Looked for a path at ${asPath}, and a worktree slug under:\n` +
+        lookup.searched.map((s) => `    ${s}`).join("\n") +
+        "\n"
+      : `  Looked for a path at ${asPath} (no worktrees.root buckets to scan for a slug).\n`
+  process.stderr.write(
+    `agentproto worktree ${cmdName}: could not resolve the git repo for "${target}".\n` +
+      where +
+      `  Run from inside the repo, pass the worktree path, or use --repo <dir>.\n`,
+  )
+  return null
 }
 
 // ── rm ──────────────────────────────────────────────────────────────────
@@ -482,7 +573,7 @@ async function runRm(args: readonly string[]): Promise<number> {
     },
   })
 
-  const resolved = resolveWorktreeTarget(positionals[0], values.repo, "rm")
+  const resolved = await resolveWorktreeTarget(positionals[0], values.repo, "rm")
   if (!resolved) return 2
   const { repoRoot, cwd, branch } = resolved
 
@@ -533,7 +624,7 @@ async function runArchive(args: readonly string[]): Promise<number> {
     },
   })
 
-  const resolved = resolveWorktreeTarget(positionals[0], values.repo, "archive")
+  const resolved = await resolveWorktreeTarget(positionals[0], values.repo, "archive")
   if (!resolved) return 2
   const { repoRoot, cwd, branch } = resolved
 
