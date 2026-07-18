@@ -16,6 +16,7 @@ import { BrowserPane } from "./browser/BrowserPane"
 import { browserTabsFor } from "./browser/browser-view"
 import { ChangesPanel } from "./changes/ChangesPanel"
 import { useGitDiff } from "./changes/useGitDiff"
+import { FilesPanel } from "./files/FilesPanel"
 import "./shell/shell.css"
 import "./browser/browser.css"
 import "./changes/changes.css"
@@ -139,7 +140,9 @@ function App() {
             <MainHeader session={selected} />
             <TabStrip tabs={browserTabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div className="pane">
-              {activeBrowserTab ? (
+              {activeTab === "files" ? (
+                <FilesPanel cwd={selected.cwd ?? ""} />
+              ) : activeBrowserTab ? (
                 <BrowserPane tab={activeBrowserTab} />
               ) : (
                 <Transcript sessionId={selected.id} records={records} />

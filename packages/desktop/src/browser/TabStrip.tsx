@@ -21,6 +21,13 @@ export function TabStrip({ tabs, activeTab, onSelect }: TabStripProps) {
         <span className="ico">◇</span>
         <span className="lbl">Transcript</span>
       </div>
+      <div
+        className={`tab${activeTab === "files" ? " active" : ""}`}
+        onClick={() => onSelect("files")}
+      >
+        <span className="ico">🗂</span>
+        <span className="lbl">Files</span>
+      </div>
       {tabs.map((tab) => (
         <div
           key={tab.id}

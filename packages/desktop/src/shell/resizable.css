@@ -1,0 +1,15 @@
+/* Resize handle — a thin hit-target sitting on a grid gutter (pairs with
+ * useResizable). Neutral until hovered, then it picks up the accent token,
+ * falling back to the current text color where no accent is defined. */
+
+.resize-handle {
+  width: 4px;
+  flex: none;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.resize-handle:hover {
+  background: var(--color-accent, currentColor);
+}
