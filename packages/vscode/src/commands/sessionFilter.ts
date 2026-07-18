@@ -38,6 +38,12 @@ export interface SessionFilterController {
   /** Cached GET /workspaces result — EMPTY_WORKSPACES until the first successful fetch. */
   readonly workspaces: WorkspacesConfig
   readonly onDidChange: vscode.Event<void>
+  /** Force-refetch GET /workspaces now, firing onDidChange if it changed.
+   *  For a caller that just mutated the registry itself (agentproto.createWorkspace
+   *  after POST /workspaces) and can't wait for the next store.onDidChange tick —
+   *  creating a workspace doesn't change the session list, so refreshAll()'s own
+   *  change-gated fire would never happen on its own. */
+  refreshWorkspaces(): Promise<void>
   dispose(): void
 }
 
@@ -98,6 +104,7 @@ export function registerSessionFilter(
       return workspaces
     },
     onDidChange: onDidChangeEmitter.event,
+    refreshWorkspaces,
     dispose() {
       storeSub.dispose()
       onDidChangeEmitter.dispose()
