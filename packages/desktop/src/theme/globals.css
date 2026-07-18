@@ -1,0 +1,66 @@
+/* Global base wiring (WP0 — frozen). Element resets, base typography, and the
+ * shared primitives (details/summary disclosure, chevron, scrollbar) the mock
+ * relies on. All values read the token vars from tokens.css — no literals. */
+
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body-family);
+  background: var(--color-background);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#root {
+  height: 100%;
+}
+
+/* disclosure primitive — collapsible reasoning/tool/file rows */
+details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chev {
+  margin-left: auto;
+  color: var(--color-ink-faint);
+  transition: transform 0.15s;
+  font-size: 10px;
+}
+details[open] > summary .chev {
+  transform: rotate(90deg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--rounded-full);
+  border: 3px solid var(--color-surface);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+  }
+}
