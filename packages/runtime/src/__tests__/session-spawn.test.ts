@@ -1129,6 +1129,29 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
     expect(result.ok).toBe(true)
     expect(captured[0]?.auth).toBeUndefined()
   })
+
+  it("a base_url option targeting a foreign gateway skips auth resolution entirely — no spec passed to the adapter, nothing echoed on the descriptor", async () => {
+    // claude-code's authDescriptor is `enforce: "always"` — without this
+    // check it would resolve+echo a native-Anthropic subscription spec even
+    // though this spawn's own `base_url` option targets Moonshot. The
+    // driver-level fix (define-agent-cli.ts) already guarantees the
+    // credential never actually lands in the child env; this covers the
+    // separate, purely-cosmetic bug where the descriptor's `auth` field
+    // still claimed one would be used.
+    const { resolver, captured } = makeAuthResolver(CLAUDE_CODE_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "claude-code",
+        cwd: "/tmp",
+        options: { base_url: "https://api.moonshot.ai/anthropic" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toBeUndefined()
+    expect(registry.list()[0]?.auth).toBeUndefined()
+  })
 })
 
 // ── worktree isolation (agent_start.worktree + worktrees.isolation) ─────────
