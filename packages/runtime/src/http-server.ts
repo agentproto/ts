@@ -23,7 +23,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
 import { mkdir, stat, writeFile } from "node:fs/promises"
-import { isAbsolute, join, resolve as resolvePath } from "node:path"
+import { basename, isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
@@ -39,6 +39,10 @@ import type { RoutineRunner, RoutineStep } from "./routine-runner.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import {
   loadWorkspacesConfig,
+  saveWorkspacesConfig,
+  addWorkspace,
+  removeWorkspace,
+  setActiveWorkspace,
   findWorkspace,
   findWorkspaceByPath,
   getActiveWorkspace,
@@ -1034,8 +1038,11 @@ export async function startHttpServer(
         if (path === "/workspaces" && req.method === "GET") {
           // Surface ~/.agentproto/workspaces.json for UIs that
           // want a workspace dropdown (spawn dialog, MCP discovery
-          // grouping, etc.). Read-only; mutate via the CLI's
-          // `agentproto workspace add/remove/use` verbs.
+          // grouping, etc.). Read-only variant; mutation lives just
+          // below (POST /workspaces, PUT /workspaces/active,
+          // DELETE /workspaces/:slug) and via the CLI's
+          // `agentproto workspace add/remove/use` verbs — both paths
+          // go through the same pure helpers in workspaces-config.ts.
           try {
             const config = await loadWorkspacesConfig()
             res.writeHead(200, { "content-type": "application/json" })
@@ -1049,6 +1056,151 @@ export async function startHttpServer(
               })
             )
           }
+          return
+        }
+
+        // Workspace registry mutation — makes `agentproto workspace
+        // add/remove/use` reachable off the CLI (e.g. the VS Code
+        // "create workspace here" CTA). Same per-boot token gate as
+        // other local mutating routes (POST /files/upload,
+        // POST /permissions/:id): these edit ~/.agentproto/workspaces.json
+        // and register directories the daemon will later use as a
+        // session cwd, so they get the same protection as other
+        // filesystem-mutating routes, not the ungated /mcps/imports
+        // precedent.
+        //
+        // NOTE: this is hand-wired REST, not a `defineTool` isomorphic
+        // verb — there's no existing machinery in this repo that
+        // projects one `defineTool` contract to cli+http+mcp+sdk (see
+        // packages/worktree for the closest precedent: defineTool
+        // contracts wired to CLI only, by hand, per call site). Doing
+        // that generically was out of scope for unblocking the VS Code
+        // extension; a follow-up could promote `commands/workspace.ts`
+        // + these three routes to share one `defineTool` contract each.
+        if (path === "/workspaces" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as {
+            path?: unknown
+            slug?: unknown
+            label?: unknown
+          } | null
+          if (!body || typeof body.path !== "string" || !body.path) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_path" }))
+            return
+          }
+          if (!isAbsolute(body.path)) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "workspace_path_not_absolute",
+                message: `path must be absolute, got "${body.path}".`,
+              })
+            )
+            return
+          }
+          try {
+            await stat(body.path)
+          } catch {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "workspace_path_not_found",
+                message: `"${body.path}" doesn't exist.`,
+              })
+            )
+            return
+          }
+          if (body.slug !== undefined && typeof body.slug !== "string") {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_slug" }))
+            return
+          }
+          if (body.label !== undefined && typeof body.label !== "string") {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_label" }))
+            return
+          }
+          try {
+            const config = await loadWorkspacesConfig()
+            const next = addWorkspace(config, {
+              slug: body.slug || basename(body.path),
+              path: body.path,
+              ...(body.label ? { label: body.label } : {}),
+            })
+            await saveWorkspacesConfig(next)
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify(next))
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "workspace_add_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        if (path === "/workspaces/active" && req.method === "PUT") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as { slug?: unknown } | null
+          if (!body || typeof body.slug !== "string" || !body.slug) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "missing_slug" }))
+            return
+          }
+          try {
+            const config = await loadWorkspacesConfig()
+            const next = setActiveWorkspace(config, body.slug)
+            await saveWorkspacesConfig(next)
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(next))
+          } catch (err) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "workspace_not_found",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        // Generic /workspaces/:slug — checked after the fixed
+        // /workspaces/active path above so PUT-active never gets
+        // mis-parsed as a slug (matters if this ever grows a same-path
+        // method; today DELETE vs PUT already disambiguate, but the
+        // ordering keeps that true even if a GET or PATCH variant is
+        // added here later).
+        const workspaceSlugMatch = path.match(/^\/workspaces\/([^/]+)$/)
+        if (workspaceSlugMatch && req.method === "DELETE") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const slug = decodeURIComponent(workspaceSlugMatch[1] ?? "")
+          const config = await loadWorkspacesConfig()
+          if (!findWorkspace(config, slug)) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "workspace_not_found", slug }))
+            return
+          }
+          const next = removeWorkspace(config, slug)
+          await saveWorkspacesConfig(next)
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(next))
           return
         }
 
