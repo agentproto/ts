@@ -438,10 +438,15 @@ jobs:
           # needs an interactive ~/.claude login the CI runner doesn't have and
           # no-ops with "Authentication required"; api-key authenticates headless.
           AUTH_MODE=$(node -p "String((require('./.github/agentic-review.json').reviewerAuthMode) || 'subscription')" 2>/dev/null || echo "subscription")
+          # Reviewer adapter. claude-code drives the Claude Code CLI, which
+          # no-ops headless in CI; claude-sdk is SDK-based and authenticates
+          # headless (and can front Moonshot/Kimi via ANTHROPIC_BASE_URL).
+          ADAPTER=$(node -p "String((require('./.github/agentic-review.json').reviewerAdapter) || 'claude-code')" 2>/dev/null || echo "claude-code")
           echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$AUTH_MODE" >> "$GITHUB_OUTPUT"
-          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) auth-mode=$AUTH_MODE"
+          echo "adapter=$ADAPTER" >> "$GITHUB_OUTPUT"
+          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION) adapter=$ADAPTER auth-mode=$AUTH_MODE"
 
       - name: Build local agentproto CLI
         if: |
@@ -449,7 +454,7 @@ jobs:
           steps.cliver.outputs.cli-source == 'workspace'
         run: |
           pnpm install --frozen-lockfile
-          pnpm build --filter @agentproto/cli...
+          pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ steps.cliver.outputs.adapter }}..."
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
@@ -469,7 +474,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
         with:
-          adapter: claude-code
+          adapter: ${{ steps.cliver.outputs.adapter }}
           # auth-mode from .github/agentic-review.json (reviewerAuthMode).
           # Both credentials are passed; the action's write-config uses only
           # the one matching auth-mode. api-key authenticates headless in CI
