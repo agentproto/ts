@@ -149,7 +149,18 @@ export function resolveBucketSlug(
  *  silently pooling into `default` until restart. Never throws: a
  *  missing/corrupt registry degrades to "nothing is registered", i.e.
  *  everything lands in `default` — today's pooled behaviour, which is
- *  the right failure direction. */
+ *  the right failure direction.
+ *
+ *  A registry read that fails transiently (a race with a concurrent
+ *  `saveWorkspacesConfig` tmp+rename) is indistinguishable here from one
+ *  that's genuinely empty — but the persist path never actually needs to
+ *  tell them apart: `sessions.ts`'s `sourceBucketOf` already keeps a
+ *  loaded row homed to the bucket it came from regardless of what this
+ *  returns, so a bad read here degrades a NEW session's placement (still
+ *  `default`, same as always) and nothing else. See the 2026-07-18
+ *  bucket-clobber incident for why that distinction matters for loaded
+ *  rows, and `sourceBucketOf`'s docblock in `sessions.ts` for where it's
+ *  actually enforced. */
 export function readRegisteredSlugs(configPath?: string): ReadonlySet<string> {
   try {
     const config = loadWorkspacesConfigSync(configPath)
@@ -335,7 +346,11 @@ export function migrateLegacySessionsFile(opts: {
   return marker
 }
 
-function readBucketRows(root: string, slug: string): unknown[] {
+/** Rows currently on disk for a bucket. `[]` for a missing/corrupt/empty
+ *  file — same "degrade to nothing rather than throw" contract as every
+ *  other reader in this module. Exported so a persist path can consult
+ *  what's already there before writing — see `mergeBucketRows`. */
+export function readBucketRows(root: string, slug: string): unknown[] {
   try {
     const parsed = JSON.parse(
       readFileSync(bucketSessionsFile(root, slug), "utf8"),
@@ -344,4 +359,51 @@ function readBucketRows(root: string, slug: string): unknown[] {
   } catch {
     return []
   }
+}
+
+const rowId = (row: unknown): string | undefined =>
+  row && typeof row === "object" && "id" in row && typeof (row as { id?: unknown }).id === "string"
+    ? (row as { id: string }).id
+    : undefined
+
+/**
+ * Merge freshly-computed rows for a bucket with whatever is already on
+ * disk, deduped by id. `rows` wins for any id it carries (it reflects
+ * this process's more current view of that session — status, endedAt,
+ * etc.).
+ *
+ * An on-disk row whose id has no counterpart in `rows` is preserved ONLY
+ * when `everHeldIds` says this daemon process has NEVER itself held that
+ * id in this bucket — i.e. it is genuinely FOREIGN, written by some
+ * other process. Exists so a persist can never SHRINK a bucket purely
+ * because this daemon instance's in-memory registry doesn't hold every
+ * row that bucket's file holds — the case a daemon that never loaded a
+ * bucket at boot (a second/skewed-build instance, a workspace-scoped
+ * boot load) hits when a new session happens to resolve into it.
+ *
+ * The `everHeldIds` check is what stops that same backstop from
+ * resurrecting a session THIS daemon deliberately forgot: an id it once
+ * held (loaded at boot, or created itself) but no longer carries in
+ * `rows` was removed on purpose, not lost to a partial view of the
+ * bucket, and must not come back just because it's still sitting on disk
+ * from a moment before that removal was persisted. `everHeldIds` is
+ * expected to grow monotonically over the caller's lifetime — an id, once
+ * added, is never removed from it even after the session itself is
+ * forgotten — precisely so this distinction survives the forget.
+ *
+ * Callers that DID authoritatively load a bucket at boot are expected to
+ * pass its rows through unmerged — this is a backstop for the buckets
+ * they didn't.
+ */
+export function mergeBucketRows(
+  onDisk: readonly unknown[],
+  rows: readonly unknown[],
+  everHeldIds: ReadonlySet<string>,
+): unknown[] {
+  const incomingIds = new Set(rows.map(rowId).filter((id): id is string => id !== undefined))
+  const preserved = onDisk.filter(row => {
+    const id = rowId(row)
+    return id !== undefined && !incomingIds.has(id) && !everHeldIds.has(id)
+  })
+  return [...rows, ...preserved]
 }

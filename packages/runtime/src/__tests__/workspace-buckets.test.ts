@@ -23,6 +23,7 @@ import {
   bucketSessionsFile,
   isSafeBucketSlug,
   listBuckets,
+  mergeBucketRows,
   migrateLegacySessionsFile,
   migrationMarkerPath,
   readRegisteredSlugs,
@@ -114,6 +115,46 @@ describe("isSafeBucketSlug", () => {
   it("rejects an over-long slug", () => {
     expect(isSafeBucketSlug("a".repeat(64))).toBe(true)
     expect(isSafeBucketSlug("a".repeat(65))).toBe(false)
+  })
+})
+
+describe("mergeBucketRows", () => {
+  const r = (id: string) => ({ id, status: "exited" })
+
+  it("preserves a foreign on-disk row — never held by this process", () => {
+    // The clobber-prevention case: a row this daemon never loaded and
+    // never created must survive a merge untouched.
+    const onDisk = [r("foreign-1"), r("foreign-2")]
+    const merged = mergeBucketRows(onDisk, [], new Set())
+    expect(merged).toEqual([r("foreign-1"), r("foreign-2")])
+  })
+
+  it("does NOT resurrect an ever-held id that's absent from `rows`", () => {
+    // The forget-regression case: `mine-1` is on disk from an earlier
+    // persist by THIS process, but the caller no longer carries it in
+    // `rows` (it was deliberately forgotten) — `everHeldIds` says so,
+    // and the merge must respect that instead of treating it as foreign.
+    const onDisk = [r("mine-1"), r("foreign-1")]
+    const merged = mergeBucketRows(onDisk, [], new Set(["mine-1"]))
+    expect(merged).toEqual([r("foreign-1")])
+  })
+
+  it("incoming rows win by id over their on-disk counterpart", () => {
+    const onDisk = [{ id: "a1", status: "running" }]
+    const rows = [{ id: "a1", status: "exited" }]
+    const merged = mergeBucketRows(onDisk, rows, new Set(["a1"]))
+    expect(merged).toEqual([{ id: "a1", status: "exited" }])
+  })
+
+  it("combines: incoming rows plus genuinely foreign on-disk rows, minus forgotten ever-held ones", () => {
+    const onDisk = [r("foreign-1"), r("forgotten-1"), r("live-1")]
+    const rows = [{ id: "live-1", status: "exited" }, r("new-1")]
+    const merged = mergeBucketRows(onDisk, rows, new Set(["forgotten-1", "live-1", "new-1"]))
+    expect(merged).toEqual([
+      { id: "live-1", status: "exited" },
+      r("new-1"),
+      r("foreign-1"),
+    ])
   })
 })
 

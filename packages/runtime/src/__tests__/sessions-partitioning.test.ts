@@ -24,6 +24,11 @@ import { bucketSessionsFile, listBuckets } from "../workspace-buckets.js"
  *  from the number changing. */
 const HISTORY_CAP = 200
 
+/** PERSIST_DEBOUNCE_MS in sessions.ts. Duplicated for the same reason as
+ *  HISTORY_CAP above — used to force the debounced async persist to fire
+ *  via fake timers rather than waiting on it in real time. */
+const PERSIST_DEBOUNCE_MS = 1_500
+
 interface Row {
   id: string
   workspaceSlug: string
@@ -79,6 +84,30 @@ describe("sessions registry — per-workspace partitioning", () => {
         sessions: { id: string }[]
       }
     ).sessions.map(s => s.id)
+
+  /** Poll a real-time condition until it's true, or fail after a bound.
+   *  Used only by the debounced-persist ("forget") test below, which
+   *  exercises the REAL `fs.promises` write behind `schedulePersist` —
+   *  fake timers don't reliably pump a pending real I/O promise through
+   *  when virtual time is advanced, so this waits on the wall clock
+   *  instead. `check` may throw (e.g. the bucket file doesn't exist
+   *  yet); that's treated as "not yet". */
+  const waitFor = async (check: () => boolean, timeoutMs = PERSIST_DEBOUNCE_MS * 3): Promise<void> => {
+    const start = Date.now()
+    for (;;) {
+      let ok = false
+      try {
+        ok = check()
+      } catch {
+        ok = false
+      }
+      if (ok) return
+      if (Date.now() - start > timeoutMs) {
+        throw new Error("waitFor: condition never became true in time")
+      }
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+  }
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "agentproto-partition-"))
@@ -251,6 +280,152 @@ describe("sessions registry — per-workspace partitioning", () => {
     expect(listBuckets(bucketsRoot)).toEqual([])
     expect(existsSync(legacy)).toBe(false)
   })
+
+  // ── 2026-07-18 bucket-clobber incident ──────────────────────────────
+  //
+  // A second/skewed daemon shared the same `~/.agentproto/workspaces/`
+  // bucket root, and a persist from it emptied `agentik-studio` (61
+  // rows → 0) and `choisir-service-public-app` (8 → 0) while the
+  // migration marker still recorded the original counts. Three
+  // compounding defects, each proven independently below:
+  //   1. `readRegisteredSlugs` collapses "read failed" and "genuinely
+  //      empty" into the same `Set()`.
+  //   2. `groupRowsByBucket` recomputed EVERY row's bucket from
+  //      `workspaceSlug` + that (possibly wrong) registry on every
+  //      persist, instead of trusting where a row was actually loaded
+  //      from.
+  //   3. Persist rewrote a bucket wholesale from whatever this daemon
+  //      instance happened to have in memory, with no merge against
+  //      what was already on disk.
+
+  it("a registry-read failure during persist does NOT empty a populated named bucket", async () => {
+    registerWorkspaces("alpha")
+    writeBucket("alpha", [
+      row("a1", "alpha", "2026-07-01T00:00:00.000Z"),
+      row("a2", "alpha", "2026-07-01T00:01:00.000Z"),
+    ])
+
+    const registry = createSessionsRegistry({})
+    expect(registry.list().map(s => s.id).sort()).toEqual(["a1", "a2"])
+
+    // Force the exact race from the incident: the registry file is
+    // unreadable at the moment a persist runs (a real occurrence is a
+    // concurrent `saveWorkspacesConfig` tmp+rename; forced here for a
+    // deterministic test).
+    writeFileSync(join(agentprotoDir, "workspaces.json"), "{ not json")
+
+    await registry.shutdown()
+
+    // Before the fix: an unreadable registry made `alpha` look
+    // unregistered, relocating both rows to `default` and writing
+    // `alpha` back with zero rows.
+    expect(bucketIds("alpha").sort()).toEqual(["a1", "a2"])
+  })
+
+  it("a session LOADED from bucket `foo` persists back to `foo` even when `foo` isn't registered", async () => {
+    // `foo`'s bucket file exists (a workspace that was registered once,
+    // or a hand-placed file), but the registry no longer — or never did
+    // — list it. Only `bar` is registered.
+    registerWorkspaces("bar")
+    writeBucket("foo", [row("f1", "foo", "2026-07-01T00:00:00.000Z")])
+
+    const registry = createSessionsRegistry({})
+    expect(registry.list().map(s => s.id)).toEqual(["f1"])
+
+    await registry.shutdown()
+
+    // Before the fix: `resolveBucketSlug("foo", {bar})` recomputes to
+    // `default` on every persist regardless of where the row came from,
+    // relocating it away from `foo` and emptying `foo`'s file.
+    expect(bucketIds("foo")).toEqual(["f1"])
+  })
+
+  it("a bucket this daemon never boot-loaded is merged, not clobbered, when a new row resolves into it", async () => {
+    registerWorkspaces("alpha")
+    // No bucket file for `alpha` exists yet — this daemon's boot-time
+    // `listBuckets` finds nothing there and never reads it.
+    const registry = createSessionsRegistry({})
+    expect(registry.list()).toEqual([])
+
+    // Another process — a concurrently-running daemon, or a second boot
+    // that raced this one — populates `alpha` AFTER this daemon already
+    // booted, the same shape as the incident's second daemon sharing one
+    // bucket root.
+    const priorRows = Array.from({ length: 12 }, (_, i) =>
+      row(`prior-${i}`, "alpha", `2026-07-01T00:0${i}:00.000Z`),
+    )
+    writeBucket("alpha", priorRows)
+
+    // This daemon records a brand-new session that resolves into
+    // `alpha` purely via the (now-updated) registry — it was never
+    // loaded from disk, so `alpha` is still absent from its
+    // boot-authoritative bucket set.
+    registry.recordCommand({
+      workspaceSlug: "alpha",
+      cwd: "/tmp/alpha",
+      command: "echo",
+      args: ["hi"],
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      stdout: "",
+      stderr: "",
+    })
+
+    await registry.shutdown()
+
+    // The bucket grew by one row — it must not have been shrunk to
+    // just that one row, discarding the 12 this daemon never read.
+    const ids = bucketIds("alpha")
+    expect(ids).toHaveLength(13)
+    for (const prior of priorRows) expect(ids).toContain(prior.id)
+  })
+
+  it("forgetting a session in a never-boot-loaded bucket does NOT resurrect it on the next persist", async () => {
+    // The merge backstop above (previous test) exists to RESTORE rows a
+    // daemon never read. It must not also UNDO a deliberate forget of a
+    // row this same daemon created and later removed — that would look
+    // identical to a foreign row unless the merge tracks which ids this
+    // process has itself ever held.
+    //
+    // Real timers deliberately, not `vi.useFakeTimers()`: the debounced
+    // persist this exercises awaits REAL `fs.promises` writes, and
+    // advancing virtual time doesn't reliably pump those through — this
+    // waits on the actual PERSIST_DEBOUNCE_MS + write latency instead.
+    registerWorkspaces("alpha")
+    // `alpha`'s bucket doesn't exist at boot — same not-boot-loaded
+    // shape as the merge test above, where the bug lives.
+    const registry = createSessionsRegistry({})
+    expect(registry.list()).toEqual([])
+
+    const desc = registry.recordCommand({
+      workspaceSlug: "alpha",
+      cwd: "/tmp/alpha",
+      command: "echo",
+      args: ["hi"],
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      stdout: "",
+      stderr: "",
+    })
+
+    // First debounced persist actually lands the row on disk.
+    await waitFor(() => existsSync(bucketSessionsFile(bucketsRoot, "alpha")) && bucketIds("alpha").includes(desc.id))
+    expect(bucketIds("alpha")).toEqual([desc.id])
+
+    // The user forgets it, then a SECOND persist runs from the SAME
+    // live daemon — `alpha` is still not in `bootLoadedBuckets`, so
+    // this persist still goes through the merge backstop.
+    registry.forget(desc.id)
+    await waitFor(() => !bucketIds("alpha").includes(desc.id))
+
+    expect(bucketIds("alpha")).toEqual([])
+
+    // And a final shutdown flush agrees — the forget stuck.
+    await registry.shutdown()
+    expect(bucketIds("alpha")).toEqual([])
+  }, 10_000)
 })
 
 describe("isolated-HOME A/B — a workspace's state lands in its own bucket", () => {
