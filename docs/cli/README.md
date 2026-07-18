@@ -40,6 +40,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto browser`](./verbs/browser.md) — manage browser service sessions (Camofox, Bureau, Chromium)
 - [`agentproto chat` / `chat-tui`](./verbs/chat.md) — interactive REPL on a daemon agent session
 - [`agentproto config`](./verbs/config.md) — read/write `~/.agentproto/config.json`
+- [`agentproto conversation`](./verbs/conversation.md) — locate the native transcript behind a session, or the session behind a native transcript
 - [`agentproto cron`](./verbs/cron.md) — durable cron jobs on the daemon (command, fresh agent, or re-prompt a live session)
 - [`agentproto daemon`](./verbs/daemon.md) — install/start/stop the background service
 - [`agentproto install`](./verbs/install.md) — install an adapter or a runtime profile

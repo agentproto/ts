@@ -219,6 +219,22 @@ export {
   resolveBucketSlug,
   type MigrationMarker,
 } from "./workspace-buckets.js"
+export {
+  appendConversationRecord,
+  conversationIndexPath,
+  findConversationRecord,
+  locateConversationByNativePath,
+  locateConversationBySessionId,
+  readConversationIndex,
+  resolveNativeLink,
+  type ClaudeNativeRef,
+  type ConversationIndexRecord,
+  type ConversationNativeRef,
+  type HermesNativeRef,
+  type LocatedConversation,
+  type LocatedConversationByPath,
+  type ResolveNativeLinkInput,
+} from "./conversation-index.js"
 export { createFileStepCache } from "./workflow-step-cache.js"
 export {
   sweepStaleRuntimeMetas,
@@ -232,6 +248,7 @@ export {
   type RuntimeMeta,
 } from "./agentproto-dir.js"
 export { fileConversationStore } from "./conversations.js"
+export { claudeProjectSlug } from "./conversation-store.js"
 export {
   loadProviders,
   setProviderKey,

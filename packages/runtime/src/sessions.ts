@@ -34,7 +34,12 @@ import {
   type SessionObserver,
 } from "./session-observer.js"
 import { formatToolCall, formatToolResult } from "./tool-presenter.js"
-import { createTranscriptWriter } from "./transcript-writer.js"
+import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import {
+  appendConversationRecord,
+  resolveNativeLink,
+  type ConversationIndexRecord,
+} from "./conversation-index.js"
 import {
   BUCKETS_ROOT,
   bucketSessionsFile,
@@ -1491,6 +1496,81 @@ export function createSessionsRegistry(opts?: {
     delete rt.desc.awaitingPermission
   }
 
+  /**
+   * Append one record to this session's workspace-bucket conversation
+   * index (`conversation-index.ts`) — the persisted, append-only memo of
+   * the session ↔ native-transcript link (DESIGN.md §6). Called at every
+   * point the link is freshly known: spawn (`spawnAgent`), an ACP-level
+   * resume (`maybeResumeAgent`), and a native graceful-exit resume-hint
+   * (`sniffResumeHints`).
+   *
+   * Best-effort by design, same discipline as `persistSnapshot` and the
+   * transcript writer: a filesystem hiccup here must never throw into the
+   * turn path, so every failure is caught and only logged. Fire-and-forget
+   * (`void`) — none of the three call sites has anything useful to do
+   * with a write's completion, and none of them is on a path a caller is
+   * blocked on.
+   *
+   * `adapterSessionIdOverride` is for the graceful-exit resume-hint call
+   * site: a raw-PTY claude session may never have gotten an ACP
+   * `adapterSessionId` at all, and the printed `claude --resume <uuid>`
+   * IS that same id space (the on-disk `.jsonl` uuid — see
+   * resume-strategies.ts's fsProbe docblock), so it's the more current
+   * value to record even when `desc.adapterSessionId` is already set.
+   *
+   * Gated on `persist` AND `partitioned` — the same two flags
+   * `schedulePersist`/`persistSnapshot` already answer to:
+   *   - `persist: false` (most of this file's own tests) means "write
+   *     nothing to disk, ever" — honour that for this store too.
+   *   - a caller that passed an explicit `persistPath` (single pooled
+   *     file — `sessions.test.ts`'s own convention) is opting OUT of the
+   *     per-workspace-bucket architecture entirely, and `bucketsRoot` in
+   *     that mode still defaults to the REAL `~/.agentproto/workspaces`
+   *     unless separately overridden — `persistSnapshot` never touches it
+   *     either in this mode (see `partitioned` branch below), so this
+   *     shouldn't either.
+   * Neither override (production, and `sessions-partitioning.test.ts`
+   * which HOME-isolates) ⇒ both true ⇒ this proceeds normally.
+   */
+  const recordConversationLink = (
+    rt: SessionRuntime,
+    adapterSessionIdOverride?: string,
+  ): void => {
+    if (!persist || !partitioned) return
+    const desc = rt.desc
+    if (desc.kind !== "agent-cli") return
+    const adapterSlug = desc.adapterSlug
+    const adapterSessionId = adapterSessionIdOverride ?? desc.adapterSessionId
+    const cwd = desc.cwd
+    if (!adapterSlug || !adapterSessionId || !cwd) return
+    void (async () => {
+      try {
+        const native = await resolveNativeLink({ cwd, adapterSlug, adapterSessionId })
+        const registered = readRegisteredSlugs(workspacesConfigPath)
+        const slug = resolveBucketSlug(desc.workspaceSlug, registered)
+        const record: ConversationIndexRecord = {
+          sessionId: desc.id,
+          workspace: slug,
+          cwd,
+          adapterSlug,
+          adapterSessionId,
+          ...(native ? { native } : {}),
+          agentprotoTranscript: sessionEventsPath(desc.id, transcriptBaseDir),
+          ...(desc.title ? { title: desc.title } : {}),
+          startedAt: desc.startedAt,
+          ...(desc.endedAt ? { endedAt: desc.endedAt } : {}),
+        }
+        await appendConversationRecord(bucketsRoot, slug, record)
+      } catch (err) {
+        console.warn(
+          `[sessions] conversation-index write failed for ${desc.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    })()
+  }
+
   const schedulePersist = (): void => {
     if (!persist) return
     if (persistTimer) clearTimeout(persistTimer)
@@ -1593,6 +1673,10 @@ export function createSessionsRegistry(opts?: {
         [strategy.storeAs]: m[1],
       }
       schedulePersist()
+      // Write point 3/3: graceful-exit resume hint. Covers the raw-PTY
+      // case where no ACP adapterSessionId was ever set — the captured
+      // id is the only handle to this conversation the daemon will have.
+      recordConversationLink(rt, m[1])
     }
   }
 
@@ -2030,6 +2114,9 @@ export function createSessionsRegistry(opts?: {
           rt.emitter.emit("status", rt.desc.status)
         }
         schedulePersist()
+        // Write point 2/3: adapterSessionId just refreshed post-resume —
+        // the old id's native transcript stops growing, the new one starts.
+        recordConversationLink(rt)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
@@ -2566,6 +2653,9 @@ export function createSessionsRegistry(opts?: {
         "stdout"
       )
       schedulePersist()
+      // Write point 1/3: cwd/adapterSlug/adapterSessionId are all known
+      // at spawn — record the link before the first turn even runs.
+      recordConversationLink(rt)
       // Fire-and-forget the initial prompt (if any). Errors land in
       // the ring buffer + bump status to "error" but don't reject
       // the spawn — the descriptor was already returned.

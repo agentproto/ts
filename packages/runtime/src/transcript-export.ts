@@ -26,6 +26,7 @@ import { createInterface } from "node:readline"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
+import { claudeProjectSlug } from "./conversation-store.js"
 import type { ConversationCandidate } from "./conversation-store.js"
 
 // ── Common model ──────────────────────────────────────────────────────
@@ -229,7 +230,7 @@ export async function exportClaudeCodeSession(
         "Pass cwd explicitly or use a session id that is in the registry.",
     )
   }
-  const encoded = cwd.replace(/\//g, "-")
+  const encoded = claudeProjectSlug(cwd)
   const filePath = join(homedir(), ".claude", "projects", encoded, `${adapterSessionId}.jsonl`)
 
   let stream: ReturnType<typeof createReadStream>

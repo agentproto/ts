@@ -86,8 +86,9 @@ export interface ConversationStore {
 // ── claude-code store ──────────────────────────────────────────────────
 //
 // Native store: ~/.claude/projects/<cwd-encoded>/<uuid>.jsonl, one file per
-// conversation. `<cwd-encoded>` is the absolute cwd with "/" → "-" (claude's
-// own convention).
+// conversation. `<cwd-encoded>` is the absolute cwd run through
+// `claudeProjectSlug` (claude's own convention — see that function's
+// docblock for the empirically-verified rule).
 
 interface ClaudeJsonlMeta {
   type?: string
@@ -96,9 +97,39 @@ interface ClaudeJsonlMeta {
   message?: { role?: string; content?: unknown }
 }
 
-function claudeCodeProjectDir(cwd: string): string {
-  const encoded = cwd.replace(/\//g, "-")
-  return resolve(homedir(), ".claude", "projects", encoded)
+/**
+ * Claude Code's own `cwd` → project-dir-name encoder.
+ *
+ * The real rule (verified empirically against `~/.claude/projects/`
+ * directory names for dozens of known cwds, including dotted worktree
+ * paths and macOS temp dirs): every character that is NOT `[a-zA-Z0-9]`
+ * is replaced 1:1 with `-`. Crucially, runs of consecutive non-alnum
+ * characters are NOT collapsed — each input character produces exactly
+ * one output character.
+ *
+ * This used to be `cwd.replace(/\//g, "-")` — slashes only. That's wrong
+ * for any cwd containing a dot (every `.agentproto` worktree, any
+ * dotdir), an underscore-prefixed segment, a space, etc., because those
+ * characters are left untouched instead of becoming `-`, so the computed
+ * directory never matches the one claude actually created.
+ *
+ * Reconstruction proof (both real, both `ls ~/.claude/projects/`-verified):
+ *   cwd  /Users/jeremy/.agentproto/worktrees/ts/gc-fresh-hold
+ *   →    -Users-jeremy--agentproto-worktrees-ts-gc-fresh-hold
+ *   (note the "--" from "/." — one dash for "/", one for ".", not collapsed)
+ *
+ *   cwd  /Volumes/SSDExternalMacStudio/Code/_agentproto-worktrees/adapter-claude-sdk
+ *   →    -Volumes-SSDExternalMacStudio-Code--agentproto-worktrees-adapter-claude-sdk
+ *   (same double-dash shape, this time from "/_")
+ */
+export function claudeProjectSlug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-")
+}
+
+/** Exported so `conversation-index.ts` can resolve the same directory
+ *  without re-deriving the slug rule itself. */
+export function claudeCodeProjectDir(cwd: string): string {
+  return resolve(homedir(), ".claude", "projects", claudeProjectSlug(cwd))
 }
 
 function extractFirstText(content: unknown): string | undefined {

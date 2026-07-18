@@ -10,9 +10,63 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   CONVERSATION_STORES,
+  claudeProjectSlug,
   type ConversationStore,
   type ResumeMetadataKey,
 } from "../conversation-store.js"
+
+// ── claudeProjectSlug ────────────────────────────────────────────────
+//
+// The bug: the old encoder was `cwd.replace(/\//g, "-")` — slashes only.
+// Claude Code's real rule replaces EVERY non-alnum character with "-",
+// one-for-one, with no collapsing of consecutive runs. These cases are
+// chosen to fail loudly under the old (wrong) implementation.
+
+describe("claudeProjectSlug", () => {
+  it("replaces slashes with dashes (the part the old encoder already got right)", () => {
+    expect(claudeProjectSlug("/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio")).toBe(
+      "-Volumes-SSDExternalMacStudio-Code-products-agentik-agentik-studio",
+    )
+  })
+
+  it("does NOT collapse a dot immediately after a slash into one dash — this is the P1 bug", () => {
+    // Old (wrong) encoder: cwd.replace(/\//g, "-") leaves the "." alone,
+    // producing "-Users-jeremy-.agentproto-...". Real claude produces a
+    // DOUBLE dash here: one for "/", one for ".", each character mapped
+    // independently.
+    const cwd = "/Users/jeremy/.agentproto/worktrees/ts/gc-fresh-hold"
+    expect(claudeProjectSlug(cwd)).toBe(
+      "-Users-jeremy--agentproto-worktrees-ts-gc-fresh-hold",
+    )
+  })
+
+  it("real-world reconstruction #2: an underscore-prefixed worktree root", () => {
+    // Live-verified against a real ~/.claude/projects/ directory name.
+    const cwd = "/Volumes/SSDExternalMacStudio/Code/_agentproto-worktrees/adapter-claude-sdk"
+    expect(claudeProjectSlug(cwd)).toBe(
+      "-Volumes-SSDExternalMacStudio-Code--agentproto-worktrees-adapter-claude-sdk",
+    )
+  })
+
+  it("maps consecutive separators to the same count of dashes, never collapsed", () => {
+    expect(claudeProjectSlug("/a//b")).toBe("-a--b")
+    expect(claudeProjectSlug("/a///b")).toBe("-a---b")
+  })
+
+  it("maps a space to a single dash (e.g. macOS 'Application Support')", () => {
+    expect(claudeProjectSlug("/Users/j/Library/Application Support/Claude")).toBe(
+      "-Users-j-Library-Application-Support-Claude",
+    )
+  })
+
+  it("preserves alphanumerics verbatim, including uppercase, digits, and existing dashes", () => {
+    expect(claudeProjectSlug("/tmp/T3st-Dir_1")).toBe("-tmp-T3st-Dir-1")
+  })
+
+  it("leaves an already-dash-only path unchanged in shape (dash maps to dash)", () => {
+    expect(claudeProjectSlug("/private/tmp")).toBe("-private-tmp")
+  })
+})
 
 // ── interface shape ──────────────────────────────────────────────────
 
