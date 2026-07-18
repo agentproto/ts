@@ -42,9 +42,10 @@ function Html({ html, className }: { html: string; className: string }) {
   return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-function ReasoningCard({ seg }: { seg: PresentedTextSegment }) {
+function ReasoningCard({ seg, defaultOpen = false }: { seg: PresentedTextSegment; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <details className="reasoning">
+    <details className="reasoning" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="re-summary">
         <span className="gi">✳</span>Reasoning<span className="chev">▸</span>
       </summary>
@@ -53,7 +54,8 @@ function ReasoningCard({ seg }: { seg: PresentedTextSegment }) {
   )
 }
 
-function ToolCard({ seg }: { seg: PresentedToolSegment }) {
+function ToolCard({ seg, defaultOpen = false }: { seg: PresentedToolSegment; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   const badge =
     seg.status === "pending" ? (
       <span className="badge pending" />
@@ -65,7 +67,7 @@ function ToolCard({ seg }: { seg: PresentedToolSegment }) {
   const firstArgLine = seg.argsText ? seg.argsText.split("\n")[0] : ""
   const hasBody = Boolean(seg.argsText || seg.resultText)
   return (
-    <details className="tool">
+    <details className="tool" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="tl-summary">
         {badge}
         <span className="tl-name">{seg.toolName ?? "tool"}</span>
@@ -159,7 +161,8 @@ function QuestionCard({ seg }: { seg: PresentedQuestionSegment }) {
   )
 }
 
-function ActivityGroup({ seg }: { seg: PresentedActivitySegment }) {
+function ActivityGroup({ seg, defaultOpen = false }: { seg: PresentedActivitySegment; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   const badge =
     seg.status === "pending" ? (
       <span className="badge pending" style={{ width: 13, height: 13 }} />
@@ -167,7 +170,7 @@ function ActivityGroup({ seg }: { seg: PresentedActivitySegment }) {
       <span className="gi">⚙</span>
     )
   return (
-    <details className="activity">
+    <details className="activity" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="act-summary">
         {badge}
         <span className="lab">{seg.status === "pending" ? "Thinking" : "Steps"}</span>
@@ -177,9 +180,9 @@ function ActivityGroup({ seg }: { seg: PresentedActivitySegment }) {
       <div className="act-children">
         {seg.children.map((child) =>
           child.kind === "tool" ? (
-            <ToolCard key={child.id} seg={child} />
+            <ToolCard key={child.id} seg={child} defaultOpen={child.status === "pending"} />
           ) : (
-            <ReasoningCard key={child.id} seg={child} />
+            <ReasoningCard key={child.id} seg={child} defaultOpen={defaultOpen} />
           ),
         )}
       </div>
@@ -187,15 +190,15 @@ function ActivityGroup({ seg }: { seg: PresentedActivitySegment }) {
   )
 }
 
-function SegmentView({ seg }: { seg: PresentedSegment }) {
+function SegmentView({ seg, isLast }: { seg: PresentedSegment; isLast: boolean }) {
   switch (seg.kind) {
     case "user":
     case "assistant-text":
       return <Html className="msg" html={seg.html} />
     case "reasoning":
-      return <ReasoningCard seg={seg} />
+      return <ReasoningCard seg={seg} defaultOpen={isLast} />
     case "tool":
-      return <ToolCard seg={seg} />
+      return <ToolCard seg={seg} defaultOpen={seg.status === "pending"} />
     case "plan":
       return <PlanCard seg={seg} />
     case "agent-question":
@@ -208,7 +211,7 @@ function SegmentView({ seg }: { seg: PresentedSegment }) {
         </div>
       )
     case "activity":
-      return <ActivityGroup seg={seg} />
+      return <ActivityGroup seg={seg} defaultOpen={isLast || seg.status === "pending"} />
   }
 }
 
@@ -248,7 +251,7 @@ export function Transcript({ sessionId, records }: TranscriptProps) {
 
   return (
     <div className="transcript" ref={scrollRef}>
-      {presented.turns.map((turn) => (
+      {presented.turns.map((turn, ti) => (
         <div className="turn" key={turn.id}>
           <div className={`avatar ${turn.role === "user" ? "user" : "agent"}`}>
             {turn.role === "user" ? "JA" : "◇"}
@@ -256,7 +259,7 @@ export function Transcript({ sessionId, records }: TranscriptProps) {
           <div className="bubble">
             <div className="who">{turn.role === "user" ? "you" : "agent"}</div>
             {turn.segments.map((seg) => (
-              <SegmentView key={seg.id} seg={seg} />
+              <SegmentView key={seg.id} seg={seg} isLast={ti === presented.turns.length - 1} />
             ))}
           </div>
         </div>
