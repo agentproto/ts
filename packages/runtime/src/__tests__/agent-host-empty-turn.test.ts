@@ -14,6 +14,7 @@ import { describe, it, expect } from "vitest"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
+import type { AgentAdapterResolver } from "../http-server.js"
 
 /** Yields a turn-end with no text and no tool call — the empty (no-op) case. */
 function silentAgentSession(): AgentSessionLike {
@@ -45,8 +46,12 @@ function makeHost(
   sessionEvents: ReturnType<typeof createSessionEventBus>,
 ): SessionsRegistryAgentHost {
   // resolveAgentAdapter is unused here — we spawn sessions directly on the
-  // registry and drive the host's sendPromptAndWait/waitTurnEnd surface.
-  return new SessionsRegistryAgentHost(registry, sessionEvents, async () => undefined)
+  // registry and drive the host's sendPromptAndWait/waitTurnEnd surface, so a
+  // never-returning stub satisfies the type without being exercised.
+  const resolveAgentAdapter: AgentAdapterResolver = async () => {
+    throw new Error("resolveAgentAdapter is not exercised by this test")
+  }
+  return new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
 }
 
 describe("agent-host: empty turn fails the step", () => {
