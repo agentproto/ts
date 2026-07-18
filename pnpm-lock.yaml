@@ -663,6 +663,43 @@ importers:
 
   packages/agentproto-placeholder: {}
 
+  packages/app-kit:
+    dependencies:
+      '@agentproto/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agentproto/mastra':
+        specifier: workspace:*
+        version: link:../mastra
+      '@agentproto/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@agentproto/workflow-loader':
+        specifier: workspace:*
+        version: link:../workflow-loader
+      '@mastra/core':
+        specifier: 1.32.1
+        version: 1.32.1(@bufbuild/protobuf@2.12.1)(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3))(@types/json-schema@7.0.15)(ai@6.0.205(zod@4.4.3))(bufferutil@4.1.0)(express@5.2.1)(openapi-types@12.1.3)(zod@4.4.3)
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
   packages/assembly:
     dependencies:
       '@agentproto/define-doctype':
@@ -10451,7 +10488,7 @@ snapshots:
       picomatch: 4.0.4
       radash: 12.1.1
       tokenx: 1.3.0
-      ws: 8.20.0(bufferutil@4.1.0)
+      ws: 8.21.0(bufferutil@4.1.0)
       xxhash-wasm: 1.1.0
       zod: 4.4.3
     transitivePeerDependencies:
