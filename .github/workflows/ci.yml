@@ -371,6 +371,18 @@ jobs:
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
 
+      # Freeze the SHA the reviewer will actually review *now*, before the
+      # "Commit changeset" step below can push a new commit and move this
+      # checkout's HEAD out from under us. "Verify review was posted" must
+      # check the review against the commit the reviewer saw, not whatever
+      # HEAD happens to be after our own follow-up commit — otherwise every
+      # PR whose review writes a changeset false-reds ("did not post a
+      # review") even though it did.
+      - name: Capture PR head SHA
+        id: headsha
+        if: steps.prstate.outputs.skip != 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # agentflow bypass: if the dev ran `review:ai --stamp` locally, an
       # empty `[agentflow-reviewed]` marker commit rides the branch. Honor it
       # and skip the cloud reviewer (the dev vouched + ran local changeset).
@@ -568,8 +580,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The SHA captured right after checkout, before "Commit changeset"
+          # could have pushed a new commit and moved HEAD. The review was
+          # posted against *that* commit, not whatever HEAD is now.
+          SHA: ${{ steps.headsha.outputs.sha }}
         run: |
-          SHA=$(git rev-parse HEAD)
           REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
           if [ "$REVIEWS" -eq 0 ]; then
             echo "::error::No review was posted on PR #$PR_NUMBER for commit $SHA. The reviewer session finished but did not call gh pr review."
