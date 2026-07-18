@@ -47,7 +47,6 @@ import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   decideWorktreeIsolation,
   loadWorktreeIsolation,
-  normalizeWorktreeField,
   type WorktreeField,
   type WorktreeIsolationMode,
   type WorktreeProvisioner,
@@ -357,7 +356,8 @@ export async function spawnAgentSession(
   //
   // Captured BEFORE the active-workspace fallback below can fill `cwd`/
   // `resolvedSlug` in — the worktree guard downstream (see
-  // `worktree_requires_explicit_repo`) needs to know whether the caller
+  // `worktree_requires_explicit_repo`, inside the `"provision"` branch of
+  // the worktree isolation decision) needs to know whether the caller
   // actually named a repo, or whether resolution only succeeded because
   // it fell through to "whatever the daemon's active workspace happens to
   // be right now". A plain (non-worktree) spawn is unaffected: the active-
@@ -365,40 +365,13 @@ export async function spawnAgentSession(
   const explicitCwd = input.cwd !== undefined
   const explicitWorkspaceSlug = input.workspaceSlug !== undefined
   // Hoisted above the cwd-resolution fallback (its usual home is right
-  // before the depth/quota gates below) — the explicit-repo guard right
-  // after this needs to know the spawn's depth BEFORE resolving `cwd`,
-  // since a nested spawn (depth > 0) never provisions a worktree of its
-  // own regardless of what `worktree` says (see `decideWorktreeIsolation`)
-  // and must NOT be rejected here for lacking an explicit repo — it
-  // inherits the parent's ground either way.
+  // before the depth/quota gates below) — the worktree isolation decision
+  // downstream needs the spawn's depth BEFORE resolving `cwd`, since a
+  // nested spawn (depth > 0) never provisions a worktree of its own
+  // regardless of what `worktree` says (see `decideWorktreeIsolation`) and
+  // must NOT be rejected for lacking an explicit repo — it inherits the
+  // parent's ground either way.
   const childDepth = callerScope ? callerScope.depth + 1 : 0
-  // Explicit-repo guard, part 1 (the field-driven half — see part 2 inside
-  // the worktree decision block below for the policy-driven `always` half).
-  // A root spawn that explicitly asked for `worktree` isolation but named
-  // NEITHER `cwd` NOR `workspaceSlug` has no caller-declared repo to cut
-  // from; letting cwd resolution silently fall through to the active
-  // workspace is exactly the incident this guard exists to prevent (a
-  // worktree + branch cut on an unrelated repo because it happened to be
-  // active at spawn time). Checked before cwd resolution even runs so it
-  // fires regardless of whether the fallback would have found A path —
-  // the point is the caller didn't say which one.
-  if (
-    childDepth === 0 &&
-    !explicitCwd &&
-    !explicitWorkspaceSlug &&
-    normalizeWorktreeField(input.worktree) !== undefined
-  ) {
-    return {
-      ok: false,
-      code: "worktree_requires_explicit_repo",
-      message:
-        "agent_start: `worktree` isolation was requested but neither `cwd` nor " +
-        "`workspaceSlug` was passed — refusing to guess the base repo from the " +
-        "daemon's active workspace. Pass `cwd` (an explicit path inside the repo " +
-        "to worktree from) or `workspaceSlug` (a slug from `agentproto workspace " +
-        "list`) to `agent_start`.",
-    }
-  }
   let cwd = input.cwd
   let resolvedSlug = input.workspaceSlug
   if (!cwd || !resolvedSlug) {
@@ -471,7 +444,7 @@ export async function spawnAgentSession(
   // compute the new session's parent attribution. A direct `/mcp`
   // spawn (no callerScope) is a root: depth 0, no parent, no caps.
   // (`childDepth` itself is computed earlier, above the cwd-resolution
-  // block — see the explicit-repo guard's comment there.)
+  // block — see the comment there.)
   const parentSessionId = callerScope?.ownerSessionId
   if (callerScope) {
     if (childDepth > callerScope.maxDepth) {

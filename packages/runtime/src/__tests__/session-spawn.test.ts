@@ -1410,6 +1410,21 @@ describe("spawnAgentSession — worktree explicit-repo guard", () => {
     expect(registry.list()).toHaveLength(0)
   })
 
+  it("mode `never` + no cwd/workspaceSlug → worktree_disabled (the policy gate wins, not the explicit-repo guard — no misleading 'pass cwd' advice)", async () => {
+    wsConfigState.value = { version: 1, workspaces: [] }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("never") },
+      { adapter: "mock", worktree: true },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_disabled")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
   it("the incident: active workspace resolves to an unrelated repo, caller passed neither cwd nor workspaceSlug → REFUSES rather than cutting a worktree there", async () => {
     wsConfigState.value = {
       version: 1,
