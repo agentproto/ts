@@ -811,7 +811,6 @@ export const MODEL_ALIASES = {
   "minimax-m2.7": "MiniMax-M2.7",
   // Moonshot — friendly version aliases.
   "kimi-k2": "kimi-k2.5",
-  "kimi-k3-code": "kimi-k3",
   "moonshotai/kimi-k2.5": "kimi-k2.5",
   "moonshotai/kimi-k2.6": "kimi-k2.6",
   "moonshotai/kimi-k2.7-code": "kimi-k2.7-code",
