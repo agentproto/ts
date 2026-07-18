@@ -49,8 +49,16 @@ inputs:
     description: Provider API key (secrets.ANTHROPIC_API_KEY). Required when auth-mode=api-key.
     required: false
     default: ''
+  cli-source:
+    description: >
+      Where to get the agentproto CLI from: "npm" installs
+      @agentproto/cli@cli-version into the action's own node_modules;
+      "workspace" uses the already-built repo CLI at
+      <cwd>/packages/cli/dist/cli.mjs (caller must build it first).
+    required: false
+    default: npm
   cli-version:
-    description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from.
+    description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from. Used when cli-source=npm.
     required: false
     default: 0.8.0
   mcp-sdk-version:
@@ -117,6 +125,7 @@ runs:
 
     - name: Install agentproto CLI + adapter + MCP SDK (pinned, standalone)
       shell: bash
+      if: inputs.cli-source == 'npm'
       run: |
         npm install --no-save --prefix "${{ github.action_path }}" \
           "@agentproto/cli@${{ inputs.cli-version }}" \
@@ -134,4 +143,5 @@ runs:
         TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         PORT: '18790'
         ACTION_PATH: ${{ github.action_path }}
+        CLI_SOURCE: ${{ inputs.cli-source }}
       run: node "${{ github.action_path }}/driver.mjs"

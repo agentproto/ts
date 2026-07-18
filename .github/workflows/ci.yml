@@ -428,13 +428,28 @@ jobs:
             echo "OAuth token absent — falling back to legacy API-key reviewer"
           fi
 
-      - name: Resolve agentproto CLI version
+      - name: Resolve agentproto CLI source/version
         id: cliver
         if: steps.prstate.outputs.skip != 'true'
         run: |
+          CLI_SOURCE=$(node -p "String((require('./.github/agentic-review.json').cliSource) || 'npm')" 2>/dev/null || echo "npm")
           CLI_VERSION=$(node -p "String((require('./.github/agentic-review.json').cliVersion) || '0.8.0')" 2>/dev/null || echo "0.8.0")
+          echo "cli-source=$CLI_SOURCE" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Using @agentproto/cli@$CLI_VERSION"
+          echo "Using agentproto CLI source=$CLI_SOURCE (version=$CLI_VERSION)"
+
+      - name: Build local agentproto CLI
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.cliver.outputs.cli-source == 'workspace'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build --filter @agentproto/cli...
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
 
       # OAuth path: agentproto-run lane (subscription billing, flat rate).
       # Falls back to legacy on any failure so a token expiry doesn't block merges.
@@ -453,6 +468,7 @@ jobs:
           auth-mode: subscription
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-source: ${{ steps.cliver.outputs.cli-source }}
           cli-version: ${{ steps.cliver.outputs.cli-version }}
           workflow-input: |
             {

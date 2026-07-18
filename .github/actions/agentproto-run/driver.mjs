@@ -70,12 +70,25 @@ if (!existsSync(workflowPath)) {
   process.exit(1)
 }
 
-const agentprotoBin = join(actionPath, "node_modules", ".bin", "agentproto")
-if (!existsSync(agentprotoBin)) {
-  console.error(
-    `driver: agentproto bin not found at ${agentprotoBin} — did the npm install step run?`,
-  )
-  process.exit(1)
+const cliSource = process.env.CLI_SOURCE ?? "npm"
+
+let agentprotoBin
+if (cliSource === "workspace") {
+  agentprotoBin = join(cwd, "packages", "cli", "dist", "cli.mjs")
+  if (!existsSync(agentprotoBin)) {
+    console.error(
+      `driver: workspace CLI not found at ${agentprotoBin} — run pnpm build --filter @agentproto/cli first`,
+    )
+    process.exit(1)
+  }
+} else {
+  agentprotoBin = join(actionPath, "node_modules", ".bin", "agentproto")
+  if (!existsSync(agentprotoBin)) {
+    console.error(
+      `driver: agentproto bin not found at ${agentprotoBin} — did the npm install step run?`,
+    )
+    process.exit(1)
+  }
 }
 
 const runtimeMetaPath = join(cwd, ".agentproto", "runtime.json")
@@ -85,9 +98,10 @@ const runtimeMetaPath = join(cwd, ".agentproto", "runtime.json")
 await mkdir(cwd, { recursive: true })
 
 console.log(
-  `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter})`,
+  `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter}, source=${cliSource})`,
 )
 const daemon = spawn(agentprotoBin, ["serve", "--workspace", cwd, "--port", String(port)], {
+  cwd,
   stdio: ["ignore", "pipe", "pipe"],
 })
 let daemonExited = false
