@@ -4,6 +4,10 @@
 agentproto permissions ls        [--json] [--session <id>]
 agentproto permissions approve   <id> [--always] [--option-id <id>] [--json]
 agentproto permissions deny      <id> [--option-id <id>] [--json]
+agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
+                                 [--session <id>] [--rules-json <json|@file>]
+                                 [--always] [--interval <dur>] [--timeout <dur>]
+                                 [--once] [--dry-run] [--json]
 ```
 
 The human side of the **cross-session permission inbox**. A session started
@@ -85,6 +89,53 @@ agentproto permissions deny perm_2
 POSTs `/permissions/:id` with `{ decision: "deny" }`. Selects a
 reject-flavored option, or cancels the request outright when none is offered.
 The tool call fails cleanly and the agent keeps reasoning.
+
+### `watch`
+
+```bash
+agentproto permissions watch --allow-tool "Write"
+agentproto permissions watch --deny-tool "Bash" --allow-tool "*"
+agentproto permissions watch --rules-json @rules.json --once --dry-run
+```
+
+Polls the permission inbox and **auto-resolves** requests that match explicit
+rules; anything that doesn't match stays parked for `permissions ls` / manual
+`approve`/`deny`. There is no implicit "resolve everything" — you must supply at
+least one rule.
+
+Two rule forms:
+
+| Form | Flags | Notes |
+|------|-------|-------|
+| Flag rules | `--allow-tool <pat>`, `--deny-tool <pat>`, optional `--session <id>`, optional `--always` | `--deny-tool` rules are evaluated **before** `--allow-tool` rules. Patterns are exact tool names or `*`-globs (e.g. `mcp__*`). |
+| JSON rules | `--rules-json <json|@file>` | Full rule array; mutually exclusive with the flag rules. |
+
+A `--rules-json` rule looks like:
+
+```json
+[
+  { "match": { "toolName": "ExitPlanMode", "sessionId": "s-abc" },
+    "decision": "approve", "scope": "always" }
+]
+```
+
+`match` needs at least one of `toolName` or `sessionId`; `sessionId` matches the
+entry's session id **or** label. `decision` is `"approve"` or `"deny"`.
+`optionId` and `scope` ( `"once"` or `"always"`, approve-only) are forwarded to
+the daemon verbatim.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--allow-tool <pat>` | — | Approve matching tools. Repeatable. |
+| `--deny-tool <pat>` | — | Deny matching tools. Repeatable. Evaluated before allows. |
+| `--session <id>` | — | Scope all flag rules to one session (id or label). |
+| `--rules-json <json\|@file>` | — | Full rule array; cannot be combined with flag rules. |
+| `--always` | `false` | With flag rules: prefer the agent's allow-always option when offered. |
+| `--interval <dur>` | `2s` | Poll interval. Accepts `500ms`, `30s`, `5m`, `2h`; bare integer = ms. |
+| `--timeout <dur>` | `1h` | Give up after this long. Same duration format. |
+| `--once` | `false` | Run a single poll pass and exit. |
+| `--dry-run` | `false` | Print what would be resolved without actually resolving. |
+| `--json` | `false` | Emit one compact JSON object per line (NDJSON). |
 
 ## Errors
 

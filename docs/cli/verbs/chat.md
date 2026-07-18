@@ -71,7 +71,7 @@ dropped or run out of order.
 
 ```bash
 # Mastra agent with a specific model
-agentproto chat mastra-agent --model anthropic/claude-sonnet-4-6
+agentproto chat mastra-agent --model openrouter/z-ai/glm-5.2
 
 # Claude Code in the current directory
 agentproto chat claude-code --cwd .

@@ -5,7 +5,7 @@ agentproto presets list [--json]
 ```
 
 List the built-in provider gateway presets shipped in
-`@agentproto/provider-presets` (moonshot, openrouter, deepseek, xai), each with
+`@agentproto/provider-presets` (moonshot, openrouter, requesty, deepseek, xai), each with
 its live key-env status. A preset is static data a claude-code / claude-sdk
 agent can front via a mode or the `base_url` option — there is no install step,
 no setup pipeline, and no credentials store.

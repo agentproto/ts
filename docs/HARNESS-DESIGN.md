@@ -44,21 +44,20 @@ Adapters live in top-level `adapters/`. The `adapter` field of
 
 | Slug | Package | Kind | Default model | `model` handling |
 | --- | --- | --- | --- | --- |
-| `claude-code` | `@agentproto/adapter-claude-code` | ACP | `claude-sonnet-4-6` | applied via ACP `session/set_config_option` after `newSession` (NOT a CLI flag). Allowed: `claude-sonnet-4-6`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-haiku-4-5` |
-| `hermes` | `@agentproto/adapter-hermes` | ACP | `anthropic/claude-sonnet-4-6` | provider-prefixed string; routed via OpenRouter/Anthropic/OpenAI per `models.env`. Allowed list in-manifest: `anthropic/claude-sonnet-4-6`, `anthropic/claude-opus-4-7`, `openai/gpt-4`, `meta-llama/llama-3.3-70b` (`adapters/hermes/src/index.ts:64-79`) |
+| `claude-code` | `@agentproto/adapter-claude-code` | ACP | `claude-sonnet-5` | applied via ACP `session/set_config_option` after `newSession` (NOT a CLI flag). Allowed: `claude-sonnet-5`, `claude-opus-4-8`, `claude-haiku-4-5`, `claude-fable-5`, `kimi-k2.7-code`, `z-ai/glm-5.2`, `deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2`, `sference/thinkingcap-qwen3.6-27b`, `sference/glm-5.2` |
+| `hermes` | `@agentproto/adapter-hermes` | ACP | `z-ai/glm-5.2` | provider-prefixed string; routed via OpenRouter/OpenAI per `models.env`. Applied via a `/model <id>` control turn after `newSession` (`models.apply: "command"`). Allowed: `z-ai/glm-5.2`, `deepseek/deepseek-v4-pro`, `meta-llama/llama-3.3-70b`, `openai/gpt-4` |
 | `opencode` | `@agentproto/adapter-opencode` | ACP | — | `--model {value}` (CLI), supports `openrouter/<provider>/<model>` |
 | `codex` | `@agentproto/adapter-codex` | ACP | `gpt-5-codex` | `--model {value}`, enum |
 | `openclaw` | `@agentproto/adapter-openclaw` | ACP | gateway-managed | n/a in manifest |
 
 > ⚠️ **Grounding note on the requested models.** The harness brief names
 > `hermes + deepseek-v4-pro` (coder) and `hermes + GLM-5.2` (researcher). Those
-> ids are **not** in hermes's in-manifest `allowed` list today — hermes routes
-> through OpenRouter, so they would be passed as provider-prefixed strings
-> (e.g. `openrouter/deepseek/deepseek-v4-pro`, `openrouter/z-ai/glm-5.2`) with
-> `OPENROUTER_API_KEY` set. The harness therefore treats `model` as an **opaque
-> string** and exposes overridable preset defaults rather than a hard enum.
-> Confirm the exact OpenRouter slugs against a live `hermes` before relying on
-> them — see WP6. (Reference: `.skills/agentproto-plugin-v0.3.0/skills/light-coder-orchestration/SKILL.md`.)
+> ids are in hermes's in-manifest `allowed` list as bare OpenRouter model ids
+> (`z-ai/glm-5.2`, `deepseek/deepseek-v4-pro`) — hermes routes through OpenRouter,
+> so no `openrouter/` prefix is required for the curated menu. The harness
+> therefore treats `model` as an **opaque string** and exposes overridable preset
+> defaults rather than a hard enum. Confirm the exact OpenRouter slugs against a
+> live `hermes` before relying on them — see WP6. (Reference: `.skills/agentproto-plugin-v0.3.0/skills/light-coder-orchestration/SKILL.md`.)
 
 ### 1.3 Existing harness-like code
 
