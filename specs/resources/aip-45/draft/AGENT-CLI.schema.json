@@ -284,6 +284,10 @@
           "description": "Stable id. The operator config references this id."
         },
         "description": { "type": "string" },
+        "kind": {
+          "enum": ["posture", "route", "context"],
+          "description": "Which orthogonal session-config axis this mode expresses: posture (what the agent may DO), route (endpoint/billing rail), or context (what enters context). Omitted ⇒ inferred from the id. Going forward only 'context' is declared here (routes come from the catalog, postures from the ACP mode registry)."
+        },
         "bin_args_prepend": {
           "type": "array",
           "items": { "type": "string" },

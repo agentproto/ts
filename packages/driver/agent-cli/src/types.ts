@@ -313,6 +313,22 @@ export interface AgentCliMode {
   id: string
   description?: string
   /**
+   * Which orthogonal session-config axis (SPEC-tracked in
+   * `@agentproto/runtime`'s `session-config.ts`) this legacy mode expresses,
+   * so the daemon can classify a `modes[]` entry without hard-coding ids:
+   * `"posture"` (what the agent may DO — plan/accept-edits/bypass/read-only),
+   * `"route"` (endpoint/billing rail), or `"context"` (what enters context).
+   * Omitted ⇒ inferred from the id (gateway-preset ids ⇒ route, known
+   * permission ids ⇒ posture, else ⇒ context — `decomposeMode`).
+   *
+   * GOING FORWARD (SPEC §3.4a) the manifest declares ONLY `"context"`: routes
+   * are derived from the catalog (`@route`), postures from the harness's own
+   * ACP mode registry (`SessionModeState.availableModes`). The `"posture"` /
+   * `"route"` values remain accepted purely so the back-compat shim can
+   * classify LEGACY tagged manifests during migration.
+   */
+  kind?: "posture" | "route" | "context"
+  /**
    * Extra argv prepended BEFORE the manifest's default `bin_args` when
    * this mode is active. Needed for CLIs whose global flags must
    * precede a subcommand baked into `bin_args` (e.g. hermes'

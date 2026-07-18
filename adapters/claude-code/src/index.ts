@@ -191,7 +191,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // zero-prompt writes) — it just doesn't guarantee plan-only reasoning
   // against a repo actively trying to escalate its own trust level.
   modes: [
-    { id: "default", description: "Standard interactive mode." },
+    { id: "default", description: "Standard interactive mode.", kind: "posture" },
     {
       id: "lean",
       description:
@@ -201,6 +201,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "no CLI flag for this — the underlying claude binary reads " +
         "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
       env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+      kind: "context",
     },
     {
       id: "plan",
@@ -210,17 +211,20 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "CLAUDE_CONFIG_DIR override (see comment above `modes`); can be defeated by a " +
         "target repo's own committed, escalated .claude/settings.json.",
       bin_args_append: ["--permission-mode", "plan"],
+      kind: "posture",
     },
     {
       id: "accept-edits",
       description: "Auto-accept file edits; commands still prompt.",
       bin_args_append: ["--permission-mode", "acceptEdits"],
+      kind: "posture",
     },
     {
       id: "bypass-permissions",
       description:
         "Skip all permission prompts. Use only in trusted automation contexts.",
       bin_args_append: ["--permission-mode", "bypassPermissions"],
+      kind: "posture",
     },
     // ── Gateway modes ───────────────────────────────────────────────
     // The claude binary honors ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN,
@@ -248,6 +252,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.moonshot.baseUrl,
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+      kind: "route",
     },
     {
       id: ANTHROPIC_GATEWAY_PRESETS.openrouter.id,
@@ -261,6 +266,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.openrouter.baseUrl,
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+      kind: "route",
     },
     {
       id: ANTHROPIC_GATEWAY_PRESETS.requesty.id,
@@ -274,6 +280,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.requesty.baseUrl,
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+      kind: "route",
     },
     {
       id: ANTHROPIC_GATEWAY_PRESETS.deepseek.id,
@@ -287,6 +294,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.deepseek.baseUrl,
       },
       env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
+      kind: "route",
     },
   ],
   options: [
