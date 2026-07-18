@@ -202,6 +202,16 @@ export {
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
+export { decomposeMode, composeMode } from "./session-config.js"
+export type {
+  SessionConfig,
+  EffortLevel,
+  AuthMethod,
+  Posture,
+  RouteSpec,
+  ContextProfile,
+  DeclaredAdapterMode,
+} from "./session-config.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {

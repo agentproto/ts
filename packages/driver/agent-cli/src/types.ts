@@ -313,6 +313,16 @@ export interface AgentCliMode {
   id: string
   description?: string
   /**
+   * Which orthogonal session-config axis (SPEC-tracked in
+   * `@agentproto/runtime`'s `session-config.ts`) this mode expresses:
+   * `"posture"` (what the agent may DO — plan/accept-edits/bypass/
+   * read-only), `"route"` (endpoint/billing rail), or `"context"` (what
+   * enters context). Lets the daemon classify a legacy `modes[]` entry
+   * without hard-coding ids. Omitted ⇒ inferred from the id (gateway-preset
+   * ids ⇒ route, known permission ids ⇒ posture, else ⇒ context).
+   */
+  kind?: "posture" | "route" | "context"
+  /**
    * Extra argv prepended BEFORE the manifest's default `bin_args` when
    * this mode is active. Needed for CLIs whose global flags must
    * precede a subcommand baked into `bin_args` (e.g. hermes'

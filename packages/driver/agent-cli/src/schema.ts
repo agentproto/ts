@@ -273,6 +273,9 @@ const capabilitiesSchema = z.object({
 export const modeSchema = z.object({
   id: z.string().regex(MODE_ID_PATTERN),
   description: z.string().optional(),
+  // Which orthogonal session-config axis this mode expresses (SPEC-tracked
+  // in @agentproto/runtime's session-config.ts). Omitted ⇒ inferred from id.
+  kind: z.enum(["posture", "route", "context"]).optional(),
   bin_args_prepend: z.array(z.string()).optional(),
   bin_args_append: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
