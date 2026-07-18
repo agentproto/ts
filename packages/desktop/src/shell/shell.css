@@ -141,8 +141,27 @@
 /* body grid */
 .body {
   display: grid;
-  grid-template-columns: 286px 1fr 360px;
+  grid-template-columns: 286px minmax(0, 1fr) 360px;
   min-height: 0;
+}
+
+/* Responsive: drop the changes panel, then the rail, as the window narrows,
+   so the transcript never gets crushed between the two side columns. */
+@media (max-width: 1200px) {
+  .body {
+    grid-template-columns: 264px minmax(0, 1fr);
+  }
+  .changes {
+    display: none;
+  }
+}
+@media (max-width: 820px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    display: none;
+  }
 }
 .rail,
 .main,
