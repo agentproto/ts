@@ -1,11 +1,11 @@
 # CLI Rationality Audit
 
-Audit of `packages/cli/src/commands/` as of 2026-07-16.
+Audit of `packages/cli/src/commands/` as of 2026-07-18.
 Findings ordered by severity.
 
 ## Command Inventory
 
-All 28 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
+All 29 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
 
 | Command | Subcommands | Key Flags | Purpose |
 |---------|-------------|-----------|---------|
@@ -15,6 +15,7 @@ All 28 verbs in the dispatcher's `VERBS` set (`packages/cli/src/cli.ts`).
 | **chat** | — | --model, --cwd, --workspace, --label, --keep, --no-color | Interactive multi-turn REPL on daemon-hosted agent session |
 | **chat-tui** | — | --model, --cwd, --workspace, --label, --system, --keep | TUI variant of chat (Ink/React split-pane) |
 | **config** | show, path, get, set, unset, edit | --json | Manage `~/.agentproto/config.json` |
+| **conversation** | locate | --json | Locate the native transcript (claude jsonl / hermes row) behind a session, or the session behind a native transcript path — reads the persisted `conversations.jsonl` index |
 | **cron** | add, list, remove (delete/rm), run | --schedule, --command, --args, --adapter, --target-session, --prompt, --cwd, --model, --timeout-ms, --label, --once, --json | Durable cron jobs on the daemon (persist to `cron-jobs.json`) |
 | **daemon** | install, uninstall, start, stop, status, logs | --dry-run, --lines | Service lifecycle (launchd/systemd wrapper) |
 | **install** | — | --force, --dry-run, --skip-setup | Install adapter binary + run setup pipeline; also `skill/*` and `runtime-profile/*` slugs |

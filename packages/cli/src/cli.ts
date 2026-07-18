@@ -30,6 +30,7 @@ import { runRunSwarm } from "./commands/run-swarm.js"
 import { runServe } from "./commands/serve.js"
 import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
+import { runConversation } from "./commands/conversation.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runPresets } from "./commands/presets.js"
 import { runBrowser } from "./commands/browser.js"
@@ -77,6 +78,8 @@ Usage:
   agentproto sessions  story  <id-or-name> [--json] [--no-color]
                                            readable per-session timeline
   agentproto sessions  stop <id-or-name>
+  agentproto conversation locate <sessionId | native-jsonl-path> [--json]
+                                           session ↔ native transcript, either direction
   agentproto browser   install <adapter> [--force] [--dry-run]
   agentproto browser   start <adapter> [--port N] [--camofox-port N] [--label L]
   agentproto browser   list  [--alive] [--json]
@@ -155,6 +158,7 @@ const VERBS = new Set([
   "serve",
   "workspace",
   "sessions",
+  "conversation",
   "tunnel",
   "presets",
   "browser",
@@ -229,6 +233,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runWorkspace(rest)
     case "sessions":
       return runSessions(rest)
+    case "conversation":
+      return runConversation(rest)
     case "tunnel":
       return runTunnel(rest)
     case "presets":
