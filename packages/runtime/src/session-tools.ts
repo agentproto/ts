@@ -16,7 +16,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
-import { registerAgentTools, registerExportSessionTool, collectSubtree } from "./agent-tools.js"
+import {
+  registerAgentTools,
+  registerExportSessionTool,
+  collectSubtree,
+  stripAnsi,
+} from "./agent-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import {
@@ -1110,6 +1115,17 @@ export function registerSessionTools(
           rows: input.rows ?? 24,
           ...(input.name ? { name: input.name } : {}),
           ...(input.label ? { label: input.label } : {}),
+          // Parent attribution + depth (orchestrator WP4) — same rule as
+          // `agent_start` (session-spawn.ts): a spawn through a scoped
+          // sub-gateway is attributed to the owning orchestrator so
+          // `session_tree` shows the PTY as its child. Depth caps and
+          // child quotas stay agent_start-only for now.
+          ...(callerScope?.ownerSessionId
+            ? {
+                parentSessionId: callerScope.ownerSessionId,
+                depth: callerScope.depth + 1,
+              }
+            : {}),
         })
         return {
           content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
@@ -1231,8 +1247,9 @@ export function registerSessionTools(
   server.tool(
     "terminal_output",
     "Snapshot the recent byte buffer of a PTY session. Returns base64-encoded " +
-      "bytes (the buffer is RAW including ANSI escapes — strip with a regex if " +
-      "you want plain text). `lastBytes` caps the read from the tail.",
+      "bytes (the buffer is RAW including ANSI escapes) by default; pass " +
+      "`clean: true` for ANSI-stripped plain text instead. `lastBytes` caps " +
+      "the read from the tail.",
     {
       sessionId: z
         .string()
@@ -1244,6 +1261,12 @@ export function registerSessionTools(
         .max(64 * 1024)
         .optional()
         .describe("Max bytes from the tail. Default: full ring buffer (~64 KiB)."),
+      clean: mcpBool
+        .optional()
+        .describe(
+          "Strip ANSI codes, returning human-readable text (as `text` " +
+            "instead of `b64`). Default false = raw base64."
+        ),
     },
     async input => {
       if (!ptyEnabled) return ptyNotConfigured("terminal_output")
@@ -1283,7 +1306,9 @@ export function registerSessionTools(
                 sessionId: desc.id,
                 status: desc.status,
                 bytes: buf.byteLength,
-                b64: buf.toString("base64"),
+                ...(input.clean
+                  ? { text: stripAnsi(buf.toString("utf8")) }
+                  : { b64: buf.toString("base64") }),
               },
               null,
               2,
