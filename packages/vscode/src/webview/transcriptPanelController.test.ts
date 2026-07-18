@@ -478,6 +478,130 @@ describe("TranscriptPanelController — structured hydration & live poll", () =>
   })
 })
 
+/**
+ * Restart continuity (Task A/C): a restarted session's descriptor now
+ * carries `resumedFrom`/`resumeVia` (persisted on the STORED descriptor by
+ * the daemon — see runtime's SessionDescriptor doc). These tests cover the
+ * panel-side stitch: walking that chain, presenting each ancestor, and —
+ * critically — never letting the ancestor walk touch the CURRENT session's
+ * own polling cursor.
+ */
+describe("TranscriptPanelController — resume chain (restart continuity)", () => {
+  it("omits resumeChain entirely for a session that wasn't restarted", async () => {
+    seq = 0
+    const client = createMockClient({ getSessionEvents: vi.fn().mockResolvedValue(page([])) })
+    const { controller, messenger } = make(client)
+
+    await controller.onReady()
+
+    expect(initMsg(messenger.messages).resumeChain).toBeUndefined()
+    // No resumedFrom on the descriptor ⇒ no ancestor lookups at all.
+    expect(client.getSession).not.toHaveBeenCalledWith("s0")
+  })
+
+  it("walks a single-hop chain, presenting the ancestor's own transcript under its own id and the divider's resumeVia", async () => {
+    seq = 0
+    const ancestorPage = page(
+      [ev({ kind: "user-prompt", text: "ancestor prompt" }), ev({ kind: "text-delta", text: "ancestor reply\n" })],
+      { sessionId: "s0" },
+    )
+    const currentPage = page([ev({ kind: "user-prompt", text: "fresh start" })], { sessionId: "s1" })
+    const getSessionEvents = vi.fn(async (id: string) => (id === "s0" ? ancestorPage : currentPage))
+    const getSession = vi.fn(async (id: string) =>
+      id === "s0" ? session({ id: "s0" }) : session({ id: "s1", resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+    )
+    const client = createMockClient({ getSessionEvents, getSession })
+    const { controller, messenger } = make(client, {
+      initialSession: session({ resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+    })
+
+    await controller.onReady()
+
+    const chain = initMsg(messenger.messages).resumeChain
+    expect(chain).toHaveLength(1)
+    expect(chain![0]!.sessionId).toBe("s0")
+    expect(chain![0]!.resumeVia).toBe("resumed via ACP")
+    expect(chain![0]!.unavailable).toBeUndefined()
+    const ancestorTurns = chain![0]!.conversation!.turns
+    expect(ancestorTurns.map(t => t.role)).toEqual(["user", "assistant"])
+  })
+
+  it("walks a multi-hop chain oldest-first, and stops at a root ancestor with no resumedFrom of its own", async () => {
+    seq = 0
+    const links: Record<string, { id: string; resumedFrom?: string; resumeVia?: string }> = {
+      s1: { id: "s1", resumedFrom: "b", resumeVia: "resumed via ACP" },
+      b: { id: "b", resumedFrom: "a", resumeVia: "resumed via claude --resume" },
+      a: { id: "a" },
+    }
+    const getSession = vi.fn(async (id: string) => session(links[id] ?? { id }))
+    const getSessionEvents = vi.fn(async (id: string) =>
+      page([ev({ kind: "user-prompt", text: `from ${id}` })], { sessionId: id }),
+    )
+    const client = createMockClient({ getSession, getSessionEvents })
+    const { controller, messenger } = make(client, { initialSession: session(links.s1) })
+
+    await controller.onReady()
+
+    const chain = initMsg(messenger.messages).resumeChain!
+    // Oldest (root) segment first, closest ancestor last — chronological
+    // render order, reversed from the walk's closest-first order.
+    expect(chain.map(s => s.sessionId)).toEqual(["a", "b"])
+    expect(chain[0]!.resumeVia).toBe("resumed via claude --resume")
+    expect(chain[1]!.resumeVia).toBe("resumed via ACP")
+  })
+
+  it("marks an ancestor unavailable on NoTranscriptError and stops walking, without erroring the panel", async () => {
+    seq = 0
+    const getSession = vi.fn(async (id: string) =>
+      // If the walk incorrectly continued past "s0", it would ask for
+      // "should-never-be-fetched" — asserted absent below.
+      session(id === "s0" ? { id: "s0", resumedFrom: "should-never-be-fetched" } : { id }),
+    )
+    const getSessionEvents = vi.fn(async (id: string) => {
+      if (id === "s0") throw new NoTranscriptError("s0")
+      return page([ev({ kind: "user-prompt", text: "current" })])
+    })
+    const client = createMockClient({ getSession, getSessionEvents })
+    const { controller, messenger } = make(client, {
+      initialSession: session({ resumedFrom: "s0", resumeVia: "" }),
+    })
+
+    await controller.onReady()
+
+    const chain = initMsg(messenger.messages).resumeChain!
+    expect(chain).toEqual([{ sessionId: "s0", resumeVia: "", unavailable: "no-transcript" }])
+    expect(getSession).not.toHaveBeenCalledWith("should-never-be-fetched")
+  })
+
+  it("keeps live polling scoped to the CURRENT session only — the ancestor is never re-fetched after init", async () => {
+    seq = 0
+    const ancestorEvents = vi.fn(async () => page([ev({ kind: "user-prompt", text: "ancestor" })], { sessionId: "s0" }))
+    const currentEvents = vi
+      .fn()
+      .mockResolvedValueOnce(page([ev({ kind: "user-prompt", text: "hello" })], { nextSeq: 1, complete: true }))
+      .mockResolvedValueOnce(
+        page([ev({ kind: "text-delta", text: "world\n" })], { nextSeq: 2, complete: true }),
+      )
+    const getSessionEvents = vi.fn(async (id: string, opts?: { since?: number }) =>
+      id === "s0" ? ancestorEvents() : currentEvents(opts),
+    )
+    const getSession = vi.fn(async (id: string) =>
+      id === "s0" ? session({ id: "s0" }) : session({ id: "s1", resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+    )
+    const client = createMockClient({ getSessionEvents, getSession })
+    const { controller } = make(client, { initialSession: session({ resumedFrom: "s0", resumeVia: "resumed via ACP" }) })
+
+    await controller.onReady()
+    expect(ancestorEvents).toHaveBeenCalledTimes(1)
+
+    await controller.pollOnce()
+    // The ancestor is fetched exactly once, at init — a later poll only
+    // ever advances the CURRENT session's own cursor.
+    expect(ancestorEvents).toHaveBeenCalledTimes(1)
+    expect(currentEvents).toHaveBeenCalledTimes(2)
+  })
+})
+
 /** A controllable SSE response body: `push` enqueues a `data:` frame,
  *  `close` ends the stream. Backs the fake `fetchImpl` in the SSE tests
  *  below so a test can decide exactly when a "live" record arrives. */

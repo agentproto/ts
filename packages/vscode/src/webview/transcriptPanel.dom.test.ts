@@ -524,6 +524,174 @@ describe("transcriptPanel webview — stop button", () => {
   })
 })
 
+describe("transcriptPanel webview — restart button", () => {
+  const btn = (panel: Panel, id: string): DomElement => {
+    const el = panel.document.getElementById(id)
+    if (!el) throw new Error(id + " missing from buildHtml output")
+    return el
+  }
+  function init(panel: Panel, over: Partial<SessionDescriptor> = {}): void {
+    panel.send({
+      type: "init",
+      session: session(over),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+  }
+
+  it("stays hidden while the session is alive", () => {
+    const panel = renderPanel()
+    init(panel, { status: "running" })
+    expect(btn(panel, "restart-btn").hidden).toBe(true)
+  })
+
+  it("appears once the session exits, beside the now-disabled input", () => {
+    const panel = renderPanel()
+    init(panel, { busy: true })
+    expect(btn(panel, "restart-btn").hidden).toBe(true)
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "exited", busy: false }) })
+
+    expect(btn(panel, "restart-btn").hidden).toBe(false)
+    // The input stays visible (disabled), not replaced — the last message
+    // typed, if any, doesn't vanish.
+    expect(btn(panel, "input").disabled).toBe(true)
+  })
+
+  it("posts a bare restart message — the host resolves the session id, not the message", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { status: "killed" })
+
+    btn(panel, "restart-btn").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "restart" })
+  })
+
+  it("hides again for a killed/error session that gets replaced by a fresh running one (same panel reused)", () => {
+    const panel = renderPanel()
+    init(panel, { status: "error" })
+    expect(btn(panel, "restart-btn").hidden).toBe(false)
+
+    panel.send({ type: "sessionUpdate", session: session({ status: "running", busy: false }) })
+    expect(btn(panel, "restart-btn").hidden).toBe(true)
+  })
+})
+
+describe("transcriptPanel webview — resume-chain history", () => {
+  function initWithChain(
+    panel: Panel,
+    resumeChain: NonNullable<Extract<ExtMessage, { type: "init" }>["resumeChain"]>,
+  ): void {
+    panel.send({
+      type: "init",
+      session: session({ resumedFrom: "s0", resumeVia: "resumed via ACP" }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+      resumeChain,
+    })
+  }
+
+  it("stays empty when init carries no resumeChain — a session that wasn't restarted", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+    const history = panel.document.getElementById("resume-history")!
+    expect(history.innerHTML).toBe("")
+  })
+
+  it("renders the ancestor's turns followed by a divider naming its id and resumeVia", () => {
+    const panel = renderPanel()
+    const ancestorConversation: PresentedConversation = {
+      version: 1,
+      sessionId: "s0",
+      turns: [
+        { id: "turn-1", role: "user", segments: [{ kind: "user", id: "seg-1", html: "ancestor prompt" }] },
+        {
+          id: "turn-2",
+          role: "assistant",
+          segments: [{ kind: "assistant-text", id: "seg-2", html: "ancestor reply" }],
+        },
+      ],
+    }
+    initWithChain(panel, [
+      { sessionId: "s0", resumeVia: "resumed via ACP", conversation: ancestorConversation },
+    ])
+
+    const history = panel.document.getElementById("resume-history")!
+    // Two turn nodes (user + assistant) plus the divider.
+    expect([...history.querySelectorAll(".turn")]).toHaveLength(2)
+    expect(history.textContent).toContain("ancestor prompt")
+    expect(history.textContent).toContain("ancestor reply")
+    const divider = history.querySelector(".resume-divider")
+    expect(divider).not.toBeNull()
+    expect(divider!.textContent).toContain("s0")
+    expect(divider!.textContent).toContain("resumed via ACP")
+  })
+
+  it("shows a note (not an error) for an ancestor whose transcript wasn't structured", () => {
+    const panel = renderPanel()
+    initWithChain(panel, [{ sessionId: "s0", resumeVia: "", unavailable: "no-transcript" }])
+
+    const history = panel.document.getElementById("resume-history")!
+    expect(history.querySelector(".resume-unavailable")).not.toBeNull()
+    expect(history.textContent).toContain("not available")
+    // Still gets a divider — "no continuity" since resumeVia is "".
+    expect(history.querySelector(".resume-divider")!.textContent).toContain("no continuity")
+  })
+
+  it("renders multiple ancestor segments in the given (oldest-first) order", () => {
+    const panel = renderPanel()
+    const convFor = (id: string): PresentedConversation => ({
+      version: 1,
+      sessionId: id,
+      turns: [{ id: "turn-1", role: "user", segments: [{ kind: "user", id: "seg-1", html: "from " + id }] }],
+    })
+    initWithChain(panel, [
+      { sessionId: "root", resumeVia: "resumed via claude --resume", conversation: convFor("root") },
+      { sessionId: "s0", resumeVia: "resumed via ACP", conversation: convFor("s0") },
+    ])
+
+    const history = panel.document.getElementById("resume-history")!
+    const dividers = [...history.querySelectorAll(".resume-divider")]
+    expect(dividers).toHaveLength(2)
+    // "from root" appears before "from s0" in document order.
+    expect(history.textContent!.indexOf("from root")).toBeLessThan(history.textContent!.indexOf("from s0"))
+    expect(dividers[0]!.textContent).toContain("root")
+    expect(dividers[1]!.textContent).toContain("s0")
+  })
+
+  it("never touches #resume-history on a later patch — ancestor history is a one-shot static render", () => {
+    const panel = renderPanel()
+    const ancestorConversation: PresentedConversation = {
+      version: 1,
+      sessionId: "s0",
+      turns: [{ id: "turn-1", role: "user", segments: [{ kind: "user", id: "seg-1", html: "ancestor" }] }],
+    }
+    initWithChain(panel, [{ sessionId: "s0", resumeVia: "resumed via ACP", conversation: ancestorConversation }])
+    const history = panel.document.getElementById("resume-history")!
+    const before = history.innerHTML
+
+    panel.send({
+      type: "patch",
+      upsertTurns: [
+        { id: "turn-5", role: "user", segments: [{ kind: "user", id: "seg-5", html: "new live message" }] },
+      ],
+      removeTurnIds: [],
+    })
+
+    expect(history.innerHTML).toBe(before)
+    expect(panel.transcript.textContent).toContain("new live message")
+  })
+})
+
 describe("transcriptPanel webview — prompt history (↑/↓)", () => {
   const el = (panel: Panel, id: string): DomElement => {
     const node = panel.document.getElementById(id)
