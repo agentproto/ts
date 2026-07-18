@@ -57,6 +57,15 @@ export class NoTranscriptError extends Error {
   }
 }
 
+/** Raised by {@link DaemonClient.addWorkspace} on a 404 — the daemon predates
+ *  the isomorphic `POST /workspaces` route, not a bad request. */
+export class WorkspacesRouteMissingError extends Error {
+  constructor() {
+    super("POST /workspaces is not available on this daemon — update your agentproto install.")
+    this.name = "WorkspacesRouteMissingError"
+  }
+}
+
 export interface SpawnAgentOptions {
   adapter: string
   cwd?: string
@@ -378,18 +387,33 @@ export class DaemonClient {
   }
 
   /**
-   * POST /workspaces — register (or upsert, by slug) a workspace. `path`
-   * must be an absolute, existing directory; `slug` defaults to the
-   * directory's basename daemon-side when omitted. Returns the full,
-   * updated `WorkspacesConfig` (mirrors `listWorkspaces`'s shape so
-   * callers can swap the store's cached config in place).
+   * POST /workspaces — register a folder as an agentproto workspace, the
+   * isomorphic counterpart to the CLI's `agentproto workspace add` (body
+   * `{ path, slug?, label? }`, response is the updated WorkspacesConfig).
+   * Backs the sessions tree's "Create workspace here" CTA.
+   *
+   * The route ships in the daemon as of #463, but a user's *running* daemon
+   * may predate it — a 404 there means "old daemon", not "bad request", so
+   * it's raised as {@link WorkspacesRouteMissingError} rather than a generic
+   * failure, and the caller can degrade to a clear "update your daemon"
+   * message instead of an opaque HTTP error.
    */
-  async addWorkspace(input: {
-    path: string
-    slug?: string
-    label?: string
-  }): Promise<WorkspacesConfig> {
-    return this.postJson<WorkspacesConfig>("/workspaces", input)
+  async addWorkspace(
+    path: string,
+    opts: { slug?: string; label?: string } = {},
+  ): Promise<WorkspacesConfig> {
+    const res = await this.authedFetch("/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, ...opts }),
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) throw new WorkspacesRouteMissingError()
+    if (!res.ok) {
+      throw new Error(`POST /workspaces failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as WorkspacesConfig
+    return { ...body, version: 1, workspaces: body.workspaces ?? [] }
   }
 
   /**

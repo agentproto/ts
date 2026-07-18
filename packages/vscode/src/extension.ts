@@ -11,6 +11,7 @@
 import * as vscode from "vscode"
 
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
+import { registerCreateWorkspaceCommand } from "./commands/createWorkspace.js"
 import { registerPermissionCommands } from "./commands/permissions.js"
 import {
   registerSessionActions,
@@ -70,6 +71,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerPermissionCommands(ctx, client, store)
   registerSessionRestart(ctx, client, store) // agentproto.restartSession
   registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
+  registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())

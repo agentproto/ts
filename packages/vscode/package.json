@@ -124,6 +124,18 @@
         "icon": "$(archive)"
       },
       {
+        "command": "agentproto.toggleGroupByWorkspace",
+        "title": "agentproto: Toggle Group Sessions By Workspace",
+        "category": "agentproto",
+        "icon": "$(group-by-ref-type)"
+      },
+      {
+        "command": "agentproto.createWorkspace",
+        "title": "agentproto: Create Workspace Here",
+        "category": "agentproto",
+        "icon": "$(add)"
+      },
+      {
         "command": "agentproto.filterSessions",
         "title": "agentproto: Filter Sessions",
         "category": "agentproto",
@@ -194,6 +206,11 @@
         },
         {
           "command": "agentproto.toggleShowArchived",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.toggleGroupByWorkspace",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
         }
@@ -291,6 +308,11 @@
           "type": "boolean",
           "default": true,
           "description": "Ask before stopping a session. When off, Stop terminates the agent immediately with no prompt — its transcript stays readable and the post-stop notification offers Restart. Turn this off here, or from the confirmation dialog itself via \"Stop and don't ask again\"."
+        },
+        "agentproto.groupByWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Group the Sessions panel by registered agentproto workspace, with the workspace(s) matching your open folder(s) sorted first and expanded. Off restores the flat session list. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Workspace)."
         }
       }
     }
