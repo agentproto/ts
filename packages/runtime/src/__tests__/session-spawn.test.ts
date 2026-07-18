@@ -18,6 +18,20 @@ vi.mock("../providers-store.js", async (importOriginal) => {
   return { ...actual, getProviderKey: vi.fn(async (p: string) => storeKeys.value[p]) }
 })
 
+// Control `~/.agentproto/workspaces.json` deterministically — the worktree
+// explicit-repo guard tests below need to simulate an active workspace that
+// resolves to SOME path (possibly an unrelated repo) without ever touching
+// the real file on the machine running the suite. `findWorkspace` /
+// `findWorkspaceByPath` / `getActiveWorkspace` stay real (pure lookups over
+// whatever `wsConfigState.value` holds).
+const wsConfigState = vi.hoisted(() => ({
+  value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
+}))
+vi.mock("../workspaces-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../workspaces-config.js")>()
+  return { ...actual, loadWorkspacesConfig: vi.fn(async () => wsConfigState.value) }
+})
+
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -1354,5 +1368,154 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.code).toBe("sandbox_provider_not_found")
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(0)
+  })
+})
+
+// ── worktree explicit-repo guard (regression: agent_start with no cwd/
+// workspaceSlug must never silently worktree whatever the daemon's active
+// workspace happens to be) ───────────────────────────────────────────────
+//
+// Reproduces the production incident: `agent_start` (and `POST
+// /sessions/agent`) called with `worktree: {...}` but NEITHER `cwd` NOR
+// `workspaceSlug` — the daemon resolved `cwd` from its active workspace,
+// which at that moment was an unrelated client repo, and cut a real
+// worktree + branch there. The fix requires the caller to name the repo
+// (`cwd` or `workspaceSlug`) whenever a worktree is actually going to be
+// provisioned; the active-workspace fallback still resolves `cwd` for a
+// PLAIN (non-worktree) spawn exactly as before.
+describe("spawnAgentSession — worktree explicit-repo guard", () => {
+  const ORIGINAL = "/repo/checkout"
+  const isolated: WorktreeProvisionOutcome = {
+    isolated: true,
+    cwd: "/root/repo/agent-abcd1234",
+    branch: "wt/agent-abcd1234",
+  }
+
+  beforeEach(() => {
+    wsConfigState.value = { version: 1, workspaces: [] }
+  })
+
+  it("no cwd + no workspaceSlug + no registered workspace at all (ambiguous) → worktree_requires_explicit_repo, provisioner never touched", async () => {
+    wsConfigState.value = { version: 1, workspaces: [] }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", worktree: true },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_requires_explicit_repo")
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("the incident: active workspace resolves to an unrelated repo, caller passed neither cwd nor workspaceSlug → REFUSES rather than cutting a worktree there", async () => {
+    wsConfigState.value = {
+      version: 1,
+      active: "unrelated-client-repo",
+      workspaces: [
+        {
+          slug: "unrelated-client-repo",
+          path: "/Users/op/clients/choisir-service-public-app",
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", worktree: { slug: "my-feature", base: "origin/main" } },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_requires_explicit_repo")
+    // The whole point: the wrong repo's path must never even reach the
+    // provisioner — no `git worktree add` was attempted against it.
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("explicit cwd inside the intended repo → provisions from that repo, even with an unrelated active workspace configured", async () => {
+    wsConfigState.value = {
+      version: 1,
+      active: "unrelated-client-repo",
+      workspaces: [
+        {
+          slug: "unrelated-client-repo",
+          path: "/Users/op/clients/choisir-service-public-app",
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ cwd: ORIGINAL })
+    expect(registry.list()[0]?.cwd).toBe(isolated.cwd)
+  })
+
+  it("explicit workspaceSlug → provisions from the resolved repo, even with a different active workspace configured", async () => {
+    wsConfigState.value = {
+      version: 1,
+      active: "unrelated-client-repo",
+      workspaces: [
+        {
+          slug: "unrelated-client-repo",
+          path: "/Users/op/clients/choisir-service-public-app",
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          slug: "intended-repo",
+          path: ORIGINAL,
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", workspaceSlug: "intended-repo", worktree: true },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ cwd: ORIGINAL })
+    expect(registry.list()[0]?.cwd).toBe(isolated.cwd)
+    expect(registry.list()[0]?.workspaceSlug).toBe("intended-repo")
+  })
+
+  it("a plain (non-worktree) spawn still uses the active-workspace fallback unchanged", async () => {
+    wsConfigState.value = {
+      version: 1,
+      active: "unrelated-client-repo",
+      workspaces: [
+        {
+          slug: "unrelated-client-repo",
+          path: "/Users/op/clients/choisir-service-public-app",
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const result = await spawnAgentSession(
+      { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock" },
+    )
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(0)
+    expect(registry.list()[0]?.cwd).toBe("/Users/op/clients/choisir-service-public-app")
   })
 })

@@ -2172,7 +2172,7 @@ async function handleSessions(
                 result.code === "orchestrator_child_quota_exceeded" ||
                 result.code === "role_spawn_denied"
               ? 409
-              : result.code === "invalid_role"
+              : result.code === "invalid_role" || result.code === "worktree_requires_explicit_repo"
                 ? 400
                 : 500
       json(status, {
