@@ -123,13 +123,22 @@ runs:
         API_KEY: ${{ inputs.api-key }}
       run: node "${{ github.action_path }}/write-config.mjs"
 
-    - name: Install agentproto CLI + adapter + MCP SDK (pinned, standalone)
+    - name: Install agentproto CLI + adapter + MCP SDK (pinned npm source)
       shell: bash
       if: inputs.cli-source == 'npm'
       run: |
         npm install --no-save --prefix "${{ github.action_path }}" \
           "@agentproto/cli@${{ inputs.cli-version }}" \
           "@agentproto/adapter-${{ inputs.adapter }}@${{ inputs.adapter-version }}" \
+          "@modelcontextprotocol/sdk@${{ inputs.mcp-sdk-version }}"
+
+    # driver.mjs imports @modelcontextprotocol/sdk itself; in workspace mode the
+    # CLI comes from the repo build but the driver still needs its own SDK.
+    - name: Install driver MCP SDK (workspace source)
+      shell: bash
+      if: inputs.cli-source == 'workspace'
+      run: |
+        npm install --no-save --prefix "${{ github.action_path }}" \
           "@modelcontextprotocol/sdk@${{ inputs.mcp-sdk-version }}"
 
     - name: Boot daemon and drive workflow over MCP
