@@ -106,6 +106,24 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "agentproto.archiveSession",
+        "title": "agentproto: Archive Session",
+        "category": "agentproto",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "agentproto.unarchiveSession",
+        "title": "agentproto: Unarchive Session",
+        "category": "agentproto",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentproto.toggleShowArchived",
+        "title": "agentproto: Toggle Archived Sessions",
+        "category": "agentproto",
+        "icon": "$(archive)"
+      },
+      {
         "command": "agentproto.filterSessions",
         "title": "agentproto: Filter Sessions",
         "category": "agentproto",
@@ -173,6 +191,11 @@
           "command": "agentproto.filterSessions",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
+        },
+        {
+          "command": "agentproto.toggleShowArchived",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -193,22 +216,32 @@
         },
         {
           "command": "agentproto.openTranscript",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
           "group": "inline@4"
         },
         {
           "command": "agentproto.restartSession",
-          "when": "view == agentproto.sessions && viewItem == session-done",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-done(-archived)?$/",
           "group": "inline@5"
         },
         {
-          "command": "agentproto.openTerminal",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
+          "command": "agentproto.archiveSession",
+          "when": "view == agentproto.sessions && viewItem == session-done",
           "group": "inline@6"
         },
         {
+          "command": "agentproto.unarchiveSession",
+          "when": "view == agentproto.sessions && viewItem == session-done-archived",
+          "group": "inline@6"
+        },
+        {
+          "command": "agentproto.openTerminal",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "group": "inline@7"
+        },
+        {
           "command": "agentproto.openTranscriptChannel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
           "group": "transcript@1"
         },
         {

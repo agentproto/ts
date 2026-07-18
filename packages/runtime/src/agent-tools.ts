@@ -821,11 +821,13 @@ export function registerAgentTools(
       if (!sessionId) return missingSessionIdError("agent_kill")
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator may only kill sessions in its own subtree — never
-      // an arbitrary id (e.g. a sibling's, or the root operator's).
+      // an arbitrary id (e.g. a sibling's, or the root operator's). Full
+      // list (includeArchived) so an archived ancestor doesn't sever the
+      // parent→child graph collectSubtree's BFS walks.
       if (callerScope) {
         const subtree = collectSubtree(
           callerScope.ownerSessionId,
-          registry.list(),
+          registry.list({ includeArchived: true }),
         )
         if (!subtree.has(sessionId)) {
           return {
@@ -926,11 +928,15 @@ export function registerAgentTools(
         .describe("Filter by exact status (overrides onlyAlive)."),
     },
     async input => {
-      let rows = registry.list()
+      // Full list (includeArchived) for subtree correctness — see
+      // session_list's docblock; archived rows are hidden below,
+      // unconditionally (this tool has no includeArchived opt-in).
+      let rows = registry.list({ includeArchived: true })
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
       }
+      rows = rows.filter(s => !s.archived)
       const kind = input.kind ?? "agent-cli"
       if (kind !== "all") {
         rows = rows.filter(s => s.kind === kind)

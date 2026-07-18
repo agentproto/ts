@@ -125,13 +125,33 @@ export class DaemonClient {
     return this.getJson<DaemonHealth>("/health")
   }
 
-  async listSessions(): Promise<SessionDescriptor[]> {
-    const body = await this.getJson<{ sessions: SessionDescriptor[] }>("/sessions")
+  /**
+   * GET /sessions. `includeArchived` opts into rows `session_archive`
+   * hides by default — the daemon's own `list()` default (recon
+   * §Session archive).
+   */
+  async listSessions(opts?: { includeArchived?: boolean }): Promise<SessionDescriptor[]> {
+    const query = opts?.includeArchived ? "?includeArchived=true" : ""
+    const body = await this.getJson<{ sessions: SessionDescriptor[] }>(`/sessions${query}`)
     return body.sessions ?? []
   }
 
   async getSession(id: string): Promise<SessionDescriptor> {
     return this.getJson<SessionDescriptor>(`/sessions/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * `session_archive` is MCP-only (there is no HTTP route) — same shape as
+   * `session_restart`. The daemon guards this server-side (refuses a
+   * still-alive session), so a failed archive throws with that message.
+   */
+  async archiveSession(idOrName: string): Promise<SessionDescriptor> {
+    return this.mcpCall<SessionDescriptor>("session_archive", { idOrName })
+  }
+
+  /** `session_unarchive` — the inverse, no status guard. MCP-only. */
+  async unarchiveSession(idOrName: string): Promise<SessionDescriptor> {
+    return this.mcpCall<SessionDescriptor>("session_unarchive", { idOrName })
   }
 
   async spawnAgent(opts: SpawnAgentOptions): Promise<SessionDescriptor> {

@@ -239,6 +239,48 @@ describe("SessionStore — poll loop", () => {
   })
 })
 
+describe("SessionStore — showArchived", () => {
+  it("defaults to hiding archived sessions — listSessions() is called with includeArchived: false", async () => {
+    const client = createFakeClient()
+    const store = new SessionStore(client, 5000, new ManualScheduler())
+
+    expect(store.showArchived).toBe(false)
+    await store.refreshAll()
+    expect(client.listSessions).toHaveBeenLastCalledWith({ includeArchived: false })
+
+    store.dispose()
+  })
+
+  it("setShowArchived(true) re-fetches immediately with includeArchived: true", async () => {
+    const client = createFakeClient()
+    const store = new SessionStore(client, 5000, new ManualScheduler())
+    await store.refreshAll()
+    client.listSessions.mockClear()
+
+    store.setShowArchived(true)
+    await flush()
+
+    expect(store.showArchived).toBe(true)
+    expect(client.listSessions).toHaveBeenCalledWith({ includeArchived: true })
+
+    store.dispose()
+  })
+
+  it("setShowArchived is a no-op (no redundant fetch) when the value doesn't change", async () => {
+    const client = createFakeClient()
+    const store = new SessionStore(client, 5000, new ManualScheduler())
+    await store.refreshAll()
+    client.listSessions.mockClear()
+
+    store.setShowArchived(false) // already false
+    await flush()
+
+    expect(client.listSessions).not.toHaveBeenCalled()
+
+    store.dispose()
+  })
+})
+
 describe("SessionStore — debounced refresh", () => {
   beforeEach(() => {
     vi.useFakeTimers()

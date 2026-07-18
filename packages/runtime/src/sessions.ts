@@ -402,6 +402,19 @@ export interface SessionDescriptor {
    *  about, for a UI that would otherwise show the adapter's argv. Distinct
    *  from `label`, which the spawner supplies and which always wins. */
   title?: string
+  /** Housekeeping-only visibility flag: hides the session from `list()`'s
+   *  default view (`session_list`, `GET /sessions`, panels) once set. Never
+   *  touches the daemon otherwise — the process is already gone by the time
+   *  this is set (see the terminal-status guard on `archiveSession`), the
+   *  transcript stays fully readable via `get()`/`findByIdOrName` (neither
+   *  filters on it), and `list({ includeArchived: true })` still returns it.
+   *  Set by `archiveSession`/`unarchiveSession` (session-tools.ts's
+   *  `session_archive`/`session_unarchive`), persisted like every other
+   *  descriptor field, and round-trips through `loadHistorySnapshot` on
+   *  reboot since it's carried by the same `...desc` spread every other
+   *  field is. Absent (not `false`) for every descriptor from before this
+   *  field existed — treated the same as `false` everywhere it's read. */
+  archived?: boolean
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -577,6 +590,26 @@ export interface SessionDescriptor {
    *  matching command session; absent otherwise (including for legacy
    *  rows persisted before this field existed). */
   priorCommandSessionId?: string
+  /** Id of the prior session this one continues from — set when this
+   *  session was spawned by `session_restart` (or the cron scheduler's
+   *  `prompt-session` action), even when the resume attempt itself
+   *  couldn't establish continuity: a fresh fallback spawn (adapter
+   *  rejected the resume id as "not found") is still "restarted from"
+   *  the prior session, just without conversation history carried over.
+   *  Absent for a session spawned directly (not via restart). Persisted
+   *  on the STORED descriptor (not just grafted onto the restart
+   *  result's JSON, as it used to be) so it survives a `list()`/`get()`
+   *  poll refresh and a daemon restart — see `resumeVia` for how the
+   *  continuity was (or wasn't) established, and the transcript panel's
+   *  chain-walk (vscode package) for the read side. */
+  resumedFrom?: string
+  /** Human-readable resume path used to arrive at `resumedFrom` — e.g.
+   *  "resumed via claude --resume" (provider-native PTY resume) or
+   *  "resumed via ACP" (adapter-level resume), or `""` when no
+   *  continuity was established (a fresh fallback spawn — see
+   *  `resumedFrom`). Only meaningful alongside `resumedFrom`; absent
+   *  (never `""`) for a session that wasn't spawned via restart. */
+  resumeVia?: string
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -980,8 +1013,34 @@ export interface SessionsRegistry {
    *  output) — see `SessionDescriptor.lastActivityAt`. No-op when the
    *  id is unknown (session already forgotten). */
   pulseActivity(id: string): void
-  list(): SessionDescriptor[]
+  /** Every non-archived session, newest `startedAt` first — the daemon's
+   *  canonical lister (`session_list`, `GET /sessions`, panels, subtree
+   *  scoping). Archived sessions are excluded UNLESS `includeArchived` is
+   *  true — the default keeps a housekeeping flag from becoming a second,
+   *  silent filter every caller has to know about, while
+   *  `{ includeArchived: true }` is there for `session_list`'s own opt-in
+   *  and for any subtree/authorization computation (`collectSubtree`) that
+   *  needs the FULL parent→child graph to stay connected — a subtree BFS
+   *  fed the filtered list would silently orphan the non-archived
+   *  descendants of an archived ancestor, since each edge is keyed off the
+   *  CHILD's own record. `get()`/`findByIdOrName()` are unaffected by this
+   *  flag entirely — a transcript stays directly openable by id no matter
+   *  how it's archived. */
+  list(opts?: { includeArchived?: boolean }): SessionDescriptor[]
   get(id: string): SessionDescriptor | undefined
+  /** Archive a TERMINAL-status session (exited/killed/error) — sets
+   *  `archived: true` and persists. Pure housekeeping: hides the row from
+   *  `list()`'s default view, nothing else. Refuses (throws) a still-alive
+   *  session (running/starting) — archiving one would hide it from the
+   *  daemon's own default view while it keeps working unattended, which is
+   *  a worse foot-gun than the flag is trying to solve. Idempotent: already
+   *  archived is a no-op success. Throws when the id is unknown. */
+  archiveSession(id: string): SessionDescriptor
+  /** Unarchive — the inverse, no status guard (an archived session was
+   *  terminal when archived, and archiving never touched daemon state, so
+   *  there is nothing to re-validate). Throws only when the id is
+   *  unknown. */
+  unarchiveSession(id: string): SessionDescriptor
   /** Subscribe to a session's output. Returns an unsubscribe fn.
    *  Initial backfill: synchronously invokes `onLine` once for each
    *  line currently in the ring buffer so attaches show context. */
@@ -1122,6 +1181,14 @@ export interface SpawnAgentInput {
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
    *  via the billing-auth resolver, never passing the raw credential here. */
   auth?: SessionAuthEcho
+  /** Prior session id this spawn continues from — set by `restartAgentSession`
+   *  (session-restart-core.ts) when this is a restart, recorded verbatim onto
+   *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
+   *  spawn. */
+  resumedFrom?: string
+  /** Human-readable resume path, recorded onto {@link SessionDescriptor.resumeVia}.
+   *  Threaded through alongside `resumedFrom` — see that field's doc. */
+  resumeVia?: string
   /** Hard ceiling on cumulative session cost (USD). When set and the
    *  adapter's usage reader reports a higher cost at a turn-end, the session
    *  is stopped (best-effort, turn-granular — caps continuation, can't abort
@@ -1198,6 +1265,12 @@ export interface SpawnPtyInput {
    *  sub-gateway so `session_tree` shows the PTY under its spawner. */
   parentSessionId?: string
   depth?: number
+  /** Restart lineage — same semantics as `SpawnAgentInput.resumedFrom` /
+   *  `resumeVia`, recorded onto {@link SessionDescriptor.resumedFrom} /
+   *  {@link SessionDescriptor.resumeVia}. Set by `session_restart` for the
+   *  pty-native/pty-plain branches (session-tools.ts). */
+  resumedFrom?: string
+  resumeVia?: string
 }
 
 export interface RecordCommandInput {
@@ -2727,6 +2800,12 @@ export function createSessionsRegistry(opts?: {
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
+        // can legitimately be "" (a fresh fallback spawn with no continuity),
+        // so it's gated on `!== undefined` rather than truthiness — a truthy
+        // gate would silently drop the empty-string case.
+        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -2837,6 +2916,10 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         depth: input.depth ?? 0,
+        // Restart lineage — same gating rule as spawnAgent above (`resumeVia`
+        // can legitimately be "").
+        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -3055,9 +3138,11 @@ export function createSessionsRegistry(opts?: {
       rt.desc.lastActivityAt = new Date().toISOString()
       schedulePersist()
     },
-    list() {
+    list(opts) {
+      const includeArchived = opts?.includeArchived ?? false
       return Array.from(sessions.values())
         .map(s => s.desc)
+        .filter(desc => includeArchived || !desc.archived)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
         .map(desc => {
           stampProcessAlive(desc)
@@ -3203,6 +3288,32 @@ export function createSessionsRegistry(opts?: {
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
       emitExited(rt)
       return true
+    },
+    archiveSession(id) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`archiveSession: no session "${id}"`)
+      // Same liveness definition as `validateAgentTurn`/`kill()` — a
+      // still-alive session must be refused rather than silently hidden
+      // from the daemon's own default view while it keeps running.
+      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+      if (isAlive) {
+        throw new Error(
+          `archiveSession: session "${id}" is still ${rt.desc.status} — only a ` +
+            "terminal-status session (exited/killed/error) can be archived."
+        )
+      }
+      rt.desc.archived = true
+      schedulePersist()
+      stampProcessAlive(rt.desc)
+      return rt.desc
+    },
+    unarchiveSession(id) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`unarchiveSession: no session "${id}"`)
+      rt.desc.archived = false
+      schedulePersist()
+      stampProcessAlive(rt.desc)
+      return rt.desc
     },
     listPendingPermissions(filter) {
       const all = Array.from(pendingPermissions.values())

@@ -121,6 +121,13 @@ export class SessionStore {
   private msSinceSnapshot = 0
   private pendingSeq = 0
 
+  /** Off by default — archived sessions are hidden from every fetch this
+   *  store makes until a caller opts in (the "show archived" tree toggle,
+   *  `agentproto.toggleShowArchived`). Flipping it re-fetches immediately
+   *  rather than waiting for the next poll tick, so the toggle reads as
+   *  instant. */
+  private _showArchived = false
+
   constructor(
     client: DaemonClient,
     pollIntervalMs = 5000,
@@ -142,6 +149,18 @@ export class SessionStore {
   /** True when the session_events_poll loop is healthy. */
   get healthy(): boolean {
     return this.consecutiveFailures < HEALTH_THRESHOLD
+  }
+
+  get showArchived(): boolean {
+    return this._showArchived
+  }
+
+  /** Flip the archived-visibility toggle and re-fetch immediately. A no-op
+   *  (no redundant fetch) when the value doesn't actually change. */
+  setShowArchived(value: boolean): void {
+    if (this._showArchived === value) return
+    this._showArchived = value
+    void this.refreshAll()
   }
 
   /**
@@ -196,7 +215,7 @@ export class SessionStore {
     let changed = false
     let reachable = false
     try {
-      const sessions = await this.client.listSessions()
+      const sessions = await this.client.listSessions({ includeArchived: this._showArchived })
       reachable = true
       if (this.stopped) return { changed, reachable }
       if (applySessionsSnapshot(this.state, sessions)) changed = true
@@ -356,7 +375,7 @@ export class SessionStore {
     if (this.stopped || !this.needsSessionRefresh) return
     this.needsSessionRefresh = false
     try {
-      const sessions = await this.client.listSessions()
+      const sessions = await this.client.listSessions({ includeArchived: this._showArchived })
       if (this.stopped) return
       this.refreshRetryMs = SESSION_REFRESH_DEBOUNCE_MS
       if (applySessionsSnapshot(this.state, sessions)) this._onDidChange.fire()

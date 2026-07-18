@@ -55,7 +55,8 @@ import {
   sendFailureTitle,
   toolIoDocumentName,
 } from "./transcript.logic.js"
-import type { ExtMessage, PresentedLine } from "./protocol.js"
+import { walkResumeChain } from "./resumeChain.logic.js"
+import type { ExtMessage, PresentedLine, ResumeChainEntry } from "./protocol.js"
 
 /** A tool value resolved for opening in an editor tab. */
 export interface ToolIoDocument {
@@ -318,12 +319,15 @@ export class TranscriptPanelController {
 
   private async initialize(): Promise<void> {
     // The render mode is decided from the best-known descriptor (initial /
-    // pre-ready), so the authoritative getSession fetch and the mode-specific
-    // content load run concurrently — one round-trip, no serial stall.
+    // pre-ready), so the authoritative getSession fetch, the mode-specific
+    // content load, and the resume-chain walk (also keyed off the pre-ready
+    // guess — a restarted session's `resumedFrom` doesn't change once set)
+    // all run concurrently — one round-trip, no serial stall.
     const preSession = this.pendingSessionUpdate ?? this.initialSession
-    const [currentSession, loaded] = await Promise.all([
+    const [currentSession, loaded, resumeChain] = await Promise.all([
       this.client.getSession(this.sessionId).catch(() => undefined),
       this.loadContent(preSession),
+      preSession.resumedFrom ? this.buildResumeChain(preSession) : Promise.resolve(undefined),
     ])
     const session = currentSession ?? this.pendingSessionUpdate ?? this.initialSession
     this.exited = isExited(session.status)
@@ -341,6 +345,7 @@ export class TranscriptPanelController {
       mode: loaded.mode,
       ...(loaded.conversation ? { conversation: loaded.conversation } : {}),
       ...(loaded.initialHtml !== undefined ? { initialHtml: loaded.initialHtml } : {}),
+      ...(resumeChain && resumeChain.length > 0 ? { resumeChain } : {}),
       history: this.promptHistory(),
     })
     this.initSent = true
@@ -400,6 +405,73 @@ export class TranscriptPanelController {
       this.appendRecords(page.events)
       if (page.nextSeq > this.eventsCursor) this.eventsCursor = page.nextSeq
       if (page.complete) return
+    }
+  }
+
+  /**
+   * Fetch an ANCESTOR's full structured transcript, paged to completion —
+   * the same paging shape as `hydrateStructured`, but deliberately a
+   * standalone loop rather than a shared helper: it must NOT touch
+   * `this.eventsCursor`/`this.records`, which stay scoped to `this.sessionId`
+   * alone (live polling after hydrate only ever advances the CURRENT
+   * session's cursor — see the class doc). Propagates `NoTranscriptError`
+   * (and anything else) verbatim so `walkResumeChain` can tell "no
+   * structured capture" apart from any other fetch failure.
+   */
+  private async fetchAllEventsFor(sessionId: string): Promise<SessionEventRecord[]> {
+    const records: SessionEventRecord[] = []
+    let cursor = 0
+    for (let guard = 0; guard < 1000; guard++) {
+      const page = await this.client.getSessionEvents(sessionId, { since: cursor })
+      records.push(...page.events)
+      if (page.nextSeq > cursor) cursor = page.nextSeq
+      if (page.complete) break
+    }
+    return records
+  }
+
+  /**
+   * Walk `session.resumedFrom` backward (resumeChain.logic.ts) and present
+   * each ancestor that loaded — the fix for the restart continuity bug: the
+   * daemon mints a brand-new session id on restart, whose own events.jsonl
+   * starts blank, so without this the prior conversation just vanishes from
+   * the panel. Returns segments in CHRONOLOGICAL (oldest-first) order, ready
+   * to render top-to-bottom above the current session's own content — the
+   * walk itself runs closest-ancestor-first, hence the `reverse()`.
+   *
+   * Never throws: a failure anywhere in the walk (an unreachable ancestor, a
+   * daemon hiccup) is swallowed here so a broken chain degrades to "no
+   * history shown" rather than ever blocking `init` on it — `walkResumeChain`
+   * itself already turns a per-ancestor failure into an `unavailable`
+   * segment instead of rejecting, so this catch is a last-resort backstop
+   * (a `getSession` throwing on the STARTING session id, for instance).
+   */
+  private async buildResumeChain(session: SessionDescriptor): Promise<ResumeChainEntry[]> {
+    try {
+      const walked = await walkResumeChain(
+        { id: session.id, resumedFrom: session.resumedFrom, resumeVia: session.resumeVia },
+        {
+          getResumeLink: async id => {
+            const desc = await this.client.getSession(id)
+            return { id: desc.id, resumedFrom: desc.resumedFrom, resumeVia: desc.resumeVia }
+          },
+          getAllEvents: id => this.fetchAllEventsFor(id),
+        },
+      )
+      return walked
+        .map(
+          (seg): ResumeChainEntry => ({
+            sessionId: seg.sessionId,
+            resumeVia: seg.resumeVia,
+            ...(seg.records
+              ? { conversation: presentConversation(reduceConversation(seg.sessionId, seg.records), this.renderers) }
+              : {}),
+            ...(seg.unavailable ? { unavailable: seg.unavailable } : {}),
+          }),
+        )
+        .reverse()
+    } catch {
+      return []
     }
   }
 
@@ -568,6 +640,21 @@ export class TranscriptPanelController {
       const message = err instanceof Error ? err.message : String(err)
       this.messenger.postMessage({ type: "stopError", title: "Stop failed", message })
     }
+  }
+
+  /**
+   * Wired from the webview's `restart` message (composer's Restart button,
+   * shown only once the session has exited). Delegates to the SAME command
+   * the sessions-tree context menu already uses (sessionRestart.ts) rather
+   * than reimplementing it: that command mints the new session id, and —
+   * since Task A — the daemon now persists `resumedFrom`/`resumeVia` onto
+   * the STORED descriptor, so the transcript it opens picks up the stitched
+   * history for free via `buildResumeChain` above. Errors (unreachable
+   * daemon, session already gone) surface through that command's own
+   * `showErrorMessage` — nothing further to do here.
+   */
+  async onRestart(): Promise<void> {
+    await vscode.commands.executeCommand("agentproto.restartSession", this.sessionId)
   }
 
   /**

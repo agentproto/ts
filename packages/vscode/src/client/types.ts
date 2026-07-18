@@ -61,6 +61,11 @@ export interface SessionDescriptor {
   /** Derived from the session's FIRST prompt — see the runtime's
    *  SessionDescriptor.title doc for the derivation + overwrite rules. */
   title?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.archived — housekeeping
+   *  flag hiding the row from the daemon's default `list()` view (and so
+   *  from `listSessions()` here too, unless `includeArchived` is passed).
+   *  Set/cleared via `session_archive`/`session_unarchive`. */
+  archived?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -90,6 +95,17 @@ export interface SessionDescriptor {
   parentSessionId?: string
   depth?: number
   priorCommandSessionId?: string
+  /** Id of the prior session this one continues from — set when this session
+   *  was spawned by a restart (`session_restart` / `agentproto.restartSession`),
+   *  even when the resume itself couldn't establish continuity (a fresh
+   *  fallback spawn is still "restarted from" the prior session). See the
+   *  runtime's SessionDescriptor.resumedFrom doc. Powers the transcript
+   *  panel's resume-chain stitch (transcriptPanelController.ts). */
+  resumedFrom?: string
+  /** Human-readable resume path for `resumedFrom` — e.g. "resumed via claude
+   *  --resume", "resumed via ACP", or "" when no continuity was established.
+   *  Only meaningful alongside `resumedFrom`. */
+  resumeVia?: string
   browserAdapterId?: string
   browserPort?: number
   browserBaseUrl?: string
