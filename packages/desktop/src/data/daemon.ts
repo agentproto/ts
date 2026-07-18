@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core"
 import type {
   DaemonHealth,
   GitDiff,
+  JsonValue,
   SessionDescriptor,
   SessionEventsPage,
 } from "./types"
@@ -30,6 +31,16 @@ export function daemonSessionEvents(
   daemonUrl = DEFAULT_DAEMON_URL,
 ): Promise<SessionEventsPage> {
   return invoke<SessionEventsPage>("daemon_session_events", { daemonUrl, id, since })
+}
+
+/** POST /sessions/:id/prompt?wait=false — drive the session with a new message.
+ *  Fire-and-forget (wait=false); the transcript poll surfaces the reply. */
+export function daemonPrompt(
+  sessionId: string,
+  text: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<JsonValue> {
+  return invoke<JsonValue>("daemon_prompt", { daemonUrl, sessionId, text })
 }
 
 /** git diff of a session's working tree, parsed into changed files + hunks.

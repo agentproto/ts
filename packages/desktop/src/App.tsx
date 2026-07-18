@@ -4,6 +4,7 @@ import { DEFAULT_DAEMON_URL, daemonHealth, daemonSessions } from "./data/daemon"
 import type { SessionDescriptor } from "./data/types"
 import { statusKind } from "./data/session-view"
 import { AppShell } from "./shell/AppShell"
+import { Composer } from "./shell/Composer"
 import { MainHeader } from "./shell/MainHeader"
 import { SessionRail, type DiffStat } from "./shell/SessionRail"
 import { Titlebar, type ConnState } from "./shell/Titlebar"
@@ -146,6 +147,7 @@ function App() {
             </div>
             <SubagentStrip total={subagents.total} running={subagents.running} />
             <WorkingRow session={selected} />
+            <Composer session={selected} />
           </>
         ) : (
           <div className="pane-placeholder">

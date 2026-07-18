@@ -152,6 +152,39 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// POST /sessions/:id/prompt?wait=false — drive the session with a new user
+/// message. Bearer-gated (mirrors the other daemon_* commands + token resolver).
+/// Body shape mirrors the VS Code client's `prompt()`: `{ "prompt": <text> }`.
+#[tauri::command]
+async fn daemon_prompt(
+    daemon_url: Option<String>,
+    session_id: String,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = format!("/sessions/{}/prompt?wait=false", urlencode(&session_id));
+
+    let mut req = client()?
+        .post(format!("{base}{path}"))
+        .json(&serde_json::json!({ "prompt": text }));
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+    // The route may answer with an empty body when wait=false — treat as null.
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
 // ── git working-tree diff (WP4) ─────────────────────────────────────────────
 // Sourced by shelling `git` (the SPEC default over the git2 crate: simplest,
 // no extra dependency). `git -C <cwd> diff HEAD` shows all uncommitted tracked
@@ -371,6 +404,7 @@ pub fn run() {
             daemon_health,
             daemon_sessions,
             daemon_session_events,
+            daemon_prompt,
             git_diff
         ])
         .run(tauri::generate_context!())

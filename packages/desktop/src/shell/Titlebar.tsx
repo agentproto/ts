@@ -21,12 +21,10 @@ function hostOf(url: string): string {
 
 export function Titlebar({ daemonUrl, conn, costToday, onNewAgent }: TitlebarProps) {
   return (
-    <div className="titlebar">
-      <div className="lights">
-        <i />
-        <i />
-        <i />
-      </div>
+    // data-tauri-drag-region makes the empty bar drag the window; the native
+    // macOS traffic lights (titleBarStyle: Overlay) render at the padded-out
+    // left edge, so there is exactly one titlebar.
+    <div className="titlebar" data-tauri-drag-region>
       <div className="brand">
         <span className="glyph">◇</span>agentproto <span className="sub">— daemon cockpit</span>
       </div>
