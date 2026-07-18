@@ -218,7 +218,6 @@ export {
   readRegisteredSlugs,
   resolveBucketSlug,
   type MigrationMarker,
-  type RegisteredSlugsResult,
 } from "./workspace-buckets.js"
 export { createFileStepCache } from "./workflow-step-cache.js"
 export {
