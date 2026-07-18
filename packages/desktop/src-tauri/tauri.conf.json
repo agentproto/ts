@@ -13,10 +13,13 @@
     "windows": [
       {
         "title": "agentproto",
-        "width": 1000,
-        "height": 720,
-        "minWidth": 640,
-        "minHeight": 480
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

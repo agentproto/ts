@@ -1,0 +1,59 @@
+/* Base token contract (WP0 — frozen).
+ *
+ * These `:root` values are the agentproto default kit's flattened vars, written
+ * statically so the shell paints correctly on first frame before <KitProvider>'s
+ * effect runs (and re-written identically by it). Switching kits overrides the
+ * --color/-font/-rounded/-spacing vars at runtime.
+ *
+ * The --st-* / --add-* / --del-* aliases below are DERIVED from the semantic
+ * tokens (var(--color-success) etc.), so they re-skin automatically with the
+ * kit and are never redefined per-kit. All component CSS (WP1..4) reads THESE
+ * vars only — zero hardcoded brand colors, semantic state via
+ * --color-success/-warning/-danger/-info. */
+:root {
+  /* colors */
+  --color-background: #0a0a0a;
+  --color-surface: #141414;
+  --color-surface-raised: #1e1e1e;
+  --color-surface-hi: #262626;
+  --color-ink: #fafafa;
+  --color-ink-muted: rgba(250, 250, 250, 0.58);
+  --color-ink-faint: rgba(250, 250, 250, 0.34);
+  --color-accent: #10b981;
+  --color-accent-fg: #0a0a0a;
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+  --color-success: #10b981;
+  --color-warning: #e0b23a;
+  --color-danger: #f2664a;
+  --color-info: #38bdf8;
+
+  /* typography */
+  --font-body-family: "Inter", -apple-system, system-ui, sans-serif;
+  --font-mono-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-h1-family: "JetBrains Mono", ui-monospace, monospace;
+
+  /* rounded */
+  --rounded-sm: 0px;
+  --rounded-md: 2px;
+  --rounded-lg: 4px;
+  --rounded-full: 9999px;
+
+  /* spacing */
+  --spacing-xs: 0.5rem;
+  --spacing-sm: 1rem;
+  --spacing-md: 1.5rem;
+
+  /* derived semantic-state aliases (follow the kit automatically) */
+  --st-run: var(--color-success);
+  --st-input: var(--color-info);
+  --st-perm: var(--color-warning);
+  --st-idle: var(--color-ink-faint);
+  --st-err: var(--color-danger);
+
+  /* derived diff gutters/backgrounds */
+  --add-bg: color-mix(in srgb, var(--color-success) 13%, transparent);
+  --add-gutter: color-mix(in srgb, var(--color-success) 55%, var(--color-ink-faint));
+  --del-bg: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  --del-gutter: color-mix(in srgb, var(--color-danger) 55%, var(--color-ink-faint));
+}
