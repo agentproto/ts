@@ -1,0 +1,193 @@
+/* WP4 — Changes / diff panel. Ported from MOCK.html; token vars only. Add/del
+ * lines use --add-*/--del-* (derived from --color-success/-danger). */
+
+.cx {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cx-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.cx-tab {
+  padding: 6px 11px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 550;
+}
+.cx-tab.active {
+  color: var(--color-ink);
+  border-bottom-color: var(--color-accent);
+}
+.cx-tab .n {
+  font-family: var(--font-mono-family);
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+  margin-left: 5px;
+}
+.cx-stub {
+  padding: 30px 16px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  text-align: center;
+}
+.cx-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.cx-branch-icon {
+  color: var(--color-ink-faint);
+}
+.cx-branch .bn {
+  font-family: var(--font-mono-family);
+  color: var(--color-ink-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cx-branch .st {
+  font-family: var(--font-mono-family);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.cx-branch .st .add {
+  color: var(--color-success);
+}
+.cx-branch .st .del {
+  color: var(--color-danger);
+}
+.cx-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+.file {
+  border-bottom: 1px solid var(--color-border);
+}
+.file > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 13px;
+  font-size: 12px;
+}
+.file > summary:hover {
+  background: var(--color-surface-raised);
+}
+.file .fn {
+  font-family: var(--font-mono-family);
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.file .fp {
+  color: var(--color-ink-faint);
+}
+.file .fs {
+  font-family: var(--font-mono-family);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.file .fs .add {
+  color: var(--color-success);
+}
+.file .fs .del {
+  color: var(--color-danger);
+}
+.diff {
+  font-family: var(--font-mono-family);
+  font-size: 11px;
+  background: var(--color-background);
+  border-top: 1px solid var(--color-border);
+  overflow-x: auto;
+}
+.dl {
+  display: grid;
+  grid-template-columns: 34px 34px 1fr;
+  white-space: pre;
+}
+.dl .ln {
+  text-align: right;
+  padding: 0 6px;
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.dl .tx {
+  padding: 0 8px;
+  color: var(--color-ink-muted);
+}
+.dl.add {
+  background: var(--add-bg);
+}
+.dl.add .ln {
+  color: var(--add-gutter);
+}
+.dl.add .tx {
+  color: color-mix(in srgb, var(--color-success) 30%, var(--color-ink));
+}
+.dl.del {
+  background: var(--del-bg);
+}
+.dl.del .ln {
+  color: var(--del-gutter);
+}
+.dl.del .tx {
+  color: color-mix(in srgb, var(--color-danger) 34%, var(--color-ink));
+}
+.dl.hunk {
+  background: color-mix(in srgb, var(--color-info) 8%, transparent);
+}
+.dl.hunk .tx {
+  color: color-mix(in srgb, var(--color-info) 60%, var(--color-ink-muted));
+}
+.cx-foot {
+  border-top: 1px solid var(--color-border);
+  padding: 10px 13px;
+}
+.cx-foot h5 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-ink-faint);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cx-foot .rem {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono-family);
+}
+.commit {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  padding: 4px 0;
+  color: var(--color-ink-muted);
+}
+.commit--empty {
+  color: var(--color-ink-faint);
+}
+.commit .h {
+  font-family: var(--font-mono-family);
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+}

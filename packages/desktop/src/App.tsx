@@ -13,8 +13,11 @@ import { useSessionEvents } from "./transcript/useSessionEvents"
 import { TabStrip } from "./browser/TabStrip"
 import { BrowserPane } from "./browser/BrowserPane"
 import { browserTabsFor } from "./browser/browser-view"
+import { ChangesPanel } from "./changes/ChangesPanel"
+import { useGitDiff } from "./changes/useGitDiff"
 import "./shell/shell.css"
 import "./browser/browser.css"
+import "./changes/changes.css"
 
 const POLL_MS = 5000
 
@@ -70,8 +73,24 @@ function App() {
     return `$${total.toFixed(2)}`
   }, [sessions])
 
-  // WP4 will populate real diff stats; until then the rail simply omits them.
-  const diffFor = useCallback((_session: SessionDescriptor): DiffStat | undefined => undefined, [])
+  // Diff of the selected session's working tree, cached by cwd so the rail can
+  // show a diff stat on any row sharing that directory.
+  const diff = useGitDiff(selected?.cwd)
+  const [diffByCwd, setDiffByCwd] = useState<Map<string, DiffStat>>(new Map())
+  useEffect(() => {
+    const cwd = selected?.cwd
+    if (!cwd || !diff) return
+    setDiffByCwd((prev) => {
+      const next = new Map(prev)
+      next.set(cwd, { added: diff.added, removed: diff.removed })
+      return next
+    })
+  }, [selected, diff])
+  const diffFor = useCallback(
+    (session: SessionDescriptor): DiffStat | undefined =>
+      session.cwd ? diffByCwd.get(session.cwd) : undefined,
+    [diffByCwd],
+  )
 
   // Reset to the transcript tab when the selected session changes.
   useEffect(() => {
@@ -137,7 +156,7 @@ function App() {
           </div>
         )
       }
-      changes={<div className="pane-placeholder">Changes pane (WP4)</div>}
+      changes={<ChangesPanel diff={selected ? diff : null} />}
     />
   )
 }
