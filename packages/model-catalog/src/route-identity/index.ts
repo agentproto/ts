@@ -2,21 +2,43 @@
  * Route-aware model identity.
  *
  * Canonical reference syntax:
- *   vendor/product[@route]
+ *   [route:]vendor/product[:pin][@route]
  *
  * A model product (who built it + what product) is separate from its serving
- * route (how we reach it / how we are billed).
+ * route (how we reach it / how we are billed) and from an optional `:pin` —
+ * an OpenRouter routing variant or an inference-provider selector.
+ *
+ * Three axes:
+ *
+ * | Axis               | Question it answers          | Example value            |
+ * |---------------------|------------------------------|---------------------------|
+ * | `vendor`            | who built the model          | `openai`, `anthropic`     |
+ * | `route`             | how we reach it / are billed | `openrouter`, `huggingface`, `openai` (direct) |
+ * | `inferenceProvider` / `variant` | who runs the GPUs behind a router, or which routing mode | `cerebras`, `groq` (provider); `free`, `nitro` (variant) |
  *
  * Examples:
- *   openai/gpt-4o              → vendor openai, product gpt-4o, route openai (direct)
- *   openai/gpt-4o@openrouter   → same product, routed through OpenRouter
- *   openai/gpt-4o@agentik-proxy → same product, operator-configured proxy route
+ *   openai/gpt-4o                    → vendor openai, product gpt-4o, route openai (direct)
+ *   openai/gpt-4o@openrouter         → same product, routed through OpenRouter
+ *   openai/gpt-4o@agentik-proxy      → same product, operator-configured proxy route
+ *   deepseek/deepseek-chat:free@openrouter → OpenRouter, variant "free"
+ *   openrouter:deepseek/deepseek-chat:free → legacy PREFIX form, same result
+ *   meta-llama/Llama-3.1-8B:cerebras@huggingface → HuggingFace, inference-provider pin "cerebras"
+ *
+ * `:pin` classification (per the resolved route):
+ *   - `openrouter` (or no explicit route) + pin ∈ {free, nitro, floor, online,
+ *     exacto} → `variant` (a routing mode, not a provider).
+ *   - anything else → `inferenceProvider` (HF inference provider / OpenRouter
+ *     provider pin).
  *
  * Design invariants:
  *   - `vendor` is who built the model; `route` is how we reach it.
  *   - `provider/model` strings parse as vendor/product with implicit route = vendor
  *     (backward-compatible reference form).
- *   - Unscoped `xx@yy` is rejected.
+ *   - Unscoped `xx@yy` is rejected; bare ids without a slash are rejected
+ *     (lenient handling belongs in consumers — see `tryParseModelRef`).
+ *   - The legacy `route:` PREFIX (colon before the first `/`, prefix must be a
+ *     known route name) parses; an explicit `@route` suffix wins on conflict.
+ *     `formatModelRef` always emits the canonical suffix form.
  *   - Route metadata (pricing, limits, transport, availability) is separate from
  *     product metadata and computed at resolution time.
  *   - The abstraction is generic across model kinds; only LLM has a concrete
@@ -31,11 +53,42 @@ import {
 } from "../llm/catalog.js"
 import { OPENROUTER_ROUTES } from "../llm/openrouter-routes.generated.js"
 import { REQUESTY_ROUTES } from "../llm/requesty-routes.generated.js"
+import {
+  HUGGINGFACE_ROUTES,
+  type HuggingFaceRouteProvider,
+} from "../llm/huggingface-routes.generated.js"
+import { CatalogProviderSchema } from "../schema/base.js"
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 
 const SEGMENT_RE = /^[a-zA-Z0-9_.-]+$/
-const REF_RE = /^([^/@]+)\/([^/@]+)(?:@([^/@]+))?$/
+
+/**
+ * OpenRouter variant suffixes — a CLOSED list. A `:pin` matching one of
+ * these on the OpenRouter route (or on a route-less/implicit-route id) is a
+ * routing *variant*, never an inference-provider pin.
+ * @see https://openrouter.ai/docs/features/provider-routing
+ */
+export const OPENROUTER_VARIANTS = [
+  "free",
+  "nitro",
+  "floor",
+  "online",
+  "exacto",
+] as const
+export type OpenRouterVariant = (typeof OPENROUTER_VARIANTS)[number]
+
+const OPENROUTER_VARIANT_SET: ReadonlySet<string> = new Set(OPENROUTER_VARIANTS)
+
+/**
+ * Route names recognised as a LEGACY `route:` PREFIX (colon before the first
+ * `/`). Derived from `CatalogProviderSchema` — the same enum that gates
+ * `selectRouter` below — so a prefix is legacy sugar for a route the catalog
+ * already knows, never an ambiguous guess.
+ */
+const KNOWN_ROUTE_PREFIXES: ReadonlySet<string> = new Set<string>(
+  CatalogProviderSchema.options
+)
 
 export interface ModelRef {
   /** The original, trimmed string. */
@@ -46,6 +99,14 @@ export interface ModelRef {
   product: string
   /** Routing target — defaults to vendor for direct vendor access. */
   route: string
+  /**
+   * Explicit `:pin` classified as an inference-provider selector (HF
+   * inference provider, or an OpenRouter provider pin outside the closed
+   * variant list) rather than a routing variant.
+   */
+  inferenceProvider?: string
+  /** OpenRouter routing variant (`free`, `nitro`, `floor`, `online`, `exacto`) — a closed list, never a provider. */
+  variant?: string
 }
 
 export class InvalidModelRefError extends Error {
@@ -59,13 +120,39 @@ export class InvalidModelRefError extends Error {
 }
 
 /**
- * Parse a model reference in `vendor/product[@route]` form.
+ * Classify a `:pin` given the route it resolves against (the EXPLICIT route
+ * only — from `@route` or the legacy prefix — never the vendor-defaulted
+ * one, so a bare `vendor/product:free` is still OpenRouter-eligible).
+ *
+ * Per-route rules:
+ *   - `openrouter`, or no explicit route → a closed-list variant becomes
+ *     `variant`; anything else is an inference-provider pin.
+ *   - every other route (`huggingface`, direct vendors, custom proxies,
+ *     unknown routes) → always an inference-provider pin.
+ */
+function classifyPin(
+  pin: string,
+  explicitRoute: string | undefined
+): Pick<ModelRef, "inferenceProvider" | "variant"> {
+  const openRouterEligible = explicitRoute === "openrouter" || explicitRoute === undefined
+  if (openRouterEligible && OPENROUTER_VARIANT_SET.has(pin)) {
+    return { variant: pin }
+  }
+  return { inferenceProvider: pin }
+}
+
+/**
+ * Parse a model reference in `[route:]vendor/product[:pin][@route]` form.
  *
  * - `openai/gpt-4o` → `{ vendor: "openai", product: "gpt-4o", route: "openai" }`
  * - `openai/gpt-4o@openrouter` → route "openrouter"
+ * - `deepseek/deepseek-chat:free@openrouter` → route "openrouter", variant "free"
+ * - `meta-llama/Llama-3.1-8B:cerebras@huggingface` → route "huggingface", inferenceProvider "cerebras"
+ * - `openrouter:anthropic/claude-sonnet-4.5` → legacy prefix, route "openrouter"
  *
- * Rejects empty strings, unscoped `@` refs, missing segments, and segments
- * containing `/` or `@`.
+ * Rejects empty strings, unscoped `@` refs, bare ids without a slash, missing
+ * segments, and segments containing `/` or `@`. `@route` wins over the
+ * legacy prefix when both are present.
  */
 export function parseModelRef(raw: string): ModelRef {
   const input = raw.trim()
@@ -73,25 +160,62 @@ export function parseModelRef(raw: string): ModelRef {
     throw new InvalidModelRefError(raw, "model reference is empty")
   }
 
-  // Reject unscoped `xx@yy` before attempting the slash-based regex.
-  if (input.includes("@") && !input.includes("/")) {
+  // 1. Peel the explicit `@route` suffix (highest-priority route source).
+  let body = input
+  let atRoute: string | undefined
+  const atIdx = input.indexOf("@")
+  if (atIdx !== -1) {
+    body = input.slice(0, atIdx)
+    atRoute = input.slice(atIdx + 1)
+  }
+
+  // Reject unscoped `xx@yy` — no slash anywhere before the `@`.
+  if (atIdx !== -1 && !body.includes("/")) {
     throw new InvalidModelRefError(
       raw,
       "unscoped @ route is not allowed; use vendor/product[@route]"
     )
   }
 
-  const match = REF_RE.exec(input)
-  if (!match) {
-    throw new InvalidModelRefError(
-      raw,
-      "expected vendor/product[@route] (e.g. openai/gpt-4o or openai/gpt-4o@openrouter)"
-    )
+  // 2. Peel the legacy `route:` PREFIX from the body — a colon before the
+  // first `/` whose prefix is a known route name.
+  let prefixRoute: string | undefined
+  let remainder = body
+  const bodySlashIdx = body.indexOf("/")
+  if (bodySlashIdx !== -1) {
+    const bodyColonIdx = body.indexOf(":")
+    if (bodyColonIdx !== -1 && bodyColonIdx < bodySlashIdx) {
+      const candidate = body.slice(0, bodyColonIdx)
+      if (KNOWN_ROUTE_PREFIXES.has(candidate)) {
+        prefixRoute = candidate
+        remainder = body.slice(bodyColonIdx + 1)
+      }
+    }
   }
 
-  const vendor = match[1]!.trim()
-  const product = match[2]!.trim()
-  const route = (match[3] ?? vendor).trim()
+  // 3. Split the remainder into `vendor/product[:pin]`.
+  const remSlashIdx = remainder.indexOf("/")
+  if (remSlashIdx === -1) {
+    throw new InvalidModelRefError(
+      raw,
+      "expected vendor/product[:pin][@route] (e.g. openai/gpt-4o or openai/gpt-4o@openrouter)"
+    )
+  }
+  const vendor = remainder.slice(0, remSlashIdx).trim()
+  const afterVendor = remainder.slice(remSlashIdx + 1)
+
+  let product = afterVendor
+  let pin: string | undefined
+  const pinColonIdx = afterVendor.indexOf(":")
+  if (pinColonIdx !== -1) {
+    product = afterVendor.slice(0, pinColonIdx)
+    pin = afterVendor.slice(pinColonIdx + 1)
+  }
+  product = product.trim()
+
+  // 4. `@route` wins over the legacy prefix; both fall back to `vendor`.
+  const explicitRoute = atRoute ?? prefixRoute
+  const route = (explicitRoute ?? vendor).trim()
 
   for (const [label, value] of [
     ["vendor", vendor],
@@ -108,19 +232,51 @@ export function parseModelRef(raw: string): ModelRef {
       )
     }
   }
+  if (pin !== undefined) {
+    if (pin.length === 0) {
+      throw new InvalidModelRefError(raw, "pin segment is empty")
+    }
+    if (!SEGMENT_RE.test(pin)) {
+      throw new InvalidModelRefError(
+        raw,
+        `pin "${pin}" contains invalid characters (no '/' or '@')`
+      )
+    }
+  }
 
-  return { raw: input, vendor, product, route }
+  const classified = pin !== undefined ? classifyPin(pin, explicitRoute) : {}
+
+  return { raw: input, vendor, product, route, ...classified }
 }
 
 /**
- * Format a {@link ModelRef} back to its canonical string.
- * Implicit direct routes omit the `@route` suffix.
+ * {@link parseModelRef}, but never throws — returns `undefined` for any
+ * input the strict grammar rejects (bare ids, malformed refs, …). Lenient
+ * handling of non-canonical ids belongs in callers; this just makes the
+ * strict parser safe to probe.
+ */
+export function tryParseModelRef(raw: string): ModelRef | undefined {
+  try {
+    return parseModelRef(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Format a {@link ModelRef} back to its canonical string
+ * `vendor/product[:pin][@route]`. Implicit direct routes omit the `@route`
+ * suffix. Always emits the canonical suffix form — never the legacy
+ * `route:` prefix — so `formatModelRef(parseModelRef(x))` is stable
+ * (idempotent under re-parse). Prefers `variant` over `inferenceProvider`
+ * when (implausibly) both are set, since parse only ever produces one.
  */
 export function formatModelRef(ref: ModelRef): string {
-  if (ref.route === ref.vendor) {
-    return `${ref.vendor}/${ref.product}`
-  }
-  return `${ref.vendor}/${ref.product}@${ref.route}`
+  let out = `${ref.vendor}/${ref.product}`
+  const pin = ref.variant ?? ref.inferenceProvider
+  if (pin !== undefined) out += `:${pin}`
+  if (ref.route !== ref.vendor) out += `@${ref.route}`
+  return out
 }
 
 /** True when `raw` matches the `vendor/product[@route]` shape. */
@@ -228,6 +384,7 @@ export function clearCustomRoutes(): void {
  *   openai/gpt-4o            → direct OpenAI pricing / transport
  *   openai/gpt-4o@openrouter → OpenRouter route pricing / transport
  *   openai/gpt-4o@requesty   → Requesty route pricing / transport
+ *   meta-llama/Llama-3.1-8B:cerebras@huggingface → HuggingFace, pinned to the "cerebras" inference provider
  *   openai/gpt-4o@agentik-proxy → custom route config (if registered)
  *
  * Bare legacy ids (e.g. `gpt-4o`, `claude-sonnet-4-5`) are also accepted and
@@ -284,6 +441,52 @@ export function resolveLlmModelRoute(
     })
   }
 
+  // ── HuggingFace route ────────────────────────────────────────────────────
+  // Keyed by bare vendor/product (HF wire id), same shape as the OpenRouter/
+  // Requesty branches above. Pricing comes from the pinned provider when
+  // `inferenceProvider` selects one, else the cheapest live provider (min
+  // input+output per-1M). Limits come from the pinned provider's context
+  // length, or the max across live providers when no pin narrows the choice.
+  if (modelRef.route === "huggingface") {
+    const key = `${modelRef.vendor}/${modelRef.product}`
+    const hfRoute = HUGGINGFACE_ROUTES[key]
+    if (!hfRoute || hfRoute.providers.length === 0) return undefined
+
+    const pinnedProvider = modelRef.inferenceProvider
+      ? hfRoute.providers.find((p) => p.provider === modelRef.inferenceProvider)
+      : undefined
+    if (modelRef.inferenceProvider !== undefined && !pinnedProvider) return undefined
+
+    const priced = hfRoute.providers.filter(isPricedHuggingFaceProvider)
+    const cheapest = priced.reduce<(typeof priced)[number] | undefined>((best, p) => {
+      if (!best) return p
+      return p.inputPer1M + p.outputPer1M < best.inputPer1M + best.outputPer1M ? p : best
+    }, undefined)
+    const selected = pinnedProvider ?? cheapest
+
+    const pricing: LLMPricing = {
+      inputPer1M: selected?.inputPer1M ?? DEFAULT_PRICING.inputPer1M,
+      outputPer1M: selected?.outputPer1M ?? DEFAULT_PRICING.outputPer1M,
+      vendor: modelRef.vendor,
+      provider: "huggingface",
+    }
+
+    const contextWindow = pinnedProvider
+      ? pinnedProvider.contextLength
+      : hfRoute.providers.reduce<number | undefined>((max, p) => {
+          if (p.contextLength === undefined) return max
+          return max === undefined ? p.contextLength : Math.max(max, p.contextLength)
+        }, undefined)
+
+    return buildLlmRoute(
+      modelRef,
+      canonicalProductId,
+      pricing,
+      { flavor: "openai", baseUrl: "https://router.huggingface.co/v1" },
+      { limits: contextWindow !== undefined ? { contextWindow } : {} }
+    )
+  }
+
   // ── Custom route (e.g. agentik-proxy) ───────────────────────────────────
   const custom = resolveCustomRoute(modelRef.route)
   if (!custom) return undefined
@@ -303,8 +506,15 @@ export function resolveLlmModelRoute(
       flavor: custom.flavor ?? "custom",
       baseUrl: custom.baseUrl,
     },
-    custom
+    { availability: custom.availability, limits: custom.limits }
   )
+}
+
+/** Narrows a HuggingFace provider entry to one that carries both prices. */
+function isPricedHuggingFaceProvider(
+  p: HuggingFaceRouteProvider
+): p is HuggingFaceRouteProvider & { inputPer1M: number; outputPer1M: number } {
+  return p.inputPer1M !== undefined && p.outputPer1M !== undefined
 }
 
 function buildLlmRoute(
@@ -312,7 +522,7 @@ function buildLlmRoute(
   canonicalProductId: string,
   pricing: LLMPricing,
   transport: ModelRouteTransport,
-  custom?: CustomRouteConfig
+  opts?: { availability?: ModelRouteAvailability; limits?: ModelRouteLimits }
 ): ResolvedLlmModelRoute {
   return {
     ref,
@@ -321,8 +531,8 @@ function buildLlmRoute(
     canonicalProductId,
     route: ref.route,
     transport,
-    availability: custom?.availability ?? "available",
-    limits: custom?.limits ?? {},
+    availability: opts?.availability ?? "available",
+    limits: opts?.limits ?? {},
     pricing,
   }
 }

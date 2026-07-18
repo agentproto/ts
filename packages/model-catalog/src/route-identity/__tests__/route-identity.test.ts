@@ -8,11 +8,15 @@
  *   - custom route config validation and resolution
  *   - legacy bare-id compatibility
  *   - ambiguity diagnostics
+ *   - :pin grammar (variant vs inferenceProvider) and the legacy route: prefix
+ *   - tryParseModelRef (never-throw)
+ *   - HuggingFace route resolution (pinned provider vs cheapest-live pricing)
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
 import {
   parseModelRef,
+  tryParseModelRef,
   formatModelRef,
   isModelRefString,
   InvalidModelRefError,
@@ -20,6 +24,7 @@ import {
   registerCustomRoute,
   clearCustomRoutes,
   diagnoseModelRef,
+  OPENROUTER_VARIANTS,
   type ModelRef,
   type CustomRouteConfig,
 } from "../index.js"
@@ -85,6 +90,95 @@ describe("parseModelRef", () => {
   })
 })
 
+describe("parseModelRef — :pin grammar", () => {
+  it("classifies a closed-list suffix as variant on the implicit route", () => {
+    const ref = parseModelRef("deepseek/deepseek-chat:free")
+    expect(ref.vendor).toBe("deepseek")
+    expect(ref.product).toBe("deepseek-chat")
+    expect(ref.route).toBe("deepseek")
+    expect(ref.variant).toBe("free")
+    expect(ref.inferenceProvider).toBeUndefined()
+  })
+
+  it("classifies every OPENROUTER_VARIANTS entry as variant on @openrouter", () => {
+    for (const variant of OPENROUTER_VARIANTS) {
+      const ref = parseModelRef(`deepseek/deepseek-chat:${variant}@openrouter`)
+      expect(ref.variant).toBe(variant)
+      expect(ref.inferenceProvider).toBeUndefined()
+    }
+  })
+
+  it("classifies a non-variant suffix as inferenceProvider on @openrouter", () => {
+    const ref = parseModelRef("openai/gpt-4o:azure@openrouter")
+    expect(ref.inferenceProvider).toBe("azure")
+    expect(ref.variant).toBeUndefined()
+  })
+
+  it("classifies any suffix as inferenceProvider on a non-openrouter route (huggingface)", () => {
+    const ref = parseModelRef("meta-llama/Llama-3.1-8B:cerebras@huggingface")
+    expect(ref.route).toBe("huggingface")
+    expect(ref.inferenceProvider).toBe("cerebras")
+    expect(ref.variant).toBeUndefined()
+  })
+
+  it("classifies a variant-named suffix as inferenceProvider on a non-openrouter route", () => {
+    // "free" is only a variant in OpenRouter's context — on huggingface it's
+    // just an (unusual) provider pin.
+    const ref = parseModelRef("meta-llama/Llama-3.1-8B:free@huggingface")
+    expect(ref.inferenceProvider).toBe("free")
+    expect(ref.variant).toBeUndefined()
+  })
+
+  it("rejects an empty pin", () => {
+    expect(() => parseModelRef("openai/gpt-4o:")).toThrow(InvalidModelRefError)
+  })
+})
+
+describe("parseModelRef — legacy route: prefix", () => {
+  it("parses the legacy prefix form to the same vendor/product/route as @route", () => {
+    const prefixed = parseModelRef("openrouter:anthropic/claude-sonnet-4.5")
+    const suffixed = parseModelRef("anthropic/claude-sonnet-4.5@openrouter")
+    expect({ ...prefixed, raw: undefined }).toEqual({ ...suffixed, raw: undefined })
+    expect(prefixed.route).toBe("openrouter")
+  })
+
+  it("combines prefix and pin", () => {
+    const ref = parseModelRef("openrouter:deepseek/deepseek-chat:free")
+    expect(ref.route).toBe("openrouter")
+    expect(ref.variant).toBe("free")
+  })
+
+  it("@route wins over the legacy prefix on conflict", () => {
+    const ref = parseModelRef("openrouter:openai/gpt-4o@requesty")
+    expect(ref.route).toBe("requesty")
+  })
+
+  it("does not treat an unknown prefix as a route (colon stays embedded, segment invalid)", () => {
+    expect(() => parseModelRef("totallyunknown:openai/gpt-4o")).toThrow(
+      InvalidModelRefError
+    )
+  })
+
+  it("formatModelRef always emits the canonical suffix form, never the prefix", () => {
+    const ref = parseModelRef("openrouter:anthropic/claude-sonnet-4.5")
+    expect(formatModelRef(ref)).toBe("anthropic/claude-sonnet-4.5@openrouter")
+  })
+})
+
+describe("tryParseModelRef", () => {
+  it("returns the same ModelRef as parseModelRef for valid input", () => {
+    expect(tryParseModelRef("openai/gpt-4o@openrouter")).toEqual(
+      parseModelRef("openai/gpt-4o@openrouter")
+    )
+  })
+
+  it("returns undefined instead of throwing for invalid input", () => {
+    expect(tryParseModelRef("gpt-4o")).toBeUndefined()
+    expect(tryParseModelRef("")).toBeUndefined()
+    expect(tryParseModelRef("gpt-4o@openrouter")).toBeUndefined()
+  })
+})
+
 describe("formatModelRef", () => {
   it("omits route suffix for implicit direct route", () => {
     const ref: ModelRef = {
@@ -104,6 +198,35 @@ describe("formatModelRef", () => {
       route: "openrouter",
     }
     expect(formatModelRef(ref)).toBe("openai/gpt-4o@openrouter")
+  })
+
+  it("includes the pin between product and route", () => {
+    const ref: ModelRef = {
+      raw: "deepseek/deepseek-chat:free@openrouter",
+      vendor: "deepseek",
+      product: "deepseek-chat",
+      route: "openrouter",
+      variant: "free",
+    }
+    expect(formatModelRef(ref)).toBe("deepseek/deepseek-chat:free@openrouter")
+  })
+
+  it("includes an inferenceProvider pin with no route suffix when route === vendor", () => {
+    const ref: ModelRef = {
+      raw: "meta-llama/Llama-3.1-8B:cerebras",
+      vendor: "meta-llama",
+      product: "Llama-3.1-8B",
+      route: "meta-llama",
+      inferenceProvider: "cerebras",
+    }
+    expect(formatModelRef(ref)).toBe("meta-llama/Llama-3.1-8B:cerebras")
+  })
+
+  it("round-trips through parseModelRef (idempotent)", () => {
+    const original = "meta-llama/Llama-3.1-8B:cerebras@huggingface"
+    const ref = parseModelRef(original)
+    expect(formatModelRef(ref)).toBe(original)
+    expect(parseModelRef(formatModelRef(ref))).toEqual(ref)
   })
 })
 
@@ -255,6 +378,56 @@ describe("resolveLlmModelRoute", () => {
     expect(route).toBeDefined()
     expect(route!.vendor).toBe("anthropic")
     expect(route!.route).toBe("openrouter")
+  })
+
+  // "google/gemma-4-31B-it" (real committed snapshot row, verified
+  // 2026-07-18): 5 live providers — novita/together/deepinfra priced +
+  // context 262144, cerebras/featherless-ai live but sparse (no
+  // pricing/context at all).
+  describe("HuggingFace route", () => {
+    it("prices from the cheapest live provider when no inferenceProvider pin is given", () => {
+      const route = resolveLlmModelRoute("google/gemma-4-31B-it@huggingface")
+      expect(route).toBeDefined()
+      expect(route!.route).toBe("huggingface")
+      expect(route!.transport).toEqual({
+        flavor: "openai",
+        baseUrl: "https://router.huggingface.co/v1",
+      })
+      expect(route!.pricing.provider).toBe("huggingface")
+      expect(route!.pricing.vendor).toBe("google")
+      // deepinfra (0.13 + 0.38 = 0.51) undercuts novita (0.54) and together (1.36).
+      expect(route!.pricing.inputPer1M).toBe(0.13)
+      expect(route!.pricing.outputPer1M).toBe(0.38)
+      expect(route!.limits.contextWindow).toBe(262144)
+    })
+
+    it("prices from the pinned inferenceProvider when the pin is a priced provider", () => {
+      const route = resolveLlmModelRoute("google/gemma-4-31B-it:novita@huggingface")
+      expect(route).toBeDefined()
+      expect(route!.pricing.inputPer1M).toBe(0.14)
+      expect(route!.pricing.outputPer1M).toBe(0.4)
+      expect(route!.limits.contextWindow).toBe(262144)
+    })
+
+    it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
+      // cerebras is live but carries no pricing/context_length for this model.
+      const route = resolveLlmModelRoute("google/gemma-4-31B-it:cerebras@huggingface")
+      expect(route).toBeDefined()
+      expect(route!.pricing.provider).toBe("huggingface")
+      expect(route!.limits.contextWindow).toBeUndefined()
+    })
+
+    it("returns undefined when the pinned inferenceProvider does not serve the model", () => {
+      const route = resolveLlmModelRoute("google/gemma-4-31B-it:groq@huggingface")
+      expect(route).toBeUndefined()
+    })
+
+    it("returns undefined for an unknown HuggingFace model", () => {
+      const route = resolveLlmModelRoute(
+        "totally-unknown-org/totally-unknown-model@huggingface"
+      )
+      expect(route).toBeUndefined()
+    })
   })
 })
 
