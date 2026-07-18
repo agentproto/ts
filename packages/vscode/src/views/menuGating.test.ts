@@ -65,6 +65,32 @@ describe("sessions view menu gating", () => {
     expect(onLive).not.toContain("agentproto.restartSession")
   })
 
+  it("offers Archive only on a finished (non-archived) session, never on a live/awaiting one", () => {
+    const onDone = sessionMenus.filter(m => admits(m.when, "session-done")).map(m => m.command)
+    expect(onDone).toContain("agentproto.archiveSession")
+
+    for (const contextValue of ["session-live", "session-awaiting", "session-pending"] as const) {
+      const offered = sessionMenus.filter(m => admits(m.when, contextValue)).map(m => m.command)
+      expect(offered).not.toContain("agentproto.archiveSession")
+    }
+  })
+
+  it("never offers Unarchive on any of the four base contextValues — it only matches the tree's `-archived`-suffixed value, which contextValueFor never produces", () => {
+    // treeContextValueFor (sessionsTree.logic.ts) is what actually appends
+    // "-archived" onto an archived row's contextValue at render time — the
+    // base SessionContextValue enum this test iterates never carries it, so
+    // Unarchive correctly shows up nowhere here.
+    for (const contextValue of [
+      "session-pending",
+      "session-live",
+      "session-awaiting",
+      "session-done",
+    ] as const) {
+      const offered = sessionMenus.filter(m => admits(m.when, contextValue)).map(m => m.command)
+      expect(offered).not.toContain("agentproto.unarchiveSession")
+    }
+  })
+
   it("names every state it admits, so a new contextValue can't fall in by accident", () => {
     // An unanchored /^session-/ is what let `session-pending` through. Any
     // regex here must be anchored at both ends.

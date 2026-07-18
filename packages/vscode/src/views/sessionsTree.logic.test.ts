@@ -19,7 +19,9 @@ import {
   relativeTime,
   silentForMs,
   tooltipFieldsFor,
+  treeContextValueFor,
   TREE_REPAINT_INTERVAL_MS,
+  withArchivedTag,
   type SeparatorNode,
   type SessionNode,
   type TreeNode,
@@ -341,6 +343,31 @@ describe("contextValueFor", () => {
     expect(contextValueFor(session({ status: "exited" }))).toBe("session-done")
     expect(contextValueFor(session({ status: "killed" }))).toBe("session-done")
     expect(contextValueFor(session({ status: "error" }))).toBe("session-done")
+  })
+})
+
+describe("treeContextValueFor", () => {
+  it("matches contextValueFor unsuffixed when not archived", () => {
+    expect(treeContextValueFor(session({ status: "exited" }))).toBe("session-done")
+    expect(treeContextValueFor(session({ status: "running" }))).toBe("session-live")
+  })
+  it("suffixes -archived when archived — package.json's menu `when` clauses tolerate this on every terminal-session action except archive/unarchive themselves", () => {
+    expect(treeContextValueFor(session({ status: "exited", archived: true }))).toBe(
+      "session-done-archived",
+    )
+  })
+})
+
+describe("withArchivedTag", () => {
+  it("passes the description through unchanged when not archived", () => {
+    expect(withArchivedTag("ws · 2h ago", false)).toBe("ws · 2h ago")
+    expect(withArchivedTag("ws · 2h ago", undefined)).toBe("ws · 2h ago")
+  })
+  it("appends an archived tag to a non-empty description", () => {
+    expect(withArchivedTag("ws · 2h ago", true)).toBe("ws · 2h ago · archived")
+  })
+  it("falls back to bare 'archived' when there's nothing else to show", () => {
+    expect(withArchivedTag("", true)).toBe("archived")
   })
 })
 

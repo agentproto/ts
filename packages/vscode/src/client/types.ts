@@ -61,6 +61,11 @@ export interface SessionDescriptor {
   /** Derived from the session's FIRST prompt — see the runtime's
    *  SessionDescriptor.title doc for the derivation + overwrite rules. */
   title?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.archived — housekeeping
+   *  flag hiding the row from the daemon's default `list()` view (and so
+   *  from `listSessions()` here too, unless `includeArchived` is passed).
+   *  Set/cleared via `session_archive`/`session_unarchive`. */
+  archived?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]

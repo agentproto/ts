@@ -238,15 +238,30 @@ export function registerSessionTools(
         .enum(["starting", "running", "exited", "killed", "error"])
         .optional()
         .describe("Filter by exact status (overrides onlyAlive)."),
+      includeArchived: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, also include archived sessions (hidden from every " +
+            "other view by `session_archive`). Default false.",
+        ),
     },
     async input => {
-      let rows = registry.list()
+      // Always pull the FULL list (archived included) — subtree scoping
+      // below needs every row to keep the parent→child graph connected
+      // (an archived ancestor excluded from the base list would silently
+      // orphan its non-archived descendants from `collectSubtree`'s BFS).
+      // The archived-hide is applied afterwards, per `input.includeArchived`.
+      let rows = registry.list({ includeArchived: true })
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator only sees the sessions in its own subtree, never
       // the whole daemon.
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
+      }
+      if (!input.includeArchived) {
+        rows = rows.filter(s => !s.archived)
       }
       if (input.kind && input.kind !== "all") {
         rows = rows.filter(s => s.kind === input.kind)
@@ -298,9 +313,14 @@ export function registerSessionTools(
         }
       }
       // Subtree scoping (WP4): mirror session_restart — a scoped orchestrator
-      // only sees usage for sessions in its own subtree.
+      // only sees usage for sessions in its own subtree. Full list
+      // (includeArchived) so an archived ancestor doesn't sever the
+      // parent→child graph collectSubtree's BFS walks.
       if (callerScope) {
-        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
         if (!subtree.has(desc.id)) {
           return {
             content: [
@@ -351,11 +371,15 @@ export function registerSessionTools(
         .describe("Filter by exact status (overrides onlyAlive)."),
     },
     async input => {
-      let rows = registry.list()
+      // Full list (includeArchived) for subtree correctness — see
+      // session_list's docblock; archived rows are hidden below,
+      // unconditionally (this tool has no includeArchived opt-in).
+      let rows = registry.list({ includeArchived: true })
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
       }
+      rows = rows.filter(s => !s.archived)
       const kind = input.kind ?? "terminal"
       if (kind !== "all") {
         rows = rows.filter(s => s.kind === kind)
@@ -398,11 +422,15 @@ export function registerSessionTools(
         .describe("Filter by exact status (overrides onlyAlive)."),
     },
     async input => {
-      let rows = registry.list()
+      // Full list (includeArchived) for subtree correctness — see
+      // session_list's docblock; archived rows are hidden below,
+      // unconditionally (this tool has no includeArchived opt-in).
+      let rows = registry.list({ includeArchived: true })
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
       }
+      rows = rows.filter(s => !s.archived)
       const kind = input.kind ?? "command"
       if (kind !== "all") {
         rows = rows.filter(s => s.kind === kind)
@@ -772,12 +800,16 @@ export function registerSessionTools(
         ),
     },
     async input => {
-      let rows = registry.list()
+      // Full list (includeArchived) for subtree correctness — see
+      // session_list's docblock; archived rows are hidden below,
+      // unconditionally (this tool has no includeArchived opt-in).
+      let rows = registry.list({ includeArchived: true })
       // Subtree scoping (WP5 / WP4): same gate as session_list.
       if (callerScope) {
         const subtree = collectSubtree(callerScope.ownerSessionId, rows)
         rows = rows.filter(s => subtree.has(s.id))
       }
+      rows = rows.filter(s => !s.archived)
       if (input.onlyAlive) {
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
@@ -878,9 +910,14 @@ export function registerSessionTools(
         }
       }
       // Subtree scoping (WP4): mirrors agent_kill — a child orchestrator
-      // may only restart sessions it (transitively) spawned.
+      // may only restart sessions it (transitively) spawned. Full list
+      // (includeArchived) so an archived ancestor doesn't sever the
+      // parent→child graph collectSubtree's BFS walks.
       if (callerScope) {
-        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list())
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
         if (!subtree.has(prev.id)) {
           return {
             content: [
@@ -1013,6 +1050,159 @@ export function registerSessionTools(
             {
               type: "text",
               text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── session_archive / session_unarchive ─────────────────────────
+  // Pure housekeeping over `SessionDescriptor.archived` — no daemon
+  // consequence, unlike every other verb above. `archiveSession` carries
+  // its own terminal-status guard (sessions.ts), so this handler's job is
+  // just lookup + subtree scoping + translating the thrown error.
+  server.tool(
+    "session_archive",
+    "Archive a terminal-status session (exited/killed/error) so it drops " +
+      "out of `session_list`'s / `GET /sessions`'s default view — a " +
+      "housekeeping flag, not a daemon action: the session's history and " +
+      "transcript are untouched and stay fully readable (`session_usage`, " +
+      "`agent_export`, or `session_list({ includeArchived: true })`). " +
+      "Refuses a still-alive session (running/starting) — archiving one " +
+      "would hide it from view while it keeps working unattended. Use " +
+      "`session_unarchive` to restore visibility.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe(
+          "Session id or name to archive — from `session_list`, must be terminal-status."
+        ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_restart — a scoped
+      // orchestrator may only archive sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_archive: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only archive sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.archiveSession(prev.id)
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_archive: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  server.tool(
+    "session_unarchive",
+    "Restore an archived session to `session_list`'s default view — the " +
+      "inverse of `session_archive`. No status guard: archiving never " +
+      "touches daemon state, so there is nothing to re-validate — any " +
+      "archived session can be unarchived at any time.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe(
+          "Session id or name to unarchive — find it via " +
+            "`session_list({ includeArchived: true })`."
+        ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_archive.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_unarchive: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only unarchive sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const desc = registry.unarchiveSession(prev.id)
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_unarchive: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

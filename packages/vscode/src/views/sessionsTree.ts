@@ -32,14 +32,15 @@ import type { SessionStore } from "../services/sessionStore.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
   buildSessionRows,
-  contextValueFor,
   descriptionFor,
   formatDuration,
   iconFor,
   labelFor,
   silentForMs,
   tooltipFieldsFor,
+  treeContextValueFor,
   TREE_REPAINT_INTERVAL_MS,
+  withArchivedTag,
   type SeparatorNode,
   type SessionNode,
   type TreeNode,
@@ -123,14 +124,21 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
         : vscode.TreeItemCollapsibleState.None
     const item = new vscode.TreeItem(labelFor(session), collapsibleState)
     item.id = session.id
-    item.description = descriptionFor(session, {
+    const baseDescription = descriptionFor(session, {
       workspaceLabel: workspaceLabelFor(this.filter.workspaces, session),
       now: this.now,
       childCount: element.children.length,
     })
-    item.contextValue = contextValueFor(session)
+    // Archived rows only ever reach the tree when the "show archived"
+    // toggle is on (the daemon's default list() already excludes them) —
+    // visually distinct so they read as "kept around, not currently in
+    // view" rather than a normal terminal session.
+    item.description = withArchivedTag(baseDescription, session.archived)
+    item.contextValue = treeContextValueFor(session)
     item.tooltip = buildTooltip(session, this.now)
-    item.iconPath = toThemeIcon(iconFor(session, this.now, this.seen.isUnread(session)))
+    item.iconPath = session.archived
+      ? new vscode.ThemeIcon("archive")
+      : toThemeIcon(iconFor(session, this.now, this.seen.isUnread(session)))
     // Single click opens the transcript — the inline $(open-preview) icon
     // (view/item/context menu, wired in package.json) remains as a second
     // way to trigger the same command.

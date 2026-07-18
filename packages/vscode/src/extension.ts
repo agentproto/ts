@@ -16,6 +16,7 @@ import {
   registerSessionActions,
   resolveSessionArg,
 } from "./commands/sessionActions.js"
+import { registerSessionArchive } from "./commands/sessionArchive.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
 import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
@@ -68,6 +69,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
   registerPermissionCommands(ctx, client, store)
   registerSessionRestart(ctx, client, store) // agentproto.restartSession
+  registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
@@ -78,6 +80,18 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("agentproto.refresh", () =>
       store.refreshAll(),
     ),
+    // Simple toggle, not full filter-infra integration (SessionFilterState's
+    // shape is frozen — see sessionFilter.logic.ts) — flips the store's
+    // archived-visibility flag, which re-fetches from the daemon with
+    // `includeArchived` and repaints the tree with the newly-visible
+    // (dimmed, $(archive)-iconed) rows.
+    vscode.commands.registerCommand("agentproto.toggleShowArchived", () => {
+      store.setShowArchived(!store.showArchived)
+      vscode.window.setStatusBarMessage(
+        `agentproto: archived sessions ${store.showArchived ? "shown" : "hidden"}`,
+        3000,
+      )
+    }),
     vscode.commands.registerCommand(
       "agentproto.openTranscript",
       async (arg: unknown) => {
