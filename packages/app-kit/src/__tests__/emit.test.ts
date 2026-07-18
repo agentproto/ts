@@ -8,20 +8,33 @@ import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { defineApp } from "../define-app.js"
 
-const systemPrompt =
+const reviewerBody =
   "You are a rigorous reviewer.\nReport findings. Change nothing.\nNever run gh pr merge."
 
 function buildApp() {
   return defineApp({
-    agent: defineAgent({
-      schema: "agent/v1",
-      id: "@agentik/reviewer",
-      description: "A PR reviewer agent bundled with its review workflow.",
-      model: "claude-sonnet-5",
-      boundaries: ["Never run gh pr merge"],
-      workflows: [{ ref: "review-and-fix" }],
-    }),
-    systemPrompt,
+    agents: [
+      {
+        agent: defineAgent({
+          schema: "agent/v1",
+          id: "@agentik/reviewer",
+          description: "A PR reviewer bundled with its review workflow.",
+          model: "claude-sonnet-5",
+          boundaries: ["Never run gh pr merge"],
+          workflows: [{ ref: "review-and-fix" }],
+        }),
+        body: reviewerBody,
+      },
+      {
+        agent: defineAgent({
+          schema: "agent/v1",
+          id: "fixer",
+          description: "Applies a fix (no body — prompt composes).",
+          model: "claude-sonnet-5",
+          workflows: [{ ref: "review-and-fix" }],
+        }),
+      },
+    ],
     workflows: [
       defineWorkflow({
         id: "review-and-fix",
@@ -48,24 +61,30 @@ describe("emit — manifests round-trip through the loaders", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("writes AGENT.md whose body is the system prompt and frontmatter re-parses", async () => {
+  it("writes one AGENT.md per agent, body = the system prompt, frontmatter re-parses", async () => {
     const app = buildApp()
-    const { agentPath, workflowPaths } = await app.emit(dir)
+    const { agentPaths, workflowPaths } = await app.emit(dir)
 
-    expect(agentPath).toMatch(/\.agents\/reviewer\/AGENT\.md$/)
+    expect(Object.keys(agentPaths).sort()).toEqual(["@agentik/reviewer", "fixer"])
+    expect(agentPaths["@agentik/reviewer"]).toMatch(/\.agents\/reviewer\/AGENT\.md$/)
     expect(workflowPaths).toHaveLength(1)
 
-    const raw = await readFile(agentPath, "utf8")
-    const parsed = parseAgentManifest(raw)
-    expect(parsed.frontmatter.id).toBe("@agentik/reviewer")
-    expect(parsed.frontmatter.schema).toBe("agent/v1")
+    const reviewer = parseAgentManifest(await readFile(agentPaths["@agentik/reviewer"]!, "utf8"))
+    expect(reviewer.frontmatter.id).toBe("@agentik/reviewer")
+    expect(reviewer.frontmatter.schema).toBe("agent/v1")
     // The AGENT.md body IS the system prompt (AIP-42).
-    expect(parsed.body.trim()).toBe(systemPrompt.trim())
+    expect(reviewer.body.trim()).toBe(reviewerBody.trim())
+
+    // The body-less agent emits an empty body and still re-parses.
+    const fixer = parseAgentManifest(await readFile(agentPaths["fixer"]!, "utf8"))
+    expect(fixer.frontmatter.id).toBe("fixer")
+    expect(fixer.body.trim()).toBe("")
   })
 
-  it("writes a WORKFLOW.md that loadWorkflowHandle resolves with matching steps", async () => {
+  it("writes a shared WORKFLOW.md that loadWorkflowHandle resolves with matching steps", async () => {
     const app = buildApp()
     const { workflowPaths } = await app.emit(dir)
+    expect(workflowPaths[0]).toMatch(/workflows\/review-and-fix\/WORKFLOW\.md$/)
 
     const handle = await loadWorkflowHandle(workflowPaths[0]!)
     expect(handle.id).toBe("review-and-fix")

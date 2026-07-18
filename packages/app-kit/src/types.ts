@@ -1,68 +1,99 @@
 /**
  * Types for `@agentproto/app-kit`.
  *
- * An "app" is the smallest shippable unit that couples an AIP-42 agent
- * (its system prompt included) with the AIP-15 workflows it runs. The
- * agent and workflows are authored with the existing `defineAgent` /
- * `defineWorkflow` — app-kit only bundles + cross-links them and gives
- * you two ways out: a runnable Mastra agent, or emitted manifests.
+ * An "app" is the smallest shippable unit that couples one or more AIP-42
+ * agents with the AIP-15 workflows they run — plus any other AIP artifacts
+ * you want to ride along (an AIP-6 company, AIP-25 personas, AIP-47 roles,
+ * policies…). The agents and workflows are authored with the existing
+ * `defineAgent` / `defineWorkflow`; app-kit bundles + cross-links them.
+ *
+ * On the system prompt: there is no `systemPrompt` field anywhere in AIP.
+ * The prompt is the free-text BODY of an AGENT.md (AIP-42) — frontmatter is
+ * `.strict()` and holds only metadata. So each agent carries an optional
+ * `body`; when omitted the prompt composes from the agent's persona /
+ * boundaries / traits (`composeInstructions` falls back to `description`),
+ * the same way Guilde assembles an operator's prompt from AIP-47 role
+ * instructions + AIP-25 persona rather than a stored string.
  */
 
 import type { AgentHandle } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
-import type { BuildMastraAgentOptions } from "@agentproto/mastra"
+import type { BuildMastraAgentResult, BuildMastraAgentOptions } from "@agentproto/mastra"
 
 /**
- * Input to `defineApp`. `agent` and each `workflows[]` entry are
- * already-validated handles from `defineAgent` / `defineWorkflow`.
- * `systemPrompt` is the AGENT.md body (AIP-42: the body is the system
- * prompt) — carried explicitly because there is no `.md` file in the
- * TS-authoring path to read it from.
+ * An agent paired with the prose that becomes its system prompt. `body`
+ * is the AGENT.md body (AIP-42) — the only place free-text instructions
+ * live. Optional: omit it to let the prompt compose from the agent's
+ * structured fields.
  */
-export interface AppDefinition {
+export interface AgentEntry {
   readonly agent: AgentHandle
-  /** The AGENT.md body / system prompt. */
-  readonly systemPrompt: string
-  readonly workflows?: readonly WorkflowHandle[]
+  /** The AGENT.md body / system prompt. Optional — composed if absent. */
+  readonly body?: string
 }
 
 /**
- * Options for `AppHandle.toMastraAgent`. Same resolvers as
- * `buildMastraAgent`, minus `body` — app-kit injects `systemPrompt`
- * as the body (pass `body` here only to override it).
+ * Structural view of any AIP doctype handle (agent, company, persona,
+ * role, policy…). Every `defineX` handle has a stable `id`; `schema`
+ * carries the doctype literal when the doctype declares one. Kept
+ * structural so an app can `attach` any AIP artifact without app-kit
+ * depending on each doctype package.
  */
+export interface DoctypeHandle {
+  readonly id: string
+  readonly schema?: string
+}
+
+/**
+ * Input to `defineApp`. Each `agents[]` entry is an already-validated
+ * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
+ */
+export interface AppDefinition {
+  readonly agents: readonly (AgentEntry | AgentHandle)[]
+  readonly workflows?: readonly WorkflowHandle[]
+  /** Any other AIP handles to carry with the app (AIP-6/25/47/…). */
+  readonly attach?: readonly DoctypeHandle[]
+}
+
+/** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
 export type ToMastraAgentOptions = BuildMastraAgentOptions
 
 /** Paths written by `AppHandle.emit`. */
 export interface EmittedApp {
-  /** Absolute path to the written `.agents/<id>/AGENT.md`. */
-  readonly agentPath: string
+  /** Absolute paths to the written `AGENT.md` files, keyed by agent id. */
+  readonly agentPaths: Readonly<Record<string, string>>
   /** Absolute paths to the written `WORKFLOW.md` files, in input order. */
   readonly workflowPaths: readonly string[]
 }
 
 /**
- * The frozen result of `defineApp`. Carries the cross-linked agent +
- * workflows and the two consumption paths.
+ * The frozen result of `defineApp`. Carries the cross-linked agents +
+ * workflows + attachments and the two consumption paths.
  */
 export interface AppHandle {
-  readonly agent: AgentHandle
-  readonly systemPrompt: string
+  readonly agents: readonly AgentEntry[]
   readonly workflows: readonly WorkflowHandle[]
+  readonly attachments: readonly DoctypeHandle[]
 
   /**
-   * Build a runnable Mastra agent whose `instructions` field is the
-   * real system prompt (AGENT.md body → `composeInstructions`). Thin
-   * wrap of `buildMastraAgent(agent, { body: systemPrompt, ...opts })`.
+   * Build every agent into a runnable Mastra agent whose `instructions`
+   * field is the real system prompt (body → `composeInstructions`).
+   * Keyed by agent id.
    */
-  toMastraAgent(
+  toMastraAgents(
     opts: ToMastraAgentOptions,
-  ): ReturnType<typeof import("@agentproto/mastra").buildMastraAgent>
+  ): Promise<Record<string, BuildMastraAgentResult>>
 
   /**
-   * Write `.agents/<id>/AGENT.md` + one `WORKFLOW.md` per workflow
-   * under `dir`, in the layout the daemon / `agentproto-run` lane
-   * loads. Returns the written paths.
+   * Single-agent convenience. Throws if the app has zero or more than
+   * one agent — use `toMastraAgents` for multi-agent apps.
+   */
+  toMastraAgent(opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult>
+
+  /**
+   * Write one `AGENT.md` per agent + one shared `WORKFLOW.md` per
+   * workflow under `dir`, in the layout the daemon / `agentproto-run`
+   * lane load. Returns the written paths.
    */
   emit(dir: string): Promise<EmittedApp>
 }

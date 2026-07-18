@@ -3,13 +3,11 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { defineApp, AppDefinitionError } from "../define-app.js"
 
-const systemPrompt = "You are a rigorous reviewer. Report findings, change nothing."
-
-function reviewer(workflows: { ref: string }[] = [{ ref: "review-and-fix" }]) {
+function agent(id: string, workflows: { ref: string }[] = [{ ref: "review-and-fix" }]) {
   return defineAgent({
     schema: "agent/v1",
-    id: "@agentik/reviewer",
-    description: "A PR reviewer agent bundled with its review workflow.",
+    id,
+    description: `Agent ${id} bundled with its workflow.`,
     model: "claude-sonnet-5",
     workflows,
   })
@@ -27,74 +25,91 @@ function reviewWorkflow(id = "review-and-fix") {
   })
 }
 
-describe("defineApp — attachment invariant", () => {
-  it("builds a frozen handle when agent ⇄ workflows match exactly", () => {
+describe("defineApp — multi-agent + attachment invariant", () => {
+  it("builds a frozen handle when agents ⇄ workflows match", () => {
     const app = defineApp({
-      agent: reviewer(),
-      systemPrompt,
+      agents: [
+        { agent: agent("@agentik/reviewer"), body: "You review." },
+        { agent: agent("@agentik/fixer") }, // body optional
+      ],
       workflows: [reviewWorkflow()],
     })
-    expect(app.agent.id).toBe("@agentik/reviewer")
-    expect(app.systemPrompt).toBe(systemPrompt)
-    expect(app.workflows).toHaveLength(1)
+    expect(app.agents).toHaveLength(2)
+    expect(app.agents[0]!.body).toBe("You review.")
+    expect(app.agents[1]!.body).toBeUndefined()
     expect(Object.isFrozen(app)).toBe(true)
-    expect(Object.isFrozen(app.workflows)).toBe(true)
+    expect(Object.isFrozen(app.agents)).toBe(true)
   })
 
-  it("accepts an app with no workflows and no workflow refs", () => {
+  it("accepts a bare AgentHandle in agents[] (no body)", () => {
     const app = defineApp({
-      agent: reviewer([]),
-      systemPrompt,
+      agents: [agent("solo", [])],
     })
-    expect(app.workflows).toHaveLength(0)
+    expect(app.agents).toHaveLength(1)
+    expect(app.agents[0]!.agent.id).toBe("solo")
   })
 
-  it("throws when the agent references a workflow the app does not bundle", () => {
+  it("carries attachments (any AIP handle) verbatim", () => {
+    const company = { id: "acme", schema: "agentcompanies/v1" }
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      attach: [company],
+    })
+    expect(app.attachments).toEqual([company])
+  })
+
+  it("throws on an empty agents array", () => {
+    expect(() => defineApp({ agents: [] })).toThrow(AppDefinitionError)
+  })
+
+  it("throws on a duplicate agent id", () => {
+    expect(() =>
+      defineApp({ agents: [agent("dup", []), agent("dup", [])] }),
+    ).toThrow(/duplicate agent id/i)
+  })
+
+  it("throws when an agent references a workflow the app does not bundle", () => {
     expect(() =>
       defineApp({
-        agent: reviewer([{ ref: "ghost-workflow" }]),
-        systemPrompt,
+        agents: [{ agent: agent("rev", [{ ref: "ghost" }]) }],
         workflows: [reviewWorkflow()],
       }),
     ).toThrow(AppDefinitionError)
   })
 
-  it("throws when a bundled workflow is not listed by the agent (orphan)", () => {
+  it("throws when a bundled workflow is referenced by no agent (orphan)", () => {
     expect(() =>
       defineApp({
-        agent: reviewer([]),
-        systemPrompt,
+        agents: [agent("rev", [])],
         workflows: [reviewWorkflow()],
       }),
-    ).toThrow(/orphan|does not list/i)
+    ).toThrow(/no agent lists it/i)
   })
 
-  it("throws on a duplicate workflow id in the bundle", () => {
-    expect(() =>
-      defineApp({
-        agent: reviewer([{ ref: "review-and-fix" }]),
-        systemPrompt,
-        workflows: [reviewWorkflow(), reviewWorkflow()],
-      }),
-    ).toThrow(/duplicate/i)
-  })
-
-  it("requires a non-empty systemPrompt", () => {
-    expect(() =>
-      defineApp({ agent: reviewer([]), systemPrompt: "" }),
-    ).toThrow(AppDefinitionError)
+  it("accepts a workflow referenced by only one of several agents", () => {
+    const app = defineApp({
+      agents: [
+        { agent: agent("rev", [{ ref: "review-and-fix" }]) },
+        { agent: agent("bystander", []) },
+      ],
+      workflows: [reviewWorkflow()],
+    })
+    expect(app.workflows).toHaveLength(1)
   })
 
   it("matches string and { ref } workflow refs by the same key", () => {
     const app = defineApp({
-      agent: defineAgent({
-        schema: "agent/v1",
-        id: "@agentik/reviewer",
-        description: "Uses a bare-string workflow ref.",
-        model: "claude-sonnet-5",
-        workflows: ["review-and-fix"],
-      }),
-      systemPrompt,
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "reviewer",
+            description: "Uses a bare-string workflow ref.",
+            model: "claude-sonnet-5",
+            workflows: ["review-and-fix"],
+          }),
+        },
+      ],
       workflows: [reviewWorkflow()],
     })
     expect(app.workflows[0]!.id).toBe("review-and-fix")

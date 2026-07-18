@@ -1,12 +1,12 @@
 # @agentproto/app-kit
 
-Declare an **agent** (with its system prompt) and the **workflows** it runs in
-one TypeScript module, then import them anywhere.
+Declare one or more **agents** (with their system prompts) and the **workflows**
+they run in one TypeScript module, then import them anywhere.
 
 A thin umbrella over AIP-42 [`defineAgent`](../agent) + AIP-15
 [`defineWorkflow`](../workflow). It doesn't re-validate their fields — those ran
 when you built the handles — it validates the *coupling* and gives you two ways
-to consume the bundle: a runnable Mastra agent, or emitted `.md` manifests.
+to consume the bundle: runnable Mastra agents, or emitted `.md` manifests.
 
 ```ts
 import { defineApp } from "@agentproto/app-kit"
@@ -14,15 +14,22 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 
 export const reviewApp = defineApp({
-  agent: defineAgent({
-    schema: "agent/v1",
-    id: "@agentik/reviewer",
-    description: "Reviews a PR diff and reports findings.",
-    model: "claude-sonnet-5",
-    boundaries: ["Never run gh pr merge", "No AI attribution in commits"],
-    workflows: [{ ref: "review-and-fix" }], // ← must match a bundled workflow
-  }),
-  systemPrompt: `You are a rigorous PR reviewer. Report findings; change nothing.`,
+  agents: [
+    {
+      agent: defineAgent({
+        schema: "agent/v1",
+        id: "@agentik/reviewer",
+        description: "Reviews a PR diff and reports findings.",
+        model: "claude-sonnet-5",
+        boundaries: ["Never run gh pr merge"],
+        workflows: [{ ref: "review-and-fix" }], // ← must match a bundled workflow
+      }),
+      body: `You are a rigorous PR reviewer. Report findings; change nothing.`,
+    },
+    // body optional — omit it and the prompt composes from the agent's
+    // persona / boundaries / traits.
+    { agent: defineAgent({ schema: "agent/v1", id: "fixer", description: "Applies fixes.", model: "claude-sonnet-5", workflows: [{ ref: "review-and-fix" }] }) },
+  ],
   workflows: [
     defineWorkflow({
       id: "review-and-fix",
@@ -34,51 +41,65 @@ export const reviewApp = defineApp({
       steps: [{ id: "review", kind: "tool", tool: "read_diff" }],
     }),
   ],
+  attach: [ /* any AIP handle: AIP-6 company, AIP-25 persona, AIP-47 role, policy… */ ],
 })
 ```
+
+## Where is the system prompt? — it's the `body`
+
+There is **no `systemPrompt` field anywhere in AIP**. An AGENT.md is
+*frontmatter (metadata) + body (the prompt)*, and the frontmatter schema is
+`.strict()` — so `defineAgent` structurally cannot hold prose. The prompt is the
+**body**, and it's optional: omit it and the prompt composes from the agent's
+`persona` (AIP-25), `boundaries`, and `traits` — the same way Guilde assembles an
+operator's prompt from AIP-47 role instructions + persona rather than a stored
+string. `composeInstructions` (in [`@agentproto/mastra`](../mastra)) is the
+assembler.
 
 ## The attachment invariant
 
-`defineApp` enforces a bijection between `agent.workflows[]` and the bundled
-workflows: every ref the agent lists must be bundled, and every bundled workflow
-must be listed. A dangling ref or an orphan workflow throws `AppDefinitionError`.
-That coupling is what "an agent attached to its workflows" means, made checkable
-at construction.
+`defineApp` enforces the coupling: agent ids are unique; every `agent.workflows[]`
+ref must resolve to a bundled workflow; every bundled workflow must be referenced
+by at least one agent. A dangling ref or an orphan workflow throws
+`AppDefinitionError`. `attach` carries any other AIP handle verbatim (structural
+`{ id }`), so a company, persona, or role rides along without app-kit depending
+on each doctype package.
 
 ## Consuming a bundle
 
-### `handle.toMastraAgent(resolvers)` — run it
+### `handle.toMastraAgents(resolvers)` — run them
 
-Turns the AGENT.md **body (your `systemPrompt`) into a real Mastra `instructions`
-field** via [`@agentproto/mastra`](../mastra). You supply the resolvers (model,
-tools, memory…); app-kit injects the system prompt as the body.
+Builds every agent, keyed by id, turning each `body` into a **real Mastra
+`instructions` field** via [`@agentproto/mastra`](../mastra). You supply the
+resolvers (model, tools, memory…).
 
 ```ts
-const { agent, instructions } = await reviewApp.toMastraAgent({
-  resolveModel: (ref) => myModelRegistry.resolve(ref),
-})
+const built = await reviewApp.toMastraAgents({ resolveModel: (ref) => registry.resolve(ref) })
+built["@agentik/reviewer"].agent   // a runnable Mastra Agent
 ```
 
-`@mastra/core` is a **peer dependency** — install it in the host if you call
-`toMastraAgent`. `emit` has no Mastra dependency.
+`handle.toMastraAgent(resolvers)` is a convenience for single-agent apps (throws
+if the app has more than one). `@mastra/core` is a **peer dependency** — install
+it in the host if you call either. `emit` has no Mastra dependency.
 
-### `handle.emit(dir)` — ship it
+### `handle.emit(dir)` — ship them
 
 Writes the manifests the daemon and the `agentproto-run` CI lane load:
 
 ```
 <dir>/.agents/reviewer/AGENT.md
-<dir>/.agents/reviewer/workflows/review-and-fix/WORKFLOW.md
+<dir>/.agents/fixer/AGENT.md
+<dir>/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
 ```
 
-Both are plain markdown: frontmatter = the validated handle, body = the system
-prompt (AGENT.md) / description (WORKFLOW.md). Because a `defineWorkflow` handle
-is pure data, the `WORKFLOW.md` needs no `entry:` module — the manifest *is* the
-workflow, so `loadWorkflowHandle` returns it directly.
+Both are plain markdown: frontmatter = the validated handle, body = the agent's
+`body` (AGENT.md) / the workflow description (WORKFLOW.md). Because a
+`defineWorkflow` handle is pure data, the `WORKFLOW.md` needs no `entry:` module —
+the manifest *is* the workflow, so `loadWorkflowHandle` returns it directly.
 
 ## Runtime note
 
-`toMastraAgent` is the path where the system prompt becomes a **true** model
+`toMastraAgents` is the path where a `body` becomes a **true** model
 `instructions` field, because that wiring lives in the mastra adapter. The
 generic daemon session-spawn has no system-prompt field today (instructions ride
 in as prepended prompt text for CLI adapters), so an emitted AGENT.md reaches the

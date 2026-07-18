@@ -1,59 +1,92 @@
 import { describe, it, expect } from "vitest"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
-import { defineApp } from "../define-app.js"
+import { defineApp, AppDefinitionError } from "../define-app.js"
 
 // Fake AI-SDK-shaped model — Mastra accepts arbitrary objects on `model`
 // as long as they satisfy generate/stream at call time; we only construct.
 const fakeModel = { provider: "test", id: "test-model" }
 
-const systemPrompt = "You are a rigorous reviewer. Report findings; change nothing."
+const reviewerBody = "You are a rigorous reviewer. Report findings; change nothing."
 
-function buildApp() {
-  return defineApp({
-    agent: defineAgent({
-      schema: "agent/v1",
-      id: "@agentik/reviewer",
-      description: "A PR reviewer agent bundled with its review workflow.",
-      model: "claude-sonnet-5",
-      boundaries: ["Never run gh pr merge"],
-      workflows: [{ ref: "review-and-fix" }],
-    }),
-    systemPrompt,
-    workflows: [
-      defineWorkflow({
-        id: "review-and-fix",
-        name: "Review and fix",
-        description: "Read the diff, report findings.",
-        version: "0.1.0",
-        inputs: {},
-        outputs: {},
-        steps: [{ id: "review", kind: "tool", tool: "read_diff" }],
-      }),
-    ],
+function reviewWorkflow() {
+  return defineWorkflow({
+    id: "review-and-fix",
+    name: "Review and fix",
+    description: "Read the diff, report findings.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [{ id: "review", kind: "tool", tool: "read_diff" }],
   })
 }
 
-describe("toMastraAgent — the system prompt becomes real instructions", () => {
-  it("injects systemPrompt as the AGENT.md body → composed instructions", async () => {
-    const app = buildApp()
-    const result = await app.toMastraAgent({ resolveModel: () => fakeModel })
+function multiAgentApp() {
+  return defineApp({
+    agents: [
+      {
+        agent: defineAgent({
+          schema: "agent/v1",
+          id: "@agentik/reviewer",
+          description: "A PR reviewer.",
+          model: "claude-sonnet-5",
+          boundaries: ["Never run gh pr merge"],
+          workflows: [{ ref: "review-and-fix" }],
+        }),
+        body: reviewerBody,
+      },
+      {
+        agent: defineAgent({
+          schema: "agent/v1",
+          id: "fixer",
+          description: "Applies fixes.",
+          model: "claude-sonnet-5",
+          workflows: [{ ref: "review-and-fix" }],
+        }),
+      },
+    ],
+    workflows: [reviewWorkflow()],
+  })
+}
 
-    expect(result.agent).toBeDefined()
-    expect(result.agent.name).toBe("reviewer")
-    // systemPrompt (the AGENT.md body) leads the composed instructions.
-    expect(result.instructions).toContain(systemPrompt)
-    // boundaries fold in as hard rules.
-    expect(result.instructions).toContain("Never run gh pr merge")
+describe("toMastraAgents — each body becomes real instructions", () => {
+  it("builds every agent, keyed by id, with body → composed instructions", async () => {
+    const built = await multiAgentApp().toMastraAgents({ resolveModel: () => fakeModel })
+
+    expect(Object.keys(built).sort()).toEqual(["@agentik/reviewer", "fixer"])
+    // reviewer's body leads its instructions; boundaries fold in.
+    expect(built["@agentik/reviewer"]!.instructions).toContain(reviewerBody)
+    expect(built["@agentik/reviewer"]!.instructions).toContain("Never run gh pr merge")
+    // body-less fixer falls back to its description (composeInstructions).
+    expect(built["fixer"]!.instructions).toContain("Applies fixes.")
+    expect(built["@agentik/reviewer"]!.agent.name).toBe("reviewer")
   })
 
-  it("lets the caller override the body explicitly", async () => {
-    const app = buildApp()
-    const result = await app.toMastraAgent({
-      resolveModel: () => fakeModel,
-      body: "Overridden prompt body.",
+  it("toMastraAgent throws for a multi-agent app", async () => {
+    await expect(
+      multiAgentApp().toMastraAgent({ resolveModel: () => fakeModel }),
+    ).rejects.toThrow(AppDefinitionError)
+  })
+
+  it("toMastraAgent works for a single-agent app and honors a body override", async () => {
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "One agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: reviewerBody,
+        },
+      ],
     })
-    expect(result.instructions).toContain("Overridden prompt body.")
-    expect(result.instructions).not.toContain(systemPrompt)
+    const overridden = await app.toMastraAgent({
+      resolveModel: () => fakeModel,
+      body: "Overridden body.",
+    })
+    expect(overridden.instructions).toContain("Overridden body.")
+    expect(overridden.instructions).not.toContain(reviewerBody)
   })
 })
