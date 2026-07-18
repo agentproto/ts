@@ -503,6 +503,35 @@ jobs:
             echo "::error::Both reviewer lanes failed."
           fi
 
+      # Runs before the gate below (not just before status-posting) so a
+      # reviewer session that reported success but never actually called
+      # `gh pr review` can't slip through as a green "Agentic review" status.
+      # continue-on-error: a hard step failure here would skip every step
+      # after it (Commit changeset, the gate, and — worst of all — Post
+      # explicit statuses), leaving the PR half-statused instead of honestly
+      # red. The gate step below reads steps.verify.outputs.posted instead.
+      - name: Verify review was posted
+        id: verify
+        if: steps.prstate.outputs.skip != 'true' && steps.bypass.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The SHA captured right after checkout, before "Commit changeset"
+          # could have pushed a new commit and moved HEAD. The review was
+          # posted against *that* commit, not whatever HEAD is now.
+          SHA: ${{ steps.headsha.outputs.sha }}
+        run: |
+          REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
+          if [ "$REVIEWS" -eq 0 ]; then
+            echo "::error::No review was posted on PR #$PR_NUMBER for commit $SHA. The reviewer session finished but did not call gh pr review."
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "Review count for $SHA: $REVIEWS"
+          fi
+
       - name: Commit changeset (if written by reviewer)
         if: |
           steps.prstate.outputs.skip != 'true' &&
@@ -554,14 +583,19 @@ jobs:
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "blocking=$BLOCKING" >> "$GITHUB_OUTPUT"
           # Honest gate, in precedence:
-          #   bypassed            → success (local review vouched, reviewer skipped)
-          #   reviewer didn't post → failure (no false green — the #72 bug)
+          #   bypassed              → success (local review vouched, reviewer skipped)
+          #   reviewer didn't post   → failure (no false green — the #72 bug)
+          #   session said done but no review found → failure (see "Verify
+          #     review was posted" above — outcome=success doesn't mean it acted)
           #   CHANGES_REQUESTED + blocking → failure
-          #   else                → success
+          #   else                  → success
           if [ "$BYPASS" = "true" ]; then
             echo "state=success" >> "$GITHUB_OUTPUT"
           elif [ "$REVIEWER_OUTCOME" != "success" ]; then
             echo "::error::Agentic reviewer did not post a review (outcome=$REVIEWER_OUTCOME)."
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+          elif [ "$VERIFY_POSTED" != "true" ]; then
+            echo "::error::Reviewer session reported success but no review was found on the PR (see 'Verify review was posted')."
             echo "state=failure" >> "$GITHUB_OUTPUT"
           elif [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
             echo "state=failure" >> "$GITHUB_OUTPUT"
@@ -573,27 +607,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
-
-      - name: Verify review was posted
-        id: verify
-        if: steps.prstate.outputs.skip != 'true' && steps.bypass.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          # The SHA captured right after checkout, before "Commit changeset"
-          # could have pushed a new commit and moved HEAD. The review was
-          # posted against *that* commit, not whatever HEAD is now.
-          SHA: ${{ steps.headsha.outputs.sha }}
-        run: |
-          REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
-          if [ "$REVIEWS" -eq 0 ]; then
-            echo "::error::No review was posted on PR #$PR_NUMBER for commit $SHA. The reviewer session finished but did not call gh pr review."
-            echo "posted=false" >> "$GITHUB_OUTPUT"
-            exit 1
-          else
-            echo "posted=true" >> "$GITHUB_OUTPUT"
-            echo "Review count for $SHA: $REVIEWS"
-          fi
+          VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
