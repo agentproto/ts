@@ -18,6 +18,7 @@
 
 import type { AgentHandle } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
+import type { WorkspaceHandle, WorkspaceDefinition } from "@agentproto/workspace"
 import type { BuildMastraAgentResult, BuildMastraAgentOptions } from "@agentproto/mastra"
 
 /**
@@ -45,6 +46,31 @@ export interface DoctypeHandle {
 }
 
 /**
+ * Lightweight way to give an app a home workspace without hand-writing a
+ * full AIP-34 `defineWorkspace(...)`. `owner` is the tenant identity
+ * (guild / user / org — the tenant model AIP-34 already ships, not a folder
+ * segment); `storage` is the AIP-35 STORAGE block and defaults to local
+ * filesystem. `id` is the globally-addressable `@<owner-slug>/<workspace>`,
+ * whose owner segment MUST equal `owner.slug`.
+ */
+export interface WorkspaceShorthand {
+  readonly id: string
+  readonly name: string
+  readonly owner: WorkspaceDefinition["owner"]
+  /** AIP-35 STORAGE block. Defaults to `{ inline: { provider: "local-fs", config: {} } }`. */
+  readonly storage?: WorkspaceDefinition["storage"]
+  readonly version?: string
+  readonly description?: string
+}
+
+/**
+ * A home workspace for an app: either a full AIP-34 `WorkspaceHandle`
+ * (from `defineWorkspace`) or the `WorkspaceShorthand` above. Discriminated
+ * structurally — a built handle carries `schema: "workspace/v1"`.
+ */
+export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
+
+/**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
  */
@@ -53,6 +79,13 @@ export interface AppDefinition {
   readonly workflows?: readonly WorkflowHandle[]
   /** Any other AIP handles to carry with the app (AIP-6/25/47/…). */
   readonly attach?: readonly DoctypeHandle[]
+  /**
+   * Optional home workspace (AIP-34). When set, the app is content
+   * *inside* a workspace whose `owner` names the tenant and whose
+   * `storage` names the backing store — `emit` writes a root `WORKSPACE.md`
+   * alongside the agents. Omit for a workspace-less bundle.
+   */
+  readonly workspace?: WorkspaceInput
 }
 
 /** Options for `toMastraAgent(s)`. Same resolvers as `buildMastraAgent`. */
@@ -64,6 +97,8 @@ export interface EmittedApp {
   readonly agentPaths: Readonly<Record<string, string>>
   /** Absolute paths to the written `WORKFLOW.md` files, in input order. */
   readonly workflowPaths: readonly string[]
+  /** Absolute path to the root `WORKSPACE.md`, when the app has a workspace. */
+  readonly workspacePath?: string
 }
 
 /**
@@ -74,6 +109,8 @@ export interface AppHandle {
   readonly agents: readonly AgentEntry[]
   readonly workflows: readonly WorkflowHandle[]
   readonly attachments: readonly DoctypeHandle[]
+  /** The app's home workspace (AIP-34), normalized to a handle. Absent if none. */
+  readonly workspace?: WorkspaceHandle
 
   /**
    * Build every agent into a runnable Mastra agent whose `instructions`
@@ -91,9 +128,9 @@ export interface AppHandle {
   toMastraAgent(opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult>
 
   /**
-   * Write one `AGENT.md` per agent + one shared `WORKFLOW.md` per
-   * workflow under `dir`, in the layout the daemon / `agentproto-run`
-   * lane load. Returns the written paths.
+   * Write one `AGENT.md` per agent + one shared `WORKFLOW.md` per workflow
+   * under `<dir>/.agentproto/`, plus a root `<dir>/WORKSPACE.md` when the
+   * app has a `workspace`. Returns the written paths.
    */
   emit(dir: string): Promise<EmittedApp>
 }

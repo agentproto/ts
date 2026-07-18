@@ -22,6 +22,12 @@ import type { WorkspaceDefinition, WorkspaceHandle } from "./types.js"
 export const defineWorkspace = createDoctype<WorkspaceDefinition, WorkspaceHandle>({
   aip: 34,
   name: "workspace",
+  // AIP-34 ids are ALWAYS scoped `@<owner-slug>/<workspace-slug>` (see the
+  // `id` regex in schema.ts). The generic DEFAULT_ID_PATTERN is a bare kebab
+  // slug and rejects the `@`/`/`, so without this the constructDoctype id
+  // gate throws before validate() on every spec-compliant id. Mirror the
+  // schema pattern here so the two gates agree.
+  idPattern: /^@[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/,
   readDescription: (def) => def.name,
   validate(def) {
     const result = workspaceFrontmatterSchema.safeParse(def)
