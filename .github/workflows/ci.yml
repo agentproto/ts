@@ -480,12 +480,15 @@ jobs:
           if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+            echo "::notice::Agentic review completed via agentproto lane (billing: subscription/OAuth)"
           elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=legacy" >> "$GITHUB_OUTPUT"
+            echo "::notice::Agentic review completed via legacy lane (billing: API-key / Anthropic)"
           else
             echo "outcome=failure" >> "$GITHUB_OUTPUT"
             echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::error::Both reviewer lanes failed."
           fi
 
       - name: Commit changeset (if written by reviewer)
@@ -558,6 +561,24 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
+
+      - name: Verify review was posted
+        id: verify
+        if: steps.prstate.outputs.skip != 'true' && steps.bypass.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
+          if [ "$REVIEWS" -eq 0 ]; then
+            echo "::error::No review was posted on PR #$PR_NUMBER for commit $SHA. The reviewer session finished but did not call gh pr review."
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          else
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "Review count for $SHA: $REVIEWS"
+          fi
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
