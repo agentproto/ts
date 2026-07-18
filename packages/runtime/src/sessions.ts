@@ -1165,6 +1165,11 @@ export interface SpawnPtyInput {
    *  collide with an existing session's name. */
   name?: string
   label?: string
+  /** Parent attribution + depth — same semantics as `SpawnAgentInput`
+   *  (orchestrator WP4): set when the spawn came through a scoped
+   *  sub-gateway so `session_tree` shows the PTY under its spawner. */
+  parentSessionId?: string
+  depth?: number
 }
 
 export interface RecordCommandInput {
@@ -2634,6 +2639,13 @@ export function createSessionsRegistry(opts?: {
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
+        // Parent attribution + depth (orchestrator WP4) — same recording
+        // rule as spawnAgent above: depth always set so subtree/depth
+        // logic never distinguishes "absent" from "root".
+        ...(input.parentSessionId
+          ? { parentSessionId: input.parentSessionId }
+          : {}),
+        depth: input.depth ?? 0,
       }
       const rt: SessionRuntime = {
         desc,
