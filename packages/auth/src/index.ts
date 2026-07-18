@@ -19,6 +19,12 @@
  *   KeychainStore / MemoryStore / FileStore — built-in CredentialStore backends
  *   resolveStoreRef(spec, server)     — map a TokenStoreSpec to a StoreRef
  *   CredentialBroker                  — path → ready-to-use auth headers
+ *   AuthProfile / AuthMethod          — named, vendor-scoped credential ref
+ *   listAuthProfiles/getAuthProfile/
+ *   addAuthProfile/removeAuthProfile  — named-profile store CRUD
+ *   resolveEndpoint/methodsPresentable/
+ *   eligibleProfiles                  — (adapter × route) → vendor + the
+ *                                        profile eligibility predicate
  */
 
 export { defineAuthProvider } from "./define-auth-provider.js"
@@ -55,6 +61,22 @@ export type {
   StoredCredential,
 } from "./store/types.js"
 export { CredentialBroker, type CredentialBrokerOptions } from "./broker.js"
+export type { AuthMethod, AuthProfile } from "./profile-types.js"
+export {
+  authProfilesPath,
+  loadAuthProfiles,
+  listAuthProfiles,
+  getAuthProfile,
+  addAuthProfile,
+  removeAuthProfile,
+  type AuthProfilesFile,
+} from "./profile-store.js"
+export {
+  resolveEndpoint,
+  methodsPresentable,
+  eligibleProfiles,
+  type AdapterAuthManifest,
+} from "./eligibility.js"
 export { guildeAuthProvider, BUILTIN_AUTH_PROVIDERS } from "./builtins.js"
 export {
   authProviderFrontmatterSchema,
