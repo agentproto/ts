@@ -192,7 +192,8 @@ The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` → `Authorization: Bearer`.
   proxy enforces a bearer gate, so `auth_token` MUST be one of those gate tokens
   — a shared secret you set **once** on the provider/adapter config (an unlisted
   token → 401). The upstream provider key is still injected server-side; the gate
-  token is separate from it.
+  token is separate from it. Send it via `auth_token` (→ `Authorization: Bearer`)
+  or `X-Proxy-Access` — **never `x-api-key`**, which the gate ignores.
 
 ### Per-provider API keys
 
@@ -207,6 +208,25 @@ Stored in `~/.agentproto/providers.json` (mode 0600):
 ```
 
 Set via: `agentproto auth provider set <provider>` or edit the file directly.
+
+### Securing a public deployment (gate env vars)
+
+Opt-in env vars on the proxy (unset = off). Full detail in the package README's
+"Securing a public deployment".
+
+- `LLM_ENDPOINT_ACCESS_TOKENS` — app-gate allow-list (comma-separated). Present a
+  listed token as `Authorization: Bearer <t>` **or** `X-Proxy-Access: <t>`.
+  **`x-api-key` is NOT accepted.**
+- `LLM_ENDPOINT_EDGE_TOKENS` — second, independent layer via `X-Edge-Auth`, meant
+  to be enforced at the edge (Cloudflare WAF) so unauthenticated traffic never
+  reaches the origin; also re-checked in-process.
+- `LLM_ENDPOINT_PUBLIC_MODELS=1` — exempts ONLY `/v1/models` (`/models`) from the
+  gates so clients can auto-discover models (e.g. Claude Desktop's launch probe);
+  pack lists stay gated.
+
+`llm-endpoint print-waf-rule [--host <h>]` emits the Cloudflare custom-rule
+expression from the configured token(s) — paste into a **Block** rule (add a
+`/v1/models` carve-out when `PUBLIC_MODELS` is on).
 
 ## Common failure modes
 
