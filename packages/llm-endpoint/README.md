@@ -246,10 +246,54 @@ When it is set, every request must present a listed token as either
 else gets `401`. When the variable is **unset the gate is open** (no inbound auth):
 fine for `localhost`, unsafe for a public origin.
 
+> **`x-api-key` is not accepted.** Some Anthropic-compatible clients default to
+> sending the credential as `x-api-key`; the gate only reads `Authorization:
+> Bearer` and `X-Proxy-Access`. Set the client's auth scheme to **Bearer**.
+
 ```bash
 LLM_ENDPOINT_ACCESS_TOKENS="$(openssl rand -hex 24)" \
   pnpm --filter @agentproto/llm-endpoint start
 ```
+
+### Public model discovery (optional)
+
+Clients that auto-discover models (e.g. Claude Desktop's launch-time model
+fetch) probe `GET /v1/models` **without** a credential, so the access gate
+`401`s them and the connection test fails. Set `LLM_ENDPOINT_PUBLIC_MODELS=1` to
+exempt **only** the default model-list path (`/v1/models`, `/models`) from every
+gate. Pack-scoped lists (`/v1/<pack>/models`) and all other paths stay gated, so
+no pack config leaks. Unset (default) keeps discovery gated too.
+
+### Edge / WAF token layer
+
+`LLM_ENDPOINT_EDGE_TOKENS` is a second, independent allow-list checked via the
+`X-Edge-Auth: <token>` header. It's meant to be enforced **at the edge** (a
+Cloudflare WAF rule in front of the tunnel) so unauthenticated traffic never
+reaches the origin — and it's also re-checked in-process as a fallback. Each
+layer is independent; unset means off. Reusing the same secret as
+`LLM_ENDPOINT_ACCESS_TOKENS` (via `Authorization: Bearer`) is fine too — one
+secret, both the edge rule and the app gate.
+
+### Generating the Cloudflare rule (`print-waf-rule`)
+
+`llm-endpoint print-waf-rule` prints a Cloudflare custom-rule (wirefilter)
+expression that **blocks** any request lacking a valid token, so the secret
+lives in one place and the edge rule is generated, not hand-typed. It reads
+`LLM_ENDPOINT_EDGE_TOKENS` (→ `X-Edge-Auth`) when set, else
+`LLM_ENDPOINT_ACCESS_TOKENS` (→ `Authorization: Bearer`); `--host <h>` (or
+`LLM_ENDPOINT_PUBLIC_HOST`) scopes the rule to one hostname. `OPTIONS` preflight
+is always allowed.
+
+```bash
+LLM_ENDPOINT_ACCESS_TOKENS="$SECRET" llm-endpoint print-waf-rule --host llm.example.com
+# → (http.host eq "llm.example.com" and http.request.method ne "OPTIONS"
+#     and not any(http.request.headers["authorization"][*] eq "Bearer $SECRET"))
+```
+
+Paste the output into a Cloudflare **Block** custom rule. If you also enabled
+`LLM_ENDPOINT_PUBLIC_MODELS`, add a carve-out so discovery bypasses the edge as
+well: `… and http.request.uri.path ne "/v1/models" and http.request.uri.path ne
+"/models" and …`.
 
 ### Exposing the port
 
