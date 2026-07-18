@@ -236,6 +236,14 @@ export type WebviewMessage =
    * session's cwd. The host replies with `mentionCandidates`.
    */
   | { type: "requestMentions"; query: string }
+  /**
+   * The model chip was clicked — open the mid-session model-switch picker.
+   * Carries no payload: the host already holds the session descriptor
+   * (adapter/model/mode) and fetches the adapter listing itself, so the
+   * webview has nothing useful to add here (and, same as `openToolIo`,
+   * never touches daemon data directly).
+   */
+  | { type: "changeModel" }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -246,6 +254,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "ready":
     case "stop":
     case "restart":
+    case "changeModel":
       return true
     case "send":
     case "interruptSend":

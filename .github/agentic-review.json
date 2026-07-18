@@ -5,6 +5,9 @@
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
+  "cliSource": "workspace",
+  "cliVersion": "0.8.0",
+  "reviewerAuthMode": "api-key",
   "describe": {
     "auto": true,
     "minBodyChars": 80

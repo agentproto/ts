@@ -16,6 +16,7 @@ import type {
   AgentCliRuntime,
   AgentCliRuntimeSession,
   AgentCliStartOptions,
+  SetModelResult,
   StreamEvent,
 } from "./types.js"
 
@@ -413,6 +414,36 @@ export function createAgentCliRuntime(
               },
             }
           : {}),
+        /**
+         * Mid-session model switch — the runtime counterpart to the
+         * spawn-time `modelApply` handling above. Dispatches on the same
+         * `definition.models.apply` strategy so a live switch behaves
+         * exactly like the spawn-time apply would have, just against an
+         * already-running session. See {@link SetModelResult} for the
+         * reason vocabulary; this never throws and never tears down the
+         * session on a rejected switch.
+         */
+        async setModel(modelId: string): Promise<SetModelResult> {
+          if (modelApply === "arg") {
+            // This CLI takes its model as a spawn-time argv token
+            // (bin_args_template, composed once before spawn) — there is
+            // no live surface to change it against a running session.
+            return { applied: false, reason: "requires-restart" }
+          }
+          if (modelApply === "command") {
+            return applyModelCommand(arm, modelId)
+          }
+          // "config" (default): apply via the arm's setConfigOption, which
+          // only the ACP arm implements — other arms (print, proprietary)
+          // simply don't have a mid-session config surface.
+          if (!arm.setConfigOption) {
+            return { applied: false, reason: "not-supported" }
+          }
+          const result = await arm.setConfigOption("model", modelId)
+          return result.applied
+            ? { applied: true, model: modelId }
+            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
+        },
         async close() {
           await arm.close()
           if (child && !child.killed) child.kill("SIGTERM")
@@ -426,14 +457,18 @@ export function createAgentCliRuntime(
  * Switch the active model via a `/model <id>` control turn, for adapters
  * whose ACP session config doesn't select the model (`models.apply:
  * "command"`, e.g. hermes). The turn is fully drained so the switch
- * completes before the caller's first real turn. Best-effort: a transport
- * failure or a missing acknowledgement is warned, never thrown — the
- * session simply continues on the agent's default model.
+ * completes before the caller's next real turn. Best-effort: a transport
+ * failure or a missing acknowledgement is warned and reported as
+ * `{applied:false, reason}`, never thrown — the session simply continues
+ * on whatever model it already had. Shared by the spawn-time apply (return
+ * value ignored there, same as before this returned a result) and the
+ * mid-session `setModel("command")` path (return value surfaced to the
+ * caller).
  */
 async function applyModelCommand(
   arm: AgentCliClient,
   modelId: string,
-): Promise<void> {
+): Promise<SetModelResult> {
   const turnId = randomUUID()
   let acked = false
   try {
@@ -447,17 +482,19 @@ async function applyModelCommand(
       if (/switch|model\s+set|now using/i.test(JSON.stringify(evt))) acked = true
     }
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
     console.warn(
       `[agent-cli] /model ${modelId} control turn failed (continuing on default):`,
       err instanceof Error ? err.message : err,
     )
-    return
+    return { applied: false, reason }
   }
   if (!acked) {
-    console.warn(
-      `[agent-cli] /model ${modelId}: no switch acknowledgement — agent may be on its default model`,
-    )
+    const reason = "no switch acknowledgement — agent may be on its default model"
+    console.warn(`[agent-cli] /model ${modelId}: ${reason}`)
+    return { applied: false, reason }
   }
+  return { applied: true, model: modelId }
 }
 
 async function* promptTurn(

@@ -110,6 +110,20 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
         "Applied as a `--model` arg at spawn. Omit for the default.",
       bin_args_template: ["--model", "{value}"],
     },
+    {
+      id: "agent",
+      // Path to an AIP-42 AGENT.md. Lets `agent_start` pick WHICH agent this
+      // arm runs — e.g. an emitted `.agentproto/agents/<id>/AGENT.md` from an
+      // @agentproto/app-kit app. Without it the built-in default agent runs.
+      // The CLI already reads `--agent` (see cli.ts); this exposes it through
+      // the manifest so the daemon can pass it.
+      type: "string" as const,
+      description:
+        "Path to an AIP-42 AGENT.md to run as this agent (e.g. an emitted " +
+        "'.agentproto/agents/<id>/AGENT.md'). Applied as an `--agent <path>` " +
+        "arg at spawn. Omit to run the built-in default agent.",
+      bin_args_template: ["--agent", "{value}"],
+    },
   ],
   tags: ["mastra", "agentproto", "acp", "agent-runtime", "first-party"],
 })

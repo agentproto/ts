@@ -15,6 +15,7 @@ export default createTsupConfig({
   external: [
     "@agentproto/agent",
     "@agentproto/workflow",
+    "@agentproto/workspace",
     "@agentproto/mastra",
     "@mastra/core",
     "@mastra/core/agent",

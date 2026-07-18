@@ -18,6 +18,16 @@ export interface DaemonConfig {
 const SECTION = "agentproto"
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:18790"
 
+/** Settings that actually require a window reload — every consumer of
+ *  DaemonClient/SessionStore holds this config by value from activation
+ *  onward (see activate()'s own comment). Deliberately NOT the whole
+ *  `agentproto.*` section: holdPermissions/confirmStop/groupByWorkspace are
+ *  read fresh on each use (or drive a live tree rebuild), and firing the
+ *  "reload the window" banner for those would be actively wrong — most
+ *  visibly for groupByWorkspace, whose own toolbar toggle is supposed to
+ *  update the tree instantly, not prompt for a reload. */
+const RELOAD_REQUIRED_KEYS = ["daemonUrl", "tokenPath", "pollIntervalMs"] as const
+
 export function getConfig(): DaemonConfig {
   const cfg = vscode.workspace.getConfiguration(SECTION)
   const pollIntervalMs = cfg.get<number>("pollIntervalMs")
@@ -39,7 +49,7 @@ export function onDidChangeConfig(
   handler: (config: DaemonConfig) => void,
 ): vscode.Disposable {
   const sub = vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration(SECTION)) {
+    if (RELOAD_REQUIRED_KEYS.some(key => e.affectsConfiguration(`${SECTION}.${key}`))) {
       handler(getConfig())
     }
   })

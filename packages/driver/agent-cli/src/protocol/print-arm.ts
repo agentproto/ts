@@ -215,6 +215,18 @@ export function createPrintSession(
       activeChild?.kill("SIGTERM")
     },
 
+    // The print arm spawns a fresh subprocess PER TURN from `baseArgs`,
+    // which already has the model baked in (composed once, before this
+    // session object was even constructed — see `bin_args_template`
+    // handling in define-agent-cli.ts/compose.ts). There is no live
+    // connection to apply a mid-session config change to, and rebuilding
+    // `baseArgs` would mean a fresh session, not a live switch — so this
+    // is honestly `requires-restart`, same as the `arg` model-apply
+    // strategy for ACP arms.
+    async setModel(): Promise<{ applied: false; reason: string }> {
+      return { applied: false, reason: "requires-restart" }
+    },
+
     async close(): Promise<void> {
       activeChild?.kill("SIGTERM")
       mcpRestore?.()

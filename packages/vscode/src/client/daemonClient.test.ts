@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http"
 import { AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { DaemonClient, NoTranscriptError } from "./daemonClient.js"
+import { DaemonClient, NoTranscriptError, WorkspacesRouteMissingError } from "./daemonClient.js"
 
 /**
  * Spin a mock daemon on an ephemeral port. Returns base URL + request log.
@@ -78,7 +78,19 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
+      if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
+      if (req.url === "/workspaces" && req.method === "POST") {
+        const body = req.body as { path: string; slug?: string; label?: string }
+        return {
+          status: 200,
+          body: {
+            version: 1,
+            active: body.slug ?? "ws",
+            workspaces: [{ slug: body.slug ?? "ws", path: body.path, addedAt: "t", updatedAt: "t", label: body.label }],
+          },
+        }
+      }
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
@@ -164,6 +176,15 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.url).toBe("/sessions/s1/interrupt")
   })
 
+  it("POST /sessions/:id/model sends the model body and returns the structured result", async () => {
+    const res = await client().setSessionModel("s1", "opus-5")
+    expect(res).toEqual({ ok: true, id: "s1", applied: true, model: "opus-5" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    expect(last.url).toBe("/sessions/s1/model")
+    expect(last.body).toEqual({ model: "opus-5" })
+  })
+
   it("throws on a non-2xx response", async () => {
     await expect(client().getSession("ghost")).rejects.toThrow(/404/)
   })
@@ -219,6 +240,18 @@ describe("DaemonClient — URL + auth header mapping", () => {
     await expect(client().getSessionEvents("terminal1")).rejects.toBeInstanceOf(NoTranscriptError)
   })
 
+  it("POST /workspaces sends { path, slug, label } and returns the updated WorkspacesConfig", async () => {
+    const config = await client().addWorkspace("/Code/new-project", { slug: "np", label: "New Project" })
+    expect(config.workspaces).toEqual([
+      { slug: "np", path: "/Code/new-project", addedAt: "t", updatedAt: "t", label: "New Project" },
+    ])
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    expect(last.url).toBe("/workspaces")
+    expect(last.body).toEqual({ path: "/Code/new-project", slug: "np", label: "New Project" })
+  })
+
+
   it("sessionEventsPoll unwraps { events, nextCursor }", async () => {
     const result = await client().sessionEventsPoll(0)
     expect(result.nextCursor).toBe(7)
@@ -259,6 +292,26 @@ describe("DaemonClient — URL + auth header mapping", () => {
       res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "bad args" } }))
     })
     await expect(client().mcpCall("adapter_list")).rejects.toThrow(/bad args/)
+  })
+})
+
+describe("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)", () => {
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
+
+  beforeEach(async () => {
+    // No /workspaces handler at all — every route falls through to the
+    // mock's default 404, standing in for a daemon that predates the
+    // isomorphic workspace verbs (PR A).
+    daemon = await mockDaemon(() => ({ status: 404, body: { error: "not_found" } }))
+  })
+
+  afterEach(async () => {
+    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  it("raises WorkspacesRouteMissingError, not a generic HTTP error", async () => {
+    const client = new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+    await expect(client.addWorkspace("/Code/whatever")).rejects.toBeInstanceOf(WorkspacesRouteMissingError)
   })
 })
 

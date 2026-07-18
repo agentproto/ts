@@ -47,6 +47,22 @@ export interface SeparatorNode {
 
 export type TreeNode = SeparatorNode | SessionNode
 
+/**
+ * Discriminates a divider row from a session row — shared with
+ * sessionsGroups.logic.ts and sessionsTree.ts so both the grouping and the
+ * tree-item mapping use the same check. Takes `unknown` (not TreeNode) so it
+ * also narrows sessionsGroups.logic.ts's wider RootNode (TreeNode | GroupNode
+ * | CtaNode) without a cast at every call site.
+ */
+export function isSeparatorNode(node: unknown): node is SeparatorNode {
+  return (
+    typeof node === "object" &&
+    node !== null &&
+    "kind" in node &&
+    (node as { kind?: unknown }).kind === "separator"
+  )
+}
+
 /** Description-string extras for the richer (post-filter) row rendering — see descriptionFor. */
 export interface DescriptionContext {
   workspaceLabel?: string

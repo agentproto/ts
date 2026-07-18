@@ -1,0 +1,141 @@
+import { describe, expect, it } from "vitest"
+
+import type { SessionDescriptor } from "../client/types.js"
+import type { SpawnAdapterInfo } from "./spawn.logic.js"
+import { buildChangeModelPlaceHolder, mapChangeModelQuickPickItems } from "./changeModel.logic.js"
+
+function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
+  return { slug: "claude-code", ...overrides }
+}
+
+function session(overrides: Partial<Pick<SessionDescriptor, "model" | "mode">> = {}): Pick<
+  SessionDescriptor,
+  "model" | "mode"
+> {
+  return { ...overrides }
+}
+
+describe("mapChangeModelQuickPickItems", () => {
+  it("groups models under a provider heading, one separator per provider", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "claude-sonnet-5", provider: "anthropic" },
+          { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+        ],
+      }),
+      session({ model: "claude-sonnet-5" }),
+    )
+    expect(items.map(i => ({ label: i.label, kind: i.kind }))).toEqual([
+      { label: "anthropic", kind: -1 },
+      { label: "claude-sonnet-5", kind: undefined },
+      { label: "moonshot", kind: -1 },
+      { label: "kimi-k2.7-code", kind: undefined },
+    ])
+  })
+
+  it("groups an unstated-provider model under the adapter's own name", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ slug: "codex", modelDetails: [{ id: "o4-mini" }] }),
+      session(),
+    )
+    expect(items).toEqual([
+      { label: "codex", kind: -1 },
+      { label: "o4-mini", model: "o4-mini" },
+    ])
+  })
+
+  it("marks the row matching the session's current model", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ modelDetails: [{ id: "opus-5", provider: "anthropic" }, { id: "sonnet-5", provider: "anthropic" }] }),
+      session({ model: "sonnet-5" }),
+    )
+    const opus = items.find(i => i.model === "opus-5")
+    const sonnet = items.find(i => i.model === "sonnet-5")
+    expect(opus?.current).toBeUndefined()
+    expect(opus?.description).toBeUndefined()
+    expect(sonnet?.current).toBe(true)
+    expect(sonnet?.description).toBe("current")
+  })
+
+  it("flags a row bound to a different mode than the session's own as restart-required", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "claude-sonnet-5", provider: "anthropic" }, // no mode — native
+          { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+        ],
+      }),
+      session({ model: "claude-sonnet-5" }), // session.mode is undefined (native)
+    )
+    const native = items.find(i => i.model === "claude-sonnet-5")
+    const gateway = items.find(i => i.model === "kimi-k2.7-code")
+    expect(native?.restartRequired).toBeUndefined()
+    expect(gateway?.restartRequired).toBe(true)
+    expect(gateway?.description).toBe("restart required")
+  })
+
+  it("does NOT flag a gateway row bound to the SAME mode the session is already running", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        modelDetails: [
+          { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
+          { id: "kimi-k2.7-fast", provider: "moonshot", mode: "moonshot" },
+        ],
+      }),
+      session({ model: "kimi-k2.7-code", mode: "moonshot" }),
+    )
+    for (const item of items) {
+      if (item.model) expect(item.restartRequired).toBeUndefined()
+    }
+  })
+
+  it("flags EVERY row as restart-required when the adapter's modelApply is 'arg'", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({
+        slug: "codex",
+        modelApply: "arg",
+        modelDetails: [{ id: "o4-mini" }, { id: "o4" }],
+      }),
+      session({ model: "o4-mini" }),
+    )
+    const modelRows = items.filter(i => i.model !== undefined)
+    expect(modelRows).toHaveLength(2)
+    for (const row of modelRows) {
+      expect(row.restartRequired).toBe(true)
+      expect(row.description).toBe("restart required")
+    }
+    // Even the currently-active row is honestly marked restart-required —
+    // the adapter can't apply ANY switch live, including "switch to itself".
+    const current = modelRows.find(r => r.model === "o4-mini")
+    expect(current?.current).toBe(true)
+    expect(current?.restartRequired).toBe(true)
+  })
+
+  it("returns an empty array when the adapter declares no models", () => {
+    expect(mapChangeModelQuickPickItems(adapter({ modelDetails: [] }), session())).toEqual([])
+  })
+
+  it("falls back to the flat `models` list when modelDetails is absent (older daemon)", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ models: ["opus-5", "sonnet-5"] }),
+      session({ model: "opus-5" }),
+    )
+    expect(items.map(i => i.label)).toEqual(["claude-code", "opus-5", "sonnet-5"])
+    expect(items.find(i => i.model === "opus-5")?.current).toBe(true)
+  })
+})
+
+describe("buildChangeModelPlaceHolder", () => {
+  it("names the session's current model", () => {
+    expect(buildChangeModelPlaceHolder({ adapterSlug: "hermes", model: "kimi-k2.7-code" })).toBe(
+      "Switch model for hermes (currently kimi-k2.7-code)",
+    )
+  })
+
+  it("says so when no model is recorded", () => {
+    expect(buildChangeModelPlaceHolder({ adapterSlug: "codex" })).toBe(
+      "Switch model for codex (no model recorded)",
+    )
+  })
+})

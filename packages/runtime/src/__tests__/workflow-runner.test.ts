@@ -577,33 +577,82 @@ steps:
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
   })
 
-  it("returns an error when no compileWorkflow callback is configured", async () => {
+  it("exposes compiled agent step ids in run.stages and resolves sessionIds", async () => {
     const bus = createSessionEventBus()
-    const registry = makeMockRegistry()
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => {
+        return {
+          id: "sess_review_001",
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd,
+          label: input.label,
+        }
+      }),
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_review_001"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
     const runner = createWorkflowRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
     })
 
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-wf",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
     const path = writeWorkflowMd(`---
-name: Empty
-id: empty
-description: Empty workflow.
+name: Review
+id: review-wf
+description: Review workflow.
 version: 0.1.0
+entry: ./entry.mjs
 inputs: {}
 outputs: {}
 steps:
-  - id: d
-    kind: tool
-    tool: demo.double
-    inputs:
-      n: $input.n
+  - id: review
+    kind: agent
 ---
 `)
 
-    await expect(runner.startFromFile({ path })).rejects.toThrow(
-      "compileWorkflow callback",
-    )
+    const run = await runner.startFromFile({ path })
+    expect(run.status).toBe("running")
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(final?.stages).toHaveLength(1)
+    expect(final?.stages[0]?.steps).toHaveLength(1)
+    expect(final?.stages[0]?.steps[0]?.label).toBe("review")
+    expect(final?.stages[0]?.steps[0]?.sessionId).toBe("sess_review_001")
+    expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
   })
 })

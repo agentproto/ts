@@ -71,6 +71,13 @@ export interface SessionDescriptor {
   argv?: readonly string[]
   cwd?: string
   adapterSlug?: string
+  /** AIP-45 mode the session was spawned with (e.g. claude-code's `plan`, a
+   *  gateway preset mode like `moonshot`). Undefined for the adapter's own
+   *  default mode. Mirrors `@agentproto/runtime` SessionDescriptor.mode —
+   *  the mid-session model-switch picker (changeModel.logic.ts) compares
+   *  this against a candidate model's bound `mode` to decide whether
+   *  picking it is a live switch or needs a restart. */
+  mode?: string
   model?: string
   auth?: {
     mode: "subscription" | "api-key"
@@ -168,6 +175,16 @@ export interface AdapterInfo {
   status?: "supported" | "available" | "ready"
   /** Short human hint shown in pickers (e.g. "anthropic · ACP · resumable"). */
   hint?: string
+  /**
+   * How this adapter selects a model (AIP-45 `models.apply`; the daemon
+   * defaults an omitted manifest field to `"config"` before projecting it
+   * here). `"arg"` bakes the model into spawn-time argv, so EVERY
+   * mid-session switch attempt is `requires-restart` regardless of target
+   * — changeModel.logic.ts marks every row that way for such an adapter.
+   * Absent on an older daemon that predates this projection; treat as
+   * `"config"`.
+   */
+  modelApply?: "config" | "command" | "arg"
 }
 
 /** /health probe result. */

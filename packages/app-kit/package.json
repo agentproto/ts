@@ -53,6 +53,7 @@
     "@agentproto/agent": "workspace:*",
     "@agentproto/mastra": "workspace:*",
     "@agentproto/workflow": "workspace:*",
+    "@agentproto/workspace": "workspace:*",
     "gray-matter": "^4.0.3"
   },
   "peerDependencies": {

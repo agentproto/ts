@@ -2497,6 +2497,40 @@ async function handleSessions(
     return true
   }
 
+  // Switch the model on a LIVE agent-cli session without restarting it —
+  // see `SessionsRegistry.setModel`'s doc comment for the full dispatch
+  // (config/command/arg apply strategies) + event-emission contract. A
+  // structured `{applied:false, reason}` (unsupported strategy, agent
+  // rejected the id, no live driver support) is still a 200 — the request
+  // was well-formed and got a definitive answer, it's just not "yes".
+  const modelMatch = path.match(/^\/sessions\/([^/]+)\/model$/)
+  if (modelMatch && req.method === "POST") {
+    const id = modelMatch[1]
+    if (!id) return false
+    const body = await readJsonBody(req)
+    const model =
+      body && typeof body === "object" && typeof (body as Record<string, unknown>).model === "string"
+        ? ((body as Record<string, unknown>).model as string)
+        : undefined
+    if (!model) {
+      json(400, { error: "missing_model" })
+      return true
+    }
+    try {
+      const result = await registry.setModel(id, model)
+      json(200, { ok: true, id, ...result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("no session")
+        ? 404
+        : msg.includes("not an agent-cli session")
+          ? 400
+          : 500
+      json(status, { error: "set_model_failed", message: msg })
+    }
+    return true
+  }
+
   if (path === "/sessions" && req.method === "POST") {
     const body = await readJsonBody(req)
     if (!body || typeof body !== "object") {
