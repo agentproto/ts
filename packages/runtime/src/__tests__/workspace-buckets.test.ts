@@ -23,6 +23,7 @@ import {
   bucketSessionsFile,
   isSafeBucketSlug,
   listBuckets,
+  mergeBucketRows,
   migrateLegacySessionsFile,
   migrationMarkerPath,
   readRegisteredSlugs,
@@ -117,6 +118,46 @@ describe("isSafeBucketSlug", () => {
   })
 })
 
+describe("mergeBucketRows", () => {
+  const r = (id: string) => ({ id, status: "exited" })
+
+  it("preserves a foreign on-disk row — never held by this process", () => {
+    // The clobber-prevention case: a row this daemon never loaded and
+    // never created must survive a merge untouched.
+    const onDisk = [r("foreign-1"), r("foreign-2")]
+    const merged = mergeBucketRows(onDisk, [], new Set())
+    expect(merged).toEqual([r("foreign-1"), r("foreign-2")])
+  })
+
+  it("does NOT resurrect an ever-held id that's absent from `rows`", () => {
+    // The forget-regression case: `mine-1` is on disk from an earlier
+    // persist by THIS process, but the caller no longer carries it in
+    // `rows` (it was deliberately forgotten) — `everHeldIds` says so,
+    // and the merge must respect that instead of treating it as foreign.
+    const onDisk = [r("mine-1"), r("foreign-1")]
+    const merged = mergeBucketRows(onDisk, [], new Set(["mine-1"]))
+    expect(merged).toEqual([r("foreign-1")])
+  })
+
+  it("incoming rows win by id over their on-disk counterpart", () => {
+    const onDisk = [{ id: "a1", status: "running" }]
+    const rows = [{ id: "a1", status: "exited" }]
+    const merged = mergeBucketRows(onDisk, rows, new Set(["a1"]))
+    expect(merged).toEqual([{ id: "a1", status: "exited" }])
+  })
+
+  it("combines: incoming rows plus genuinely foreign on-disk rows, minus forgotten ever-held ones", () => {
+    const onDisk = [r("foreign-1"), r("forgotten-1"), r("live-1")]
+    const rows = [{ id: "live-1", status: "exited" }, r("new-1")]
+    const merged = mergeBucketRows(onDisk, rows, new Set(["forgotten-1", "live-1", "new-1"]))
+    expect(merged).toEqual([
+      { id: "live-1", status: "exited" },
+      r("new-1"),
+      r("foreign-1"),
+    ])
+  })
+})
+
 describe("HOME-isolated bucket paths", () => {
   let home: string
   const realHome = process.env.HOME
@@ -155,29 +196,19 @@ describe("HOME-isolated bucket paths", () => {
         ],
       }),
     )
-    const result = readRegisteredSlugs()
-    expect(result.ok).toBe(true)
-    expect([...result.slugs].sort()).toEqual(["alpha", "beta"])
+    expect([...readRegisteredSlugs()].sort()).toEqual(["alpha", "beta"])
   })
 
-  it("treats a MISSING registry as legitimately empty, not a failed read", () => {
-    // Distinct from corruption below: `loadWorkspacesConfigSync` treats
-    // ENOENT as the legitimate first-boot state and returns an empty
-    // config rather than throwing, so this is `ok: true` with zero
-    // slugs — everything still pools into `default`, but a persist path
-    // can trust that "nothing is registered" claim, unlike the corrupt
-    // case where it must not.
-    const result = readRegisteredSlugs()
-    expect(result.ok).toBe(true)
-    expect(result.slugs.size).toBe(0)
+  it("degrades to `nothing registered` when the registry is missing", () => {
+    // The safe failure direction: everything pools into `default`, i.e.
+    // today's behaviour, rather than the daemon refusing to persist.
+    expect(readRegisteredSlugs().size).toBe(0)
   })
 
-  it("degrades to `nothing registered`, and signals the read failed, when the registry is corrupt", () => {
+  it("degrades to `nothing registered` when the registry is corrupt", () => {
     mkdirSync(join(home, ".agentproto"), { recursive: true })
     writeFileSync(join(home, ".agentproto", "workspaces.json"), "{ not json")
-    const result = readRegisteredSlugs()
-    expect(result.ok).toBe(false)
-    expect(result.slugs.size).toBe(0)
+    expect(readRegisteredSlugs().size).toBe(0)
   })
 })
 

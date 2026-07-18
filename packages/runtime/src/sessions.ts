@@ -666,6 +666,27 @@ interface SessionRuntime {
 const RECENT_LINES_CAP = 500
 const RECENT_BYTES_CAP = 64 * 1024
 const PERSIST_DEBOUNCE_MS = 1_500
+
+/** Shared, never-mutated empty set — the `heldIdsByBucket` lookup for a
+ *  bucket this process has never placed anything in falls back to this
+ *  instead of allocating a fresh empty `Set` on every persist. */
+const EMPTY_ID_SET: ReadonlySet<string> = new Set()
+
+/** Record that this daemon process has, at some point, placed session
+ *  `id` in bucket `slug` — see `heldIdsByBucket`'s docblock at its
+ *  declaration in `createSessionsRegistry` for why this has to be
+ *  monotonic (never remove an id once added). Shared by the boot-time
+ *  load path (`loadHistorySnapshot`) and the live resolve path
+ *  (`groupRowsByBucket`) so both feed the same set. */
+function markHeldId(map: Map<string, Set<string>>, slug: string, id: string): void {
+  let set = map.get(slug)
+  if (!set) {
+    set = new Set()
+    map.set(slug, set)
+  }
+  set.add(id)
+}
+
 /** Cap on the number of historical descriptors loaded from ONE
  *  sessions.json at boot. Older entries (by startedAt) are dropped
  *  on overflow — newest history wins. Adjust upward if the file
@@ -1362,6 +1383,17 @@ export function createSessionsRegistry(opts?: {
   // unregistered, relocating it to `default` and emptying its real
   // bucket on write.
   const sourceBucketOf = new Map<string, string>()
+  // Every session id this daemon process has EVER placed in a given
+  // bucket — at load time (a row read from that bucket's file at boot)
+  // or at resolve time (a new session that landed there via
+  // `resolveBucketSlug`). Grows monotonically: an id is added once and
+  // never removed, even after the session itself is forgotten
+  // (`sessions.delete`). This is what lets `mergeBucketRows` tell a
+  // genuinely FOREIGN on-disk row (never held by us — safe to preserve)
+  // apart from one this daemon deliberately removed (held here once,
+  // absent from `rows` now — must NOT be resurrected). See
+  // `mergeBucketRows`'s docblock in `workspace-buckets.ts`.
+  const heldIdsByBucket = new Map<string, Set<string>>()
   if (persist) {
     if (partitioned) {
       // Read-only on the legacy artifact, once, guarded by its own
@@ -1369,7 +1401,7 @@ export function createSessionsRegistry(opts?: {
       migrateLegacySessionsFile({
         root: bucketsRoot,
         legacyFile: legacyPath,
-        registered: readRegisteredSlugs(workspacesConfigPath).slugs,
+        registered: readRegisteredSlugs(workspacesConfigPath),
       })
       for (const slug of listBuckets(bucketsRoot)) {
         knownBuckets.add(slug)
@@ -1379,6 +1411,7 @@ export function createSessionsRegistry(opts?: {
           sessionEvents,
           slug,
           sourceBucketOf,
+          heldIdsByBucket,
         )
       }
     } else {
@@ -1548,13 +1581,22 @@ export function createSessionsRegistry(opts?: {
    *
    *  Every known bucket gets an entry even when it has no rows left —
    *  otherwise forgetting a bucket's last session would leave its old
-   *  snapshot on disk to be re-loaded at the next boot. */
+   *  snapshot on disk to be re-loaded at the next boot.
+   *
+   *  Also stamps `heldIdsByBucket` for every row it places — the id is
+   *  recorded against the bucket it resolves to THIS round, whether that
+   *  came from `sourceBucketOf` or fresh resolution, so `rowsToWrite`'s
+   *  merge backstop can tell "never held by us" (safe to preserve from
+   *  disk) apart from "held once, gone now" (a deliberate forget, must
+   *  not resurrect) even for a bucket this daemon never loaded at
+   *  boot. */
   const groupRowsByBucket = (): Map<string, SessionDescriptor[]> => {
-    const registry = readRegisteredSlugs(workspacesConfigPath)
+    const registered = readRegisteredSlugs(workspacesConfigPath)
     const groups = new Map<string, SessionDescriptor[]>()
     for (const slug of knownBuckets) groups.set(slug, [])
     for (const desc of snapshotRows()) {
-      const slug = sourceBucketOf.get(desc.id) ?? resolveBucketSlug(desc.workspaceSlug, registry.slugs)
+      const slug = sourceBucketOf.get(desc.id) ?? resolveBucketSlug(desc.workspaceSlug, registered)
+      markHeldId(heldIdsByBucket, slug, desc.id)
       const list = groups.get(slug)
       if (list) list.push(desc)
       else groups.set(slug, [desc])
@@ -1577,9 +1619,17 @@ export function createSessionsRegistry(opts?: {
    *  workspace — hits the moment ANY row (even a single brand-new
    *  session) happens to resolve into it: without the merge, writing
    *  `rows` verbatim would silently discard every row already on disk
-   *  that this process's memory never held. */
+   *  that this process's memory never held. `heldIdsByBucket` bounds the
+   *  merge so it only ever RESTORES foreign rows, never resurrects one
+   *  this daemon deliberately forgot — see `mergeBucketRows`. */
   const rowsToWrite = (slug: string, rows: SessionDescriptor[]): unknown[] =>
-    bootLoadedBuckets.has(slug) ? rows : mergeBucketRows(readBucketRows(bucketsRoot, slug), rows)
+    bootLoadedBuckets.has(slug)
+      ? rows
+      : mergeBucketRows(
+          readBucketRows(bucketsRoot, slug),
+          rows,
+          heldIdsByBucket.get(slug) ?? EMPTY_ID_SET,
+        )
 
   const persistSnapshot = async (): Promise<void> => {
     try {
@@ -3320,6 +3370,11 @@ function loadHistorySnapshot(
    *  of recomputing the bucket from `workspaceSlug`. */
   bucketSlug?: string,
   sourceBucketOf?: Map<string, string>,
+  /** See `heldIdsByBucket`'s docblock in `createSessionsRegistry` —
+   *  every loaded row's id is stamped against `bucketSlug` here too, so
+   *  a row this daemon read at boot is never mistaken for a foreign one
+   *  by `mergeBucketRows` after it's later forgotten. */
+  heldIdsByBucket?: Map<string, Set<string>>,
 ): void {
   let raw: string
   try {
@@ -3392,7 +3447,10 @@ function loadHistorySnapshot(
     }
     rt.emitter.setMaxListeners(50)
     sessions.set(desc.id, rt)
-    if (bucketSlug !== undefined) sourceBucketOf?.set(desc.id, bucketSlug)
+    if (bucketSlug !== undefined) {
+      sourceBucketOf?.set(desc.id, bucketSlug)
+      if (heldIdsByBucket) markHeldId(heldIdsByBucket, bucketSlug, desc.id)
+    }
     if (wasAlive) {
       sessionEvents?.emit({
         type: "session:exited",
