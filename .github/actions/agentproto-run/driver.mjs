@@ -207,6 +207,35 @@ async function main() {
   }
 
   console.log(`driver: run ${runId} reached terminal status=${run.status}`)
+  // Unconditional diagnostics — a "done" run that silently no-op'd (e.g. the
+  // agent's turn ended without acting) is otherwise a total CI black box:
+  // the only thing ever logged was the top-level status. Per-step state
+  // (sessionId, timestamps, error) and each session's output tail cost one
+  // cheap extra round trip each and let a red/suspicious run be diagnosed
+  // straight from the Action log instead of needing a live daemon to inspect.
+  console.log(`driver: run stages:\n${JSON.stringify(run.stages ?? [], null, 2)}`)
+  const sessionIds = new Set()
+  for (const stage of run.stages ?? []) {
+    for (const step of stage.steps ?? []) {
+      if (step.sessionId) sessionIds.add(step.sessionId)
+    }
+  }
+  for (const sessionId of sessionIds) {
+    try {
+      const outputResult = await client.callTool({
+        name: "agent_output",
+        arguments: { sessionId, lastN: 200, clean: true },
+      })
+      const output = parseToolResult(outputResult)
+      console.log(
+        `driver: session ${sessionId} output tail:\n${(output.lines ?? []).join("\n")}`,
+      )
+    } catch (err) {
+      console.error(
+        `driver: failed to fetch output for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", run.status)
   return run.status === "done" ? 0 : 1
