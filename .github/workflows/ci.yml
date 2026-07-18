@@ -522,7 +522,11 @@ jobs:
           # posted against *that* commit, not whatever HEAD is now.
           SHA: ${{ steps.headsha.outputs.sha }}
         run: |
-          REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
+          # --paginate: without it only the first 30 reviews come back, so a
+          # PR with 30+ prior reviews could push the matching one past page 1
+          # and false-negative here — the exact failure mode this step exists
+          # to catch.
+          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq "[.[] | select(.commit_id == \"$SHA\")] | length")
           if [ "$REVIEWS" -eq 0 ]; then
             echo "::error::No review was posted on PR #$PR_NUMBER for commit $SHA. The reviewer session finished but did not call gh pr review."
             echo "posted=false" >> "$GITHUB_OUTPUT"
