@@ -228,6 +228,20 @@ export interface AcpClient {
   close(): Promise<void>
 }
 
+/**
+ * Result of a mid-session `setConfigOption` call — mirrors the best-effort
+ * contract `newSession`'s own `model`/`effort`/`mode` params already use
+ * (see the reject handler below): a rejected config option is reported
+ * structurally, never thrown, so a caller can surface "didn't apply" to a
+ * human without the live session (or its in-flight turn) ever being at risk.
+ */
+export interface SetConfigOptionResult {
+  applied: boolean
+  /** Present only when `applied` is false — the server's rejection detail
+   *  (see `configOptionErrorDetail`), or a client-side reason. */
+  reason?: string
+}
+
 export interface AcpClientSession {
   readonly sessionId: string
   prompt(input: {
@@ -235,6 +249,15 @@ export interface AcpClientSession {
     signal?: AbortSignal
   }): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
+  /**
+   * Apply a session config option (e.g. `configId:"model"`) on this LIVE,
+   * already-connected session — the mid-session counterpart to the
+   * `model`/`effort`/`mode` params `newSession` accepts at connect time.
+   * Same non-fatal contract: a server rejection resolves
+   * `{applied:false, reason}` instead of throwing, so a bad or gated model
+   * id can never kill an otherwise-healthy session.
+   */
+  setConfigOption(configId: string, value: string): Promise<SetConfigOptionResult>
   close(): Promise<void>
 }
 
@@ -596,6 +619,32 @@ function buildSession(
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
       onActivity?.()
+    },
+    async setConfigOption(configId, value) {
+      try {
+        await connection.setSessionConfigOption({
+          configId,
+          value,
+          sessionId,
+        } as never)
+        onActivity?.()
+        return { applied: true }
+      } catch (err) {
+        // Non-fatal by design — same reasoning as newSession's own
+        // model/effort/mode application above: the agent's accepted
+        // vocabulary for a config option is dynamic (varies by wrapper
+        // version + account entitlements), so a rejection here is
+        // expected and must never propagate as a thrown error. The
+        // caller decides what to do with `{applied:false, reason}`
+        // (e.g. surface a non-modal warning), the session itself is
+        // completely unaffected.
+        const reason = configOptionErrorDetail(err)
+        console.warn(
+          `[acp] session ${sessionId}: set_config_option ${configId}="${value}" ` +
+            `rejected by server — ${reason}`,
+        )
+        return { applied: false, reason }
+      }
     },
     async close() {
       // Cancel any permission requests this session parked before dropping it,

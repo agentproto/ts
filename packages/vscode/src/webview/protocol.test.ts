@@ -83,4 +83,8 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "requestMentions", query: "src/" })).toBe(true)
     expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
   })
+
+  it("accepts changeModel (the model chip was clicked) with no payload", () => {
+    expect(isWebviewMessage({ type: "changeModel" })).toBe(true)
+  })
 })

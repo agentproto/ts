@@ -17,6 +17,7 @@ export type SessionEventType =
   | "session:permission-resolved"
   | "session:exited"
   | "session:command-done"
+  | "session:model-changed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -131,6 +132,24 @@ export interface SessionCommandDoneEvent {
   ts: string
 }
 
+/**
+ * Emitted when `SessionsRegistry.setModel` successfully switches a LIVE
+ * agent-cli session's model (`POST /sessions/:id/model`, `session_set_model`
+ * MCP tool). Only fires on `applied: true` — a rejected switch changes
+ * nothing about the session, so there's nothing to announce. `model` is the
+ * new value now reflected on `SessionDescriptor.model` (and therefore on the
+ * next `session_list` / SSE `sessionUpdate` a client sees). Consumers:
+ * `session_events_poll`, the webhook notifier, and the routine engine —
+ * same distribution as every other lifecycle event on this bus.
+ */
+export interface SessionModelChangedEvent {
+  type: "session:model-changed"
+  sessionId: string
+  model: string
+  label?: string
+  ts: string
+}
+
 /** Emitted by the supervisor when a completion policy's gate passes. */
 export interface PolicyPassedEvent {
   type: "policy:passed"
@@ -209,6 +228,7 @@ export type SessionEvent =
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
   | SessionCommandDoneEvent
+  | SessionModelChangedEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent

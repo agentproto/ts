@@ -280,6 +280,13 @@ export function createAcpProtocolArm(
       if (!session) return
       await session.cancel()
     },
+    async setConfigOption(configId, value) {
+      // No connected session yet — nothing to apply against. Distinct from
+      // `not-supported` (a protocol-level absence): this arm DOES support
+      // it, there's just no live connection right now.
+      if (!session) return { applied: false, reason: "not-connected" }
+      return session.setConfigOption(configId, value)
+    },
     respondPermission(
       requestId: string,
       resolution: AcpPermissionResolution,

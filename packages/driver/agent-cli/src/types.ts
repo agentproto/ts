@@ -760,6 +760,33 @@ export interface AgentCliConnectOptions {
 }
 
 /**
+ * Result of a mid-session model-switch attempt — see
+ * {@link AgentCliRuntimeSession.setModel}. Mirrors
+ * `@agentproto/acp/client`'s `SetConfigOptionResult` (this package stays
+ * decoupled from `@agentproto/acp`'s client subpath by not importing its
+ * type, hence the structural duplicate) plus the applied model id, so a
+ * caller can echo back exactly what took effect.
+ */
+export interface SetModelResult {
+  applied: boolean
+  /** The model id that took effect. Present only when `applied` is true. */
+  model?: string
+  /**
+   * Present only when `applied` is false. Canonical values:
+   *   - `"requires-restart"` — this adapter's `models.apply` is `"arg"`;
+   *     the model is baked into argv at spawn time and cannot change on a
+   *     live session.
+   *   - `"not-supported"` — the protocol arm has no mid-session config
+   *     surface (e.g. the print arm, or an ACP arm with no connected
+   *     session yet).
+   *   - anything else — the agent's own rejection detail, verbatim from
+   *     `configOptionErrorDetail` (ACP `config` strategy) or the `/model`
+   *     control-turn failure (`command` strategy).
+   */
+  reason?: string
+}
+
+/**
  * Per-turn dispatch shape. Implemented by every protocol arm
  * (ACP, MCP, proprietary). The runner is the only call site for
  * these methods; consumers see {@link AgentCliSession} instead.
@@ -769,6 +796,19 @@ export interface AgentCliClient {
   send(turnId: string, message: unknown): Promise<void>
   events(): AsyncIterable<StreamEvent>
   cancel(turnId: string): Promise<void>
+  /**
+   * Apply a session config option (e.g. `configId:"model"`) on the LIVE,
+   * already-connected session — only the ACP arm implements this (its
+   * connection exposes `session/set_config_option` mid-session); other
+   * arms (print, proprietary) omit it, and `define-agent-cli.ts`'s
+   * `setModel` treats its absence as `{applied:false,
+   * reason:"not-supported"}`. Non-fatal: a server rejection resolves
+   * `{applied:false, reason}` rather than throwing.
+   */
+  setConfigOption?(
+    configId: string,
+    value: string,
+  ): Promise<{ applied: boolean; reason?: string }>
   /**
    * Resolve a permission request parked by permission-hold mode — `requestId`
    * is the `toolCallId` carried on the `agent-prompt` StreamEvent that
@@ -978,5 +1018,21 @@ export interface AgentCliRuntimeSession {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean
+  /**
+   * Switch the active model on this LIVE, already-running session,
+   * honoring the manifest's `models.apply` strategy:
+   *   - `"config"`  — `session/set_config_option(configId:"model")` on the
+   *     retained ACP connection (via the arm's `setConfigOption`).
+   *   - `"command"` — the same `/model <id>` control turn `models.apply:
+   *     "command"` uses at spawn time (`applyModelCommand`), drained and
+   *     checked for a switch acknowledgement.
+   *   - `"arg"`     — always `{applied:false, reason:"requires-restart"}`:
+   *     this CLI takes its model as a spawn-time argv token, so a live
+   *     switch is impossible without restarting the session.
+   * Always resolves — never throws and never kills the session, even when
+   * the underlying agent rejects the request. See {@link SetModelResult}
+   * for the full reason vocabulary.
+   */
+  setModel(modelId: string): Promise<SetModelResult>
   close(): Promise<void>
 }

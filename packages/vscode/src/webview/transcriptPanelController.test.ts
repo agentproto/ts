@@ -66,6 +66,7 @@ type MockClient = DaemonClient & {
   getSessionEvents: ReturnType<typeof vi.fn>
   uploadFile: ReturnType<typeof vi.fn>
   resolveToken: ReturnType<typeof vi.fn>
+  setSessionModel: ReturnType<typeof vi.fn>
 }
 
 function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {}): MockClient {
@@ -84,6 +85,7 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
     // doesn't explicitly opt into exercising the SSE path — same fallback
     // codepath a real old-daemon 404 takes, just triggered earlier.
     resolveToken: vi.fn().mockRejectedValue(new Error("no SSE in this test")),
+    setSessionModel: vi.fn().mockResolvedValue({ ok: true, id: "s1", applied: true, model: "opus-5" }),
     ...over,
   } as unknown as MockClient
 }
@@ -895,5 +897,52 @@ describe("TranscriptPanelController — @file mention candidates", () => {
 
     expect(messenger.messages).toContainEqual({ type: "mentionCandidates", query: "x", items: [] })
     expect(vi.mocked(listRepoFiles)).not.toHaveBeenCalled()
+  })
+})
+
+describe("TranscriptPanelController — mid-session model switch", () => {
+  it("session getter exposes the current best-known descriptor", () => {
+    const { controller } = make(createMockClient(), {
+      initialSession: session({ adapterSlug: "claude-code", model: "sonnet-5" }),
+    })
+    expect(controller.session.adapterSlug).toBe("claude-code")
+    expect(controller.session.model).toBe("sonnet-5")
+  })
+
+  it("session getter reflects the latest sessionUpdate, not just the initial descriptor", () => {
+    const { controller } = make(createMockClient(), {
+      initialSession: session({ model: "sonnet-5" }),
+    })
+    controller.onSessionUpdate(session({ model: "opus-5" }))
+    expect(controller.session.model).toBe("opus-5")
+  })
+
+  it("setModel delegates to client.setSessionModel with this controller's sessionId", async () => {
+    const client = createMockClient()
+    const { controller } = make(client, { initialSession: session({ id: "s1" }) })
+
+    const result = await controller.setModel("opus-5")
+
+    expect(client.setSessionModel).toHaveBeenCalledWith("s1", "opus-5")
+    expect(result).toEqual({ ok: true, id: "s1", applied: true, model: "opus-5" })
+  })
+
+  it("passes through a rejected switch without throwing", async () => {
+    const client = createMockClient({
+      setSessionModel: vi.fn().mockResolvedValue({
+        ok: true,
+        id: "s1",
+        applied: false,
+        reason: "requires-restart",
+      }),
+    })
+    const { controller } = make(client)
+
+    await expect(controller.setModel("o4-mini")).resolves.toEqual({
+      ok: true,
+      id: "s1",
+      applied: false,
+      reason: "requires-restart",
+    })
   })
 })

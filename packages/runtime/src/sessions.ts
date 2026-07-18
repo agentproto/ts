@@ -85,7 +85,29 @@ export interface AgentSessionLike {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean | Promise<boolean>
+  /**
+   * Switch the active model on this LIVE session — mirrors
+   * `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.setModel`
+   * without importing it (this package stays driver-decoupled, same
+   * reasoning as the rest of this structural interface). Optional: absent
+   * for a session shape that doesn't support live model switching (a
+   * sandboxed proxy session, or a future non-agent-cli transport) —
+   * `SessionsRegistry.setModel` treats a missing method as
+   * `{applied:false, reason:"not-supported"}` rather than throwing.
+   */
+  setModel?(modelId: string): Promise<SetSessionModelResult>
   close(): Promise<void>
+}
+
+/** Result of `SessionsRegistry.setModel` — see that method's doc comment. */
+export interface SetSessionModelResult {
+  applied: boolean
+  /** The model id now active. Present only when `applied` is true. */
+  model?: string
+  /** Present only when `applied` is false — see
+   *  `@agentproto/driver-agent-cli`'s `SetModelResult` for the reason
+   *  vocabulary this passes through verbatim. */
+  reason?: string
 }
 
 /**
@@ -453,6 +475,18 @@ export interface SessionDescriptor {
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
   adapterSlug?: string
+  /**
+   * AIP-45 mode the session was spawned with (`AgentCliStartOptions.config.
+   * mode` — e.g. claude-code's `plan`/`accept-edits`, a gateway preset mode
+   * like `moonshot`). Undefined for the adapter's default/native mode.
+   * Recorded so a client can tell whether a candidate model switch stays
+   * within THIS mode (live-switchable via `setModel`) or needs a different
+   * one (`AgentCliModelEntry.mode` on the target) — a mode change is
+   * spawn-time env/argv rewiring (e.g. `ANTHROPIC_BASE_URL`), which
+   * `POST /sessions/:id/model` cannot perform on a live process; that case
+   * is surfaced to clients as `requires-restart`, never silently attempted.
+   */
+  mode?: string
   /** The model the session was requested to run (echoed back at spawn). */
   model?: string
   /**
@@ -1006,6 +1040,26 @@ export interface SessionsRegistry {
    *  id is unknown, or when `cancel()` itself rejects ("does not support
    *  interrupt", propagated from `interruptInFlightTurn`). */
   interruptSession(id: string): Promise<{ wasBusy: boolean }>
+  /**
+   * Switch the model on a LIVE agent-cli session without restarting it —
+   * the mid-session counterpart to `spawnAgent`'s `input.model` (which
+   * only applies at spawn time). Delegates to the driver session's own
+   * `setModel` (see `AgentSessionLike.setModel`), which dispatches on the
+   * adapter's `models.apply` strategy (`config`/`command`/`arg`) and never
+   * throws on a rejected switch.
+   *
+   * On `{applied:true}`, updates `SessionDescriptor.model` so
+   * `session_list`/SSE reflect the switch and emits a
+   * `session:model-changed` event on the session event bus. On
+   * `{applied:false}` the descriptor and event bus are untouched — nothing
+   * changed, so nothing to announce.
+   *
+   * Throws (not a structured result) for the two "this request doesn't
+   * even make sense" cases: an unknown session id, or a session that
+   * isn't an agent-cli kind (or whose driver session predates `setModel`
+   * entirely) — both are caller errors, not an adapter's refusal.
+   */
+  setModel(id: string, modelId: string): Promise<SetSessionModelResult>
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -1176,6 +1230,10 @@ export interface SpawnAgentInput {
   depth?: number
   /** Requested model id — recorded on the descriptor for display + echo. */
   model?: string
+  /** AIP-45 mode the session was spawned with — recorded onto
+   *  {@link SessionDescriptor.mode}. See that field's doc for why a client
+   *  needs it (mode-mismatch detection for mid-session model switching). */
+  mode?: string
   /** Resolved auth echo (mode + fingerprint + provider/source/setEnv) —
    *  recorded verbatim onto {@link SessionDescriptor.auth}. See that field's
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
@@ -2795,6 +2853,7 @@ export function createSessionsRegistry(opts?: {
           : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
@@ -3131,6 +3190,31 @@ export function createSessionsRegistry(opts?: {
       if (!isAlive || !rt.busy) return { wasBusy: false }
       await interruptInFlightTurn(rt, id, "interruptSession")
       return { wasBusy: true }
+    },
+    async setModel(id, modelId) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setModel: no session "${id}"`)
+      if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
+        throw new Error(`setModel: session "${id}" is not an agent-cli session`)
+      }
+      if (!rt.agentSession.setModel) {
+        return { applied: false, reason: "not-supported" }
+      }
+      const result = await rt.agentSession.setModel(modelId)
+      if (result.applied) {
+        rt.desc.model = result.model ?? modelId
+        schedulePersist()
+        if (sessionEvents) {
+          sessionEvents.emit({
+            type: "session:model-changed",
+            sessionId: id,
+            model: rt.desc.model,
+            label: rt.desc.label,
+            ts: new Date().toISOString(),
+          })
+        }
+      }
+      return result
     },
     pulseActivity(id) {
       const rt = sessions.get(id)
