@@ -656,6 +656,36 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
   })
 })
 
+describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
+  it.each([
+    ["kimi-k3", 3.0, 15.0],
+    ["kimi-k2.7-code", 0.95, 4.0],
+  ])("%s resolves to expected direct-Moonshot pricing", (id, input, output) => {
+    const pricing = resolvePricing(id)
+    expect(pricing).toBeDefined()
+    expect(pricing?.vendor).toBe("moonshot")
+    expect(pricing?.provider).toBe("moonshot")
+    expect(pricing?.inputPer1M).toBe(input)
+    expect(pricing?.outputPer1M).toBe(output)
+  })
+
+  // OpenRouter-routed ids resolve to their own literal OPENROUTER_ROUTES
+  // entry (vendor as OpenRouter reports it) BEFORE the alias table is even
+  // consulted — resolvePricing tries a direct match first. Different vendor
+  // string than the direct-SDK entries above by design.
+  it.each([
+    ["moonshotai/kimi-k3", 3.0, 15.0],
+    ["moonshotai/kimi-k2.7-code", 0.85, 3.79],
+  ])("%s resolves to expected OpenRouter-routed pricing", (id, input, output) => {
+    const pricing = resolvePricing(id)
+    expect(pricing).toBeDefined()
+    expect(pricing?.vendor).toBe("moonshotai")
+    expect(pricing?.provider).toBe("openrouter")
+    expect(pricing?.inputPer1M).toBe(input)
+    expect(pricing?.outputPer1M).toBe(output)
+  })
+})
+
 describe("resolveContextWindow", () => {
   it.each([
     ["claude-opus-4-8", 1000000, 128000, "anthropic"],
@@ -664,6 +694,7 @@ describe("resolveContextWindow", () => {
     ["claude-haiku-4-5", 200000, 64000, "anthropic"],
     ["llama-3.3-70b-versatile", 131072, 32768, "groq"],
     ["kimi-k2.6", 262144, undefined, "moonshot"],
+    ["kimi-k3", 1048576, undefined, "moonshot"],
   ])("%s resolves to a live context window", (id, contextWindow, maxOutput, provider) => {
     const entry = resolveContextWindow(id)
     expect(entry).toBeDefined()

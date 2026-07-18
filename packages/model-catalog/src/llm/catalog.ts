@@ -608,6 +608,26 @@ export const LLM_PRICING_CATALOG = {
   },
 
   // ── Moonshot (direct SDK) ─────────────────────────────────────────────
+  "kimi-k3": {
+    // Flagship, released 2026-07-16 (2.8T-param MoE, 1M context,
+    // reasoning-always-on). Source: https://openrouter.ai/moonshotai/kimi-k3
+    // (fetched 2026-07-18). Cache-hit input is 90% off cache-miss
+    // ($0.30 vs $3.00/1M).
+    inputPer1M: 3.0,
+    outputPer1M: 15.0,
+    cacheReadMultiplier: 0.1,
+    vendor: "moonshot",
+    provider: "moonshot",
+  },
+  "kimi-k2.7-code": {
+    // Source: direct Moonshot pricing (fetched 2026-07-18). Cache-hit
+    // input is $0.19/1M vs $0.95/1M miss (80% off).
+    inputPer1M: 0.95,
+    outputPer1M: 4.0,
+    cacheReadMultiplier: 0.2,
+    vendor: "moonshot",
+    provider: "moonshot",
+  },
   "kimi-k2.6": {
     inputPer1M: 0.95,
     outputPer1M: 4.0,
@@ -793,6 +813,8 @@ export const MODEL_ALIASES = {
   "kimi-k2": "kimi-k2.5",
   "moonshotai/kimi-k2.5": "kimi-k2.5",
   "moonshotai/kimi-k2.6": "kimi-k2.6",
+  "moonshotai/kimi-k2.7-code": "kimi-k2.7-code",
+  "moonshotai/kimi-k3": "kimi-k3",
   // Mistral
   "mistralai/mistral-large-latest": "mistral-large-latest",
   "mistralai/mistral-small-latest": "mistral-small-latest",
