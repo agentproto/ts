@@ -37,6 +37,7 @@ import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
 import { isWebviewMessage, type ExtMessage, type WebviewMessage } from "./protocol.js"
 import { TranscriptPanelController } from "./transcriptPanelController.js"
+import { runChangeModelFlow } from "../commands/changeModel.js"
 
 export interface TranscriptPanels {
   open(session: SessionDescriptor): void
@@ -175,7 +176,7 @@ export function registerTranscriptPanels(
         panel.webview.onDidReceiveMessage(async (raw: unknown) => {
           if (!isWebviewMessage(raw)) return
           try {
-            await handleWebviewMessage(raw, controller, outputDocs)
+            await handleWebviewMessage(raw, controller, outputDocs, client)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             void vscode.window.showErrorMessage(`agentproto: ${message}`)
@@ -220,10 +221,14 @@ async function handleWebviewMessage(
   msg: WebviewMessage,
   controller: TranscriptPanelController,
   outputDocs: OutputDocuments,
+  client: DaemonClient,
 ): Promise<void> {
   switch (msg.type) {
     case "ready":
       await controller.onReady()
+      return
+    case "changeModel":
+      await runChangeModelFlow(controller, client)
       return
     case "send":
       await controller.onSend(msg.text, false)
@@ -859,6 +864,22 @@ export function buildHtml(nonce: string): string {
       text-overflow: ellipsis;
     }
     .composer-chip:empty { display: none; }
+    /* The model chip is the one clickable chip (click → switch model) — reset
+       the generic button rule's chrome so it still reads as plain chip text,
+       only gaining an underline + link color on hover as the click affordance. */
+    .composer-chip-btn {
+      padding: 0;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
+    .composer-chip-btn:hover:not(:disabled) {
+      background: transparent;
+      color: var(--vscode-textLink-foreground, var(--vscode-editor-foreground));
+      text-decoration: underline;
+    }
     button {
       padding: 3px 8px;
       border: none;
@@ -989,7 +1010,7 @@ export function buildHtml(nonce: string): string {
       <div id="composer-bar">
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip"></span>
-          <span id="composer-model" class="composer-chip"></span>
+          <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
           <span id="composer-auth" class="composer-chip"></span>
         </span>
         <span id="send-status"></span>
@@ -2144,6 +2165,12 @@ export function buildHtml(nonce: string): string {
         autoGrow();
       }
 
+      // Click the model chip → the host fetches this session's adapter
+      // listing and shows a native quick-pick (no picker vocabulary lives in
+      // the webview — see runChangeModelFlow / changeModel.logic.ts).
+      composerModel.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changeModel' });
+      });
       sendBtn.addEventListener('click', function() { send(false); });
       // Abandon the in-flight turn, send nothing — distinct from "Interrupt &
       // send" below, which takes the queued message NOW instead of waiting.

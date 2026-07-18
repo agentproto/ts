@@ -223,6 +223,20 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/interrupt`, {})
   }
 
+  /**
+   * Switch the model on a LIVE agent-cli session without restarting it —
+   * `POST /sessions/:id/model`. Mirrors the daemon's non-fatal contract:
+   * a rejected or unsupported switch resolves `{applied:false, reason}`
+   * rather than throwing — only a genuinely bad request (unknown session,
+   * missing model) throws. Callers check `applied`, they don't catch for it.
+   */
+  async setSessionModel(
+    id: string,
+    model: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; model?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/model`, { model })
+  }
+
   async deleteSession(id: string): Promise<{ ok: boolean; id: string }> {
     return this.deleteJson(`/sessions/${encodeURIComponent(id)}`)
   }

@@ -78,6 +78,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
+      if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
@@ -162,6 +163,15 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const last = daemon.requests[daemon.requests.length - 1]!
     expect(last.method).toBe("POST")
     expect(last.url).toBe("/sessions/s1/interrupt")
+  })
+
+  it("POST /sessions/:id/model sends the model body and returns the structured result", async () => {
+    const res = await client().setSessionModel("s1", "opus-5")
+    expect(res).toEqual({ ok: true, id: "s1", applied: true, model: "opus-5" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    expect(last.url).toBe("/sessions/s1/model")
+    expect(last.body).toEqual({ model: "opus-5" })
   })
 
   it("throws on a non-2xx response", async () => {

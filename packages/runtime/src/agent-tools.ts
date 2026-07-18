@@ -11,6 +11,7 @@
  *   agent_output  tail the ring buffer
  *   agent_kill    SIGTERM the session
  *   agent_interrupt   cancel the in-flight turn, leave the session alive
+ *   agent_set_model   switch a live session's model without restarting
  *   agent_export  export a clean transcript
  *   agent_sessions_list   browse alive + recent agent sessions
  */
@@ -897,6 +898,49 @@ export function registerAgentTools(
             {
               type: "text",
               text: `agent_interrupt: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── agent_set_model ─────────────────────────────────────
+  server.tool(
+    "agent_set_model",
+    "Switch the model on a LIVE agent-cli session without restarting it — " +
+      "the mid-session counterpart to picking a model at `agent_start` time. " +
+      "Dispatches on the adapter's own apply strategy: a session whose " +
+      "adapter selects models via ACP session config or a `/model` control " +
+      "turn switches live; one that takes its model as a spawn-time CLI " +
+      "argument (e.g. codex) can't, and reports " +
+      "`{applied:false, reason:\"requires-restart\"}` instead of failing. " +
+      "Never throws on a rejected switch — check `applied` in the result.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+      model: z.string().describe("Model id to switch to."),
+    },
+    async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_set_model")
+      try {
+        const result = await registry.setModel(sessionId, input.model)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_set_model: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

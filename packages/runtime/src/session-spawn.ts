@@ -914,6 +914,7 @@ export async function spawnAgentSession(
       agentSession,
       adapterSlug: input.adapter,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),

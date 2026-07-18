@@ -606,6 +606,31 @@ export class TranscriptPanelController {
     return undefined
   }
 
+  /**
+   * The best-known session descriptor — the same one the header/composer
+   * chips already render from. Public so the changeModel flow (which lives
+   * outside this class, alongside its other vscode-UI-facing command
+   * counterparts) can read the session's adapter/model/mode without this
+   * class growing a `vscode.window.showQuickPick` dependency of its own.
+   */
+  get session(): SessionDescriptor {
+    return this.currentSession
+  }
+
+  /**
+   * Switch the model on this LIVE session — thin passthrough to
+   * `client.setSessionModel` that keeps the sessionId plumbing in one
+   * place. Deliberately does NOT touch `currentSession` on success: the
+   * chip refreshes from the next daemon-driven `sessionUpdate` (see
+   * `onSessionUpdate`), same "never optimistic" contract every other
+   * descriptor-driven part of this panel already follows.
+   */
+  async setModel(
+    model: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; model?: string; reason?: string }> {
+    return this.client.setSessionModel(this.sessionId, model)
+  }
+
   async onSend(text: string, interrupt: boolean): Promise<void> {
     if (this.isSending) return
     this.isSending = true

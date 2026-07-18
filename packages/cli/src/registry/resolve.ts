@@ -110,6 +110,19 @@ export interface AdapterInfo {
    *  `provider`/`mode` are undefined for a bare-string entry — an
    *  unstated provider is never guessed here (see AdapterModelInfo). */
   modelDetails: AdapterModelInfo[]
+  /**
+   * How this adapter selects a model (AIP-45 `models.apply`, defaulted the
+   * same way the driver does — omitted manifest field ⇒ `"config"`). Tells
+   * a client whether a mid-session model switch (`POST /sessions/:id/
+   * model`) can even work for this adapter: `"arg"` bakes the model into
+   * spawn-time argv, so EVERY switch attempt reports `requires-restart`
+   * regardless of target model — a picker should mark every row that way
+   * rather than let the user discover it per-pick. Absent for the ACP
+   * generic-config adapter family (`listAcpGenericAdapters`), which has no
+   * `models.apply` concept of its own; treat an absent value as `"config"`,
+   * the same default the manifest schema applies.
+   */
+  modelApply?: "config" | "command" | "arg"
 }
 
 /** One entry of an adapter's declared model menu, projected from a
@@ -159,6 +172,14 @@ function toModelDetails(allowed: unknown): AdapterModelInfo[] {
     }
   }
   return out
+}
+
+/** Read `models.apply` off a loosely-typed handle field, defaulted the
+ *  same way `defineAgentCli`'s driver does when the manifest omits it —
+ *  see `AdapterInfo.modelApply`'s doc for why this matters to a client. */
+function toModelApply(models: unknown): "config" | "command" | "arg" {
+  const apply = (models as { apply?: unknown } | undefined)?.apply
+  return apply === "command" || apply === "arg" ? apply : "config"
 }
 
 const slugToCamel = (slug: string): string =>
@@ -511,6 +532,7 @@ export async function listInstalledAdapters(opts?: {
           models: modelDetails.map((m) => m.id),
           modes: toAdapterModes(resolved.handle.modes),
           modelDetails,
+          modelApply: toModelApply(handle.models),
         }
         out.push(info)
       } catch (err) {
@@ -563,6 +585,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
   readonly models: string[]
   readonly modes: AdapterMode[]
   readonly modelDetails: AdapterModelInfo[]
+  readonly modelApply: "config" | "command" | "arg"
   readonly packageName: string
   readonly originalHandle: AgentCliHandle
   /** Mirrors `ResolvedAdapter.stale` — set when this handle came from the
@@ -575,7 +598,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
 type AgentCliInfo = Pick<
   AdapterInfo,
-  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails"
+  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply"
 > & { stale?: true; authRequired?: boolean; provider?: string }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
@@ -586,6 +609,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     models: h.models,
     modes: h.modes,
     modelDetails: h.modelDetails,
+    modelApply: h.modelApply,
     ...(h.stale ? { stale: true } : {}),
     ...(h.authRequired ? { authRequired: true } : {}),
     ...(typeof h.originalHandle.provider === "string" ? { provider: h.originalHandle.provider } : {}),
@@ -638,6 +662,7 @@ export function wrapCliHandle(
     models: modelDetails.map((m) => m.id),
     modes: toAdapterModes(handle.modes),
     modelDetails,
+    modelApply: toModelApply(h.models),
     originalHandle: handle,
     ...(stale ? { stale: true as const } : {}),
   }
@@ -774,6 +799,7 @@ export async function listAdaptersWithCatalog(
       models: e.info?.models ?? [],
       modes: e.info?.modes ?? [],
       modelDetails: e.info?.modelDetails ?? [],
+      modelApply: e.info?.modelApply ?? "config",
       status: stale ? ("unresolvable" as const) : e.status,
       ...(stale
         ? {

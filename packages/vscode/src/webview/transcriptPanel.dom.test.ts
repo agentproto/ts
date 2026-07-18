@@ -409,6 +409,16 @@ describe("transcriptPanel webview — composer", () => {
     expect(panel.document.getElementById("header-subtitle")).toBeNull()
   })
 
+  it("clicking the model chip posts changeModel to the host", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
+
+    btn(panel, "composer-model").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "changeModel" })
+  })
+
   it("keeps send inert until there is something to send", () => {
     const panel = renderPanel()
     init(panel)
