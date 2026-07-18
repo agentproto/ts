@@ -402,11 +402,64 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run agentic PR reviewer
-        id: reviewer
+      - name: Load agentic-review config
+        id: config
+        if: steps.prstate.outputs.skip != 'true'
+        run: |
+          if [ -f .github/agentic-review.json ]; then
+            echo "json=$(jq -c . .github/agentic-review.json)" >> "$GITHUB_OUTPUT"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "json={}" >> "$GITHUB_OUTPUT"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine review mode
+        id: mode
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        run: |
+          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]; then
+            echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+            echo "Using agentproto lane (OAuth subscription token)"
+          else
+            echo "mode=legacy" >> "$GITHUB_OUTPUT"
+            echo "OAuth token absent — falling back to legacy API-key reviewer"
+          fi
+
+      # OAuth path: agentproto-run lane (subscription billing, flat rate).
+      # Falls back to legacy on any failure so a token expiry doesn't block merges.
+      - name: Run agentic PR reviewer (agentproto lane)
+        id: reviewer-agentproto
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto'
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+        with:
+          adapter: claude-code
+          auth-mode: subscription
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          workflow-input: |
+            {
+              "prNumber": ${{ github.event.pull_request.number }},
+              "baseRef": "${{ github.base_ref }}",
+              "githubToken": "${{ steps.setup.outputs.token }}",
+              "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
+            }
+          timeout-minutes: 15
+
+      - name: Run agentic PR reviewer (legacy API-key fallback)
+        id: reviewer-legacy
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          (steps.mode.outputs.mode == 'legacy' || steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
         continue-on-error: true
@@ -417,6 +470,23 @@ jobs:
           # bot identity (mentionable) instead of github-actions[bot].
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Propagate reviewer outcome for gate
+        id: reviewer
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
+        run: |
+          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+            echo "mode=agentproto" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+            echo "mode=legacy" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Commit changeset (if written by reviewer)
         if: |
@@ -487,7 +557,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
-          REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
+          REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
