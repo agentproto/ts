@@ -5,6 +5,7 @@
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
+  "cliVersion": "0.8.0",
   "describe": {
     "auto": true,
     "minBodyChars": 80

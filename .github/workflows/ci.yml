@@ -428,6 +428,14 @@ jobs:
             echo "OAuth token absent — falling back to legacy API-key reviewer"
           fi
 
+      - name: Resolve agentproto CLI version
+        id: cliver
+        if: steps.prstate.outputs.skip != 'true'
+        run: |
+          CLI_VERSION=$(node -p "String((require('./.github/agentic-review.json').cliVersion) || '0.8.0')" 2>/dev/null || echo "0.8.0")
+          echo "cli-version=$CLI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using @agentproto/cli@$CLI_VERSION"
+
       # OAuth path: agentproto-run lane (subscription billing, flat rate).
       # Falls back to legacy on any failure so a token expiry doesn't block merges.
       - name: Run agentic PR reviewer (agentproto lane)
@@ -445,6 +453,7 @@ jobs:
           auth-mode: subscription
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          cli-version: ${{ steps.cliver.outputs.cli-version }}
           workflow-input: |
             {
               "prNumber": ${{ github.event.pull_request.number }},

@@ -52,7 +52,7 @@ inputs:
   cli-version:
     description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from.
     required: false
-    default: 0.7.0
+    default: 0.8.0
   mcp-sdk-version:
     description: Pinned @modelcontextprotocol/sdk npm version for the driver's MCP client (matches this repo's own ^1.29.0 pin).
     required: false
