@@ -12,8 +12,15 @@ import type {
   AcpPermissionResolution,
   StreamEvent,
 } from "@agentproto/acp"
+import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 
-export type { AcpMcpServer, AcpPermissionResolution, StreamEvent }
+export type {
+  AcpMcpServer,
+  AcpPermissionResolution,
+  StreamEvent,
+  SessionConfigOption,
+  SessionMode,
+}
 
 export type AgentCliProtocol = "acp" | "mcp" | "proprietary" | "print"
 export type AgentCliSessionMode = "ephemeral" | "persistent" | "resumable"
@@ -787,6 +794,30 @@ export interface SetModelResult {
 }
 
 /**
+ * Result of a mid-session `setSessionMode` attempt — see
+ * {@link AgentCliRuntimeSession.setSessionMode}. Same shape convention as
+ * {@link SetModelResult}: `applied` + the value that took effect on
+ * success, or a `reason` on failure. Never thrown — a mode switch the
+ * wrapper rejects (unknown/stale mode id, no native mode registry) always
+ * resolves structurally.
+ */
+export interface SetSessionModeResult {
+  applied: boolean
+  /** The mode id that took effect. Present only when `applied` is true. */
+  modeId?: string
+  /**
+   * Present only when `applied` is false. Canonical values:
+   *   - `"not-supported"` — the protocol arm has no `setSessionMode`
+   *     surface at all (e.g. the print/proprietary arms, or a non-ACP
+   *     wrapper with no native mode registry).
+   *   - `"not-connected"` — the ACP arm has no live session yet.
+   *   - anything else — the wrapper's own rejection detail (a mode id not
+   *     in `availableModes`, or a stale/version-mismatched offer).
+   */
+  reason?: string
+}
+
+/**
  * Per-turn dispatch shape. Implemented by every protocol arm
  * (ACP, MCP, proprietary). The runner is the only call site for
  * these methods; consumers see {@link AgentCliSession} instead.
@@ -809,6 +840,38 @@ export interface AgentCliClient {
     configId: string,
     value: string,
   ): Promise<{ applied: boolean; reason?: string }>
+  /**
+   * Switch this session's mode on the LIVE, already-connected session via
+   * ACP `session/set_mode` — only the ACP arm implements this (its
+   * connection exposes `setSessionMode` mid-session); other arms (print,
+   * proprietary) omit it, and `define-agent-cli.ts`'s `setSessionMode`
+   * treats its absence as `{applied:false, reason:"not-supported"}`.
+   * Non-fatal: a rejection resolves `{applied:false, reason}` rather than
+   * throwing — mirrors `setConfigOption`'s contract exactly.
+   */
+  setSessionMode?(
+    modeId: string,
+  ): Promise<{ applied: boolean; reason?: string }>
+  /**
+   * The wrapper's advertised session configuration options, captured at
+   * connect time (`newSession`/`loadSession` response `configOptions`) —
+   * see `@agentproto/acp/client`'s `AcpClientSession.availableConfigOptions`
+   * for the full contract. Only the ACP arm populates this; other arms
+   * leave it undefined (treated as empty by `define-agent-cli.ts`).
+   */
+  readonly availableConfigOptions?: SessionConfigOption[]
+  /**
+   * The wrapper's advertised session modes, captured at connect time
+   * (`SessionModeState.availableModes`) — see `@agentproto/acp/client`'s
+   * `AcpClientSession.availableModes`. Only the ACP arm populates this;
+   * other arms leave it undefined.
+   */
+  readonly availableModes?: SessionMode[]
+  /**
+   * The mode id the wrapper reported as active at connect time
+   * (`SessionModeState.currentModeId`). Only the ACP arm populates this.
+   */
+  readonly currentModeId?: string
   /**
    * Resolve a permission request parked by permission-hold mode — `requestId`
    * is the `toolCallId` carried on the `agent-prompt` StreamEvent that
@@ -1034,5 +1097,43 @@ export interface AgentCliRuntimeSession {
    * for the full reason vocabulary.
    */
   setModel(modelId: string): Promise<SetModelResult>
+  /**
+   * Switch the active mode on this LIVE, already-running session via ACP
+   * `session/set_mode` (SDK `setSessionMode`) — the native-posture
+   * counterpart to `setModel`, a distinct axis (SPEC §3.4a: posture comes
+   * from the harness's own mode registry, not a manifest mode list).
+   * Always resolves — never throws and never kills the session, even when
+   * the wrapper rejects the request (unknown mode id, no native mode
+   * registry). Resolves `{applied:false, reason:"not-supported"}` for any
+   * arm that doesn't implement `AgentCliClient.setSessionMode` (print,
+   * proprietary, or a non-ACP wrapper with no mode surface). See
+   * {@link SetSessionModeResult} for the full reason vocabulary.
+   */
+  setSessionMode(modeId: string): Promise<SetSessionModeResult>
+  /**
+   * The wrapper's advertised session configuration options, captured once
+   * at connect time (SPEC §3.9 capability read-surface) — the per-model
+   * value lists a caller can resolve BEFORE attempting to apply a
+   * model/effort value, instead of discovering the accepted vocabulary
+   * only by catching a `setModel`/`setConfigOption` rejection. Empty
+   * (`[]`) for arms that don't populate `AgentCliClient.
+   * availableConfigOptions` (print, proprietary). Snapshot at connect
+   * time; not live-updated by a later `setModel`/`setSessionMode` call.
+   */
+  readonly availableConfigOptions: SessionConfigOption[]
+  /**
+   * The wrapper's advertised session modes (SDK `SessionModeState.
+   * availableModes`), captured at connect time. Empty (`[]`) when the
+   * wrapper has no native mode registry, or for arms that don't populate
+   * `AgentCliClient.availableModes` — the read-surface signal a caller
+   * uses to fall back to a portable/prompt-injected posture instead of a
+   * native `setSessionMode` switch.
+   */
+  readonly availableModes: SessionMode[]
+  /**
+   * The mode id the wrapper reported as active at connect time. Undefined
+   * when the wrapper advertised no mode state.
+   */
+  readonly currentModeId: string | undefined
   close(): Promise<void>
 }
