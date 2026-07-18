@@ -84,13 +84,18 @@ it in the host if you call either. `emit` has no Mastra dependency.
 
 ### `handle.emit(dir)` — ship them
 
-Writes the manifests the daemon and the `agentproto-run` CI lane load:
+Writes the manifests under an **agentproto-owned base** — it doesn't squat the
+shared root `.agents/` convention:
 
 ```
-<dir>/.agents/reviewer/AGENT.md
-<dir>/.agents/fixer/AGENT.md
-<dir>/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
+<dir>/.agentproto/agents/reviewer/AGENT.md
+<dir>/.agentproto/agents/fixer/AGENT.md
+<dir>/.agentproto/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)
 ```
+
+The daemon's state root is migrating toward a `tenants/<t>/…` segment
+(AIP-46 / DESIGN.md §9); app-kit will add that segment once the daemon's tenant
+layer lands, rather than inventing the shape ahead of it.
 
 Both are plain markdown: frontmatter = the validated handle, body = the agent's
 `body` (AGENT.md) / the workflow description (WORKFLOW.md). Because a

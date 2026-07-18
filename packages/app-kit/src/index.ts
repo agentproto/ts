@@ -13,9 +13,9 @@
  *   - `handle.toMastraAgents(resolvers)` builds each agent into a Mastra
  *     agent whose `instructions` field is the real system prompt — the
  *     AGENT.md body (via `@agentproto/mastra`).
- *   - `handle.emit(dir)` writes the `.agents/<id>/AGENT.md` + shared
- *     `workflows/<id>/WORKFLOW.md` manifests the daemon / `agentproto-run`
- *     lane load.
+ *   - `handle.emit(dir)` writes `.agentproto/agents/<id>/AGENT.md` + shared
+ *     `.agentproto/workflows/<id>/WORKFLOW.md` manifests under an
+ *     agentproto-owned base (not the shared root `.agents/`).
  *
  * There is no `systemPrompt` field in AIP: the prompt is the AGENT.md
  * BODY (frontmatter is `.strict()`). So each agent carries an optional

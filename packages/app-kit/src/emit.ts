@@ -1,10 +1,15 @@
 /**
- * `emitApp(app, dir)` — write an app's agents + workflows to disk in the
- * layout the daemon and the `agentproto-run` CI lane load:
+ * `emitApp(app, dir)` — write an app's agents + workflows to disk under an
+ * agentproto-owned base, so the manifests don't squat the shared root
+ * `.agents/` convention:
  *
- *   <dir>/.agents/<id>/AGENT.md        (one per agent)
- *   <dir>/workflows/<wf.id>/WORKFLOW.md (shared — a workflow may be run by
- *                                        several agents)
+ *   <dir>/.agentproto/agents/<id>/AGENT.md         (one per agent)
+ *   <dir>/.agentproto/workflows/<wf.id>/WORKFLOW.md (shared — a workflow may
+ *                                                    be run by several agents)
+ *
+ * The `tenants/<t>/…` segment the daemon's state root is migrating toward
+ * (AIP-46 / DESIGN.md §9) is deliberately NOT invented here yet — it lands
+ * once the daemon's tenant layer does.
  *
  * Both are plain markdown manifests: frontmatter = the validated handle,
  * body = the agent's `body` (its system prompt) or the workflow description.
@@ -28,7 +33,7 @@ interface EmitInput {
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
   const agentPaths: Record<string, string> = {}
   for (const { agent, body } of app.agents) {
-    const agentDir = join(dir, ".agents", stripOwner(agent.id))
+    const agentDir = join(dir, ".agentproto", "agents", stripOwner(agent.id))
     await mkdir(agentDir, { recursive: true })
     const agentPath = join(agentDir, "AGENT.md")
     await writeFile(agentPath, toManifest(agent, body ?? ""), "utf8")
@@ -37,7 +42,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
 
   const workflowPaths: string[] = []
   for (const wf of app.workflows) {
-    const wfDir = join(dir, "workflows", wf.id)
+    const wfDir = join(dir, ".agentproto", "workflows", wf.id)
     await mkdir(wfDir, { recursive: true })
     const wfPath = join(wfDir, "WORKFLOW.md")
     await writeFile(wfPath, toManifest(wf, wf.description ?? ""), "utf8")
