@@ -6,6 +6,7 @@ import { defineAgent } from "@agentproto/agent"
 import { parseAgentManifest } from "@agentproto/agent/manifest"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
+import { parseWorkspaceManifest } from "@agentproto/workspace/manifest"
 import { defineApp } from "../define-app.js"
 
 const reviewerBody =
@@ -92,5 +93,43 @@ describe("emit — manifests round-trip through the loaders", () => {
       "review:tool",
       "report:tool",
     ])
+  })
+
+  it("writes a root WORKSPACE.md (AIP-34) that parseWorkspaceManifest re-parses", async () => {
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "@acme/reviewer",
+            description: "A reviewer in a workspace.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Review.",
+        },
+      ],
+      workspace: {
+        id: "@acme/reviewers",
+        name: "Acme Reviewers",
+        owner: { type: "guild", id: "guild_123", slug: "acme" },
+      },
+    })
+    const { workspacePath, agentPaths } = await app.emit(dir)
+
+    // WORKSPACE.md is the ROOT manifest; agents live under .agentproto/.
+    expect(workspacePath).toMatch(/\/WORKSPACE\.md$/)
+    expect(workspacePath).not.toMatch(/\.agentproto\//)
+    expect(agentPaths["@acme/reviewer"]).toMatch(/\.agentproto\/agents\/reviewer\/AGENT\.md$/)
+
+    const ws = parseWorkspaceManifest(await readFile(workspacePath!, "utf8"))
+    expect(ws.frontmatter.schema).toBe("workspace/v1")
+    expect(ws.frontmatter.id).toBe("@acme/reviewers")
+    expect(ws.frontmatter.owner.type).toBe("guild")
+    expect(ws.frontmatter.storage).toEqual({ inline: { provider: "local-fs", config: {} } })
+  })
+
+  it("omits WORKSPACE.md when the app has no workspace", async () => {
+    const { workspacePath } = await buildApp().emit(dir)
+    expect(workspacePath).toBeUndefined()
   })
 })

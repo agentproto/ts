@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
+import { defineWorkspace } from "@agentproto/workspace"
 import { defineApp, AppDefinitionError } from "../define-app.js"
 
 function agent(id: string, workflows: { ref: string }[] = [{ ref: "review-and-fix" }]) {
@@ -95,6 +96,55 @@ describe("defineApp — multi-agent + attachment invariant", () => {
       workflows: [reviewWorkflow()],
     })
     expect(app.workflows).toHaveLength(1)
+  })
+
+  it("normalizes a workspace shorthand to an AIP-34 handle with local-fs default", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      workspace: {
+        id: "@acme/reviewers",
+        name: "Acme Reviewers",
+        owner: { type: "guild", id: "guild_123", slug: "acme" },
+        // storage omitted → defaults to local-fs
+      },
+    })
+    expect(app.workspace?.schema).toBe("workspace/v1")
+    expect(app.workspace?.id).toBe("@acme/reviewers")
+    expect(app.workspace?.owner.type).toBe("guild")
+    expect(app.workspace?.storage).toEqual({ inline: { provider: "local-fs", config: {} } })
+    expect(app.workspace?.version).toBe("0.1.0")
+  })
+
+  it("carries a pre-built defineWorkspace handle through unchanged", () => {
+    const ws = defineWorkspace({
+      schema: "workspace/v1",
+      id: "@acme/reviewers",
+      name: "Acme Reviewers",
+      version: "2.0.0",
+      owner: { type: "org", id: "org_1", slug: "acme" },
+      storage: { inline: { provider: "github", config: {} } },
+    })
+    const app = defineApp({ agents: [agent("solo", [])], workspace: ws })
+    expect(app.workspace).toBe(ws)
+    expect(app.workspace?.version).toBe("2.0.0")
+  })
+
+  it("has no workspace when none is declared", () => {
+    const app = defineApp({ agents: [agent("solo", [])] })
+    expect(app.workspace).toBeUndefined()
+  })
+
+  it("rejects a malformed workspace shorthand with the AIP-34 diagnostic", () => {
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        workspace: {
+          id: "no-owner-segment", // fails the @<owner>/<ws> id pattern
+          name: "Bad",
+          owner: { type: "guild", id: "g", slug: "acme" },
+        },
+      }),
+    ).toThrow(/defineWorkspace \(AIP-34\)/)
   })
 
   it("matches string and { ref } workflow refs by the same key", () => {

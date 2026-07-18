@@ -3,13 +3,16 @@
  * agentproto-owned base, so the manifests don't squat the shared root
  * `.agents/` convention:
  *
+ *   <dir>/WORKSPACE.md                              (when the app has a
+ *                                                    workspace — AIP-34 root
+ *                                                    manifest; owner = tenant)
  *   <dir>/.agentproto/agents/<id>/AGENT.md         (one per agent)
  *   <dir>/.agentproto/workflows/<wf.id>/WORKFLOW.md (shared — a workflow may
  *                                                    be run by several agents)
  *
- * The `tenants/<t>/…` segment the daemon's state root is migrating toward
- * (AIP-46 / DESIGN.md §9) is deliberately NOT invented here yet — it lands
- * once the daemon's tenant layer does.
+ * The "tenant" isn't a `tenants/<t>/…` path segment — it's the `owner` of
+ * the AIP-34 WORKSPACE.md (guild / user / org), and local storage is its
+ * AIP-35 `storage` block. So there is no bespoke tenant folder to invent.
  *
  * Both are plain markdown manifests: frontmatter = the validated handle,
  * body = the agent's `body` (its system prompt) or the workflow description.
@@ -22,15 +25,31 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
+import type { WorkspaceHandle } from "@agentproto/workspace"
 import type { AgentEntry, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
   readonly agents: readonly AgentEntry[]
   readonly workflows: readonly WorkflowHandle[]
+  readonly workspace?: WorkspaceHandle
 }
 
 export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> {
+  // Root WORKSPACE.md (AIP-34): the workspace manifest whose `owner` names
+  // the tenant and whose `storage` names the backing store. The agents +
+  // workflows below live *inside* this workspace, under `.agentproto/`.
+  let workspacePath: string | undefined
+  if (app.workspace) {
+    await mkdir(dir, { recursive: true })
+    workspacePath = join(dir, "WORKSPACE.md")
+    await writeFile(
+      workspacePath,
+      toManifest(app.workspace, app.workspace.description ?? app.workspace.name),
+      "utf8",
+    )
+  }
+
   const agentPaths: Record<string, string> = {}
   for (const { agent, body } of app.agents) {
     const agentDir = join(dir, ".agentproto", "agents", stripOwner(agent.id))
@@ -49,7 +68,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     workflowPaths.push(wfPath)
   }
 
-  return { agentPaths, workflowPaths }
+  return { agentPaths, workflowPaths, ...(workspacePath ? { workspacePath } : {}) }
 }
 
 /**

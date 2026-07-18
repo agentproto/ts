@@ -19,14 +19,17 @@
  */
 
 import { buildMastraAgent } from "@agentproto/mastra"
+import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
+import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
   AgentEntry,
   AppDefinition,
   AppHandle,
   DoctypeHandle,
   ToMastraAgentOptions,
+  WorkspaceInput,
 } from "./types.js"
 import { refKey } from "./refs.js"
 import { emitApp } from "./emit.js"
@@ -46,6 +49,7 @@ export function defineApp(def: AppDefinition): AppHandle {
   const agents = def.agents.map(normalizeEntry)
   const workflows = def.workflows ?? []
   const attachments = def.attach ?? []
+  const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined
 
   validateAttachment(agents, workflows)
 
@@ -57,6 +61,7 @@ export function defineApp(def: AppDefinition): AppHandle {
     agents: frozenAgents,
     workflows: frozenWorkflows,
     attachments: frozenAttachments,
+    ...(workspace ? { workspace } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions) {
       const out: Record<string, Awaited<ReturnType<typeof buildMastraAgent>>> = {}
@@ -76,11 +81,35 @@ export function defineApp(def: AppDefinition): AppHandle {
     },
 
     emit(dir: string) {
-      return emitApp({ agents: frozenAgents, workflows: frozenWorkflows }, dir)
+      return emitApp(
+        { agents: frozenAgents, workflows: frozenWorkflows, ...(workspace ? { workspace } : {}) },
+        dir,
+      )
     },
   }
 
   return Object.freeze(handle)
+}
+
+/**
+ * Normalize the `workspace` input to an AIP-34 `WorkspaceHandle`. A built
+ * handle (already run through `defineWorkspace`) carries `schema:
+ * "workspace/v1"` and passes straight through; a `WorkspaceShorthand` is
+ * completed with a local-fs storage default and a `0.1.0` version, then
+ * validated by `defineWorkspace` — so a malformed shorthand fails with the
+ * same AIP-34 diagnostic as a malformed WORKSPACE.md.
+ */
+function toWorkspaceHandle(input: WorkspaceInput): WorkspaceHandle {
+  if ("schema" in input) return input
+  return defineWorkspace({
+    schema: "workspace/v1",
+    version: input.version ?? "0.1.0",
+    id: input.id,
+    name: input.name,
+    owner: input.owner,
+    storage: input.storage ?? { inline: { provider: "local-fs", config: {} } },
+    ...(input.description ? { description: input.description } : {}),
+  })
 }
 
 function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions) {

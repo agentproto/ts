@@ -42,8 +42,30 @@ export const reviewApp = defineApp({
     }),
   ],
   attach: [ /* any AIP handle: AIP-6 company, AIP-25 persona, AIP-47 role, policy… */ ],
+  workspace: {                          // ← optional home workspace (AIP-34)
+    id: "@acme/reviewers",
+    name: "Acme Reviewers",
+    owner: { type: "guild", id: "guild_123", slug: "acme" }, // = the tenant
+    // storage defaults to { inline: { provider: "local-fs", config: {} } }
+  },
 })
 ```
+
+## The tenant + local storage — it's the workspace, not a folder
+
+An app can declare a home **`workspace`** (AIP-34 `WORKSPACE.md`). Reuse it
+instead of inventing tenant folders, because AIP-34/35 already model both axes:
+
+- **Tenant** = the workspace's `owner` — `{ type: "guild" | "user" | "org", id, slug }`.
+  Not a `tenants/<t>/` path segment; an identity on the manifest.
+- **Local storage** = the AIP-35 `storage` block — `provider: "local-fs"` (also
+  `dev-local`, `local-ide`, `github`, `mastra-s3`, …). Defaults to `local-fs`.
+
+Pass either a `{ id, name, owner, storage? }` **shorthand** (completed with a
+local-fs default + validated by `defineWorkspace`) or a pre-built
+[`defineWorkspace`](../workspace) handle. This is the same workspace model Guilde
+already uses — a guild's `system` workspace mounted at `/.guilde` holding its
+operator / role / skill definitions.
 
 ## Where is the system prompt? — it's the `body`
 
@@ -88,6 +110,7 @@ Writes the manifests under an **agentproto-owned base** — it doesn't squat the
 shared root `.agents/` convention:
 
 ```
+<dir>/WORKSPACE.md                                      (AIP-34 root manifest — only when the app has a workspace)
 <dir>/.agentproto/agents/reviewer/AGENT.md
 <dir>/.agentproto/agents/fixer/AGENT.md
 <dir>/.agentproto/workflows/review-and-fix/WORKFLOW.md   (shared — a workflow may be run by several agents)

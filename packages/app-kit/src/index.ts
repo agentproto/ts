@@ -15,7 +15,14 @@
  *     AGENT.md body (via `@agentproto/mastra`).
  *   - `handle.emit(dir)` writes `.agentproto/agents/<id>/AGENT.md` + shared
  *     `.agentproto/workflows/<id>/WORKFLOW.md` manifests under an
- *     agentproto-owned base (not the shared root `.agents/`).
+ *     agentproto-owned base (not the shared root `.agents/`), plus a root
+ *     `WORKSPACE.md` when the app has a `workspace`.
+ *
+ * An app may declare a home `workspace` (AIP-34 `defineWorkspace`, or a
+ * `{ id, name, owner, storage? }` shorthand). Its `owner` is the tenant
+ * (guild / user / org) and its `storage` the backing store (defaults to
+ * local-fs) — the tenant/local-storage model AIP-34/35 already ship, so
+ * app-kit reuses it rather than inventing tenant folders.
  *
  * There is no `systemPrompt` field in AIP: the prompt is the AGENT.md
  * BODY (frontmatter is `.strict()`). So each agent carries an optional
@@ -34,6 +41,8 @@ export type {
   AppHandle,
   AgentEntry,
   DoctypeHandle,
+  WorkspaceShorthand,
+  WorkspaceInput,
   ToMastraAgentOptions,
   EmittedApp,
 } from "./types.js"
