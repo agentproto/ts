@@ -20,11 +20,14 @@ An app here is a plain `AppHandle` — `codeTeam.agents`, `codeTeam.workflows`,
 
 ## Teams
 
-| Team | Import | Agents |
-| --- | --- | --- |
-| `code-team` | `@agentproto/apps/code-team` | `implementer` → `reviewer` → `fixer`, bound to the `deliver-change` workflow |
+| Team | Import | Agents | Workflow |
+| --- | --- | --- | --- |
+| `code-team` | `@agentproto/apps/code-team` | `implementer` → `reviewer` → `fixer` | `deliver-change` |
+| `content-team` | `@agentproto/apps/content-team` | `researcher` → `writer` → `editor` | `produce-content` |
 
-More teams (e.g. `content-team`) land as sibling modules and re-exports.
+Each team is a folder with `agents/<name>.ts` (one self-contained file per agent
+— its `defineAgent` handle + `body`) and `workflows/<name>.ts`, composed in the
+team's `index.ts`. A new team is a sibling folder + a re-export.
 
 ## Two ways to consume
 

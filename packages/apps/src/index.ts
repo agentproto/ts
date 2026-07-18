@@ -12,8 +12,10 @@
  *     manifests for a runtime that loads from a workspace.
  *
  * Teams are generic (`@agentproto/…` ids, no product dependency), so any host
- * — including agentik-studio — can consume them. Add a new team as a sibling
- * module (e.g. `content-team.ts`) and re-export it here.
+ * — including agentik-studio — can consume them. Each team lives in its own
+ * folder (`code-team/`, `content-team/`) with `agents/` + `workflows/`, and is
+ * re-exported here + as a subpath (`@agentproto/apps/<team>`).
  */
 
-export { codeTeam } from "./code-team.js"
+export { codeTeam } from "./code-team/index.js"
+export { contentTeam } from "./content-team/index.js"

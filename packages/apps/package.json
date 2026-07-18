@@ -36,6 +36,11 @@
       "import": "./dist/code-team.mjs",
       "default": "./dist/code-team.mjs"
     },
+    "./content-team": {
+      "types": "./dist/content-team.d.ts",
+      "import": "./dist/content-team.mjs",
+      "default": "./dist/content-team.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

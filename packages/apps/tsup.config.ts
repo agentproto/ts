@@ -5,7 +5,11 @@ export default createTsupConfig({
  * @agentproto/apps v0.1.0
  * Ready-made agentproto apps (teams of agents + workflows) built on app-kit.
  */`,
-  entry: { index: "src/index.ts", "code-team": "src/code-team.ts" },
+  entry: {
+    index: "src/index.ts",
+    "code-team": "src/code-team/index.ts",
+    "content-team": "src/content-team/index.ts",
+  },
   format: ["esm"],
   splitting: false,
   // dts emitted by `tsc -p tsconfig.build.json` instead — @mastra/core's own

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { codeTeam } from "../code-team.js"
+import { codeTeam } from "../code-team/index.js"
 
 const fakeModel = { provider: "test", id: "test-model" }
 
@@ -11,7 +11,6 @@ describe("code-team app", () => {
       "@agentproto/reviewer",
     ])
     expect(codeTeam.workflows.map((w) => w.id)).toEqual(["deliver-change"])
-    // Every agent references the one bundled workflow (attachment invariant).
     for (const { agent } of codeTeam.agents) {
       expect(agent.workflows).toContainEqual({ ref: "deliver-change" })
     }
@@ -25,15 +24,11 @@ describe("code-team app", () => {
       "@agentproto/reviewer",
     ])
     expect(built["@agentproto/reviewer"]!.instructions).toContain("rigorous reviewer")
-    // The reviewer's boundary folds into its instructions.
     expect(built["@agentproto/reviewer"]!.instructions).toContain("Never run gh pr merge")
   })
 
   it("lets a host use just one agent of the team", async () => {
-    // The "use n agents from a team" path: build all, pick one by id.
     const built = await codeTeam.toMastraAgents({ resolveModel: () => fakeModel })
-    const reviewerOnly = built["@agentproto/reviewer"]
-    expect(reviewerOnly).toBeDefined()
-    expect(reviewerOnly!.agent.name).toBe("reviewer")
+    expect(built["@agentproto/reviewer"]!.agent.name).toBe("reviewer")
   })
 })
