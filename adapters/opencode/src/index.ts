@@ -108,7 +108,7 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // with `configId` ∈ {"model", "effort", "mode"} directly on the wire —
   // no CLI flags involved. Both are applied post-`session/new`, not argv.
   modes: [
-    { id: "default", description: "Standard interactive mode." },
+    { id: "default", description: "Standard interactive mode.", kind: "posture" },
     {
       id: "plan",
       description:
@@ -116,12 +116,14 @@ export const opencode: AgentCliHandle = defineAgentCli({
       // No CLI flag exists for this — applied via ACP
       // session/set_config_option(configId:"mode") after newSession.
       apply: "config",
+      kind: "posture",
     },
     {
       id: "build",
       description:
         "Auto-execute mode — file edits and shell commands run without per-step prompts.",
       apply: "config",
+      kind: "posture",
     },
   ],
   options: [
