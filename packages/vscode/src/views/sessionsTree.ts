@@ -32,6 +32,7 @@ import type { SessionStore } from "../services/sessionStore.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
   buildSessionRows,
+  collapseResumeChains,
   descriptionFor,
   formatDuration,
   iconFor,
@@ -96,7 +97,15 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<TreeNode>, 
     // from what's actually shown.
     const survivors = filterSessions(all, this.filter.state, this.filter.workspaces)
     this._hiddenCount = all.length - survivors.length
-    this.nodes = buildSessionRows(survivors, this.now)
+    // Collapse resume chains AFTER the filter (which already excludes
+    // archived rows via the store's includeArchived toggle — see
+    // sessionStore.ts) so a predecessor is hidden ONLY when its successor is
+    // actually visible in `survivors`; a successor that got filtered out or
+    // stayed archived leaves the predecessor showing instead of vanishing
+    // the whole restart chain. Row count (not `all.length`) so a collapsed
+    // predecessor never inflates the filter's "hidden" badge.
+    const collapsed = collapseResumeChains(survivors)
+    this.nodes = buildSessionRows(collapsed, this.now)
     this._onDidChange.fire()
   }
 

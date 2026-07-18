@@ -384,20 +384,18 @@ export function buildHtml(nonce: string): string {
       color: var(--vscode-editorWarning-foreground);
     }
     #blocked-note[hidden] { display: none; }
-    /* Resume-chain history (Task C) — a restarted session's ancestor
-       transcripts, rendered ONCE at init as a static block ABOVE the live
-       timeline. Deliberately its OWN scroll region (capped height) rather
-       than growing #transcript's flex box unbounded: a chain of several
-       restarts could otherwise push the live conversation off-screen. Empty
-       (no resumedFrom) collapses to nothing via :empty. */
+    /* Resume-chain history — a restarted session's ancestor transcripts,
+       rendered ONCE at init as the FIRST content INSIDE #transcript (see the
+       'init' handler + paintResumeChain), not a separate scroll pane above
+       it: one continuous conversation, oldest ancestor turn to newest live
+       one, governed by #transcript's single scroll region. Empty (no
+       resumedFrom) collapses to nothing via :empty — no border, no gap. */
     #resume-history {
-      flex: 0 1 auto;
-      max-height: 35vh;
-      overflow-y: auto;
-      padding: 10px 14px 4px;
+      padding-bottom: 6px;
+      margin-bottom: 10px;
       border-bottom: 1px solid var(--vscode-panel-border);
     }
-    #resume-history:empty { display: none; padding: 0; border: none; }
+    #resume-history:empty { display: none; padding: 0; margin: 0; border: none; }
     .resume-divider {
       text-align: center;
       font-size: 0.78em;
@@ -964,7 +962,6 @@ export function buildHtml(nonce: string): string {
       </div>
     </div>
   </div>
-  <div id="resume-history"></div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
   <div id="blocked-note" hidden></div>
   <div id="working" hidden>
@@ -1031,7 +1028,6 @@ export function buildHtml(nonce: string): string {
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
       const blockedNote = document.getElementById('blocked-note');
-      const resumeHistory = document.getElementById('resume-history');
       const transcript = document.getElementById('transcript');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
@@ -1100,6 +1096,13 @@ export function buildHtml(nonce: string): string {
        *  firing a second interrupt at an already-cancelling turn. */
       let isStopping = false;
       let mode = 'raw';
+      // Cached copy of the current session's resume chain (oldest-first, see
+      // protocol.ts's init.resumeChain doc) so a full-transcript reset
+      // (clearTranscript, below) can repaint the SAME static ancestor block
+      // it would otherwise wipe — #resume-history now lives INSIDE
+      // #transcript (one continuous scroll region), so a blind
+      // transcript.innerHTML reset erases it without this.
+      let lastResumeChain = null;
       let lastUsage;
       // Turns/segments are addressed by stable id (data-turn-id/data-seg-id)
       // and patched in place — a live update never tears the DOM down, so
@@ -1671,10 +1674,21 @@ export function buildHtml(nonce: string): string {
         nodes[turn.id] = node;
       }
 
+      // The stitched ancestor history (#resume-history, painted by
+      // paintResumeChain below) counts as real content: a restarted session
+      // with no live turns yet is NOT an empty conversation, it's one whose
+      // newest turn happens to be an ancestor's — see the module's Problem-1
+      // fix. Only when NEITHER live turns NOR ancestor history exist does
+      // "no messages" actually hold.
+      function hasResumeHistory() {
+        const node = document.getElementById('resume-history');
+        return node !== null && node.childNodes.length > 0;
+      }
+
       function syncEmptyState() {
         const hasTurns = transcript.querySelector('.turn[data-turn-id]') !== null;
         const emptyNode = document.getElementById('empty');
-        if (hasTurns) {
+        if (hasTurns || hasResumeHistory()) {
           if (emptyNode) emptyNode.remove();
         } else if (!emptyNode) {
           const e = el('div', undefined, 'No messages yet.');
@@ -1699,11 +1713,23 @@ export function buildHtml(nonce: string): string {
         if (!hasFill) contextPopover.hidden = true;
       }
 
+      // Wipes #transcript back to empty and immediately repaints the static
+      // ancestor block (from lastResumeChain) as its first child. A blind
+      // transcript.innerHTML reset would otherwise erase #resume-history
+      // along with the live timeline, now that both share one scroll region
+      // — this is the one place that reset happens, so every full-transcript
+      // rebuild (renderFullConversation, and raw mode's init branch) routes
+      // through it instead of touching transcript.innerHTML directly.
+      function clearTranscript() {
+        transcript.innerHTML = '';
+        paintResumeChain();
+      }
+
       // Full resync — used by 'init' (and a hypothetical future 'conversation'
       // full-resync message). Everything after this flows as 'patch'.
       function renderFullConversation(conv) {
         const atBottom = !isScrolledUp;
-        transcript.innerHTML = '';
+        clearTranscript();
         pendingTools.clear();
         const nodes = {};
         if (conv && conv.turns) {
@@ -1757,30 +1783,57 @@ export function buildHtml(nonce: string): string {
         return node;
       }
 
-      // Render the FULL resume chain into #resume-history, once, at init.
+      // #resume-history is built lazily (never part of the static HTML
+      // skeleton) so it can be recreated as the first child of #transcript
+      // after any full reset (clearTranscript) — always in front of the live
+      // timeline, in the SAME scroll region, never a sibling pane of its own.
+      function resumeHistoryContainer() {
+        let node = document.getElementById('resume-history');
+        if (!node) {
+          node = el('div');
+          node.id = 'resume-history';
+          transcript.insertBefore(node, transcript.firstChild);
+        }
+        return node;
+      }
+
+      // Paints lastResumeChain into #resume-history. Split from
+      // renderResumeChain (below) so clearTranscript can repaint the SAME
+      // cached chain after a full reset without the caller re-sending it.
       // chain is already oldest-first (host-side reverse — see
       // transcriptPanelController.ts's buildResumeChain): each ancestor's
       // turns (or an "unavailable" note when its transcript couldn't load)
       // are followed by the divider describing HOW the next-more-recent
       // session resumed from it, so the sequence reads top-to-bottom as
-      // "what happened, then it restarted, then what happened next".
-      function renderResumeChain(chain) {
-        resumeHistory.innerHTML = '';
-        for (const entry of chain || []) {
+      // "what happened, then it restarted, then what happened next" —
+      // directly into the transcript's OWN scroll region, not a capped pane
+      // above it.
+      function paintResumeChain() {
+        const container = resumeHistoryContainer();
+        container.innerHTML = '';
+        for (const entry of lastResumeChain || []) {
           if (entry.conversation && entry.conversation.turns) {
             for (const turn of entry.conversation.turns) {
-              resumeHistory.appendChild(renderStaticTurn(turn));
+              container.appendChild(renderStaticTurn(turn));
             }
           } else if (entry.unavailable) {
-            resumeHistory.appendChild(el('div', 'resume-unavailable',
+            container.appendChild(el('div', 'resume-unavailable',
               entry.unavailable === 'no-transcript'
                 ? 'Earlier history not available (no structured transcript).'
                 : 'Earlier history could not be loaded.'));
           }
           const via = entry.resumeVia ? ' (' + entry.resumeVia + ')' : ' (no continuity)';
-          resumeHistory.appendChild(el('div', 'resume-divider',
+          container.appendChild(el('div', 'resume-divider',
             '── restarted · resumed from ' + entry.sessionId + via + ' ──'));
         }
+      }
+
+      // Render the FULL resume chain, once, at init — see paintResumeChain
+      // for the actual paint. Caching the chain in lastResumeChain is what
+      // lets clearTranscript restore it after a later full reset.
+      function renderResumeChain(chain) {
+        lastResumeChain = chain || null;
+        paintResumeChain();
       }
 
       // The wire prompt is text + every attachment path, space-joined: v1 hands
@@ -2147,17 +2200,30 @@ export function buildHtml(nonce: string): string {
           case 'init':
             mode = msg.mode || 'raw';
             isScrolledUp = false;
+            // Independent of mode — an ancestor's history renders as the
+            // FIRST content in the SAME scroll region as the current
+            // session's own content (structured OR raw), never a separate
+            // capped pane. Cached/painted before the mode branch below so a
+            // raw-mode reset (clearTranscript) already has it to repaint.
+            // Only ever set here (init runs once per panel), never on
+            // 'conversation'/'patch' — see protocol.ts's resumeChain doc.
+            renderResumeChain(msg.resumeChain);
             if (mode === 'structured') {
               renderFullConversation(msg.conversation);
             } else {
-              transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
+              clearTranscript();
+              // Suppress the dead "No transcript available" placeholder
+              // when the stitched ancestor history above IS the transcript
+              // — only show it when there's genuinely nothing at all (no
+              // ancestor history AND no raw content either).
+              const raw = msg.initialHtml || (hasResumeHistory() ? '' : '<div id="empty">No transcript available.</div>');
+              if (raw) {
+                const rawWrap = el('div');
+                rawWrap.innerHTML = raw;
+                while (rawWrap.firstChild) transcript.appendChild(rawWrap.firstChild);
+              }
               transcript.scrollTop = transcript.scrollHeight;
             }
-            // Independent of mode — an ancestor's history renders in its
-            // own static block whether the CURRENT session is structured or
-            // raw. Only ever painted here (init runs once per panel), never
-            // on 'conversation'/'patch' — see protocol.ts's resumeChain doc.
-            renderResumeChain(msg.resumeChain);
             historyState = { entries: msg.history || [], index: null, draft: '' };
             applySession(msg.session);
             break;

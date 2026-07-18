@@ -392,6 +392,41 @@ export function compareSessions(a: SessionDescriptor, b: SessionDescriptor): num
 }
 
 /**
+ * Collapse a resume chain to its tail: hide any session `S` for which some
+ * OTHER session in the SAME input list has `resumedFrom === S.id`. A restart
+ * mints a new session id and links back via `resumedFrom` (see the runtime's
+ * `SessionDescriptor.resumedFrom` doc), so left unfiltered the tree shows
+ * both the dead predecessor and its live successor as separate rows with
+ * the same title. This hides the predecessor — transitively, so a chain
+ * A→B→C (B resumed from A, C resumed from B) collapses to just C — without
+ * dropping anything a survivor doesn't already cover: the predecessor's own
+ * conversation is still reachable through the survivor's stitched transcript
+ * (transcriptPanelController.ts's resume-chain stitch).
+ *
+ * Deliberately independent of `buildSessionTree`'s parentSessionId nesting —
+ * `resumedFrom` is a REPLACEMENT relationship (same conversation, new
+ * session id), not a spawner/subagent one, and a hidden predecessor must
+ * never become a `SessionNode.children` entry: that array drives the
+ * "N subagents" tree-row suffix (`descriptionFor`'s `ctx.childCount`), and a
+ * resumed-from predecessor is not a subagent — it would misreport the count.
+ *
+ * A `resumedFrom` pointing at an id absent from `sessions` (successor
+ * filtered out, e.g. archived, or the predecessor already missing from the
+ * list) is ignored: nothing in `sessions` claims that id via `resumedFrom`
+ * lookup unless the id is actually present as a session's own `id`, so the
+ * predecessor stays visible whenever its successor isn't. Caller applies
+ * this AFTER `filterSessions` — see sessionsTree.ts's `rebuild` — so a
+ * predecessor is only hidden when its successor is actually shown.
+ */
+export function collapseResumeChains(sessions: readonly SessionDescriptor[]): SessionDescriptor[] {
+  const resumedFromIds = new Set<string>()
+  for (const session of sessions) {
+    if (session.resumedFrom) resumedFromIds.add(session.resumedFrom)
+  }
+  return sessions.filter(session => !resumedFromIds.has(session.id))
+}
+
+/**
  * Group sessions into a parent/child tree: roots are sessions without a
  * (resolvable) parentSessionId; children are nested under their parent's
  * node (orchestrator subtrees). A parentSessionId pointing at an id absent
