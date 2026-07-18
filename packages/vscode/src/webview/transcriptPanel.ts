@@ -234,6 +234,9 @@ async function handleWebviewMessage(
     case "stop":
       await controller.onStop()
       return
+    case "restart":
+      await controller.onRestart()
+      return
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
       return
@@ -381,6 +384,33 @@ export function buildHtml(nonce: string): string {
       color: var(--vscode-editorWarning-foreground);
     }
     #blocked-note[hidden] { display: none; }
+    /* Resume-chain history (Task C) — a restarted session's ancestor
+       transcripts, rendered ONCE at init as a static block ABOVE the live
+       timeline. Deliberately its OWN scroll region (capped height) rather
+       than growing #transcript's flex box unbounded: a chain of several
+       restarts could otherwise push the live conversation off-screen. Empty
+       (no resumedFrom) collapses to nothing via :empty. */
+    #resume-history {
+      flex: 0 1 auto;
+      max-height: 35vh;
+      overflow-y: auto;
+      padding: 10px 14px 4px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    #resume-history:empty { display: none; padding: 0; border: none; }
+    .resume-divider {
+      text-align: center;
+      font-size: 0.78em;
+      color: var(--vscode-descriptionForeground);
+      margin: 10px 0;
+      opacity: 0.8;
+    }
+    .resume-unavailable {
+      font-size: 0.85em;
+      font-style: italic;
+      color: var(--vscode-descriptionForeground);
+      padding: 4px 0 10px;
+    }
     #transcript {
       flex: 1 1 auto;
       overflow-y: auto;
@@ -884,6 +914,21 @@ export function buildHtml(nonce: string): string {
     #stop:hover:not(:disabled) {
       background: var(--vscode-inputValidation-warningBorder, var(--vscode-toolbar-hoverBackground));
     }
+    /* Shown only once the session has exited, beside the now-disabled input
+       (see refreshComposer) — a session that has exited has exactly one
+       useful action left, so it earns the button's primary styling, same
+       treatment as #send.has-text. */
+    #restart-btn {
+      flex: 0 0 auto;
+      font-size: 0.85em;
+      line-height: 1;
+      padding: 4px 8px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    #restart-btn:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+    }
     #send-status {
       flex: 0 0 auto;
       color: var(--vscode-errorForeground);
@@ -919,6 +964,7 @@ export function buildHtml(nonce: string): string {
       </div>
     </div>
   </div>
+  <div id="resume-history"></div>
   <div id="transcript"><div id="empty">Loading transcript…</div></div>
   <div id="blocked-note" hidden></div>
   <div id="working" hidden>
@@ -951,6 +997,7 @@ export function buildHtml(nonce: string): string {
         </span>
         <span id="send-status"></span>
         <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
+        <button id="restart-btn" hidden title="Restart this session — resumes the conversation in a new session">↻ Restart</button>
         <button id="send" title="Send (Enter)">↵</button>
         <button id="stop" hidden title="Stop the current turn">■</button>
       </div>
@@ -984,6 +1031,7 @@ export function buildHtml(nonce: string): string {
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
       const blockedNote = document.getElementById('blocked-note');
+      const resumeHistory = document.getElementById('resume-history');
       const transcript = document.getElementById('transcript');
       const working = document.getElementById('working');
       const workingText = document.getElementById('working-text');
@@ -995,6 +1043,7 @@ export function buildHtml(nonce: string): string {
       const sendBtn = document.getElementById('send');
       const stopBtn = document.getElementById('stop');
       const interruptBtn = document.getElementById('interrupt-send');
+      const restartBtn = document.getElementById('restart-btn');
       const sendStatus = document.getElementById('send-status');
       const errorBanner = document.getElementById('error-banner');
       const ebTitle = document.getElementById('eb-title');
@@ -1088,6 +1137,10 @@ export function buildHtml(nonce: string): string {
         // whenever the agent is busy.
         interruptBtn.hidden = queuedText === null || exited;
         interruptBtn.disabled = !live;
+        // The one useful action left once a session has exited — shown
+        // beside the now-disabled input rather than replacing it, so the
+        // last message typed (if any) stays visible instead of vanishing.
+        restartBtn.hidden = !exited;
         composer.classList.toggle('disabled', exited);
         renderQueued();
       }
@@ -1679,6 +1732,57 @@ export function buildHtml(nonce: string): string {
         if (atBottom) transcript.scrollTop = transcript.scrollHeight;
       }
 
+      // A resume-chain ancestor's turns are rendered ONCE, statically — they
+      // never patch again (the ancestor session is dead history), so this
+      // deliberately does NOT go through upsertTurn/insertTurnInOrder (those
+      // assume a live, ordered, re-patchable timeline keyed by a single
+      // shared turn-id numbering — turn ids from a DIFFERENT session's own
+      // reduceConversation aren't ordered against this session's at all).
+      // buildSegmentShell/paintSegment are still reused as-is: they only
+      // build/paint a segment from its own data, with no reference to the
+      // live #transcript, so the same rendering fidelity (tool cards,
+      // folded activity runs, plans, …) applies to frozen history for free.
+      function renderStaticTurn(turn) {
+        const node = el('div', 'turn turn-' + turn.role);
+        if (turn.role === 'user') node.appendChild(el('div', 'role', 'You'));
+        const bubble = el('div', 'bubble');
+        node.appendChild(bubble);
+        for (const seg of turn.segments || []) {
+          const segNode = buildSegmentShell(seg);
+          segNode.dataset.segId = seg.id;
+          paintSegment(segNode, seg);
+          bubble.appendChild(segNode);
+        }
+        markToolRuns(bubble);
+        return node;
+      }
+
+      // Render the FULL resume chain into #resume-history, once, at init.
+      // chain is already oldest-first (host-side reverse — see
+      // transcriptPanelController.ts's buildResumeChain): each ancestor's
+      // turns (or an "unavailable" note when its transcript couldn't load)
+      // are followed by the divider describing HOW the next-more-recent
+      // session resumed from it, so the sequence reads top-to-bottom as
+      // "what happened, then it restarted, then what happened next".
+      function renderResumeChain(chain) {
+        resumeHistory.innerHTML = '';
+        for (const entry of chain || []) {
+          if (entry.conversation && entry.conversation.turns) {
+            for (const turn of entry.conversation.turns) {
+              resumeHistory.appendChild(renderStaticTurn(turn));
+            }
+          } else if (entry.unavailable) {
+            resumeHistory.appendChild(el('div', 'resume-unavailable',
+              entry.unavailable === 'no-transcript'
+                ? 'Earlier history not available (no structured transcript).'
+                : 'Earlier history could not be loaded.'));
+          }
+          const via = entry.resumeVia ? ' (' + entry.resumeVia + ')' : ' (no continuity)';
+          resumeHistory.appendChild(el('div', 'resume-divider',
+            '── restarted · resumed from ' + entry.sessionId + via + ' ──'));
+        }
+      }
+
       // The wire prompt is text + every attachment path, space-joined: v1 hands
       // the agent readable PATHS (Decision A), so a chip collapses back into the
       // prompt string here. Keeping it a plain string is what lets the mid-turn
@@ -1998,6 +2102,9 @@ export function buildHtml(nonce: string): string {
       // Interrupt only ever acts on the queued message — it's the only thing
       // waiting, and it's what the button offers to stop waiting for.
       interruptBtn.addEventListener('click', function() { flushQueued(true); });
+      // The host resolves which session to restart from the CONTROLLER, not
+      // from anything this message carries — see protocol.ts's restart doc.
+      restartBtn.addEventListener('click', function() { vscode.postMessage({ type: 'restart' }); });
       queuedCancel.addEventListener('click', function() {
         queuedText = null;
         refreshComposer();
@@ -2046,6 +2153,11 @@ export function buildHtml(nonce: string): string {
               transcript.innerHTML = msg.initialHtml || '<div id="empty">No transcript available.</div>';
               transcript.scrollTop = transcript.scrollHeight;
             }
+            // Independent of mode — an ancestor's history renders in its
+            // own static block whether the CURRENT session is structured or
+            // raw. Only ever painted here (init runs once per panel), never
+            // on 'conversation'/'patch' — see protocol.ts's resumeChain doc.
+            renderResumeChain(msg.resumeChain);
             historyState = { entries: msg.history || [], index: null, draft: '' };
             applySession(msg.session);
             break;

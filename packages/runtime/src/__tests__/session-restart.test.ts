@@ -13,7 +13,7 @@
  */
 
 import { afterEach, describe, it, expect } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, utimesSync, mkdirSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -89,6 +89,10 @@ function makeFakePtyFactory(): PtyFactory {
 
 async function buildHarness(
   resolverOpts: Parameters<typeof makeResolver>[0] = {},
+  // Real persistence (round-trip through sessions.json) only when a caller
+  // passes a path — the reload/persistence tests below need it, everything
+  // else stays in-memory-only like before.
+  persistPath?: string,
 ): Promise<{
   client: Client
   registry: SessionsRegistry
@@ -99,7 +103,7 @@ async function buildHarness(
   const { resolver, calls } = makeResolver(resolverOpts)
   const registry = createSessionsRegistry({
     sessionEvents,
-    persist: false,
+    ...(persistPath ? { persistPath } : { persist: false }),
     spawnPty: makeFakePtyFactory(),
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
@@ -313,6 +317,122 @@ describe("session_restart", () => {
     expect(String(body.error)).toMatch(/no session/)
 
     await close()
+  })
+})
+
+/**
+ * `resumedFrom`/`resumeVia` used to exist only on the restart RESULT's JSON
+ * (grafted on in session-tools.ts), never on the STORED descriptor — so the
+ * link vanished the moment a caller re-read the session via `session_list`/
+ * `session_get` instead of holding onto the original restart response. These
+ * tests drive the fix: the fields must be on the registry's own descriptor,
+ * not just this call's JSON, and must survive a save/reload cycle (real
+ * `persistPath`, not `persist: false`) the same way every other descriptor
+ * field does.
+ */
+describe("session_restart — resumedFrom/resumeVia persist on the stored descriptor", () => {
+  let tmp: string
+  let persistPath: string
+
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it("agent/ACP restart: the NEW session's registry-held descriptor (not just the tool's JSON) carries resumedFrom/resumeVia", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "session-restart-persist-"))
+    persistPath = join(tmp, "sessions.json")
+    const { client, registry, close } = await buildHarness({}, persistPath)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+    const newId = String(desc.id)
+
+    // The descriptor the REGISTRY holds for the new id — not the tool
+    // response — is what a later session_list/session_get poll reads.
+    const stored = registry.get(newId)
+    expect(stored?.resumedFrom).toBe(prev.id)
+    expect(stored?.resumeVia).toBe("resumed via ACP")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("pty-native restart: the stored descriptor carries resumedFrom/resumeVia too", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "session-restart-persist-pty-"))
+    persistPath = join(tmp, "sessions.json")
+    const { client, registry, close } = await buildHarness({}, persistPath)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+    const newId = String(desc.id)
+
+    const stored = registry.get(newId)
+    expect(stored?.resumedFrom).toBe(prev.id)
+    expect(stored?.resumeVia).toBe("resumed via claude --resume")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("survives a daemon restart: reloading sessions.json from a fresh registry still shows resumedFrom/resumeVia", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "session-restart-persist-reload-"))
+    persistPath = join(tmp, "sessions.json")
+    const { client, registry, close } = await buildHarness({}, persistPath)
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    const newId = String(toolJson(result).id)
+
+    await close()
+    // Flush + tear down this registry, then boot a brand-new one against
+    // the same file — the same thing a daemon restart does.
+    registry.shutdown()
+
+    const raw = JSON.parse(readFileSync(persistPath, "utf8"))
+    const persistedRow = raw.sessions.find((s: { id: string }) => s.id === newId)
+    expect(persistedRow?.resumedFrom).toBe(prev.id)
+    expect(persistedRow?.resumeVia).toBe("resumed via ACP")
+
+    const reloaded = createSessionsRegistry({ persistPath })
+    const afterReload = reloaded.get(newId)
+    expect(afterReload?.resumedFrom).toBe(prev.id)
+    expect(afterReload?.resumeVia).toBe("resumed via ACP")
+    reloaded.shutdown()
   })
 })
 

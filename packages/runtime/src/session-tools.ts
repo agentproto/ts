@@ -974,6 +974,9 @@ export function registerSessionTools(
               : Array.isArray(prev.argv) && prev.argv.length > 0
                 ? [...prev.argv]
                 : tokenizeCommand(prev.command)
+          // Persist the resume lineage onto the STORED descriptor (not just
+          // grafted onto this response's JSON, as it used to be) — see
+          // `SessionDescriptor.resumedFrom`'s doc for why that matters.
           const desc = registry.spawnPty({
             argv,
             cwd,
@@ -982,16 +985,14 @@ export function registerSessionTools(
             rows: input.rows ?? 24,
             ...(prev.name ? { name: prev.name } : {}),
             ...(prev.label ? { label: prev.label } : {}),
+            resumedFrom: prev.id,
+            resumeVia: describeResumePath(augmented),
           })
           return {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(
-                  { ...desc, resumedFrom: prev.id, resumeVia: describeResumePath(augmented) },
-                  null,
-                  2
-                ),
+                text: JSON.stringify(desc, null, 2),
               },
             ],
           }

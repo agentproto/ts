@@ -590,6 +590,26 @@ export interface SessionDescriptor {
    *  matching command session; absent otherwise (including for legacy
    *  rows persisted before this field existed). */
   priorCommandSessionId?: string
+  /** Id of the prior session this one continues from — set when this
+   *  session was spawned by `session_restart` (or the cron scheduler's
+   *  `prompt-session` action), even when the resume attempt itself
+   *  couldn't establish continuity: a fresh fallback spawn (adapter
+   *  rejected the resume id as "not found") is still "restarted from"
+   *  the prior session, just without conversation history carried over.
+   *  Absent for a session spawned directly (not via restart). Persisted
+   *  on the STORED descriptor (not just grafted onto the restart
+   *  result's JSON, as it used to be) so it survives a `list()`/`get()`
+   *  poll refresh and a daemon restart — see `resumeVia` for how the
+   *  continuity was (or wasn't) established, and the transcript panel's
+   *  chain-walk (vscode package) for the read side. */
+  resumedFrom?: string
+  /** Human-readable resume path used to arrive at `resumedFrom` — e.g.
+   *  "resumed via claude --resume" (provider-native PTY resume) or
+   *  "resumed via ACP" (adapter-level resume), or `""` when no
+   *  continuity was established (a fresh fallback spawn — see
+   *  `resumedFrom`). Only meaningful alongside `resumedFrom`; absent
+   *  (never `""`) for a session that wasn't spawned via restart. */
+  resumeVia?: string
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -1161,6 +1181,14 @@ export interface SpawnAgentInput {
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
    *  via the billing-auth resolver, never passing the raw credential here. */
   auth?: SessionAuthEcho
+  /** Prior session id this spawn continues from — set by `restartAgentSession`
+   *  (session-restart-core.ts) when this is a restart, recorded verbatim onto
+   *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
+   *  spawn. */
+  resumedFrom?: string
+  /** Human-readable resume path, recorded onto {@link SessionDescriptor.resumeVia}.
+   *  Threaded through alongside `resumedFrom` — see that field's doc. */
+  resumeVia?: string
   /** Hard ceiling on cumulative session cost (USD). When set and the
    *  adapter's usage reader reports a higher cost at a turn-end, the session
    *  is stopped (best-effort, turn-granular — caps continuation, can't abort
@@ -1237,6 +1265,12 @@ export interface SpawnPtyInput {
    *  sub-gateway so `session_tree` shows the PTY under its spawner. */
   parentSessionId?: string
   depth?: number
+  /** Restart lineage — same semantics as `SpawnAgentInput.resumedFrom` /
+   *  `resumeVia`, recorded onto {@link SessionDescriptor.resumedFrom} /
+   *  {@link SessionDescriptor.resumeVia}. Set by `session_restart` for the
+   *  pty-native/pty-plain branches (session-tools.ts). */
+  resumedFrom?: string
+  resumeVia?: string
 }
 
 export interface RecordCommandInput {
@@ -2766,6 +2800,12 @@ export function createSessionsRegistry(opts?: {
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
+        // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
+        // can legitimately be "" (a fresh fallback spawn with no continuity),
+        // so it's gated on `!== undefined` rather than truthiness — a truthy
+        // gate would silently drop the empty-string case.
+        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -2876,6 +2916,10 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         depth: input.depth ?? 0,
+        // Restart lineage — same gating rule as spawnAgent above (`resumeVia`
+        // can legitimately be "").
+        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
       }
       const rt: SessionRuntime = {
         desc,

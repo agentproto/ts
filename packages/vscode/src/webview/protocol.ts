@@ -11,6 +11,31 @@ import type { MentionCandidate } from "./mentions.logic.js"
 import type { SendFailureKind } from "./transcript.logic.js"
 
 /**
+ * One ancestor segment of a restarted session's resume chain, ALREADY
+ * presented to safe HTML on the extension host — same "webview never parses
+ * raw content" contract as `conversation` below. Oldest-first order in
+ * `init.resumeChain` (the walk itself runs closest-ancestor-first — see
+ * `walkResumeChain`, resumeChain.logic.ts — and the controller reverses it
+ * before shipping this).
+ */
+export interface ResumeChainEntry {
+  /** The ancestor session's id — shown (shortened) in the divider. */
+  sessionId: string
+  /** How the NEXT-more-recent session in the chain resumed from this one —
+   *  e.g. "resumed via claude --resume", "resumed via ACP", or "" for a
+   *  fresh fallback spawn with no continuity established. Drives the
+   *  divider's label. */
+  resumeVia: string
+  /** This ancestor's presented conversation, when its structured transcript
+   *  loaded. Absent (with `unavailable` set) when it couldn't. */
+  conversation?: PresentedConversation
+  /** Set when this ancestor's transcript couldn't be loaded — the walk
+   *  stopped here (see `walkResumeChain`'s doc). The panel shows a note
+   *  instead of erroring. */
+  unavailable?: "no-transcript" | "fetch-error"
+}
+
+/**
  * A raw-mode transcript line, ALREADY rendered to safe HTML on the host.
  *
  * Carries HTML rather than the daemon's raw `{line, stream}` because those
@@ -54,6 +79,17 @@ export type ExtMessage =
        * unescaped daemon text here.
        */
       initialHtml?: string
+      /**
+       * This session's resume ancestry, oldest segment first, present only
+       * when the session was spawned by a restart (`SessionDescriptor.
+       * resumedFrom`). Independent of `mode` — an ancestor's history renders
+       * above the current session's own content (structured OR raw) in its
+       * own static block, never mixed into the live-reconciled timeline (see
+       * transcriptPanel.ts's `#resume-history`). Absent for a session that
+       * wasn't restarted, or when the walk found nothing (e.g. its
+       * immediate `resumedFrom` id no longer resolves).
+       */
+      resumeChain?: ResumeChainEntry[]
       /**
        * Seeded prompt history for ↑/↓ (oldest → newest) — the last 100
        * `user-prompt` record texts from this session, so history survives a
@@ -162,6 +198,16 @@ export type WebviewMessage =
   | { type: "interruptSend"; text: string }
   | { type: "stop" }
   /**
+   * The composer's "Restart" button (shown only once the session has
+   * exited — see transcriptPanel.ts's `refreshComposer`). Targets THIS
+   * panel's own session id; the host resolves that from the controller, not
+   * from anything the message carries. Mints a new session id via the same
+   * `agentproto.restartSession` command the sessions-tree context menu uses
+   * (sessionRestart.ts), whose transcript now opens with the resume chain
+   * stitched in (see resumeChain.logic.ts + `init.resumeChain`).
+   */
+  | { type: "restart" }
+  /**
    * Open a tool call's full input/output in a read-only editor tab.
    *
    * Carries an id and which side to open — deliberately NOT the text. The
@@ -199,6 +245,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   switch (type) {
     case "ready":
     case "stop":
+    case "restart":
       return true
     case "send":
     case "interruptSend":

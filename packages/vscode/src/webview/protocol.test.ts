@@ -26,6 +26,12 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "stop" })).toBe(true)
   })
 
+  it("accepts restart", () => {
+    // The composer's Restart button (shown only once exited) — targets this
+    // panel's own session id, resolved host-side, not carried on the message.
+    expect(isWebviewMessage({ type: "restart" })).toBe(true)
+  })
+
   it("rejects send without text", () => {
     expect(isWebviewMessage({ type: "send" })).toBe(false)
   })
