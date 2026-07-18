@@ -44,11 +44,13 @@ describe("llm:openrouter generator", () => {
     expect(src).toContain("export const OPENROUTER_ROUTES: Record<string, LLMPricing> = {")
     expect(src).toContain("export const OPENROUTER_PROVIDERS: readonly string[] = [")
 
-    // Entry count = number of `inputPer1M:` occurrences. Matches the 6-model
-    // committed snapshot exactly (deterministic from the fixture); ≥1 is the
-    // contract floor.
+    // Entry count = number of `inputPer1M:` occurrences. The committed
+    // snapshot is the FULL live OpenRouter /v1/models payload (see the
+    // generator's own doc comment — "every route the router exposes"), so
+    // its size legitimately grows/shrinks as OpenRouter's catalog changes.
+    // ≥1 is the real contract floor; asserting an exact count here would
+    // just re-break on every refresh.
     const entryCount = (src.match(/inputPer1M:/g) ?? []).length
-    expect(entryCount).toBe(6)
     expect(entryCount).toBeGreaterThanOrEqual(1)
 
     // Spot-check a real entry WITH cache fields (Anthropic prompt caching).
@@ -61,8 +63,6 @@ describe("llm:openrouter generator", () => {
     // Providers list: derived + sorted + deduped.
     expect(src).toContain('"anthropic",')
     expect(src).toContain('"openai",')
-    // z-ai is NOT in the 6-model fixture.
-    expect(src).not.toContain('"z-ai"')
   })
 
   it("is byte-identical across two generate calls (deterministic)", async () => {
