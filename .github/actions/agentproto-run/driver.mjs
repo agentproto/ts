@@ -221,9 +221,44 @@ async function main() {
   }
 
   console.log(`driver: run ${runId} reached terminal status=${run.status}`)
+
+  // A workflow can report status="done" even when its agent step spawned a
+  // session that exited clean with ZERO work — a SILENT NO-OP that otherwise
+  // reads as success and lets the calling gate pass a PR nobody reviewed. Read
+  // the real session output, log it (the only place the agent's own stderr
+  // surfaces in CI), and treat an empty "done" as a failure so the caller's
+  // fallback reviewer takes over.
+  const sessionIds = Array.isArray(run?.result?.sessionIds) ? run.result.sessionIds : []
+  console.log(`driver: run produced sessionIds=${JSON.stringify(sessionIds)}`)
+  let sawAgentOutput = false
+  for (const sid of sessionIds) {
+    try {
+      const outRes = await client.callTool({
+        name: "agent_output",
+        arguments: { sessionId: sid, lastN: 400, clean: true },
+      })
+      const text = typeof outRes?.content?.[0]?.text === "string" ? outRes.content[0].text : ""
+      console.log(`driver: ---- agent_output ${sid} ----\n${text}\n---- end agent_output ${sid} ----`)
+      if (text.trim().length > 0) sawAgentOutput = true
+    } catch (err) {
+      console.error(
+        `driver: agent_output ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  const silentNoop = run.status === "done" && (sessionIds.length === 0 || !sawAgentOutput)
+  if (silentNoop) {
+    console.error(
+      "driver: run reached status=done but produced NO agent session output — treating " +
+        "as FAILURE (silent no-op). The reviewer did not actually run; the calling job's " +
+        "fallback reviewer should take over.",
+    )
+  }
+  const finalStatus = silentNoop ? "failed" : run.status
   await writeGithubOutput("run-id", runId)
-  await writeGithubOutput("status", run.status)
-  return run.status === "done" ? 0 : 1
+  await writeGithubOutput("status", finalStatus)
+  return finalStatus === "done" ? 0 : 1
 }
 
 let exitCode = 1
