@@ -70,12 +70,25 @@ if (!existsSync(workflowPath)) {
   process.exit(1)
 }
 
-const agentprotoBin = join(actionPath, "node_modules", ".bin", "agentproto")
-if (!existsSync(agentprotoBin)) {
-  console.error(
-    `driver: agentproto bin not found at ${agentprotoBin} — did the npm install step run?`,
-  )
-  process.exit(1)
+const cliSource = process.env.CLI_SOURCE ?? "npm"
+
+let agentprotoBin
+if (cliSource === "workspace") {
+  agentprotoBin = join(cwd, "packages", "cli", "dist", "cli.mjs")
+  if (!existsSync(agentprotoBin)) {
+    console.error(
+      `driver: workspace CLI not found at ${agentprotoBin} — run pnpm build --filter @agentproto/cli first`,
+    )
+    process.exit(1)
+  }
+} else {
+  agentprotoBin = join(actionPath, "node_modules", ".bin", "agentproto")
+  if (!existsSync(agentprotoBin)) {
+    console.error(
+      `driver: agentproto bin not found at ${agentprotoBin} — did the npm install step run?`,
+    )
+    process.exit(1)
+  }
 }
 
 const runtimeMetaPath = join(cwd, ".agentproto", "runtime.json")
@@ -85,9 +98,10 @@ const runtimeMetaPath = join(cwd, ".agentproto", "runtime.json")
 await mkdir(cwd, { recursive: true })
 
 console.log(
-  `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter})`,
+  `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter}, source=${cliSource})`,
 )
 const daemon = spawn(agentprotoBin, ["serve", "--workspace", cwd, "--port", String(port)], {
+  cwd,
   stdio: ["ignore", "pipe", "pipe"],
 })
 let daemonExited = false
@@ -207,9 +221,62 @@ async function main() {
   }
 
   console.log(`driver: run ${runId} reached terminal status=${run.status}`)
+
+  // A failed run must explain itself: surface run.error and every step error
+  // (the workflow-runner puts the failure reason there — e.g. an empty-turn or
+  // adapter/auth failure) so CI logs show WHY, not just that it failed.
+  if (run.status !== "done") {
+    if (run.error) console.error(`driver: run error: ${run.error}`)
+    for (const stage of Array.isArray(run.stages) ? run.stages : []) {
+      for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
+        if (step?.error) console.error(`driver: step '${step.id ?? "?"}' error: ${step.error}`)
+      }
+    }
+  }
+
+  // A workflow can report status="done" even when its agent step spawned a
+  // session that exited clean with ZERO work — a SILENT NO-OP that otherwise
+  // reads as success and lets the calling gate pass a PR nobody reviewed. Read
+  // the real session output, log it (the only place the agent's own stderr
+  // surfaces in CI), and treat an empty "done" as a failure so the caller's
+  // fallback reviewer takes over. On the failure path run.result isn't filled,
+  // so also harvest any session id the stages recorded during execution.
+  const sessionIds = new Set(Array.isArray(run?.result?.sessionIds) ? run.result.sessionIds : [])
+  for (const stage of Array.isArray(run.stages) ? run.stages : []) {
+    for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
+      if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
+    }
+  }
+  console.log(`driver: run produced sessionIds=${JSON.stringify([...sessionIds])}`)
+  let sawAgentOutput = false
+  for (const sid of sessionIds) {
+    try {
+      const outRes = await client.callTool({
+        name: "agent_output",
+        arguments: { sessionId: sid, lastN: 400, clean: true },
+      })
+      const text = typeof outRes?.content?.[0]?.text === "string" ? outRes.content[0].text : ""
+      console.log(`driver: ---- agent_output ${sid} ----\n${text}\n---- end agent_output ${sid} ----`)
+      if (text.trim().length > 0) sawAgentOutput = true
+    } catch (err) {
+      console.error(
+        `driver: agent_output ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  const silentNoop = run.status === "done" && (sessionIds.size === 0 || !sawAgentOutput)
+  if (silentNoop) {
+    console.error(
+      "driver: run reached status=done but produced NO agent session output — treating " +
+        "as FAILURE (silent no-op). The reviewer did not actually run; the calling job's " +
+        "fallback reviewer should take over.",
+    )
+  }
+  const finalStatus = silentNoop ? "failed" : run.status
   await writeGithubOutput("run-id", runId)
-  await writeGithubOutput("status", run.status)
-  return run.status === "done" ? 0 : 1
+  await writeGithubOutput("status", finalStatus)
+  return finalStatus === "done" ? 0 : 1
 }
 
 let exitCode = 1

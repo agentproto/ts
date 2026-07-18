@@ -49,10 +49,18 @@ inputs:
     description: Provider API key (secrets.ANTHROPIC_API_KEY). Required when auth-mode=api-key.
     required: false
     default: ''
-  cli-version:
-    description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from.
+  cli-source:
+    description: >
+      Where to get the agentproto CLI from: "npm" installs
+      @agentproto/cli@cli-version into the action's own node_modules;
+      "workspace" uses the already-built repo CLI at
+      <cwd>/packages/cli/dist/cli.mjs (caller must build it first).
     required: false
-    default: 0.7.0
+    default: npm
+  cli-version:
+    description: Pinned @agentproto/cli npm version to install and run `agentproto serve` from. Used when cli-source=npm.
+    required: false
+    default: 0.8.0
   mcp-sdk-version:
     description: Pinned @modelcontextprotocol/sdk npm version for the driver's MCP client (matches this repo's own ^1.29.0 pin).
     required: false
@@ -115,12 +123,22 @@ runs:
         API_KEY: ${{ inputs.api-key }}
       run: node "${{ github.action_path }}/write-config.mjs"
 
-    - name: Install agentproto CLI + adapter + MCP SDK (pinned, standalone)
+    - name: Install agentproto CLI + adapter + MCP SDK (pinned npm source)
       shell: bash
+      if: inputs.cli-source == 'npm'
       run: |
         npm install --no-save --prefix "${{ github.action_path }}" \
           "@agentproto/cli@${{ inputs.cli-version }}" \
           "@agentproto/adapter-${{ inputs.adapter }}@${{ inputs.adapter-version }}" \
+          "@modelcontextprotocol/sdk@${{ inputs.mcp-sdk-version }}"
+
+    # driver.mjs imports @modelcontextprotocol/sdk itself; in workspace mode the
+    # CLI comes from the repo build but the driver still needs its own SDK.
+    - name: Install driver MCP SDK (workspace source)
+      shell: bash
+      if: inputs.cli-source == 'workspace'
+      run: |
+        npm install --no-save --prefix "${{ github.action_path }}" \
           "@modelcontextprotocol/sdk@${{ inputs.mcp-sdk-version }}"
 
     - name: Boot daemon and drive workflow over MCP
@@ -134,4 +152,5 @@ runs:
         TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         PORT: '18790'
         ACTION_PATH: ${{ github.action_path }}
+        CLI_SOURCE: ${{ inputs.cli-source }}
       run: node "${{ github.action_path }}/driver.mjs"

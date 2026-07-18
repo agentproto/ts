@@ -146,7 +146,20 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       }
       unsubs.push(
         this.sessionEvents.on("session:turn-end", (ev) => {
-          if (ev.sessionId === sessionId) done()
+          if (ev.sessionId !== sessionId) return
+          // An empty turn — no assistant output, no tool call, not awaiting
+          // input — is a silent no-op: e.g. the adapter's underlying CLI hit
+          // "Authentication required" and returned nothing. Fail the step so
+          // the workflow run reports `status: "failed"` instead of a false
+          // "done", letting the caller fall back instead of passing blind.
+          if (ev.empty === true) {
+            fail(
+              `session ${sessionId} produced an empty turn — no assistant output or ` +
+                `tool call (commonly an auth failure or an invalid model id)`,
+            )
+          } else {
+            done()
+          }
         }),
       )
       unsubs.push(

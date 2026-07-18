@@ -168,6 +168,72 @@ function translateStages(
   }
 }
 
+// ── Reverse translation: RuntimeWorkflow → WorkflowStage[] ───────────
+// `startFromFile` wraps a compiled WORKFLOW.md in a single outer run. The
+// workflow-runtime's AgentSessionHost stores spawned sessions under the
+// *inner* AgentStep ids (e.g. "review"), but fillStepStates was looking up
+// the generic outer "workflow" label and never found them. Walk the compiled
+// runtime workflow and expose its agent step ids as WorkflowStage labels so
+// status output + downstream diagnostics can resolve the real sessions.
+
+type RuntimeStep = RuntimeWorkflow["steps"][number]
+
+interface CollectedAgentStep {
+  id: string
+  adapter?: string
+  sessionRef?: string
+}
+
+function collectAgentSteps(steps: readonly RuntimeStep[]): CollectedAgentStep[] {
+  const collected: CollectedAgentStep[] = []
+  for (const step of steps) {
+    if (step.kind === "agent") {
+      const adapter = typeof step.adapter === "string" ? step.adapter : undefined
+      collected.push({ id: step.id, adapter, sessionRef: step.sessionRef })
+    } else if (step.kind === "parallel") {
+      for (const branch of step.branches) collected.push(...collectAgentSteps(branch.steps))
+    } else if (step.kind === "group") {
+      collected.push(...collectAgentSteps(step.steps))
+    } else if (step.kind === "map") {
+      // We can't enumerate map items statically, but the body template is a
+      // function that returns a RunStep. There's no static steps list to walk.
+      // Skip — dynamic agent steps inside a map are out of scope for this
+      // diagnostic mapping; the host still tracks them by label at runtime.
+    } else if (step.kind === "pipeline") {
+      for (const stage of step.stages) {
+        // stage is a function returning a RunStep; can't be walked statically.
+      }
+    } else if (step.kind === "branch") {
+      collected.push(...collectAgentSteps(step.then))
+      if (step.otherwise) collected.push(...collectAgentSteps(step.otherwise))
+    } else if (step.kind === "loop") {
+      collected.push(...collectAgentSteps(step.body))
+    } else if (step.kind === "subworkflow") {
+      collected.push(...collectAgentSteps(step.workflow.steps))
+    }
+    // tool / transform / approval / suspend have no agent sessions.
+  }
+  return collected
+}
+
+function runtimeWorkflowToStages(workflow: RuntimeWorkflow): WorkflowStage[] {
+  const agents = collectAgentSteps(workflow.steps)
+  if (agents.length === 0) {
+    // No agent steps in this compiled workflow — keep the generic outer stage
+    // so non-agent (tool-only) workflows behave exactly as before.
+    return [{ steps: [{ label: "workflow" }] }]
+  }
+  return [
+    {
+      steps: agents.map((a) => ({
+        label: a.id,
+        ...(a.adapter !== undefined ? { adapter: a.adapter } : {}),
+        ...(a.sessionRef !== undefined ? { sessionRef: a.sessionRef } : {}),
+      })),
+    },
+  ]
+}
+
 // ── Factory ──────────────────────────────────────────────────────────
 
 const DEFAULT_PERSIST_PATH = (): string =>
@@ -425,26 +491,30 @@ export function createWorkflowRunner(opts: {
       }
       const handle = await loadWorkflowHandle(args.path)
       const workflow = await compileWorkflow(handle)
+      const fileStages = runtimeWorkflowToStages(workflow)
       const runId = `wfrun_${randomUUID()}`
       const run: WorkflowRun = {
         runId,
         workflowId: handle.id,
         status: "running",
         startedAt: new Date().toISOString(),
-        stages: [
-          {
-            index: 0,
+        stages: fileStages.map((stage, si) => ({
+          index: si,
+          ...(stage.label !== undefined ? { label: stage.label } : {}),
+          status: "pending" as const,
+          steps: stage.steps.map((s, i) => ({
+            index: i,
+            label: s.label,
             status: "pending" as const,
-            steps: [{ index: 0, label: "workflow", status: "pending" as const }],
-          },
-        ],
+          })),
+        })),
       }
       const abort = new AbortController()
       const state: RunState = {
         run,
         cancelled: false,
         abort,
-        stages: [],
+        stages: fileStages,
         ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
         ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
       }
