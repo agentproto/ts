@@ -364,8 +364,9 @@ export class DaemonClient {
 
   /**
    * GET /workspaces — the daemon's registered workspace list
-   * (~/.agentproto/workspaces.json). Read-only; mutation is CLI-only
-   * (`agentproto workspace add/remove/use`).
+   * (~/.agentproto/workspaces.json). Read-only; see addWorkspace /
+   * removeWorkspace / setActiveWorkspace below for mutation (also
+   * available via the CLI's `agentproto workspace add/remove/use`).
    *
    * A session descriptor only carries `workspaceSlug`, so this is the join
    * table for rendering a human workspace name and for resolving a cwd back
@@ -374,6 +375,38 @@ export class DaemonClient {
   async listWorkspaces(): Promise<WorkspacesConfig> {
     const body = await this.getJson<WorkspacesConfig>("/workspaces")
     return { ...body, version: 1, workspaces: body.workspaces ?? [] }
+  }
+
+  /**
+   * POST /workspaces — register (or upsert, by slug) a workspace. `path`
+   * must be an absolute, existing directory; `slug` defaults to the
+   * directory's basename daemon-side when omitted. Returns the full,
+   * updated `WorkspacesConfig` (mirrors `listWorkspaces`'s shape so
+   * callers can swap the store's cached config in place).
+   */
+  async addWorkspace(input: {
+    path: string
+    slug?: string
+    label?: string
+  }): Promise<WorkspacesConfig> {
+    return this.postJson<WorkspacesConfig>("/workspaces", input)
+  }
+
+  /**
+   * DELETE /workspaces/:slug — drop a registered workspace. If it was
+   * active, the daemon reassigns active to whatever's first (or clears it
+   * when none remain) — see `removeWorkspace` in workspaces-config.ts.
+   */
+  async removeWorkspace(slug: string): Promise<WorkspacesConfig> {
+    return this.deleteJson<WorkspacesConfig>(`/workspaces/${encodeURIComponent(slug)}`)
+  }
+
+  /**
+   * PUT /workspaces/active — set the daemon's active workspace. 404s
+   * (surfaced as a thrown Error) when `slug` isn't registered.
+   */
+  async setActiveWorkspace(slug: string): Promise<WorkspacesConfig> {
+    return this.putJson<WorkspacesConfig>("/workspaces/active", { slug })
   }
 
   /**
@@ -460,6 +493,10 @@ export class DaemonClient {
 
   private async deleteJson<T>(path: string): Promise<T> {
     return this.request<T>("DELETE", path)
+  }
+
+  private async putJson<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>("PUT", path, body)
   }
 
   /**
