@@ -61,6 +61,40 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// One authed daemon request for every command that just proxies the daemon:
+/// resolves the base URL + bearer token, sends, treats an empty body as Null,
+/// and maps a non-2xx to `HTTP {status} — {body}`.
+async fn daemon_request(
+    daemon_url: Option<String>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+
+    let mut req = client()?.request(method, format!("{base}{path}"));
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
 async fn get_json(url: &str, path: &str, authed: bool) -> Result<serde_json::Value, String> {
     let base = normalize_url(url);
     let mut req = client()?.get(format!("{base}{path}"));
@@ -161,28 +195,8 @@ async fn daemon_prompt(
     session_id: String,
     text: String,
 ) -> Result<serde_json::Value, String> {
-    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
-    let base = normalize_url(&url);
     let path = format!("/sessions/{}/prompt?wait=false", urlencode(&session_id));
-
-    let mut req = client()?
-        .post(format!("{base}{path}"))
-        .json(&serde_json::json!({ "prompt": text }));
-    if let Some(token) = resolve_token(&base) {
-        req = req.bearer_auth(token);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status} — {body}"));
-    }
-    // The route may answer with an empty body when wait=false — treat as null.
-    let raw = res.text().await.unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+    daemon_request(daemon_url, reqwest::Method::POST, &path, Some(serde_json::json!({ "prompt": text }))).await
 }
 
 /// POST /sessions/agent — spawn a new agent session. Bearer-gated.
@@ -193,26 +207,7 @@ async fn daemon_spawn(
     daemon_url: Option<String>,
     opts: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
-    let base = normalize_url(&url);
-    let path = "/sessions/agent";
-
-    let mut req = client()?.post(format!("{base}{path}")).json(&opts);
-    if let Some(token) = resolve_token(&base) {
-        req = req.bearer_auth(token);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status} — {body}"));
-    }
-    // The route answers with a SessionDescriptor object.
-    let raw = res.text().await.unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+    daemon_request(daemon_url, reqwest::Method::POST, "/sessions/agent", Some(opts)).await
 }
 
 /// POST /sessions/:id/kill — end a session. Bearer-gated. Empty body on success
@@ -222,27 +217,8 @@ async fn daemon_kill(
     daemon_url: Option<String>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
-    let base = normalize_url(&url);
     let path = format!("/sessions/{}/kill", urlencode(&session_id));
-
-    let mut req = client()?
-        .post(format!("{base}{path}"))
-        .json(&serde_json::json!({}));
-    if let Some(token) = resolve_token(&base) {
-        req = req.bearer_auth(token);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status} — {body}"));
-    }
-    let raw = res.text().await.unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+    daemon_request(daemon_url, reqwest::Method::POST, &path, Some(serde_json::json!({}))).await
 }
 
 /// POST /sessions/:id/interrupt — cancel the in-flight turn and leave the
@@ -252,27 +228,45 @@ async fn daemon_interrupt(
     daemon_url: Option<String>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
-    let base = normalize_url(&url);
     let path = format!("/sessions/{}/interrupt", urlencode(&session_id));
+    daemon_request(daemon_url, reqwest::Method::POST, &path, Some(serde_json::json!({}))).await
+}
 
-    let mut req = client()?
-        .post(format!("{base}{path}"))
-        .json(&serde_json::json!({}));
-    if let Some(token) = resolve_token(&base) {
-        req = req.bearer_auth(token);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status} — {body}"));
-    }
-    let raw = res.text().await.unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+/// POST /sessions/:id/model — switch model on a live session. Bearer-gated.
+/// Mirrors the daemon's non-fatal contract: a rejected switch resolves
+/// `{applied:false, reason}` rather than throwing.
+#[tauri::command]
+async fn daemon_set_model(
+    daemon_url: Option<String>,
+    session_id: String,
+    model: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/sessions/{}/model", urlencode(&session_id));
+    daemon_request(daemon_url, reqwest::Method::POST, &path, Some(serde_json::json!({ "model": model }))).await
+}
+
+/// GET /sessions/:id/export?format=… — export the session transcript.
+/// Bearer-gated. Defaults to markdown when no format is supplied.
+#[tauri::command]
+async fn daemon_export_session(
+    daemon_url: Option<String>,
+    session_id: String,
+    format: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let format = format.as_deref().unwrap_or("markdown");
+    let path = format!("/sessions/{}/export?format={}", urlencode(&session_id), urlencode(format));
+    daemon_request(daemon_url, reqwest::Method::GET, &path, None).await
+}
+
+/// DELETE /sessions/:id — delete a session. Bearer-gated. Empty body on success
+/// is treated as null.
+#[tauri::command]
+async fn daemon_delete_session(
+    daemon_url: Option<String>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/sessions/{}", urlencode(&session_id));
+    daemon_request(daemon_url, reqwest::Method::DELETE, &path, None).await
 }
 
 /// GET /permissions[?sessionId=…] — list pending permission requests.
@@ -304,27 +298,8 @@ async fn daemon_respond_permission(
     permission_id: String,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
-    let base = normalize_url(&url);
     let path = format!("/permissions/{}", urlencode(&permission_id));
-
-    let mut req = client()?
-        .post(format!("{base}{path}"))
-        .json(&input);
-    if let Some(token) = resolve_token(&base) {
-        req = req.bearer_auth(token);
-    }
-    let res = req.send().await.map_err(|e| e.to_string())?;
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status} — {body}"));
-    }
-    let raw = res.text().await.unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+    daemon_request(daemon_url, reqwest::Method::POST, &path, Some(input)).await
 }
 
 // ── git working-tree diff (WP4) ─────────────────────────────────────────────
@@ -751,6 +726,9 @@ pub fn run() {
             daemon_spawn,
             daemon_kill,
             daemon_interrupt,
+            daemon_set_model,
+            daemon_export_session,
+            daemon_delete_session,
             daemon_permissions,
             daemon_respond_permission,
             git_diff,

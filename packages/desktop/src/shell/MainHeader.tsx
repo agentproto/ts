@@ -2,13 +2,18 @@
 // pill, adapter/model tags, context %, cost, and the workspace/cwd crumb, plus
 // the Export/Interrupt/Stop actions. Driven by the selected SessionDescriptor.
 
-import type { SessionDescriptor } from "../data/types"
+import type { ExportResult, SessionDescriptor, SetModelResult } from "../data/types"
 import { sessionTitle, statusKind, statusText } from "../data/session-view"
+import { SessionActionMenu } from "./SessionActionMenu"
 
 interface MainHeaderProps {
   session: SessionDescriptor
+  daemonUrl?: string
   onInterrupt?: () => void
   onStop?: () => void
+  onModelSwitched?: (result: SetModelResult) => void
+  onExported?: (result: ExportResult) => void
+  onDeleted?: (sessionId: string) => void
 }
 
 function contextPct(s: SessionDescriptor): number | null {
@@ -18,7 +23,15 @@ function contextPct(s: SessionDescriptor): number | null {
   return Math.round((s.contextUsed / s.contextSize) * 100)
 }
 
-export function MainHeader({ session, onInterrupt, onStop }: MainHeaderProps) {
+export function MainHeader({
+  session,
+  daemonUrl,
+  onInterrupt,
+  onStop,
+  onModelSwitched,
+  onExported,
+  onDeleted,
+}: MainHeaderProps) {
   const kind = statusKind(session)
   const pct = contextPct(session)
   const crumb = `${session.workspaceSlug || "default"} / ${session.cwd ?? "—"}`
@@ -44,7 +57,13 @@ export function MainHeader({ session, onInterrupt, onStop }: MainHeaderProps) {
         <span className="crumb">{crumb}</span>
       </div>
       <div className="mactions">
-        <button className="btn ghost xs">⧉ Export</button>
+        <SessionActionMenu
+          session={session}
+          daemonUrl={daemonUrl}
+          onModelSwitched={onModelSwitched}
+          onExported={onExported}
+          onDeleted={onDeleted}
+        />
         <button className="btn ghost xs" disabled={!live || !onInterrupt} onClick={onInterrupt}>
           ⏸ Interrupt
         </button>

@@ -5,12 +5,14 @@ import { invoke } from "@tauri-apps/api/core"
 
 import type {
   DaemonHealth,
+  ExportResult,
   GitDiff,
   JsonValue,
   PendingPermission,
   RespondPermissionInput,
   SessionDescriptor,
   SessionEventsPage,
+  SetModelResult,
   SpawnAgentOptions,
 } from "./types"
 
@@ -75,6 +77,34 @@ export function daemonInterrupt(
   daemonUrl = DEFAULT_DAEMON_URL,
 ): Promise<JsonValue> {
   return invoke<JsonValue>("daemon_interrupt", { daemonUrl, sessionId })
+}
+
+/** POST /sessions/:id/model — switch model on a live session. Bearer-gated.
+ *  Non-fatal: a rejected switch resolves `applied:false` + `reason`. */
+export function daemonSetModel(
+  sessionId: string,
+  model: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<SetModelResult> {
+  return invoke<SetModelResult>("daemon_set_model", { daemonUrl, sessionId, model })
+}
+
+/** GET /sessions/:id/export?format=… — export the session transcript.
+ *  Bearer-gated. */
+export function daemonExportSession(
+  sessionId: string,
+  format: "markdown" | "json" = "markdown",
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<ExportResult> {
+  return invoke<ExportResult>("daemon_export_session", { daemonUrl, sessionId, format })
+}
+
+/** DELETE /sessions/:id — delete a session. Bearer-gated. */
+export function daemonDeleteSession(
+  sessionId: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<{ ok: boolean; id: string }> {
+  return invoke<{ ok: boolean; id: string }>("daemon_delete_session", { daemonUrl, sessionId })
 }
 
 /** GET /permissions[?sessionId=…] — pending permission requests for the given
