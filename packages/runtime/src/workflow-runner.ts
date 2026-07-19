@@ -313,13 +313,16 @@ function resolveStepSessionId(
   step: WorkflowStep,
   agents: SessionsRegistryAgentHost,
 ): string | undefined {
-  if (step.adapter) {
-    return agents.resolveByLabel(step.label)
-  }
   if (step.sessionRef) {
     return agents.resolveByLabel(step.sessionRef)
   }
-  return undefined
+  // Fall through to the step's own label even when `adapter` is unset: a
+  // compiled WORKFLOW.md whose entry declares `adapter` as a SELECTOR
+  // function is erased to `adapter: undefined` in the stage mapping
+  // (`collectAgentSteps` only keeps string adapters), but the host still
+  // registered the spawned session under this step id — without this, such
+  // steps reported no sessionId and callers fell back to fuzzy recovery.
+  return agents.resolveByLabel(step.label)
 }
 
 function fillStepStates(

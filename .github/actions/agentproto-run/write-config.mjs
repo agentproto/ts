@@ -125,5 +125,44 @@ if (hasOptions) {
   wrote.push(`options [${Object.keys(options).join(", ")}]`)
 }
 
+// ── Langfuse tracing (optional, all-or-nothing) ──────────────────────────
+// When the three load-bearing LANGFUSE_* vars are present, write the same
+// creds file `setup_eval_reporter` writes (~/.agentproto/eval-reporter-creds/
+// langfuse.json) and flip `defaults.langfuseTracing` on, so the daemon this
+// action boots traces its (single) reviewer session. The HOST daemon owns
+// the proxied sandbox session, so IT emits the traces — the box needs
+// nothing. Absent/partial creds ⇒ skip silently: tracing must never gate the
+// review (and the tracer itself is soft-fail — flush errors are swallowed,
+// so an unreachable Langfuse host degrades to no traces, never a red job).
+const lfPublicKey = process.env.LANGFUSE_PUBLIC_KEY ?? ""
+const lfSecretKey = process.env.LANGFUSE_SECRET_KEY ?? ""
+const lfBaseUrl = process.env.LANGFUSE_BASE_URL ?? ""
+const lfProject = process.env.LANGFUSE_PROJECT ?? ""
+if (lfPublicKey && lfSecretKey && lfBaseUrl) {
+  const credsDir = join(configDir, "eval-reporter-creds")
+  await mkdir(credsDir, { recursive: true })
+  const creds = {
+    publicKey: lfPublicKey,
+    secretKey: lfSecretKey,
+    // The ingestion client joins `${baseUrl}/api/public/ingestion` — strip a
+    // trailing slash so the path doesn't double up.
+    baseUrl: lfBaseUrl.replace(/\/+$/, ""),
+    // Langfuse "environment" tag on every trace — the project itself is
+    // selected by the key pair; this is just the filterable label. Sanitized
+    // to Langfuse's allowed charset (lowercase alphanumerics, -, _).
+    environment: (lfProject || "github-ci").toLowerCase().replace(/[^a-z0-9-_]/g, "-"),
+  }
+  await writeFile(join(credsDir, "langfuse.json"), JSON.stringify(creds, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  })
+  config.defaults.langfuseTracing = true
+  wrote.push(`langfuse tracing (environment=${creds.environment})`)
+} else if (lfPublicKey || lfSecretKey || lfBaseUrl) {
+  console.log(
+    "write-config: partial LANGFUSE_* env (need PUBLIC_KEY + SECRET_KEY + BASE_URL) — tracing skipped",
+  )
+}
+
 await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 })
 console.log(`write-config: wrote defaults.adapters.${adapter}.{${wrote.join(", ")}} to ${configPath}`)

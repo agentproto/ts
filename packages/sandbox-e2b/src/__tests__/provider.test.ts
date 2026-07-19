@@ -52,10 +52,13 @@ describe("e2bSandboxProvider.boot", () => {
       "sudo npm i -g @agentproto/cli@latest",
       expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
     )
-    // opens the daemon's own origin allowlist for this sandbox's public host
+    // opens the daemon's own origin allowlist for this sandbox's public host,
+    // and DISABLES e2b's 60s default command timeout (timeoutMs: 0) — that
+    // default applies to background commands too and was SIGKILLing the
+    // daemon one minute after boot, killing every >60s agent turn.
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("agentproto serve --port 18790 --bind 0.0.0.0"),
-      expect.objectContaining({ background: true, envs: { OPENROUTER_API_KEY: "k" } }),
+      expect.objectContaining({ background: true, envs: { OPENROUTER_API_KEY: "k" }, timeoutMs: 0 }),
     )
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       expect.stringContaining("--allow-origin https://sbx-abc-18790.e2b.dev"),
@@ -87,6 +90,37 @@ describe("e2bSandboxProvider.boot", () => {
     expect(sandbox.commands.run).toHaveBeenCalledWith(
       "sudo npm i -g @agentproto/cli@latest '@agentproto/adapter-claude-sdk@latest' '@anthropic-ai/claude-code@latest'",
       expect.anything(),
+    )
+  })
+
+  it("defaults the sandbox LIFETIME to 45min — never e2b's 5-minute default (mid-turn reaper)", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider, DEFAULT_TEMPLATE } = await import("../provider.js")
+    await e2bSandboxProvider.boot(spec, { env: {} })
+
+    expect(sandboxCreateMock).toHaveBeenCalledWith(
+      DEFAULT_TEMPLATE,
+      expect.objectContaining({ timeoutMs: 45 * 60_000 }),
+    )
+  })
+
+  it("config.timeoutMs still overrides the lifetime default", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    await e2bSandboxProvider.boot(
+      { provider: "e2b", config: { timeoutMs: 120_000 } },
+      { env: {} },
+    )
+
+    expect(sandboxCreateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ timeoutMs: 120_000 }),
     )
   })
 

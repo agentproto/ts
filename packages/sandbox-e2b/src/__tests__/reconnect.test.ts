@@ -17,6 +17,7 @@ function fakeSandbox(overrides: Partial<Record<string, unknown>> = {}) {
     commands: { run: vi.fn(async () => ({})) },
     kill: vi.fn(async () => true),
     pause: vi.fn(async () => true),
+    setTimeout: vi.fn(async () => {}),
     ...overrides,
   }
 }
@@ -50,6 +51,9 @@ describe("e2bSandboxProvider.connect", () => {
     )
     expect(sandboxCreateMock).not.toHaveBeenCalled()
     expect(sandbox.commands.run).not.toHaveBeenCalled()
+    // A resumed box keeps its ORIGINAL deadline — connect must re-arm the
+    // lifetime so the reconnected session isn't reaped mid-turn.
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(45 * 60_000)
     expect(booted.mcpUrl).toBe("https://sbx-abc-18790.e2b.dev/mcp")
     expect(booted.sandboxId).toBe("sbx_abc")
   })

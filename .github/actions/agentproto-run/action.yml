@@ -101,6 +101,28 @@ inputs:
       loudly and the workflow step fails (no silent host spawn).
     required: false
     default: ''
+  langfuse-public-key:
+    description: >
+      Langfuse public key (pk-lf-…, secrets.LANGFUSE_PUBLIC_KEY). All of
+      public-key + secret-key + base-url must be set to enable session
+      tracing on the daemon this action boots; any missing ⇒ tracing is
+      skipped silently (never fails the run).
+    required: false
+    default: ''
+  langfuse-secret-key:
+    description: Langfuse secret key (sk-lf-…, secrets.LANGFUSE_SECRET_KEY). Masked.
+    required: false
+    default: ''
+  langfuse-base-url:
+    description: Langfuse base URL (self-hosted host:port or cloud URL).
+    required: false
+    default: ''
+  langfuse-project:
+    description: >
+      Informational project label — stamped as the Langfuse `environment` tag
+      on traces (sanitized). The project itself is selected by the key pair.
+    required: false
+    default: ''
   cli-source:
     description: >
       Where to get the agentproto CLI from: "npm" installs
@@ -164,11 +186,15 @@ runs:
         API_KEY: ${{ inputs.api-key }}
         PROVIDER_KEY: ${{ inputs.provider-key }}
         E2B_KEY: ${{ inputs.e2b-api-key }}
+        LF_SECRET: ${{ inputs.langfuse-secret-key }}
+        LF_PUBLIC: ${{ inputs.langfuse-public-key }}
       run: |
         if [ -n "$OAUTH_TOKEN" ]; then echo "::add-mask::$OAUTH_TOKEN"; fi
         if [ -n "$API_KEY" ]; then echo "::add-mask::$API_KEY"; fi
         if [ -n "$PROVIDER_KEY" ]; then echo "::add-mask::$PROVIDER_KEY"; fi
         if [ -n "$E2B_KEY" ]; then echo "::add-mask::$E2B_KEY"; fi
+        if [ -n "$LF_SECRET" ]; then echo "::add-mask::$LF_SECRET"; fi
+        if [ -n "$LF_PUBLIC" ]; then echo "::add-mask::$LF_PUBLIC"; fi
 
     - name: Write ~/.agentproto/config.json adapter credentials + options
       shell: bash
@@ -180,6 +206,10 @@ runs:
         MODEL: ${{ inputs.model }}
         BASE_URL: ${{ inputs.base-url }}
         THINKING: ${{ inputs.thinking }}
+        LANGFUSE_PUBLIC_KEY: ${{ inputs.langfuse-public-key }}
+        LANGFUSE_SECRET_KEY: ${{ inputs.langfuse-secret-key }}
+        LANGFUSE_BASE_URL: ${{ inputs.langfuse-base-url }}
+        LANGFUSE_PROJECT: ${{ inputs.langfuse-project }}
       run: node "${{ github.action_path }}/write-config.mjs"
 
     - name: Install agentproto CLI + adapter + MCP SDK (pinned npm source)
