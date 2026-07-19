@@ -185,6 +185,148 @@ async fn daemon_prompt(
     serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
 }
 
+/// POST /sessions/agent — spawn a new agent session. Bearer-gated.
+/// Body shape mirrors the VS Code client's `spawnAgent()`: `opts` is forwarded
+/// verbatim. The daemon returns a SessionDescriptor on success.
+#[tauri::command]
+async fn daemon_spawn(
+    daemon_url: Option<String>,
+    opts: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = "/sessions/agent";
+
+    let mut req = client()?.post(format!("{base}{path}")).json(&opts);
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+    // The route answers with a SessionDescriptor object.
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
+/// POST /sessions/:id/kill — end a session. Bearer-gated. Empty body on success
+/// is treated as null.
+#[tauri::command]
+async fn daemon_kill(
+    daemon_url: Option<String>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = format!("/sessions/{}/kill", urlencode(&session_id));
+
+    let mut req = client()?
+        .post(format!("{base}{path}"))
+        .json(&serde_json::json!({}));
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
+/// POST /sessions/:id/interrupt — cancel the in-flight turn and leave the
+/// session alive. Bearer-gated. Empty body on success is treated as null.
+#[tauri::command]
+async fn daemon_interrupt(
+    daemon_url: Option<String>,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = format!("/sessions/{}/interrupt", urlencode(&session_id));
+
+    let mut req = client()?
+        .post(format!("{base}{path}"))
+        .json(&serde_json::json!({}));
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
+/// GET /permissions[?sessionId=…] — list pending permission requests.
+/// Bearer-gated GET; mirrors `daemon_sessions` and unwraps the `permissions`
+/// array (or [] if the daemon omits it).
+#[tauri::command]
+async fn daemon_permissions(
+    daemon_url: Option<String>,
+    session_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = match session_id {
+        Some(id) => format!("/permissions?sessionId={}", urlencode(&id)),
+        None => "/permissions".to_string(),
+    };
+    let body = get_json(&base, &path, true).await?;
+    Ok(body
+        .get("permissions")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(vec![])))
+}
+
+/// POST /permissions/:id — respond to a pending permission request.
+/// Bearer-gated. `input` is forwarded verbatim.
+#[tauri::command]
+async fn daemon_respond_permission(
+    daemon_url: Option<String>,
+    permission_id: String,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = daemon_url.unwrap_or_else(|| DEFAULT_DAEMON_URL.to_string());
+    let base = normalize_url(&url);
+    let path = format!("/permissions/{}", urlencode(&permission_id));
+
+    let mut req = client()?
+        .post(format!("{base}{path}"))
+        .json(&input);
+    if let Some(token) = resolve_token(&base) {
+        req = req.bearer_auth(token);
+    }
+    let res = req.send().await.map_err(|e| e.to_string())?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status} — {body}"));
+    }
+    let raw = res.text().await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+}
+
 // ── git working-tree diff (WP4) ─────────────────────────────────────────────
 // Sourced by shelling `git` (the SPEC default over the git2 crate: simplest,
 // no extra dependency). `git -C <cwd> diff HEAD` shows all uncommitted tracked
@@ -606,6 +748,11 @@ pub fn run() {
             daemon_sessions,
             daemon_session_events,
             daemon_prompt,
+            daemon_spawn,
+            daemon_kill,
+            daemon_interrupt,
+            daemon_permissions,
+            daemon_respond_permission,
             git_diff,
             list_dir,
             read_file,

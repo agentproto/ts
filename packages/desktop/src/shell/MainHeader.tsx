@@ -7,6 +7,8 @@ import { sessionTitle, statusKind, statusText } from "../data/session-view"
 
 interface MainHeaderProps {
   session: SessionDescriptor
+  onInterrupt?: () => void
+  onStop?: () => void
 }
 
 function contextPct(s: SessionDescriptor): number | null {
@@ -16,10 +18,11 @@ function contextPct(s: SessionDescriptor): number | null {
   return Math.round((s.contextUsed / s.contextSize) * 100)
 }
 
-export function MainHeader({ session }: MainHeaderProps) {
+export function MainHeader({ session, onInterrupt, onStop }: MainHeaderProps) {
   const kind = statusKind(session)
   const pct = contextPct(session)
   const crumb = `${session.workspaceSlug || "default"} / ${session.cwd ?? "—"}`
+  const live = session.status !== "exited" && session.status !== "killed"
   return (
     <div className="mhead">
       <div className="info">
@@ -42,8 +45,12 @@ export function MainHeader({ session }: MainHeaderProps) {
       </div>
       <div className="mactions">
         <button className="btn ghost xs">⧉ Export</button>
-        <button className="btn ghost xs">⏸ Interrupt</button>
-        <button className="btn ghost xs danger">⏹ Stop</button>
+        <button className="btn ghost xs" disabled={!live || !onInterrupt} onClick={onInterrupt}>
+          ⏸ Interrupt
+        </button>
+        <button className="btn ghost xs danger" disabled={!live || !onStop} onClick={onStop}>
+          ⏹ Stop
+        </button>
       </div>
     </div>
   )

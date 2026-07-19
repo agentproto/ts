@@ -144,3 +144,49 @@ export interface GitDiff {
   files: ChangedFile[]
   commits: Array<{ hash: string; message: string }>
 }
+
+/**
+ * POST /sessions/agent body — copied field-for-field from the VS Code client's
+ * SpawnAgentOptions. Narrowed only to honor this package's no-`unknown` rule
+ * (mcpServers becomes JsonValue[], orchestrator becomes a JSON object).
+ */
+export interface SpawnAgentOptions {
+  adapter: string
+  cwd?: string
+  workspaceSlug?: string
+  resumeSessionId?: string
+  mode?: string
+  model?: string
+  effort?: string
+  auth?: {
+    mode: "subscription" | "api-key"
+    token?: string
+    apiKey?: string
+  }
+  prompt?: string
+  label?: string
+  role?: string
+  promptAppend?: string
+  orchestrator?: boolean | Record<string, JsonValue>
+  mcpServers?: JsonValue[]
+  trace?: boolean
+  permissionHold?: boolean
+}
+
+/** A pending ACP permission request held in the cross-session inbox. */
+export interface PendingPermission {
+  id: string
+  sessionId: string
+  toolCallId: string
+  toolName?: string
+  text: string
+  options: Array<{ optionId: string; name?: string; kind?: string }>
+  requestedAt: string
+}
+
+/** POST /permissions/:id body — copied field-for-field from the VS Code client. */
+export interface RespondPermissionInput {
+  decision: "approve" | "deny"
+  optionId?: string
+  scope?: "once" | "always"
+}
