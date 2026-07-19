@@ -100,6 +100,14 @@ const built = await reviewApp.toMastraAgents({ resolveModel: (ref) => registry.r
 built["@agentik/reviewer"].agent   // a runnable Mastra Agent
 ```
 
+**Use just some of a team.** Pass `only` to build a subset instead of the whole
+app — so a host doesn't pay to build agents it won't run. Unknown ids throw.
+
+```ts
+const built = await reviewApp.toMastraAgents({ resolveModel }, ["@agentik/reviewer"])
+const [reviewer] = reviewApp.pick(["@agentik/reviewer"]) // select without building
+```
+
 `handle.toMastraAgent(resolvers)` is a convenience for single-agent apps (throws
 if the app has more than one). `@mastra/core` is a **peer dependency** — install
 it in the host if you call either. `emit` has no Mastra dependency.

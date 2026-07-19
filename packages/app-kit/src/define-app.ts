@@ -63,12 +63,17 @@ export function defineApp(def: AppDefinition): AppHandle {
     attachments: frozenAttachments,
     ...(workspace ? { workspace } : {}),
 
-    async toMastraAgents(opts: ToMastraAgentOptions) {
+    async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
+      const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
       const out: Record<string, Awaited<ReturnType<typeof buildMastraAgent>>> = {}
-      for (const entry of frozenAgents) {
+      for (const entry of targets) {
         out[entry.agent.id] = await buildOne(entry, opts)
       }
       return out
+    },
+
+    pick(ids: readonly string[]) {
+      return selectAgents(frozenAgents, ids)
     },
 
     async toMastraAgent(opts: ToMastraAgentOptions) {
@@ -109,6 +114,27 @@ function toWorkspaceHandle(input: WorkspaceInput): WorkspaceHandle {
     owner: input.owner,
     storage: input.storage ?? { inline: { provider: "local-fs", config: {} } },
     ...(input.description ? { description: input.description } : {}),
+  })
+}
+
+/**
+ * Resolve `ids` to their app entries, preserving the caller's order. Throws
+ * `AppDefinitionError` on any id the app doesn't bundle — a hand-picked list
+ * that names a missing agent is a bug, not a silent no-op.
+ */
+function selectAgents(
+  agents: readonly AgentEntry[],
+  ids: readonly string[],
+): readonly AgentEntry[] {
+  const byId = new Map(agents.map((e) => [e.agent.id, e]))
+  return ids.map((id) => {
+    const entry = byId.get(id)
+    if (!entry) {
+      throw new AppDefinitionError(
+        `agent '${id}' is not in this app. Bundled: [${[...byId.keys()].join(", ")}].`,
+      )
+    }
+    return entry
   })
 }
 

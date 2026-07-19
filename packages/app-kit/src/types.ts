@@ -113,13 +113,24 @@ export interface AppHandle {
   readonly workspace?: WorkspaceHandle
 
   /**
-   * Build every agent into a runnable Mastra agent whose `instructions`
-   * field is the real system prompt (body → `composeInstructions`).
-   * Keyed by agent id.
+   * Build agents into runnable Mastra agents whose `instructions` field is
+   * the real system prompt (body → `composeInstructions`), keyed by agent id.
+   *
+   * Pass `only` to build just those agent ids instead of the whole app — the
+   * "use n of a team" path, so a host doesn't pay to build agents it won't
+   * run. Every id in `only` must belong to the app (unknown ids throw).
    */
   toMastraAgents(
     opts: ToMastraAgentOptions,
+    only?: readonly string[],
   ): Promise<Record<string, BuildMastraAgentResult>>
+
+  /**
+   * Select a subset of the app's agents by id, as a fresh readonly list —
+   * without building them. Throws `AppDefinitionError` on an unknown id.
+   * Handy to inspect or hand-pick before `toMastraAgents`.
+   */
+  pick(ids: readonly string[]): readonly AgentEntry[]
 
   /**
    * Single-agent convenience. Throws if the app has zero or more than
