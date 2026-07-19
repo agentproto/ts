@@ -67,6 +67,12 @@ interface E2bSandboxConfig {
    *  Default true. Only runs when this provider is the one starting the
    *  daemon (skipped when the health probe finds it already autostarted). */
   updateCliOnBoot?: boolean
+  /** CLI version to install on boot, pinned instead of a floating `@latest`.
+   *  A broken `@agentproto/cli@latest` publish otherwise silently kills the
+   *  box on boot; pinning a known-good version (sourced from config, defaulting
+   *  to the repo's declared `cliVersion`) makes the boot install reproducible.
+   *  Produces `@agentproto/cli@<version>`; when unset, falls back to `@latest`. */
+  cliVersion?: string
   /** Extra npm package specs installed globally ALONGSIDE the CLI update
    *  (single `npm i -g` invocation). Load-bearing for adapters: the CLI
    *  update replaces the global install, LOSING any template-baked
@@ -94,6 +100,7 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
       typeof config.daemonReadyTimeoutMs === "number" ? config.daemonReadyTimeoutMs : undefined,
     pollIntervalMs: typeof config.pollIntervalMs === "number" ? config.pollIntervalMs : undefined,
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
+    cliVersion: typeof config.cliVersion === "string" ? config.cliVersion : undefined,
     installPackages: Array.isArray(config.installPackages)
       ? config.installPackages.filter((p): p is string => typeof p === "string" && p.length > 0)
       : undefined,
@@ -136,7 +143,8 @@ async function ensureDaemonHealthy(
     const extras = (config.installPackages ?? [])
       .map(spec => ` '${spec.replace(/'/g, "")}'`)
       .join("")
-    await sandbox.commands.run(`sudo npm i -g @agentproto/cli@latest${extras}`, {
+    const cli = `@agentproto/cli@${config.cliVersion ?? "latest"}`
+    await sandbox.commands.run(`sudo npm i -g ${cli}${extras}`, {
       envs: env,
       timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
     })

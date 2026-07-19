@@ -58,7 +58,12 @@ export const sandboxRefFor = (config, verb) => {
     `@agentproto/adapter-${adapter}@latest`,
     ...(adapter === "claude-code" ? ["@anthropic-ai/claude-code@latest"] : []),
   ]
-  return { provider: slug, config: { installPackages }, env: { passthrough } }
+  // Pin the boot CLI install to a known-good version so a broken
+  // `@agentproto/cli@latest` publish can't silently kill the box. Only pass
+  // the key when configured — the provider defaults to `@latest` otherwise.
+  const cliVersion = typeof cfg.cliVersion === "string" ? cfg.cliVersion.trim() : ""
+  const sandboxConfig = { installPackages, ...(cliVersion ? { cliVersion } : {}) }
+  return { provider: slug, config: sandboxConfig, env: { passthrough } }
 }
 
 /** In-box working directory when sandboxed (the box workspace); undefined ⇒ run cwd. */
