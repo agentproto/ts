@@ -138,18 +138,23 @@
   cursor: pointer;
 }
 
-/* body grid */
+/* body grid — the rail's own width flows through the --rail-w custom property
+ * (set by AppShell from useResizable), so the drag handle actually resizes the
+ * grid track instead of only updating dead state. The resize-handle gets its
+ * own thin explicit track between the rail and main, so it never steals space
+ * from (or shifts) the panes on either side of it. */
 .body {
   display: grid;
-  grid-template-columns: 286px minmax(0, 1fr) 360px;
+  grid-template-columns: var(--rail-w, 286px) 4px minmax(0, 1fr) 360px;
   min-height: 0;
 }
 
-/* Responsive: drop the changes panel, then the rail, as the window narrows,
-   so the transcript never gets crushed between the two side columns. */
+/* Responsive: drop the changes panel, then the rail (+ its handle), as the
+   window narrows, so the transcript never gets crushed between the two side
+   columns. */
 @media (max-width: 1200px) {
   .body {
-    grid-template-columns: 264px minmax(0, 1fr);
+    grid-template-columns: var(--rail-w, 264px) 4px minmax(0, 1fr);
   }
   .changes {
     display: none;
@@ -159,7 +164,8 @@
   .body {
     grid-template-columns: minmax(0, 1fr);
   }
-  .rail {
+  .rail,
+  .resize-handle {
     display: none;
   }
 }
