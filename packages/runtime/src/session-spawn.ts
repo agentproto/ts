@@ -351,9 +351,12 @@ export async function spawnAgentSession(
     resolveWorktreeIsolation,
   } = deps
 
-  // cwd resolution mirrors the HTTP route: explicit cwd wins,
-  // then workspaceSlug lookup, then active workspace, then a
-  // hard error (the operator probably forgot a step).
+  // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
+  // for a SCOPED spawn (callerScope set) — the spawning session's own cwd,
+  // OR — for a ROOT spawn (no callerScope) — the daemon's global active
+  // workspace, then a hard error (the operator probably forgot a step). A
+  // scoped spawn never falls back to the global active workspace; see the
+  // `callerScope` branch below.
   //
   // Captured BEFORE the active-workspace fallback below can fill `cwd`/
   // `resolvedSlug` in — the worktree guard downstream (see
@@ -405,12 +408,41 @@ export async function spawnAgentSession(
     try {
       const config = await loadWorkspacesConfig()
       if (!cwd) {
-        const ws = input.workspaceSlug
-          ? findWorkspace(config, input.workspaceSlug)
-          : getActiveWorkspace(config)
-        if (ws) {
-          cwd = ws.path
-          resolvedSlug = ws.slug
+        if (input.workspaceSlug) {
+          const ws = findWorkspace(config, input.workspaceSlug)
+          if (ws) {
+            cwd = ws.path
+            resolvedSlug = ws.slug
+          }
+        } else if (callerScope) {
+          // Scoped (nested) spawn with neither `cwd` nor `workspaceSlug`:
+          // default to the SPAWNING session's own cwd rather than the
+          // daemon's global active workspace, which has no relationship to
+          // the parent's repo (see AUDIT.md, agentproto-workspace-cwd-audit).
+          // `ownerSessionId` is bound synchronously right after the owning
+          // orchestrator session is registered (`bindOrchestratorLifecycle`
+          // below, called immediately after `registry.spawnAgent`) — strictly
+          // before that session can be reached to make this nested call, so
+          // it is always populated here. A scoped spawn that still can't
+          // resolve a cwd (a parent with no recorded cwd) falls through to
+          // the `no_cwd` error below instead of guessing `active` — `active`
+          // is reserved for root spawns only.
+          const parentCwd = callerScope.ownerSessionId
+            ? registry.get(callerScope.ownerSessionId)?.cwd
+            : undefined
+          if (parentCwd) {
+            cwd = parentCwd
+            const ws = findWorkspaceByPath(config, parentCwd)
+            if (ws) {
+              resolvedSlug = ws.slug
+            }
+          }
+        } else {
+          const ws = getActiveWorkspace(config)
+          if (ws) {
+            cwd = ws.path
+            resolvedSlug = ws.slug
+          }
         }
       } else if (!resolvedSlug) {
         // cwd provided but no explicit workspaceSlug — try to match
