@@ -21,15 +21,18 @@ import { registerSessionArchive } from "./commands/sessionArchive.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
 import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerImportConversationCommand } from "./commands/importConversation.js"
+import { registerSelectWorkspaceCommand } from "./commands/selectWorkspace.js"
 import { registerSwitchHarness } from "./commands/switchHarness.js"
 import { registerSpawnCommand } from "./commands/spawn.js"
 import { registerTranscript } from "./commands/transcript.js"
 import { getConfig, onDidChangeConfig } from "./config.js"
 import { SeenTracker } from "./services/seen.js"
 import { SessionStore } from "./services/sessionStore.js"
+import { WorkspacePinStore } from "./services/workspacePin.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
 import { registerStatusBar } from "./views/statusBar.js"
+import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 
@@ -62,12 +65,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerPermissionsView(ctx, store)
   registerStatusBar(ctx, store)
 
+  // Per-window "target workspace" pin — client-side only, never the daemon's
+  // global `active` workspace. See services/workspacePin.ts.
+  const workspacePin = new WorkspacePinStore(ctx.workspaceState)
+  ctx.subscriptions.push(workspacePin)
+  registerSelectWorkspaceCommand(ctx, client, workspacePin)
+  registerWorkspacePinStatusBar(ctx, client, workspacePin)
+
   // Start the live-update loop.
   store.start()
   ctx.subscriptions.push(store)
 
   // ── Commands ────────────────────────────────────────────────────────
-  registerSpawnCommand(ctx, client, store)
+  registerSpawnCommand(ctx, client, store, workspacePin)
   registerSessionActions(ctx, client, store)
   registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
   registerPermissionCommands(ctx, client, store)
