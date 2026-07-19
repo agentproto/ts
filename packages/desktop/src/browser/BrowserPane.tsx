@@ -103,6 +103,16 @@ function BrowserPaneInner({ tab }: { tab: BrowserTab }) {
         {loading ? <span className="bspinner" aria-label="Loading" /> : null}
       </div>
       <div className="bview dark">
+        {/*
+          allow-scripts + allow-same-origin is the known sandbox-escape pairing:
+          a same-origin document can reach the embedder and neutralize the rest
+          of the sandbox. We accept it deliberately — this is a browser tab whose
+          whole job is to render arbitrary real sites, which need scripts, their
+          own cookies and storage (same-origin) to function; dropping either flag
+          turns most pages into broken shells. The mitigation is scope, not the
+          attribute: the src is agent/user-supplied inside a locally-trusted Tauri
+          webview with no privileged bridge exposed to the frame.
+        */}
         <iframe
           key={`${index}:${reloadNonce}`}
           className="bframe"

@@ -29,13 +29,29 @@ interface PaletteEntry {
   onRun: () => void
 }
 
+// Subsequence fuzzy match: every char of `query` must appear in `target` in
+// order (not necessarily contiguous). Returns a cost where lower = better —
+// earlier first match and fewer gaps between matched chars rank higher; -1 when
+// the query isn't a subsequence of the target.
 function fuzzyScore(query: string, target: string): number {
   if (!query) return 0
   const q = query.toLowerCase()
   const t = target.toLowerCase()
-  const idx = t.indexOf(q)
-  if (idx === -1) return -1
-  return idx
+
+  let ti = 0
+  let firstMatch = -1
+  let gaps = 0
+  let prev = -1
+  for (let qi = 0; qi < q.length; qi++) {
+    const ch = q[qi]
+    const found = t.indexOf(ch, ti)
+    if (found === -1) return -1
+    if (firstMatch === -1) firstMatch = found
+    if (prev !== -1) gaps += found - prev - 1
+    prev = found
+    ti = found + 1
+  }
+  return firstMatch + gaps
 }
 
 export function CommandPalette({

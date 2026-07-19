@@ -3,7 +3,7 @@
 // ⌘1/⌘2/⌘3 switch tabs (transcript / files / the first browser tab, if any).
 // Standalone: callers wire the handlers to whatever state they own (App.tsx).
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 
 export interface ShortcutHandlers {
   onPalette: () => void
@@ -17,6 +17,12 @@ const TAB_FOR_DIGIT: Record<string, "transcript" | "files"> = {
 }
 
 export function useShortcuts(handlers: ShortcutHandlers): void {
+  // Keep the latest handlers in a ref so the keydown listener subscribes once
+  // (empty deps) instead of re-binding on every render — callers pass a fresh
+  // object literal each render, which would otherwise churn the listener.
+  const ref = useRef(handlers)
+  ref.current = handlers
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       const mod = e.metaKey || e.ctrlKey
@@ -26,30 +32,30 @@ export function useShortcuts(handlers: ShortcutHandlers): void {
 
       if (key === "k") {
         e.preventDefault()
-        handlers.onPalette()
+        ref.current.onPalette()
         return
       }
 
       if (key === "f") {
         e.preventDefault()
-        handlers.onFocusFilter()
+        ref.current.onFocusFilter()
         return
       }
 
       if (key === "1" || key === "2") {
         e.preventDefault()
-        handlers.onSwitchTab(TAB_FOR_DIGIT[key])
+        ref.current.onSwitchTab(TAB_FOR_DIGIT[key])
         return
       }
 
       if (key === "3") {
         e.preventDefault()
-        handlers.onSwitchTab("browser")
+        ref.current.onSwitchTab("browser")
         return
       }
     }
 
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [handlers])
+  }, [])
 }

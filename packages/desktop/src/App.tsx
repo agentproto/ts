@@ -111,13 +111,21 @@ function App() {
   )
   const activeBrowserTab = browserTabs.find((t) => t.id === activeTab) ?? null
 
-  const paletteActions = useMemo<PaletteAction[]>(
-    () => [
+  const paletteActions = useMemo<PaletteAction[]>(() => {
+    const actions: PaletteAction[] = [
       { id: "tab-transcript", label: "Go to Transcript", run: () => setActiveTab("transcript") },
       { id: "tab-files", label: "Go to Files", run: () => setActiveTab("files") },
-    ],
-    [],
-  )
+    ]
+    const firstBrowser = browserTabs[0]
+    if (firstBrowser) {
+      actions.push({
+        id: "tab-browser",
+        label: "Go to Browser",
+        run: () => setActiveTab(firstBrowser.id),
+      })
+    }
+    return actions
+  }, [browserTabs])
 
   useShortcuts({
     onPalette: () => setPaletteOpen(true),
