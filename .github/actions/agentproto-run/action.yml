@@ -161,6 +161,12 @@ outputs:
   status:
     description: Terminal workflow status — "done", "failed", or "cancelled".
     value: ${{ steps.run.outputs.status }}
+  provenance:
+    description: >
+      JSON array of per-session provenance (sessionId, label, adapter, remote,
+      sandboxId, parentSessionId, model, costUsd, tokensIn, tokensOut, source).
+      Empty [] when no agent session ran. Feeds delivery-specific footer stamps.
+    value: ${{ steps.run.outputs.provenance }}
 
 runs:
   using: composite

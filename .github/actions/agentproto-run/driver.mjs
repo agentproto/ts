@@ -316,6 +316,12 @@ async function main() {
   )
   const failed = run.status !== "done"
   let sawAgentOutput = false
+  // Provenance record per session — session_usage (cost/tokens) + descriptor
+  // (adapter, sandbox, parentSessionId=supervisor). Emitted as the `provenance`
+  // output so a delivery-specific step (e.g. the review-footer stamp) can sign
+  // the artifact deterministically, without the model having to know its own id
+  // or cost. Verb-agnostic: /pr and /fix can reuse it for a PR-body stamp.
+  const provenance = []
   // Cap the dump fan-out — a pathological run should not flood the job log.
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
@@ -324,6 +330,29 @@ async function main() {
         `driver: session ${sid} descriptor: status=${desc.status} adapter=${desc.adapterSlug ?? "?"} ` +
           `label=${desc.label ?? ""} remote=${desc.remote === true} sandboxId=${desc.sandboxId ?? ""}`,
       )
+      let usage = {}
+      try {
+        usage = parseToolResult(
+          await client.callTool({ name: "session_usage", arguments: { idOrName: sid } }),
+        ) || {}
+      } catch (err) {
+        console.error(
+          `driver: session_usage ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      provenance.push({
+        sessionId: sid,
+        label: desc.label ?? "",
+        adapter: desc.adapterSlug ?? "",
+        remote: desc.remote === true,
+        sandboxId: desc.sandboxId ?? "",
+        parentSessionId: desc.parentSessionId ?? "",
+        model: usage.model ?? "",
+        costUsd: typeof usage.costUsd === "number" ? usage.costUsd : undefined,
+        tokensIn: typeof usage.tokensIn === "number" ? usage.tokensIn : undefined,
+        tokensOut: typeof usage.tokensOut === "number" ? usage.tokensOut : undefined,
+        source: usage.source ?? "none",
+      })
     }
     let text = ""
     try {
@@ -390,6 +419,9 @@ async function main() {
   const finalStatus = silentNoop ? "failed" : run.status
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", finalStatus)
+  // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.
+  await writeGithubOutput("provenance", JSON.stringify(provenance))
+  console.log(`driver: provenance=${JSON.stringify(provenance)}`)
   return finalStatus === "done" ? 0 : 1
 }
 
