@@ -175,6 +175,44 @@ describe("defineAgentCli (AIP-45)", () => {
     })
   })
 
+  describe("mode.kind narrowed to \"context\" (SPEC §3.4a route/posture extraction)", () => {
+    // `AgentCliMode.kind` no longer accepts "posture" or "route": route is
+    // derived from the model catalog (@route) and posture from the harness's
+    // ACP mode registry — neither is a manifest mode anymore. Only "context"
+    // (an env toggle with no ACP-protocol home) survives as a declarable kind.
+    // The casts bypass the compile-time narrowing so the runtime schema's own
+    // rejection is what's under test.
+    type LegacyMode = { id: string; kind: string; env?: Record<string, string> }
+    const withModes = (modes: LegacyMode[]) =>
+      minimal({ modes: modes as unknown as AgentCliDefinition["modes"] })
+
+    it("accepts kind: \"context\"", () => {
+      const handle = defineAgentCli(
+        withModes([{ id: "lean", kind: "context", env: { X: "1" } }]),
+      )
+      expect(handle.modes?.[0]?.kind).toBe("context")
+    })
+
+    it("rejects a legacy kind: \"posture\" mode", () => {
+      expect(() =>
+        defineAgentCli(withModes([{ id: "plan", kind: "posture" }])),
+      ).toThrow(/AIP-45/)
+    })
+
+    it("rejects a legacy kind: \"route\" mode", () => {
+      expect(() =>
+        defineAgentCli(withModes([{ id: "moonshot", kind: "route" }])),
+      ).toThrow(/AIP-45/)
+    })
+
+    it("still accepts a mode that omits kind (id-inferred by the daemon shim)", () => {
+      const handle = defineAgentCli(
+        minimal({ modes: [{ id: "default", description: "Standard." }] }),
+      )
+      expect(handle.modes?.[0]?.kind).toBeUndefined()
+    })
+  })
+
   describe("parseAgentCliManifest", () => {
     it("parses a minimal AGENT-CLI.md", () => {
       const md = `---

@@ -538,13 +538,25 @@ export function createMastraMapperState(): MastraMapperState {
 
 /**
  * Extract text from Mastra Code content blocks.
- * Blocks are `{ type: "text", text: "..." }` arrays on `message.content`.
+ * Blocks are normally a `{ type: "text", text: "..." }` array directly on
+ * `message.content`, but newer Mastra Code builds wrap them in an object —
+ * `{ format: 2, parts: [...] }` — so unwrap that shape to the blocks array
+ * first.
  */
 function extractTextFromBlocks(
   content: unknown,
 ): string {
-  if (!Array.isArray(content)) return ""
-  return (content as Array<Record<string, unknown>>)
+  let blocks = content
+  if (
+    blocks !== null &&
+    typeof blocks === "object" &&
+    !Array.isArray(blocks) &&
+    Array.isArray((blocks as Record<string, unknown>).parts)
+  ) {
+    blocks = (blocks as Record<string, unknown>).parts
+  }
+  if (!Array.isArray(blocks)) return ""
+  return (blocks as Array<Record<string, unknown>>)
     .filter(c => c.type === "text" && typeof c.text === "string")
     .map(c => c.text as string)
     .join("")

@@ -1104,9 +1104,10 @@ export interface SessionsRegistry {
    *
    * On `{applied:true}`, updates `SessionDescriptor.model` so
    * `session_list`/SSE reflect the switch and emits a
-   * `session:model-changed` event on the session event bus. On
-   * `{applied:false}` the descriptor and event bus are untouched — nothing
-   * changed, so nothing to announce.
+   * `session:config-changed {axis:"model"}` event on the session event bus
+   * (plus a back-compat `session:model-changed` alias). On `{applied:false}`
+   * the descriptor and event bus are untouched — nothing changed, so nothing
+   * to announce.
    *
    * Throws (not a structured result) for the two "this request doesn't
    * even make sense" cases: an unknown session id, or a session that
@@ -3278,12 +3279,25 @@ export function createSessionsRegistry(opts?: {
         rt.desc.model = result.model ?? modelId
         schedulePersist()
         if (sessionEvents) {
+          const ts = new Date().toISOString()
+          // Axis-generic notification (SPEC step 4) — the shared event that
+          // live-effort/posture (step 5) and restart-override (step 6) also emit.
+          sessionEvents.emit({
+            type: "session:config-changed",
+            sessionId: id,
+            axis: "model",
+            value: rt.desc.model,
+            label: rt.desc.label,
+            ts,
+          })
+          // Back-compat alias — kept so existing `session:model-changed`
+          // subscribers keep working (SPEC step 4).
           sessionEvents.emit({
             type: "session:model-changed",
             sessionId: id,
             model: rt.desc.model,
             label: rt.desc.label,
-            ts: new Date().toISOString(),
+            ts,
           })
         }
       }

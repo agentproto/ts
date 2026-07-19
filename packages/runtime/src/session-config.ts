@@ -16,10 +16,23 @@
  * `@agentproto/auth`. The narrow `AuthMethod` *facet*, by contrast, is
  * structurally mirrored below (§3.1) — the descriptor's `accessProfile` echo
  * (§3.7) names it, and mirroring a two-value string union is cheaper than
- * taking a package dependency for it, the same structural-mirror rationale as
- * `DeclaredAdapterMode` (below) and `DeclaredAdapterOption`
- * (`spawn-defaults.ts:447`).
+ * taking a package dependency on `@agentproto/auth` for it, the same
+ * structural-mirror rationale as `DeclaredAdapterMode` (below) and
+ * `DeclaredAdapterOption` (`spawn-defaults.ts:447`).
+ *
+ * It DOES, however, import a VALUE — the legacy AIP-45 mode-id classification
+ * (`inferLegacyModeKind`) — from `@agentproto/driver-agent-cli` (a lean,
+ * acyclic runtime → driver edge; the driver never depends back on the runtime).
+ * Unlike the type mirrors above (a mirror can't silently break — the compiler
+ * still checks structural compatibility), the gateway/posture id SET is a value
+ * list needed on BOTH sides of the driver/runtime boundary — here for
+ * `decomposeMode` and in the driver's `composeSpawn` back-compat shim — so it
+ * is single-sourced in the driver (its AIP-45 home) rather than copied, which
+ * for a value list WOULD silently drift. Only the daemon-domain canonical-
+ * posture VALUE mapping (`POSTURE_MODE_VALUES`) stays local.
  */
+
+import { inferLegacyModeKind } from "@agentproto/driver-agent-cli"
 
 /**
  * Reasoning / compute budget label.
@@ -120,10 +133,13 @@ export interface SessionConfig {
 /**
  * Manifest-declared AIP-45 mode id + axis discriminant — the minimum
  * `decomposeMode`/`composeMode` need from `AgentCliMode` (driver `types.ts`).
- * Mirrors its `id`/`kind` fields structurally without importing
- * `@agentproto/driver-agent-cli` into the runtime package — the same
+ * Mirrors its `id`/`kind` fields structurally rather than importing the full
+ * `AgentCliMode` TYPE surface from `@agentproto/driver-agent-cli` — the same
  * structural-mirror pattern as `DeclaredAdapterOption` (`spawn-defaults.ts:447`)
- * and `DeclaredAdapterPreset` (`preset-tools.ts`).
+ * and `DeclaredAdapterPreset` (`preset-tools.ts`). (The module does take a
+ * value-level import — `inferLegacyModeKind` — from that package; see the
+ * boundary note at the top for why a shared value list is single-sourced, not
+ * mirrored.)
  *
  * `kind` narrows to a single meaningful value going forward — `"context"` (the
  * one axis with no ACP-protocol home); routes come from the catalog and
@@ -136,15 +152,6 @@ export interface DeclaredAdapterMode {
   kind?: "posture" | "route" | "context"
 }
 
-/** Gateway-preset ids inferred as the `route` axis when a mode declares no
- *  explicit `kind` (SPEC §3.5 classification order, step 2). */
-const GATEWAY_MODE_IDS: ReadonlySet<string> = new Set([
-  "moonshot",
-  "openrouter",
-  "requesty",
-  "deepseek",
-])
-
 /**
  * Legacy posture-mode ids, normalized to the `CanonicalPosture` vocabulary
  * (the "superset over adapters"). Some ids don't literally match a
@@ -152,6 +159,11 @@ const GATEWAY_MODE_IDS: ReadonlySet<string> = new Set([
  * codex's `full-access` (auto-approve every file/shell op, trusted-sandbox
  * only) is the same trust level as `bypass`; opencode's `build` ("not
  * planning, normal execution") is the same trust level as `default`.
+ *
+ * This is the daemon-domain VALUE mapping only; the id CLASSIFICATION (which
+ * ids are route vs posture) is single-sourced in `@agentproto/driver-agent-cli`
+ * (`inferLegacyModeKind`). Its keys are exactly {@link LEGACY_POSTURE_MODE_IDS}
+ * from that same module — a unit test asserts they don't drift.
  */
 const POSTURE_MODE_VALUES: Readonly<Record<string, CanonicalPosture>> = {
   default: "default",
@@ -161,12 +173,6 @@ const POSTURE_MODE_VALUES: Readonly<Record<string, CanonicalPosture>> = {
   "read-only": "read-only",
   "full-access": "bypass",
   build: "default",
-}
-
-function inferModeKind(modeId: string): "posture" | "route" | "context" {
-  if (GATEWAY_MODE_IDS.has(modeId)) return "route"
-  if (modeId in POSTURE_MODE_VALUES) return "posture"
-  return "context"
 }
 
 /**
@@ -186,7 +192,7 @@ export function decomposeMode(
   modeId: string,
 ): Partial<SessionConfig> {
   const declared = modes.find(mode => mode.id === modeId)
-  const kind = declared?.kind ?? inferModeKind(modeId)
+  const kind = declared?.kind ?? inferLegacyModeKind(modeId)
   if (kind === "route") return { route: { gateway: modeId } }
   if (kind === "posture") return { posture: POSTURE_MODE_VALUES[modeId] ?? "default" }
   return { contextProfile: modeId }

@@ -163,6 +163,62 @@ describe("createPrintSession — mastracode print config", () => {
     expect(reconstructed).toBe(original)
   })
 
+  it("unwraps the `{ format: 2, parts: [...] }` content shape on message_update and message_end, still tracking lastTextLength across updates", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(session.send("hello"))
+    await Promise.resolve()
+
+    // Current mastracode (--output jsonl) wraps content in an object with a
+    // `parts` array instead of the flat block-array shape.
+    feed(lastChild!, [
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: { format: 2, parts: [{ type: "text", text: "HARNESS" }] },
+        },
+      },
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: { format: 2, parts: [{ type: "text", text: "HARNESS OK" }] },
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: { format: 2, parts: [{ type: "text", text: "HARNESS OK" }] },
+        },
+      },
+      { type: "agent_end", reason: "complete" },
+      {
+        type: "result",
+        status: "completed",
+        text: "HARNESS OK",
+        finishReason: "complete",
+        threadId: "thread-1",
+        exitCode: 0,
+      },
+    ])
+    finish(lastChild!, 0)
+    const events = await pending
+
+    const deltas = events
+      .filter(e => e.kind === "text-delta")
+      .map(e => (e as { text: string }).text)
+    expect(deltas).toEqual(["HARNESS", " OK"])
+    expect(deltas.join("")).toBe("HARNESS OK")
+  })
+
   it("threads the mastra tool_start `args` field into the tool-call StreamEvent's arguments", async () => {
     const session = createPrintSession({
       bin: "npx",

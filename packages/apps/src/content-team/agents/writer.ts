@@ -9,6 +9,7 @@ export const writer: AgentEntry = {
     description: "Drafts the piece from the researcher's brief.",
     model: "claude-sonnet-5",
     boundaries: ["Stay on the brief", "One idea per paragraph"],
+    tools: ["list_dir", "read_file", "write_file", "edit_file"],
     workflows: [{ ref: "produce-content" }],
   }),
   body:

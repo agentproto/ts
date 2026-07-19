@@ -9,6 +9,7 @@ export const editor: AgentEntry = {
     description: "Edits the draft for voice, clarity, and length.",
     model: "claude-sonnet-5",
     boundaries: ["Preserve the writer's meaning", "Cut, don't pad"],
+    tools: ["read_file", "edit_file"],
     workflows: [{ ref: "produce-content" }],
   }),
   body:

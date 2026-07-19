@@ -285,8 +285,8 @@
         },
         "description": { "type": "string" },
         "kind": {
-          "enum": ["posture", "route", "context"],
-          "description": "Which orthogonal session-config axis this mode expresses: posture (what the agent may DO), route (endpoint/billing rail), or context (what enters context). Omitted ⇒ inferred from the id. Going forward only 'context' is declared here (routes come from the catalog, postures from the ACP mode registry)."
+          "enum": ["context"],
+          "description": "Which orthogonal session-config axis this mode expresses. Narrowed to the single value 'context' (what enters context) — the only concern with no ACP-protocol home. Route is derived from the model catalog (@route route-identity), not a manifest mode; posture comes from the harness's own ACP mode registry (SessionModeState.availableModes). Omitted ⇒ inferred from the id. The legacy 'posture'/'route' back-compat classification lives in the daemon's decomposeMode shim, not this manifest surface."
         },
         "bin_args_prepend": {
           "type": "array",

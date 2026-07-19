@@ -223,6 +223,71 @@ describe("composeSpawn (AIP-45)", () => {
     }
   })
 
+  describe("legacy route/posture mode back-compat (SPEC §3.4a extraction)", () => {
+    // A POST-migration manifest: the gateway (route) and permission (posture)
+    // modes are gone; only the `lean` context mode remains. A caller can still
+    // pass a legacy id as `config.mode` (persisted OPERATOR.md config, a
+    // defaults binding, an in-flight request) — that must DEGRADE to a soft
+    // no-op, not hard-fail the spawn, because the replacement route/posture path
+    // (catalog `@route` / ACP mode registry) lands in a later step.
+    const migrated = () =>
+      handle({
+        modes: [
+          {
+            id: "lean",
+            kind: "context",
+            env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+          },
+        ],
+      })
+
+    const LEGACY_IDS = [
+      // route (deleted gateway modes)
+      "moonshot",
+      "openrouter",
+      "requesty",
+      "deepseek",
+      // posture (deleted permission modes across claude-code/codex/opencode)
+      "default",
+      "plan",
+      "accept-edits",
+      "bypass-permissions",
+      "read-only",
+      "full-access",
+      "build",
+    ]
+
+    it.each(LEGACY_IDS)(
+      "composes a legacy '%s' id as a soft no-op (no throw, no env/argv patch)",
+      legacyId => {
+        const base = composeSpawn(migrated())
+        let out!: ReturnType<typeof composeSpawn>
+        expect(() => {
+          out = composeSpawn(migrated(), { mode: legacyId })
+        }).not.toThrow()
+        // The extracted id contributes no mode patch — identical to no mode.
+        expect(out.binArgs).toEqual(base.binArgs)
+        expect(out.env).toEqual(base.env)
+        expect(out.envUnset).toEqual(base.envUnset)
+      }
+    )
+
+    it("still applies the surviving `lean` context mode normally", () => {
+      const out = composeSpawn(migrated(), { mode: "lean" })
+      expect(out.env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe("1")
+    })
+
+    it("still throws unknown_mode for a genuinely-unknown id", () => {
+      try {
+        composeSpawn(migrated(), { mode: "yolo" })
+        throw new Error("expected composeSpawn to throw")
+      } catch (err) {
+        expect(err).toBeInstanceOf(RuntimeConfigError)
+        expect((err as RuntimeConfigError).code).toBe("unknown_mode")
+      }
+    })
+  })
+
   it("interpolates {value} in option bin_args_template", () => {
     const out = composeSpawn(handle(), {
       options: { model: "claude-opus-4-7", max_turns: 50 },
