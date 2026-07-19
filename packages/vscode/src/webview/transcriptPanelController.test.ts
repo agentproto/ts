@@ -1,6 +1,9 @@
 import { homedir } from "node:os"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 // The @mention file source shells out to git — mock it so the controller test
 // stays hermetic (mentionSource.test.ts covers the real IO against a temp repo).
@@ -101,6 +104,28 @@ function createMockStore(): SessionStore & { emitLine: (line: SessionStreamLine)
       lineHandler?.(line)
     },
   } as unknown as SessionStore & { emitLine: (line: SessionStreamLine) => void }
+}
+
+let fakeHome: string
+let originalHome: string | undefined
+
+afterEach(() => {
+  if (fakeHome) rmSync(fakeHome, { recursive: true, force: true })
+  if (originalHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = originalHome
+  }
+})
+
+function setupFakeHome(cwd: string): string {
+  originalHome = process.env.HOME
+  fakeHome = mkdtempSync(join(tmpdir(), "transcript-panel-native-"))
+  process.env.HOME = fakeHome
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, "-")
+  const dir = join(fakeHome, ".claude", "projects", encoded)
+  mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 function make(
@@ -227,6 +252,65 @@ describe("TranscriptPanelController — raw fallback mode", () => {
 
     expect(initMsg(messenger.messages)).toMatchObject({ type: "init", session: initial })
     expect(messenger.messages).toContainEqual({ type: "sessionUpdate", session: updated })
+  })
+})
+
+describe("TranscriptPanelController — native PTY bridge", () => {
+  it("hydrates a terminal claude PTY from native conversation records", async () => {
+    const cwd = "/native/proj"
+    const dir = setupFakeHome(cwd)
+    const conversationId = "63e014d3-0000-0000-0000-000000000099"
+    writeFileSync(
+      join(dir, `${conversationId}.jsonl`),
+      [
+        {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: "hello native" }] },
+        },
+        {
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "native reply" }] },
+        },
+      ].map(line => JSON.stringify(line)).join("\n") + "\n",
+    )
+
+    const initial = session({
+      kind: "terminal",
+      pty: true,
+      adapterSlug: "claude-code",
+      argv: ["claude", "--resume", conversationId],
+      cwd,
+    })
+    const client = createMockClient({
+      getSession: vi.fn().mockResolvedValue(initial),
+    })
+    const { controller, messenger } = make(client, { initialSession: initial })
+
+    await controller.onReady()
+
+    expect(client.getSessionEvents).not.toHaveBeenCalled()
+    const init = initMsg(messenger.messages)
+    expect(init.mode).toBe("structured")
+    expect(init.conversation?.turns).toHaveLength(2)
+    expect(textOf(init.conversation!).join(" ")).toContain("hello native")
+    expect(textOf(init.conversation!).join(" ")).toContain("native reply")
+  })
+
+  it("falls back to raw for a PTY terminal that is not a known native store", async () => {
+    // The gating boundary: a PTY terminal is only bridged when its binary maps
+    // to a conversation store. An unknown binary must degrade to raw, not sit
+    // empty in structured mode waiting for events that will never come.
+    const client = createMockClient()
+    const { controller, messenger } = make(client, {
+      initialSession: session({ kind: "terminal", pty: true, argv: ["bash"] }),
+    })
+
+    await controller.onReady()
+
+    const init = initMsg(messenger.messages)
+    expect(init.mode).toBe("raw")
+    expect(client.getSessionEvents).not.toHaveBeenCalled()
+    expect(client.exportSession).toHaveBeenCalledWith("s1", "markdown")
   })
 })
 

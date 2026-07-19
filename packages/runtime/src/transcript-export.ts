@@ -53,6 +53,8 @@ export interface ExportedSessionMeta {
     cacheRead?: number
     cacheWrite?: number
     reasoning?: number
+    contextSize?: number
+    contextUsed?: number
   }
   costUsd?: number
   source?: string

@@ -136,6 +136,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "agentproto.importConversation",
+        "title": "agentproto: Import Claude Conversation",
+        "category": "agentproto",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "agentproto.filterSessions",
         "title": "agentproto: Filter Sessions",
         "category": "agentproto",
@@ -158,6 +164,11 @@
         "title": "agentproto: Open Terminal",
         "category": "agentproto",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "agentproto.switchHarness",
+        "title": "agentproto: Switch Harness",
+        "category": "agentproto"
       },
       {
         "command": "agentproto.openTranscriptChannel",
@@ -213,6 +224,11 @@
           "command": "agentproto.toggleGroupByWorkspace",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
+        },
+        {
+          "command": "agentproto.importConversation",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -255,6 +271,11 @@
           "command": "agentproto.openTerminal",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
           "group": "inline@7"
+        },
+        {
+          "command": "agentproto.switchHarness",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "inline@8"
         },
         {
           "command": "agentproto.openTranscriptChannel",
