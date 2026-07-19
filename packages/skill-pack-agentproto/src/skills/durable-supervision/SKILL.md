@@ -74,10 +74,13 @@ pièges prouvés en live** :
 Gate vert prouvé : `policy:passed`, status `done`, `lastGate.exitCode:0`.
 
 **⚠️ En pratique (vécu en vrai, répété 2× sur une même session d'orchestration,
-2026-07-01) : pour le pattern dominant "worktree dédié par feature"
-(`_agentproto-worktrees/<feature>/`, cwd absolu HORS de `agentik-studio`), les
-gates shell sont quasiment INUTILISABLES.** Le workspace ancré est celui de TON
-PROPRE contexte appelant (l'orchestrateur), pas celui de la session cible — donc
+2026-07-01) : pour le pattern dominant "worktree dédié par feature" — désormais
+provisionné NATIVEMENT via `agent_start({ worktree: … })` (le daemon fait
+`git worktree add` + les setup hooks), pas un `git worktree add` fait main ; le
+worktree vit sous `worktrees.root` (défaut `~/.agentproto/worktrees`), cwd absolu
+HORS de `agentik-studio` — les gates shell sont quasiment INUTILISABLES.** Le
+workspace ancré est celui de TON PROPRE contexte appelant (l'orchestrateur), pas
+celui de la session cible — donc
 même un `cwd` absolu explicite au spawn échoue systématiquement, immédiatement
 (`status: blocked`, `retries: 0` — PAS un cas géré par `onFail`, c'est une
 erreur d'infra, pas un exit code). Pire : l'échec est **silencieux** — la policy

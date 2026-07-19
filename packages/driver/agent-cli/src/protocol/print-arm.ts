@@ -227,6 +227,17 @@ export function createPrintSession(
       return { applied: false, reason: "requires-restart" }
     },
 
+    // No ACP session — no wrapper-advertised capability read-surface and
+    // no `session/set_mode` RPC to switch live. Mirrors the "arm has no
+    // mid-session config surface" case `define-agent-cli.ts` reports for
+    // `setModel` on other arms.
+    availableConfigOptions: [],
+    availableModes: [],
+    currentModeId: undefined,
+    async setSessionMode(): Promise<{ applied: false; reason: string }> {
+      return { applied: false, reason: "not-supported" }
+    },
+
     async close(): Promise<void> {
       activeChild?.kill("SIGTERM")
       mcpRestore?.()

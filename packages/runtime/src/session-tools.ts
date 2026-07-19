@@ -42,7 +42,11 @@ import { projectSessionUsage } from "./usage.js"
 import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
-import type { AgentAdapterResolver, AgentAdapterLister } from "./http-server.js"
+import type {
+  AgentAdapterResolver,
+  AgentAdapterLister,
+  CatalogModelsLister,
+} from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import {
   loadWorkspacesConfig,
@@ -128,6 +132,10 @@ export interface RegisterSessionToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional catalog lister — when wired, exposes the read-only
+   *  `catalog_models` MCP tool. Without it the tool returns a clear "not
+   *  configured" error pointing at the host wiring. */
+  listCatalogModels?: CatalogModelsLister
   /** Forwarded to `registerAgentTools` — the daemon's own plain `/mcp`
    *  gateway URL, defaulted onto `hermes` `agent_start` spawns that
    *  pass no `mcpServers`. See `RegisterAgentToolsOptions.daemonMcpUrl`. */

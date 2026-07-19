@@ -1,0 +1,304 @@
+name: Adapter harness bake-off
+
+# Runs a MATRIX of agent adapters × auth/model configs, each doing ONE minimal
+# agent turn ("reply HARNESS OK"), and reports which combos actually produce
+# assistant output headless. Every row drives the SAME generic lane
+# (.github/actions/agentproto-run) against the SAME adapter-agnostic workflow
+# (.github/agentproto-workflows/harness-smoke/), differing only in the adapter
+# slug + auth/model knobs. Additive to, and separate from, the pr-review gate
+# in ci.yml — this workflow never gates a merge; it is a diagnostic bake-off.
+#
+# Rows are EXPECTED to disagree: some adapters can't authenticate headless
+# (claude-code subscription needs an interactive login), some have no secret in
+# this repo (codex/OpenAI), some don't support the requested mode (pi has no
+# authSubscription). A red row is a RESULT, not a failure of this workflow —
+# hence `fail-fast: false` + `continue-on-error: true` on every run, and a
+# summary table that records each row's terminal status.
+#
+# `workflow_dispatch` for ad-hoc manual runs. `pull_request` is scoped to the
+# harness's own paths so it only re-proves itself when it changes (like the
+# lane smoke), not on every PR.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - .github/actions/agentproto-run/**
+      - .github/agentproto-workflows/harness-smoke/**
+      - .github/workflows/adapter-harness-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    # A fork PR has no access to this repo's secrets (it is public), so every
+    # row would just fail on missing auth for no reason — skip outright rather
+    # than produce noise-red on every fork PR (mirrors the lane smoke guard).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Must independently cover the action's own `timeout-minutes` input (a
+    # composite action cannot self-impose a job timeout) PLUS the install+build.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Baselines ────────────────────────────────────────────────
+          - slug: claude-code-sub
+            name: claude-code / subscription
+            adapter: claude-code
+            auth-mode: subscription
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: CLAUDE_CODE_OAUTH_TOKEN
+            provider-key-env: ''
+            config: subscription (CLAUDE_CODE_OAUTH_TOKEN) — known auth-required empty turn headless
+          - slug: claude-code-apikey
+            name: claude-code / api-key
+            adapter: claude-code
+            auth-mode: api-key
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: ANTHROPIC_API_KEY
+            provider-key-env: ''
+            config: api-key (ANTHROPIC_API_KEY)
+          - slug: claude-sdk-apikey
+            name: claude-sdk / api-key
+            adapter: claude-sdk
+            auth-mode: api-key
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: ANTHROPIC_API_KEY
+            provider-key-env: ''
+            config: api-key (ANTHROPIC_API_KEY)
+          # ── claude-sdk via Moonshot (Kimi) gateway ───────────────────
+          # base_url makes the runtime skip native billing-auth; the Moonshot
+          # bearer rides the daemon env as ANTHROPIC_AUTH_TOKEN (provider-key-env),
+          # and --thinking is on because Kimi rejects a request without it.
+          - slug: claude-sdk-moonshot-k26
+            name: claude-sdk / moonshot kimi-k2.6
+            adapter: claude-sdk
+            auth-mode: api-key
+            model: kimi-k2.6
+            base-url: https://api.moonshot.ai/anthropic
+            thinking: 'true'
+            key-ref: MOONSHOT_API_KEY
+            provider-key-env: ANTHROPIC_AUTH_TOKEN
+            config: moonshot gateway, model kimi-k2.6, thinking on (MOONSHOT_API_KEY → ANTHROPIC_AUTH_TOKEN)
+          - slug: claude-sdk-moonshot-k27code
+            name: claude-sdk / moonshot kimi-k2.7-code
+            adapter: claude-sdk
+            auth-mode: api-key
+            model: kimi-k2.7-code
+            base-url: https://api.moonshot.ai/anthropic
+            thinking: 'true'
+            key-ref: MOONSHOT_API_KEY
+            provider-key-env: ANTHROPIC_AUTH_TOKEN
+            config: moonshot gateway, model kimi-k2.7-code, thinking on (MOONSHOT_API_KEY → ANTHROPIC_AUTH_TOKEN)
+          - slug: claude-sdk-moonshot-k3
+            name: claude-sdk / moonshot kimi-k3
+            adapter: claude-sdk
+            auth-mode: api-key
+            model: kimi-k3
+            base-url: https://api.moonshot.ai/anthropic
+            thinking: 'true'
+            key-ref: MOONSHOT_API_KEY
+            provider-key-env: ANTHROPIC_AUTH_TOKEN
+            config: moonshot gateway, model kimi-k3, thinking on (MOONSHOT_API_KEY → ANTHROPIC_AUTH_TOKEN)
+          # ── pi (both anthropic modes) ────────────────────────────────
+          # pi declares NO authSubscription, so the subscription row is expected
+          # to fail with unsupported_auth_mode — a valid bake-off result.
+          - slug: pi-anthropic-sub
+            name: pi / anthropic subscription
+            adapter: pi
+            auth-mode: subscription
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: CLAUDE_CODE_OAUTH_TOKEN
+            provider-key-env: ''
+            config: subscription (CLAUDE_CODE_OAUTH_TOKEN) — pi has no authSubscription, expect unsupported_auth_mode
+          - slug: pi-anthropic-apikey
+            name: pi / anthropic api-key
+            adapter: pi
+            auth-mode: api-key
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: ANTHROPIC_API_KEY
+            provider-key-env: ''
+            config: api-key (ANTHROPIC_API_KEY), default model anthropic/claude-sonnet-4-5
+          # ── mastracode (both variants) ───────────────────────────────
+          - slug: mastracode-apikey
+            name: mastracode / anthropic api-key
+            adapter: mastracode
+            auth-mode: api-key
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: ANTHROPIC_API_KEY
+            provider-key-env: ''
+            config: api-key (ANTHROPIC_API_KEY), default model anthropic/claude-sonnet-4-5
+          - slug: mastracode-inprocess-apikey
+            name: mastracode-inprocess / anthropic api-key
+            adapter: mastracode-inprocess
+            auth-mode: api-key
+            model: ''
+            base-url: ''
+            thinking: ''
+            key-ref: ANTHROPIC_API_KEY
+            provider-key-env: ''
+            config: api-key (ANTHROPIC_API_KEY), default model anthropic/claude-sonnet-4-5
+          # ── mastra-agent Kimi via Groq ───────────────────────────────
+          # mastra-agent routes `provider/model` through Mastra's gateway; it has
+          # NO Moonshot-direct provider wiring and no OpenRouter key is available,
+          # so Kimi-via-Moonshot is covered by the claude-sdk rows above. This row
+          # instead proves whether mastra-agent produces output headless at all,
+          # using the available GROQ key + a Kimi model served by Groq.
+          - slug: mastra-agent-kimi-groq
+            name: mastra-agent / kimi via groq
+            adapter: mastra-agent
+            auth-mode: api-key
+            model: groq/moonshotai/kimi-k2-instruct
+            base-url: ''
+            thinking: ''
+            key-ref: GROQ_API_KEY
+            provider-key-env: GROQ_API_KEY
+            config: groq gateway (Mastra), model groq/moonshotai/kimi-k2-instruct (GROQ_API_KEY)
+          # ── codex (expected fail — no OpenAI secret in this repo) ─────
+          - slug: codex-openai
+            name: codex / openai
+            adapter: codex
+            auth-mode: api-key
+            model: gpt-5-codex
+            base-url: ''
+            thinking: ''
+            key-ref: ''
+            provider-key-env: ''
+            config: openai (OPENAI_API_KEY) — NO OpenAI/Codex secret in this repo, expected fail on missing key
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # turbo needs full history to compute the affected set (see ci.yml).
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build local agentproto CLI + matrix adapter
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ matrix.adapter }}..."
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+
+      - name: Run harness turn (${{ matrix.adapter }})
+        id: run
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        with:
+          adapter: ${{ matrix.adapter }}
+          cli-source: workspace
+          workflow-path: .github/agentproto-workflows/harness-smoke/WORKFLOW.md
+          workflow-input: '{"adapter":"${{ matrix.adapter }}"}'
+          auth-mode: ${{ matrix.auth-mode }}
+          # Each key-ref lands in exactly ONE slot (subscription→oauth-token,
+          # anthropic api-key→api-key, gateway/groq keys→provider-key), so these
+          # inline selectors never collide. A blank secret (e.g. codex) resolves
+          # to '' and the row fails-reports on missing auth.
+          oauth-token: ${{ matrix.key-ref == 'CLAUDE_CODE_OAUTH_TOKEN' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          api-key: ${{ matrix.key-ref == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
+          provider-key: ${{ (matrix.key-ref == 'MOONSHOT_API_KEY' && secrets.MOONSHOT_API_KEY) || (matrix.key-ref == 'GROQ_API_KEY' && secrets.GROQ_API_KEY) || '' }}
+          provider-key-env: ${{ matrix.provider-key-env }}
+          model: ${{ matrix.model }}
+          base-url: ${{ matrix.base-url }}
+          thinking: ${{ matrix.thinking }}
+          timeout-minutes: '15'
+
+      - name: Record result
+        if: always()
+        env:
+          ROW_NAME: ${{ matrix.name }}
+          ROW_CONFIG: ${{ matrix.config }}
+          ROW_STATUS: ${{ steps.run.outputs.status }}
+          ROW_OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          STATUS="$ROW_STATUS"
+          # No terminal status output ⇒ the action itself errored before the
+          # driver wrote one (build/boot/config failure) — record it as failed.
+          if [ -z "$STATUS" ]; then STATUS="failed (${ROW_OUTCOME:-error})"; fi
+          mkdir -p harness-results
+          # Pipe-delimited; the summary job parses this. Values are matrix
+          # literals (never secrets).
+          printf '%s|%s|%s\n' "$ROW_NAME" "$ROW_CONFIG" "$STATUS" > "harness-results/row.txt"
+          {
+            echo "### ${ROW_NAME}"
+            echo ""
+            echo "- config: ${ROW_CONFIG}"
+            echo "- status: **${STATUS}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-result-${{ matrix.slug }}
+          path: harness-results/row.txt
+          retention-days: 7
+
+  summary:
+    name: Bake-off summary table
+    runs-on: ubuntu-latest
+    needs: harness
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Download all row results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: harness-result-*
+          path: results
+          merge-multiple: false
+
+      - name: Render summary table
+        run: |
+          {
+            echo "# Adapter harness bake-off"
+            echo ""
+            echo "One minimal agent turn per row (\"reply HARNESS OK\"). Status is the"
+            echo "lane's terminal workflow status — \`done\` means the adapter actually"
+            echo "produced assistant output headless; \`failed\` means it did not (an"
+            echo "empty/no-session \`done\` is reported as failed by the driver)."
+            echo ""
+            echo "| Adapter / config | Details | Status |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Each artifact dir holds one row.txt (name|config|status).
+          found=0
+          for f in results/*/row.txt; do
+            [ -f "$f" ] || continue
+            found=1
+            IFS='|' read -r name config status < "$f"
+            printf '| %s | %s | %s |\n' "$name" "$config" "$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" = "0" ]; then
+            echo "| _(no row results found)_ | | |" >> "$GITHUB_STEP_SUMMARY"
+          fi

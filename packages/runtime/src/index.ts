@@ -57,6 +57,7 @@ import {
   type AuthOptions,
   type AgentAdapterResolver,
   type AgentAdapterLister,
+  type CatalogModelsLister,
 } from "./http-server.js"
 import {
   createSessionsRegistry,
@@ -96,7 +97,19 @@ export type {
   AgentAdapterResolver,
   AgentAdapterLister,
   AdapterListEntry,
+  CatalogModelsLister,
 } from "./http-server.js"
+export {
+  buildCatalogModels,
+  type CatalogAdapterInput,
+  type CatalogAdapterModelInput,
+  type CatalogModelsQuery,
+  type CatalogModelsResponse,
+  type CatalogVendor,
+  type CatalogProduct,
+  type CatalogRoute,
+  type CatalogPricing,
+} from "./catalog-models.js"
 export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"
 export { makeBrowserAdapterLister } from "./browser-adapters.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"
@@ -202,6 +215,26 @@ export {
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
+export { decomposeMode, composeMode } from "./session-config.js"
+export type {
+  SessionConfig,
+  EffortLevel,
+  CanonicalPosture,
+  Posture,
+  RouteSpec,
+  ContextProfile,
+  AuthMethod,
+  DeclaredAdapterMode,
+} from "./session-config.js"
+export {
+  resolvePosture,
+  findNativeMode,
+  canonicalForModeId,
+  normalizeModeId,
+  POSTURE_PREAMBLES,
+  POSTURE_NATIVE_ALIASES,
+} from "./canonical-posture.js"
+export type { PostureResolution, SessionMode } from "./canonical-posture.js"
 export { parseDuration } from "./heartbeat.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {
@@ -362,6 +395,11 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional catalog lister — when provided, enables
+   *  `GET /catalog/models` HTTP route + `catalog_models` MCP tool
+   *  (SPEC §5) so UIs can discover every runnable model + route without
+   *  trial-and-error against a spawn. */
+  listCatalogModels?: CatalogModelsLister
   /** Optional browser adapter resolver — when provided, enables the
    *  `start_browser` MCP tool (launches Camofox / Bureau / Chromium). */
   resolveBrowserAdapter?: BrowserAdapterResolver
@@ -935,6 +973,9 @@ export async function createGateway(
       ...(opts.listAgentAdapters
         ? { listAgentAdapters: opts.listAgentAdapters }
         : {}),
+      ...(opts.listCatalogModels
+        ? { listCatalogModels: opts.listCatalogModels }
+        : {}),
     })
     registerBrowserTools(server, {
       registry: sessions,
@@ -1135,6 +1176,9 @@ export async function createGateway(
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    ...(opts.listCatalogModels
+      ? { listCatalogModels: opts.listCatalogModels }
       : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }

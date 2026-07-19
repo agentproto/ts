@@ -29,6 +29,49 @@ export type SessionStatus =
   | "killed"
   | "error"
 
+// ── Decomposed per-session config axes (SPEC §3.1/§3.7,
+//    `agentproto-session-config-axes`). Mirror @agentproto/runtime's
+//    session-config.ts axis types field-for-field so the picker (step 8) reads
+//    each descriptor chip off its own axis instead of decoding the compound
+//    legacy `mode` string. Kept as local literals — the client mirrors the
+//    daemon by hand and takes no runtime import (see this file's header). ──
+
+/** Mirrors @agentproto/runtime EffortLevel (session-config.ts) — the documented
+ *  SUPERSET ceiling; the offerable set is resolved per (adapter × model). */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
+
+/** Mirrors @agentproto/runtime CanonicalPosture — a portable "what the agent may
+ *  DO" vocabulary. */
+export type CanonicalPosture = "default" | "plan" | "accept-edits" | "bypass" | "read-only"
+
+/** Mirrors @agentproto/runtime Posture — a canonical posture OR a raw harness
+ *  mode id from the ACP mode registry (SPEC §3.4a). */
+export type Posture = CanonicalPosture | { harnessModeId: string }
+
+/** Mirrors @agentproto/runtime RouteSpec — endpoint / gateway rail. `baseUrl`
+ *  only for a custom gateway the catalog can't resolve. */
+export interface RouteSpec {
+  gateway: string
+  baseUrl?: string
+}
+
+/** Mirrors @agentproto/runtime ContextProfile — `"lean"` drops bundled skills. */
+export type ContextProfile = "full" | "lean" | (string & {})
+
+/** Mirrors @agentproto/runtime AuthMethod — the narrow eligibility facet of a
+ *  named profile (SPEC §1c). */
+export type AuthMethod = "oauth-bearer" | "api-key"
+
+/** Mirrors @agentproto/runtime SessionAccessProfileEcho — the non-secret
+ *  identity of the NAMED auth profile attached to the session (SPEC §3.6/§3.7),
+ *  so the access chip can name the wallet. NEVER the credential. */
+export interface SessionAccessProfileEcho {
+  profileRef: string
+  label?: string
+  vendor: string
+  method: AuthMethod
+}
+
 /**
  * SessionDescriptor — the daemon's canonical session row. Field-for-field
  * copy of the recon §Session descriptor contract (packages/runtime
@@ -83,6 +126,17 @@ export interface SessionDescriptor {
     mode: "subscription" | "api-key"
     fingerprint: string
   }
+  /** Decomposed per-session config axes — mirror @agentproto/runtime
+   *  SessionDescriptor's echo fields (SPEC §3.7). Each is one orthogonal axis
+   *  the picker chip reads independently; all optional, absent = adapter
+   *  default. See the axis type docs above. */
+  effort?: EffortLevel
+  posture?: Posture
+  route?: RouteSpec
+  contextProfile?: ContextProfile
+  /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the
+   *  daemon's SessionAccessProfileEcho. Non-secret. */
+  accessProfile?: SessionAccessProfileEcho
   costUsd?: number
   tokensIn?: number
   tokensOut?: number

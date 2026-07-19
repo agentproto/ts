@@ -396,6 +396,33 @@ async fn git_diff(cwd: String) -> Result<GitDiff, String> {
     })
 }
 
+// ── directory listing (slice 3 / Files tree) ────────────────────────────────
+// Backs the React `useFileTree` hook (src/files/useFileTree.ts), which calls
+// `invoke<string[]>("list_dir", { cwd })`. Contract: one absolute path string
+// per entry, a trailing "/" marking a directory. The hook's parseEntry keeps
+// the full path (so a directory's path can be fed straight back in to expand
+// the next level) and takes the last segment as the display name.
+
+/// list_dir — the immediate entries of `cwd`. Reads the directory with the
+/// arg-array `std::fs::read_dir` (never a shell). Returns absolute paths,
+/// directories suffixed with "/". A bad/unreadable path is a rejected promise
+/// on the JS side, surfaced in the hook's `error` rather than thrown.
+#[tauri::command]
+fn list_dir(cwd: String) -> Result<Vec<String>, String> {
+    let read = std::fs::read_dir(&cwd).map_err(|e| format!("{cwd}: {e}"))?;
+    let mut out: Vec<String> = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let mut path = entry.path().to_string_lossy().to_string();
+        if is_dir {
+            path.push('/');
+        }
+        out.push(path);
+    }
+    Ok(out)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -405,7 +432,8 @@ pub fn run() {
             daemon_sessions,
             daemon_session_events,
             daemon_prompt,
-            git_diff
+            git_diff,
+            list_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

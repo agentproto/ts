@@ -45,10 +45,46 @@ toi                               → e2e LIVE (script tsx contre le vrai daemon
   aware). Rapport final imposé : fichiers touchés, choix de design, wiring
   lines, exit codes RÉELS.
 
+## Worktree natif — provisionne + spawne en UN geste
+
+**Le DÉFAUT : ne fais JAMAIS `git worktree add` + `pnpm install` à la main.**
+Passe le champ `worktree` à `agent_start` et le daemon s'en charge :
+
+- `agent_start({ cwd: <repo cible>, worktree: { slug, base: "origin/main" } })`
+  (ou `worktree: true`, slug auto-minté depuis `label`). Le daemon fait
+  `git worktree add -b wt/<slug> … origin/main` **puis joue les setup hooks de
+  l'`agentproto.json` du repo** (pour `agentproto/ts` : `pnpm install
+  --prefer-offline` + `pnpm build`) AVANT de spawner l'adapter dedans. Donc
+  install + build sont AUTOMATIQUES — zéro geste git/pnpm à la main.
+- Le worktree atterrit HORS du monorepo (racine `worktrees.root` du daemon,
+  défaut `~/.agentproto/worktrees/<repo>/<slug>`) — ce qui règle du même coup le
+  piège « worktree sibling de `ts/` → collision de packages pnpm/turbo »
+  (worktree HORS du monorepo par construction).
+- **Root seulement.** Honoré uniquement pour un spawn ROOT ; un enfant spawné
+  VIA cet orchestrateur hérite de l'arbre du parent (pas de second worktree) —
+  ne provisionne donc PAS par-enfant. Ignoré pour un spawn `sandbox` (la box
+  isole déjà). Exige un `cwd` (ou `workspaceSlug`) explicite, sinon
+  `worktree_requires_explicit_repo` (pas de branche coupée au hasard sur le
+  workspace actif). Une policy daemon `worktrees.isolation` (`always` / `never`,
+  env `AGENTPROTO_WORKTREES_ISOLATION` > config) peut forcer/interdire
+  globalement ; défaut `on-request`.
+- **Teardown = à la main APRÈS merge** (le worktree n'est PAS supprimé à la
+  fermeture de session) : `agentproto worktree rm|archive <path|slug>` (`rm`
+  refuse si l'arbre est dirty sauf `--discard-modified/--discard-untracked` ;
+  `archive` snapshot d'abord sous `~/.agentproto/worktree-salvage/`), ou
+  `agentproto worktree gc --apply` pour balayer les merged+clean+idle.
+- **Fallback — worktree local à TOI** (quand le superviseur veut son PROPRE
+  worktree pour consolider/éditer SANS spawner d'agent) :
+  `agentproto worktree new <slug> [--base origin/main]` (crée sous
+  `worktrees.root`, branche `wt/<slug>`, joue les setup hooks — `--no-setup`
+  pour les sauter) — PAS un `git worktree add` brut à la main.
+
 ## Protocole de spawn (hermes / modèles OpenRouter)
 
 1. `agent_start` **idle** (pas de prompt initial !), `role: "executor"` (strip
-   agent_start/agent_prompt), cwd = worktree dédié.
+   agent_start/agent_prompt), `cwd` = le repo cible + `worktree: { slug, base:
+   "origin/main" }` (cf. section précédente — le daemon provisionne + installe ;
+   pas de worktree fait main).
 2. `/model <slug>` seul → attendre turn-end → **vérifier la ligne
    `Model switched to: <slug> · Provider: …`** dans agent_output.
 3. Ping de vie : `Reply with exactly: READY` → turn non-vide = session saine.
@@ -59,8 +95,8 @@ repo sur le modèle par défaut cher — vécu : ~$1.9 le tour pour rien). Et un
 vide après switch ≠ session foutue : voir Diagnostic.
 
 Pour claude-code/claude-sdk : `model` + `auth {mode:"subscription"}` (ou
-`mode:"moonshot"` + kimi) se pinnent AU SPAWN — pas de danse /model, le brief
-peut partir dans le prompt initial.
+`mode:"moonshot"` + kimi) **et `worktree`** se pinnent AU SPAWN — pas de danse
+/model, le brief peut partir dans le prompt initial.
 
 ## Monitoring (économe en tokens superviseur)
 

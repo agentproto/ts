@@ -3,7 +3,8 @@
 
 import type { BrowserTab } from "../data/types"
 
-export type ActiveTab = "transcript"
+// Fixed tab ids plus one per open browser tab (see browserTabsFor).
+export type ActiveTab = "transcript" | "files" | string
 
 interface TabStripProps {
   tabs: readonly BrowserTab[]
@@ -20,6 +21,13 @@ export function TabStrip({ tabs, activeTab, onSelect }: TabStripProps) {
       >
         <span className="ico">◇</span>
         <span className="lbl">Transcript</span>
+      </div>
+      <div
+        className={`tab${activeTab === "files" ? " active" : ""}`}
+        onClick={() => onSelect("files")}
+      >
+        <span className="ico">🗂</span>
+        <span className="lbl">Files</span>
       </div>
       {tabs.map((tab) => (
         <div
