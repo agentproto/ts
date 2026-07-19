@@ -246,3 +246,104 @@ describe("buildCatalogModels — pricing + ref enrichment", () => {
     expect(route?.pricing).toBeNull()
   })
 })
+
+// The regression this PR closes: a router-prefixed Mastra id like
+// `openrouter/z-ai/glm-5.2` (adapters/mastra-agent/src/index.ts:78) is a
+// 3-segment `<router>/<vendor>/<product>` string. `parseModelRef` splits on
+// the FIRST `/` and rejects a product still holding one, so before the fix
+// this threw `InvalidModelRefError` and 500'd the WHOLE catalog. These
+// fixtures mirror mastra-agent's real `models.allowed`.
+const MASTRA_AGENT: CatalogAdapterInput = {
+  slug: "mastra-agent",
+  models: [
+    { id: "openrouter/z-ai/glm-5.2" },
+    { id: "openrouter/deepseek/deepseek-v4-pro" },
+    { id: "openai/gpt-5" },
+  ],
+  // OpenRouter/OpenAI api-key gateway — never subscription (SPEC §1c).
+  authDescriptor: { provider: "openrouter" },
+}
+
+describe("buildCatalogModels — router-prefixed OpenRouter ids (regression)", () => {
+  it("does not throw on the exact id that crashed the endpoint", () => {
+    expect(() =>
+      buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [] }),
+    ).not.toThrow()
+  })
+
+  it("represents `openrouter/z-ai/glm-5.2` as the canonical z-ai/glm-5.2@openrouter row", () => {
+    const response = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [] })
+    // vendor z-ai, product glm-5.2, route openrouter — NOT the 3-segment
+    // `openrouter/z-ai/glm-5.2` mangling, and NOT dropped from the catalog.
+    const route = findRoute(response, "z-ai", "glm-5.2", "openrouter")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("z-ai/glm-5.2@openrouter")
+    expect(route?.curated).toBe(true)
+    expect(route?.adapters).toContain("mastra-agent")
+    // Priced from the REAL committed OpenRouter snapshot
+    // (openrouter-routes.generated.ts, keyed `z-ai/glm-5.2`).
+    expect(route?.pricing).not.toBeNull()
+    expect(route?.pricing?.inPer1M).toBeGreaterThan(0)
+  })
+
+  it("resolves the second router-prefixed id (`openrouter/deepseek/deepseek-v4-pro`) too", () => {
+    const response = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [] })
+    const route = findRoute(response, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("deepseek/deepseek-v4-pro@openrouter")
+  })
+
+  it("keeps an OpenRouter id whose product has no snapshot pricing as a valid, unpriced row", () => {
+    // A router-prefixed id for a product NOT in the OpenRouter snapshot must
+    // still surface as a valid `<vendor>/<product>@openrouter` row (parsed,
+    // just unpriced) rather than being dropped or crashing.
+    const response = buildCatalogModels({
+      adapters: [
+        { slug: "x", models: [{ id: "openrouter/z-ai/glm-does-not-exist" }] },
+      ],
+      profiles: [],
+    })
+    const route = findRoute(response, "z-ai", "glm-does-not-exist", "openrouter")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("z-ai/glm-does-not-exist@openrouter")
+    expect(route?.pricing).toBeNull()
+  })
+
+  it("leaves a 2-segment direct id (`openai/gpt-5`) as a direct-route row", () => {
+    const response = buildCatalogModels({ adapters: [MASTRA_AGENT], profiles: [] })
+    const route = findRoute(response, "openai", "gpt-5", "openai")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("openai/gpt-5")
+  })
+
+  it("marks the z-ai/glm route runnable for an openrouter api-key profile", () => {
+    const openrouterKey: AuthProfile = {
+      id: "personal-openrouter",
+      vendor: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-or",
+    }
+    const response = buildCatalogModels({
+      adapters: [MASTRA_AGENT],
+      profiles: [openrouterKey],
+    })
+    const route = findRoute(response, "z-ai", "glm-5.2", "openrouter")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("personal-openrouter")
+  })
+
+  it("never lets one unparseable id 500 the response — a garbage id is skipped-in-place, siblings survive", () => {
+    // An id normalization can't rescue (unknown 3-segment prefix) must not
+    // throw: it degrades to a best-effort row and the good rows still build.
+    const response = buildCatalogModels({
+      adapters: [
+        {
+          slug: "weird",
+          models: [{ id: "notaroute/z-ai/glm-5.2" }, { id: "openrouter/z-ai/glm-5.2" }],
+        },
+      ],
+      profiles: [],
+    })
+    expect(findRoute(response, "z-ai", "glm-5.2", "openrouter")).toBeDefined()
+  })
+})

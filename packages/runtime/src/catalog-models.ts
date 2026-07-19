@@ -131,6 +131,48 @@ interface ResolvedModel {
   pricing: CatalogPricing | null
 }
 
+/** Rewrite a router-prefixed id (`<router>/<vendor>/<product>`) into the
+ *  canonical route-identity `<vendor>/<product>@<router>` the parser accepts.
+ *
+ *  Mastra-style adapters (e.g. `adapters/mastra-agent`) declare their model
+ *  ids in `<provider>/<upstream-id>` form, and for a gateway router the
+ *  upstream id is itself `<vendor>/<product>` — so a native OpenRouter id like
+ *  `z-ai/glm-5.2` is advertised as the 3-segment `openrouter/z-ai/glm-5.2`.
+ *  `parseModelRef` splits on the FIRST `/` and rejects a product that still
+ *  contains one (`route-identity/index.ts` SEGMENT_RE), so feeding it the raw
+ *  3-segment string throws and, before this normalization, 500'd the whole
+ *  catalog. The route-identity grammar's canonical form for such a model is
+ *  `<vendor>/<product>@<router>` (`z-ai/glm-5.2@openrouter`) — the `@route`
+ *  suffix, NOT a leading route segment — so we recompose to that. Only the
+ *  known gateway routers (whose native ids are `<vendor>/<product>`) are
+ *  peeled; every other id is returned untouched. A `:pin` variant/provider
+ *  suffix on the upstream id is preserved (it rides along in the remainder).
+ */
+function normalizeRouterPrefixedId(id: string): string {
+  const firstSlash = id.indexOf("/")
+  if (firstSlash === -1) return id
+  const head = id.slice(0, firstSlash)
+  if (!(WIDENING_ROUTES as readonly string[]).includes(head)) return id
+  const remainder = id.slice(firstSlash + 1)
+  // Only a genuine `<vendor>/<product>` upstream id (still carrying a `/`) is
+  // the router-prefixed shape; a 2-segment `<router>/<product>` is left alone.
+  if (!remainder.includes("/") || remainder.includes("@")) return id
+  return `${remainder}@${head}`
+}
+
+/** {@link resolveLlmModelRoute} that never throws. `resolveLlmModelRoute`
+ *  parses through the strict `parseModelRef`, which throws on a still-
+ *  unparseable ref (e.g. an unrecognised 3-segment id that normalization
+ *  didn't rewrite) — defense-in-depth so a single bad id can never 500 the
+ *  catalog. */
+function tryResolveLlmModelRoute(id: string): ReturnType<typeof resolveLlmModelRoute> {
+  try {
+    return resolveLlmModelRoute(id)
+  } catch {
+    return undefined
+  }
+}
+
 /** Infer a vendor from a bare id family prefix — ports `providerFromIdPrefix`
  *  (`packages/cli/src/commands/models.ts:47-54`) so a model id that predates
  *  its pricing-catalog entry still gets a vendor instead of `"unknown"`. */
@@ -149,7 +191,11 @@ function vendorFromIdPrefix(bareId: string): string | undefined {
  *  pricing, then the id-prefix heuristic as a last resort. Never throws —
  *  every id gets SOME vendor rather than being dropped from the catalog. */
 function resolveModelId(id: string): ResolvedModel {
-  const resolved = resolveLlmModelRoute(id)
+  // A router-prefixed Mastra id (`openrouter/z-ai/glm-5.2`) becomes its
+  // canonical route-identity (`z-ai/glm-5.2@openrouter`) BEFORE any parse, so
+  // it resolves to a real vendor/product/route row instead of throwing.
+  const normalized = normalizeRouterPrefixedId(id)
+  const resolved = tryResolveLlmModelRoute(normalized)
   if (resolved) {
     return {
       vendor: resolved.vendor,
@@ -163,7 +209,7 @@ function resolveModelId(id: string): ResolvedModel {
       },
     }
   }
-  const parsed = tryParseModelRef(id)
+  const parsed = tryParseModelRef(normalized)
   if (parsed) {
     return {
       vendor: parsed.vendor,
