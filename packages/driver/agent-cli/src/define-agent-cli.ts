@@ -9,7 +9,6 @@ import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
-import { resolveCliEnv } from "./model.js"
 import type {
   AgentCliClient,
   AgentCliDefinition,
@@ -17,6 +16,7 @@ import type {
   AgentCliRuntime,
   AgentCliRuntimeSession,
   AgentCliStartOptions,
+  ResolvedAuthSpec,
   SetEffortResult,
   SetModelResult,
   SetSessionModeResult,
@@ -87,12 +87,28 @@ export function createAgentCliRuntime(
     definition,
     async start(opts?: AgentCliStartOptions): Promise<AgentCliRuntimeSession> {
       const cwd = opts?.cwd ?? process.cwd()
+      // Built from the REAL ambient env (filtered to strings) merged with
+      // the host-provided override, not `resolveCliEnv` — that helper is
+      // tuned for `makeAgentCliModel`'s narrower PROVIDER_KEY_ENV allowlist
+      // (no CODEX_API_KEY) and would under-detect a codex user who only has
+      // CODEX_API_KEY set ambiently, even though the spawned process below
+      // *does* inherit it via `filterStringEnv(process.env)`.
       const cliEnv = {
-        ...resolveCliEnv({}),
+        ...filterStringEnv(process.env),
         ...(opts?.env ?? {}),
       }
+      // Hardcodes the codex adapter id rather than a manifest-declared flag
+      // (unlike most other adapter behaviour in this file) because the
+      // underlying fact — "codex rejects `-c model=...` under ChatGPT-account
+      // auth" — is a property of the codex CLI's own argv validation, not
+      // something a manifest author can usefully toggle per-adapter today.
+      // Same precedent as `resolveClaudeCodePermissionMode` below. Could
+      // become a declarative `models.authAwareSkip` flag if a second adapter
+      // needs the same treatment.
       const codexAuthMode =
-        definition.id === "codex" ? detectCodexAuthMode(cliEnv) : undefined
+        definition.id === "codex"
+          ? detectCodexAuthMode(cliEnv, opts?.auth)
+          : undefined
       const skipModelArg = definition.id === "codex" && codexAuthMode !== "api-key"
       // Compose final argv + env from the manifest + per-call config.
       // Mode patches and option patches land BEFORE the host-provided
@@ -654,7 +670,26 @@ function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 function detectCodexAuthMode(
   env: Record<string, string>,
+  authSpec?: ResolvedAuthSpec,
 ): "api-key" | "chatgpt" | undefined {
+  // Deterministic billing-auth (`opts.auth`), when it will actually engage,
+  // is AUTHORITATIVE over ambient-env/auth.json sniffing below — an
+  // operator who ran `agentproto auth provider set openai sk-...` (never
+  // exported to the shell, per `ResolvedAuthSpec`'s own contract) must not
+  // have that silently overridden by a stale `~/.codex/auth.json`
+  // ChatGPT-mode sniff. Only trust it when a real credential resolved
+  // (`mode` alone, with no `credential`, is an arbitrary fallback pick —
+  // see `ResolvedAuthSpec.neitherConfigured`, not a real signal) AND the
+  // spec would actually engage later in `start()` (explicit config, or an
+  // adapter that enforces `always`) — an unconfigured `when-configured`
+  // adapter falls through to ambient detection unchanged.
+  if (
+    authSpec?.credential &&
+    (authSpec.explicit === true || authSpec.enforce === "always")
+  ) {
+    return authSpec.mode === "api-key" ? "api-key" : "chatgpt"
+  }
+
   if (env.OPENAI_API_KEY || env.CODEX_API_KEY) return "api-key"
 
   const authPath = join(homedir(), ".codex", "auth.json")
