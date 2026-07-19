@@ -5,6 +5,7 @@
 import { useState } from "react"
 
 import type { ChangedFile, DiffLine, GitDiff } from "../data/types"
+import { usePrStatus, type PrStatusDto } from "./usePrStatus"
 
 type CxTab = "changes" | "files" | "pr"
 
@@ -23,6 +24,20 @@ function DiffRow({ line }: { line: DiffLine }) {
       <span className="tx">
         {line.kind === "hunk" ? line.text : `${LINE_PREFIX[line.kind]}${line.text}`}
       </span>
+    </div>
+  )
+}
+
+function PrBadge({ state }: { state: string }) {
+  return <span className={`cx-pr-badge ${state.toLowerCase()}`}>{state}</span>
+}
+
+function PrChecks({ checks }: { checks: PrStatusDto["checks"] }) {
+  return (
+    <div className="cx-pr-checks">
+      <span className="pass">✓ {checks.passed}</span>
+      <span className="fail">✗ {checks.failed}</span>
+      <span className="pend">• {checks.pending}</span>
     </div>
   )
 }
@@ -51,13 +66,18 @@ function FileRow({ file, defaultOpen }: { file: ChangedFile; defaultOpen: boolea
 
 interface ChangesPanelProps {
   diff: GitDiff | null
+  cwd: string | null
 }
 
-export function ChangesPanel({ diff }: ChangesPanelProps) {
+export function ChangesPanel({ diff, cwd }: ChangesPanelProps) {
   const [tab, setTab] = useState<CxTab>("changes")
 
   const files = diff?.files ?? []
   const commits = diff?.commits ?? []
+
+  // The PR tab keys off the selected session's cwd (a filesystem path, unlike
+  // GitDiff.branch which is only a branch name).
+  const { pr, loading: prLoading, error: prError } = usePrStatus(cwd)
 
   return (
     <div className="cx">
@@ -83,7 +103,25 @@ export function ChangesPanel({ diff }: ChangesPanelProps) {
       {tab === "files" ? (
         <div className="cx-stub">File tree — out of scope for this slice.</div>
       ) : tab === "pr" ? (
-        <div className="cx-stub">No PR surface for this session.</div>
+        prError ? (
+          <div className="cx-stub">Failed to load PR status: {prError}</div>
+        ) : prLoading ? (
+          <div className="cx-stub">Loading PR status…</div>
+        ) : pr ? (
+          <div className="cx-pr">
+            <div className="cx-pr-head">
+              <span className="cx-pr-num">#{pr.number}</span>
+              <PrBadge state={pr.state} />
+            </div>
+            <div className="cx-pr-title">{pr.title}</div>
+            <PrChecks checks={pr.checks} />
+            <a className="cx-pr-link" href={pr.url} target="_blank" rel="noreferrer">
+              {pr.url}
+            </a>
+          </div>
+        ) : (
+          <div className="cx-stub">No open PR for this branch.</div>
+        )
       ) : diff && diff.branch ? (
         <>
           <div className="cx-branch">

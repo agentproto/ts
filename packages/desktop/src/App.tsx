@@ -161,7 +161,7 @@ function App() {
           </div>
         )
       }
-      changes={<ChangesPanel diff={selected ? diff : null} />}
+      changes={<ChangesPanel diff={selected ? diff : null} cwd={selected?.cwd ?? null} />}
     />
   )
 }

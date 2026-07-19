@@ -423,6 +423,180 @@ fn list_dir(cwd: String) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+// ── file content (slice 4 / Files viewer) ───────────────────────────────────
+// Backs the React `useFileContent` hook (src/files/useFileContent.ts), which
+// calls `invoke<FileContentDto>("read_file", { path })`. Reads with `std::fs`
+// (never a shell). A file over the cap is truncated (`truncated: true`, keeping
+// the valid UTF-8 prefix); binary/non-UTF8 content is rejected with a short
+// message rather than dumping bytes.
+
+const MAX_FILE_BYTES: usize = 512 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileContentDto {
+    path: String,
+    content: String,
+    truncated: bool,
+}
+
+/// read_file — the UTF-8 text of `path`, capped at MAX_FILE_BYTES. A bad path
+/// (missing, unreadable) is a rejected promise on the JS side (surfaced in the
+/// hook's `error`); binary content is rejected the same way rather than dumped.
+#[tauri::command]
+fn read_file(path: String) -> Result<FileContentDto, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+    let truncated = bytes.len() > MAX_FILE_BYTES;
+    let slice = if truncated {
+        &bytes[..MAX_FILE_BYTES]
+    } else {
+        &bytes[..]
+    };
+
+    // A NUL byte marks a binary file — don't try to render it.
+    if slice.contains(&0) {
+        return Err("binary file — cannot display".to_string());
+    }
+
+    let content = match std::str::from_utf8(slice) {
+        Ok(s) => s.to_string(),
+        // Truncation can sever a multi-byte char at the cap boundary — keep the
+        // valid prefix. A genuine mid-file invalid sequence ⇒ treat as binary.
+        Err(e) if truncated => std::str::from_utf8(&slice[..e.valid_up_to()])
+            .map_err(|e| e.to_string())?
+            .to_string(),
+        Err(_) => return Err("binary file — cannot display".to_string()),
+    };
+
+    Ok(FileContentDto {
+        path,
+        content,
+        truncated,
+    })
+}
+
+// ── PR status (slice 4 / Changes → PR tab) ──────────────────────────────────
+// Backs the React `usePrStatus` hook (src/changes/usePrStatus.ts), which calls
+// `invoke<PrStatusDto | null>("pr_status", { cwd })`. Shells `gh pr view` in
+// `cwd` (via `current_dir`, since gh — unlike git — has no `-C` flag and infers
+// the repo from the working directory). No open PR / not a GitHub repo / gh
+// absent ⇒ Ok(None), so the tab degrades to "no open PR" rather than erroring.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrChecks {
+    passed: u32,
+    failed: u32,
+    pending: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrStatusDto {
+    number: u64,
+    title: String,
+    state: String,
+    url: String,
+    checks: PrChecks,
+}
+
+/// Bucket a single `statusCheckRollup` entry into passed / failed / pending.
+/// gh returns two node shapes: StatusContext (carries `state`) and CheckRun
+/// (carries `status` + `conclusion`); normalize both to one bucket.
+fn check_bucket(check: &serde_json::Value) -> &'static str {
+    // StatusContext — a legacy commit status, keyed by `state`.
+    if let Some(state) = check.get("state").and_then(|v| v.as_str()) {
+        return match state {
+            "SUCCESS" => "passed",
+            "FAILURE" | "ERROR" => "failed",
+            _ => "pending",
+        };
+    }
+    // CheckRun — only a COMPLETED run carries a meaningful conclusion.
+    let status = check.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status != "COMPLETED" {
+        return "pending";
+    }
+    match check
+        .get("conclusion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+    {
+        "SUCCESS" | "NEUTRAL" | "SKIPPED" => "passed",
+        "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => "failed",
+        _ => "pending",
+    }
+}
+
+/// pr_status — the open PR (if any) for the repo at `cwd`. Degrades to Ok(None)
+/// on every non-answer (empty cwd, gh absent, non-GitHub repo, no open PR).
+#[tauri::command]
+fn pr_status(cwd: String) -> Result<Option<PrStatusDto>, String> {
+    if cwd.is_empty() || cwd == "—" {
+        return Ok(None);
+    }
+
+    let output = Command::new("gh")
+        .current_dir(&cwd)
+        .args([
+            "pr",
+            "view",
+            "--json",
+            "number,title,state,url,statusCheckRollup",
+        ])
+        .output();
+
+    // gh absent, no open PR, or not a GitHub repo all exit non-zero ⇒ no PR.
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return Ok(None),
+    };
+    let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+
+    let number = json.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+    let title = json
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let state = json
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let url = json
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut checks = PrChecks {
+        passed: 0,
+        failed: 0,
+        pending: 0,
+    };
+    if let Some(rollup) = json.get("statusCheckRollup").and_then(|v| v.as_array()) {
+        for check in rollup {
+            match check_bucket(check) {
+                "passed" => checks.passed += 1,
+                "failed" => checks.failed += 1,
+                _ => checks.pending += 1,
+            }
+        }
+    }
+
+    Ok(Some(PrStatusDto {
+        number,
+        title,
+        state,
+        url,
+        checks,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -433,7 +607,9 @@ pub fn run() {
             daemon_session_events,
             daemon_prompt,
             git_diff,
-            list_dir
+            list_dir,
+            read_file,
+            pr_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

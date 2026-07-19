@@ -5,6 +5,7 @@
 import { useState } from "react"
 
 import "./files.css"
+import { FileViewer } from "./FileViewer"
 import { useFileTree } from "./useFileTree"
 import type { FileEntry } from "./useFileTree"
 
@@ -16,7 +17,12 @@ function sortEntries(entries: FileEntry[]): FileEntry[] {
   })
 }
 
-function DirNode({ entry }: { entry: FileEntry }) {
+interface OpenHandlers {
+  openPath: string | null
+  onOpen: (path: string) => void
+}
+
+function DirNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandlers) {
   const [open, setOpen] = useState<boolean>(false)
   return (
     <li className="files-node files-node--dir">
@@ -30,24 +36,29 @@ function DirNode({ entry }: { entry: FileEntry }) {
         <span className="files-icon">📁</span>
         <span className="files-name">{entry.name}</span>
       </button>
-      {open ? <TreeLevel cwd={entry.path} /> : null}
+      {open ? <TreeLevel cwd={entry.path} openPath={openPath} onOpen={onOpen} /> : null}
     </li>
   )
 }
 
-function FileNode({ entry }: { entry: FileEntry }) {
+function FileNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandlers) {
+  const active = openPath === entry.path
   return (
     <li className="files-node files-node--file">
-      <span className="files-row files-row--leaf">
+      <button
+        type="button"
+        className={active ? "files-row files-row--leaf files-row--active" : "files-row files-row--leaf"}
+        onClick={() => onOpen(entry.path)}
+      >
         <span className="files-chev" />
         <span className="files-icon">📄</span>
         <span className="files-name">{entry.name}</span>
-      </span>
+      </button>
     </li>
   )
 }
 
-function TreeLevel({ cwd }: { cwd: string }) {
+function TreeLevel({ cwd, openPath, onOpen }: { cwd: string } & OpenHandlers) {
   const { entries, loading, error } = useFileTree(cwd)
 
   if (error) return <div className="files-msg files-msg--error">{error}</div>
@@ -58,9 +69,9 @@ function TreeLevel({ cwd }: { cwd: string }) {
     <ul className="files-list">
       {sortEntries(entries).map((entry) =>
         entry.isDir ? (
-          <DirNode key={entry.path} entry={entry} />
+          <DirNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} />
         ) : (
-          <FileNode key={entry.path} entry={entry} />
+          <FileNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} />
         ),
       )}
     </ul>
@@ -72,13 +83,20 @@ export interface FilesPanelProps {
 }
 
 export function FilesPanel({ cwd }: FilesPanelProps) {
+  const [openPath, setOpenPath] = useState<string | null>(null)
+
   return (
-    <div className="files-panel">
-      {cwd ? (
-        <TreeLevel cwd={cwd} />
-      ) : (
-        <div className="files-msg">No working directory for this session.</div>
-      )}
+    <div className="files-split">
+      <div className="files-panel">
+        {cwd ? (
+          <TreeLevel cwd={cwd} openPath={openPath} onOpen={setOpenPath} />
+        ) : (
+          <div className="files-msg">No working directory for this session.</div>
+        )}
+      </div>
+      <div className="files-viewer-pane">
+        <FileViewer path={openPath} />
+      </div>
     </div>
   )
 }
