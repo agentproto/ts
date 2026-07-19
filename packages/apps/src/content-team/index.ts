@@ -11,11 +11,13 @@ import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { researcher } from "./agents/researcher.js"
 import { writer } from "./agents/writer.js"
 import { editor } from "./agents/editor.js"
+import { illustrator } from "./agents/illustrator.js"
 import { produceContent } from "./workflows/produce-content.js"
+import { produceCover } from "./workflows/produce-cover.js"
 
 export const contentTeam: AppHandle = defineApp({
-  agents: [researcher, writer, editor],
-  workflows: [produceContent],
+  agents: [researcher, writer, editor, illustrator],
+  workflows: [produceContent, produceCover],
 })
 
-export { researcher, writer, editor, produceContent }
+export { researcher, writer, editor, illustrator, produceContent, produceCover }

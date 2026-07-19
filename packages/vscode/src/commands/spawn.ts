@@ -21,6 +21,8 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import { resolvePinnedTarget } from "../services/workspacePin.logic.js"
+import type { WorkspacePinStore } from "../services/workspacePin.js"
 import { EMPTY_WORKSPACES } from "../services/workspaces.logic.js"
 import {
   assembleSpawnOptions,
@@ -55,13 +57,14 @@ export function registerSpawnCommand(
   ctx: vscode.ExtensionContext,
   client: DaemonClient,
   store: SessionStore,
+  workspacePin: WorkspacePinStore,
 ): void {
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("agentproto.spawnAgent", () => runSpawnWizard(client, store)),
+    vscode.commands.registerCommand("agentproto.spawnAgent", () => runSpawnWizard(client, store, workspacePin)),
   )
 }
 
-async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promise<void> {
+async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspacePin: WorkspacePinStore): Promise<void> {
   let adapters: SpawnAdapterInfo[]
   try {
     adapters = (await client.listAdapters()) as SpawnAdapterInfo[]
@@ -74,10 +77,6 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
     return
   }
 
-  const cwdResolution = await resolveWizardDefaultCwd()
-  if (cwdResolution === undefined) return // Escape during folder disambiguation aborts the wizard.
-  const defaultCwd = cwdResolution
-
   let workspaceConfig: WorkspacesConfig
   try {
     workspaceConfig = await client.listWorkspaces()
@@ -85,6 +84,23 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
     // Old daemon with no /workspaces route, or unreachable — degrade to no
     // slug rather than block the spawn; the daemon infers as it does today.
     workspaceConfig = EMPTY_WORKSPACES
+  }
+
+  // A pin takes precedence over the folder-derivation ladder entirely — it's
+  // the whole point of pinning a window to a workspace regardless of what
+  // folder happens to be open in it. Only an unset pin, or a pin whose
+  // workspace was since removed (resolvePinnedTarget returns undefined),
+  // falls through to resolveWizardDefaultCwd/resolveWorkspaceSlug below.
+  const pinnedTarget = resolvePinnedTarget(workspaceConfig, workspacePin.get())
+  let defaultCwd: string
+  let pinnedSlug: string | undefined
+  if (pinnedTarget) {
+    defaultCwd = pinnedTarget.cwd
+    pinnedSlug = pinnedTarget.workspaceSlug
+  } else {
+    const cwdResolution = await resolveWizardDefaultCwd()
+    if (cwdResolution === undefined) return // Escape during folder disambiguation aborts the wizard.
+    defaultCwd = cwdResolution
   }
 
   const holdDefault = holdPermissionsSetting()
@@ -117,12 +133,24 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore): Promis
       // a mode where none was declared.
       if (picked.mode) answers.mode = picked.mode
     }
-    if (defaultCwd) answers.cwd = defaultCwd
+    if (!defaultCwd) {
+      // No pin AND no folder open in this window (resolveWizardDefaultCwd
+      // returned ""): sending the spawn with neither cwd nor workspaceSlug
+      // would fall through to the daemon's single GLOBAL `active` workspace
+      // — the exact footgun this pin exists to avoid. Block the collapsed
+      // picker's immediate-spawn shortcut rather than send it silently;
+      // Configure… still lets you type a cwd explicitly.
+      vscode.window.showWarningMessage(
+        "agentproto: no folder open and no workspace pinned — pin a target workspace (status bar) or use Configure… to set a working directory.",
+      )
+      return
+    }
+    answers.cwd = defaultCwd
   } else {
     return
   }
 
-  const slug = resolveWorkspaceSlug(workspaceConfig, answers.cwd)
+  const slug = pinnedSlug ?? resolveWorkspaceSlug(workspaceConfig, answers.cwd)
   if (slug) answers.workspaceSlug = slug
 
   // Show the row before asking, not after being answered: spawnAgent() blocks

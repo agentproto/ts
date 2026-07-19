@@ -73,7 +73,14 @@
       {
         "command": "agentproto.refresh",
         "title": "agentproto: Refresh",
-        "category": "agentproto"
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.selectWorkspace",
+        "title": "agentproto: Select Target Workspace",
+        "category": "agentproto",
+        "icon": "$(root-folder)"
       },
       {
         "command": "agentproto.spawnAgent",

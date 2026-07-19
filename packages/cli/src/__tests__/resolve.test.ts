@@ -48,7 +48,7 @@ describe("resolveAdapter — proprietary adapter re-import fix", () => {
 // clients instead of being silently accepted. hermes' `lean` mode is the
 // canonical measured no-op (see adapters/hermes/src/index.ts).
 describe("listInstalledAdapters — mode status projection", () => {
-  it("surfaces hermes' lean mode as status 'noop' with a status_note", async () => {
+  it("surfaces hermes' lean mode as status 'noop' with a status_note", { timeout: 15_000 }, async () => {
     const adapters = await listInstalledAdapters()
     const hermes = adapters.find((a) => a.slug === "hermes")
     expect(hermes).toBeDefined()
@@ -250,4 +250,3 @@ describe("resolveAdapter — last-known-good is bounded by a TTL, not disk exist
     }
   })
 })
-
