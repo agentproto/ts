@@ -55,6 +55,22 @@ describe("sessions view menu gating", () => {
     }
   })
 
+  it("offers Switch Harness only on live real sessions, never on a pending row", () => {
+    const onLive = sessionMenus.filter(m => admits(m.when, "session-live")).map(m => m.command)
+    expect(onLive).toContain("agentproto.switchHarness")
+
+    const onAwaiting = sessionMenus
+      .filter(m => admits(m.when, "session-awaiting"))
+      .map(m => m.command)
+    expect(onAwaiting).toContain("agentproto.switchHarness")
+
+    const onDone = sessionMenus.filter(m => admits(m.when, "session-done")).map(m => m.command)
+    expect(onDone).not.toContain("agentproto.switchHarness")
+
+    const onPending = sessionMenus.filter(m => admits(m.when, "session-pending")).map(m => m.command)
+    expect(onPending).not.toContain("agentproto.switchHarness")
+  })
+
   it("keeps stop off a finished session and restart off a live one", () => {
     const onDone = sessionMenus.filter(m => admits(m.when, "session-done")).map(m => m.command)
     expect(onDone).not.toContain("agentproto.killSession")

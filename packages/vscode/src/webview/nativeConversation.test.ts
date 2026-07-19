@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { loadNativeConversation } from "./nativeConversation.js"
+import { isNativeConversationSession, loadNativeConversation } from "./nativeConversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 
 let fakeHome: string
@@ -93,5 +93,38 @@ describe("loadNativeConversation", () => {
     expect(records[0]).toMatchObject({ sessionId: "sess_test", text: "hello" })
     expect(records[3]).toMatchObject({ toolName: "bash", toolCallId: "native-1-0" })
     expect(records[4]).toMatchObject({ toolCallId: "native-1-0", result: "a.txt\nb.txt" })
+  })
+})
+
+describe("isNativeConversationSession", () => {
+  // The gate the panel controller reads to decide whether a PTY terminal can
+  // bridge to a provider-native transcript (structured) or must stay raw. Two
+  // ways to recognise a known store: an explicit adapterSlug, or the binary in
+  // argv[0]. Anything else — non-PTY, unknown binary, or a non-terminal kind —
+  // is deliberately NOT native, so the caller's raw fallback stays intact.
+  it("recognises a claude PTY by adapterSlug", () => {
+    expect(isNativeConversationSession({ kind: "terminal", pty: true, adapterSlug: "claude-code" })).toBe(true)
+  })
+
+  it("recognises a claude PTY by argv binary", () => {
+    expect(isNativeConversationSession({ kind: "terminal", pty: true, argv: ["claude", "--resume", "abc"] })).toBe(true)
+  })
+
+  it("recognises a hermes PTY by argv binary", () => {
+    expect(
+      isNativeConversationSession({ kind: "terminal", pty: true, argv: ["hermes", "--resume", "abc", "--tui"] }),
+    ).toBe(true)
+  })
+
+  it("rejects a non-PTY terminal", () => {
+    expect(isNativeConversationSession({ kind: "terminal", pty: false, adapterSlug: "claude-code" })).toBe(false)
+  })
+
+  it("rejects a PTY whose binary is not a known store", () => {
+    expect(isNativeConversationSession({ kind: "terminal", pty: true, argv: ["bash"] })).toBe(false)
+  })
+
+  it("rejects a non-terminal kind even with a known store", () => {
+    expect(isNativeConversationSession({ kind: "agent-cli", pty: true, adapterSlug: "claude-code" })).toBe(false)
   })
 })

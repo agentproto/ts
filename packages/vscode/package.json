@@ -160,6 +160,11 @@
         "icon": "$(terminal)"
       },
       {
+        "command": "agentproto.switchHarness",
+        "title": "agentproto: Switch Harness",
+        "category": "agentproto"
+      },
+      {
         "command": "agentproto.openTranscriptChannel",
         "title": "agentproto: Open Transcript (Raw Output Channel)",
         "category": "agentproto"
@@ -255,6 +260,11 @@
           "command": "agentproto.openTerminal",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
           "group": "inline@7"
+        },
+        {
+          "command": "agentproto.switchHarness",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "inline@8"
         },
         {
           "command": "agentproto.openTranscriptChannel",

@@ -295,6 +295,23 @@ describe("TranscriptPanelController — native PTY bridge", () => {
     expect(textOf(init.conversation!).join(" ")).toContain("hello native")
     expect(textOf(init.conversation!).join(" ")).toContain("native reply")
   })
+
+  it("falls back to raw for a PTY terminal that is not a known native store", async () => {
+    // The gating boundary: a PTY terminal is only bridged when its binary maps
+    // to a conversation store. An unknown binary must degrade to raw, not sit
+    // empty in structured mode waiting for events that will never come.
+    const client = createMockClient()
+    const { controller, messenger } = make(client, {
+      initialSession: session({ kind: "terminal", pty: true, argv: ["bash"] }),
+    })
+
+    await controller.onReady()
+
+    const init = initMsg(messenger.messages)
+    expect(init.mode).toBe("raw")
+    expect(client.getSessionEvents).not.toHaveBeenCalled()
+    expect(client.exportSession).toHaveBeenCalledWith("s1", "markdown")
+  })
 })
 
 describe("TranscriptPanelController — structured hydration & live poll", () => {
