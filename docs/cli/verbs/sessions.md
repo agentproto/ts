@@ -10,6 +10,7 @@ agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                        [--auth-token <token>]
                                        [--options-json <json|@file>]
                                        [--prompt <text>] [--label <text>]
+                                       [--title <text>]
                                        [--orchestrator | --orchestrator-json <json>]
                                        [--mcp-servers-json <json|@file>]
                                        [--hold-permissions]
@@ -152,6 +153,7 @@ reattached later.
 | `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
+| `--title <text>` | Display title (auto-derived fallback) for this session. |
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |

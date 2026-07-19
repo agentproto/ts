@@ -142,7 +142,7 @@ running.
   workspace    ~/code/my-project
   pty          enabled (node-pty)
   origins      localhost:* only (default)
-  endpoints    /mcp · /sessions · /events · /sessions/:id/pty (WS)
+  endpoints    /mcp · /sessions · /events · /sessions/:id/pty (WS) · /sessions/:id/terminal/input · /sessions/:id (PATCH)
   mode         tunnel → wss://guilde.work/api/v1/agentproto/tunnel
 ```
 

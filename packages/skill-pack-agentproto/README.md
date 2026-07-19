@@ -4,7 +4,8 @@ The `agentproto-plugin` skill pack — source of truth for the skills that
 teach an agent to operate the `agentproto` CLI/daemon itself: agent-session
 orchestration, light-coder orchestration, hermes headless background runs,
 nested orchestration, durable supervision, adapter setup, LLM endpoint
-proxying, and supervisor sessions.
+proxying, supervisor sessions, CI review/fix lanes, and skill-authoring
+reference guides.
 
 ## Editing
 

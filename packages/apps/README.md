@@ -20,10 +20,10 @@ An app here is a plain `AppHandle` — `codeTeam.agents`, `codeTeam.workflows`,
 
 ## Teams
 
-| Team | Import | Agents | Workflow |
+| Team | Import | Agents | Workflows |
 | --- | --- | --- | --- |
 | `code-team` | `@agentproto/apps/code-team` | `implementer` → `reviewer` → `fixer` | `deliver-change` |
-| `content-team` | `@agentproto/apps/content-team` | `researcher` → `writer` → `editor` | `produce-content` |
+| `content-team` | `@agentproto/apps/content-team` | `researcher` → `writer` → `editor` → `illustrator` | `produce-content`, `produce-cover` |
 
 Each team is a folder with `agents/<name>.ts` (one self-contained file per agent
 — its `defineAgent` handle + `body`) and `workflows/<name>.ts`, composed in the

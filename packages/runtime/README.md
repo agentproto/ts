@@ -45,6 +45,8 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Sessions list     | `GET /sessions` / `GET /sessions/:id`    | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                   | Long-lived ACP agent (needs `resolveAgentAdapter`)    |
 | Interrupt turn    | `POST /sessions/:id/interrupt`           | Cancel the in-flight turn; session stays alive        |
+| Terminal input    | `POST /sessions/:id/terminal/input`      | Write raw input into a live PTY session               |
+| Rename session    | `PATCH /sessions/:id`                    | Set or clear the session's user-facing `title`/`label`|
 | **PTY spawn**     | **`POST /sessions/terminal`**            | Needs `spawnPty` factory                              |
 | **PTY attach**    | **`WS /sessions/:id/pty`**               | JSON frames `{kind:data|input|resize|exit|ping|pong}`; multi-subscriber, min-size resize, ring-buffer replay |
 | SSE attach        | `GET /sessions/:id/stream`               | Line-by-line text events                              |
@@ -52,7 +54,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 
 ### Auth model
 
-- `Authorization: Bearer <token>` required on **mutating** `/sessions/*` routes (POST/DELETE) and the PTY WS upgrade.
+- `Authorization: Bearer <token>` required on **mutating** `/sessions/*` routes (POST/PATCH/DELETE) and the PTY WS upgrade.
 - **No loopback bypass** for those routes — the threat being defended against is a browser fetch from a localhost-loaded page, which IS loopback. A browser can't read `runtime.json` (mode 0600); a same-user process can.
 - Read routes (`GET /sessions`, SSE `/stream`) stay open for read-only telemetry compatibility.
 - The optional `auth?: AuthOptions` field on `createGateway` is for the *tunnel* bearer (Cloudflare-fronted public surface), independent of the per-boot token. It gates `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route, with a loopback bypass for requests that never crossed a tunnel (127.0.0.1/::1 with no `X-Forwarded-For`).
