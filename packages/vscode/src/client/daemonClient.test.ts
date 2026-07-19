@@ -76,6 +76,7 @@ describe("DaemonClient — URL + auth header mapping", () => {
       }
       if (req.url?.startsWith("/sessions/s1") && req.method === "GET") return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
+      if (req.url === "/sessions/terminal" && req.method === "POST") return { status: 201, body: { id: "t1", kind: "terminal", status: "running", command: "claude --resume X", pid: 3, startedAt: "t", workspaceSlug: "ws", pty: true, argv: ["claude", "--resume", "X"], cwd: "/ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
@@ -142,6 +143,15 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.method).toBe("POST")
     expect(last.url).toBe("/sessions/agent")
     expect(last.body).toMatchObject({ adapter: "claude-code", prompt: "hi" })
+  })
+
+  it("POST /sessions/terminal sends the spawn body and returns 201 descriptor", async () => {
+    const s = await client().spawnTerminal({ argv: ["claude", "--resume", "X"], cwd: "/ws" })
+    expect(s.id).toBe("t1")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("POST")
+    expect(last.url).toBe("/sessions/terminal")
+    expect(last.body).toMatchObject({ argv: ["claude", "--resume", "X"], cwd: "/ws" })
   })
 
   it("POST /sessions/:id/prompt?wait=false maps to fire-and-forget", async () => {

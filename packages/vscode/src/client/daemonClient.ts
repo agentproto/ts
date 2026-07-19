@@ -89,6 +89,15 @@ export interface SpawnAgentOptions {
   permissionHold?: boolean
 }
 
+export interface SpawnTerminalOptions {
+  argv: string[]
+  cwd?: string
+  workspaceSlug?: string
+  label?: string
+  name?: string
+  env?: Record<string, string>
+}
+
 export interface PromptOptions {
   interrupt?: boolean
   /** wait=true blocks until the turn ends; wait=false is fire-and-forget. */
@@ -165,6 +174,10 @@ export class DaemonClient {
 
   async spawnAgent(opts: SpawnAgentOptions): Promise<SessionDescriptor> {
     return this.postJson<SessionDescriptor>("/sessions/agent", opts)
+  }
+
+  async spawnTerminal(opts: SpawnTerminalOptions): Promise<SessionDescriptor> {
+    return this.postJson<SessionDescriptor>("/sessions/terminal", opts)
   }
 
   async prompt(
