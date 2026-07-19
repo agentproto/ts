@@ -1494,6 +1494,9 @@ export function registerOrchestrationTools(
         prompt: z.string().min(1).describe("Prompt to send to the spawned agent."),
         cwd: z.string().optional().describe("Working directory for the spawned session."),
         model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
+        mode: z.string().optional().describe("AIP-45 mode id forwarded to the adapter, e.g. 'bypass-permissions', 'plan'."),
+        permissionHold: z.boolean().optional().describe("Start the spawned session in permission-hold (inbox) mode."),
+        options: z.record(z.string(), z.union([z.boolean(), z.number(), z.string()])).optional().describe("Manifest-declared option id → value map forwarded to the adapter."),
       }),
       z.object({
         kind: z.literal("prompt-session"),

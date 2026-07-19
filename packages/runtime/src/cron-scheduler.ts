@@ -61,6 +61,9 @@ export type CronAction =
       prompt: string
       cwd?: string
       model?: string
+      mode?: string // AIP-45 mode id, e.g. "bypass-permissions", "plan"
+      permissionHold?: boolean // start in permission-hold (inbox) mode
+      options?: Record<string, boolean | number | string> // manifest option ids
     }
   | {
       kind: "prompt-session"
@@ -361,6 +364,9 @@ export function createCronScheduler(opts: {
     const agentSession = await resolved.startSession({
       cwd,
       ...(action.model ? { model: action.model } : {}),
+      ...(action.mode ? { mode: action.mode } : {}),
+      ...(action.permissionHold ? { permissionHold: true } : {}),
+      ...(action.options && Object.keys(action.options).length > 0 ? { options: action.options } : {}),
     })
     const desc = registry.spawnAgent({
       workspaceSlug: "default",
@@ -368,6 +374,7 @@ export function createCronScheduler(opts: {
       agentSession,
       adapterSlug: action.adapter,
       label: `cron:${job.id}`,
+      ...(action.mode ? { mode: action.mode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
     })
     // Fire-and-forget: send the prompt and record the session id.

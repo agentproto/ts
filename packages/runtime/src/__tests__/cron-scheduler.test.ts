@@ -308,14 +308,100 @@ describe("CronScheduler", () => {
   function makeMockRegistry(desc: { processAlive?: boolean; busy?: boolean } | undefined): {
     registry: SessionsRegistry
     sendPrompt: ReturnType<typeof vi.fn>
+    spawnAgent: ReturnType<typeof vi.fn>
   } {
     const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const spawnAgent = vi.fn().mockImplementation((input: { mode?: string }) => ({
+      id: input.mode ? `sess_${input.mode}` : "sess_cron_agent",
+      processAlive: true,
+    }))
     const registry = {
       get: vi.fn().mockReturnValue(desc),
       sendPrompt,
+      spawnAgent,
     } as unknown as SessionsRegistry
-    return { registry, sendPrompt }
+    return { registry, sendPrompt, spawnAgent }
   }
+
+  it("run() — agent action threads mode, permissionHold, and options into startSession and spawnAgent", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, sendPrompt, spawnAgent } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    const startSession = vi.fn().mockResolvedValue({ id: "adapter_sess_1" })
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: {
+          kind: "agent",
+          adapter: "mock",
+          prompt: "wake up",
+          mode: "bypass-permissions",
+          permissionHold: true,
+          options: { skills: "fast", verbose: true },
+        },
+      })
+
+      const result = await scheduler.run(job.id)
+
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+      expect(startSession).toHaveBeenCalledOnce()
+      expect(startSession).toHaveBeenCalledWith({
+        cwd: workspace,
+        mode: "bypass-permissions",
+        permissionHold: true,
+        options: { skills: "fast", verbose: true },
+      })
+      expect(spawnAgent).toHaveBeenCalledOnce()
+      expect(spawnAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "bypass-permissions",
+        }),
+      )
+      expect(sendPrompt).toHaveBeenCalledWith("sess_bypass-permissions", "wake up")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — agent action omits mode, permissionHold, and options when not provided", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry, spawnAgent } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    const startSession = vi.fn().mockResolvedValue({ id: "adapter_sess_2" })
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: {
+          kind: "agent",
+          adapter: "mock",
+          prompt: "wake up",
+        },
+      })
+
+      await scheduler.run(job.id)
+
+      expect(startSession).toHaveBeenCalledOnce()
+      const startArgs = startSession.mock.calls[0]![0]
+      expect(startArgs).toMatchObject({ cwd: workspace })
+      expect(startArgs).not.toHaveProperty("mode")
+      expect(startArgs).not.toHaveProperty("permissionHold")
+      expect(startArgs).not.toHaveProperty("options")
+      expect(spawnAgent).toHaveBeenCalledOnce()
+      const spawnArgs = spawnAgent.mock.calls[0]![0]
+      expect(spawnArgs).not.toHaveProperty("mode")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
 
   it("create() — accepts a prompt-session action shape", () => {
     const workspace = makeTmpWorkspace()
@@ -569,6 +655,112 @@ describe("CronScheduler", () => {
       expect(startSession.mock.calls[0]![0]).not.toHaveProperty("resumeSessionId")
 
       expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — kind:\"agent\" forwards mode/permissionHold/options into startSession and mode into spawnAgent", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+
+    const spawnedDesc = { id: "sess_new", processAlive: true }
+    const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const spawnAgent = vi.fn().mockReturnValue(spawnedDesc)
+    const mockRegistry = {
+      spawnAgent,
+      sendPrompt,
+    } as unknown as SessionsRegistry
+
+    const mockAgentSession = { id: "adapter_sess_1" }
+    const startSession = vi.fn().mockResolvedValue(mockAgentSession)
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({
+      sessionEvents,
+      registry: mockRegistry,
+      resolveAgentAdapter,
+      workspace,
+    })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: {
+          kind: "agent",
+          adapter: "claude-code",
+          prompt: "ship it",
+          mode: "bypass-permissions",
+          permissionHold: true,
+          options: { skills: "docs" },
+        },
+      })
+      const result = await scheduler.run(job.id)
+
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+
+      expect(startSession).toHaveBeenCalledOnce()
+      expect(startSession.mock.calls[0]![0]).toMatchObject({
+        cwd: workspace,
+        mode: "bypass-permissions",
+        permissionHold: true,
+        options: { skills: "docs" },
+      })
+
+      expect(spawnAgent).toHaveBeenCalledOnce()
+      expect(spawnAgent.mock.calls[0]![0]).toMatchObject({ mode: "bypass-permissions" })
+
+      expect(sendPrompt).toHaveBeenCalledWith("sess_new", "ship it")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — kind:\"agent\" without mode/permissionHold/options leaks none of them into startSession", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+
+    const spawnedDesc = { id: "sess_new", processAlive: true }
+    const sendPrompt = vi.fn().mockResolvedValue(undefined)
+    const spawnAgent = vi.fn().mockReturnValue(spawnedDesc)
+    const mockRegistry = {
+      spawnAgent,
+      sendPrompt,
+    } as unknown as SessionsRegistry
+
+    const mockAgentSession = { id: "adapter_sess_1" }
+    const startSession = vi.fn().mockResolvedValue(mockAgentSession)
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+
+    const sessionEvents = createSessionEventBus()
+    const scheduler = createCronScheduler({
+      sessionEvents,
+      registry: mockRegistry,
+      resolveAgentAdapter,
+      workspace,
+    })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "claude-code", prompt: "ship it" },
+      })
+      const result = await scheduler.run(job.id)
+
+      expect(result).toBeDefined()
+      expect(result!.ok).toBe(true)
+
+      expect(startSession).toHaveBeenCalledOnce()
+      const startSessionArg = startSession.mock.calls[0]![0]
+      expect(startSessionArg).toEqual({ cwd: workspace })
+      expect(startSessionArg).not.toHaveProperty("mode")
+      expect(startSessionArg).not.toHaveProperty("permissionHold")
+      expect(startSessionArg).not.toHaveProperty("options")
+
+      expect(spawnAgent).toHaveBeenCalledOnce()
+      expect(spawnAgent.mock.calls[0]![0]).not.toHaveProperty("mode")
     } finally {
       scheduler.shutdown()
     }
