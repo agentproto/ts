@@ -1,12 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { DEFAULT_DAEMON_URL, daemonHealth, daemonSessions } from "./data/daemon"
-import type { SessionDescriptor } from "./data/types"
+import {
+  DEFAULT_DAEMON_URL,
+  daemonHealth,
+  daemonInterrupt,
+  daemonKill,
+  daemonPermissions,
+  daemonSessions,
+} from "./data/daemon"
+import type { PendingPermission, SessionDescriptor } from "./data/types"
 import { statusKind } from "./data/session-view"
 import { AppShell } from "./shell/AppShell"
 import { Composer } from "./shell/Composer"
 import { MainHeader } from "./shell/MainHeader"
+import { PermissionBanner } from "./shell/PermissionBanner"
 import { SessionRail, type DiffStat } from "./shell/SessionRail"
+import { SpawnModal } from "./shell/SpawnModal"
 import { Titlebar, type ConnState } from "./shell/Titlebar"
 import { Transcript } from "./transcript/Transcript"
 import { SubagentStrip, WorkingRow } from "./transcript/MainChrome"
@@ -33,6 +42,8 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<string>("transcript")
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [spawnOpen, setSpawnOpen] = useState(false)
+  const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([])
   const filterInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
@@ -57,6 +68,27 @@ function App() {
     const t = setInterval(() => void refresh(), POLL_MS)
     return () => clearInterval(t)
   }, [refresh])
+
+  // Poll pending permission requests for the selected session.
+  useEffect(() => {
+    const poll = async () => {
+      if (!selectedId) {
+        setPendingPermissions([])
+        return
+      }
+      try {
+        const perms = await daemonPermissions(selectedId, daemonUrl)
+        setPendingPermissions(perms)
+      } catch (e) {
+        // Degrade silently — the main refresh loop already surfaces daemon errors.
+        // eslint-disable-next-line no-console
+        console.error("permissions poll failed:", e)
+      }
+    }
+    void poll()
+    const t = setInterval(() => void poll(), POLL_MS)
+    return () => clearInterval(t)
+  }, [selectedId, daemonUrl])
 
   // Keep a valid selection: default to the first session, drop a stale one.
   useEffect(() => {
@@ -149,6 +181,39 @@ function App() {
     }
   }, [sessions, selected])
 
+  const onNewAgent = useCallback(() => setSpawnOpen(true), [])
+
+  const onSpawned = useCallback(
+    (sessionId: string) => {
+      setSelectedId(sessionId)
+      setSpawnOpen(false)
+      void refresh()
+    },
+    [refresh],
+  )
+
+  const onInterrupt = useCallback(async () => {
+    if (!selectedId) return
+    try {
+      await daemonInterrupt(selectedId, daemonUrl)
+      await refresh()
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("interrupt failed:", e)
+    }
+  }, [selectedId, daemonUrl, refresh])
+
+  const onStop = useCallback(async () => {
+    if (!selectedId) return
+    try {
+      await daemonKill(selectedId, daemonUrl)
+      await refresh()
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("stop failed:", e)
+    }
+  }, [selectedId, daemonUrl, refresh])
+
   return (
     <>
     <AppShell
@@ -157,7 +222,7 @@ function App() {
           daemonUrl={daemonUrl}
           conn={conn}
           costToday={costToday}
-          onNewAgent={() => void 0}
+          onNewAgent={onNewAgent}
         />
       }
       rail={
@@ -172,7 +237,12 @@ function App() {
       main={
         selected ? (
           <>
-            <MainHeader session={selected} />
+            <MainHeader session={selected} onInterrupt={onInterrupt} onStop={onStop} />
+            <PermissionBanner
+              permissions={pendingPermissions}
+              onResponded={refresh}
+              daemonUrl={daemonUrl}
+            />
             <TabStrip tabs={browserTabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div className="pane">
               {activeTab === "files" ? (
@@ -204,6 +274,12 @@ function App() {
       sessions={sessions}
       onSelectSession={setSelectedId}
       actions={paletteActions}
+    />
+    <SpawnModal
+      open={spawnOpen}
+      onClose={() => setSpawnOpen(false)}
+      onSpawned={onSpawned}
+      daemonUrl={daemonUrl}
     />
     </>
   )

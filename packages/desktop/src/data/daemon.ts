@@ -7,8 +7,11 @@ import type {
   DaemonHealth,
   GitDiff,
   JsonValue,
+  PendingPermission,
+  RespondPermissionInput,
   SessionDescriptor,
   SessionEventsPage,
+  SpawnAgentOptions,
 } from "./types"
 
 export const DEFAULT_DAEMON_URL = "http://127.0.0.1:18790"
@@ -47,4 +50,48 @@ export function daemonPrompt(
  *  `cwd` is the session's working directory (SessionDescriptor.cwd). */
 export function gitDiff(cwd: string): Promise<GitDiff> {
   return invoke<GitDiff>("git_diff", { cwd })
+}
+
+/** POST /sessions/agent — spawn a new agent session. Bearer-gated in Rust. */
+export function daemonSpawn(
+  opts: SpawnAgentOptions,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<SessionDescriptor> {
+  return invoke<SessionDescriptor>("daemon_spawn", { daemonUrl, opts })
+}
+
+/** POST /sessions/:id/kill — end a session. Bearer-gated in Rust. */
+export function daemonKill(
+  sessionId: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<JsonValue> {
+  return invoke<JsonValue>("daemon_kill", { daemonUrl, sessionId })
+}
+
+/** POST /sessions/:id/interrupt — cancel the in-flight turn, leave the session
+ *  alive. Bearer-gated in Rust. */
+export function daemonInterrupt(
+  sessionId: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<JsonValue> {
+  return invoke<JsonValue>("daemon_interrupt", { daemonUrl, sessionId })
+}
+
+/** GET /permissions[?sessionId=…] — pending permission requests for the given
+ *  session (or all sessions when omitted). Bearer-gated in Rust. */
+export function daemonPermissions(
+  sessionId?: string,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<PendingPermission[]> {
+  return invoke<PendingPermission[]>("daemon_permissions", { daemonUrl, sessionId })
+}
+
+/** POST /permissions/:id — respond to a pending permission request.
+ *  Bearer-gated in Rust. */
+export function respondPermission(
+  permissionId: string,
+  input: RespondPermissionInput,
+  daemonUrl = DEFAULT_DAEMON_URL,
+): Promise<JsonValue> {
+  return invoke<JsonValue>("daemon_respond_permission", { daemonUrl, permissionId, input })
 }
