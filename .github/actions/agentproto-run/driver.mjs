@@ -97,12 +97,31 @@ const runtimeMetaPath = join(cwd, ".agentproto", "runtime.json")
 // doesn't already exist — ensure it does before spawning.
 await mkdir(cwd, { recursive: true })
 
+// Optional gateway/provider key injected onto the DAEMON's own process env
+// under an arbitrary name (PROVIDER_KEY_ENV). This is how an Anthropic-
+// compatible gateway spawn receives its bearer: the daemon spawns the adapter
+// subprocess with `filterStringEnv(process.env)` (see
+// packages/driver/agent-cli/src/define-agent-cli.ts), so any string env var on
+// the daemon inherits to the child. For a gateway spawn (a `base_url` option is
+// set, so the runtime skips native billing-auth resolution — session-spawn.ts's
+// `hasGatewayBaseUrlOption`), no auth scrub runs, so e.g. ANTHROPIC_AUTH_TOKEN
+// set here survives to the child and the SDK sends it as `Authorization:
+// Bearer`. Empty ⇒ no-op (backward compatible: existing callers pass neither).
+const providerKeyEnv = (process.env.PROVIDER_KEY_ENV ?? "").trim()
+const providerKey = process.env.PROVIDER_KEY ?? ""
+const daemonEnv = { ...process.env }
+if (providerKeyEnv && providerKey) {
+  daemonEnv[providerKeyEnv] = providerKey
+  console.log(`driver: injected provider key env ${providerKeyEnv} into the daemon process env`)
+}
+
 console.log(
   `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter}, source=${cliSource})`,
 )
 const daemon = spawn(agentprotoBin, ["serve", "--workspace", cwd, "--port", String(port)], {
   cwd,
   stdio: ["ignore", "pipe", "pipe"],
+  env: daemonEnv,
 })
 let daemonExited = false
 daemon.on("exit", (code, signal) => {

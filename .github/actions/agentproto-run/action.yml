@@ -49,6 +49,50 @@ inputs:
     description: Provider API key (secrets.ANTHROPIC_API_KEY). Required when auth-mode=api-key.
     required: false
     default: ''
+  model:
+    description: >
+      Optional AIP-45 `model` option for the spawned adapter (e.g.
+      "kimi-k2.7-code", "anthropic/claude-sonnet-4-5"). Written to
+      `defaults.adapters.<adapter>.options.model` in config.json, which the
+      runtime renders to the adapter's `--model <id>` spawn arg. Default '' ⇒
+      the adapter's own default model (fully backward compatible).
+    required: false
+    default: ''
+  base-url:
+    description: >
+      Optional AIP-45 `base_url` option — an Anthropic-compatible gateway
+      endpoint (e.g. "https://api.moonshot.ai/anthropic"). Written to
+      `defaults.adapters.<adapter>.options.base_url`, which the runtime injects
+      as ANTHROPIC_BASE_URL in the adapter subprocess env. Setting it makes the
+      spawn a GATEWAY spawn: the runtime skips native billing-auth resolution
+      (no ANTHROPIC_* native credential is injected). Default '' ⇒ the default
+      Anthropic endpoint.
+    required: false
+    default: ''
+  thinking:
+    description: >
+      Optional AIP-45 `thinking` boolean option — set to "true" to enable
+      extended thinking (adds `--thinking`). Required by thinking-gated gateway
+      models such as Moonshot's Kimi, which reject a request without it. Default
+      '' ⇒ off (native models pick their own thinking behaviour).
+    required: false
+    default: ''
+  provider-key:
+    description: >
+      Optional gateway/provider key VALUE (e.g. a Moonshot bearer, a Groq key).
+      Injected onto the daemon process env under `provider-key-env` — inherited
+      by the adapter subprocess. Pair with `base-url` for a gateway spawn.
+      Never interpolated into a shell string; masked with ::add-mask::.
+    required: false
+    default: ''
+  provider-key-env:
+    description: >
+      Env-var NAME under which `provider-key` is set on the daemon/adapter
+      subprocess (e.g. "ANTHROPIC_AUTH_TOKEN" for an Anthropic-compatible
+      gateway bearer, or "GROQ_API_KEY"). Only used when `provider-key` is also
+      set. Default '' ⇒ no provider key injected.
+    required: false
+    default: ''
   cli-source:
     description: >
       Where to get the agentproto CLI from: "npm" installs
@@ -110,17 +154,22 @@ runs:
       env:
         OAUTH_TOKEN: ${{ inputs.oauth-token }}
         API_KEY: ${{ inputs.api-key }}
+        PROVIDER_KEY: ${{ inputs.provider-key }}
       run: |
         if [ -n "$OAUTH_TOKEN" ]; then echo "::add-mask::$OAUTH_TOKEN"; fi
         if [ -n "$API_KEY" ]; then echo "::add-mask::$API_KEY"; fi
+        if [ -n "$PROVIDER_KEY" ]; then echo "::add-mask::$PROVIDER_KEY"; fi
 
-    - name: Write ~/.agentproto/config.json adapter credentials
+    - name: Write ~/.agentproto/config.json adapter credentials + options
       shell: bash
       env:
         ADAPTER: ${{ inputs.adapter }}
         AUTH_MODE: ${{ inputs.auth-mode }}
         OAUTH_TOKEN: ${{ inputs.oauth-token }}
         API_KEY: ${{ inputs.api-key }}
+        MODEL: ${{ inputs.model }}
+        BASE_URL: ${{ inputs.base-url }}
+        THINKING: ${{ inputs.thinking }}
       run: node "${{ github.action_path }}/write-config.mjs"
 
     - name: Install agentproto CLI + adapter + MCP SDK (pinned npm source)
@@ -153,4 +202,6 @@ runs:
         PORT: '18790'
         ACTION_PATH: ${{ github.action_path }}
         CLI_SOURCE: ${{ inputs.cli-source }}
+        PROVIDER_KEY: ${{ inputs.provider-key }}
+        PROVIDER_KEY_ENV: ${{ inputs.provider-key-env }}
       run: node "${{ github.action_path }}/driver.mjs"
