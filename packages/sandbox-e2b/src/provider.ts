@@ -31,6 +31,16 @@ export const DEFAULT_TEMPLATE = "53ybr99wdfgoebi9nee8"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
 const DEFAULT_PORT = 18790
+/**
+ * Default sandbox LIFETIME. e2b's own default is 5 minutes (`SandboxOpts.
+ * timeoutMs @default 300_000`) — lethal for real agent work: boot (~30s) +
+ * `npm i -g` (~90s) + a multi-minute agent turn crosses 5:00 mid-turn, e2b
+ * reaps the VM, and the next request cold-boots it WITHOUT the daemon —
+ * surfacing as the baffling `"The sandbox is running but port is not open"`
+ * 502 (observed live killing a PR-review turn). 45 minutes covers any
+ * plausible session; `config.timeoutMs` still overrides in either direction.
+ */
+const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 const DEFAULT_WORKSPACE = "/home/user"
 const HEALTH_PROBE_TIMEOUT_MS = 3_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
@@ -133,7 +143,15 @@ async function ensureDaemonHealthy(
   }
   await sandbox.commands.run(
     `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
-    { background: true, envs: env },
+    // timeoutMs: 0 disables e2b's per-command timeout — which DEFAULTS TO 60
+    // SECONDS and applies to `background: true` commands too, silently
+    // SIGKILLing the daemon one minute after boot. That was the root cause of
+    // every long agent turn dying with "sandbox is running but port is not
+    // open" (502) / `MCP error -32001` while short (<60s) probe turns passed
+    // — verified live: the daemon's port went dead at exactly serve+60s with
+    // the VM healthy and memory flat. The daemon must live as long as the
+    // SANDBOX (lifetime cap above), not as long as a shell command.
+    { background: true, envs: env, timeoutMs: 0 },
   )
   const ready = await probeHealth(healthUrl, daemonReadyTimeoutMs, pollIntervalMs)
   if (!ready) {
@@ -174,7 +192,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     const sandbox = await Sandbox.create(template, {
       apiKey: process.env.E2B_API_KEY,
       envs: opts.env,
-      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      timeoutMs: config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
     })
 
     const host = sandbox.getHost(port)
@@ -188,6 +206,10 @@ export const e2bSandboxProvider: SandboxProvider = {
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
     const sandbox = await Sandbox.connect(sandboxId, { apiKey: process.env.E2B_API_KEY })
+    // A resumed box keeps its ORIGINAL lifetime deadline — re-arm it so the
+    // reconnected session gets the same runway a fresh boot gets (same
+    // 5-minute-default trap as `boot`, see DEFAULT_SANDBOX_TIMEOUT_MS).
+    await sandbox.setTimeout(config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS)
 
     const host = sandbox.getHost(port)
     await ensureDaemonHealthy(sandbox, host, port, workspace, config, opts.env)

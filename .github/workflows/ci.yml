@@ -371,6 +371,16 @@ jobs:
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
 
+      # Capture the PR head SHA the reviewer will actually SEE, before
+      # anything can move HEAD (the sandboxed reviewer pushes its changeset to
+      # the head branch from inside the box; the host-side "Commit changeset"
+      # step pushes too). The posted review's `commit_id` is stamped at post
+      # time against THIS sha — the verify step below matches on it.
+      - name: Capture PR head SHA
+        id: headsha
+        if: steps.prstate.outputs.skip != 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # agentflow bypass: if the dev ran `review:ai --stamp` locally, an
       # empty `[agentflow-reviewed]` marker commit rides the branch. Honor it
       # and skip the cloud reviewer (the dev vouched + ran local changeset).
@@ -514,6 +524,13 @@ jobs:
           # the runner does not reproduce inside a sandbox, whose own daemon
           # spawns the adapter.
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Langfuse session tracing for the reviewer (HOST daemon emits — it
+          # owns the proxied sandbox session). All-or-nothing: missing secrets
+          # ⇒ tracing silently skipped, never a red review.
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
           cli-source: ${{ steps.cliver.outputs.cli-source }}
           cli-version: ${{ steps.cliver.outputs.cli-version }}
@@ -595,6 +612,35 @@ jobs:
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # INDEPENDENT API-level guarantee that a review row actually exists for
+      # the SHA the reviewer saw — belt-and-suspenders on top of the driver's
+      # empty-turn/silent-no-op detection (which watches the SESSION, not the
+      # GitHub side-effect). `--paginate` + `jq -s 'add'` is load-bearing: a
+      # naive `--paginate --jq` evaluates PER PAGE and can false-pass on the
+      # count. continue-on-error so the gate (not this step) decides the
+      # job's fate with a clear error.
+      - name: Verify review was posted
+        id: verify
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ steps.headsha.outputs.sha }}
+        run: |
+          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          echo "Reviews posted against reviewed SHA $SHA: $COUNT"
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
+            exit 1
+          fi
+
       # Gate: resolve decision + blocking config, post explicit statuses on
       # HEAD for both "Agentic review" and "Changeset present?" so the merge
       # gate is covered even when [skip ci] suppresses a new CI run.
@@ -614,12 +660,17 @@ jobs:
           # Honest gate, in precedence:
           #   bypassed            → success (local review vouched, reviewer skipped)
           #   reviewer didn't post → failure (no false green — the #72 bug)
+          #   review row missing for reviewed SHA → failure (API-level proof,
+          #     independent of the reviewer's own success report)
           #   CHANGES_REQUESTED + blocking → failure
           #   else                → success
           if [ "$BYPASS" = "true" ]; then
             echo "state=success" >> "$GITHUB_OUTPUT"
           elif [ "$REVIEWER_OUTCOME" != "success" ]; then
             echo "::error::Agentic reviewer did not post a review (outcome=$REVIEWER_OUTCOME)."
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+          elif [ "$VERIFY_POSTED" != "true" ]; then
+            echo "::error::Reviewer reported success but no review exists for the reviewed SHA (verify.posted=$VERIFY_POSTED) — refusing a false green."
             echo "state=failure" >> "$GITHUB_OUTPUT"
           elif [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
             echo "state=failure" >> "$GITHUB_OUTPUT"
@@ -631,6 +682,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
+          VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'

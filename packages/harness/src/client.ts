@@ -104,16 +104,28 @@ export class HarnessClient {
    * `{ timedOut: true, sessionIds }` with no `event` field at all — `event`
    * is only ever set (to `"turn-end"|"awaiting-input"|"exited"`) on a real
    * match. Callers must check `timedOut`, not `event`, to detect a timeout.
+   *
+   * MCP request timeout = the long-poll window + a 60s grace, NOT the SDK's
+   * flat 60s default: the server holds the request open for up to the window
+   * (49s), which left only ~11s of real headroom — a remote daemon whose
+   * event loop stalls under load (observed: an e2b microVM saturated by a
+   * monorepo clone + a model turn) blew past it and the client threw
+   * `MCP error -32001`, killing an otherwise healthy multi-minute turn.
    */
   async waitForAny(
     sessionIds: string[],
     opts?: { timeoutMs?: number; event?: TurnEvent },
   ): Promise<TurnResult> {
-    return this.#call("session_monitor", {
-      sessionIds,
-      ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-      ...(opts?.event !== undefined ? { event: opts.event } : {}),
-    })
+    const windowMs = Math.min(Math.max(opts?.timeoutMs ?? 49_000, 1_000), 49_000)
+    return this.#call(
+      "session_monitor",
+      {
+        sessionIds,
+        ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        ...(opts?.event !== undefined ? { event: opts.event } : {}),
+      },
+      { timeoutMs: windowMs + 60_000 },
+    )
   }
 
   /**

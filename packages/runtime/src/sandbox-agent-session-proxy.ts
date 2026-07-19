@@ -32,6 +32,14 @@ const MAX_POLL_MS = 49_000
  *  lines between polls (the ring buffer itself is still capped upstream —
  *  see the module doc's known-limitation note). */
 const MAX_OUTPUT_LINES = 500
+/** Give up on the turn only after this many poll failures IN A ROW — a
+ *  saturated box (clone + model turn on a small microVM) can stall single
+ *  requests past their timeout while the turn itself is healthy. With the
+ *  49s window + retry delay this tolerates several minutes of continuous
+ *  unreachability before declaring the box dead. */
+const MAX_CONSECUTIVE_POLL_FAILURES = 6
+/** Pause between failed polls — no tight error loop against a sick box. */
+const POLL_RETRY_DELAY_MS = 5_000
 
 export interface SandboxAgentSessionProxyOpts {
   /** The booted sandbox's daemon host. `prompt`/`output`/`kill`/`waitForAny`
@@ -102,21 +110,60 @@ export function createSandboxAgentSessionProxy(
       // this offset can go stale — acceptable for the turn sizes this
       // flattening path targets; a real fix subscribes to the box's SSE
       // stream instead of polling a bounded tail.
+      // Transient-failure tolerance: a single failed poll request must NOT
+      // kill the turn. A long review turn saturates a small box (monorepo
+      // clone + model generation), stalling its daemon's event loop past the
+      // client's per-request timeout — `MCP error -32001` — while the turn
+      // itself is perfectly healthy (observed in CI, ~2min in). Each poll is
+      // a bounded request, but the TURN is the loop: retry after a short
+      // pause, and only give up after MAX_CONSECUTIVE_POLL_FAILURES in a row
+      // (a genuinely dead/unreachable box still errors, with the last
+      // failure's message).
+      let consecutivePollFailures = 0
       for (;;) {
-        const result = await host.waitForAny([remoteSessionId], {
-          event: "any",
-          timeoutMs: MAX_POLL_MS,
-        })
+        let result: Awaited<ReturnType<typeof host.waitForAny>>
+        try {
+          result = await host.waitForAny([remoteSessionId], {
+            event: "any",
+            timeoutMs: MAX_POLL_MS,
+          })
+          consecutivePollFailures = 0
+        } catch (pollErr) {
+          consecutivePollFailures++
+          if (consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+            throw new Error(
+              `sandbox proxy: ${consecutivePollFailures} consecutive poll failures against the ` +
+                `box daemon (session "${remoteSessionId}") — giving up. Last error: ` +
+                `${pollErr instanceof Error ? pollErr.message : String(pollErr)}`,
+            )
+          }
+          await new Promise((resolve) => setTimeout(resolve, POLL_RETRY_DELAY_MS))
+          continue
+        }
         // A clean long-poll timeout carries no `event` at all — keep
         // polling past it instead of mistaking it for a real settle
         // (mirrors `@agentproto/worktree`'s `waitForSettled`).
         if (result.timedOut) continue
 
-        const tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
-        if (tail.length > seenLength) {
+        // The tail pull is best-effort: the offset-based diff means a failed
+        // pull loses nothing — a later successful pull (or the catch's final
+        // harvest below) yields the full unseen suffix. One immediate retry,
+        // then proceed without it rather than killing a settled turn over a
+        // missed output read.
+        let tail: string | undefined
+        try {
+          tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+        } catch {
+          try {
+            tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+          } catch {
+            tail = undefined
+          }
+        }
+        if (tail !== undefined && tail.length > seenLength) {
           yield { kind: "text-delta", text: tail.slice(seenLength) }
         }
-        seenLength = tail.length
+        if (tail !== undefined) seenLength = tail.length
 
         if (result.event === "exited") {
           // The box's OWN session ended out-of-band (crash, OOM, an
