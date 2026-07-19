@@ -2665,6 +2665,9 @@ export function createSessionsRegistry(opts?: {
     // completion) and must be flagged, not reported as a green turn-end.
     let sawAssistantText = false
     let sawToolCall = false
+    // Track tool-call IDs announced during this turn so the finally block can
+    // emit synthetic tool-results for adapters that silently drop them.
+    const pendingToolCallIds = new Set<string>()
     try {
       appendLine(
         rt,
@@ -2688,7 +2691,13 @@ export function createSessionsRegistry(opts?: {
         // `text-delta` is the sole assistant-text channel (see projectEvent);
         // a whitespace-only delta doesn't count as real output.
         if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
-        else if (evt.kind === "tool-call") sawToolCall = true
+        else if (evt.kind === "tool-call") {
+          sawToolCall = true
+          if (evt.toolCallId) pendingToolCallIds.add(evt.toolCallId)
+        }
+        if (evt.kind === "tool-result" && evt.toolCallId) {
+          pendingToolCallIds.delete(evt.toolCallId)
+        }
         if (evt.kind === "turn-end") {
           sawTurnEnd = true
           turnEndReason = evt.reason
@@ -2726,6 +2735,25 @@ export function createSessionsRegistry(opts?: {
       // crashed, stream ended early) must not leave the session flagged
       // blocked forever — the turn is over, nothing is pending anymore.
       releaseBlockedOn(rt.desc)
+
+      // ── Synthetic tool-results for orphaned pending tool calls ─────────
+      // Adapters that execute a tool but silently drop the matching
+      // `tool_call_update status=completed` leave the tool card stuck
+      // "pending" in every UI consumer. Emit a synthetic `tool-result`
+      // before the turn-end so transcript reducers can resolve the segment.
+      if (pendingToolCallIds.size > 0) {
+        for (const toolCallId of pendingToolCallIds) {
+          const synthetic: AgentStreamEvent = {
+            kind: "tool-result",
+            toolCallId,
+            result: null,
+            isError: false,
+          }
+          transcriptWriter.recordEvent(rt.desc.id, synthetic)
+          projectEvent(rt, synthetic)
+        }
+        pendingToolCallIds.clear()
+      }
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
