@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PassThrough } from "node:stream"
 import { spawn } from "node:child_process"
-import type { AgentCliClient, AgentCliDefinition, StreamEvent } from "../types.js"
+import type {
+  AgentCliClient,
+  AgentCliDefinition,
+  ResolvedAuthSpec,
+  StreamEvent,
+} from "../types.js"
 
 /**
  * `AgentCliRuntimeSession.setModel` — the mid-session counterpart to the
@@ -25,8 +30,13 @@ function fakeChild() {
   return { pid: 1234, stdin, stdout, stderr, killed: false, kill: vi.fn() }
 }
 
+const spawnCalls: Array<{ bin: string; args: string[] }> = []
+
 vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => fakeChild()),
+  spawn: vi.fn((bin: string, args: string[]) => {
+    spawnCalls.push({ bin, args })
+    return fakeChild()
+  }),
 }))
 
 // Mutable per-test fixtures the mocked ACP arm reads from — reset in
@@ -199,5 +209,170 @@ describe("AgentCliRuntimeSession.setModel — apply:'arg' (codex-style)", () => 
     expect(result).toEqual({ applied: false, reason: "requires-restart" })
     expect(sendCalls).toEqual([])
     expect(setConfigOptionSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("AgentCliRuntime.start — codex model argv auth awareness", () => {
+  const codexDef: AgentCliDefinition = {
+    ...baseDef,
+    id: "codex",
+    name: "codex",
+    provider: "openai",
+    options: [
+      {
+        id: "model",
+        type: "enum",
+        enum: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
+      },
+    ],
+    models: {
+      default: "gpt-5-codex",
+      allowed: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
+      apply: "arg",
+      bin_args_template: ["-c", 'model="{model}"'],
+    },
+  } as AgentCliDefinition
+
+  beforeEach(() => {
+    spawnCalls.length = 0
+    setConfigOptionSpy = undefined
+    scriptedEvents = []
+    sendError = undefined
+  })
+
+  it("keeps the model argv when api-key auth is present", async () => {
+    const prevHome = process.env.HOME
+    const prevKey = process.env.OPENAI_API_KEY
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    process.env.HOME = "/tmp/codex-auth-test-home"
+    process.env.OPENAI_API_KEY = "sk-proj-auth-key"
+    try {
+      const runtime = createAgentCliRuntime(codexDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { options: { model: "gpt-5" } },
+      })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = prevKey
+    }
+
+    expect(spawnCalls[0]!.args).toEqual([
+      "acp",
+      "-c",
+      'model="gpt-5"',
+    ])
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it("skips the model argv and warns when no api key is available", async () => {
+    const prevHome = process.env.HOME
+    const prevKey = process.env.OPENAI_API_KEY
+    const prevCodexKey = process.env.CODEX_API_KEY
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    process.env.HOME = "/tmp/codex-auth-test-home"
+    delete process.env.OPENAI_API_KEY
+    delete process.env.CODEX_API_KEY
+    try {
+      const runtime = createAgentCliRuntime(codexDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { options: { model: "gpt-5" } },
+      })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = prevKey
+      if (prevCodexKey === undefined) delete process.env.CODEX_API_KEY
+      else process.env.CODEX_API_KEY = prevCodexKey
+    }
+
+    expect(spawnCalls[0]!.args).toEqual(["acp"])
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[agent-cli] codex: skipped model override "gpt-5" for ChatGPT-account auth; using Codex\'s default model.',
+    )
+    warnSpy.mockRestore()
+  })
+
+  // Regression: `resolveCliEnv`'s narrower PROVIDER_KEY_ENV allowlist doesn't
+  // forward CODEX_API_KEY (it's tuned for `makeAgentCliModel`), so detection
+  // must be built from the real ambient env, not that helper — otherwise a
+  // codex user with ONLY CODEX_API_KEY set ambiently (no OPENAI_API_KEY)
+  // would be misdetected as ChatGPT-account auth and lose their model
+  // override, even though the spawned process itself inherits the key fine.
+  it("keeps the model argv when only ambient CODEX_API_KEY (no OPENAI_API_KEY) is present", async () => {
+    const prevHome = process.env.HOME
+    const prevKey = process.env.OPENAI_API_KEY
+    const prevCodexKey = process.env.CODEX_API_KEY
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    process.env.HOME = "/tmp/codex-auth-test-home"
+    delete process.env.OPENAI_API_KEY
+    process.env.CODEX_API_KEY = "sk-codex-ambient-key"
+    try {
+      const runtime = createAgentCliRuntime(codexDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { options: { model: "gpt-5" } },
+      })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = prevKey
+      if (prevCodexKey === undefined) delete process.env.CODEX_API_KEY
+      else process.env.CODEX_API_KEY = prevCodexKey
+    }
+
+    expect(spawnCalls[0]!.args).toEqual(["acp", "-c", 'model="gpt-5"'])
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  // Regression: a deterministic billing-auth credential resolved via
+  // `opts.auth` (the config-store/`agentproto auth provider set` flow) must
+  // be authoritative over ambient-env/auth.json sniffing — an operator who
+  // configured an api-key this way (never exported to the shell, per
+  // `ResolvedAuthSpec`'s own contract) must not have their model override
+  // silently dropped just because no ambient env var / auth.json says
+  // "api-key".
+  it("keeps the model argv when opts.auth resolves an explicit, credentialed api-key spec — no ambient env at all", async () => {
+    const prevHome = process.env.HOME
+    const prevKey = process.env.OPENAI_API_KEY
+    const prevCodexKey = process.env.CODEX_API_KEY
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    process.env.HOME = "/tmp/codex-auth-test-home"
+    delete process.env.OPENAI_API_KEY
+    delete process.env.CODEX_API_KEY
+    const authSpec: ResolvedAuthSpec = {
+      mode: "api-key",
+      credential: "sk-configured-from-store",
+      setEnv: "OPENAI_API_KEY",
+      unsetEnv: [],
+      explicit: true,
+      enforce: "when-configured",
+    }
+    try {
+      const runtime = createAgentCliRuntime(codexDef)
+      await runtime.start({
+        cwd: "/tmp",
+        config: { options: { model: "gpt-5" } },
+        auth: authSpec,
+      })
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = prevKey
+      if (prevCodexKey === undefined) delete process.env.CODEX_API_KEY
+      else process.env.CODEX_API_KEY = prevCodexKey
+    }
+
+    expect(spawnCalls[0]!.args).toEqual(["acp", "-c", 'model="gpt-5"'])
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })

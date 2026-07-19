@@ -83,6 +83,17 @@ export interface ComposedSpawn {
 }
 
 /**
+ * Optional spawn-time hints that are outside the pure runtime config.
+ * Today the only consumer is auth-aware codex model handling: the
+ * composer can be told to skip `models.apply:"arg"` when the caller has
+ * already determined that the current auth mode must preserve the CLI's
+ * default model.
+ */
+export interface ComposeSpawnOptions {
+  skipModelArg?: boolean
+}
+
+/**
  * Compose the final spawn args from a manifest + per-call config.
  * Pure — no I/O, no sandbox access, no global state. Safe to call
  * repeatedly with the same input.
@@ -97,7 +108,8 @@ export interface ComposedSpawn {
  */
 export function composeSpawn(
   handle: AgentCliHandle,
-  config?: RuntimeConfig
+  config?: RuntimeConfig,
+  opts?: ComposeSpawnOptions
 ): ComposedSpawn {
   if (!config)
     return {
@@ -216,7 +228,8 @@ export function composeSpawn(
   if (
     typeof requestedModel === "string" &&
     handle.models?.apply === "arg" &&
-    handle.models.bin_args_template
+    handle.models.bin_args_template &&
+    !opts?.skipModelArg
   ) {
     append.push(
       ...handle.models.bin_args_template.map(token =>

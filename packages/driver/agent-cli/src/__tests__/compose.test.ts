@@ -510,6 +510,17 @@ describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
     expect(composed.binArgs).toEqual(["-y", "@zed-industries/codex-acp"])
   })
 
+  it("skips the model argv when told the current auth mode must preserve the CLI default", () => {
+    const composed = composeSpawn(
+      argHandle(),
+      {
+        options: { model: "gpt-5-codex" },
+      },
+      { skipModelArg: true },
+    )
+    expect(composed.binArgs).toEqual(["-y", "@zed-industries/codex-acp"])
+  })
+
   it("still enforces the option's own enum before composing", () => {
     expect(() =>
       composeSpawn(argHandle(), { options: { model: "gpt-9-nonexistent" } })
