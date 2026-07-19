@@ -168,15 +168,20 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // here:
   //   - posture now comes from the harness's own ACP mode registry
   //     (`SessionModeState.availableModes`) plus the daemon's canonical-posture
-  //     layer. claude-code's enforcement mechanism is unchanged — the driver
-  //     (`resolveClaudeCodePermissionMode` in define-agent-cli.ts) still points
-  //     a per-session `CLAUDE_CONFIG_DIR` at a throwaway `settings.json` with
-  //     `{"permissions":{"defaultMode":"<value>"}}` (the ACP wrapper ignores
-  //     `--permission-mode` on argv) — it is just no longer sourced from a
-  //     manifest mode. The known limitation still holds: a target repo that
-  //     commits its own escalated `.claude/settings.json` `permissions.
-  //     defaultMode` defeats OUR requested mode in the same merge pass and the
-  //     session falls back to "default" (never the original silent-write bug).
+  //     layer (step 2c). The `CLAUDE_CONFIG_DIR` ENFORCEMENT MECHANISM in the
+  //     driver (`resolveClaudeCodePermissionMode` in define-agent-cli.ts) is
+  //     unchanged — it still points a per-session `CLAUDE_CONFIG_DIR` at a
+  //     throwaway `settings.json` with `{"permissions":{"defaultMode":
+  //     "<value>"}}` (the ACP wrapper ignores `--permission-mode` on argv). But
+  //     its INPUT changed: it looks the value up in `modes[]` by `config.mode`,
+  //     and with the posture modes removed here that lookup no longer matches
+  //     for `plan`/`accept-edits`/`bypass-permissions` — so the `config.mode`-
+  //     driven path is now DORMANT (returns undefined) until step 2c re-sources
+  //     the requested posture from the canonical layer and feeds it in. The
+  //     known limitation still holds once it does: a target repo that commits
+  //     its own escalated `.claude/settings.json` `permissions.defaultMode`
+  //     defeats OUR requested mode in the same merge pass and the session falls
+  //     back to "default" (never the original silent-write bug).
   //   - route now comes from the model catalog's `@route` route-identity; the
   //     gateway endpoint is still reachable per-spawn via the `base_url` /
   //     `auth_token` options (below), which carry the same ANTHROPIC_API_KEY +
