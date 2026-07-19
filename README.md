@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 0.9.0-alpha.** APIs are stabilising; expect minor breaking changes
+> **Status: 0.10.0-alpha.** APIs are stabilising; expect minor breaking changes
 > between alpha releases.
 
 ## Quick start
@@ -126,6 +126,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `conversation_read` | Read the provider-native conversation behind any session (agent-cli or PTY) |
 | `session_list` / `session_tree` / `session_usage` / `session_restart` | Canonical session list, hierarchy, usage, and resume |
 | `session_archive` / `session_unarchive` | Hide / restore sessions from the canonical list (VS Code "show archived" toggle) |
+| `session_rename` | Set or clear a session's user-facing `title` / `label` |
 | `terminal_start` / `terminal_input` / `terminal_output` / `terminal_kill` | Drive raw PTY sessions |
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |
 | `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |

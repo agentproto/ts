@@ -37,9 +37,11 @@ Requires `E2B_API_KEY` in the host process's environment.
   `https://<getHost>/mcp`.
 - The pre-built `agentproto-workstation` template can lag behind the latest
   `@agentproto/cli` release. This provider runs `npm i -g
-  @agentproto/cli@latest` before starting the daemon (set `updateCliOnBoot:
-  false` in `spec.config` to skip it — e.g. once the template is rebuilt
-  against a current release, which is the cleaner long-term fix).
+  @agentproto/cli@<cliVersion>` before starting the daemon (`cliVersion` defaults
+  to `@latest`; pin it in `spec.config` for reproducible boots). Set
+  `updateCliOnBoot: false` in `spec.config` to skip the install entirely — e.g.
+  once the template is rebuilt against a current release, which is the cleaner
+  long-term fix.
 
 ## License
 

@@ -10,7 +10,7 @@ Aligned to the WorkOS [auth.md](https://github.com/workos/auth.md) open standard
 two-hop `.well-known` discovery, the `agent_auth` metadata block, and the
 service-auth claim ceremony (`urn:workos:agent-auth:grant-type:claim`).
 
-> **Status: 0.1.0-alpha.** Two flows specified in v1 (`pat`, `service-auth`);
+> **Status: 0.2.0-alpha.** Two flows specified in v1 (`pat`, `service-auth`);
 > `id-jag` (agentproto-as-IdP) is reserved.
 
 Spec: <https://agentproto.sh/docs/aip-50> · Standard: <https://github.com/workos/auth.md>
@@ -240,6 +240,7 @@ through that structural seam. See `@agentproto/secrets`' README.
 | `runAuthFlow` | resolve → discover → dispatch |
 | `FLOW_ENGINES` | registered flow engines (`pat`, `service-auth`) |
 | `CredentialBroker` / `CredentialBrokerOptions` | path → fresh `resolveHeaders` |
+| `eligibleProfiles` | `(adapter × route) → vendor + profile eligibility predicate` |
 | `CredentialStore` / `StoreRef` / `StoredCredential` | pluggable-store interface + shapes |
 | `KeychainStore` / `MemoryStore` / `FileStore` / `resolveStoreRef` | built-in backends + ref resolver |
 | `readKeychainToken` / `writeKeychainToken` / `resolveAccount` | Keychain helpers |

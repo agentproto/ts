@@ -243,6 +243,8 @@ What `serve` exposes:
 | Sessions (list)   | `GET /sessions` / `GET /sessions/:id`     | id-or-name in `:id`                                   |
 | Agent spawn       | `POST /sessions/agent`                    | Long-lived ACP agent (multi-turn)                     |
 | Interrupt turn    | `POST /sessions/:id/interrupt`            | Cancel the in-flight turn and leave the session alive |
+| Terminal input    | `POST /sessions/:id/terminal/input`       | Write raw input into a live PTY session               |
+| Rename session    | `PATCH /sessions/:id`                     | Set or clear the session's user-facing `title`/`label`|
 | **PTY spawn**     | **`POST /sessions/terminal`**             | Real PTY under node-pty (alt-screen, ANSI, raw input) |
 | **PTY attach**    | **`WS /sessions/:id/pty`**                | JSON-framed duplex; multi-subscriber                  |
 | SSE attach        | `GET /sessions/:id/stream`                | Line-by-line text events                              |
@@ -316,6 +318,7 @@ agentproto sessions mirror claude-tui
 
 # Spawn an agent CLI (ACP, structured events)
 agentproto sessions start claude-code --workspace my-app --attach
+agentproto sessions start claude-code --workspace my-app --title "payments refactor" --attach
 agentproto sessions start hermes --label "ops on-call"
 
 # Spawn a real PTY (raw bytes, ANSI escapes, alt-screen apps)
@@ -364,6 +367,7 @@ When `agentproto serve` is up, the gateway's `/mcp` endpoint exposes these tools
 | **`terminal_input`**          | Send keystrokes to a PTY's stdin                          |
 | **`terminal_output`**         | Snapshot the recent byte buffer (base64)                  |
 | **`terminal_kill`**           | SIGTERM a PTY session                                     |
+| `session_rename`              | Set or clear a session's user-facing `title`/`label`      |
 | `adapter_list`                | Enumerate installed `@agentproto/adapter-*` packages      |
 | `mcp_discovered_list`         | MCP servers configured in claude / cursor / goose         |
 | `mcp_imported_list`           | The user's curated MCP set                                |
