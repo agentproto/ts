@@ -623,7 +623,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
  *  local to this module rather than shared: it's a small field-by-field
  *  read, not the money-critical precedence logic (that lives entirely in
  *  `resolveAuthSpec`, reused as-is via `isAgentCliAuthConfigured`). */
-function toAuthDescriptor(handle: AgentCliHandle): AdapterAuthDescriptor {
+export function toAuthDescriptor(handle: AgentCliHandle): AdapterAuthDescriptor {
   const providerParse = handle.provider
     ? CatalogProviderSchema.safeParse(handle.provider)
     : undefined

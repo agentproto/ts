@@ -102,6 +102,7 @@ import {
   listAdaptersWithCatalog,
   listAdaptersWithAcp,
 } from "../registry/resolve.js"
+import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
 import { CATALOG } from "../registry/catalog.js"
 import WebSocket from "ws"
 
@@ -609,6 +610,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // appends the generic ACP agents (curated ACP_CATALOG + a user's
       // config.acpAgents) so a zero-code ACP CLI is discoverable too.
       listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+      // Read-only catalog/vendor endpoint (SPEC §5) — `GET /catalog/models`
+      // + `catalog_models` MCP tool. Joins the same installed-adapter
+      // listing `listAgentAdapters` uses with the real named-profile store.
+      listCatalogModels: query => listCatalogModelsFromInstalled(query),
       resolveBrowserAdapter,
       listBrowserAdapters,
       ...(spawnPty ? { spawnPty } : {}),

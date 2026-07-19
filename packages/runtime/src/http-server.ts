@@ -89,6 +89,10 @@ import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
+import type {
+  CatalogModelsQuery,
+  CatalogModelsResponse,
+} from "./catalog-models.js"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -251,6 +255,16 @@ export interface AdapterListEntry {
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
 
+/** Loads the read-only vendor/product/route catalog (SPEC §5) for
+ *  `GET /catalog/models` + the `catalog_models` MCP tool. A host wires this
+ *  from `buildCatalogModels` (`catalog-models.ts`) fed by its installed
+ *  adapters + `@agentproto/auth`'s `listAuthProfiles()` — the query params
+ *  are forwarded verbatim from the request. Omitted ⇒ the route/tool
+ *  report "not enabled" (same convention as `listAgentAdapters`). */
+export type CatalogModelsLister = (
+  query: CatalogModelsQuery,
+) => Promise<CatalogModelsResponse>
+
 export interface AuthOptions {
   mode: "none" | "bearer"
   token?: string
@@ -345,6 +359,10 @@ export interface RuntimeHttpServerOptions {
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional — when wired, enables `GET /catalog/models` (read-only,
+   *  no session) + the `catalog_models` MCP tool (SPEC §5). Hosts ship a
+   *  shim over `buildCatalogModels` (`catalog-models.ts`). */
+  listCatalogModels?: CatalogModelsLister
   /** Optional — when wired alongside `sessions`, enables
    *  `POST /sessions/browser` (same operation as MCP `start_browser`,
    *  exposed as an HTTP route for the CLI surface). */
@@ -1373,6 +1391,47 @@ export async function startHttpServer(
             const adapters = await opts.listAgentAdapters()
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify({ adapters }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "list_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        // Read-only catalog/vendor endpoint (SPEC §5) — no session, no auth
+        // gate (same policy as /adapters and /presets). Query params:
+        // adapter, vendor, route, runnableOnly.
+        if (path === "/catalog/models" && req.method === "GET") {
+          if (!opts.listCatalogModels) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "lister_not_configured",
+                message:
+                  "Daemon was started without `listCatalogModels` — see " +
+                  "`buildCatalogModels` in `catalog-models.ts`.",
+              })
+            )
+            return
+          }
+          try {
+            const qs = new URLSearchParams(
+              url.includes("?") ? url.slice(url.indexOf("?") + 1) : "",
+            )
+            const runnableOnlyParam = qs.get("runnableOnly")
+            const catalog = await opts.listCatalogModels({
+              ...(qs.get("adapter") ? { adapter: qs.get("adapter")! } : {}),
+              ...(qs.get("vendor") ? { vendor: qs.get("vendor")! } : {}),
+              ...(qs.get("route") ? { route: qs.get("route")! } : {}),
+              ...(runnableOnlyParam === "true" ? { runnableOnly: true } : {}),
+            })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(catalog))
           } catch (err) {
             res.writeHead(500, { "content-type": "application/json" })
             res.end(

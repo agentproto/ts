@@ -28,6 +28,7 @@ import {
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  CatalogModelsLister,
 } from "./http-server.js"
 import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -135,6 +136,10 @@ export interface RegisterAgentToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional catalog lister — when wired, exposes the read-only
+   *  `catalog_models` MCP tool (SPEC §5). Without it the tool returns a
+   *  clear "not configured" error pointing at the host wiring. */
+  listCatalogModels?: CatalogModelsLister
   /** The daemon's own plain `/mcp` gateway URL (e.g.
    *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` for a
    *  `hermes` adapter with no caller-supplied `mcpServers` defaults to
@@ -216,6 +221,7 @@ export function registerAgentTools(
     registry,
     resolveAgentAdapter,
     listAgentAdapters,
+    listCatalogModels,
     buildOrchestratorMcp,
     callerScope,
     webhookNotifier,
@@ -1035,6 +1041,59 @@ export function registerAgentTools(
             {
               type: "text",
               text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── catalog_models ────────────────────────────────────────────
+  server.tool(
+    "catalog_models",
+    "Read-only vendor/product/route catalog (SPEC §5) — every model this " +
+      "host can reach, widened beyond any one adapter's model list via " +
+      "OpenRouter/Requesty/HuggingFace routing, with a profile-aware " +
+      "`runnable` flag per route. Use before `agent_start` to see what's " +
+      "actually spawnable given the auth profiles configured on this host.",
+    {
+      adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
+      vendor: z.string().optional().describe("Keep only this vendor's entry."),
+      route: z.string().optional().describe("Keep only routes with this route id."),
+      runnableOnly: mcpBool.optional().describe("Drop every route with runnable:false."),
+    },
+    async ({ adapter, vendor, route, runnableOnly }) => {
+      if (!listCatalogModels) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "catalog_models is not enabled — the daemon was started without " +
+                "a catalog lister. Wire `buildCatalogModels` via " +
+                "`createGateway({ listCatalogModels })`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const catalog = await listCatalogModels({
+          ...(adapter ? { adapter } : {}),
+          ...(vendor ? { vendor } : {}),
+          ...(route ? { route } : {}),
+          ...(runnableOnly ? { runnableOnly: true } : {}),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(catalog, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `catalog_models failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
