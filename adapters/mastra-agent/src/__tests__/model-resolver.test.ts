@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   modelRefToString,
+  normalizeModelId,
   providerOf,
   resolveMastraModel,
 } from "../model-resolver.js"
@@ -59,5 +60,37 @@ describe("resolveMastraModel", () => {
     expect(resolveMastraModel("localhost/my-model", {})).toBe(
       "localhost/my-model",
     )
+  })
+
+  it("infers anthropic for a bare Claude id, so a portable AGENT.md routes", () => {
+    // `claude-sonnet-5` is what claude-code / claude-sdk accept bare; here it
+    // must become `anthropic/claude-sonnet-5` or Mastra's gateway can't route.
+    expect(resolveMastraModel("claude-sonnet-5", env)).toBe(
+      "anthropic/claude-sonnet-5",
+    )
+    // Still key-checked under the inferred provider.
+    expect(() => resolveMastraModel("claude-sonnet-5", {})).toThrow(
+      /ANTHROPIC_API_KEY/,
+    )
+  })
+})
+
+describe("normalizeModelId", () => {
+  it("infers anthropic for a bare Claude id", () => {
+    expect(normalizeModelId("claude-sonnet-5")).toBe("anthropic/claude-sonnet-5")
+    expect(normalizeModelId("claude-opus-4-8")).toBe("anthropic/claude-opus-4-8")
+  })
+
+  it("leaves an already-prefixed id untouched", () => {
+    expect(normalizeModelId("anthropic/claude-sonnet-5")).toBe(
+      "anthropic/claude-sonnet-5",
+    )
+    expect(normalizeModelId("openrouter/z-ai/glm-5.2")).toBe(
+      "openrouter/z-ai/glm-5.2",
+    )
+  })
+
+  it("leaves a non-Claude bare id alone (still needs an explicit provider)", () => {
+    expect(normalizeModelId("gpt-5")).toBe("gpt-5")
   })
 })

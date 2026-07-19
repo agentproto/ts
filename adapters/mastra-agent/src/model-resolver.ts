@@ -46,6 +46,20 @@ export function providerOf(modelId: string): string {
 }
 
 /**
+ * Infer the provider for a bare, unambiguous id so an AGENT.md stays
+ * adapter-agnostic. `claude-sonnet-5` — what the claude-code / claude-sdk
+ * adapters already accept bare — routes here as `anthropic/claude-sonnet-5`,
+ * instead of being handed to Mastra's gateway with no provider (which fails
+ * with "could not resolve model configuration"). Only Claude ids are
+ * unambiguous today; every other provider still needs the explicit prefix.
+ */
+export function normalizeModelId(modelId: string): string {
+  if (modelId.includes("/")) return modelId
+  if (/^claude[-.]/i.test(modelId)) return `anthropic/${modelId}`
+  return modelId
+}
+
+/**
  * Resolve an AIP-42 model ref to the value Mastra's `Agent` constructor takes.
  * Returns the `provider/model` string — Mastra routes it. `env` defaults to
  * `process.env`; injectable for tests.
@@ -54,7 +68,7 @@ export function resolveMastraModel(
   ref: ModelRef,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const modelId = modelRefToString(ref)
+  const modelId = normalizeModelId(modelRefToString(ref))
   if (!modelId) {
     throw new Error("mastra-agent: empty `model` ref.")
   }
