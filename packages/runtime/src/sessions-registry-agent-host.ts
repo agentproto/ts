@@ -11,7 +11,10 @@
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
-import type { AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
+import { SandboxSpecSchema } from "@agentproto/sandbox"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import { spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
@@ -26,17 +29,69 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       cwd?: string
       /** Optional webhook URL for escalation notifications. */
       notifyUrl?: string
+      /** Resolves a sandbox provider slug for `AgentStep.sandbox` spawns —
+       *  the same resolver `agent_start.sandbox` uses. Omitted ⇒ a sandbox
+       *  step fails loudly (`sandbox_provider_not_found`), never silently
+       *  spawns on the host. */
+      resolveSandboxProvider?: SandboxProviderResolver
     },
   ) {}
 
   async spawn(
     adapter: string,
-    opts: { cwd?: string; workspaceSlug?: string; stepId?: string },
+    opts: { cwd?: string; workspaceSlug?: string; stepId?: string; sandbox?: AgentSandboxRef },
   ): Promise<string> {
-    const resolved = await this.resolveAgentAdapter(adapter)
-    if (!resolved) throw new Error(`adapter '${adapter}' not found`)
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
     const cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
+
+    // Sandbox spawn: delegate to the same `spawnAgentSession` core the MCP
+    // `agent_start` tool uses (session-spawn.ts) so the sandbox boot / secret
+    // resolution / proxy path is shared rather than re-implemented here. The
+    // host's local adapter registry has no bearing on a sandboxed spawn (the
+    // box resolves `adapter` itself), so no local resolveAgentAdapter gate.
+    if (opts.sandbox !== undefined) {
+      let sandbox: string | SandboxSpecInput
+      if (typeof opts.sandbox === "string") {
+        sandbox = opts.sandbox
+      } else {
+        // Validate the workflow-authored inline spec against the same AIP-36
+        // schema `agent_start.sandbox` enforces (config defaults to {}). A
+        // malformed spec fails the step loudly here, before any boot.
+        const parsed = SandboxSpecSchema.safeParse({ config: {}, ...opts.sandbox })
+        if (!parsed.success) {
+          throw new Error(
+            `agent step sandbox spec invalid (provider "${opts.sandbox.provider}"): ${parsed.error.message}`,
+          )
+        }
+        sandbox = parsed.data
+      }
+      const result = await spawnAgentSession(
+        {
+          registry: this.registry,
+          resolveAgentAdapter: this.resolveAgentAdapter,
+          ...(this.opts?.resolveSandboxProvider
+            ? { resolveSandboxProvider: this.opts.resolveSandboxProvider }
+            : {}),
+        },
+        {
+          adapter,
+          cwd,
+          workspaceSlug,
+          sandbox,
+          label: `agent-step:${adapter}`,
+        },
+      )
+      if (!result.ok) {
+        throw new Error(`agent step sandbox spawn failed (${result.code}): ${result.message}`)
+      }
+      if (opts.stepId) {
+        this.sessionsByLabel.set(opts.stepId, result.descriptor.id)
+      }
+      return result.descriptor.id
+    }
+
+    const resolved = await this.resolveAgentAdapter(adapter)
+    if (!resolved) throw new Error(`adapter '${adapter}' not found`)
     const agentSession = await resolved.startSession({ cwd })
     const desc = this.registry.spawnAgent({
       workspaceSlug,

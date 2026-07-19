@@ -65,6 +65,31 @@ describe("e2bSandboxProvider.boot", () => {
     expect(booted.sandboxId).toBe("sbx_abc")
   })
 
+  it("installs config.installPackages alongside the CLI update in ONE npm invocation (adapter survives the update)", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {
+        healthProbeTimeoutMs: 0,
+        installPackages: [
+          "@agentproto/adapter-claude-sdk@latest",
+          "@anthropic-ai/claude-code@latest",
+        ],
+      },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest '@agentproto/adapter-claude-sdk@latest' '@anthropic-ai/claude-code@latest'",
+      expect.anything(),
+    )
+  })
+
   it("skips the CLI update when updateCliOnBoot is false", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)

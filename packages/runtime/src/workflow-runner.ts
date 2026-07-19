@@ -25,13 +25,14 @@ import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
 import { runWorkflow } from "@agentproto/workflow-runtime"
-import type { RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { RoutinePolicy, RoutineStepState } from "./routine-runner.js"
 import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
@@ -48,6 +49,11 @@ export interface WorkflowStep {
   /** Reuse the session spawned by an earlier step (any prior stage),
    *  identified by that step's `label`. Ignored if `adapter` is set. */
   sessionRef?: string
+  /** Run this step's session inside a sandbox — a provider slug (e.g.
+   *  `"local"`, `"e2b"`) or an inline AIP-36 spec object. Only meaningful
+   *  with `adapter`. Requires the runner to be wired with
+   *  `resolveSandboxProvider`; fails loudly otherwise. */
+  sandbox?: AgentSandboxRef
   policy?: RoutinePolicy
   /** Cache this step's output under the run's `cacheKey` — opt-in, for idempotent steps. */
   cacheable?: boolean
@@ -149,6 +155,7 @@ function translateStages(
           id: step.label,
           ...(step.adapter !== undefined ? { adapter: step.adapter } : {}),
           ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
+          ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
           ...(step.cacheable ? { cacheable: true } : {}),
           prompt: () => step.prompt ?? "",
           policy: step.policy ?? { awaiting: "fail" as const },
@@ -405,6 +412,10 @@ export function createWorkflowRunner(opts: {
   sessionEvents: SessionEventBus
   resolveAgentAdapter: AgentAdapterResolver
   webhookNotifier?: WebhookNotifier
+  /** Sandbox provider resolver for `sandbox`-carrying agent steps — the same
+   *  resolver `agent_start.sandbox` uses. Omitted ⇒ a sandbox step fails
+   *  loudly (never a silent host spawn). */
+  resolveSandboxProvider?: SandboxProviderResolver
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -471,6 +482,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: input.workspaceSlug,
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
+          ...(opts.resolveSandboxProvider
+            ? { resolveSandboxProvider: opts.resolveSandboxProvider }
+            : {}),
         },
       )
 
@@ -528,6 +542,9 @@ export function createWorkflowRunner(opts: {
         {
           workspaceSlug: args.workspaceSlug,
           cwd: args.cwd,
+          ...(opts.resolveSandboxProvider
+            ? { resolveSandboxProvider: opts.resolveSandboxProvider }
+            : {}),
         },
       )
 

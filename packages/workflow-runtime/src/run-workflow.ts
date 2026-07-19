@@ -166,8 +166,17 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     )
   }
   const cwd = step.cwd ? resolveSel(step.cwd, b) : ctx.cwd
+  // Sandbox ref: a selector resolves per-run (undefined ⇒ host spawn); a
+  // literal (slug string or inline spec object) passes through as-is.
+  const sandbox =
+    typeof step.sandbox === "function" ? step.sandbox(b) : step.sandbox
   const sessionId = step.adapter
-    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), { cwd, workspaceSlug: ctx.workspaceSlug, stepId: step.id })
+    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), {
+        cwd,
+        workspaceSlug: ctx.workspaceSlug,
+        stepId: step.id,
+        ...(sandbox !== undefined ? { sandbox } : {}),
+      })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
   await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))

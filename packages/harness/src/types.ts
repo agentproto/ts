@@ -65,6 +65,15 @@ export interface StartAgentArgs {
   mcpServers?: McpServerMount[]
   orchestrator?: OrchestratorOption
   notifyUrl?: string
+  /** Deterministic billing-auth mode + explicit credential, forwarded to
+   *  `agent_start.auth`. Needed when the target daemon has no credential of
+   *  its own (e.g. a fresh sandbox box, whose adapters never inherit the
+   *  parent shell env for claude-code subscription auth). */
+  auth?: {
+    mode?: "subscription" | "api-key"
+    token?: string
+    apiKey?: string
+  }
 }
 
 /** Session descriptor as returned by `agent_start` (subset). */

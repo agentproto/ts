@@ -689,6 +689,22 @@ export function registerOrchestrationTools(
             "(e.g. a 'verify' step reusing a 'produce' step's session).",
         ),
       cacheable: z.boolean().optional().describe("Cache this step's output under the run's cacheKey (opt-in; for idempotent/pure steps only)."),
+      sandbox: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .describe("Sandbox provider slug from `list_sandbox_providers` (e.g. 'local', 'e2b')."),
+          z
+            .object({ provider: z.string().min(1) })
+            .passthrough()
+            .describe("Inline AIP-36 SandboxSpec ({ provider, config?, env?, … })."),
+        ])
+        .optional()
+        .describe(
+          "Run this step's session inside a sandbox instead of on the host — " +
+            "same semantics as `agent_start.sandbox`. Only meaningful with `adapter`.",
+        ),
       policy: z
         .discriminatedUnion("awaiting", [
           z.object({ awaiting: z.literal("auto-allow"), prompt: z.string() }),

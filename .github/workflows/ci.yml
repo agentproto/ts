@@ -420,12 +420,17 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
         run: |
-          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]; then
+          # The agentproto lane can bill either way (reviewerAuthMode in
+          # .github/agentic-review.json): subscription rides the OAuth token,
+          # api-key rides ANTHROPIC_API_KEY (also what the e2b sandbox
+          # passthrough injects). Either credential qualifies the lane;
+          # legacy only when BOTH are absent.
+          if [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ] || [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane (OAuth subscription token)"
+            echo "Using agentproto lane"
           else
             echo "mode=legacy" >> "$GITHUB_OUTPUT"
-            echo "OAuth token absent — falling back to legacy API-key reviewer"
+            echo "No reviewer credential — falling back to legacy API-key reviewer"
           fi
 
       - name: Resolve agentproto CLI source/version
@@ -504,6 +509,11 @@ jobs:
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # e2b microVM sandbox for the reviewer session (reviewerSandbox in
+          # .github/agentic-review.json) — the daemon-internal spawn failure on
+          # the runner does not reproduce inside a sandbox, whose own daemon
+          # spawns the adapter.
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
           cli-source: ${{ steps.cliver.outputs.cli-source }}
           cli-version: ${{ steps.cliver.outputs.cli-version }}
@@ -511,6 +521,7 @@ jobs:
             {
               "prNumber": ${{ github.event.pull_request.number }},
               "baseRef": "${{ github.base_ref }}",
+              "repo": "${{ github.repository }}",
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
