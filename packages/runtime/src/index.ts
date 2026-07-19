@@ -223,6 +223,7 @@ export type {
   Posture,
   RouteSpec,
   ContextProfile,
+  AuthMethod,
   DeclaredAdapterMode,
 } from "./session-config.js"
 export { parseDuration } from "./heartbeat.js"
