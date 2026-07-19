@@ -92,8 +92,123 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # ── Sandboxed agentflow lane (review / pr / implement / fix) ──────────
+      # The same "sandboxed agentproto agent" block ci.yml's auto-review uses
+      # (.github/actions/agentproto-run + .github/agentproto-workflows/*),
+      # routed by verb: review → pr-review workflow; pr/implement/fix →
+      # agent-verb workflow. The legacy runner-side agent loop below stays the
+      # FALLBACK (sandbox unconfigured, non-sandbox verbs, or lane failure).
+      - name: Parse command (routing)
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ steps.ctx.outputs.is_pr == 'true' && steps.ctx.outputs.number || '' }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.is_pr == 'false' && steps.ctx.outputs.number || '' }}
+        run: node scripts/agent-command.mjs --parse-only
+
+      - name: Compose sandbox lane inputs
+        id: compose
+        if: steps.parse.outputs.sandboxable == 'true'
+        env:
+          VERB: ${{ steps.parse.outputs.verb }}
+          REQUEST_B64: ${{ steps.parse.outputs.request_b64 }}
+          FORCE_PR_DELIVERY: ${{ steps.parse.outputs.force_pr_delivery }}
+          IS_PR: ${{ steps.ctx.outputs.is_pr }}
+          NUMBER: ${{ steps.ctx.outputs.number }}
+          HEAD_REF: ${{ steps.ctx.outputs.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          node -e '
+            const fs = require("fs")
+            const cfg = JSON.parse(fs.readFileSync(".github/agentic-review.json", "utf8"))
+            const verb = process.env.VERB
+            // /fix --pr forces pr-delivery — override the per-verb config.
+            if (verb === "fix" && process.env.FORCE_PR_DELIVERY === "true") {
+              cfg.commands = cfg.commands || {}
+              cfg.commands.fix = { ...(cfg.commands.fix || {}), fixDelivery: "pr" }
+            }
+            const isPr = process.env.IS_PR === "true"
+            const num = Number(process.env.NUMBER || 0)
+            const request = Buffer.from(process.env.REQUEST_B64 || "", "base64").toString("utf8")
+            // NOTE: no githubToken here — the box receives GITHUB_TOKEN via
+            // the sandbox env passthrough (daemon env → box env), so the
+            // token never needs to ride a step output or the workflow input.
+            const common = {
+              repo: process.env.REPO,
+              baseRef: "main",
+              reviewConfig: cfg,
+            }
+            const input =
+              verb === "review"
+                ? { ...common, prNumber: num }
+                : {
+                    ...common,
+                    verb,
+                    prNumber: isPr ? num : 0,
+                    issueNumber: isPr ? 0 : num,
+                    requestText: request,
+                    headRef: isPr ? process.env.HEAD_REF : "",
+                  }
+            const path =
+              verb === "review"
+                ? ".github/agentproto-workflows/pr-review/WORKFLOW.md"
+                : ".github/agentproto-workflows/agent-verb/WORKFLOW.md"
+            const out = [
+              `workflow_path=${path}`,
+              `workflow_input=${JSON.stringify(input)}`,
+              `adapter=${String(cfg.reviewerAdapter || "claude-code")}`,
+              `auth_mode=${String(cfg.reviewerAuthMode || "api-key")}`,
+              `cli_source=${String(cfg.cliSource || "npm")}`,
+              `cli_version=${String(cfg.cliVersion || "0.8.0")}`,
+              "",
+            ].join("\n")
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, out)
+          '
+
+      - name: Build local agentproto CLI (workspace source)
+        if: |
+          steps.parse.outputs.sandboxable == 'true' &&
+          steps.compose.outputs.cli_source == 'workspace'
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ steps.compose.outputs.adapter }}..."
+
+      - name: Run sandboxed agent verb
+        id: sandbox-verb
+        if: steps.parse.outputs.sandboxable == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/agentproto-run
+        env:
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+        with:
+          adapter: ${{ steps.compose.outputs.adapter }}
+          auth-mode: ${{ steps.compose.outputs.auth_mode }}
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: ${{ steps.compose.outputs.workflow_path }}
+          cli-source: ${{ steps.compose.outputs.cli_source }}
+          cli-version: ${{ steps.compose.outputs.cli_version }}
+          workflow-input: ${{ steps.compose.outputs.workflow_input }}
+          timeout-minutes: 20
+
+      # ── Legacy runner-side agent loop — non-sandbox verbs (help / triage /
+      # wiki / explain / freeform) and the FALLBACK when the sandbox lane is
+      # unconfigured or failed.
       - name: Run agent command
         id: run
+        if: |
+          always() &&
+          (steps.parse.outputs.sandboxable != 'true' ||
+           steps.sandbox-verb.outcome == 'failure' ||
+           steps.sandbox-verb.outputs.status == 'failed')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
@@ -132,6 +247,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
-          CONTENT="hooray"
-          [ "${{ steps.run.outcome }}" != "success" ] && CONTENT="-1"
+          # Success = the sandbox lane delivered (status=done), or the legacy
+          # dispatcher ran and succeeded (including as the lane's fallback).
+          CONTENT="-1"
+          if [ "${{ steps.sandbox-verb.outputs.status }}" = "done" ]; then CONTENT="hooray"; fi
+          if [ "${{ steps.run.outcome }}" = "success" ]; then CONTENT="hooray"; fi
           gh api "${{ steps.ctx.outputs.reactions }}" -f content="$CONTENT" || true

@@ -22,6 +22,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { appendFileSync } from 'node:fs'
 import {
   loadConfig, resolveCommandConfig, loadSkills, renderSkillsBlock, runAgentLoop, ROOT,
 } from './lib/agent-core.mjs'
@@ -32,7 +33,13 @@ const COMMENT_BODY = process.env.COMMENT_BODY ?? ''
 const PR_NUMBER = process.env.PR_NUMBER || null
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER || null
 
-if (!apiKey) { console.error('Error: ANTHROPIC_API_KEY is required.'); process.exit(1) }
+// --parse-only: emit { verb, request, sandboxable } to GITHUB_OUTPUT and stop —
+// the agent-command workflow uses this to route sandbox-capable verbs
+// (review / pr / implement / fix) through the agentproto-run lane instead of
+// this script's runner-side agent loop. Needs no API key (no LLM call).
+const PARSE_ONLY = process.argv.includes('--parse-only')
+
+if (!apiKey && !PARSE_ONLY) { console.error('Error: ANTHROPIC_API_KEY is required.'); process.exit(1) }
 
 const config = loadConfig()
 const KNOWN_VERBS = ['review', 'fix', 'pr', 'implement', 'triage', 'wiki', 'explain', 'help']
@@ -69,11 +76,44 @@ function parseCommand(body, botMention) {
 const parsed = parseCommand(COMMENT_BODY, config.botMention)
 if (!parsed) {
   console.log('No bot command found in comment — nothing to do.')
+  if (PARSE_ONLY && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, 'verb=none\nsandboxable=false\n')
+  }
   process.exit(0)
 }
 
 const flags = new Set(parsed.args.split(/\s+/).filter((t) => t.startsWith('--')))
 const requestText = parsed.freeText.replace(/--\S+/g, '').trim()
+
+if (PARSE_ONLY) {
+  // Sandbox-capable verbs (the ones the agentproto-workflows cover) route to
+  // the sandboxed lane WHEN a sandbox is configured (reviewerSandbox in
+  // agentic-review.json) and the target fits (review/fix need a PR).
+  // `/fix --pr` forces pr-delivery — surfaced so the workflow can pass it.
+  const SANDBOX_VERBS = new Set(['review', 'fix', 'pr', 'implement'])
+  const sandboxConfigured = Boolean(String(config.reviewerSandbox ?? '').trim())
+  const targetOk =
+    parsed.verb === 'pr' || parsed.verb === 'implement' ? true : Boolean(PR_NUMBER)
+  const sandboxable = SANDBOX_VERBS.has(parsed.verb) && sandboxConfigured && targetOk
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      [
+        `verb=${parsed.verb}`,
+        `sandboxable=${sandboxable}`,
+        `force_pr_delivery=${flags.has('--pr')}`,
+        // Single-line-safe: requests are free text — base64 them across the
+        // step boundary (the workflow decodes when composing workflow-input).
+        // UNSTRIPPED freeText, not requestText: a /pr request may legitimately
+        // contain `--flags` that the flag-stripper would eat.
+        `request_b64=${Buffer.from(parsed.freeText, 'utf8').toString('base64')}`,
+        '',
+      ].join('\n'),
+    )
+  }
+  console.log(`parse-only: verb=${parsed.verb} sandboxable=${sandboxable}`)
+  process.exit(0)
+}
 
 console.log(`\n🤖 agent-command: verb=${parsed.verb} via=${parsed.via} pr=${PR_NUMBER ?? '-'} issue=${ISSUE_NUMBER ?? '-'}`)
 
