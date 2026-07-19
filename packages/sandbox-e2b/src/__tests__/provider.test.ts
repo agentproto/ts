@@ -93,6 +93,64 @@ describe("e2bSandboxProvider.boot", () => {
     )
   })
 
+  it("pins the boot CLI install to config.cliVersion instead of @latest", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { healthProbeTimeoutMs: 0, cliVersion: "0.8.0" },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@0.8.0",
+      expect.anything(),
+    )
+  })
+
+  it("pins the CLI version alongside installPackages in one npm invocation", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {
+        healthProbeTimeoutMs: 0,
+        cliVersion: "0.8.0",
+        installPackages: ["@agentproto/adapter-claude-sdk@latest"],
+      },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@0.8.0 '@agentproto/adapter-claude-sdk@latest'",
+      expect.anything(),
+    )
+  })
+
+  it("defaults the boot CLI install to @latest when no cliVersion is configured", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "sudo npm i -g @agentproto/cli@latest",
+      expect.anything(),
+    )
+  })
+
   it("defaults the sandbox LIFETIME to 45min — never e2b's 5-minute default (mid-turn reaper)", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
