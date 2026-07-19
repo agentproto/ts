@@ -27,7 +27,7 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
-import { deriveSessionTitle } from "./session-title.js"
+import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
 import type {
   AuthMethod,
   ContextProfile,
@@ -1300,6 +1300,19 @@ export interface SessionsRegistry {
    *  there is nothing to re-validate). Throws only when the id is
    *  unknown. */
   unarchiveSession(id: string): SessionDescriptor
+  /** Set or clear a session's user-facing name (`PATCH /sessions/:id`, the
+   *  `session_rename` MCP verb). Each of `title`/`label`: a non-empty string
+   *  sets that field (trimmed, capped to the derivation's `MAX_LENGTH` by
+   *  code point); an empty/whitespace-only string or `null` CLEARS it (the
+   *  UI reverts to the derived title / friendly fallback); `undefined`
+   *  leaves it untouched. Persists via the same `schedulePersist` every
+   *  descriptor mutation uses, and emits `session:renamed` so live UIs
+   *  repaint. Pure display state — never touches the live agent. Throws when
+   *  the id is unknown. */
+  renameSession(
+    id: string,
+    patch: { title?: string | null; label?: string | null },
+  ): SessionDescriptor
   /** Subscribe to a session's output. Returns an unsubscribe fn.
    *  Initial backfill: synchronously invokes `onLine` once for each
    *  line currently in the ring buffer so attaches show context. */
@@ -3736,6 +3749,42 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`unarchiveSession: no session "${id}"`)
       rt.desc.archived = false
       schedulePersist()
+      stampProcessAlive(rt.desc)
+      return rt.desc
+    },
+    renameSession(id, patch) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`renameSession: no session "${id}"`)
+      // Each field: undefined ⇒ leave as-is; null / empty-or-whitespace ⇒
+      // clear (revert to the derived title / friendly fallback); otherwise
+      // trim and cap to the SAME bound the derivation uses (by code point, so
+      // an astral char at the boundary isn't split into an orphan surrogate).
+      const apply = (field: "title" | "label"): void => {
+        const raw = patch[field]
+        if (raw === undefined) return
+        const trimmed = raw === null ? "" : raw.trim()
+        if (trimmed === "") {
+          rt.desc[field] = undefined
+          return
+        }
+        const points = Array.from(trimmed)
+        rt.desc[field] =
+          points.length > TITLE_MAX_LENGTH ? points.slice(0, TITLE_MAX_LENGTH).join("") : trimmed
+      }
+      apply("title")
+      apply("label")
+      schedulePersist()
+      // Announce it so a live UI repaints the name without waiting for its
+      // next snapshot poll — same bus every other lifecycle event rides.
+      // Fields are included only when set, so a clear reads as "absent" the
+      // same way the descriptor now does.
+      sessionEvents?.emit({
+        type: "session:renamed",
+        sessionId: id,
+        ...(rt.desc.title !== undefined ? { title: rt.desc.title } : {}),
+        ...(rt.desc.label !== undefined ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
       stampProcessAlive(rt.desc)
       return rt.desc
     },

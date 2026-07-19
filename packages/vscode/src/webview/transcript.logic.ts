@@ -3,6 +3,7 @@
  * be unit-tested under plain vitest and reused by the webview script.
  */
 
+import { sessionDisplayName } from "../client/sessionName.js"
 import type { SessionDescriptor, SessionStreamLine } from "../client/types.js"
 
 export interface TranscriptModel {
@@ -93,8 +94,13 @@ export function formatCostLine(
   return parts.join(" · ") || "—"
 }
 
-export function formatTitle(session: Pick<SessionDescriptor, "label" | "title" | "id">): string {
-  return session.label ?? session.title ?? session.id
+/** The transcript tab/header title. Thin alias over the shared
+ *  `sessionDisplayName` (SPEC-3 FIX D) so the tab, the tree row, and the
+ *  in-panel header all resolve a name the same way. */
+export function formatTitle(
+  session: Pick<SessionDescriptor, "label" | "title" | "id" | "adapterSlug" | "kind">,
+): string {
+  return sessionDisplayName(session)
 }
 
 export function formatSubtitle(session: Pick<SessionDescriptor, "adapterSlug" | "model">): string {

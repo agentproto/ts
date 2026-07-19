@@ -2,7 +2,7 @@
  * `agentproto sessions [--watch] [--attach <id>] [--json]`
  * `agentproto sessions start <slug> [--cwd <dir>] [--workspace <slug>]
  *                                    [--prompt <text>] [--label <text>]
- *                                    [--attach] [--json]`
+ *                                    [--title <text>] [--attach] [--json]`
  * `agentproto sessions stop <id>`
  *
  * Browse and control the daemon's live sessions (terminals, agent
@@ -70,7 +70,8 @@ Usage:
                                       [--base-url <url>] [--auth-token <token>]
                                       [--options-json <json|@file>]
                                       [--prompt <text>]
-                                      [--label <text>] [--attach] [--json]
+                                      [--label <text>] [--title <text>]
+                                      [--attach] [--json]
                                       [--orchestrator | --orchestrator-json <json>]
                                       [--mcp-servers-json <json|@file>]
                                       [--hold-permissions] [--no-color]
@@ -228,6 +229,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       "options-json": { type: "string" },
       prompt: { type: "string", short: "p" },
       label: { type: "string" },
+      title: { type: "string" },
       attach: { type: "boolean" },
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
@@ -373,6 +375,9 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (options !== undefined && Object.keys(options).length > 0) body.options = options
   if (values.prompt) body.prompt = values.prompt
   if (values.label) body.label = values.label
+  // Explicit title (FIX C): overrides the first-sentence-of-prompt derivation
+  // the daemon would otherwise apply. `label` still out-ranks it in the UI.
+  if (values.title) body.title = values.title
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
   if (values["hold-permissions"]) body.permissionHold = true

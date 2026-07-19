@@ -4,7 +4,11 @@
  * adapter's argv or a raw session id. See `deriveSessionTitle` below.
  */
 
-const MAX_LENGTH = 60
+/** Max code points a session's derived title — and an operator-supplied
+ *  title/label — may carry. Exported so the rename write-path
+ *  (`SessionsRegistry.renameSession`) caps to the SAME bound the derivation
+ *  uses, rather than inventing a second limit. */
+export const MAX_LENGTH = 60
 
 /** Structural narrowing for an `unknown` prompt payload — no `as` casts.
  *  `Record<string, unknown>` lets property access type-check without

@@ -81,6 +81,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
+      if (req.url === "/sessions/s1" && req.method === "PATCH") {
+        const patch = req.body as { title?: string | null; label?: string | null }
+        return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws", ...(patch.label ? { label: patch.label } : {}), ...(patch.title ? { title: patch.title } : {}) } }
+      }
       if (req.url === "/workspaces" && req.method === "POST") {
         const body = req.body as { path: string; slug?: string; label?: string }
         return {
@@ -248,6 +252,22 @@ describe("DaemonClient — URL + auth header mapping", () => {
 
   it("getSessionEvents throws NoTranscriptError on a 404 no_transcript", async () => {
     await expect(client().getSessionEvents("terminal1")).rejects.toBeInstanceOf(NoTranscriptError)
+  })
+
+  it("renameSession PATCHes /sessions/:id with the { title?, label? } patch and returns the descriptor", async () => {
+    const desc = await client().renameSession("s1", { label: "My Session" })
+    expect(desc.label).toBe("My Session")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("PATCH")
+    expect(last.url).toBe("/sessions/s1")
+    expect(last.body).toEqual({ label: "My Session" })
+  })
+
+  it("renameSession forwards an explicit null to clear a field", async () => {
+    await client().renameSession("s1", { label: null })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("PATCH")
+    expect(last.body).toEqual({ label: null })
   })
 
   it("POST /workspaces sends { path, slug, label } and returns the updated WorkspacesConfig", async () => {

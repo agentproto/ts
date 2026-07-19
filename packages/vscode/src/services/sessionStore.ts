@@ -52,6 +52,10 @@ const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
   "session:awaiting-input",
   "session:exited",
   "session:command-done",
+  // A rename mutates the descriptor's display name (SPEC-3) — refresh the
+  // authoritative list so the tree/tab/header repaint without waiting for the
+  // next clock snapshot.
+  "session:renamed",
 ])
 
 export interface FocusOutputHandlers {

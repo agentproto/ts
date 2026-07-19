@@ -213,6 +213,12 @@ export interface SpawnAgentSessionInput {
   resumeSessionId?: string
   prompt?: string
   label?: string
+  /** Explicit session title (SPEC-3 FIX C, `agentproto sessions start
+   *  --title`). When set, it wins over the first-sentence derivation from
+   *  `prompt` — so a CLI-named session isn't limited to whatever its opening
+   *  prompt happened to say. Unlike `label`, it fills the `title` slot, so a
+   *  spawner `label` still out-ranks it in the display chain. */
+  title?: string
   mode?: string
   /** Manifest-declared option id → value map (AIP-45 `options`), applied
    *  at spawn time alongside `mode`. Forwarded verbatim to the driver's
@@ -886,7 +892,11 @@ export async function spawnAgentSession(
   // ITSELF, before role/promptAppend composition, so every future prepended
   // block (a skill header, a memory dump, another role field) can't
   // re-introduce this bug by ending up ahead of the caller's actual ask.
-  const initialTitle = input.prompt ? deriveSessionTitle(input.prompt) : undefined
+  // An explicit `--title` (FIX C) wins over the derivation; a trimmed empty
+  // string is treated as "not supplied" so it falls through to the prompt.
+  const explicitTitle = input.title?.trim() ? input.title.trim() : undefined
+  const initialTitle =
+    explicitTitle ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
   // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.

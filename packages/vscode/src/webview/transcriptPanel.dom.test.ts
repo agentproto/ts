@@ -1004,10 +1004,39 @@ describe("transcriptPanel webview — header title", () => {
     expect(el(panel, "header-title").textContent).toBe("My renamed session")
   })
 
-  it("falls back to the id when neither label nor title exist yet — pre-#390 sessions self-heal on their next prompt", () => {
+  it("falls back to the friendly adapter · short-id name when neither label nor title exist yet (FIX D) — pre-#390 sessions self-heal on their next prompt", () => {
     const panel = renderPanel()
     init(panel, { label: undefined, title: undefined, id: "sess_09ed741a" })
-    expect(el(panel, "header-title").textContent).toBe("sess_09ed741a")
+    // No bare sess_… id: the header now mirrors sessionDisplayName's fallback.
+    expect(el(panel, "header-title").textContent).toBe("agent-cli · ed741a")
+  })
+
+  it("click-to-edit posts a rename with the typed name, prefilled with the current name (FIX B)", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { label: "old name", title: undefined })
+    const header = el(panel, "header-title")
+    header.dispatchEvent(new panel.window.Event("click"))
+    const input = header.querySelector("input")
+    expect(input).not.toBeNull()
+    // Prefilled with the editable name (label), NOT the adapter·id fallback.
+    expect(input?.value).toBe("old name")
+    input!.value = "renamed"
+    input!.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "Enter" }))
+    expect(posted).toContainEqual({ type: "rename", name: "renamed" })
+  })
+
+  it("Escape cancels the rename without posting and restores the title", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { label: "old name", title: undefined })
+    const header = el(panel, "header-title")
+    header.dispatchEvent(new panel.window.Event("click"))
+    const input = header.querySelector("input")
+    input!.value = "discard me"
+    input!.dispatchEvent(new panel.window.KeyboardEvent("keydown", { key: "Escape" }))
+    expect(posted.some(m => (m as { type: string }).type === "rename")).toBe(false)
+    expect(el(panel, "header-title").textContent).toBe("old name")
   })
 })
 

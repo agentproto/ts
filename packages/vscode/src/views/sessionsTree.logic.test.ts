@@ -45,23 +45,23 @@ describe("labelFor", () => {
   it("prefers label over command", () => {
     expect(labelFor(session({ label: "sales-analysis" }))).toBe("sales-analysis")
   })
-  it("falls back to command when label is unset", () => {
-    expect(labelFor(session({ label: undefined }))).toBe("claude-code --print")
+  it("falls back to title when label is unset", () => {
+    expect(labelFor(session({ label: undefined, title: "Fix the login bug" }))).toBe(
+      "Fix the login bug",
+    )
   })
   it("prefers label over title", () => {
     expect(
       labelFor(session({ label: "sales-analysis", title: "Fix the login bug" })),
     ).toBe("sales-analysis")
   })
-  it("falls back to title when label is unset", () => {
-    expect(labelFor(session({ label: undefined, title: "Fix the login bug" }))).toBe(
-      "Fix the login bug",
-    )
-  })
-  it("falls back to command when both label and title are unset", () => {
-    expect(labelFor(session({ label: undefined, title: undefined }))).toBe(
-      "claude-code --print",
-    )
+  it("falls back to the friendly adapter · id name when both label and title are unset", () => {
+    // FIX D: the fallback names the session by adapter (or kind) + a short id,
+    // NOT the raw argv `command` — which read as noise in a tree row.
+    expect(labelFor(session({ label: undefined, title: undefined }))).toBe("agent-cli · s1")
+    expect(
+      labelFor(session({ label: undefined, title: undefined, adapterSlug: "claude-code" })),
+    ).toBe("claude-code · s1")
   })
 })
 

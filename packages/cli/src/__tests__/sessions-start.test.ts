@@ -223,4 +223,32 @@ describe("agentproto sessions start — orchestrator / mcpServers flags", () => 
     expect(body.orchestrator).toBeUndefined()
     expect(body.mcpServers).toBeUndefined()
   })
+
+  it("USAGE documents --title (FIX C)", async () => {
+    const code = await runSessions(["--help"])
+    expect(code).toBe(0)
+    expect(stdoutChunks.join("")).toContain("--title")
+  })
+
+  it("sends --title on the POST body, alongside --label", async () => {
+    const code = await runSessions([
+      "start",
+      "claude-code",
+      "--title",
+      "Nightly audit",
+      "--label",
+      "audit",
+    ])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.title).toBe("Nightly audit")
+    expect(body.label).toBe("audit")
+  })
+
+  it("omits title from the body when --title is not passed", async () => {
+    const code = await runSessions(["start", "claude-code"])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.title).toBeUndefined()
+  })
 })

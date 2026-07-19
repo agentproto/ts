@@ -5,6 +5,7 @@
  */
 
 import { isPendingSession } from "../services/pending.logic.js"
+import { sessionDisplayName } from "../client/sessionName.js"
 import type { SessionDescriptor } from "../client/types.js"
 
 export type SessionContextValue =
@@ -88,10 +89,13 @@ export function isAwaiting(session: SessionDescriptor): boolean {
   return Boolean(session.awaitingInput || session.awaitingPermission)
 }
 
-/** Item label: `label ?? title ?? command`. `label` is spawner-supplied and
- *  always wins; `title` is derived from the session's first prompt. */
+/** Item label. Thin alias over the shared `sessionDisplayName` (SPEC-3 FIX D):
+ *  `label ?? title ?? <adapter · short-id>`. `label` is spawner-supplied (and
+ *  what a user rename writes) and always wins; `title` is derived from the
+ *  session's first prompt; the fallback names it by adapter + short id rather
+ *  than the raw argv `command`, which read as noise in a tree row. */
 export function labelFor(session: SessionDescriptor): string {
-  return session.label ?? session.title ?? session.command
+  return sessionDisplayName(session)
 }
 
 /**

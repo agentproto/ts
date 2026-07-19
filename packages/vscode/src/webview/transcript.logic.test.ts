@@ -124,19 +124,28 @@ describe("formatCostLine", () => {
 
 describe("formatTitle", () => {
   it("uses label when available", () => {
-    expect(formatTitle({ label: "abc", id: "s1" })).toBe("abc")
+    expect(formatTitle({ label: "abc", id: "s1", kind: "agent-cli" })).toBe("abc")
   })
 
-  it("falls back to id when neither label nor title is set", () => {
-    expect(formatTitle({ id: "s1" })).toBe("s1")
+  it("falls back to the friendly adapter · id name when neither label nor title is set", () => {
+    // FIX D: no bare `sess_…` id — the fallback names the session by adapter
+    // (or kind) + a short id.
+    expect(formatTitle({ id: "s1", kind: "agent-cli" })).toBe("agent-cli · s1")
+    expect(formatTitle({ id: "s1", kind: "agent-cli", adapterSlug: "claude-code" })).toBe(
+      "claude-code · s1",
+    )
   })
 
   it("prefers label over title", () => {
-    expect(formatTitle({ label: "abc", title: "Fix the login bug", id: "s1" })).toBe("abc")
+    expect(
+      formatTitle({ label: "abc", title: "Fix the login bug", id: "s1", kind: "agent-cli" }),
+    ).toBe("abc")
   })
 
   it("falls back to title when label is unset", () => {
-    expect(formatTitle({ title: "Fix the login bug", id: "s1" })).toBe("Fix the login bug")
+    expect(formatTitle({ title: "Fix the login bug", id: "s1", kind: "agent-cli" })).toBe(
+      "Fix the login bug",
+    )
   })
 })
 

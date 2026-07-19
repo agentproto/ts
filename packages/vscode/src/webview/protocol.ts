@@ -264,6 +264,14 @@ export type WebviewMessage =
    * view to show.
    */
   | { type: "setView"; view: "conversation" | "terminal" }
+  /**
+   * The header title was edited in place (SPEC-3 FIX B). Carries the new name
+   * the user typed; the host resolves the target session from the controller
+   * (not from this message) and writes it as the session's `label` — the
+   * winning display field, so the rename always shows. An empty `name` clears
+   * the label, reverting to the derived title / friendly fallback.
+   */
+  | { type: "rename"; name: string }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -289,6 +297,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return typeof m.query === "string"
     case "setView":
       return m.view === "conversation" || m.view === "terminal"
+    case "rename":
+      return typeof m.name === "string"
     default:
       return false
   }

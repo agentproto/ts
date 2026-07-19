@@ -172,6 +172,24 @@ export class DaemonClient {
     return this.mcpCall<SessionDescriptor>("session_unarchive", { idOrName })
   }
 
+  /**
+   * `PATCH /sessions/:id` — set or clear a session's user-facing name (SPEC-3
+   * FIX B). Each of `title`/`label`: a string sets it, `null`/`""` clears it,
+   * an omitted key leaves it untouched. Returns the updated descriptor. A user
+   * rename writes `label` (the winning display field) so the edit always
+   * shows; the derived `title` stays the auto fallback (fork-1).
+   */
+  async renameSession(
+    id: string,
+    patch: { title?: string | null; label?: string | null },
+  ): Promise<SessionDescriptor> {
+    return this.request<SessionDescriptor>(
+      "PATCH",
+      `/sessions/${encodeURIComponent(id)}`,
+      patch,
+    )
+  }
+
   async spawnAgent(opts: SpawnAgentOptions): Promise<SessionDescriptor> {
     return this.postJson<SessionDescriptor>("/sessions/agent", opts)
   }
