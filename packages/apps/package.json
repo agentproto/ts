@@ -32,12 +32,12 @@
       "default": "./dist/index.mjs"
     },
     "./code-team": {
-      "types": "./dist/code-team.d.ts",
+      "types": "./dist/code-team/index.d.ts",
       "import": "./dist/code-team.mjs",
       "default": "./dist/code-team.mjs"
     },
     "./content-team": {
-      "types": "./dist/content-team.d.ts",
+      "types": "./dist/content-team/index.d.ts",
       "import": "./dist/content-team.mjs",
       "default": "./dist/content-team.mjs"
     },
