@@ -22,6 +22,8 @@ import {
   type AgentSessionLike,
   type AgentStreamEvent,
 } from "../sessions.js"
+import { sessionEventsPath } from "../transcript-writer.js"
+import { readFileSync } from "node:fs"
 
 /** Deferred the test controls to pause the fake agent mid-turn. */
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -216,32 +218,49 @@ describe("SessionDescriptor.blockedOn", () => {
     registry.shutdown()
   })
 
-  it("non-regression: unclassified tools leave the descriptor untouched and list() JSON keeps its shape", async () => {
+  it("synthesizes a tool-result for orphaned pending tool calls at turn-end", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const desc = registry.spawnAgent({
       workspaceSlug: "default",
       cwd: "/tmp",
       agentSession: scriptedAgentSession([
-        { kind: "tool-call", toolName: "read_file", toolCallId: "tc-1" },
-        { kind: "tool-result", toolName: "read_file", toolCallId: "tc-1", result: "x" },
-        { kind: "turn-end", reason: "completed" },
+        { kind: "tool-call", toolName: "read_file", toolCallId: "tc-orphan", arguments: { path: "/tmp/x" } },
+        // Stream ends here: no tool-result, no turn-end (adapter dropped it).
       ]),
       adapterSlug: "claude-code",
     })
 
     await registry.sendPrompt(desc.id, "go")
 
-    const row = registry.list().find(s => s.id === desc.id)
-    expect(row).toBeDefined()
-    expect(row?.blockedOn).toBeUndefined()
-    expect(row?.pendingToolCallId).toBeUndefined()
-    // Existing shape untouched: the descriptor still serializes cleanly and
-    // carries its pre-existing fields.
-    const json = JSON.parse(JSON.stringify(row)) as Record<string, unknown>
-    expect(json.id).toBe(desc.id)
-    expect(json.status).toBeDefined()
-    expect(json.kind).toBeDefined()
-    expect("blockedOn" in json).toBe(false)
+    // The descriptor is clean.
+    expect(registry.get(desc.id)?.blockedOn).toBeUndefined()
+
+    // Allow the write stream buffer to flush before reading the file.
+    await new Promise(r => setTimeout(r, 50))
+
+    // The transcript carries a synthetic tool-result BEFORE the synthetic turn-end.
+    const eventsPath = sessionEventsPath(desc.id, transcriptDir)
+    const lines = readFileSync(eventsPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map(l => JSON.parse(l) as AgentStreamEvent)
+    const toolResults = lines.filter(
+      (r): r is AgentStreamEvent & { kind: "tool-result" } => r.kind === "tool-result"
+    )
+    expect(toolResults.length).toBe(1)
+    expect(toolResults[0]).toMatchObject({
+      kind: "tool-result",
+      toolCallId: "tc-orphan",
+      result: null,
+      isError: false,
+    })
+
+    // Synthetic turn-end follows the synthetic tool-result.
+    const turnEnds = lines.filter(r => r.kind === "turn-end")
+    expect(turnEnds.length).toBe(1)
+    const resultIdx = lines.findIndex(r => r.kind === "tool-result")
+    const turnEndIdx = lines.findIndex(r => r.kind === "turn-end")
+    expect(resultIdx).toBeLessThan(turnEndIdx)
 
     registry.shutdown()
   })
