@@ -10,6 +10,8 @@
 
 import { EventEmitter } from "node:events"
 
+import type { SessionConfig } from "./session-config.js"
+
 export type SessionEventType =
   | "session:turn-end"
   | "session:awaiting-input"
@@ -18,6 +20,7 @@ export type SessionEventType =
   | "session:exited"
   | "session:command-done"
   | "session:model-changed"
+  | "session:config-changed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -150,6 +153,45 @@ export interface SessionModelChangedEvent {
   ts: string
 }
 
+/**
+ * The `SessionConfig` axis a `session:config-changed` event reports. Reuses
+ * the axis vocabulary of `SessionConfig` itself (`session-config.ts`, SPEC
+ * §3.1) so there's a single source of truth for the axis names — model /
+ * effort / access / route / posture / contextProfile.
+ */
+export type SessionConfigAxis = keyof SessionConfig
+
+/**
+ * Emitted when a SINGLE `SessionConfig` axis is changed on a session and the
+ * change actually took effect (SPEC §7.2 build step 4). This is the shared,
+ * axis-generic successor to `session:model-changed`: the live config verbs
+ * (`agent_set_effort` / `agent_set_posture`, step 5) and restart-with-override
+ * (step 6) all announce their single-axis change through THIS event, carrying
+ * which axis moved and the new value now reflected on the descriptor.
+ *
+ * A model change still ALSO emits `session:model-changed` as a back-compat
+ * alias (`sessions.ts` `setModel`) so existing subscribers keep working; new
+ * consumers should prefer this event and switch on `axis`.
+ *
+ * Discriminated by `axis`, with `value` typed to that axis's `SessionConfig`
+ * field — a `model` change carries a `string`, an `effort` change an
+ * `EffortLevel`, a `route` change a `RouteSpec`, and so on. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine).
+ */
+export type SessionConfigChangedEvent = {
+  [A in SessionConfigAxis]: {
+    type: "session:config-changed"
+    sessionId: string
+    /** Which `SessionConfig` axis changed. */
+    axis: A
+    /** The axis's new value, as now reflected on `SessionDescriptor`. */
+    value: NonNullable<SessionConfig[A]>
+    label?: string
+    ts: string
+  }
+}[SessionConfigAxis]
+
 /** Emitted by the supervisor when a completion policy's gate passes. */
 export interface PolicyPassedEvent {
   type: "policy:passed"
@@ -229,6 +271,7 @@ export type SessionEvent =
   | SessionExitedEvent
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
+  | SessionConfigChangedEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent
