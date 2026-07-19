@@ -544,11 +544,42 @@ jobs:
             }
           timeout-minutes: 15
 
+      # The native lane can POST its review and STILL report failure — the
+      # box session erroring during post-review wind-down (changeset delivery)
+      # after the curl-REST post already landed. Observed live on PR #494:
+      # native review posted 02:55:33, turn error 02:56:34, redundant legacy
+      # review 02:58:07. Ask the API whether a review already exists for the
+      # reviewed SHA BEFORE arming the fallback: a posted review means the
+      # lane succeeded in substance and the fallback would only duplicate it
+      # (and bill a second review).
+      - name: Check whether a review was already posted (fallback gate)
+        id: postcheck
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ steps.headsha.outputs.sha }}
+        run: |
+          # --paginate + `jq -s add` is load-bearing: a naive `--paginate
+          # --jq` evaluates per PAGE and can miscount.
+          COUNT=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+            | jq -s "add | [.[] | select(.commit_id==\"$SHA\")] | length")
+          echo "Reviews already posted against reviewed SHA $SHA: $COUNT"
+          if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run agentic PR reviewer (legacy API-key fallback)
         id: reviewer-legacy
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
+          steps.postcheck.outputs.posted != 'true' &&
           (steps.mode.outputs.mode == 'legacy' || steps.reviewer-agentproto.outcome == 'failure' || steps.reviewer-agentproto.outputs.status == 'failed')
         # Don't abort the job on a non-posting reviewer — capture the outcome so
         # the gate can turn it into an honest red instead of a false green.
@@ -567,7 +598,12 @@ jobs:
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
         run: |
-          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ]; then
+          # A posted review IS lane success, even when the native session
+          # errored after posting (post-review wind-down — see the postcheck
+          # step). The verify step below independently re-proves the review
+          # row before the gate trusts this.
+          if [ "${{ steps.reviewer-agentproto.outputs.status }}" = "done" ] \
+            || [ "${{ steps.postcheck.outputs.posted }}" = "true" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.reviewer-legacy.outcome }}" = "success" ]; then
