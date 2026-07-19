@@ -181,6 +181,22 @@ if (!Array.isArray(packages) || !summary) {
   process.exit(1)
 }
 
+// ── deterministic coverage ────────────────────────────────────────────────────
+// The model decides which touched packages to list — and it can omit one. That
+// is exactly how @agentproto/auth got stranded: #470 added a new export to auth
+// AND consumed it in cli, but the generated changeset only listed cli, so auth
+// was never republished and every `npm i -g @agentproto/cli@latest` crashed on
+// the missing export. Trust the model for the BUMP TYPE, but never for
+// COVERAGE: force every touched publishable package into the changeset, adding
+// any the model dropped as `patch` (the safe minimum that still republishes).
+const listed = new Set(packages.map((p) => p.name))
+for (const name of touchedPackages) {
+  if (!listed.has(name)) {
+    packages.push({ name, bump: 'patch' })
+    console.warn(`  + coverage: added ${name}@patch (touched but omitted by the model)`)
+  }
+}
+
 // ── write changeset ───────────────────────────────────────────────────────────
 
 const frontmatter = packages.map((p) => `"${p.name}": ${p.bump}`).join('\n')
