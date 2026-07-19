@@ -949,6 +949,13 @@ export async function spawnAgentSession(
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.label ? { label: input.label } : {}),
+        // Explicit billing-auth for the box's OWN agent_start. A fresh box
+        // has no ~/.agentproto/config.json and claude-code never inherits
+        // subscription auth from the shell env — the credential must ride the
+        // spawn call itself. Only the caller's EXPLICIT `auth` is forwarded
+        // (host config defaults stay host-scoped; the box resolves its own
+        // defaults otherwise).
+        ...(input.auth ? { auth: input.auth } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -1171,6 +1178,10 @@ async function bootSandboxAgentSession(opts: {
   model?: string
   effort?: string
   label?: string
+  /** Explicit billing-auth forwarded to the BOX's own `agent_start` — see
+   *  the call-site comment (fresh boxes have no config and claude-code never
+   *  inherits shell-env subscription auth). */
+  auth?: DefaultsAdapterAuthConfig
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -1250,6 +1261,7 @@ async function bootSandboxAgentSession(opts: {
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
+      ...(opts.auth ? { auth: opts.auth } : {}),
     })
     remoteSessionId = remoteDesc.id
   } catch (err) {

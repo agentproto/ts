@@ -36,6 +36,7 @@ export type {
   GroupStep,
   SubworkflowStep,
   AgentStep,
+  AgentSandboxRef,
   AgentSessionHost,
   StepCache,
   StepCacheEntry,

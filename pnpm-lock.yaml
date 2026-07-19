@@ -911,6 +911,9 @@ importers:
       '@agentproto/runtime-profile-standard':
         specifier: workspace:*
         version: link:../runtime-profile-standard
+      '@agentproto/sandbox-e2b':
+        specifier: workspace:*
+        version: link:../sandbox-e2b
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets

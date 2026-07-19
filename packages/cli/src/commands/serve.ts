@@ -541,6 +541,15 @@ export async function runServe(args: readonly string[]): Promise<number> {
         audience: "mcp",
         signal,
       }),
+    // Sandbox env-slug resolution (`agent_start.sandbox` inline specs'
+    // `env.passthrough` / `env.auth.state.env`): resolve against the DAEMON
+    // process's own environment — an explicit host decision, not the
+    // `@agentproto/sandbox` default (`session-spawn.ts` deliberately never
+    // falls back on its own). The operator who started `agentproto serve`
+    // controls this env (e.g. CI exports CLAUDE_CODE_OAUTH_TOKEN /
+    // GITHUB_TOKEN for the e2b reviewer box); a missing slug still fails the
+    // boot loudly upstream.
+    resolveSandboxSecret: async (slug) => process.env[slug] ?? null,
   })
 
   // ── E2E pairing registry ──

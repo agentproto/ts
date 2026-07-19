@@ -93,6 +93,14 @@ inputs:
       set. Default '' ⇒ no provider key injected.
     required: false
     default: ''
+  e2b-api-key:
+    description: >
+      e2b API key (secrets.E2B_API_KEY). Required when the workflow places an
+      agent step in an `e2b` sandbox (`@agentproto/sandbox-e2b` reads
+      E2B_API_KEY from the daemon process env). Empty ⇒ an e2b boot fails
+      loudly and the workflow step fails (no silent host spawn).
+    required: false
+    default: ''
   cli-source:
     description: >
       Where to get the agentproto CLI from: "npm" installs
@@ -155,10 +163,12 @@ runs:
         OAUTH_TOKEN: ${{ inputs.oauth-token }}
         API_KEY: ${{ inputs.api-key }}
         PROVIDER_KEY: ${{ inputs.provider-key }}
+        E2B_KEY: ${{ inputs.e2b-api-key }}
       run: |
         if [ -n "$OAUTH_TOKEN" ]; then echo "::add-mask::$OAUTH_TOKEN"; fi
         if [ -n "$API_KEY" ]; then echo "::add-mask::$API_KEY"; fi
         if [ -n "$PROVIDER_KEY" ]; then echo "::add-mask::$PROVIDER_KEY"; fi
+        if [ -n "$E2B_KEY" ]; then echo "::add-mask::$E2B_KEY"; fi
 
     - name: Write ~/.agentproto/config.json adapter credentials + options
       shell: bash
@@ -204,4 +214,24 @@ runs:
         CLI_SOURCE: ${{ inputs.cli-source }}
         PROVIDER_KEY: ${{ inputs.provider-key }}
         PROVIDER_KEY_ENV: ${{ inputs.provider-key-env }}
+        # Sandbox support. The daemon (a child of this driver) resolves a
+        # sandbox spec's `env.passthrough` slugs against ITS OWN process env
+        # (serve.ts's resolveSandboxSecret), and @agentproto/sandbox-e2b reads
+        # E2B_API_KEY from the same env to boot the microVM. These exports
+        # exist for that path only — HOST spawns still authenticate via
+        # ~/.agentproto/config.json (write-config.mjs above), never ambient env.
+        E2B_API_KEY: ${{ inputs.e2b-api-key }}
+        # Gated like ANTHROPIC_AUTH_TOKEN below — a stale ambient OAuth token
+        # in api-key mode would shadow the API key for claude-code spawns.
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.auth-mode == 'subscription' && inputs.oauth-token || '' }}
+        # claude-sdk's subscription env var — same credential as
+        # CLAUDE_CODE_OAUTH_TOKEN, exported under the name the SDK reads so a
+        # sandbox spec can passthrough ANTHROPIC_AUTH_TOKEN once a live
+        # subscription token exists (the 2026-07 stored token is expired —
+        # api-key passthrough is the proven-live recipe today). Gated on
+        # auth-mode: an ambient AUTH_TOKEN outranks ANTHROPIC_API_KEY in the
+        # Claude CLI, so exporting a stale one in api-key mode would shadow
+        # the working key for any host-side claude-sdk spawn.
+        ANTHROPIC_AUTH_TOKEN: ${{ inputs.auth-mode == 'subscription' && inputs.oauth-token || '' }}
+        ANTHROPIC_API_KEY: ${{ inputs.api-key }}
       run: node "${{ github.action_path }}/driver.mjs"

@@ -115,6 +115,10 @@ if (providerKeyEnv && providerKey) {
   console.log(`driver: injected provider key env ${providerKeyEnv} into the daemon process env`)
 }
 
+// Timestamp fence for the agent_sessions_list fallback below — persisted
+// sessions from BEFORE this boot are someone else's.
+const driverStartedAt = Date.now()
+
 console.log(
   `driver: booting agentproto serve --workspace ${cwd} --port ${port} (adapter=${adapter}, source=${cliSource})`,
 )
@@ -248,7 +252,7 @@ async function main() {
     if (run.error) console.error(`driver: run error: ${run.error}`)
     for (const stage of Array.isArray(run.stages) ? run.stages : []) {
       for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
-        if (step?.error) console.error(`driver: step '${step.id ?? "?"}' error: ${step.error}`)
+        if (step?.error) console.error(`driver: step '${step.label ?? step.id ?? "?"}' error: ${step.error}`)
       }
     }
   }
@@ -258,29 +262,120 @@ async function main() {
   // reads as success and lets the calling gate pass a PR nobody reviewed. Read
   // the real session output, log it (the only place the agent's own stderr
   // surfaces in CI), and treat an empty "done" as a failure so the caller's
-  // fallback reviewer takes over. On the failure path run.result isn't filled,
-  // so also harvest any session id the stages recorded during execution.
+  // fallback reviewer takes over.
+  //
+  // Session-id harvest, most- to least-structured:
+  //   1. run.result.sessionIds + per-step sessionId (the runner now fills
+  //      these on the FAILURE path too),
+  //   2. `sess_…` ids embedded in run/step error strings (e.g. "session
+  //      sess_ab12cd34 ended with status 'error'"),
+  //   3. LAST RESORT, only when 1+2 found nothing: `agent_sessions_list`,
+  //      filtered to sessions started after this driver booted the daemon —
+  //      a daemon can carry persisted session state from previous runs
+  //      (observed locally: an unfiltered list dumped megabytes of
+  //      unrelated transcripts), so the list is diagnostic-only, never
+  //      merged when structured ids exist, and never counts toward the
+  //      silent-no-op gate below.
+  // Without 2+3, a failed run whose state plumbing missed the id left CI
+  // logs with a bare "status 'error'" and NOTHING else — undiagnosable.
   const sessionIds = new Set(Array.isArray(run?.result?.sessionIds) ? run.result.sessionIds : [])
+  const stepErrors = []
   for (const stage of Array.isArray(run.stages) ? run.stages : []) {
     for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
       if (typeof step?.sessionId === "string" && step.sessionId) sessionIds.add(step.sessionId)
+      if (typeof step?.error === "string" && step.error) stepErrors.push(step.error)
     }
   }
-  console.log(`driver: run produced sessionIds=${JSON.stringify([...sessionIds])}`)
+  const SESSION_ID_RE = /sess_[A-Za-z0-9-]+/g
+  for (const text of [run.error, ...stepErrors]) {
+    for (const match of String(text ?? "").matchAll(SESSION_ID_RE)) sessionIds.add(match[0])
+  }
+  const structuredIdCount = sessionIds.size
+  let listedSessions = []
+  try {
+    const listed = parseToolResult(
+      await client.callTool({ name: "agent_sessions_list", arguments: {} }),
+    )
+    listedSessions = Array.isArray(listed) ? listed : Array.isArray(listed?.sessions) ? listed.sessions : []
+  } catch (err) {
+    console.error(
+      `driver: agent_sessions_list failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+  if (structuredIdCount === 0) {
+    for (const s of listedSessions) {
+      if (typeof s?.id !== "string" || !s.id) continue
+      const startedAt = Date.parse(String(s?.startedAt ?? ""))
+      if (Number.isFinite(startedAt) && startedAt < driverStartedAt) continue
+      sessionIds.add(s.id)
+    }
+  }
+  console.log(
+    `driver: run produced sessionIds=${JSON.stringify([...sessionIds])}` +
+      (structuredIdCount === 0 && sessionIds.size > 0 ? " (recovered via agent_sessions_list)" : ""),
+  )
+  const failed = run.status !== "done"
   let sawAgentOutput = false
-  for (const sid of sessionIds) {
+  // Cap the dump fan-out — a pathological run should not flood the job log.
+  for (const sid of [...sessionIds].slice(0, 8)) {
+    const desc = listedSessions.find((s) => s?.id === sid)
+    if (desc) {
+      console.log(
+        `driver: session ${sid} descriptor: status=${desc.status} adapter=${desc.adapterSlug ?? "?"} ` +
+          `label=${desc.label ?? ""} remote=${desc.remote === true} sandboxId=${desc.sandboxId ?? ""}`,
+      )
+    }
+    let text = ""
     try {
+      // On failure, dump the RAW ring buffer (clean:true strips [thought]/
+      // [tool]/framing lines — exactly the adapter stderr and stack traces a
+      // post-mortem needs). Keep clean output for the success path.
       const outRes = await client.callTool({
         name: "agent_output",
-        arguments: { sessionId: sid, lastN: 400, clean: true },
+        arguments: { sessionId: sid, lastN: 400, clean: !failed },
       })
-      const text = typeof outRes?.content?.[0]?.text === "string" ? outRes.content[0].text : ""
+      const rawText = typeof outRes?.content?.[0]?.text === "string" ? outRes.content[0].text : ""
+      // The tool returns JSON ({sessionId, status, lines: [...]}) — join the
+      // actual lines so the emptiness check below sees the AGENT's output,
+      // not the (always non-empty) JSON envelope.
+      try {
+        const parsed = JSON.parse(rawText)
+        text = Array.isArray(parsed?.lines) ? parsed.lines.join("\n") : rawText
+      } catch {
+        text = rawText
+      }
       console.log(`driver: ---- agent_output ${sid} ----\n${text}\n---- end agent_output ${sid} ----`)
       if (text.trim().length > 0) sawAgentOutput = true
     } catch (err) {
       console.error(
         `driver: agent_output ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
       )
+    }
+    // Empty buffer on a failed run: fall back to the daemon-captured
+    // transcript (`agent_export` reads events.jsonl, which survives even
+    // when the ring buffer never got a line — e.g. a spawn that died before
+    // producing output).
+    if (failed && text.trim().length === 0) {
+      try {
+        const expRes = await client.callTool({
+          name: "agent_export",
+          arguments: { sessionId: sid, format: "markdown" },
+        })
+        const transcript =
+          typeof expRes?.content?.[0]?.text === "string" ? expRes.content[0].text : ""
+        // Tail-cap the transcript — a long session's export can run to
+        // megabytes, and the post-mortem needs the END of the conversation.
+        const lines = transcript.split("\n")
+        const tail = lines.slice(-200).join("\n")
+        console.log(
+          `driver: ---- agent_export ${sid} (last ${Math.min(lines.length, 200)}/${lines.length} lines) ----\n` +
+            `${tail}\n---- end agent_export ${sid} ----`,
+        )
+      } catch (err) {
+        console.error(
+          `driver: agent_export ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
     }
   }
 

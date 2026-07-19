@@ -82,11 +82,15 @@ export function createSandboxAgentSessionProxy(
     async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
       const prompt = extractPromptText(message)
       lastPrompt = prompt
-      await host.prompt(remoteSessionId, prompt)
-
       // Tracks how much of the box's `agent_output` tail this turn has
-      // already yielded, as a character offset into the raw joined string
-      // — NOT a line count. `projectEvent`'s text-delta handling expects
+      // already yielded — declared OUTSIDE the try so the catch's final
+      // harvest below can yield only the unseen suffix.
+      let seenLength = 0
+      try {
+        await host.prompt(remoteSessionId, prompt)
+
+      // The offset is a character offset into the raw joined string — NOT a
+      // line count. `projectEvent`'s text-delta handling expects
       // newline-delimited STREAM FRAGMENTS it coalesces itself (partial
       // lines included); re-splitting the tail into whole lines here and
       // yielding each separately (with the splitting newline stripped)
@@ -98,7 +102,6 @@ export function createSandboxAgentSessionProxy(
       // this offset can go stale — acceptable for the turn sizes this
       // flattening path targets; a real fix subscribes to the box's SSE
       // stream instead of polling a bounded tail.
-      let seenLength = 0
       for (;;) {
         const result = await host.waitForAny([remoteSessionId], {
           event: "any",
@@ -132,6 +135,25 @@ export function createSandboxAgentSessionProxy(
           reason: result.event === "awaiting-input" ? "awaiting-input" : "completed",
         }
         return
+      }
+      } catch (err) {
+        // Final harvest before the error propagates: pull whatever the box
+        // printed that this turn hasn't yielded yet, so the HOST transcript
+        // and ring buffer carry the box session's last words (stack traces,
+        // adapter stderr, partial thoughts). Without this, a failure between
+        // polls — or a thrown `host.prompt`/`waitForAny` — left the host
+        // side EMPTY and post-mortem diagnosis blind (observed in CI: a box
+        // session erroring ~2min in with zero surfaced output). Best-effort:
+        // the box may already be unreachable.
+        try {
+          const tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+          if (tail.length > seenLength) {
+            yield { kind: "text-delta", text: tail.slice(seenLength) }
+          }
+        } catch {
+          // box gone — nothing more to salvage
+        }
+        throw err
       }
     },
 

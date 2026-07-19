@@ -411,6 +411,86 @@ describe("runWorkflow — agent step", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledWith("sess_prior", "verify")
   })
 
+  it("passes a literal sandbox ref (slug) through to host.spawn", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-sandbox-slug",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          sandbox: "e2b",
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+      sandbox: "e2b",
+    })
+  })
+
+  it("resolves a sandbox selector per-run; undefined ⇒ host spawn (no sandbox key)", async () => {
+    const host = fakeHost()
+    const spec = { provider: "e2b", config: {}, env: { passthrough: ["GITHUB_TOKEN"] } }
+    const wf: RuntimeWorkflow = {
+      id: "agent-sandbox-sel",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          sandbox: (b) => ((b.input as { boxed: boolean }).boxed ? spec : undefined),
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, input: { boxed: true } })
+    expect(host.spawn).toHaveBeenLastCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+      sandbox: spec,
+    })
+    await runWorkflow({ workflow: wf, agents: host, input: { boxed: false } })
+    expect(host.spawn).toHaveBeenLastCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+    })
+  })
+
+  it("a host that rejects the sandbox spawn fails the run loudly (no silent host fallback)", async () => {
+    const spawn = vi.fn(async () => {
+      throw new Error("agent step sandbox spawn failed (sandbox_provider_not_found): no resolver")
+    })
+    const host = fakeHost({ spawn })
+    const wf: RuntimeWorkflow = {
+      id: "agent-sandbox-fail-loud",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          sandbox: "e2b",
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
+      /sandbox spawn failed \(sandbox_provider_not_found\)/,
+    )
+    // The failed spawn is the ONLY spawn attempt — the step must not retry
+    // on the host without the sandbox.
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(spawn).toHaveBeenCalledWith("mock-adapter", expect.objectContaining({ sandbox: "e2b" }))
+    expect(host.sendPromptAndWait).not.toHaveBeenCalled()
+  })
+
   it("resolves adapter from a selector function", async () => {
     const host = fakeHost()
     const wf: RuntimeWorkflow = {

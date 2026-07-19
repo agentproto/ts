@@ -59,9 +59,18 @@ export class HarnessClient {
     return new HarnessClient(url, client)
   }
 
-  /** Spawn a session via `agent_start`. */
+  /** Spawn a session via `agent_start`.
+   *
+   *  Uses a 180s request timeout instead of the MCP SDK's 60s default: a
+   *  spawn on a COLD daemon (freshly booted sandbox box, first import of a
+   *  just-installed adapter package) legitimately exceeds 60s — observed
+   *  live against an e2b box, where the default timeout aborted an
+   *  otherwise-successful spawn (`MCP error -32001`). Failures still
+   *  surface immediately; the ceiling only bounds the wait. */
   async start(args: StartAgentArgs): Promise<SessionDescriptor> {
-    return this.#call("agent_start", args as unknown as Record<string, unknown>)
+    return this.#call("agent_start", args as unknown as Record<string, unknown>, {
+      timeoutMs: 180_000,
+    })
   }
 
   /** Send a follow-up turn via `agent_prompt` (fire-and-forget). `opts.interrupt`
@@ -125,12 +134,19 @@ export class HarnessClient {
 
   // ── private helpers ────────────────────────────────────────────────
 
-  /** Call a daemon MCP tool and unwrap its JSON response. */
+  /** Call a daemon MCP tool and unwrap its JSON response. `timeoutMs`
+   *  overrides the MCP SDK's 60s default request timeout for calls that can
+   *  legitimately run long (see `start`). */
   async #call<T = unknown>(
     name: string,
     args: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
   ): Promise<T> {
-    const res = await this.#client.callTool({ name, arguments: args })
+    const res = await this.#client.callTool(
+      { name, arguments: args },
+      undefined,
+      opts?.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : undefined,
+    )
     const text = (
       res.content as Array<{ type: string; text?: string }>
     )[0]?.text

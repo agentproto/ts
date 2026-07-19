@@ -17,6 +17,10 @@ inputs:
     type: string
     description: Base branch ref (e.g. "main").
     default: main
+  repo:
+    type: string
+    description: owner/repo slug — required for the sandbox bootstrap clone (reviewerSandbox mode).
+    default: ""
   githubToken:
     type: string
     description: GitHub token for posting reviews and changesets.

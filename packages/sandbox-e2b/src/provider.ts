@@ -57,6 +57,16 @@ interface E2bSandboxConfig {
    *  Default true. Only runs when this provider is the one starting the
    *  daemon (skipped when the health probe finds it already autostarted). */
   updateCliOnBoot?: boolean
+  /** Extra npm package specs installed globally ALONGSIDE the CLI update
+   *  (single `npm i -g` invocation). Load-bearing for adapters: the CLI
+   *  update replaces the global install, LOSING any template-baked
+   *  `@agentproto/adapter-*` packages (verified against a live template) —
+   *  so the adapter the caller intends to spawn must be (re)installed in the
+   *  same breath, e.g. `["@agentproto/adapter-claude-sdk@latest"]` (plus
+   *  `"@anthropic-ai/claude-code@latest"` for the claude-code adapter's
+   *  underlying CLI). Ignored when `updateCliOnBoot` is false or the daemon
+   *  was already autostarted healthy. */
+  installPackages?: string[]
   /** Timeout for the `npm i -g` update command. Default 120s. */
   updateCliTimeoutMs?: number
 }
@@ -74,6 +84,9 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
       typeof config.daemonReadyTimeoutMs === "number" ? config.daemonReadyTimeoutMs : undefined,
     pollIntervalMs: typeof config.pollIntervalMs === "number" ? config.pollIntervalMs : undefined,
     updateCliOnBoot: typeof config.updateCliOnBoot === "boolean" ? config.updateCliOnBoot : undefined,
+    installPackages: Array.isArray(config.installPackages)
+      ? config.installPackages.filter((p): p is string => typeof p === "string" && p.length > 0)
+      : undefined,
     updateCliTimeoutMs:
       typeof config.updateCliTimeoutMs === "number" ? config.updateCliTimeoutMs : undefined,
   }
@@ -104,7 +117,16 @@ async function ensureDaemonHealthy(
   if (alreadyUp) return
 
   if (config.updateCliOnBoot ?? true) {
-    await sandbox.commands.run("sudo npm i -g @agentproto/cli@latest", {
+    // One `npm i -g` for the CLI update AND any caller-declared extras
+    // (`installPackages` — typically the adapter about to be spawned). The
+    // CLI update alone replaces the global install and LOSES template-baked
+    // adapters, so the two must land in the same invocation. Extras are
+    // single-quoted (with any quote chars stripped) since they arrive from
+    // caller-authored spec config.
+    const extras = (config.installPackages ?? [])
+      .map(spec => ` '${spec.replace(/'/g, "")}'`)
+      .join("")
+    await sandbox.commands.run(`sudo npm i -g @agentproto/cli@latest${extras}`, {
       envs: env,
       timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
     })
