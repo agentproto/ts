@@ -143,10 +143,23 @@ jobs:
             pnpm dlx @vscode/vsce publish --skip-duplicate --packagePath "$vsix"
           fi
 
-          gh release create "$tag" "$vsix" \
-            --title "agentproto VS Code extension v${version}" \
-            --notes "Official release, built from $(git rev-parse HEAD). Published to the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Agentproto.agentproto-vscode) — or install this VSIX directly with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
-            --latest=false
+          # Idempotent, mirroring the skill-pack step below: the extension is
+          # private and changesets doesn't bump it, so a run can legitimately
+          # reach a `vscode-v${version}` whose GitHub release already exists
+          # (packages/vscode changed since the last tag but the version didn't,
+          # a force_post_release_steps backfill, a reconcile re-run). A plain
+          # `gh release create` hard-fails on that duplicate tag and turns an
+          # otherwise-successful release red — exactly what `--skip-duplicate`
+          # already prevents on the Marketplace side. Refresh the asset instead.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists — refreshing its VSIX asset instead of recreating."
+            gh release upload "$tag" "$vsix" --clobber
+          else
+            gh release create "$tag" "$vsix" \
+              --title "agentproto VS Code extension v${version}" \
+              --notes "Official release, built from $(git rev-parse HEAD). Published to the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Agentproto.agentproto-vscode) — or install this VSIX directly with VS Code's **Extensions: Install from VSIX...** command, or \`code --install-extension\`." \
+              --latest=false
+          fi
 
       # Skill packs (packages/skill-pack-*) ship two ways from ONE build (see
       # each package's scripts/build.mjs, already run by "Build all packages"
