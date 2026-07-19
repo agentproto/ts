@@ -2475,6 +2475,9 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@agentproto/eval-reporters':
         specifier: workspace:*
         version: link:../eval-reporters
