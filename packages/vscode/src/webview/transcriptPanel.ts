@@ -242,6 +242,9 @@ async function handleWebviewMessage(
     case "restart":
       await controller.onRestart()
       return
+    case "setView":
+      await controller.onSetView(msg.view)
+      return
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
       return
@@ -354,6 +357,32 @@ export function buildHtml(nonce: string): string {
     .header-action { position: relative; }
     .header-btn { font-size: 0.85em; }
     .header-btn:empty { display: none; }
+    /* Segmented Conversation⇄Terminal toggle — a pure display switch for the
+       same session (FIX 2), NOT the restart-based harness switch. Hidden via
+       [hidden] when the session has only one representation to show. */
+    #view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    #view-toggle[hidden] { display: none; }
+    .view-seg {
+      font-size: 0.8em;
+      padding: 2px 8px;
+      border: none;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+    }
+    .view-seg + .view-seg {
+      border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    }
+    .view-seg:hover { color: var(--vscode-foreground); }
+    .view-seg.active {
+      background: var(--vscode-button-background, var(--vscode-editorWidget-background));
+      color: var(--vscode-button-foreground, var(--vscode-foreground));
+    }
     /* A webview has no VS Code popover API — this is our own
        absolutely-positioned element, anchored to its button so it never
        reflows the transcript underneath it. */
@@ -964,6 +993,10 @@ export function buildHtml(nonce: string): string {
   <div id="header">
     <div id="header-title"></div>
     <div id="header-actions">
+      <div id="view-toggle" class="header-action" role="group" aria-label="Change view" hidden>
+        <button id="view-conversation" class="view-seg" type="button" data-view="conversation">Conversation</button>
+        <button id="view-terminal" class="view-seg" type="button" data-view="terminal">Terminal</button>
+      </div>
       <div class="header-action">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
         <div id="cost-popover" class="popover" hidden>
@@ -1037,6 +1070,9 @@ export function buildHtml(nonce: string): string {
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
       const headerTitle = document.getElementById('header-title');
+      const viewToggle = document.getElementById('view-toggle');
+      const viewConversationBtn = document.getElementById('view-conversation');
+      const viewTerminalBtn = document.getElementById('view-terminal');
       const costBtn = document.getElementById('cost-btn');
       const costPopover = document.getElementById('cost-popover');
       const popoverTokensIn = document.getElementById('popover-tokens-in');
@@ -2204,6 +2240,22 @@ export function buildHtml(nonce: string): string {
         closeAllPopovers();
         popover.hidden = wasOpen;
       }
+      // Segmented view toggle (FIX 2). The active segment is derived from the
+      // current render mode (structured -> Conversation, raw -> Terminal), so a
+      // view switch — which re-posts 'init' with the new mode — reflects the
+      // active segment for free. A click asks the host to flip; the host does
+      // the reload + re-render (no restart).
+      function updateViewToggle() {
+        const active = mode === 'structured' ? 'conversation' : 'terminal';
+        viewConversationBtn.classList.toggle('active', active === 'conversation');
+        viewTerminalBtn.classList.toggle('active', active === 'terminal');
+      }
+      viewConversationBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'setView', view: 'conversation' });
+      });
+      viewTerminalBtn.addEventListener('click', function() {
+        vscode.postMessage({ type: 'setView', view: 'terminal' });
+      });
       costBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         togglePopover(costPopover);
@@ -2251,7 +2303,12 @@ export function buildHtml(nonce: string): string {
               }
               transcript.scrollTop = transcript.scrollHeight;
             }
-            historyState = { entries: msg.history || [], index: null, draft: '' };
+            // A view flip (FIX 2) re-posts 'init' WITHOUT a history field so
+            // the accumulated ↑/↓ history survives the switch; the first init
+            // always carries one (possibly []), which seeds it.
+            historyState = { entries: msg.history || historyState.entries, index: null, draft: '' };
+            viewToggle.hidden = !msg.canToggle;
+            updateViewToggle();
             applySession(msg.session);
             break;
           case 'conversation':

@@ -1929,6 +1929,11 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    session alive and idle; returns
  *                                    {ok, id, wasBusy}. No-op (wasBusy:
  *                                    false) on an idle or terminal session.
+ *   POST   /sessions/:id/terminal/input → write raw input into a live PTY
+ *                                    session (terminal-view reply); mirrors
+ *                                    the MCP `terminal_input` verb. Body:
+ *                                    { text, enter? (default true) }. 404 no
+ *                                    session, 400 not a live PTY.
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
  *   POST   /sessions/browser      → start a browser adapter and register
@@ -2559,6 +2564,60 @@ async function handleSessions(
           : 500
       json(status, { error: "interrupt_failed", message: msg })
     }
+    return true
+  }
+
+  // Write raw input into a live PTY/terminal session — the terminal-view
+  // sibling of `POST /sessions/:id/prompt` (which is agent-cli only and 400s
+  // for kind=terminal, so the transcript composer can't reply on a terminal
+  // through it). Mirrors the MCP `terminal_input` verb: the `text` is written
+  // verbatim, then — unless `enter:false` — a LONE `\r` is written in a
+  // SECOND, separate write so paste-detecting TUIs (Claude Code in bracketed-
+  // paste mode) see the CR as the Enter key (submit) rather than a trailing
+  // pasted newline. Body: { text: string, enter?: boolean (default true) }.
+  const terminalInputMatch = path.match(/^\/sessions\/([^/]+)\/terminal\/input$/)
+  if (terminalInputMatch && req.method === "POST") {
+    const id = terminalInputMatch[1]
+    if (!id) return false
+    if (!ptyEnabled) {
+      json(501, {
+        error: "pty_not_configured",
+        message:
+          "POST /sessions/:id/terminal/input needs the host to inject `spawnPty` into createGateway " +
+          "(node-pty optional dep — install in @agentproto/cli).",
+      })
+      return true
+    }
+    const desc = registry.get(id)
+    if (!desc) {
+      json(404, { error: "no_session", message: `no session "${id}"` })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const text = (body as { text?: unknown } | null)?.text
+    if (typeof text !== "string") {
+      json(400, { error: "missing_text", message: "Body `text` must be a string." })
+      return true
+    }
+    if (desc.kind !== "terminal" || desc.pty !== true) {
+      json(400, {
+        error: "not_a_pty",
+        message: `session "${id}" is not a live PTY (kind=${desc.kind})`,
+      })
+      return true
+    }
+    const enter = (body as { enter?: unknown } | null)?.enter !== false
+    let ok = true
+    if (text.length > 0) ok = registry.writeTerminalInput(id, text) && ok
+    if (enter) ok = registry.writeTerminalInput(id, "\r") && ok
+    if (!ok) {
+      json(400, {
+        error: "not_a_pty",
+        message: `session "${id}" has no live PTY to write to`,
+      })
+      return true
+    }
+    json(200, { ok: true })
     return true
   }
 

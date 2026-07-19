@@ -61,6 +61,7 @@ function createMockMessenger(): {
 
 type MockClient = DaemonClient & {
   prompt: ReturnType<typeof vi.fn>
+  writeTerminalInput: ReturnType<typeof vi.fn>
   kill: ReturnType<typeof vi.fn>
   interrupt: ReturnType<typeof vi.fn>
   exportSession: ReturnType<typeof vi.fn>
@@ -76,6 +77,7 @@ function createMockClient(over: Partial<Record<keyof MockClient, unknown>> = {})
   return {
     url: "http://127.0.0.1:18790",
     prompt: vi.fn().mockResolvedValue(undefined),
+    writeTerminalInput: vi.fn().mockResolvedValue({ ok: true }),
     kill: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue({ ok: true, id: "s1", wasBusy: true }),
     exportSession: vi.fn().mockResolvedValue({ content: "# hello", format: "markdown" }),
@@ -1028,5 +1030,61 @@ describe("TranscriptPanelController — mid-session model switch", () => {
       applied: false,
       reason: "requires-restart",
     })
+  })
+})
+
+describe("TranscriptPanelController — onSend routing (FIX 1)", () => {
+  it("routes a terminal (PTY) session's reply through writeTerminalInput, not prompt", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client, {
+      initialSession: session({ kind: "terminal", pty: true, argv: ["claude"] }),
+    })
+
+    await controller.onSend("hello there", false)
+
+    expect(client.writeTerminalInput).toHaveBeenCalledWith("s1", "hello there")
+    expect(client.prompt).not.toHaveBeenCalled()
+    expect(messenger.messages.some(m => m.type === "sendAck")).toBe(true)
+  })
+
+  it("ignores `interrupt` for a terminal session (a PTY has no mid-turn ACP queue)", async () => {
+    const client = createMockClient()
+    const { controller } = make(client, {
+      initialSession: session({ kind: "terminal", pty: true, argv: ["claude"] }),
+    })
+
+    await controller.onSend("go", true)
+
+    expect(client.writeTerminalInput).toHaveBeenCalledWith("s1", "go")
+    expect(client.prompt).not.toHaveBeenCalled()
+  })
+
+  it("routes an agent-cli session's reply through prompt, not writeTerminalInput", async () => {
+    const client = createMockClient()
+    const { controller, messenger } = make(client, { initialSession: session({ kind: "agent-cli" }) })
+
+    await controller.onSend("hi agent", true)
+
+    expect(client.prompt).toHaveBeenCalledWith("s1", "hi agent", { interrupt: true, wait: false })
+    expect(client.writeTerminalInput).not.toHaveBeenCalled()
+    expect(messenger.messages.some(m => m.type === "sendAck")).toBe(true)
+  })
+
+  it("classifies a terminal send failure the same way as an agent send failure", async () => {
+    const client = createMockClient({
+      writeTerminalInput: vi.fn().mockRejectedValue(new Error("boom")),
+    })
+    const { controller, messenger } = make(client, {
+      initialSession: session({ kind: "terminal", pty: true, argv: ["claude"] }),
+    })
+
+    await controller.onSend("hello", false)
+
+    const err = messenger.messages.find(m => m.type === "sendError")
+    expect(err).toBeDefined()
+    if (err && err.type === "sendError") {
+      expect(err.text).toBe("hello")
+      expect(err.message).toContain("boom")
+    }
   })
 })
