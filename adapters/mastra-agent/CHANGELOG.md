@@ -1,5 +1,22 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.2.0
+
+### Minor Changes
+
+- cd4ad1a: Declare an `agent` manifest option so agent_start can pick the AGENT.md
+
+### Patch Changes
+
+- c850b1b: Infer anthropic for bare claude model ids; grant team agents their workspace tools
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [48c55d5]
+  - @agentproto/driver-agent-cli@2.0.0
+
 ## 0.1.5
 
 ### Patch Changes

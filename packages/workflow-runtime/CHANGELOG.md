@@ -1,5 +1,11 @@
 # @agentproto/workflow-runtime
 
+## 0.5.0
+
+### Minor Changes
+
+- 57d1499: Route sandboxed agent-step spawns through spawnAgentSession; e2b installPackages boot option
+
 ## 0.4.0
 
 ### Minor Changes

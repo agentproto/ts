@@ -1,5 +1,25 @@
 # @agentproto/adapter-claude-code
 
+## 2.0.0
+
+### Major Changes
+
+- 92c1c51: Narrow AgentCliMode.kind to "context"; drop posture/route modes from claude-code, codex, opencode
+
+### Patch Changes
+
+- 5c99163: Sync docs (README/manifests) with already-shipped requesty preset, catalog-sync, and permissions watch
+- b16bb83: Add SessionConfig axes type + decomposeMode/composeMode shim (SPEC §3.1)
+- Updated dependencies [5c99163]
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [48c55d5]
+  - @agentproto/provider-presets@0.4.1
+  - @agentproto/driver-agent-cli@2.0.0
+
 ## 1.1.0
 
 ### Minor Changes

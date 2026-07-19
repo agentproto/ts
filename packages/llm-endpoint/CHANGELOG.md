@@ -1,5 +1,15 @@
 # @agentproto/llm-endpoint
 
+## 0.4.0
+
+### Minor Changes
+
+- a7599f4: Add inbound + edge/WAF access gates and fix /v1 pack-path normalization
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

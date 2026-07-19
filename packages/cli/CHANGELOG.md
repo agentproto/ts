@@ -1,5 +1,31 @@
 # @agentproto/cli
 
+## 0.9.0
+
+### Minor Changes
+
+- cc84da6: Fix claude-code project-slug encoding and add persisted conversation index + `conversation locate` verb
+- b331539: Add read-only GET /catalog/models + catalog_models MCP tool (SPEC §5)
+
+### Patch Changes
+
+- 5c99163: Sync docs (README/manifests) with already-shipped requesty preset, catalog-sync, and permissions watch
+- 57d1499: Route sandboxed agent-step spawns through spawnAgentSession; e2b installPackages boot option
+- Updated dependencies [9e30ad2]
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [57d1499]
+- Updated dependencies [48c55d5]
+- Updated dependencies [3d403d7]
+  - @agentproto/model-catalog@0.6.0
+  - @agentproto/driver-agent-cli@2.0.0
+  - @agentproto/acp@0.6.0
+  - @agentproto/sandbox-e2b@0.2.0
+  - @agentproto/worktree@0.4.2
+
 ## 0.8.0
 
 ### Minor Changes

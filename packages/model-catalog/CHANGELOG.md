@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.6.0
+
+### Minor Changes
+
+- 9e30ad2: Refresh Moonshot/OpenRouter snapshots, add Kimi K3 + K2.7 Code pricing
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/apps",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/apps — a home for ready-made agentproto apps (teams of agents + their workflows), declared with @agentproto/app-kit. Import a team (code-team, content-team, …) and use any of its agents/workflows from your own host: in-process via toMastraAgents(), or emit its manifests to disk.",
   "keywords": [
     "agentproto",

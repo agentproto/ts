@@ -1,5 +1,24 @@
 # @agentproto/driver-agent-cli
 
+## 2.0.0
+
+### Major Changes
+
+- 92c1c51: Narrow AgentCliMode.kind to "context"; drop posture/route modes from claude-code, codex, opencode
+
+### Minor Changes
+
+- b16bb83: Add SessionConfig axes type + decomposeMode/composeMode shim (SPEC §3.1)
+- a021138: Add ACP capability read-surface (configOptions/modes) and live setSessionMode
+- 48c55d5: Add live effort + live posture verbs and a model↔route switch guard
+
+### Patch Changes
+
+- 1411e36: Don't engage native Anthropic billing-auth when a gateway base_url is set without an auth_token
+- 9fab1ad: Fix mastracode print-arm text extraction for {format,parts} content shape
+- Updated dependencies [a021138]
+  - @agentproto/acp@0.6.0
+
 ## 1.2.0
 
 ### Minor Changes

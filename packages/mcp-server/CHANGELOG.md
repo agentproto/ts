@@ -1,5 +1,11 @@
 # @agentproto/mcp-server
 
+## 0.2.3
+
+### Patch Changes
+
+- e3bacf3: Add app-kit pick()/only, fix content-team tools, self_inspect discovers app-emitted agents
+
 ## 0.2.2
 
 ### Patch Changes
