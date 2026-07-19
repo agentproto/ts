@@ -817,6 +817,10 @@ export async function createGateway(
         resolveAgentAdapter: opts.resolveAgentAdapter,
         webhookNotifier,
         persist,
+        // Sandbox-capable agent steps (`AgentStep.sandbox` / workflow_start's
+        // step `sandbox`) resolve providers through the same resolver
+        // `agent_start.sandbox` uses.
+        resolveSandboxProvider: resolveSandboxProviderResolved,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. The daemon's workflow
         // surface is agent-step based (like the stage primitive), so no tool/

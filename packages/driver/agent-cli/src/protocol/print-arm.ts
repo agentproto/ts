@@ -238,6 +238,13 @@ export function createPrintSession(
       return { applied: false, reason: "not-supported" }
     },
 
+    // Same as `setSessionMode`: a print arm has no live ACP session to apply
+    // `set_config_option(configId:"effort")` against — effort is baked into
+    // the spawn argv/env, so a live change is honestly `not-supported`.
+    async setEffort(): Promise<{ applied: false; reason: string }> {
+      return { applied: false, reason: "not-supported" }
+    },
+
     async close(): Promise<void> {
       activeChild?.kill("SIGTERM")
       mcpRestore?.()

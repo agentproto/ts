@@ -835,6 +835,30 @@ export interface SetSessionModeResult {
 }
 
 /**
+ * Result of a mid-session `setEffort` attempt — see
+ * {@link AgentCliRuntimeSession.setEffort}. Same shape convention as
+ * {@link SetModelResult}/{@link SetSessionModeResult}: `applied` + the value
+ * that took effect on success, or a `reason` on failure. Effort is a per-model
+ * capability (SPEC §3.9) — a label the current model doesn't accept resolves
+ * `{applied:false, reason}` best-effort, never thrown (SPEC risk R7).
+ */
+export interface SetEffortResult {
+  applied: boolean
+  /** The effort label that took effect. Present only when `applied` is true. */
+  effort?: string
+  /**
+   * Present only when `applied` is false. Canonical values:
+   *   - `"not-supported"` — the protocol arm has no `setConfigOption` surface
+   *     at all (e.g. the print/proprietary arms, or an ACP arm with no
+   *     connected session yet).
+   *   - anything else — the wrapper's own rejection detail (an effort label
+   *     the current model doesn't accept, or a stale/version-mismatched
+   *     offer), verbatim from `configOptionErrorDetail`.
+   */
+  reason?: string
+}
+
+/**
  * Per-turn dispatch shape. Implemented by every protocol arm
  * (ACP, MCP, proprietary). The runner is the only call site for
  * these methods; consumers see {@link AgentCliSession} instead.
@@ -1127,6 +1151,20 @@ export interface AgentCliRuntimeSession {
    * {@link SetSessionModeResult} for the full reason vocabulary.
    */
   setSessionMode(modeId: string): Promise<SetSessionModeResult>
+  /**
+   * Switch the reasoning/compute budget on this LIVE, already-running session
+   * via ACP `session/set_config_option(configId:"effort")` — the effort-axis
+   * counterpart to `setModel`'s `"config"` strategy (SPEC §4.2, build step 5).
+   * Effort is model-dependent (SPEC §3.9): the same label maps to a different
+   * budget across models and some labels are model-gated (opus offers
+   * `ultracode`, haiku doesn't), so a value the current model rejects resolves
+   * `{applied:false, reason}` best-effort (SPEC risk R7) rather than throwing.
+   * Resolves `{applied:false, reason:"not-supported"}` for any arm with no
+   * `setConfigOption` surface (print, proprietary, non-ACP). Always resolves —
+   * never throws and never tears down the session. See {@link SetEffortResult}
+   * for the full reason vocabulary.
+   */
+  setEffort(effort: string): Promise<SetEffortResult>
   /**
    * The wrapper's advertised session configuration options, captured once
    * at connect time (SPEC §3.9 capability read-surface) — the per-model

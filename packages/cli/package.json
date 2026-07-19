@@ -87,6 +87,7 @@
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/rendezvous": "workspace:*",
     "@agentproto/runtime-profile-standard": "workspace:*",
+    "@agentproto/sandbox-e2b": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/worktree": "workspace:*",
     "@clack/prompts": "^1.5.0",

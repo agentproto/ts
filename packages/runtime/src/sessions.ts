@@ -21,6 +21,7 @@
  */
 
 import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
+import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
@@ -39,6 +40,8 @@ import type {
   SessionAwaitingQuestion,
   SessionConfigChangedEvent,
 } from "./session-event-bus.js"
+import { resolvePosture } from "./canonical-posture.js"
+import { tryParseModelRef } from "@agentproto/model-catalog/route-identity"
 import {
   composeSessionObservers,
   filterSessionObserver,
@@ -107,6 +110,31 @@ export interface AgentSessionLike {
    * `{applied:false, reason:"not-supported"}` rather than throwing.
    */
   setModel?(modelId: string): Promise<SetSessionModelResult>
+  /**
+   * Switch the reasoning/compute budget on this LIVE session — mirrors
+   * `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.setEffort`
+   * (ACP `session/set_config_option(configId:"effort")`), same driver-decoupled
+   * structural-mirror reasoning as `setModel` above. Optional: absent for a
+   * session shape with no live config surface (sandboxed proxy, future
+   * transport) — `SessionsRegistry.setEffort` treats a missing method as
+   * `{applied:false, reason:"not-supported"}` rather than throwing.
+   */
+  setEffort?(effort: string): Promise<SetSessionEffortResult>
+  /**
+   * Switch the native posture (harness mode) on this LIVE session — mirrors
+   * `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.setSessionMode`
+   * (ACP `session/set_mode`). Optional, same treatment as `setModel`/`setEffort`.
+   */
+  setSessionMode?(modeId: string): Promise<SetSessionModeResult>
+  /**
+   * The harness's advertised session modes captured at connect time
+   * (`SessionModeState.availableModes`, #482 ACP capability read-surface).
+   * `SessionsRegistry.setPosture` resolves a requested posture against this to
+   * decide native-live vs restart (SPEC §3.4a). Absent/empty for arms with no
+   * native mode registry — treated as "no native mode", so any posture pick
+   * routes to restart.
+   */
+  readonly availableModes?: readonly SessionMode[]
   close(): Promise<void>
 }
 
@@ -119,6 +147,69 @@ export interface SetSessionModelResult {
    *  `@agentproto/driver-agent-cli`'s `SetModelResult` for the reason
    *  vocabulary this passes through verbatim. */
   reason?: string
+  /**
+   * Present only on the model↔route guard refusal (SPEC risk R2 / §4.4): the
+   * requested model's route-identity crosses the session's current route/vendor
+   * boundary, which a live `setModel` cannot perform (route is a spawn-time
+   * `ANTHROPIC_BASE_URL`, not a live ACP config option). The daemon refuses the
+   * live switch (`applied:false, reason:"requires-restart"`) rather than
+   * silently keeping the old endpoint, and hands back the override a
+   * restart-with-override (step 6) should carry to apply model + route together.
+   */
+  suggestedOverride?: { route: RouteSpec; model: string }
+}
+
+/**
+ * Result of `SessionsRegistry.setEffort` — mirrors the driver's
+ * `SetEffortResult` (see `AgentSessionLike.setEffort`). Effort is a per-model
+ * capability (SPEC §3.9); a rejected label is a soft `{applied:false, reason}`
+ * (SPEC risk R7), never thrown.
+ */
+export interface SetSessionEffortResult {
+  applied: boolean
+  /** The effort label now active. Present only when `applied` is true. */
+  effort?: string
+  /** Present only when `applied` is false — passes the driver's reason through
+   *  verbatim (`"not-supported"`, or the wrapper's own rejection detail). */
+  reason?: string
+}
+
+/** Result of a mid-session `setSessionMode` attempt on the driver session —
+ *  structural mirror of `@agentproto/driver-agent-cli`'s `SetSessionModeResult`,
+ *  used by {@link AgentSessionLike.setSessionMode}. */
+export interface SetSessionModeResult {
+  applied: boolean
+  /** The mode id that took effect. Present only when `applied` is true. */
+  modeId?: string
+  /** Present only when `applied` is false — the driver's reason verbatim. */
+  reason?: string
+}
+
+/**
+ * Result of `SessionsRegistry.setPosture` (SPEC §4.2, build step 5). A posture
+ * that maps to a native advertised harness mode is switched LIVE via
+ * `setSessionMode` (`applied:true`); one with no native mode (prompt-injected /
+ * env-applied) is NOT forced live — it resolves
+ * `{applied:false, reason:"requires-restart"}` so the caller routes it through
+ * the restart-with-override path (step 6, not implemented here).
+ */
+export interface SetSessionPostureResult {
+  applied: boolean
+  /** The posture now active. Present only when `applied` is true. */
+  posture?: Posture
+  /** The native harness mode id switched to — present only on a native
+   *  (`applied:true`) switch, so a caller can echo exactly what took effect. */
+  modeId?: string
+  /** Present only when `applied` is false — `"requires-restart"` when the
+   *  posture has no native mode (prompt/env apply-path needs a fresh spawn),
+   *  `"not-supported"` for a session with no live mode surface, or the harness's
+   *  own rejection detail when a native switch was attempted and refused. */
+  reason?: string
+  /** How the requested posture resolved against the harness's advertised modes
+   *  (`native` | `prompt` | `noop` | `unavailable`, from `resolvePosture`) —
+   *  lets the caller distinguish "needs restart because prompt-injected" from a
+   *  genuine native-switch rejection. */
+  resolution?: "native" | "prompt" | "noop" | "unavailable"
 }
 
 /**
@@ -893,6 +984,21 @@ function findPriorCommandSessionId(
   return best?.desc.id
 }
 
+/**
+ * The route-identity a session is currently pinned to, for the model↔route
+ * guard (SPEC risk R2 / §4.4). Prefers the explicit `route` axis echo when the
+ * session recorded one; otherwise derives it from the current model ref's
+ * `@route` (which defaults to the vendor for a direct ref — `anthropic/claude…`
+ * ⇒ route `anthropic`). `undefined` when neither is known (a bare/legacy model
+ * id with no route axis), which the guard treats as "route unknown → don't
+ * block" so it never refuses a same-endpoint switch on incomplete information.
+ */
+function currentRouteOf(desc: SessionDescriptor): string | undefined {
+  if (desc.route?.gateway) return desc.route.gateway
+  if (desc.model) return tryParseModelRef(desc.model)?.route
+  return undefined
+}
+
 /** Spread-ready worktree identity for a spawn path's `cwd` — see
  *  `SessionDescriptor.worktreePath`. Returns `{}` (not `{worktreePath:
  *  undefined}`) for the common case of a cwd outside any worktree, so the
@@ -1131,6 +1237,34 @@ export interface SessionsRegistry {
    * builds the fully-typed event (axis + value already reflected on the new
    * descriptor); the registry only forwards it. */
   emitConfigChanged(ev: SessionConfigChangedEvent): void
+  /**
+   * Switch the reasoning/compute budget (effort) on a LIVE agent-cli session
+   * without restarting it — the live-effort verb (SPEC §4.2, build step 5),
+   * `POST /sessions/:id/effort` + `agent_set_effort`. Delegates to the driver
+   * session's `setEffort` (ACP `set_config_option(configId:"effort")`); effort
+   * is model-dependent (SPEC §3.9), so a label the current model rejects is a
+   * soft `{applied:false, reason}` (SPEC risk R7), never thrown.
+   *
+   * On `{applied:true}` updates `SessionDescriptor.effort` and emits
+   * `session:config-changed {axis:"effort"}`; on `{applied:false}` the
+   * descriptor and bus are untouched. Throws (caller error, not an adapter
+   * refusal) for an unknown session id or a non-agent-cli session — same
+   * contract as `setModel`.
+   */
+  setEffort(id: string, effort: string): Promise<SetSessionEffortResult>
+  /**
+   * Switch the posture on a LIVE agent-cli session (SPEC §4.2, build step 5),
+   * `POST /sessions/:id/posture` + `agent_set_posture`. When the requested
+   * posture maps to a NATIVE advertised harness mode (`resolvePosture` →
+   * `native`), it's switched live via the driver's `setSessionMode`
+   * (`applied:true`, descriptor + `session:config-changed {axis:"posture"}`
+   * emitted). When there is NO native mode (prompt-injected / env-applied /
+   * a raw mode the session no longer advertises), it is NOT forced live — it
+   * resolves `{applied:false, reason:"requires-restart"}` so the caller routes
+   * it through restart-with-override (step 6, not implemented here). Throws for
+   * an unknown session id or a non-agent-cli session, same as `setModel`.
+   */
+  setPosture(id: string, posture: Posture): Promise<SetSessionPostureResult>
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -3287,6 +3421,26 @@ export function createSessionsRegistry(opts?: {
       if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
         throw new Error(`setModel: session "${id}" is not an agent-cli session`)
       }
+      // Model↔route guard (SPEC risk R2 / §4.4). A live `setModel` can only
+      // change the model within the current route — the route is a spawn-time
+      // `ANTHROPIC_BASE_URL`, not a live ACP config option. If the requested
+      // model's route-identity crosses the session's current route/vendor
+      // boundary, refuse the live switch rather than silently keeping the old
+      // endpoint (the "pick a gateway model live, keep the old billing rail"
+      // hole), and hand back the override a restart-with-override should carry.
+      // Lenient by construction: the guard fires ONLY when BOTH the current and
+      // target routes are known AND differ — bare/unparseable ids (no `@route`,
+      // no vendor slash) leave the route unknown and fall through to a normal
+      // live switch, so this never blocks a same-endpoint model change.
+      const targetRoute = tryParseModelRef(modelId)?.route
+      const currentRoute = currentRouteOf(rt.desc)
+      if (targetRoute && currentRoute && targetRoute !== currentRoute) {
+        return {
+          applied: false,
+          reason: "requires-restart",
+          suggestedOverride: { route: { gateway: targetRoute }, model: modelId },
+        }
+      }
       if (!rt.agentSession.setModel) {
         return { applied: false, reason: "not-supported" }
       }
@@ -3324,6 +3478,83 @@ export function createSessionsRegistry(opts?: {
       // builds the typed event off the NEW descriptor's axis value; the
       // registry only owns the bus, not the event shape.
       sessionEvents?.emit(ev)
+    },
+    async setEffort(id, effort) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setEffort: no session "${id}"`)
+      if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
+        throw new Error(`setEffort: session "${id}" is not an agent-cli session`)
+      }
+      if (!rt.agentSession.setEffort) {
+        return { applied: false, reason: "not-supported" }
+      }
+      const result = await rt.agentSession.setEffort(effort)
+      if (result.applied) {
+        // The label the wrapper accepted (`result.effort`) is authoritative;
+        // fall back to the requested one. Cast: the ACP surface speaks a bare
+        // string and the descriptor's echo is the `EffortLevel` superset (SPEC
+        // §3.1) — a model-specific value outside the union is still recorded
+        // as-echoed rather than dropped.
+        rt.desc.effort = (result.effort ?? effort) as EffortLevel
+        schedulePersist()
+        if (sessionEvents) {
+          sessionEvents.emit({
+            type: "session:config-changed",
+            sessionId: id,
+            axis: "effort",
+            value: rt.desc.effort,
+            label: rt.desc.label,
+            ts: new Date().toISOString(),
+          })
+        }
+      }
+      return result
+    },
+    async setPosture(id, posture) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setPosture: no session "${id}"`)
+      if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
+        throw new Error(`setPosture: session "${id}" is not an agent-cli session`)
+      }
+      // Resolve the requested posture against the harness's advertised modes
+      // (#482 read-surface). Native ⇒ switch live via `setSessionMode`; anything
+      // else (prompt-injected / env / a raw mode the session no longer
+      // advertises) is NOT forced live — it rides the system prompt or spawn
+      // env, so it needs a fresh spawn (SPEC §3.4a/§4.2). We hand back
+      // `requires-restart` and let the caller route it through the
+      // restart-with-override path (step 6, not implemented here).
+      const resolution = resolvePosture(posture, rt.agentSession.availableModes ?? [])
+      if (resolution.kind !== "native") {
+        return {
+          applied: false,
+          reason: "requires-restart",
+          resolution: resolution.kind,
+        }
+      }
+      if (!rt.agentSession.setSessionMode) {
+        return { applied: false, reason: "not-supported", resolution: "native" }
+      }
+      const result = await rt.agentSession.setSessionMode(resolution.mode.id)
+      if (!result.applied) {
+        return {
+          applied: false,
+          resolution: "native",
+          ...(result.reason ? { reason: result.reason } : {}),
+        }
+      }
+      rt.desc.posture = posture
+      schedulePersist()
+      if (sessionEvents) {
+        sessionEvents.emit({
+          type: "session:config-changed",
+          sessionId: id,
+          axis: "posture",
+          value: posture,
+          label: rt.desc.label,
+          ts: new Date().toISOString(),
+        })
+      }
+      return { applied: true, posture, modeId: resolution.mode.id, resolution: "native" }
     },
     pulseActivity(id) {
       const rt = sessions.get(id)

@@ -293,6 +293,12 @@ describe("WorkflowRunner", () => {
     expect(final?.status).toBe("failed")
     expect(final?.stages[0]?.status).toBe("failed")
     expect(final?.stages[1]?.status).toBe("pending")
+    // The FAILED step still resolves its sessionId (the session spawned
+    // before the failure) — this is what lets the CI driver `agent_output`
+    // a dead session's last words instead of reporting a bare "failed"
+    // with no handle to diagnose (the observed blind spot).
+    expect(final?.stages[0]?.steps[0]?.sessionId).toBe("sess_fail")
+    expect(final?.result?.sessionIds).toContain("sess_fail")
   })
 
   it("cancel() stops the run", async () => {

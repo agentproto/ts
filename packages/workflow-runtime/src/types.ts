@@ -203,6 +203,15 @@ export interface SubworkflowStep {
 }
 
 /**
+ * Where an {@link AgentStep}'s session runs when not on the host: a sandbox
+ * provider slug (e.g. `"local"`, `"e2b"`) or an inline AIP-36 SandboxSpec-like
+ * object (`{ provider, config, env?, … }`). This runtime stays structural —
+ * the injected {@link AgentSessionHost} interprets the value (the daemon host
+ * forwards it to the same sandbox boot path `agent_start.sandbox` uses).
+ */
+export type AgentSandboxRef = string | { provider: string; [k: string]: unknown }
+
+/**
  * Spawn or reuse an agent session and send it a prompt, waiting for the
  * turn to complete. The host injects an {@link AgentSessionHost} — this
  * runtime has no knowledge of concrete session registries or event buses.
@@ -216,6 +225,13 @@ export interface AgentStep {
   sessionRef?: string
   /** Working directory for this spawn. Omit to fall back to the run-level `ctx.cwd`. */
   cwd?: Selector<string>
+  /** Run this step's session inside a sandbox instead of on the host — a
+   *  provider slug or inline spec (see {@link AgentSandboxRef}), or a selector
+   *  resolving to one (`undefined` ⇒ host spawn, same as omitting the field).
+   *  Only meaningful when `adapter` is set (a `sessionRef` reuse inherits the
+   *  referenced session's placement). Hosts without sandbox support MUST fail
+   *  the spawn loudly rather than silently running on the host. */
+  sandbox?: Selector<AgentSandboxRef | undefined> | AgentSandboxRef
   /** Prompt to send. */
   prompt: Selector<string>
   policy?:
@@ -276,8 +292,14 @@ export interface ResumeRequest {
 }
 
 export interface AgentSessionHost {
-  /** Spawn a new agent session and return its id. */
-  spawn(adapter: string, opts: { cwd?: string; workspaceSlug?: string; stepId?: string }): Promise<string>
+  /** Spawn a new agent session and return its id. A `sandbox` ref asks the
+   *  host to run the session inside that sandbox (provider slug or inline
+   *  spec); hosts that can't MUST throw rather than silently spawn on the
+   *  host. */
+  spawn(
+    adapter: string,
+    opts: { cwd?: string; workspaceSlug?: string; stepId?: string; sandbox?: AgentSandboxRef },
+  ): Promise<string>
   /** Send a prompt to an existing session and wait for its turn to end. */
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
   /** Look up a session by the step id that spawned it (for sessionRef reuse). */

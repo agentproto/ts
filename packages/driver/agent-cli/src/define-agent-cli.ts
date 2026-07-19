@@ -16,6 +16,7 @@ import type {
   AgentCliRuntime,
   AgentCliRuntimeSession,
   AgentCliStartOptions,
+  SetEffortResult,
   SetModelResult,
   SetSessionModeResult,
   StreamEvent,
@@ -468,6 +469,24 @@ export function createAgentCliRuntime(
           const result = await arm.setSessionMode(modeId)
           return result.applied
             ? { applied: true, modeId }
+            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
+        },
+        /**
+         * Mid-session effort switch — the effort-axis counterpart to
+         * `setModel`'s `"config"` strategy, wired to the same
+         * `arm.setConfigOption` surface with `configId:"effort"` (only the
+         * ACP arm implements it). Best-effort and non-fatal: an effort label
+         * the current model rejects resolves `{applied:false, reason}` (SPEC
+         * risk R7), never thrown and never tearing down the session. See
+         * {@link SetEffortResult} for the reason vocabulary.
+         */
+        async setEffort(effort: string): Promise<SetEffortResult> {
+          if (!arm.setConfigOption) {
+            return { applied: false, reason: "not-supported" }
+          }
+          const result = await arm.setConfigOption("effort", effort)
+          return result.applied
+            ? { applied: true, effort }
             : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
         },
         async close() {
