@@ -8,6 +8,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 // Control the providers.json api-key lookup deterministically (the resolver's
@@ -1527,6 +1530,43 @@ describe("spawnAgentSession — worktree explicit-repo guard", () => {
     expect(registry.list()[0]?.workspaceSlug).toBe("intended-repo")
   })
 
+  it("linked worktree cwd resolves to the workspace of its base repo, not default", async () => {
+    const root = mkdtempSync(join(tmpdir(), "session-spawn-worktree-"))
+    try {
+      const baseRepo = join(root, "repo")
+      const tree = join(root, "trees", "linked")
+      const admin = join(baseRepo, ".git", "worktrees", "linked")
+      mkdirSync(admin, { recursive: true })
+      mkdirSync(tree, { recursive: true })
+      writeFileSync(join(admin, "gitdir"), `${join(tree, ".git")}\n`)
+      writeFileSync(join(admin, "commondir"), "../..\n")
+      writeFileSync(join(tree, ".git"), `gitdir: ${admin}\n`)
+      const cwd = join(tree, "packages", "runtime", "src")
+      mkdirSync(cwd, { recursive: true })
+
+      wsConfigState.value = {
+        version: 1,
+        workspaces: [
+          {
+            slug: "base-repo",
+            path: baseRepo,
+            addedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }
+      const { registry, deps } = baseDeps()
+      const result = await spawnAgentSession({ ...deps }, { adapter: "mock", cwd })
+
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(result.descriptor.workspaceSlug).toBe("base-repo")
+      expect(registry.list()[0]?.workspaceSlug).toBe("base-repo")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("a plain (non-worktree) spawn still uses the active-workspace fallback unchanged", async () => {
     wsConfigState.value = {
       version: 1,
@@ -1549,5 +1589,95 @@ describe("spawnAgentSession — worktree explicit-repo guard", () => {
     expect(result.ok).toBe(true)
     expect(calls).toHaveLength(0)
     expect(registry.list()[0]?.cwd).toBe("/Users/op/clients/choisir-service-public-app")
+  })
+})
+
+// ── worktree cwd → base repo's workspace (regression: a session spawned
+// with `cwd` pointing AT a linked git worktree used to fall through to the
+// literal "default" bucket, because `findWorkspaceByPath` only matches
+// registered workspace ROOTS and a worktree lives outside all of them).
+// `resolveWorktreeIdentity` reads real on-disk git layout (no DI seam), so
+// these build an actual linked-worktree fixture on tmpdir rather than
+// mocking — mirrors `worktree-identity.test.ts`'s fixture.
+describe("spawnAgentSession — worktree cwd resolves to its base repo's workspace", () => {
+  let base: string
+
+  beforeEach(() => {
+    wsConfigState.value = { version: 1, workspaces: [] }
+    base = mkdtempSync(join(tmpdir(), "session-spawn-worktree-test-"))
+    mkdirSync(join(base, "repo", ".git"), { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  /** Same on-disk layout as `worktree-identity.test.ts`'s fixture: an admin
+   *  dir under the main checkout's `.git/worktrees/<name>` carrying git's
+   *  `gitdir` back-pointer and a `commondir` file, plus the linked tree
+   *  itself. */
+  function makeWorktree(name: string): string {
+    const admin = join(base, "repo", ".git", "worktrees", name)
+    const tree = join(base, "trees", name)
+    mkdirSync(admin, { recursive: true })
+    mkdirSync(tree, { recursive: true })
+    writeFileSync(join(admin, "gitdir"), `${join(tree, ".git")}\n`)
+    writeFileSync(join(tree, ".git"), `gitdir: ${admin}\n`)
+    writeFileSync(join(admin, "commondir"), "../..\n")
+    return tree
+  }
+
+  it("cwd is a linked worktree of a registered workspace → resolves to that workspace's slug, not default", async () => {
+    const repoRoot = join(base, "repo")
+    const tree = makeWorktree("feature-a")
+    wsConfigState.value = {
+      version: 1,
+      workspaces: [
+        {
+          slug: "the-base-repo",
+          path: repoRoot,
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: tree })
+
+    expect(result.ok).toBe(true)
+    expect(registry.list()[0]?.workspaceSlug).toBe("the-base-repo")
+  })
+
+  it("cwd is a worktree whose base repo is NOT registered → still falls back to default", async () => {
+    const tree = makeWorktree("feature-b")
+    wsConfigState.value = { version: 1, workspaces: [] }
+    const { registry, deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: tree })
+
+    expect(result.ok).toBe(true)
+    expect(registry.list()[0]?.workspaceSlug).toBe("default")
+  })
+
+  it("cwd is a plain (non-worktree) directory → unaffected, still resolves via direct path match", async () => {
+    const repoRoot = join(base, "repo")
+    wsConfigState.value = {
+      version: 1,
+      workspaces: [
+        {
+          slug: "the-base-repo",
+          path: repoRoot,
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    }
+    const { registry, deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: repoRoot })
+
+    expect(result.ok).toBe(true)
+    expect(registry.list()[0]?.workspaceSlug).toBe("the-base-repo")
   })
 })
