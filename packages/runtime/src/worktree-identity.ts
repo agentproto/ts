@@ -39,6 +39,10 @@ export interface WorktreeIdentity {
   /** The worktree's generation id, when it carries a provision marker.
    *  Absent for a worktree created by a bare `git worktree add`. */
   worktreeId?: string
+  /** Absolute path of the PRIMARY worktree — the main checkout this linked
+   *  worktree was cut from — derived from the admin dir's `commondir` file.
+   *  Absent when `commondir` is missing/unreadable; never a throw. */
+  mainRepoPath?: string
 }
 
 function statOrUndefined(path: string): Stats | undefined {
@@ -81,6 +85,26 @@ function readWorktreeGitDir(dir: string): string | undefined {
   return statOrUndefined(join(gitDir, "gitdir"))?.isFile() === true ? gitDir : undefined
 }
 
+/** The primary repo root a linked worktree was cut from, or `undefined` when
+ *  `commondir` is missing/unreadable/empty — never a throw: a bookkeeping
+ *  miss must never fail a spawn.
+ *
+ *  `gitDir` is the worktree admin dir (`<commonGitDir>/worktrees/<name>`);
+ *  git writes a `commondir` file into it whose contents (usually `../..`)
+ *  resolve to the common `.git` directory. The primary repo root is that
+ *  common dir's parent — the directory HOLDING the shared `.git`. */
+function readMainRepoPath(gitDir: string): string | undefined {
+  let raw: string
+  try {
+    raw = readFileSync(join(gitDir, "commondir"), "utf8").trim()
+  } catch {
+    return undefined
+  }
+  if (!raw) return undefined
+  const commonGitDir = isAbsolute(raw) ? raw : resolve(gitDir, raw)
+  return dirname(commonGitDir)
+}
+
 /** The provision marker's `worktreeId`, or `undefined` when the worktree has
  *  no marker (a hand-rolled `git worktree add`) or it's unreadable/malformed
  *  — never a throw: a spawn must not fail over bookkeeping. */
@@ -121,9 +145,12 @@ export function resolveWorktreeIdentity(cwd: string): WorktreeIdentity | undefin
       const gitDir = readWorktreeGitDir(dir)
       if (gitDir === undefined) return undefined
       const worktreeId = readWorktreeId(gitDir)
-      return worktreeId === undefined
-        ? { worktreePath: dir }
-        : { worktreePath: dir, worktreeId }
+      const mainRepoPath = readMainRepoPath(gitDir)
+      return {
+        worktreePath: dir,
+        ...(worktreeId === undefined ? {} : { worktreeId }),
+        ...(mainRepoPath === undefined ? {} : { mainRepoPath }),
+      }
     }
     const parent = dirname(dir)
     if (parent === dir) return undefined // filesystem root — no repo above.

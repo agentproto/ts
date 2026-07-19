@@ -16,6 +16,7 @@ import {
   getActiveWorkspace,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
+import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
@@ -457,6 +458,15 @@ export async function spawnAgentSession(
         const ws = findWorkspaceByPath(config, cwd)
         if (ws) {
           resolvedSlug = ws.slug
+        } else {
+          // cwd matched no workspace directly — if it's a linked git worktree,
+          // fall back to the workspace of the repo it was cut from, so worktree
+          // sessions group under their base repo instead of the "default" bucket.
+          const identity = resolveWorktreeIdentity(cwd)
+          if (identity?.mainRepoPath) {
+            const baseWs = findWorkspaceByPath(config, identity.mainRepoPath)
+            if (baseWs) resolvedSlug = baseWs.slug
+          }
         }
       }
     } catch {

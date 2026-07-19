@@ -20,7 +20,7 @@
  * future fields go on top, never break v1 readers.
  */
 
-import { promises as fs, readFileSync } from "node:fs"
+import { promises as fs, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, resolve } from "node:path"
 
@@ -230,6 +230,19 @@ export function findWorkspace(
   return config.workspaces.find(w => w.slug === sanitizeSlug(slug))
 }
 
+/** Resolve a path through `realpathSync` so symlinked roots (macOS `/tmp` →
+ *  `/private/tmp`, a symlinked volume, …) compare equal to their real
+ *  location. Falls back to a lexical `resolve` when the path doesn't exist
+ *  on disk — `realpathSync` throws on ENOENT, and a not-yet-existing path
+ *  still needs a comparable value. */
+function canonical(p: string): string {
+  try {
+    return realpathSync(resolve(p))
+  } catch {
+    return resolve(p)
+  }
+}
+
 /** Find a workspace whose path is an ancestor of (or equal to) the
  *  given directory. Returns the most specific match (longest path)
  *  when multiple workspaces nest under the same root. */
@@ -237,9 +250,12 @@ export function findWorkspaceByPath(
   config: WorkspacesConfig,
   dir: string
 ): WorkspaceEntry | undefined {
-  const resolved = resolve(dir)
+  const resolved = canonical(dir)
   const candidates = config.workspaces
-    .filter(w => resolved.startsWith(resolve(w.path) + "/") || resolved === resolve(w.path))
+    .filter(w => {
+      const wPath = canonical(w.path)
+      return resolved.startsWith(wPath + "/") || resolved === wPath
+    })
     .sort((a, b) => b.path.length - a.path.length)
   return candidates[0]
 }

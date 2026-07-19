@@ -22,7 +22,7 @@ describe("resolveWorktreeIdentity", () => {
    *  tree itself, whose `.git` is a file pointing at that admin dir. */
   function makeWorktree(
     name: string,
-    options: { marker?: string; relativeLink?: boolean } = {},
+    options: { marker?: string; relativeLink?: boolean; commondir?: string } = {},
   ): { tree: string; admin: string } {
     const admin = join(base, "repo", ".git", "worktrees", name)
     const tree = join(base, "trees", name)
@@ -33,6 +33,11 @@ describe("resolveWorktreeIdentity", () => {
     writeFileSync(join(tree, ".git"), `gitdir: ${target}\n`)
     if (options.marker !== undefined) {
       writeFileSync(join(admin, "agentproto-worktree.json"), options.marker)
+    }
+    // Only written when the test cares — pre-existing fixtures omit it, so
+    // their assertions stay exactly as they were (no `mainRepoPath`).
+    if (options.commondir !== undefined) {
+      writeFileSync(join(admin, "commondir"), `${options.commondir}\n`)
     }
     return { tree, admin }
   }
@@ -123,5 +128,53 @@ describe("resolveWorktreeIdentity", () => {
 
   it("does not throw for a cwd that no longer exists", () => {
     expect(resolveWorktreeIdentity(join(base, "repo", "gone", "deeper"))).toBeUndefined()
+  })
+
+  it("reports mainRepoPath for a linked worktree carrying a commondir file", () => {
+    const { tree } = makeWorktree("marked", {
+      marker: JSON.stringify({ worktreeId: "wt_f6bbf517", createdAt: "2026-07-16T22:40:52.442Z" }),
+      commondir: "../..",
+    })
+
+    expect(resolveWorktreeIdentity(tree)).toEqual({
+      worktreePath: tree,
+      worktreeId: "wt_f6bbf517",
+      mainRepoPath: join(base, "repo"),
+    })
+  })
+
+  it("resolves an absolute commondir just as well as a relative one", () => {
+    const { tree } = makeWorktree("abscommondir", {
+      commondir: join(base, "repo", ".git"),
+    })
+
+    expect(resolveWorktreeIdentity(tree)).toEqual({
+      worktreePath: tree,
+      mainRepoPath: join(base, "repo"),
+    })
+  })
+
+  it("omits mainRepoPath (without throwing) when commondir is missing", () => {
+    const { tree } = makeWorktree("nocommondir")
+
+    const identity = resolveWorktreeIdentity(tree)
+
+    expect(identity).toEqual({ worktreePath: tree })
+    expect(identity && "mainRepoPath" in identity).toBe(false)
+  })
+
+  it("omits mainRepoPath when commondir is empty", () => {
+    const { tree, admin } = makeWorktree("emptycommondir")
+    writeFileSync(join(admin, "commondir"), "")
+
+    const identity = resolveWorktreeIdentity(tree)
+
+    expect(identity).toEqual({ worktreePath: tree })
+    expect(identity && "mainRepoPath" in identity).toBe(false)
+  })
+
+  it("a plain checkout / a dir outside any repo still reports no mainRepoPath", () => {
+    expect(resolveWorktreeIdentity(join(base, "repo"))).toBeUndefined()
+    expect(resolveWorktreeIdentity(base)).toBeUndefined()
   })
 })
