@@ -235,6 +235,25 @@ export class DaemonClient {
     return (await res.json()) as { path: string; bytes: number }
   }
 
+  /**
+   * POST /sessions/:id/terminal/input — write text into a live PTY/terminal
+   * session's stdin, mirroring the MCP `terminal_input` verb. `enter` (default
+   * true) writes a lone carriage return in a SECOND write after the text so a
+   * paste-detecting TUI (Claude Code) submits it as the Enter key. This is the
+   * terminal-view reply path: a `kind: "terminal"` session has no agent
+   * `prompt` route (that 400s for a PTY), so the composer routes here instead.
+   */
+  async writeTerminalInput(
+    id: string,
+    text: string,
+    opts: { enter?: boolean } = {},
+  ): Promise<{ ok: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/terminal/input`, {
+      text,
+      ...(opts.enter === false ? { enter: false } : {}),
+    })
+  }
+
   async kill(id: string): Promise<{ ok: boolean; sessionId: string }> {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }

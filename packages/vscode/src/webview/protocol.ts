@@ -102,6 +102,16 @@ export type ExtMessage =
        * own local pushes carry it from there.
        */
       history?: string[]
+      /**
+       * True when this session has BOTH a conversation and a raw terminal
+       * representation, so the header's Conversation⇄Terminal toggle should
+       * show (see viewToggle.logic.ts's `canToggleView`). Absent/false hides
+       * it. The ACTIVE segment is derived from `mode` in the webview
+       * (structured → Conversation, raw → Terminal), so a view switch — which
+       * re-posts `init` with the new `mode` — reflects the new active segment
+       * for free. A pure display flip: no restart, no resume id.
+       */
+      canToggle?: boolean
     }
   | {
       type: "conversation"
@@ -244,6 +254,16 @@ export type WebviewMessage =
    * never touches daemon data directly).
    */
   | { type: "changeModel" }
+  /**
+   * The header's Conversation⇄Terminal segmented toggle was clicked. A PURE
+   * display switch for THIS session — the host re-renders the SAME session's
+   * other representation (structured conversation ⇄ raw terminal) and re-arms
+   * the live feed, with NO restart and NO resume id. Distinct from the
+   * restart-based `switchHarness` command (see viewToggle.logic.ts). The host
+   * resolves the session from the controller; the message carries only which
+   * view to show.
+   */
+  | { type: "setView"; view: "conversation" | "terminal" }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -267,6 +287,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return isBinaryPayload(m.bytes) && typeof m.mime === "string" && typeof m.name === "string"
     case "requestMentions":
       return typeof m.query === "string"
+    case "setView":
+      return m.view === "conversation" || m.view === "terminal"
     default:
       return false
   }

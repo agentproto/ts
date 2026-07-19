@@ -45,6 +45,7 @@ import {
   type PresentedConversation,
 } from "./conversation.js"
 import { isNativeConversationSession, loadNativeConversation } from "./nativeConversation.js"
+import { canToggleView } from "./viewToggle.logic.js"
 import { buildAttachmentName, buildDroppedName, resolveAttachmentsCwd } from "./attachments.logic.js"
 import { filterMentionCandidates, type MentionCandidate } from "./mentions.logic.js"
 import { listRepoFiles } from "./mentionSource.js"
@@ -241,6 +242,16 @@ export class TranscriptPanelController {
   private initSent = false
   private initPromise: Promise<void> | undefined
   private mode: "structured" | "raw" | undefined
+  /**
+   * User's explicit view choice from the header toggle (FIX 2). Overrides the
+   * auto mode pick in {@link loadContent}: `"raw"` forces the terminal view,
+   * `"structured"` forces the conversation view. Undefined keeps today's
+   * automatic pick so a session that never toggles is unchanged.
+   */
+  private forcedView: "structured" | "raw" | undefined
+  /** The resume ancestry computed once at init — re-sent verbatim on a view
+   *  toggle re-render (the ancestry doesn't change when the view flips). */
+  private resumeChain: ResumeChainEntry[] | undefined
   private readonly linesBuffer: SessionStreamLine[] = []
   private pendingSessionUpdate: SessionDescriptor | undefined
   private isSending = false
@@ -331,6 +342,7 @@ export class TranscriptPanelController {
     this.exited = isExited(session.status)
     this.currentSession = session
     this.mode = loaded.mode
+    this.resumeChain = resumeChain
     // `init` ships this same snapshot, so the first live update diffs
     // against what the webview actually has instead of treating every turn
     // as new.
@@ -349,6 +361,7 @@ export class TranscriptPanelController {
       ...(loaded.initialHtml !== undefined ? { initialHtml: loaded.initialHtml } : {}),
       ...(resumeChain && resumeChain.length > 0 ? { resumeChain } : {}),
       history: this.promptHistory(),
+      ...(canToggleView(session) ? { canToggle: true } : {}),
     })
     this.initSent = true
 
@@ -385,6 +398,15 @@ export class TranscriptPanelController {
     mode: "structured" | "raw"
     initialHtml?: string
   }> {
+    // The header toggle (FIX 2) forces the terminal view: skip the structured
+    // path entirely and render the raw flattened stream, even for an
+    // agent-cli / native-PTY session that auto would show as a conversation.
+    // (`"structured"` needs no special-case — it falls through to today's
+    // auto pick, which already chooses structured for exactly those kinds.)
+    if (this.forcedView === "raw") {
+      this.structuredSource = undefined
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
+    }
     if (preSession.kind === "agent-cli") {
       this.structuredSource = "daemon"
       try {
@@ -664,7 +686,17 @@ export class TranscriptPanelController {
     this.isSending = true
     this.messenger.postMessage({ type: "sending" })
     try {
-      await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+      if (this.currentSession.kind === "terminal") {
+        // A PTY/terminal session has no agent `prompt` route (that 400s for
+        // kind=terminal) — reply flows through the terminal-input broker
+        // instead. A terminal has no mid-turn ACP queue, so `interrupt` is a
+        // no-op here and is ignored. The native autoPoll reflects the reply
+        // back on its own (see pollOnce/fetchNewNativeRecords) — nothing else
+        // to do.
+        await this.client.writeTerminalInput(this.sessionId, text)
+      } else {
+        await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+      }
       this.messenger.postMessage({ type: "sendAck" })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -682,6 +714,53 @@ export class TranscriptPanelController {
     } finally {
       this.isSending = false
     }
+  }
+
+  /**
+   * FIX 2: flip what this panel RENDERS for the SAME session between the
+   * structured conversation and the raw terminal — a pure display switch, with
+   * NO session restart and NO resume id (distinct from `switchHarness`). Sets
+   * {@link forcedView}, tears down the live feed + structured accumulator,
+   * re-runs {@link loadContent} under the forced view, re-posts `init` so the
+   * webview re-hydrates in the new mode, and re-arms the poll loop. A no-op
+   * when the requested view already matches the current mode.
+   */
+  async onSetView(view: "conversation" | "terminal"): Promise<void> {
+    const desired = view === "terminal" ? "raw" : "structured"
+    if (this.mode === desired) {
+      this.forcedView = desired
+      return
+    }
+    this.forcedView = desired
+    // Tear down the live transport and structured accumulator so the reload
+    // starts from a clean cursor — the new mode rebuilds its own state.
+    this.feed?.dispose()
+    this.feed = undefined
+    this.records.length = 0
+    this.seenSeqs.clear()
+    this.eventsCursor = 0
+    this.lastPresented = undefined
+
+    const loaded = await this.loadContent(this.currentSession)
+    this.mode = loaded.mode
+    if (loaded.mode === "structured") this.lastPresented = this.present()
+
+    this.messenger.postMessage({
+      type: "init",
+      session: this.currentSession,
+      nonce: "",
+      mode: loaded.mode,
+      ...(loaded.mode === "structured" ? { conversation: this.lastPresented } : {}),
+      ...(loaded.initialHtml !== undefined ? { initialHtml: loaded.initialHtml } : {}),
+      ...(this.resumeChain && this.resumeChain.length > 0 ? { resumeChain: this.resumeChain } : {}),
+      // No `history` field: the webview preserves its accumulated ↑/↓ history
+      // across a view flip (see the `init` handler) instead of reseeding it.
+      ...(canToggleView(this.currentSession) ? { canToggle: true } : {}),
+    })
+
+    // Raw mode is fed by the always-open focus stream (onLine); only the
+    // structured path needs its record feed re-armed.
+    if (loaded.mode === "structured") this.startFeed()
   }
 
   /** Cancel the in-flight turn — unlike a kill, the session stays alive
