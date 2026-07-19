@@ -89,4 +89,26 @@ describe("toMastraAgents — each body becomes real instructions", () => {
     expect(overridden.instructions).toContain("Overridden body.")
     expect(overridden.instructions).not.toContain(reviewerBody)
   })
+
+  it("toMastraAgents with `only` builds just the named subset", async () => {
+    const built = await multiAgentApp().toMastraAgents(
+      { resolveModel: () => fakeModel },
+      ["@agentik/reviewer"],
+    )
+    expect(Object.keys(built)).toEqual(["@agentik/reviewer"])
+    expect(built["@agentik/reviewer"]!.instructions).toContain(reviewerBody)
+  })
+
+  it("`only` / `pick` throw on an agent id the app does not bundle", async () => {
+    const app = multiAgentApp()
+    expect(() => app.pick(["nope"])).toThrow(AppDefinitionError)
+    await expect(
+      app.toMastraAgents({ resolveModel: () => fakeModel }, ["nope"]),
+    ).rejects.toThrow(AppDefinitionError)
+  })
+
+  it("`pick` returns the entries in the caller's order, without building", () => {
+    const picked = multiAgentApp().pick(["fixer", "@agentik/reviewer"])
+    expect(picked.map((e) => e.agent.id)).toEqual(["fixer", "@agentik/reviewer"])
+  })
 })
