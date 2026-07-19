@@ -34,7 +34,11 @@ import type {
   Posture,
   RouteSpec,
 } from "./session-config.js"
-import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
+import type {
+  SessionEventBus,
+  SessionAwaitingQuestion,
+  SessionConfigChangedEvent,
+} from "./session-event-bus.js"
 import {
   composeSessionObservers,
   filterSessionObserver,
@@ -1115,6 +1119,18 @@ export interface SessionsRegistry {
    * entirely) — both are caller errors, not an adapter's refusal.
    */
   setModel(id: string, modelId: string): Promise<SetSessionModelResult>
+  /**
+   * Announce a single `SessionConfig` axis change on the session event bus
+   * (SPEC step 6). `setModel` emits its `session:config-changed` event inline,
+   * but restart-with-override (`restartAgentSession`, session-restart-core.ts)
+   * lives OUTSIDE the registry — it re-resolves auth and re-spawns a fresh
+   * session — so it announces each changed axis (access/route/posture/…) of the
+   * new session through this one method rather than reaching into the private
+   * event bus. No-op when the registry was constructed without a `sessionEvents`
+   * bus (the emit is best-effort observability, never load-bearing). The caller
+   * builds the fully-typed event (axis + value already reflected on the new
+   * descriptor); the registry only forwards it. */
+  emitConfigChanged(ev: SessionConfigChangedEvent): void
   /** Stamp `lastActivityAt` on a live agent-cli session's descriptor
    *  and schedule a debounced persist. Called from the `onActivity`
    *  callback threaded down through the driver → ACP client, which
@@ -3302,6 +3318,12 @@ export function createSessionsRegistry(opts?: {
         }
       }
       return result
+    },
+    emitConfigChanged(ev) {
+      // Best-effort forward — restart-with-override (session-restart-core.ts)
+      // builds the typed event off the NEW descriptor's axis value; the
+      // registry only owns the bus, not the event shape.
+      sessionEvents?.emit(ev)
     },
     pulseActivity(id) {
       const rt = sessions.get(id)
