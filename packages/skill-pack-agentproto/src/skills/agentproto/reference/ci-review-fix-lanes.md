@@ -201,18 +201,33 @@ This is what took the most work to get right.
 
 ---
 
-## Native vs legacy reviewer — the discriminator
+## Native vs legacy reviewer — how to tell them apart
 
 BOTH the native lane and the legacy `scripts/review-pr.mjs` fallback post under
-the same `ponytail-coder[bot]` GitHub App identity. The ONLY way to tell them
-apart is the **`--- @agentproto-bot`** footer: the native `entry.mjs` prompt
-signs it; the legacy fallback does not.
+the same `ponytail-coder[bot]` GitHub App identity. Discriminators, most → least
+reliable:
+
+1. **The run log (authoritative).** `Using agentproto CLI source=… adapter=claude-sdk
+   auth-mode=subscription` in the "Resolve agentproto CLI source/version" step ⇒
+   the native subscription lane ran.
+2. **The review rubric.** The native `entry.mjs` prompt yields
+   `## Summary / ## Changeset / ## Findings / ## Simplify / ## Verdict`; the
+   legacy fallback's format differs.
+3. **The `--- @agentproto-bot` footer** — the *intended* sign, but it's
+   **model-emitted, so it can be ABSENT on a genuine native review** (observed:
+   PR #511's native review omitted it). Footer-absence is INCONCLUSIVE, not proof
+   of legacy — don't gate on it.
 
 ```bash
-# Is the review native (subscription lane) or legacy fallback?
-gh api repos/agentproto/ts/pulls/<N>/reviews \
-  --jq '.[] | {user: .user.login, state, native: (.body | test("@agentproto-bot"))}'
+# Authoritative check — the run log, NOT the footer:
+gh run view <RUN_ID> --repo agentproto/ts --log | grep -iE "auth-mode=subscription|adapter=claude-sdk"
 ```
+
+> **Gap (follow-up):** the footer should be appended **deterministically in
+> `entry.mjs`** (in code, after the model writes the body) instead of trusting
+> the model to emit it — only then does footer-presence become a reliable
+> discriminator, and the fallback-gate's "already posted?" detection could key on
+> it too.
 
 ---
 
