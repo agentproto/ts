@@ -1276,8 +1276,18 @@ describe("spawnAgentSession — worktree isolation", () => {
       version: 1,
       active: "active",
       workspaces: [
-        { slug: "parent", path: parentCwd },
-        { slug: "active", path: activeCwd },
+        {
+          slug: "parent",
+          path: parentCwd,
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          slug: "active",
+          path: activeCwd,
+          addedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
       ],
     }
     const callerScope: OrchestratorScope = {
