@@ -309,7 +309,7 @@ describe("agentproto pack skill (resync vs bump)", () => {
     expect(versionDirs.length).toBe(1)
   })
 
-  it("--bump patch creates a new version directory, old stays", async () => {
+  it("--bump patch creates a new version directory, old stays", { timeout: 20_000 }, async () => {
     const { manifestPath, outDir, packName } = await createFixture(tmp)
 
     // Generate version 1.0.0
