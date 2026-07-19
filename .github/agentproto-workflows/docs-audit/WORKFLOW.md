@@ -5,7 +5,7 @@ description: >
   Documentation auditor. Spawns a single claude session that reads the repo's
   user-facing docs, compares them against a shipped feature surface, and reports
   drift. Read-only by default; the `delivery` input escalates to commit or PR.
-version: 0.2.0
+version: 0.3.0
 entry: ./entry.mjs
 inputs:
   surface:
@@ -39,14 +39,19 @@ steps:
   - id: audit
     kind: agent
     adapter: claude-code
+  - id: deliver
+    kind: agent
+    sessionRef: audit
 ---
 
 # Docs drift audit
 
 A composable agentflow lane (see `reference/ci-review-fix-lanes.md`) that carries
-a documentation audit inside a single claude session. Like `pr-review` and
-`agent-verb`, it composes the shared `lib/sandbox-agent.mjs` block builders, so
-placement, billing, and delivery follow the one sandbox recipe:
+a documentation audit across two steps sharing one session (the `review-fix-demo`
+shape): step `audit` reports drift read-only, step `deliver` (via `sessionRef`)
+acts on that report. Like `pr-review` and `agent-verb`, it composes the shared
+`lib/sandbox-agent.mjs` block builders, so placement, billing, and delivery
+follow the one sandbox recipe:
 
 - **Placement** is config-driven via `reviewConfig` (the parsed
   `.github/agentic-review.json`). Omit it — as `workflow_run_file` does for a
@@ -55,14 +60,16 @@ placement, billing, and delivery follow the one sandbox recipe:
   `reviewerSandbox: "e2b"` (CI) and it runs in a sandbox with `claude-sdk`.
 - **Delivery** is a per-run `delivery` input, NOT an `agentic-review.json` key,
   so the lane needs no merge-machinery config edit to be useful:
-  - `review` (default) — read-only: report drift, edit nothing. The report is
-    the session's final message.
-  - `commit` — apply the doc fixes and commit them to the working branch.
-  - `pr` — apply the doc fixes and open a fresh PR (`bot/docs-audit-config-axes`).
+  - `review` (default) — read-only: `audit` reports drift, `deliver` is a no-op.
+    The report is the `audit` step's final message.
+  - `commit` — `deliver` applies the doc fixes and commits them to a fresh
+    `bot/docs-audit-<runid>` branch (never straight onto the base branch).
+  - `pr` — `deliver` applies the doc fixes and opens a fresh PR from that branch.
 
-The manifest mirrors the entry's step graph for governance (AIP-15
+The manifest mirrors the entry's two-step graph for governance (AIP-15
 `reconcileEntry`); `entry.mjs` is the source of truth for the runtime `agent`
-step (adapter/sandbox/cwd are resolved there via the `lib` selectors), which is
-only reachable via an entry module. Hard rules from `hardRulesBlock` apply: no
+steps (adapter/sandbox/cwd are resolved there via the `lib` selectors; `deliver`
+inherits placement from `audit` via `sessionRef`), which are only reachable via
+an entry module. Hard rules from `hardRulesBlock` apply: no
 AI attribution, never `gh pr merge`, and — DOCS lane — edit only Markdown docs,
 never code/workflows/config.

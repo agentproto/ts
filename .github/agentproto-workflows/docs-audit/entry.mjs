@@ -5,6 +5,14 @@
 // only reaches the compiler via an entry module — mirrors the smoke/pr-review
 // pattern (a literal object, no build step).
 //
+// TWO STEPS, sharing one session via `sessionRef` (the review-fix-demo shape):
+//   1. audit   — READ-ONLY: read the docs + ground truth, emit the drift report.
+//   2. deliver — reuses the audit session; a no-op in `review` mode, else it
+//      applies the fixes it just reported and commits / opens a PR.
+// A single "report THEN deliver" mega-prompt is unreliable — the model treats
+// the report as terminal and stops before delivering. Splitting delivery into
+// its own turn (that continues the same session) makes commit/pr dependable.
+//
 // Placement is config-driven (reviewerSandbox in the passed reviewConfig):
 //   · no reviewConfig (local `workflow_run_file`) ⇒ host spawn, adapter
 //     claude-code, subscription billing from the daemon config.
@@ -14,7 +22,7 @@
 // Delivery is a per-run INPUT (`delivery`), NOT an agentic-review.json key, so
 // this lane needs no merge-machinery config edit to be useful:
 //   · review (default) — report drift only, edit nothing.
-//   · commit           — apply the doc fixes and commit to the working branch.
+//   · commit           — apply the doc fixes and commit to a dedicated branch.
 //   · pr               — apply the doc fixes and open a fresh PR.
 
 import {
@@ -70,81 +78,31 @@ const deliveryOf = (bindings) => {
   return DELIVERY_MODES.has(raw) ? raw : "review"
 }
 
-// Phase 3 — switched on delivery mode AND placement (sandbox uses gh-free curl
-// REST via the lib blocks; host uses the authenticated gh/git already present).
-const deliveryBlock = (delivery, sandboxed, { repo, baseRef, branch }) => {
-  if (delivery === "review") {
-    return [
-      `## Phase 3: Deliver — REVIEW ONLY`,
-      ``,
-      `Do NOT edit any file, do NOT commit, do NOT open a PR. Your report from`,
-      `Phase 2 IS your final message. Stop after emitting it.`,
-    ].join("\n")
-  }
+const isSandboxRun = (bindings) =>
+  sandboxRefFor(bindings?.input?.reviewConfig, VERB) !== undefined &&
+  Boolean(bindings?.input?.repo)
 
-  const apply = [
-    `## Phase 3: Deliver — ${delivery.toUpperCase()}`,
-    ``,
-    `1. Apply the fixes from your Phase-2 report by EDITING the doc files in place`,
-    `   (only the drift you actually found — do not invent changes). Keep edits`,
-    `   surgical and grounded in the file:line rows of your report.`,
-    ``,
-  ]
+// Run-specific, not surface-specific: a fresh branch per run so a rerun with a
+// different `surface`/`docPaths` never collides (non-fast-forward push) with a
+// still-open branch from a prior run.
+const branchFor = () => `bot/docs-audit-${Date.now().toString(36)}`
 
-  if (delivery === "commit") {
-    apply.push(`2. Commit the edits to a dedicated branch (never straight onto ${baseRef}):`)
-    apply.push(
-      sandboxed
-        ? commitDeliveryBlock({ branch })
-        : [
-            `   \`\`\`bash`,
-            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
-            `   git push origin HEAD:"${branch}"`,
-            `   \`\`\``,
-          ].join("\n"),
-    )
-  } else {
-    // pr
-    apply.push(`2. Open a fresh pull request with the edits:`)
-    apply.push(
-      sandboxed
-        ? restOpenPrBlock({ repo, branch, base: baseRef, titleHint: "the drift report above" })
-        : [
-            `   \`\`\`bash`,
-            `   git checkout -b "${branch}"`,
-            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
-            `   git push -u origin "${branch}"`,
-            `   gh pr create --base ${baseRef} --title "<concise PR title for the doc fixes>" --body-file -`,
-            `   \`\`\``,
-            `   Pipe your drift report (what changed + why) into the PR body. NEVER run \`gh pr merge\`.`,
-          ].join("\n"),
-    )
-  }
-  return apply.join("\n")
-}
-
+// ── Step 1: audit (read-only) ────────────────────────────────────────
 const auditPrompt = (bindings) => {
   const input = bindings?.input ?? {}
   const surface = (input.surface && String(input.surface).trim()) || DEFAULT_SURFACE
   const docPaths =
     (input.docPaths && String(input.docPaths).trim()) || DEFAULT_DOC_PATHS
-  const delivery = deliveryOf(bindings)
   const baseRef = String(input.baseRef || "main")
   const repo = String(input.repo || "")
-  const reviewConfig = input.reviewConfig || {}
-  const isSandbox = sandboxRefFor(reviewConfig, VERB) !== undefined && Boolean(repo)
-  // Run-specific, not surface-specific: a fresh branch per run so a rerun
-  // with a different `surface`/`docPaths` never collides (non-fast-forward
-  // push) with a still-open branch from a prior run.
-  const branch = `bot/docs-audit-${Date.now().toString(36)}`
+  const sandboxed = isSandboxRun(bindings)
 
   return [
-    `You are a documentation auditor for the @agentproto/ts monorepo.`,
-    delivery === "review"
-      ? `This run is READ-ONLY: report where the docs have drifted from a shipped surface. Do NOT edit, commit, or open a PR.`
-      : `This run will AUDIT then DELIVER fixes (${delivery}). First produce the full report, THEN apply and deliver.`,
+    `You are a documentation auditor for the @agentproto/ts monorepo. This turn is`,
+    `READ-ONLY: read the docs and report drift. Do NOT edit, commit, or open a PR —`,
+    `a later turn in this same session handles any delivery.`,
     ``,
-    isSandbox ? bootstrapBlock({ repo, baseRef }) : "",
+    sandboxed ? bootstrapBlock({ repo, baseRef }) : "",
     `## The shipped surface the docs SHOULD reflect`,
     ``,
     surface,
@@ -177,27 +135,87 @@ const auditPrompt = (bindings) => {
     `Then a short ranked list "Where a doc fix should land first".`,
     `Ground every row in a real file:line you actually read. If a doc is already`,
     `current, say so rather than inventing a finding.`,
-    ``,
-    deliveryBlock(delivery, isSandbox, { repo, baseRef, branch }),
-    ``,
-    hardRulesBlock({
-      sandboxed: isSandbox,
-      extra: [
-        `- This is a DOCS lane — never touch code, migrations, workflows, or config; edit only Markdown docs.`,
-        `- Never run \`gh pr merge\`.`,
-      ],
-    }),
   ]
     .filter(Boolean)
     .join("\n")
+}
+
+// ── Step 2: deliver (reuses the audit session) ───────────────────────
+const deliverPrompt = (bindings) => {
+  const input = bindings?.input ?? {}
+  const delivery = deliveryOf(bindings)
+  const baseRef = String(input.baseRef || "main")
+  const repo = String(input.repo || "")
+  const sandboxed = isSandboxRun(bindings)
+
+  if (delivery === "review") {
+    return [
+      `This was a review-only run (delivery=review). The audit report you produced`,
+      `in the previous turn IS the deliverable — do NOT edit any file, commit, or`,
+      `open a PR. Reply with the single word: DONE.`,
+    ].join("\n")
+  }
+
+  const branch = branchFor()
+  const apply = [
+    `This continues your audit turn in the SAME session. Now DELIVER the fixes you`,
+    `just reported (delivery=${delivery}).`,
+    ``,
+    `1. Apply the fixes from your report by EDITING the doc files in place — only`,
+    `   the drift you actually found (grounded in your file:line rows); do not`,
+    `   invent changes, and touch only Markdown docs.`,
+    ``,
+  ]
+
+  if (delivery === "commit") {
+    apply.push(`2. Commit the edits to a dedicated branch (never straight onto ${baseRef}):`)
+    apply.push(
+      sandboxed
+        ? commitDeliveryBlock({ branch })
+        : [
+            `   \`\`\`bash`,
+            `   git checkout -b "${branch}"`,
+            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
+            `   git push -u origin "${branch}"`,
+            `   \`\`\``,
+          ].join("\n"),
+    )
+  } else {
+    apply.push(`2. Open a fresh pull request with the edits:`)
+    apply.push(
+      sandboxed
+        ? restOpenPrBlock({ repo, branch, base: baseRef, titleHint: "the drift report above" })
+        : [
+            `   \`\`\`bash`,
+            `   git checkout -b "${branch}"`,
+            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
+            `   git push -u origin "${branch}"`,
+            `   gh pr create --base ${baseRef} --title "<concise PR title for the doc fixes>" --body-file -`,
+            `   \`\`\``,
+            `   Pipe your drift report (what changed + why) into the PR body. Print the PR URL when done.`,
+          ].join("\n"),
+    )
+  }
+
+  apply.push(``)
+  apply.push(
+    hardRulesBlock({
+      sandboxed,
+      extra: [
+        `- DOCS lane — edit only Markdown docs; never code, migrations, workflows, or config.`,
+        `- Never run \`gh pr merge\`.`,
+      ],
+    }),
+  )
+  return apply.join("\n")
 }
 
 export default {
   name: "Docs drift audit",
   id: "docs-audit",
   description:
-    "Read-only-by-default documentation auditor. A local (or sandboxed) claude session reads the repo docs, compares them against a shipped surface, and reports drift; the `delivery` input can escalate to commit or PR.",
-  version: "0.2.0",
+    "Read-only-by-default documentation auditor. Step 1 audits the repo docs against a shipped surface and reports drift; step 2 (same session, via sessionRef) escalates to commit or PR when the `delivery` input asks for it.",
+  version: "0.3.0",
   inputs: {
     surface: {
       type: "string",
@@ -225,7 +243,7 @@ export default {
   outputs: {
     report: {
       type: "string",
-      description: "The markdown drift report (also the session's final message in review mode).",
+      description: "The markdown drift report (the audit step's final message).",
     },
   },
   steps: [
@@ -238,6 +256,13 @@ export default {
       sandbox: (b) => sandboxRefFor(b?.input?.reviewConfig, VERB),
       cwd: (b) => workspaceCwdFor(b?.input?.reviewConfig, VERB),
       prompt: auditPrompt,
+    },
+    {
+      id: "deliver",
+      kind: "agent",
+      // Reuse the audit session — inherits its placement; no-op in review mode.
+      sessionRef: "audit",
+      prompt: deliverPrompt,
     },
   ],
 }
