@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest"
 import type { SessionMode } from "@agentproto/acp/client"
 import {
   canonicalForModeId,
+  CANONICAL_POSTURES,
   findNativeMode,
+  isCanonicalPosture,
   normalizeModeId,
+  parsePostureInput,
   POSTURE_NATIVE_ALIASES,
   POSTURE_PREAMBLES,
   resolvePosture,
@@ -180,5 +183,31 @@ describe("resolvePosture — native enforcement vs prompt-injection fallback (SP
     expect(r.kind).toBe("native")
     if (r.kind !== "native") return
     expect(r.mode.name).toBe("Plan (proposes, does not act)")
+  })
+})
+
+describe("parsePostureInput — wire string → Posture", () => {
+  it("keeps a canonical vocabulary value as a bare canonical posture", () => {
+    for (const p of CANONICAL_POSTURES) {
+      expect(parsePostureInput(p)).toBe(p)
+      expect(isCanonicalPosture(p)).toBe(true)
+    }
+  })
+
+  it("wraps anything else as a raw harness mode id", () => {
+    expect(parsePostureInput("architect")).toEqual({ harnessModeId: "architect" })
+    // A harness's own spelling of a canonical concept (claude-code's
+    // camelCase) isn't in the canonical vocabulary set, so it rides the
+    // raw-mode-id path — resolvePosture still matches it against availableModes.
+    expect(parsePostureInput("bypassPermissions")).toEqual({
+      harnessModeId: "bypassPermissions",
+    })
+    expect(isCanonicalPosture("architect")).toBe(false)
+  })
+
+  it("CANONICAL_POSTURES is exactly the canonical vocabulary (alias-map keys)", () => {
+    expect([...CANONICAL_POSTURES].sort()).toEqual(
+      Object.keys(POSTURE_NATIVE_ALIASES).sort(),
+    )
   })
 })

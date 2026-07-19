@@ -86,6 +86,7 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import { parsePostureInput } from "./canonical-posture.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
@@ -2586,6 +2587,74 @@ async function handleSessions(
           ? 400
           : 500
       json(status, { error: "set_model_failed", message: msg })
+    }
+    return true
+  }
+
+  // Switch the reasoning/compute budget (effort) on a LIVE agent-cli session —
+  // the effort-axis sibling of `POST /sessions/:id/model` (SPEC §4.2, step 5).
+  // See `SessionsRegistry.setEffort`. Effort is model-dependent (SPEC §3.9); a
+  // label the current model rejects is a well-formed `{applied:false, reason}`
+  // (still 200 — the request got a definitive answer, just not "yes").
+  const effortMatch = path.match(/^\/sessions\/([^/]+)\/effort$/)
+  if (effortMatch && req.method === "POST") {
+    const id = effortMatch[1]
+    if (!id) return false
+    const body = await readJsonBody(req)
+    const effort =
+      body && typeof body === "object" && typeof (body as Record<string, unknown>).effort === "string"
+        ? ((body as Record<string, unknown>).effort as string)
+        : undefined
+    if (!effort) {
+      json(400, { error: "missing_effort" })
+      return true
+    }
+    try {
+      const result = await registry.setEffort(id, effort)
+      json(200, { ok: true, id, ...result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("no session")
+        ? 404
+        : msg.includes("not an agent-cli session")
+          ? 400
+          : 500
+      json(status, { error: "set_effort_failed", message: msg })
+    }
+    return true
+  }
+
+  // Switch the posture on a LIVE agent-cli session (SPEC §4.2/§3.4a, step 5).
+  // A posture that maps to a native advertised harness mode switches live via
+  // ACP `setSessionMode`; one with no native mode returns
+  // `{applied:false, reason:"requires-restart"}` (still 200 — the caller routes
+  // it through the restart-override, step 6). The wire `posture` string is a
+  // canonical vocabulary value (`plan`/`bypass`/…) or a raw harness mode id;
+  // `parsePostureInput` picks which.
+  const postureMatch = path.match(/^\/sessions\/([^/]+)\/posture$/)
+  if (postureMatch && req.method === "POST") {
+    const id = postureMatch[1]
+    if (!id) return false
+    const body = await readJsonBody(req)
+    const postureRaw =
+      body && typeof body === "object" && typeof (body as Record<string, unknown>).posture === "string"
+        ? ((body as Record<string, unknown>).posture as string)
+        : undefined
+    if (!postureRaw) {
+      json(400, { error: "missing_posture" })
+      return true
+    }
+    try {
+      const result = await registry.setPosture(id, parsePostureInput(postureRaw))
+      json(200, { ok: true, id, ...result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("no session")
+        ? 404
+        : msg.includes("not an agent-cli session")
+          ? 400
+          : 500
+      json(status, { error: "set_posture_failed", message: msg })
     }
     return true
   }

@@ -12,6 +12,8 @@
  *   agent_kill    SIGTERM the session
  *   agent_interrupt   cancel the in-flight turn, leave the session alive
  *   agent_set_model   switch a live session's model without restarting
+ *   agent_set_effort  switch a live session's reasoning/compute budget
+ *   agent_set_posture switch a live session's posture (native mode)
  *   agent_export  export a clean transcript
  *   agent_sessions_list   browse alive + recent agent sessions
  */
@@ -34,6 +36,7 @@ import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
+import { parsePostureInput } from "./canonical-posture.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -947,6 +950,101 @@ export function registerAgentTools(
             {
               type: "text",
               text: `agent_set_model: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── agent_set_effort ─────────────────────────────────────
+  server.tool(
+    "agent_set_effort",
+    "Switch the reasoning/compute budget (effort) on a LIVE agent-cli session " +
+      "without restarting it — the effort-axis counterpart to `agent_set_model`. " +
+      "Applied via the adapter's ACP session config. Effort is model-dependent: " +
+      "the same label means a different budget across models and some labels are " +
+      "model-gated (opus offers `ultracode`, haiku doesn't), so a label the " +
+      "current model rejects reports `{applied:false, reason}` instead of " +
+      "failing. Never throws on a rejected switch — check `applied` in the result.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+      effort: z
+        .string()
+        .describe(
+          "Effort label to switch to (e.g. low/medium/high/xhigh/max/ultracode; " +
+            "the accepted set is model-dependent).",
+        ),
+    },
+    async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_set_effort")
+      try {
+        const result = await registry.setEffort(sessionId, input.effort)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_set_effort: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── agent_set_posture ─────────────────────────────────────
+  server.tool(
+    "agent_set_posture",
+    "Switch the posture (what the agent may DO — plan / accept-edits / bypass / " +
+      "read-only, or a raw harness mode id) on a LIVE agent-cli session. When the " +
+      "posture maps to a NATIVE mode the harness advertises, it switches live " +
+      "(`applied:true`). When there is no native mode (the posture would have to " +
+      "be prompt-injected or applied at spawn), it is NOT forced live — the " +
+      "result is `{applied:false, reason:\"requires-restart\"}` so the caller can " +
+      "re-apply it through a session restart instead. Never throws on a rejected " +
+      "switch — check `applied`.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+      posture: z
+        .string()
+        .describe(
+          "Posture to switch to: a canonical value (default/plan/accept-edits/" +
+            "bypass/read-only) or a raw harness mode id.",
+        ),
+    },
+    async input => {
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_set_posture")
+      try {
+        const result = await registry.setPosture(sessionId, parsePostureInput(input.posture))
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: true, sessionId, ...result }, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_set_posture: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

@@ -91,6 +91,35 @@ export const POSTURE_NATIVE_ALIASES: Readonly<Record<CanonicalPosture, readonly 
 }
 
 /**
+ * The agentproto-canonical posture vocabulary as a runtime value list — exactly
+ * the keys of {@link POSTURE_NATIVE_ALIASES}. Used by {@link parsePostureInput}
+ * to tell a portable canonical value apart from a raw harness mode id at the
+ * daemon's wire boundary.
+ */
+export const CANONICAL_POSTURES: readonly CanonicalPosture[] = Object.keys(
+  POSTURE_NATIVE_ALIASES,
+) as CanonicalPosture[]
+
+const CANONICAL_POSTURE_SET: ReadonlySet<string> = new Set(CANONICAL_POSTURES)
+
+/** True when `value` is one of the agentproto-canonical posture vocabulary values. */
+export function isCanonicalPosture(value: string): value is CanonicalPosture {
+  return CANONICAL_POSTURE_SET.has(value)
+}
+
+/**
+ * Coerce a wire posture string (from `agent_set_posture` / `POST
+ * /sessions/:id/posture`) into a {@link Posture}. A value in the portable
+ * canonical vocabulary (`plan`, `bypass`, …) stays canonical so it resolves
+ * against whatever native mode the harness spells it as (SPEC §3.4a); anything
+ * else is taken as a raw harness mode id (`{ harnessModeId }`) — a native mode
+ * the canonical vocabulary doesn't name (e.g. opencode's `architect`).
+ */
+export function parsePostureInput(raw: string): Posture {
+  return isCanonicalPosture(raw) ? raw : { harnessModeId: raw }
+}
+
+/**
  * Normalize a mode id for matching: lowercase and strip every non-alphanumeric
  * character, so `"acceptEdits"`, `"accept-edits"`, and `"Accept_Edits"` all
  * collapse to `"acceptedits"`. Lets one readable alias in
