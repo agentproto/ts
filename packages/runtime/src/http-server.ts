@@ -2170,6 +2170,9 @@ async function handleSessions(
           : {}),
         ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
+        // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
+        // first-sentence derivation from the prompt (see session-spawn.ts).
+        ...(typeof b.title === "string" ? { title: b.title } : {}),
         ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
           ? { idempotencyKey: b.idempotencyKey }
           : {}),
@@ -2801,6 +2804,43 @@ async function handleSessions(
           ? 400
           : 500
       json(status, { error: "set_posture_failed", message: msg })
+    }
+    return true
+  }
+
+  // Rename a session — set or clear its user-facing `title`/`label` (SPEC-3
+  // FIX B write-path). The ONLY session mutation route that isn't a POST: it's
+  // a partial update of the descriptor's display fields, so PATCH. Body:
+  // `{ title?: string | null, label?: string | null }` — a string sets (the
+  // registry trims + caps), `null` or `""` clears (reverts to derived/
+  // fallback), an omitted key leaves that field untouched. Persist + the
+  // `session:renamed` event are the registry's job. 404 on an unknown id.
+  const renameMatch = path.match(/^\/sessions\/([^/]+)$/)
+  if (renameMatch && req.method === "PATCH") {
+    const rawIdOrName = renameMatch[1]
+    if (!rawIdOrName) return false
+    const resolved = registry.findByIdOrName(rawIdOrName)
+    if (!resolved) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    // A present key with a string OR explicit null is honoured; any other
+    // type (number, object) is ignored rather than 400 — a well-formed
+    // rename should never fail because an unrelated stray field rode along.
+    const field = (v: unknown): string | null | undefined =>
+      typeof v === "string" ? v : v === null ? null : undefined
+    const patch: { title?: string | null; label?: string | null } = {
+      ...("title" in b ? { title: field(b.title) } : {}),
+      ...("label" in b ? { label: field(b.label) } : {}),
+    }
+    try {
+      const desc = registry.renameSession(resolved.id, patch)
+      json(200, desc)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 500, { error: "rename_failed", message: msg })
     }
     return true
   }

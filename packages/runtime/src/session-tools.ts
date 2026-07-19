@@ -1360,6 +1360,119 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_rename ──────────────────────────────────────────────
+  // The headless twin of the VS Code rename UX + `PATCH /sessions/:id`.
+  // Pure display state (the descriptor's `title`/`label`) — never touches the
+  // live agent — so, like archive, it just resolves + scopes + delegates to
+  // the registry, which trims/caps, persists, and emits `session:renamed`.
+  server.tool(
+    "session_rename",
+    "Set or clear a session's user-facing name — the label the sessions tree, " +
+      "transcript header, and tab show. `label` out-ranks `title` in that " +
+      "display chain, so a user rename should write `label` (the default a UI " +
+      "picks) to be sure it shows; `title` is the auto-derived first-sentence " +
+      "fallback. For EACH of `title`/`label`: a non-empty string sets it " +
+      "(trimmed + length-capped), an empty string clears it (reverting to the " +
+      "derived title / a friendly `adapter · id` fallback), and omitting it " +
+      "leaves that field untouched. Persists across daemon restarts. Does NOT " +
+      "rename the adapter-native session or touch the running agent.",
+    {
+      idOrName: z
+        .string()
+        .min(1)
+        .describe("Session id or name to rename — from `session_list`."),
+      label: z
+        .string()
+        .optional()
+        .describe(
+          "New label (the winning display field). Empty string clears it. " +
+            "Omit to leave the label untouched.",
+        ),
+      title: z
+        .string()
+        .optional()
+        .describe(
+          "New title (the auto-derived fallback slot). Empty string clears it, " +
+            "reverting to the first-sentence derivation. Omit to leave it untouched.",
+        ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${input.idOrName}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      // Subtree scoping (WP4): mirrors session_archive — a scoped orchestrator
+      // may only rename sessions it (transitively) spawned.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_rename: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only rename sessions it (transitively) spawned.",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      if (input.title === undefined && input.label === undefined) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "nothing_to_rename",
+                message: "session_rename: supply at least one of `title` or `label`.",
+                ok: false,
+                sessionId: prev.id,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const desc = registry.renameSession(prev.id, {
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.label !== undefined ? { label: input.label } : {}),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(desc, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `session_rename: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
   server.tool(
     "terminal_start",
     "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +

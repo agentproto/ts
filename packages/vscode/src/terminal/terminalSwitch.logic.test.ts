@@ -54,8 +54,10 @@ describe("terminalDisplayName", () => {
     expect(terminalDisplayName(session({ label: "my-session" }))).toBe("agentproto: my-session")
   })
 
-  it("falls back to the session id when there is no label", () => {
-    expect(terminalDisplayName(session({ id: "abc123", label: undefined }))).toBe("agentproto: abc123")
+  it("falls back to the friendly adapter · short-id name when there is no label/title (FIX D)", () => {
+    expect(terminalDisplayName(session({ id: "abc123", label: undefined }))).toBe(
+      "agentproto: agent-cli · abc123",
+    )
   })
 })
 

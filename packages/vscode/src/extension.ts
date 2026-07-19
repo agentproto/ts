@@ -18,6 +18,7 @@ import {
   resolveSessionArg,
 } from "./commands/sessionActions.js"
 import { registerSessionArchive } from "./commands/sessionArchive.js"
+import { registerSessionRename } from "./commands/sessionRename.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
 import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerImportConversationCommand } from "./commands/importConversation.js"
@@ -73,6 +74,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerPermissionCommands(ctx, client, store)
   registerSessionRestart(ctx, client, store) // agentproto.restartSession
   registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
+  registerSessionRename(ctx, client, store) // agentproto.renameSession
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
 

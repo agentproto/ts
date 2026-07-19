@@ -21,6 +21,7 @@ export type SessionEventType =
   | "session:command-done"
   | "session:model-changed"
   | "session:config-changed"
+  | "session:renamed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -192,6 +193,25 @@ export type SessionConfigChangedEvent = {
   }
 }[SessionConfigAxis]
 
+/**
+ * Emitted when an operator sets or clears a session's user-facing name
+ * (`PATCH /sessions/:id`, the `session_rename` MCP verb). Unlike
+ * `session:config-changed`, a name is NOT a `SessionConfig` axis — it never
+ * touches the live agent, only the descriptor's display fields — so it rides
+ * its own event. `title`/`label` carry the values now on the descriptor
+ * (absent when that field was cleared). Same bus distribution as every other
+ * lifecycle event: `session_events_poll`, the webhook notifier, the routine
+ * engine — which is how a live UI (the VS Code tree / transcript header/tab)
+ * learns to repaint the name without waiting for its next snapshot poll.
+ */
+export interface SessionRenamedEvent {
+  type: "session:renamed"
+  sessionId: string
+  title?: string
+  label?: string
+  ts: string
+}
+
 /** Emitted by the supervisor when a completion policy's gate passes. */
 export interface PolicyPassedEvent {
   type: "policy:passed"
@@ -272,6 +292,7 @@ export type SessionEvent =
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
   | SessionConfigChangedEvent
+  | SessionRenamedEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent

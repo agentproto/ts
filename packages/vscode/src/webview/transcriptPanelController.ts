@@ -763,6 +763,20 @@ export class TranscriptPanelController {
     if (loaded.mode === "structured") this.startFeed()
   }
 
+  /**
+   * The header title was edited in place (SPEC-3 FIX B). Writes the new name
+   * as this session's `label` — the winning display field, so the rename is
+   * guaranteed to show over any derived `title`. An empty name clears the
+   * label (reverting to the derived/fallback). The live `session:renamed`
+   * event flows back through the store, whose `onDidChange` re-posts the
+   * descriptor here (updating the header) and repaints the tab + tree — so
+   * there's nothing to optimistically patch on this side. A failure propagates
+   * to `handleWebviewMessage`'s catch, which surfaces it as an error notice.
+   */
+  async onRename(name: string): Promise<void> {
+    await this.client.renameSession(this.sessionId, { label: name.trim() })
+  }
+
   /** Cancel the in-flight turn — unlike a kill, the session stays alive
    *  and ready for the next prompt. */
   async onStop(): Promise<void> {

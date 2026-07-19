@@ -106,6 +106,12 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "agentproto.renameSession",
+        "title": "agentproto: Rename Session",
+        "category": "agentproto",
+        "icon": "$(edit)"
+      },
+      {
         "command": "agentproto.archiveSession",
         "title": "agentproto: Archive Session",
         "category": "agentproto",
@@ -256,6 +262,11 @@
           "command": "agentproto.restartSession",
           "when": "view == agentproto.sessions && viewItem =~ /^session-done(-archived)?$/",
           "group": "inline@5"
+        },
+        {
+          "command": "agentproto.renameSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "group": "modify@1"
         },
         {
           "command": "agentproto.archiveSession",

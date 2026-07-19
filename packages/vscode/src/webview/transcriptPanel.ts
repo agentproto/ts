@@ -161,6 +161,12 @@ export function registerTranscriptPanels(
           const updated = store.sessions.find(s => s.id === session.id)
           if (!updated) return
           controller.onSessionUpdate(updated)
+          // FIX A: the tab caption was set ONCE at createWebviewPanel and never
+          // reassigned, so a tab opened before the title derived (or before a
+          // rename) stayed frozen on the raw session id. Reassign it here on
+          // every store change — cheap, and idempotent when the name is
+          // unchanged — so the tab tracks the derived title and live renames.
+          panel.title = formatTitle(updated)
           paintTabIcon(panel, updated)
           // Watching output arrive IS reading it — while this tab is the
           // focused one, new output must never mark the session unread behind
@@ -244,6 +250,9 @@ async function handleWebviewMessage(
       return
     case "setView":
       await controller.onSetView(msg.view)
+      return
+    case "rename":
+      await controller.onRename(msg.name)
       return
     case "attachImage":
       await controller.onAttachImage(msg.bytes, msg.mime)
@@ -347,6 +356,21 @@ export function buildHtml(nonce: string): string {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      /* Click-to-edit (FIX B): the title doubles as a rename affordance. */
+      cursor: text;
+    }
+    #header-title:hover { color: var(--vscode-foreground); }
+    /* The inline rename box that replaces the title text while editing —
+       sized to fill the same slot so the header doesn't reflow. */
+    #header-title input {
+      width: 100%;
+      font: inherit;
+      font-weight: 600;
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+      border-radius: 4px;
+      padding: 1px 4px;
     }
     #header-actions {
       flex: 0 0 auto;
@@ -991,7 +1015,7 @@ export function buildHtml(nonce: string): string {
 </head>
 <body>
   <div id="header">
-    <div id="header-title"></div>
+    <div id="header-title" title="Click to rename this session"></div>
     <div id="header-actions">
       <div id="view-toggle" class="header-action" role="group" aria-label="Change view" hidden>
         <button id="view-conversation" class="view-seg" type="button" data-view="conversation">Conversation</button>
@@ -1127,6 +1151,9 @@ export function buildHtml(nonce: string): string {
       let lastTokensOut;
       /** Latest descriptor — re-read by the 1s ticker so a stall surfaces without a poll. */
       let lastSession;
+      /** True while the in-place header rename box is open — see beginTitleEdit.
+       *  Guards updateHeader from wiping the input on a mid-edit sessionUpdate. */
+      let isEditingTitle = false;
       /**
        * Text typed while the agent was mid-turn. The daemon takes ONE turn at
        * a time and rejects anything else with a 409, so instead of firing that
@@ -1366,12 +1393,22 @@ export function buildHtml(nonce: string): string {
         popoverAuth.textContent = session.auth ? session.auth.mode : '—';
       }
 
+      // Mirrors sessionDisplayName in client/sessionName.ts — this inline
+      // script has no module system to import it from, so the precedence
+      // (label, then the derived title, then a friendly adapter · short-id
+      // fallback) is duplicated here (FIX D) and the two must stay in sync.
+      function shortSessionId(id) {
+        return id && id.length > 8 ? id.slice(-6) : (id || '');
+      }
+      function displayName(session) {
+        return session.label ?? session.title
+          ?? ((session.adapterSlug || session.kind) + ' · ' + shortSessionId(session.id));
+      }
+
       function updateHeader(session) {
-        // Mirrors formatTitle in transcript.logic.ts — this inline script has
-        // no module system to import it from, so the fallback order (label,
-        // then the derived title, then id) is duplicated here and the two
-        // must stay in sync.
-        headerTitle.textContent = session.label ?? session.title ?? session.id ?? '';
+        // Don't stomp the inline rename box mid-edit — a sessionUpdate landing
+        // while the user is typing must not wipe what they've entered.
+        if (!isEditingTitle) headerTitle.textContent = displayName(session);
         // What will answer, shown where you type to it — the header no longer
         // repeats any of it. Each chip is omitted when the daemon doesn't
         // report the field (CSS :empty), rather than rendering "undefined".
@@ -2256,6 +2293,42 @@ export function buildHtml(nonce: string): string {
       viewTerminalBtn.addEventListener('click', function() {
         vscode.postMessage({ type: 'setView', view: 'terminal' });
       });
+      // Click-to-edit rename (FIX B). Clicking the header title swaps its text
+      // for an inline input prefilled with the CURRENT editable name (label,
+      // else derived title — never the adapter·id fallback, which the user
+      // shouldn't accidentally commit as a real name). Enter saves, Escape
+      // cancels, blur saves. The host writes it as the label and the live
+      // session-update repaints the header + tab + tree.
+      function beginTitleEdit() {
+        if (isEditingTitle || !lastSession) return;
+        isEditingTitle = true;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.setAttribute('aria-label', 'Rename session');
+        input.value = lastSession.label ?? lastSession.title ?? '';
+        headerTitle.textContent = '';
+        headerTitle.appendChild(input);
+        input.focus();
+        input.select();
+        let settled = false;
+        const finish = function(save) {
+          if (settled) return;
+          settled = true;
+          isEditingTitle = false;
+          const next = input.value.trim();
+          if (save) vscode.postMessage({ type: 'rename', name: next });
+          // Restore text immediately — optimistic; the sessionUpdate confirms.
+          headerTitle.textContent = save && next ? next : displayName(lastSession);
+        };
+        input.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+          // Keep composer/global key handlers from reacting to typing in here.
+          e.stopPropagation();
+        });
+        input.addEventListener('blur', function() { finish(true); });
+      }
+      headerTitle.addEventListener('click', beginTitleEdit);
       costBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         togglePopover(costPopover);
