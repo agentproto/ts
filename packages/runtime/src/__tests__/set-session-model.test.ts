@@ -130,6 +130,18 @@ describe("SessionsRegistry.setModel", () => {
       label: "my-conversation",
       ts: expect.any(String),
     })
+
+    // The axis-generic successor event (SPEC step 4) fires alongside the
+    // back-compat alias, carrying WHICH axis moved + the new value.
+    const configChanged = seen.find(ev => ev.type === "session:config-changed")
+    expect(configChanged).toEqual({
+      type: "session:config-changed",
+      sessionId: desc.id,
+      axis: "model",
+      value: "claude-sonnet-5",
+      label: "my-conversation",
+      ts: expect.any(String),
+    })
     reg.shutdown()
   })
 
@@ -152,6 +164,8 @@ describe("SessionsRegistry.setModel", () => {
     // The original model is untouched — a rejected switch changes nothing.
     expect(reg.get(desc.id)?.model).toBe("original-model")
     expect(seen.find(ev => ev.type === "session:model-changed")).toBeUndefined()
+    // A rejected switch changes nothing, so neither event fires.
+    expect(seen.find(ev => ev.type === "session:config-changed")).toBeUndefined()
     reg.shutdown()
   })
 

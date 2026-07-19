@@ -76,6 +76,39 @@ describe("SessionEventBus", () => {
     expect(handler).toHaveBeenCalledTimes(1)
   })
 
+  it("carries a config-changed event for any single SessionConfig axis", () => {
+    const bus = createSessionEventBus()
+    const onConfig = vi.fn()
+    bus.on("session:config-changed", onConfig)
+
+    // The axis-generic event (SPEC step 4) must carry each orthogonal axis
+    // with its own value shape — the model axis a string, effort an
+    // EffortLevel, route a RouteSpec, posture a Posture — so live-effort/
+    // posture (step 5) and restart-override (step 6) can all reuse it.
+    bus.emit({ type: "session:config-changed", sessionId: "s1", axis: "model", value: "claude-opus-4-8", ts: "t" })
+    bus.emit({ type: "session:config-changed", sessionId: "s1", axis: "effort", value: "ultracode", ts: "t" })
+    bus.emit({
+      type: "session:config-changed",
+      sessionId: "s1",
+      axis: "route",
+      value: { gateway: "moonshot" },
+      ts: "t",
+    })
+    bus.emit({ type: "session:config-changed", sessionId: "s1", axis: "posture", value: "plan", ts: "t" })
+    // A sibling type must not leak into the config-changed handler.
+    bus.emit({ type: "session:turn-end", sessionId: "s1", awaitingInput: false, ts: "t" })
+
+    expect(onConfig).toHaveBeenCalledTimes(4)
+    expect(onConfig).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ axis: "model", value: "claude-opus-4-8" }),
+    )
+    expect(onConfig).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ axis: "route", value: { gateway: "moonshot" } }),
+    )
+  })
+
   it("multiple subscribers on same type all fire", () => {
     const bus = createSessionEventBus()
     const h1 = vi.fn()
