@@ -1,3 +1,4 @@
+// Parameterized verb workflow (pr / fix / implement) — see ../lib/sandbox-agent.mjs
 // Entry-based handle for the composable "sandboxed agentproto agent" verbs
 // beyond review: `pr` (implement a request / an issue and open a PR) and
 // `fix` (apply the latest review's requested changes). One parameterized
