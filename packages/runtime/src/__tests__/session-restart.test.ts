@@ -553,4 +553,99 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     await close()
     registry.shutdown()
   })
+
+  it("restart-with-override forces the agent path and lands each axis on the fresh descriptor (step 6)", async () => {
+    // A claude-code session that WOULD normally restart pty-native
+    // (`claude --resume`) — but an override must take the agent path so the
+    // axes actually apply.
+    const { client, registry, calls, close } = await buildHarness()
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: {
+        idOrName: prev.id,
+        model: "claude-opus-4-8",
+        effort: "high",
+        posture: "plan",
+        route: { gateway: "moonshot" },
+        contextProfile: "lean",
+      },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    // Agent path (not the pty-native `claude --resume`).
+    expect(desc.kind).toBe("agent-cli")
+    expect(calls).toHaveLength(1)
+    expect(desc.model).toBe("claude-opus-4-8")
+    expect(desc.effort).toBe("high")
+    expect(desc.posture).toBe("plan")
+    expect(desc.route).toEqual({ gateway: "moonshot" })
+    expect(desc.contextProfile).toBe("lean")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("an unknown access-profile override is rejected as a 400 (SPEC Rx/Ry surface)", async () => {
+    const { client, registry, calls, close } = await buildHarness()
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    registry.kill(prev.id)
+    const before = registry.list().length
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: {
+        idOrName: prev.id,
+        access: { profileRef: "definitely-not-a-real-profile-xyz-9001" },
+      },
+    })
+    expect(result.isError).toBe(true)
+    const err = toolJson(result)
+    expect(err.status).toBe(400)
+    expect(err.error).toBe("restart_override_invalid")
+    // No new session spawned — rejected before startSession.
+    expect(calls).toHaveLength(0)
+    expect(registry.list()).toHaveLength(before)
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("restart-with-override on a non-agent (PTY) session is a 400", async () => {
+    const { client, registry, close } = await buildHarness()
+    const prev = registry.spawnPty({
+      argv: ["bash"],
+      cwd: process.cwd(),
+      workspaceSlug: "default",
+      cols: 80,
+      rows: 24,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id, effort: "high" },
+    })
+    expect(result.isError).toBe(true)
+    const err = toolJson(result)
+    expect(err.status).toBe(400)
+    expect(err.error).toBe("restart_override_invalid")
+
+    await close()
+    registry.shutdown()
+  })
 })

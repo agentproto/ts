@@ -86,6 +86,11 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
+import {
+  restartAgentSession,
+  RestartOverrideError,
+  type RestartOverrides,
+} from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
@@ -2587,6 +2592,88 @@ async function handleSessions(
           ? 400
           : 500
       json(status, { error: "set_model_failed", message: msg })
+    }
+    return true
+  }
+
+  // Restart-with-override (SPEC §4.3, step 6) — the single HTTP path for all
+  // four restart-only axes (incl. access/auth-profile). Body carries the same
+  // optional axis overrides as the `session_restart` MCP verb; each present
+  // axis overlays the prior session, an omitted one is carried forward. Always
+  // forces the agent-cli resume path (auth re-resolution + fresh descriptor),
+  // so it only applies to agent-cli sessions. An unknown/ineligible access
+  // profile (SPEC Rx/Ry) is a real 400, never a silent wallet swap.
+  const restartMatch = path.match(/^\/sessions\/([^/]+)\/restart$/)
+  if (restartMatch && req.method === "POST") {
+    const id = restartMatch[1]
+    if (!id) return false
+    if (!resolveAgentAdapter) {
+      json(501, {
+        error: "restart_not_enabled",
+        message:
+          "POST /sessions/:id/restart needs the host to inject `resolveAgentAdapter`.",
+      })
+      return true
+    }
+    const prev = registry.findByIdOrName(id)
+    if (!prev) {
+      json(404, { error: "no_session", message: `no session "${id}" found` })
+      return true
+    }
+    if (!prev.adapterSlug) {
+      json(400, {
+        error: "restart_override_invalid",
+        message:
+          "restart-with-override only applies to agent-cli sessions " +
+          "(a PTY/command session has no config axes to override).",
+      })
+      return true
+    }
+    const body = (await readJsonBody(req)) as Record<string, unknown> | undefined
+    const b = body && typeof body === "object" ? body : {}
+    const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
+    const overrides: RestartOverrides = {
+      ...(str(b.model) !== undefined ? { model: str(b.model)! } : {}),
+      ...(str(b.effort) !== undefined ? { effort: str(b.effort) as RestartOverrides["effort"] } : {}),
+      ...(b.access && typeof b.access === "object" &&
+      str((b.access as Record<string, unknown>).profileRef) !== undefined
+        ? { access: { profileRef: str((b.access as Record<string, unknown>).profileRef)! } }
+        : {}),
+      ...(b.route && typeof b.route === "object" &&
+      str((b.route as Record<string, unknown>).gateway) !== undefined
+        ? {
+            route: {
+              gateway: str((b.route as Record<string, unknown>).gateway)!,
+              ...(str((b.route as Record<string, unknown>).baseUrl) !== undefined
+                ? { baseUrl: str((b.route as Record<string, unknown>).baseUrl)! }
+                : {}),
+            },
+          }
+        : {}),
+      ...(b.posture !== undefined ? { posture: b.posture as RestartOverrides["posture"] } : {}),
+      ...(str(b.contextProfile) !== undefined ? { contextProfile: str(b.contextProfile)! } : {}),
+      ...(str(b.mode) !== undefined ? { mode: str(b.mode)! } : {}),
+    }
+    try {
+      const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
+        forceAgentResume: true,
+        overrides,
+      })
+      json(200, {
+        ...restarted.desc,
+        resumedFrom: restarted.resumedFrom,
+        resumeVia: restarted.resumeVia,
+        ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+      })
+    } catch (err) {
+      if (err instanceof RestartOverrideError) {
+        json(err.status, { error: err.code, message: err.message, sessionId: prev.id })
+        return true
+      }
+      json(500, {
+        error: "restart_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
     return true
   }

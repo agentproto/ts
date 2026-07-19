@@ -30,7 +30,11 @@ import {
   describeResumePath,
   tokenizeCommand,
 } from "./resume-strategies.js"
-import { restartAgentSession } from "./session-restart-core.js"
+import {
+  restartAgentSession,
+  RestartOverrideError,
+  type RestartOverrides,
+} from "./session-restart-core.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -903,6 +907,52 @@ export function registerSessionTools(
         .max(200)
         .optional()
         .describe("PTY rows — same case as `cols`. Default 24."),
+      // ── Restart-with-override axes (SPEC §4.3, step 6) — the single path
+      //    for all four restart-only axes. Each optional; an omitted axis is
+      //    carried forward from the prior session, an axis set here wins.
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override the model on restart (route-identity ref)."),
+      effort: z
+        .enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
+        .optional()
+        .describe("Override the reasoning-effort level on restart."),
+      access: z
+        .object({
+          profileRef: z
+            .string()
+            .min(1)
+            .describe("Attach this NAMED auth profile (SPEC §1c). Rejected 400 " +
+              "if it's not eligible for the resolved (adapter × route)."),
+        })
+        .optional()
+        .describe("Switch the session's billing wallet to a named auth profile."),
+      route: z
+        .object({
+          gateway: z.string().min(1).describe("Endpoint/gateway id (anthropic|moonshot|…)."),
+          baseUrl: z.string().url().optional().describe("Explicit base URL for a custom gateway."),
+        })
+        .optional()
+        .describe("Override the endpoint/gateway rail on restart (access is downstream)."),
+      posture: z
+        .union([
+          z.enum(["default", "plan", "accept-edits", "bypass", "read-only"]),
+          z.object({ harnessModeId: z.string().min(1) }),
+        ])
+        .optional()
+        .describe("Override the posture (what the agent may DO) on restart."),
+      contextProfile: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override what enters context (full|lean|…) on restart."),
+      mode: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Legacy AIP-45 mode id override, forwarded verbatim to the driver at spawn."),
     },
     async input => {
       const prev = registry.findByIdOrName(input.idOrName)
@@ -939,6 +989,95 @@ export function registerSessionTools(
                   ok: false,
                   sessionId: prev.id,
                 }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      // ── Restart-with-override (step 6) ───────────────────────────
+      // Fold the per-axis override inputs into the single overrides map — only
+      // present fields. A restart carrying ANY override is a config change that
+      // needs auth re-resolution + a fresh descriptor, so it routes through
+      // `restartAgentSession` on the FORCED agent path (`forceAgentResume`),
+      // bypassing the PTY-native `claude --resume` branch that can't re-resolve
+      // billing or apply an axis. A plain restart (no overrides) falls through
+      // to the strategy decision below, byte-identical to before.
+      const overrides: RestartOverrides = {
+        ...(input.model !== undefined ? { model: input.model } : {}),
+        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        ...(input.access !== undefined ? { access: input.access } : {}),
+        ...(input.route !== undefined ? { route: input.route } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.contextProfile !== undefined ? { contextProfile: input.contextProfile } : {}),
+        ...(input.mode !== undefined ? { mode: input.mode } : {}),
+      }
+      if (Object.keys(overrides).length > 0) {
+        if (!prev.adapterSlug || !resolveAgentAdapter) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "restart_override_invalid",
+                  status: 400,
+                  message:
+                    "session_restart: restart-with-override only applies to agent-cli " +
+                    "sessions (a PTY/command session has no config axes to override).",
+                  ok: false,
+                  sessionId: prev.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        try {
+          const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev, {
+            forceAgentResume: true,
+            overrides,
+          })
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    ...restarted.desc,
+                    resumedFrom: restarted.resumedFrom,
+                    resumeVia: restarted.resumeVia,
+                    ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          }
+        } catch (err) {
+          if (err instanceof RestartOverrideError) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: err.code,
+                    status: err.status,
+                    message: err.message,
+                    ok: false,
+                    sessionId: prev.id,
+                  }),
+                },
+              ],
+              isError: true,
+            }
+          }
+          return {
+            content: [
+              {
+                type: "text",
+                text: `session_restart: ${err instanceof Error ? err.message : String(err)}`,
               },
             ],
             isError: true,
@@ -1034,7 +1173,8 @@ export function registerSessionTools(
           }
         }
         // Shared with the cron scheduler's `prompt-session` action —
-        // see session-restart-core.ts.
+        // see session-restart-core.ts. Overrides take the forced-agent path
+        // handled earlier, so a restart reaching HERE never carries any.
         const restarted = await restartAgentSession(registry, resolveAgentAdapter, prev)
         return {
           content: [
