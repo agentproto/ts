@@ -5,10 +5,10 @@
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
-  "cliSource": "workspace",
+  "cliSource": "npm",
   "cliVersion": "0.8.0",
   "reviewerAdapter": "claude-sdk",
-  "reviewerAuthMode": "api-key",
+  "reviewerAuthMode": "subscription",
   "describe": {
     "auto": true,
     "minBodyChars": 80
