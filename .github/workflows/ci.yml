@@ -677,6 +677,29 @@ jobs:
             exit 1
           fi
 
+      # Stamp a DETERMINISTIC @agentproto-bot provenance footer (session id +
+      # label, supervisor/parent session, adapter+auth, sandbox, cost/tokens,
+      # run link, sha) onto the posted review. Runner-owned — never the model —
+      # so the marker is a reliable native-vs-legacy discriminator. Cosmetic:
+      # continue-on-error + the script never throws, so a bad stamp can't red a
+      # green review. PROVENANCE is empty when the legacy fallback posted.
+      - name: Stamp review provenance footer
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.verify.outputs.posted == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ steps.headsha.outputs.sha }}
+          AUTH_MODE: ${{ steps.cliver.outputs.auth-mode }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          PROVENANCE: ${{ steps.reviewer-agentproto.outputs.provenance }}
+        run: node scripts/stamp-review-footer.mjs
+
       # Gate: resolve decision + blocking config, post explicit statuses on
       # HEAD for both "Agentic review" and "Changeset present?" so the merge
       # gate is covered even when [skip ci] suppresses a new CI run.
