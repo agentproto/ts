@@ -461,6 +461,28 @@ jobs:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
 
+      # Seed claude-code's trust/onboarding state so it doesn't hit an
+      # interactive trust dialog headless (a clean runner has no ~/.claude.json,
+      # so Claude Code raises a trust prompt and the turn comes back empty).
+      - name: Seed claude-code trust/onboarding (headless)
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.mode.outputs.mode == 'agentproto' &&
+          steps.cliver.outputs.adapter == 'claude-code'
+        run: |
+          node -e '
+            const fs=require("fs"),os=require("os"),path=require("path");
+            const p=path.join(os.homedir(),".claude.json");
+            let c={}; try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}
+            c.hasCompletedOnboarding=true;
+            c.projects=c.projects||{};
+            const cwd=process.env.GITHUB_WORKSPACE;
+            c.projects[cwd]=Object.assign({},c.projects[cwd],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true});
+            fs.writeFileSync(p,JSON.stringify(c,null,2));
+            console.log("seeded "+p+" (onboarding + trust) for "+cwd);
+          '
+
       # OAuth path: agentproto-run lane (subscription billing, flat rate).
       # Falls back to legacy on any failure so a token expiry doesn't block merges.
       - name: Run agentic PR reviewer (agentproto lane)
