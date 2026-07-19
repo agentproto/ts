@@ -40,7 +40,7 @@ agentproto pair         <offer|accept|ls|revoke|exec>               pairing over
 agentproto rendezvous   serve [--port <n>] [--host <ip>]           run a rendezvous broker
 ```
 
-`agentproto --help` prints the full usage; `--version` prints the package version.
+> `agentproto --help` prints the full usage; `--version` prints the package version.
 
 ## Quick start
 
