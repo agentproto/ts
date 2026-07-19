@@ -41,10 +41,11 @@ const postReviewInstruction = (sandboxed, prNumber, repo) =>
 const changesetDeliveryInstruction = (sandboxed, prNumber, repo) =>
   sandboxed
     ? [
-        `   Sandbox delivery: commit the changeset file and push it to the PR head branch:`,
+        `   Sandbox delivery: heal any guessed package name, then commit the changeset file and push it to the PR head branch:`,
         `   \`\`\`bash`,
         `   HEAD_BRANCH=$(curl -sS -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
         `     "https://api.github.com/repos/${repo}/pulls/${prNumber}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).head.ref))')`,
+        `   node scripts/check-changesets.mjs --fix || true   # heal a mis-scoped name (e.g. @agentproto/vscode → agentproto-vscode) BEFORE it lands — the host-side --fix never sees a changeset pushed from the box`,
         `   git add .changeset/pr-${prNumber}-agentic.md && git commit -m "chore: agentic reviewer — changeset" && git push origin "HEAD:\${HEAD_BRANCH}"`,
         `   \`\`\``,
         `   If the push is rejected, include the changeset file content verbatim in a follow-up PR comment (POST /repos/${repo}/issues/${prNumber}/comments with a {"body": ...} payload) instead — never fail the review over changeset delivery.`,
