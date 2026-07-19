@@ -137,7 +137,9 @@ Newly shipped manifest fields (this release):
 - `models.allowed` entries can be bare id strings (back-compat) or structured
   objects `{ id, provider?, mode? }` that bind a model to its billing provider
   and adapter mode. This is what lets model pickers (e.g. the VS Code extension)
-  pin gateway mode when a user selects a model.
+  pin the gateway when a user selects a model. (This manifest-level binding is
+  what the runtime surfaces per-session as the **`route`** config axis — the
+  endpoint/gateway rail; see [`verbs/sessions.md`](../verbs/sessions.md#config-axes-mcphttp).)
 
 The AgentProto spec for the adapter shape is AIP-45 — see
 <https://agentproto.sh/docs/aip-45>.

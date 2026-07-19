@@ -148,7 +148,7 @@ reattached later.
 | `--model <id>` | Adapter model option. |
 | `--base-url <url>` | Manifest `base_url` option (claude-code/claude-sdk) — injected as `ANTHROPIC_BASE_URL`. |
 | `--auth-token <token>` | Manifest `auth_token` option — injected as `ANTHROPIC_AUTH_TOKEN`. |
-| `--auth subscription\|api-key` | Deterministic billing-auth mode for adapters that declare it (today: claude-code). |
+| `--auth subscription\|api-key` | Deterministic billing-auth mode + inline credential for adapters that declare it (today: claude-code). This is the *inline* billing selector; the first-class config axis is a **named auth profile** (`access.profileRef`) — see [Config axes](#config-axes-mcphttp). |
 | `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
@@ -231,6 +231,37 @@ Only reachable today via the MCP `start_agent_session` tool or
 `list_sandbox_providers` (see what's configured) and
 `setup_sandbox_provider` (register credentials for one).
 
+#### Config axes (MCP/HTTP)
+
+A session's behaviour is configured along a fixed set of **axes** — the unified
+surface that replaces the older overloaded `mode` concept. Each is set at spawn
+(`agent_start` / `POST /sessions/agent`) and, where it can apply live, switched
+mid-session:
+
+| Axis | What it controls | Values |
+|------|------------------|--------|
+| `model` | route-identity ref | `[route:]vendor/product[:pin][@route]` |
+| `effort` | reasoning/compute budget | `low\|medium\|high\|xhigh\|max\|ultracode` |
+| `access` | a **named** auth profile (`access.profileRef`), not an inline token | profile ref eligible for the resolved (adapter × route) |
+| `route` | endpoint/gateway rail | `anthropic\|openrouter\|requesty\|…` |
+| `posture` | what the agent may **do** | `default\|plan\|accept-edits\|bypass\|read-only` (or a raw harness mode id) |
+| `contextProfile` | what enters context | `full\|lean\|…` |
+
+**Live switches** — best-effort, mid-session, no restart. Each returns
+`{applied:false, reason}` (rather than throwing) when the running adapter can't
+apply it live:
+
+- `agent_set_model { sessionId, model }`
+- `agent_set_effort { sessionId, effort }`
+- `agent_set_posture { sessionId, posture }`
+
+An axis that can't switch live (e.g. `requires-restart`) can be re-applied
+through [restart-with-override](#restart-id-or-name). `posture` supersedes the
+legacy `mode`/`--auth`-only framing for "what the agent may do" and "which
+wallet pays"; use `catalog_models` (see [`models.md`](./models.md)) to discover
+which `(model, route)` pairs are actually runnable given the configured auth
+profiles.
+
 ### `terminal -- <argv...>`
 
 ```bash
@@ -270,6 +301,17 @@ fresh shape when the adapter reports the id is unknown ("session
 killed too early to persist"). The banner reports which path was
 taken: `(resumed via claude --resume from ses_abc12)` or
 `(fresh — resume not available)`.
+
+**Restart-with-override (MCP/HTTP).** The `session_restart` MCP tool (and the
+`POST /sessions/:id/restart` route) accept per-axis overrides — `model`,
+`effort`, `posture`, `route`, `access.profileRef`, and `contextProfile` (plus a
+legacy `mode`). An omitted axis is carried forward from the prior session; an
+axis set here wins. A restart carrying **any** override is treated as a config
+change: it re-resolves auth and takes the forced agent-resume path (bypassing
+the PTY-native `claude --resume` branch, which can't re-resolve billing or apply
+an axis). This is the way to apply an axis that a [live switch](#config-axes-mcphttp)
+reported as `requires-restart`. Only agent-CLI sessions have axes to override —
+a PTY/command restart with overrides is rejected `400`.
 
 ### `mirror <id-or-name>`
 
