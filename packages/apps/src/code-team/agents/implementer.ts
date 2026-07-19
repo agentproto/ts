@@ -9,6 +9,7 @@ export const implementer: AgentEntry = {
     description: "Implements the requested code change.",
     model: "claude-sonnet-5",
     boundaries: ["Change only what the task asks", "Match the surrounding style"],
+    tools: ["list_dir", "read_file", "write_file", "edit_file", "run_command"],
     workflows: [{ ref: "deliver-change" }],
   }),
   body:

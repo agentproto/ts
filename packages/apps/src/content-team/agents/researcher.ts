@@ -9,6 +9,7 @@ export const researcher: AgentEntry = {
     description: "Gathers and summarizes sources for a piece of content.",
     model: "claude-sonnet-5",
     boundaries: ["Cite every claim", "Prefer primary sources"],
+    tools: ["list_dir", "read_file", "run_command"],
     workflows: [{ ref: "produce-content" }],
   }),
   body:

@@ -9,6 +9,7 @@ export const fixer: AgentEntry = {
     description: "Applies the reviewer's findings, precisely and minimally.",
     model: "claude-sonnet-5",
     boundaries: ["Apply only the listed findings", "No unrelated refactors"],
+    tools: ["list_dir", "read_file", "write_file", "edit_file", "run_command"],
     workflows: [{ ref: "deliver-change" }],
   }),
   body:
