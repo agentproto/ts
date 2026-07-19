@@ -16,7 +16,7 @@
  * without an `exports` declaration.
  */
 
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -51,9 +51,31 @@ async function importEntryHandle(
   entry: string,
 ): Promise<WorkflowHandle> {
   const abs = isAbsolute(entry) ? entry : join(dirname(workflowMdPath), entry)
+
+  // Cache-bust the ESM import by mtime so a long-lived daemon re-reads an edited
+  // entry.mjs instead of serving Node's process-lifetime URL-cached module —
+  // which, because the manifest IS re-read fresh, would otherwise fail
+  // reconcileEntry with a spurious step-count mismatch after an edit. Fresh
+  // daemons / CI boot cold, so they never need it — this only helps the dev loop.
+  //
+  // Skipped under the Vite/vitest transform (`process.env.VITEST`): Vite owns
+  // import() resolution there and rejects a query on a file URL (and a failed
+  // attempt poisons its resolver for the plain retry too), while a test process
+  // never has the long-lived-daemon staleness this guards against.
+  let href = pathToFileURL(abs).href
+  if (!process.env.VITEST) {
+    try {
+      const url = pathToFileURL(abs)
+      url.searchParams.set("v", String((await stat(abs)).mtimeMs))
+      href = url.href
+    } catch {
+      // stat race with an in-flight edit — fall back to the plain URL.
+    }
+  }
+
   let mod: Record<string, unknown>
   try {
-    mod = (await import(pathToFileURL(abs).href)) as Record<string, unknown>
+    mod = (await import(href)) as Record<string, unknown>
   } catch (err) {
     throw new WorkflowLoadError(
       `cannot import entry '${entry}': ${err instanceof Error ? err.message : String(err)}`,
