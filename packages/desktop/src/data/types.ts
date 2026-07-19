@@ -173,6 +173,23 @@ export interface SpawnAgentOptions {
   permissionHold?: boolean
 }
 
+/** POST /sessions/:id/model response — non-fatal: a rejected switch resolves
+ *  `applied:false` + `reason` rather than throwing. */
+export interface SetModelResult {
+  ok: boolean
+  id: string
+  applied: boolean
+  model?: string
+  reason?: string
+}
+
+/** GET /sessions/:id/export response — the exported transcript content. */
+export interface ExportResult {
+  content: string
+  format: string
+  adapter?: string
+}
+
 /** A pending ACP permission request held in the cross-session inbox. */
 export interface PendingPermission {
   id: string

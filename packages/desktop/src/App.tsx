@@ -8,7 +8,7 @@ import {
   daemonPermissions,
   daemonSessions,
 } from "./data/daemon"
-import type { PendingPermission, SessionDescriptor } from "./data/types"
+import type { ExportResult, PendingPermission, SessionDescriptor, SetModelResult } from "./data/types"
 import { statusKind } from "./data/session-view"
 import { AppShell } from "./shell/AppShell"
 import { Composer } from "./shell/Composer"
@@ -214,6 +214,25 @@ function App() {
     }
   }, [selectedId, daemonUrl, refresh])
 
+  const onModelSwitched = useCallback(
+    (_result: SetModelResult) => {
+      void refresh()
+    },
+    [refresh],
+  )
+
+  const onExported = useCallback((_result: ExportResult) => {
+    // The menu already copied the transcript to the clipboard.
+  }, [])
+
+  const onDeleted = useCallback(
+    (_sessionId: string) => {
+      setSelectedId(null)
+      void refresh()
+    },
+    [refresh],
+  )
+
   return (
     <>
     <AppShell
@@ -237,7 +256,15 @@ function App() {
       main={
         selected ? (
           <>
-            <MainHeader session={selected} onInterrupt={onInterrupt} onStop={onStop} />
+            <MainHeader
+              session={selected}
+              daemonUrl={daemonUrl}
+              onInterrupt={onInterrupt}
+              onStop={onStop}
+              onModelSwitched={onModelSwitched}
+              onExported={onExported}
+              onDeleted={onDeleted}
+            />
             <PermissionBanner
               permissions={pendingPermissions}
               onResponded={refresh}
