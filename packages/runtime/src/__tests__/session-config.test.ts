@@ -8,8 +8,12 @@ import {
   type SessionConfig,
 } from "../session-config.js"
 
-// Mirrors the claude-code manifest's `modes[]` (kind tags added alongside this
-// shim) — the real-world fixture decomposeMode/composeMode operate on.
+// A LEGACY (pre-migration) claude-code `modes[]`, still carrying the old
+// posture/route kind tags. As of the SPEC §3.4a route/posture extraction the
+// live manifest declares ONLY `kind:"context"` (route → catalog `@route`,
+// posture → ACP mode registry), so this fixture no longer mirrors the shipped
+// adapter — it is deliberately the OLD shape, because `decomposeMode`/
+// `composeMode` must keep classifying these legacy ids for back-compat.
 const CLAUDE_CODE_MODES: DeclaredAdapterMode[] = [
   { id: "default", kind: "posture" },
   { id: "lean", kind: "context" },

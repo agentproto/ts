@@ -100,32 +100,15 @@ export const opencode: AgentCliHandle = defineAgentCli({
     resumable: true,
     bidirectional: true,
   },
-  // `opencode acp --help` (v1.17.13) has no `--mode` or `--model` flag —
-  // it's a yargs CLI that throws on any unrecognized flag, so either one
-  // used to crash the spawned subprocess before ACP even connected. Unlike
-  // claude-code's wrapper (which needs the CLAUDE_CONFIG_DIR trick for
-  // mode), opencode's own ACP server implements `session/set_config_option`
-  // with `configId` ∈ {"model", "effort", "mode"} directly on the wire —
-  // no CLI flags involved. Both are applied post-`session/new`, not argv.
-  modes: [
-    { id: "default", description: "Standard interactive mode.", kind: "posture" },
-    {
-      id: "plan",
-      description:
-        "Plan-only mode — reasoning + proposals, no edits or shell calls.",
-      // No CLI flag exists for this — applied via ACP
-      // session/set_config_option(configId:"mode") after newSession.
-      apply: "config",
-      kind: "posture",
-    },
-    {
-      id: "build",
-      description:
-        "Auto-execute mode — file edits and shell commands run without per-step prompts.",
-      apply: "config",
-      kind: "posture",
-    },
-  ],
+  // No manifest `modes[]`: opencode's operation profiles (default / plan /
+  // build) are POSTURE, which no longer lives in the manifest (SPEC §3.4a).
+  // opencode's own ACP server already advertises these as native session modes
+  // and switches them on the wire via `session/set_config_option`
+  // (configId:"mode") / `session/set_mode` — precisely the harness ACP mode
+  // registry (`SessionModeState.availableModes`) posture is now sourced from,
+  // so declaring them here would only duplicate the harness's own truth. route
+  // comes from the model catalog and opencode has no context mode, so the array
+  // would be empty — omit it.
   options: [
     {
       id: "model",
