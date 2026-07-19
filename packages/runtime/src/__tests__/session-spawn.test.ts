@@ -573,7 +573,6 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     const callerScope: OrchestratorScope = {
       token: "tok",
       tools: new Set(["agent_start"]),
-      ownerSessionId: "parent",
       depth: 0,
       maxDepth: 3,
       maxChildren: 8,
@@ -605,7 +604,6 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     const callerScope: OrchestratorScope = {
       token: "tok",
       tools: new Set(["agent_start"]),
-      ownerSessionId: "parent",
       depth: 0,
       maxDepth: 3,
       maxChildren: 8,
@@ -1271,6 +1269,17 @@ describe("spawnAgentSession — worktree isolation", () => {
   it("nested spawn (depth > 0) inherits the parent's ground — no second worktree even under always", async () => {
     const { registry, deps } = baseDeps()
     const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const activeCwd = "/repo/active-workspace"
+    const parentCwd = ORIGINAL
+    const previousConfig = wsConfigState.value
+    wsConfigState.value = {
+      version: 1,
+      active: "active",
+      workspaces: [
+        { slug: "parent", path: parentCwd },
+        { slug: "active", path: activeCwd },
+      ],
+    }
     const callerScope: OrchestratorScope = {
       token: "tok",
       tools: new Set(["agent_start"]),
@@ -1280,13 +1289,26 @@ describe("spawnAgentSession — worktree isolation", () => {
       maxChildren: 8,
       role: "supervisor",
     }
-    const result = await spawnAgentSession(
-      { ...deps, callerScope, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
-      { adapter: "mock", cwd: ORIGINAL, worktree: true },
-    )
-    expect(result.ok).toBe(true)
-    expect(calls).toHaveLength(0)
-    expect(registry.list()[0]?.cwd).toBe(ORIGINAL)
+    try {
+      const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: parentCwd })
+      expect(parent.ok).toBe(true)
+      if (!parent.ok) throw new Error("expected success")
+      callerScope.ownerSessionId = parent.descriptor.id
+
+      const result = await spawnAgentSession(
+        { ...deps, callerScope, provisionWorktree, resolveWorktreeIsolation: pinMode("always") },
+        { adapter: "mock" },
+      )
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected success")
+      expect(calls).toHaveLength(0)
+      expect(result.descriptor.cwd).toBe(parentCwd)
+      expect(result.descriptor.cwd).not.toBe(activeCwd)
+      expect(registry.get(result.descriptor.id)?.cwd).toBe(parentCwd)
+      expect(registry.list()[0]?.cwd).toBe(parentCwd)
+    } finally {
+      wsConfigState.value = previousConfig
+    }
   })
 
   it("provision required but no provisioner wired → worktree_provisioner_not_enabled", async () => {
