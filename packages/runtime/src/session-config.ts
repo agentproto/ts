@@ -9,11 +9,16 @@
  *
  * Boundary note: this module deliberately does NOT import from
  * `@agentproto/auth`. `packages/runtime` intentionally has no dependency on
- * that package (`mcp-credential-deps.ts:1-9`), so the named-profile types it
- * owns — `AuthProfile` / `AuthMethod` (`packages/auth/src/profile-types.ts:21,24`,
- * shipped in #470) — are referenced by citation, never redefined here. The
- * `access` axis only needs a `profileRef` string; the profile record itself
- * stays in `@agentproto/auth`.
+ * that package (`mcp-credential-deps.ts:1-9`), so the named-profile record it
+ * owns — `AuthProfile` (`packages/auth/src/profile-types.ts:24`, shipped in
+ * #470) — is referenced by citation, never redefined here: the `access` axis
+ * only needs a `profileRef` string, and the profile record itself stays in
+ * `@agentproto/auth`. The narrow `AuthMethod` *facet*, by contrast, is
+ * structurally mirrored below (§3.1) — the descriptor's `accessProfile` echo
+ * (§3.7) names it, and mirroring a two-value string union is cheaper than
+ * taking a package dependency for it, the same structural-mirror rationale as
+ * `DeclaredAdapterMode` (below) and `DeclaredAdapterOption`
+ * (`spawn-defaults.ts:447`).
  */
 
 /**
@@ -72,6 +77,18 @@ export interface RouteSpec {
  * being blocked while preserving literal autocompletion for the known values.
  */
 export type ContextProfile = "full" | "lean" | (string & {})
+
+/**
+ * How an attached auth profile authenticates — the narrow eligibility gate,
+ * a *facet* of a named profile (SPEC §1c/§3.1), NOT a session-level enum. A
+ * structural mirror of `@agentproto/auth`'s `AuthMethod`
+ * (`packages/auth/src/profile-types.ts:21`, #470): `"api-key"` ↔ `tokenKind
+ * "pat"`, `"oauth-bearer"` ↔ `tokenKind "oat"` (a subscription bearer). Kept
+ * here — rather than imported — because `packages/runtime` has no dependency
+ * on `@agentproto/auth` (see the boundary note above); only the descriptor's
+ * `accessProfile` echo (§3.7) needs to name it.
+ */
+export type AuthMethod = "oauth-bearer" | "api-key"
 
 /**
  * The complete per-session config surface, decomposed into orthogonal axes

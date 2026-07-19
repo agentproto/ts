@@ -27,6 +27,13 @@ import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { deriveSessionTitle } from "./session-title.js"
+import type {
+  AuthMethod,
+  ContextProfile,
+  EffortLevel,
+  Posture,
+  RouteSpec,
+} from "./session-config.js"
 import type { SessionEventBus, SessionAwaitingQuestion } from "./session-event-bus.js"
 import {
   composeSessionObservers,
@@ -362,6 +369,25 @@ export interface SessionAuthEcho {
   setEnv?: string
 }
 
+/**
+ * The `access` axis's descriptor ECHO (SPEC §3.6/§3.7) — a non-secret
+ * description of the NAMED auth profile attached to the session, recorded so a
+ * client chip can NAME the wallet ("Jeremy Max") without re-resolving it. This
+ * is deliberately separate from {@link SessionAuthEcho}, which stays as-is: the
+ * `auth` echo is the resolver's observable output (mode + credential
+ * fingerprint), this is the profile IDENTITY the operator selected. NEVER the
+ * credential — `profileRef` resolves through `@agentproto/auth` at read time
+ * (`packages/auth/src/profile-types.ts:24`, #470). `profileRef` is always set
+ * when this object is present (the profile is the reason it exists); the rest
+ * mirror the `AuthProfile` fields the chip renders.
+ */
+export interface SessionAccessProfileEcho {
+  profileRef: string
+  label?: string
+  vendor: string
+  method: AuthMethod
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -489,6 +515,34 @@ export interface SessionDescriptor {
   mode?: string
   /** The model the session was requested to run (echoed back at spawn). */
   model?: string
+  // ── Decomposed per-session config axes (SPEC §3.1/§3.7,
+  //    `agentproto-session-config-axes`). Each is the DESCRIPTOR ECHO of one
+  //    orthogonal axis, recorded here so a picker chip renders that axis
+  //    independently instead of decoding the compound legacy `mode` string
+  //    above (SPEC §3.8). All optional and `...desc`-spread-persisted like
+  //    every other field, so they round-trip through `loadHistorySnapshot`
+  //    and read as "adapter default" when absent on a pre-existing
+  //    descriptor (SPEC risk R6). This step adds the SHAPE + round-trip only;
+  //    the live-config verbs (`agent_set_effort`/`_posture`) and the
+  //    restart-override that WRITE them are later build steps.
+  /** Reasoning / compute budget the session resolved to (SPEC §3.1 axis 2).
+   *  A LIVE-switchable axis; echoed here so the effort chip re-opens on it. */
+  effort?: EffortLevel
+  /** What the agent may DO (SPEC §3.1 axis 5) — an agentproto-canonical
+   *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
+   *  registry (SPEC §3.4a). */
+  posture?: Posture
+  /** Endpoint / gateway rail (SPEC §3.1 axis 4). `baseUrl` is carried only
+   *  for a custom gateway the catalog can't resolve; `access` is downstream
+   *  of this axis (SPEC §1c). */
+  route?: RouteSpec
+  /** What enters context (SPEC §3.1 axis 5b) — `"lean"` drops bundled skills. */
+  contextProfile?: ContextProfile
+  /** The `access` axis echo (SPEC §3.6/§3.7): the NAMED auth profile attached
+   *  to the session, so the access chip can name the wallet. Distinct from the
+   *  `auth` fingerprint echo below, which stays as-is — see
+   *  {@link SessionAccessProfileEcho}. NEVER the credential. */
+  accessProfile?: SessionAccessProfileEcho
   /**
    * Deterministic billing-auth mode + a non-secret credential fingerprint,
    * recorded at spawn time for adapters that resolved an explicit
@@ -1239,6 +1293,18 @@ export interface SpawnAgentInput {
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
    *  via the billing-auth resolver, never passing the raw credential here. */
   auth?: SessionAuthEcho
+  /** Decomposed config-axis echoes (SPEC §3.7) — recorded verbatim onto the
+   *  matching {@link SessionDescriptor} fields, the same optional-spread way
+   *  `model`/`mode`/`auth` are. All optional; a caller that resolved an axis
+   *  passes its echo so the descriptor round-trips it and the picker re-opens
+   *  on it. See each descriptor field's doc for the axis contract. */
+  effort?: EffortLevel
+  posture?: Posture
+  route?: RouteSpec
+  contextProfile?: ContextProfile
+  /** Named auth-profile echo for the `access` axis (SPEC §3.6). Non-secret —
+   *  see {@link SessionAccessProfileEcho}. */
+  accessProfile?: SessionAccessProfileEcho
   /** Prior session id this spawn continues from — set by `restartAgentSession`
    *  (session-restart-core.ts) when this is a restart, recorded verbatim onto
    *  {@link SessionDescriptor.resumedFrom}. Absent for a direct (non-restart)
@@ -2855,6 +2921,13 @@ export function createSessionsRegistry(opts?: {
         ...(input.model ? { model: input.model } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
+        // Decomposed config-axis echoes (SPEC §3.7), same optional-spread
+        // shape as `model`/`mode`/`auth` above.
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.route ? { route: input.route } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
