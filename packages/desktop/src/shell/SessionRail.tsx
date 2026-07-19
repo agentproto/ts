@@ -2,7 +2,7 @@
 // status dot + title + adapter/model tags + (when known) a diff stat, with
 // orchestrator children nested by parentSessionId. Filter box narrows by title.
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, type Ref } from "react"
 
 import type { SessionDescriptor } from "../data/types"
 import {
@@ -25,6 +25,8 @@ interface SessionRailProps {
   onSelect: (id: string) => void
   /** Optional per-session diff stat (from the changes panel's git fetch). */
   diffFor: (session: SessionDescriptor) => DiffStat | undefined
+  /** Optional ref onto the filter input, so ⌘F can focus it from the shell. */
+  filterRef?: Ref<HTMLInputElement>
 }
 
 function matches(s: SessionDescriptor, q: string): boolean {
@@ -121,7 +123,7 @@ function Group({
   )
 }
 
-export function SessionRail({ sessions, selectedId, onSelect, diffFor }: SessionRailProps) {
+export function SessionRail({ sessions, selectedId, onSelect, diffFor, filterRef }: SessionRailProps) {
   const [filter, setFilter] = useState("")
   const groups = useMemo(() => groupSessions(sessions), [sessions])
 
@@ -129,6 +131,7 @@ export function SessionRail({ sessions, selectedId, onSelect, diffFor }: Session
     <aside className="rail">
       <div className="search">
         <input
+          ref={filterRef}
           placeholder="Filter sessions…  ⌘F"
           value={filter}
           spellCheck={false}

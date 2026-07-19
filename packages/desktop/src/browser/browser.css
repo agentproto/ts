@@ -1,6 +1,4 @@
-/* WP3 — tab strip + browser pane. Ported from MOCK.html; token vars only.
- * The .bpreview chrome mimics a browser frame; it is a placeholder, not a live
- * embed (deep embedding is out of scope). */
+/* WP3 — tab strip + browser pane. Ported from MOCK.html; token vars only. */
 
 .tabs {
   display: flex;
@@ -79,7 +77,29 @@
   color: var(--color-ink-faint);
   font-size: 13px;
   display: flex;
-  gap: 8px;
+  gap: 4px;
+}
+.baddr .nav-btn {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rounded-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-ink-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.baddr .nav-btn:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  border-color: var(--color-border);
+}
+.baddr .nav-btn:disabled {
+  color: var(--color-ink-faint);
+  opacity: 0.4;
+  cursor: default;
 }
 .baddr .url {
   flex: 1;
@@ -91,75 +111,45 @@
   border-radius: var(--rounded-full);
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
-  font-family: var(--font-mono-family);
-  font-size: 11.5px;
-  color: var(--color-ink-muted);
 }
 .baddr .url .lock {
   color: var(--st-run);
   font-size: 10px;
 }
+.baddr .url-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: var(--font-mono-family);
+  font-size: 11.5px;
+  color: var(--color-ink-muted);
+}
+.baddr .bspinner {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border-radius: var(--rounded-full);
+  border: 2px solid color-mix(in srgb, var(--st-run) 30%, transparent);
+  border-top-color: var(--st-run);
+  animation: bspin 0.8s linear infinite;
+}
+@keyframes bspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .bview {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   background: var(--color-background);
   color: var(--color-ink);
 }
-.bpreview {
-  display: grid;
-  place-items: center;
+.bframe {
+  width: 100%;
   height: 100%;
-  padding: 24px;
-}
-.bpreview .frame {
-  width: 380px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--rounded-lg);
-  overflow: hidden;
-  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.35);
+  border: none;
   background: var(--color-surface);
-  color: var(--color-ink);
-  font-family: var(--font-mono-family);
-}
-.bpreview .fbar {
-  height: 26px;
-  background: var(--color-surface-hi);
-  border-bottom: 1px solid var(--color-border);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-}
-.bpreview .fbar i {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--rounded-full);
-}
-.bpreview .fbar i:nth-child(1) {
-  background: #ff5f57;
-}
-.bpreview .fbar i:nth-child(2) {
-  background: #febc2e;
-}
-.bpreview .fbar i:nth-child(3) {
-  background: #28c840;
-}
-.bpreview .fbody {
-  padding: 16px;
-  font-size: 11px;
-}
-.bpreview .bp-title {
-  color: var(--color-accent);
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-.bpreview .bp-url {
-  color: var(--color-ink);
-  word-break: break-all;
-  margin-bottom: 12px;
-}
-.bpreview .bp-note {
-  color: var(--color-ink-faint);
-  font-family: var(--font-body-family);
-  line-height: 1.5;
 }

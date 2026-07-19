@@ -71,6 +71,24 @@ button.files-row:hover {
   color: var(--color-ink-muted);
 }
 
+.files-diffstat {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  font-family: var(--font-mono-family);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.files-diffstat-add {
+  color: var(--color-success);
+}
+
+.files-diffstat-del {
+  margin-left: 4px;
+  color: var(--color-danger);
+}
+
 .files-msg {
   padding: 4px 12px 4px 30px;
   color: var(--color-ink-faint);
@@ -143,6 +161,38 @@ button.files-row:hover {
   letter-spacing: 0.04em;
 }
 
+.file-viewer-toggle {
+  display: flex;
+  flex: none;
+  margin-left: auto;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--rounded-full);
+  background: var(--color-background);
+}
+
+.file-viewer-toggle-btn {
+  border: 0;
+  padding: 2px 9px;
+  border-radius: var(--rounded-full);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.file-viewer-toggle-btn:hover {
+  color: var(--color-ink);
+}
+
+.file-viewer-toggle-btn--active {
+  background: var(--color-surface-raised);
+  color: var(--color-accent);
+}
+
 .file-viewer-body {
   flex: 1;
   min-height: 0;
@@ -178,4 +228,62 @@ button.files-row:hover {
 .file-viewer-text {
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.file-diff-body {
+  font-family: var(--font-mono-family);
+  font-size: 12px;
+}
+
+.file-diff-row {
+  display: grid;
+  grid-template-columns: 3em 3em 1fr;
+  white-space: pre;
+}
+
+.file-diff-ln {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  user-select: none;
+}
+
+.file-diff-tx {
+  padding: 0 8px;
+  color: var(--color-ink-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.file-diff-row--add {
+  background: var(--add-bg);
+}
+
+.file-diff-row--add .file-diff-ln {
+  color: var(--add-gutter);
+}
+
+.file-diff-row--add .file-diff-tx {
+  color: color-mix(in srgb, var(--color-success) 30%, var(--color-ink));
+}
+
+.file-diff-row--del {
+  background: var(--del-bg);
+}
+
+.file-diff-row--del .file-diff-ln {
+  color: var(--del-gutter);
+}
+
+.file-diff-row--del .file-diff-tx {
+  color: color-mix(in srgb, var(--color-danger) 34%, var(--color-ink));
+}
+
+.file-diff-row--hunk {
+  background: color-mix(in srgb, var(--color-info) 8%, transparent);
+}
+
+.file-diff-row--hunk .file-diff-tx {
+  color: color-mix(in srgb, var(--color-info) 60%, var(--color-ink-muted));
 }

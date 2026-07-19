@@ -4,7 +4,9 @@
 
 import { useState } from "react"
 
+import type { GitDiff } from "../data/types"
 import "./files.css"
+import { matchChangedFile } from "./diffMatch"
 import { FileViewer } from "./FileViewer"
 import { useFileTree } from "./useFileTree"
 import type { FileEntry } from "./useFileTree"
@@ -22,7 +24,16 @@ interface OpenHandlers {
   onOpen: (path: string) => void
 }
 
-function DirNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandlers) {
+interface DiffAware {
+  diff: GitDiff | null | undefined
+}
+
+function DirNode({
+  entry,
+  openPath,
+  onOpen,
+  diff,
+}: { entry: FileEntry } & OpenHandlers & DiffAware) {
   const [open, setOpen] = useState<boolean>(false)
   return (
     <li className="files-node files-node--dir">
@@ -36,13 +47,21 @@ function DirNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandler
         <span className="files-icon">📁</span>
         <span className="files-name">{entry.name}</span>
       </button>
-      {open ? <TreeLevel cwd={entry.path} openPath={openPath} onOpen={onOpen} /> : null}
+      {open ? (
+        <TreeLevel cwd={entry.path} openPath={openPath} onOpen={onOpen} diff={diff} />
+      ) : null}
     </li>
   )
 }
 
-function FileNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandlers) {
+function FileNode({
+  entry,
+  openPath,
+  onOpen,
+  diff,
+}: { entry: FileEntry } & OpenHandlers & DiffAware) {
   const active = openPath === entry.path
+  const changed = matchChangedFile(diff, entry.path)
   return (
     <li className="files-node files-node--file">
       <button
@@ -53,12 +72,23 @@ function FileNode({ entry, openPath, onOpen }: { entry: FileEntry } & OpenHandle
         <span className="files-chev" />
         <span className="files-icon">📄</span>
         <span className="files-name">{entry.name}</span>
+        {changed ? (
+          <span className="files-diffstat">
+            {changed.added > 0 ? <span className="files-diffstat-add">+{changed.added}</span> : null}
+            {changed.removed > 0 ? <span className="files-diffstat-del">-{changed.removed}</span> : null}
+          </span>
+        ) : null}
       </button>
     </li>
   )
 }
 
-function TreeLevel({ cwd, openPath, onOpen }: { cwd: string } & OpenHandlers) {
+function TreeLevel({
+  cwd,
+  openPath,
+  onOpen,
+  diff,
+}: { cwd: string } & OpenHandlers & DiffAware) {
   const { entries, loading, error } = useFileTree(cwd)
 
   if (error) return <div className="files-msg files-msg--error">{error}</div>
@@ -69,9 +99,9 @@ function TreeLevel({ cwd, openPath, onOpen }: { cwd: string } & OpenHandlers) {
     <ul className="files-list">
       {sortEntries(entries).map((entry) =>
         entry.isDir ? (
-          <DirNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} />
+          <DirNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} diff={diff} />
         ) : (
-          <FileNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} />
+          <FileNode key={entry.path} entry={entry} openPath={openPath} onOpen={onOpen} diff={diff} />
         ),
       )}
     </ul>
@@ -80,22 +110,24 @@ function TreeLevel({ cwd, openPath, onOpen }: { cwd: string } & OpenHandlers) {
 
 export interface FilesPanelProps {
   cwd?: string | undefined
+  diff?: GitDiff | null | undefined
 }
 
-export function FilesPanel({ cwd }: FilesPanelProps) {
+export function FilesPanel({ cwd, diff }: FilesPanelProps) {
   const [openPath, setOpenPath] = useState<string | null>(null)
+  const changedFile = openPath !== null ? matchChangedFile(diff, openPath) : null
 
   return (
     <div className="files-split">
       <div className="files-panel">
         {cwd ? (
-          <TreeLevel cwd={cwd} openPath={openPath} onOpen={setOpenPath} />
+          <TreeLevel cwd={cwd} openPath={openPath} onOpen={setOpenPath} diff={diff} />
         ) : (
           <div className="files-msg">No working directory for this session.</div>
         )}
       </div>
       <div className="files-viewer-pane">
-        <FileViewer path={openPath} />
+        <FileViewer path={openPath} changedFile={changedFile} />
       </div>
     </div>
   )
