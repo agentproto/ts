@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { createDoctype } from "@agentproto/define-doctype"
 import { agentCliFrontmatterSchema } from "./schema.js"
@@ -9,6 +9,7 @@ import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
+import { resolveCliEnv } from "./model.js"
 import type {
   AgentCliClient,
   AgentCliDefinition,
@@ -86,13 +87,28 @@ export function createAgentCliRuntime(
     definition,
     async start(opts?: AgentCliStartOptions): Promise<AgentCliRuntimeSession> {
       const cwd = opts?.cwd ?? process.cwd()
+      const cliEnv = {
+        ...resolveCliEnv({}),
+        ...(opts?.env ?? {}),
+      }
+      const codexAuthMode =
+        definition.id === "codex" ? detectCodexAuthMode(cliEnv) : undefined
+      const skipModelArg = definition.id === "codex" && codexAuthMode !== "api-key"
       // Compose final argv + env from the manifest + per-call config.
       // Mode patches and option patches land BEFORE the host-provided
       // env so an operator-set option can be observed by the CLI even
       // when the manifest also touches the same env key (operator
       // intent wins). Validation runs here too — a misconfigured
       // operator throws RuntimeConfigError before we exec anything.
-      const composed = composeSpawn(definition, opts?.config)
+      const composed = composeSpawn(definition, opts?.config, {
+        skipModelArg,
+      })
+      const requestedModel = opts?.config?.options?.model
+      if (skipModelArg && typeof requestedModel === "string") {
+        console.warn(
+          `[agent-cli] codex: skipped model override "${requestedModel}" for ChatGPT-account auth; using Codex's default model.`,
+        )
+      }
       const env: Record<string, string> = {
         ...filterStringEnv(process.env),
         ...composed.env,
@@ -634,4 +650,24 @@ function filterStringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     if (typeof v === "string") out[k] = v
   }
   return out
+}
+
+function detectCodexAuthMode(
+  env: Record<string, string>,
+): "api-key" | "chatgpt" | undefined {
+  if (env.OPENAI_API_KEY || env.CODEX_API_KEY) return "api-key"
+
+  const authPath = join(homedir(), ".codex", "auth.json")
+  try {
+    const parsed = JSON.parse(readFileSync(authPath, "utf8")) as {
+      auth_mode?: unknown
+    }
+    if (parsed.auth_mode === "api-key" || parsed.auth_mode === "chatgpt") {
+      return parsed.auth_mode
+    }
+  } catch {
+    // Missing auth file or unreadable JSON: fall back to env-only detection.
+  }
+
+  return "chatgpt"
 }
