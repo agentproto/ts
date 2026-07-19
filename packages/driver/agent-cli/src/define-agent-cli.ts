@@ -17,6 +17,7 @@ import type {
   AgentCliRuntimeSession,
   AgentCliStartOptions,
   SetModelResult,
+  SetSessionModeResult,
   StreamEvent,
 } from "./types.js"
 
@@ -366,6 +367,15 @@ export function createAgentCliRuntime(
       return {
         sessionId,
         pid: child?.pid,
+        // Capability read-surface (SPEC §3.9/§3.4a) — snapshotted once
+        // `arm.connect()` above has resolved, so an ACP arm's captured
+        // `newSession`/`loadSession` response is already populated. Arms
+        // that don't model this (print, proprietary) leave the getters
+        // undefined, defaulted here to the same empty/absent shape their
+        // `setModel`-style counterparts use for "not supported".
+        availableConfigOptions: arm.availableConfigOptions ?? [],
+        availableModes: arm.availableModes ?? [],
+        currentModeId: arm.currentModeId,
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           currentTurnId = turnId
@@ -442,6 +452,22 @@ export function createAgentCliRuntime(
           const result = await arm.setConfigOption("model", modelId)
           return result.applied
             ? { applied: true, model: modelId }
+            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
+        },
+        /**
+         * Mid-session posture switch — the native-mode counterpart to
+         * `setModel`, wired directly to the arm's `setSessionMode` (only
+         * the ACP arm implements it). See {@link SetSessionModeResult} for
+         * the reason vocabulary; this never throws and never tears down
+         * the session on a rejected switch.
+         */
+        async setSessionMode(modeId: string): Promise<SetSessionModeResult> {
+          if (!arm.setSessionMode) {
+            return { applied: false, reason: "not-supported" }
+          }
+          const result = await arm.setSessionMode(modeId)
+          return result.applied
+            ? { applied: true, modeId }
             : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
         },
         async close() {

@@ -204,6 +204,15 @@ export function createAcpProtocolArm(
     get sessionId(): string | undefined {
       return session?.sessionId
     },
+    get availableConfigOptions() {
+      return session?.availableConfigOptions ?? []
+    },
+    get availableModes() {
+      return session?.availableModes ?? []
+    },
+    get currentModeId(): string | undefined {
+      return session?.currentModeId
+    },
     async connect(opts: AgentCliConnectOptions) {
       const permissionHandler =
         options.onPermissionRequest ??
@@ -286,6 +295,11 @@ export function createAcpProtocolArm(
       // it, there's just no live connection right now.
       if (!session) return { applied: false, reason: "not-connected" }
       return session.setConfigOption(configId, value)
+    },
+    async setSessionMode(modeId) {
+      // Same not-connected/not-supported split as setConfigOption above.
+      if (!session) return { applied: false, reason: "not-connected" }
+      return session.setSessionMode(modeId)
     },
     respondPermission(
       requestId: string,

@@ -12,6 +12,8 @@ import {
   ClientSideConnection,
   ndJsonStream,
   type Client as AcpClientHandlers,
+  type SessionConfigOption,
+  type SessionMode,
   type Stream,
 } from "@agentclientprotocol/sdk"
 import type {
@@ -19,6 +21,8 @@ import type {
   AcpPermissionResolution,
   StreamEvent,
 } from "../types.js"
+
+export type { SessionConfigOption, SessionMode }
 
 export type { AcpPermissionResolution }
 
@@ -244,6 +248,35 @@ export interface SetConfigOptionResult {
 
 export interface AcpClientSession {
   readonly sessionId: string
+  /**
+   * The wrapper's advertised session configuration options (SDK
+   * `SessionConfigOption[]`), captured verbatim from `newSession`'s /
+   * `loadSession`'s response at connect time — the per-model value lists
+   * (e.g. which model/effort ids the wrapper will actually accept) that
+   * today are otherwise discoverable only by calling `setConfigOption`
+   * and catching a reject. A read surface so a caller can resolve what's
+   * offerable BEFORE attempting to apply it. Empty when the wrapper
+   * advertises nothing (`configOptions` absent/`null` on the wire) —
+   * never inferred or guessed. Snapshot at connect time; not live-updated
+   * by a later `setConfigOption`/`setSessionMode` call.
+   */
+  readonly availableConfigOptions: SessionConfigOption[]
+  /**
+   * The wrapper's advertised session modes (SDK `SessionModeState.
+   * availableModes`), captured from the same connect-time response.
+   * Empty when the wrapper has no native mode registry (`modes`
+   * absent/`null` on the wire) — the read-surface signal a caller uses to
+   * decide there's no native posture to switch, only a portable/
+   * prompt-injected one. Snapshot at connect time, same as
+   * `availableConfigOptions`.
+   */
+  readonly availableModes: SessionMode[]
+  /**
+   * The mode id the wrapper reported as active (`SessionModeState.
+   * currentModeId`) at connect time. `undefined` when the wrapper
+   * advertised no mode state at all.
+   */
+  readonly currentModeId: string | undefined
   prompt(input: {
     messages: unknown[]
     signal?: AbortSignal
@@ -258,6 +291,18 @@ export interface AcpClientSession {
    * id can never kill an otherwise-healthy session.
    */
   setConfigOption(configId: string, value: string): Promise<SetConfigOptionResult>
+  /**
+   * Switch this session's mode on this LIVE, already-connected session via
+   * ACP `session/set_mode` (SDK `setSessionMode`) — the native-posture
+   * counterpart to `setConfigOption`, distinct axis (SDK models mode and
+   * config-option as separate RPCs). Same best-effort, non-fatal contract:
+   * a mode the wrapper doesn't recognize (not in `availableModes`, a stale
+   * offer, or a version mismatch) resolves `{applied:false, reason}`
+   * instead of throwing — a rejected mode switch must never kill an
+   * otherwise-healthy session, mirroring `setConfigOption`'s contract
+   * exactly.
+   */
+  setSessionMode(modeId: string): Promise<SetConfigOptionResult>
   close(): Promise<void>
 }
 
@@ -274,6 +319,12 @@ interface SessionState {
    * notification is liveness evidence for.
    */
   resetWatchdogTimer?: () => void
+  /** Snapshot of `AcpClientSession.availableConfigOptions` — see there. */
+  configOptions: SessionConfigOption[]
+  /** Snapshot of `AcpClientSession.availableModes` — see there. */
+  modes: SessionMode[]
+  /** Snapshot of `AcpClientSession.currentModeId` — see there. */
+  currentModeId: string | undefined
 }
 
 export async function createAcpClient(
@@ -359,6 +410,9 @@ export async function createAcpClient(
         resolveNext: null,
         done: false,
         active: false,
+        configOptions: response.configOptions ?? [],
+        modes: response.modes?.availableModes ?? [],
+        currentModeId: response.modes?.currentModeId,
       }
       sessions.set(sessionId, state)
       // Apply model + effort via session/set_config_option immediately
@@ -451,7 +505,7 @@ export async function createAcpClient(
       // fresh `SessionState` so subsequent `prompt` calls have a slot
       // to flush events into — same lifecycle shape as a brand-new
       // session.
-      await connection.loadSession({
+      const response = await connection.loadSession({
         sessionId: params.sessionId,
         cwd: params.cwd,
         mcpServers: toAcpMcpServers(params.mcpServers ?? []) as never,
@@ -462,6 +516,9 @@ export async function createAcpClient(
         resolveNext: null,
         done: false,
         active: false,
+        configOptions: response.configOptions ?? [],
+        modes: response.modes?.availableModes ?? [],
+        currentModeId: response.modes?.currentModeId,
       }
       sessions.set(params.sessionId, state)
       return buildSession(
@@ -510,6 +567,9 @@ function buildSession(
 ): AcpClientSession {
   return {
     sessionId,
+    availableConfigOptions: state.configOptions,
+    availableModes: state.modes,
+    currentModeId: state.currentModeId,
     prompt(input) {
       if (state.active) {
         throw new Error(
@@ -642,6 +702,24 @@ function buildSession(
         console.warn(
           `[acp] session ${sessionId}: set_config_option ${configId}="${value}" ` +
             `rejected by server — ${reason}`,
+        )
+        return { applied: false, reason }
+      }
+    },
+    async setSessionMode(modeId) {
+      try {
+        await connection.setSessionMode({ sessionId, modeId })
+        onActivity?.()
+        return { applied: true }
+      } catch (err) {
+        // Non-fatal by design — same reasoning as `setConfigOption` above:
+        // a mode id the wrapper doesn't (or no longer) recognize must never
+        // propagate as a thrown error. The caller decides what to do with
+        // `{applied:false, reason}` (e.g. route the pick through a restart
+        // override instead), the session itself is completely unaffected.
+        const reason = configOptionErrorDetail(err)
+        console.warn(
+          `[acp] session ${sessionId}: set_mode "${modeId}" rejected by server — ${reason}`,
         )
         return { applied: false, reason }
       }
