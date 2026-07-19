@@ -7,7 +7,7 @@
   "maxReviewTurns": 50,
   "cliSource": "npm",
   "cliVersion": "0.8.0",
-  "reviewerAdapter": "claude-sdk",
+  "reviewerAdapter": "claude-code",
   "reviewerAuthMode": "subscription",
   "describe": {
     "auto": true,
