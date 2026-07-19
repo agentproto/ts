@@ -464,6 +464,33 @@ describe("runWorkflow — agent step", () => {
     })
   })
 
+  it("a host that rejects the sandbox spawn fails the run loudly (no silent host fallback)", async () => {
+    const spawn = vi.fn(async () => {
+      throw new Error("agent step sandbox spawn failed (sandbox_provider_not_found): no resolver")
+    })
+    const host = fakeHost({ spawn })
+    const wf: RuntimeWorkflow = {
+      id: "agent-sandbox-fail-loud",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          sandbox: "e2b",
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
+      /sandbox spawn failed \(sandbox_provider_not_found\)/,
+    )
+    // The failed spawn is the ONLY spawn attempt — the step must not retry
+    // on the host without the sandbox.
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(spawn).toHaveBeenCalledWith("mock-adapter", expect.objectContaining({ sandbox: "e2b" }))
+    expect(host.sendPromptAndWait).not.toHaveBeenCalled()
+  })
+
   it("resolves adapter from a selector function", async () => {
     const host = fakeHost()
     const wf: RuntimeWorkflow = {

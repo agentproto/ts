@@ -401,6 +401,15 @@ async function executeRunWorkflow(
         }
         // else: remaining stages stay "pending"
       }
+
+      // Resolve step sessionIds on FAILURE too — previously only the success
+      // path did this, so a run whose agent session spawned and then errored
+      // reported failed steps with NO sessionId, leaving callers (e.g. the CI
+      // driver) blind: no handle to `agent_output` the dead session's last
+      // words. The host's label map is populated at spawn time, so any
+      // session that got as far as spawning resolves here.
+      const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
+      if (sessionIds.length > 0) state.run.result = { sessionIds }
     }
   }
 

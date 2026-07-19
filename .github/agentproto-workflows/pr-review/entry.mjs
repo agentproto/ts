@@ -34,25 +34,62 @@ const inSandbox = (bindings) => sandboxRef(bindings) !== undefined
 
 // A sandbox box has no checkout — the agent must clone + fetch the PR before
 // reviewing. GITHUB_TOKEN is injected into the box env (never inlined here).
+// The box has NO `gh` CLI (only git/node/npm — verified against the live e2b
+// template), so every GitHub interaction in sandbox mode goes through the
+// REST API via curl.
 const sandboxBootstrap = (prNumber, baseRef, repo) => [
   `## Phase 0: Workspace bootstrap (you are in a fresh sandbox — no checkout exists)`,
   ``,
-  `1. Clone the repo using the GITHUB_TOKEN already exported in your environment (reference the env var — NEVER print its value):`,
+  `This sandbox has git, node, npm, and curl — there is NO \`gh\` CLI. Do not try to use \`gh\`; all GitHub API interactions use curl with the GITHUB_TOKEN env var (reference the env var — NEVER print its value).`,
+  ``,
+  `1. Clone the repo:`,
   `   \`\`\`bash`,
   `   git clone "https://x-access-token:\${GITHUB_TOKEN}@github.com/${repo}.git" repo && cd repo`,
   `   git fetch origin ${baseRef} "pull/${prNumber}/head:pr-${prNumber}" && git checkout "pr-${prNumber}"`,
   `   \`\`\``,
   `2. Run all later git/file commands from this clone; the diff base is \`origin/${baseRef}\`.`,
-  `3. If the \`gh\` CLI is not installed in this sandbox, post the review via the GitHub REST API instead:`,
-  `   \`\`\`bash`,
-  `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-  `     "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews" \\`,
-  `     -d '{"event":"COMMENT","body":"<review markdown>"}'`,
-  `   \`\`\``,
-  `   (event: APPROVE / REQUEST_CHANGES / COMMENT.)`,
-  `4. Changeset delivery from a sandbox: after writing \`.changeset/pr-${prNumber}-agentic.md\`, commit it and push to the PR head branch (\`git push origin HEAD:<head-branch>\`; find the head branch via \`gh pr view ${prNumber} --json headRefName\` or the REST API). If the push is rejected, include the changeset file content verbatim in the review body instead.`,
   ``,
 ].join("\n")
+
+// How to post the review — the ONE Phase-2 posting instruction, switched on
+// placement so the sandbox path never references the absent `gh` CLI.
+const postReviewInstruction = (sandboxed, prNumber, repo) =>
+  sandboxed
+    ? [
+        `   Write the review body to a file first (safe JSON quoting), then POST it via the GitHub REST API:`,
+        `   \`\`\`bash`,
+        `   # review.md contains your review markdown`,
+        `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' COMMENT`,
+        `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
+        `     "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews" \\`,
+        `     --data @payload.json`,
+        `   \`\`\``,
+        `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. Check the curl response: a JSON object with an "id" field means the review posted; anything else, print the response and retry once.`,
+      ].join("\n")
+    : [
+        `   Run:`,
+        `   \`\`\`bash`,
+        `   gh pr review ${prNumber} --comment --body "<your review markdown>"`,
+        `   \`\`\``,
+        `   Replace --comment with --approve or --request-changes as appropriate.`,
+      ].join("\n")
+
+// Changeset delivery, switched on placement: the host lane's checkout is the
+// CI workspace (the job commits it); a sandbox clone is ephemeral, so the
+// changeset must be pushed to the PR head branch — head branch resolved via
+// REST (no `gh` in the box).
+const changesetDeliveryInstruction = (sandboxed, prNumber, repo) =>
+  sandboxed
+    ? [
+        `   Sandbox delivery: commit the changeset file and push it to the PR head branch:`,
+        `   \`\`\`bash`,
+        `   HEAD_BRANCH=$(curl -sS -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
+        `     "https://api.github.com/repos/${repo}/pulls/${prNumber}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).head.ref))')`,
+        `   git add .changeset/pr-${prNumber}-agentic.md && git commit -m "chore: agentic reviewer — changeset" && git push origin "HEAD:\${HEAD_BRANCH}"`,
+        `   \`\`\``,
+        `   If the push is rejected, include the changeset file content verbatim in a follow-up PR comment (POST /repos/${repo}/issues/${prNumber}/comments with a {"body": ...} payload) instead — never fail the review over changeset delivery.`,
+      ].join("\n")
+    : ""
 
 const reviewPrompt = (bindings) => {
   const { prNumber, baseRef = "main", repo = "", reviewConfig = {} } = bindings.input
@@ -70,12 +107,14 @@ const reviewPrompt = (bindings) => {
       ? `If the PR touches any of these paths, be extra careful and flag risks explicitly, but review normally — merge-time escalation handles final approval: ${escalateGlobs.join(", ")}`
       : ""
 
+  const sandboxed = inSandbox(bindings) && Boolean(repo)
+
   return [
     `You are an expert code reviewer for the @agentproto/ts monorepo — a TypeScript implementation of open agent standards (AIPs).`,
     ``,
     `Your job: review PR #${prNumber} and post a structured GitHub review.`,
     ``,
-    inSandbox(bindings) && repo ? sandboxBootstrap(prNumber, baseRef, repo) : "",
+    sandboxed ? sandboxBootstrap(prNumber, baseRef, repo) : "",
     `## Config (from .github/agentic-review.json)`,
     `- blocking: ${cfg.blocking} — the gate job will fail if you request changes.`,
     `- maxReviewTurns: ${cfg.maxReviewTurns} — this session should finish well within that.`,
@@ -91,11 +130,7 @@ const reviewPrompt = (bindings) => {
     `## Phase 2: Act (in this order)`,
     ``,
     `1. **POST THE REVIEW FIRST** (mandatory — do this before anything else):`,
-    `   Run:`,
-    `   \`\`\`bash`,
-    `   gh pr review ${prNumber} --comment --body "<your review markdown>"`,
-    `   \`\`\``,
-    `   Replace --comment with --approve or --request-changes as appropriate.`,
+    postReviewInstruction(sandboxed, prNumber, repo),
     `   The review body must follow this format:`,
     ``,
     `   \`\`\`markdown`,
@@ -134,12 +169,15 @@ const reviewPrompt = (bindings) => {
     `   - major: removed/renamed export, incompatible signature change, breaking behavior`,
     `   - CI / workflow / script changes → do NOT bump any package`,
     ``,
-    `3. If you used --REQUEST-CHANGES, note that the \`pr-fix\` job will later read your review and attempt to apply fixes automatically.`,
+    changesetDeliveryInstruction(sandboxed, prNumber, repo),
+    `3. If you requested changes (REQUEST_CHANGES), note that the \`pr-fix\` job will later read your review and attempt to apply fixes automatically.`,
     ``,
     `## Hard rules`,
     ``,
     `- NEVER add AI/Claude/Anthropic attribution (no \`Co-Authored-By: ...\`, no \`Generated with ...\`) to any output.`,
-    `- The \`gh\` CLI is already authenticated via GITHUB_TOKEN in the environment.`,
+    sandboxed
+      ? `- There is NO \`gh\` CLI here — use curl against api.github.com with the GITHUB_TOKEN env var for every GitHub API call, and never echo the token.`
+      : `- The \`gh\` CLI is already authenticated via GITHUB_TOKEN in the environment.`,
     `- Keep exploration tight — posting the review is the most important action.`,
     `- If the PR is trivial (e.g. only CI changes, only docs), approve quickly with a brief comment.`,
     escalateGlobs.length > 0
