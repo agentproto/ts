@@ -83,6 +83,25 @@ either:
    `OPENROUTER_API_KEY`, etc.
 2. The stored provider key file (`agentproto auth provider set …`).
 
+## `catalog_models` (MCP) — the route/vendor/profile-aware catalog
+
+`agentproto models` lists what each **adapter** declares. For the broader view —
+every model this host can reach, widened beyond any one adapter's list via
+OpenRouter / Requesty / HuggingFace routing — the daemon exposes the read-only
+`catalog_models` MCP tool (backed by `GET /catalog/models`):
+
+- entries are keyed by **vendor** / **product** and carry one entry per **route**
+  (endpoint rail: `anthropic`, `openrouter`, `requesty`, …);
+- each route has a **profile-aware `runnable` flag** — true only when an auth
+  profile eligible for that `(adapter × route)` is actually configured on the
+  host, so it answers "what is spawnable *right now*", not just "what key env var
+  exists";
+- filter with `adapter`, `vendor`, `route`, and `runnableOnly`.
+
+Use it before `agent_start` to pick a `(model, route)` pair the host can run, and
+alongside the [`access` config axis](./sessions.md#config-axes-mcphttp) (named
+auth profiles) that decides which profile pays.
+
 ## Examples
 
 ```bash

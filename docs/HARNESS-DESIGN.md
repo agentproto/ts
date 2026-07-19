@@ -25,6 +25,10 @@ daemon's `/mcp` endpoint:
 | `agent_prompt` | follow-up turn, no respawn | `sessionId` \| `id` (req, aliases), `prompt` (req); returns immediately `{ ok, sessionId, queued:true }` — `agent-tools.ts` |
 | `agent_output` | tail ring buffer | `sessionId` \| `id` (req, aliases), `lastN?` (default 80, max 500) — `agent-tools.ts` |
 | `agent_kill` | SIGTERM the session | `sessionId` \| `id` (aliases) — `agent-tools.ts` |
+| `agent_interrupt` | cancel the in-flight turn, keep the session alive | `sessionId` \| `id` (aliases); `{ ok, wasBusy }` — `agent-tools.ts` |
+| `agent_set_model` / `agent_set_effort` / `agent_set_posture` | best-effort live config-axis switches | `sessionId` \| `id`, + `model` / `effort` / `posture`; return `{applied:false, reason}` when not live-applicable — `agent-tools.ts` |
+| `catalog_models` | route/vendor/profile-aware model catalog | `adapter?`, `vendor?`, `route?`, `runnableOnly?`; per-route `runnable` flag — `agent-tools.ts` |
+| `session_restart` | respawn with continuity; restart-with-override | `idOrName`, + optional axis overrides (`model`/`effort`/`posture`/`route`/`access.profileRef`/`contextProfile`) — `session-tools.ts` |
 | `session_list` / `agent_sessions_list` | enumerate (scoped on sub-gateway) | `kind?`, `onlyAlive?`, `status?` — `session-tools.ts` / `agent-tools.ts` |
 | `session_monitor` | multiplexed long-poll, block until ANY session fires a lifecycle event | `sessionIds` (array or single id, 1–20) \| `sessionId` \| `id`, `timeoutMs?` (default 25 000, max 49 000), `event?` (`turn-end`\|`awaiting-input`\|`exited`\|`any`) — `orchestration-tools.ts` |
 | `session_events_poll` | cheap cursor pull of events since last call | `orchestration-tools.ts` |
