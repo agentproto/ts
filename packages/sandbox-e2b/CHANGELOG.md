@@ -1,5 +1,12 @@
 # @agentproto/sandbox-e2b
 
+## 0.2.1
+
+### Patch Changes
+
+- 8e44bce: Pin the boot-time `@agentproto/cli` install to a configurable `cliVersion` (defaulting to `@latest`) instead of a hardcoded `@agentproto/cli@latest`, so a broken `@latest` npm publish can no longer silently kill the sandbox on boot.
+  - @agentproto/sandbox@0.1.5
+
 ## 0.2.0
 
 ### Minor Changes

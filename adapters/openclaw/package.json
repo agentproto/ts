@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-openclaw",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "@agentproto/adapter-openclaw — AIP-45 AGENT-CLI adapter for OpenClaw. Spawns `openclaw acp` and bridges OpenClaw's Gateway session over stdio JSON-RPC.",
   "keywords": [
     "agentproto",

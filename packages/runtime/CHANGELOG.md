@@ -1,5 +1,33 @@
 # @agentproto/runtime
 
+## 1.1.0
+
+### Minor Changes
+
+- ed0c269: Add terminal input endpoint and UI toggle for conversation/terminal view switching.
+  - HTTP endpoint `POST /sessions/:id/terminal/input` for writing raw input to PTY sessions (FIX 2)
+  - DaemonClient method `writeTerminalInput` for terminal input requests
+  - VSCode UI: Conversation⇄Terminal segmented toggle for sessions with both representations
+  - Routing: Terminal sessions now use `writeTerminalInput` instead of `prompt` endpoint
+  - View toggle logic for agent-cli and native-conversation PTY sessions
+
+- 4632ec7: Session management feature set: terminal input routing via POST /sessions/:id/terminal/input, session renaming via PATCH /sessions/:id and session_rename MCP tool, explicit --title flag for spawn, and structured↔terminal view toggle for dual-representation sessions. Includes code-point-aware name truncation, field-independent rename operations, and comprehensive test coverage.
+
+### Patch Changes
+
+- ee4ab3f: Fix linked git worktree session workspace resolution: sessions spawned in linked worktrees now group under their base repo's registered workspace instead of falling back to "default". Also adds symlink-aware path comparison to handle macOS `/tmp` → `/private/tmp` aliases.
+- a4239ff: Repair two `WorkspaceEntry` test literals that predated the AIP-34
+  `addedAt`/`updatedAt` fields becoming required, restoring `check-types` green.
+- Updated dependencies [3edb7a7]
+- Updated dependencies [a0b94fd]
+- Updated dependencies [cc00682]
+  - @agentproto/workflow-loader@0.1.1
+  - @agentproto/auth@0.2.0
+  - @agentproto/driver-agent-cli@2.0.1
+  - @agentproto/secrets@0.2.1
+  - @agentproto/acp@0.6.0
+  - @agentproto/sandbox@0.1.5
+
 ## 1.0.0
 
 ### Major Changes

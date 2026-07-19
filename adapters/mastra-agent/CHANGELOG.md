@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [cc00682]
+  - @agentproto/driver-agent-cli@2.0.1
+
 ## 0.2.0
 
 ### Minor Changes
