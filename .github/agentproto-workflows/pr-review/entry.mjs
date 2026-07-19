@@ -120,7 +120,11 @@ export default {
     {
       id: "review",
       kind: "agent",
-      adapter: "claude-code",
+      // Adapter is configurable via .github/agentic-review.json
+      // (reviewerAdapter). Defaults to claude-code but that adapter drives the
+      // Claude Code CLI, which no-ops headless in CI ("Authentication
+      // required" / empty turn) — claude-sdk (SDK-based) authenticates headless.
+      adapter: (b) => String(b?.input?.reviewConfig?.reviewerAdapter || "claude-code"),
       prompt: reviewPrompt,
     },
   ],

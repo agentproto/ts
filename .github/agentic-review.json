@@ -7,7 +7,8 @@
   "maxReviewTurns": 50,
   "cliSource": "workspace",
   "cliVersion": "0.8.0",
-  "reviewerAuthMode": "api-key",
+  "reviewerAdapter": "claude-code",
+  "reviewerAuthMode": "subscription",
   "describe": {
     "auto": true,
     "minBodyChars": 80
