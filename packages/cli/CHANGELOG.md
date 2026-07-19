@@ -1,5 +1,23 @@
 # @agentproto/cli
 
+## 0.10.0
+
+### Minor Changes
+
+- 4632ec7: Session management feature set: terminal input routing via POST /sessions/:id/terminal/input, session renaming via PATCH /sessions/:id and session_rename MCP tool, explicit --title flag for spawn, and structured↔terminal view toggle for dual-representation sessions. Includes code-point-aware name truncation, field-independent rename operations, and comprehensive test coverage.
+
+### Patch Changes
+
+- f3137e3: raise timeouts on slow cli tests
+- Updated dependencies [8e44bce]
+- Updated dependencies [a0b94fd]
+- Updated dependencies [cc00682]
+  - @agentproto/sandbox-e2b@0.2.1
+  - @agentproto/auth@0.2.0
+  - @agentproto/driver-agent-cli@2.0.1
+  - @agentproto/secrets@0.2.1
+  - @agentproto/acp@0.6.0
+
 ## 0.9.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @agentproto/adapter-opencode
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [cc00682]
+  - @agentproto/driver-agent-cli@2.0.1
+
 ## 1.0.0
 
 ### Major Changes

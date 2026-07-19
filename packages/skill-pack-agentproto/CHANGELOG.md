@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.5.2
+
+### Patch Changes
+
+- a97108b: Add CI review/fix lanes and skill-authoring reference guides to the agentproto skill
+
 ## 0.5.1
 
 ### Patch Changes

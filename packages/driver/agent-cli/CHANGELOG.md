@@ -1,5 +1,12 @@
 # @agentproto/driver-agent-cli
 
+## 2.0.1
+
+### Patch Changes
+
+- cc00682: Skip codex -c model= override on ChatGPT-account auth
+  - @agentproto/acp@0.6.0
+
 ## 2.0.0
 
 ### Major Changes
