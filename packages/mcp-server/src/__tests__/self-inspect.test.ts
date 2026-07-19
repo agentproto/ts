@@ -192,6 +192,43 @@ describe("selfInspect", () => {
     }
   })
 
+  it("discovers an app-emitted manifest under .agentproto/agents/", async () => {
+    // @agentproto/app-kit `emit` writes here (runtime-owned base), not .agents/.
+    const ws = makeTmp()
+    try {
+      await mkdir(join(ws, ".agentproto", "agents", "test-agent"), { recursive: true })
+      await writeFile(
+        join(ws, ".agentproto", "agents", "test-agent", "AGENT.md"),
+        AGENT_MD(),
+      )
+
+      const result = await selfInspect("test-agent", ws)
+      expect(result.agentPath).toBe(
+        join(ws, ".agentproto", "agents", "test-agent", "AGENT.md"),
+      )
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
+  it("prefers a hand-authored .agents/ manifest over the emitted one", async () => {
+    const ws = makeTmp()
+    try {
+      await mkdir(join(ws, ".agents", "test-agent"), { recursive: true })
+      await mkdir(join(ws, ".agentproto", "agents", "test-agent"), { recursive: true })
+      await writeFile(join(ws, ".agents", "test-agent", "AGENT.md"), AGENT_MD())
+      await writeFile(
+        join(ws, ".agentproto", "agents", "test-agent", "AGENT.md"),
+        AGENT_MD(),
+      )
+
+      const result = await selfInspect("test-agent", ws)
+      expect(result.agentPath).toBe(join(ws, ".agents", "test-agent", "AGENT.md"))
+    } finally {
+      rmSync(ws, { recursive: true, force: true })
+    }
+  })
+
   it("throws with a clear message when the agent is not found", async () => {
     const ws = makeTmp()
     try {

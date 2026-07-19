@@ -121,16 +121,32 @@ export async function selfInspect(
   agentId: string,
   workspace: string,
 ): Promise<SelfInspectResult> {
-  const agentPath = join(workspace, ".agents", agentId, "AGENT.md")
+  // Hand-authored manifests live at `.agents/<id>/`; manifests emitted from a
+  // TS app (@agentproto/app-kit `emit`) live under the runtime-owned base
+  // `.agentproto/agents/<id>/`. Discover both so an emitted app is inspectable
+  // without the caller knowing which authoring path produced it.
+  const candidatePaths = [
+    join(workspace, ".agents", agentId, "AGENT.md"),
+    join(workspace, ".agentproto", "agents", agentId, "AGENT.md"),
+  ]
 
-  let handle: Awaited<ReturnType<typeof agentVerbs.load>>["handle"]
-  try {
-    const result = await agentVerbs.load(agentPath)
-    handle = result.handle
-  } catch (err) {
+  let handle: Awaited<ReturnType<typeof agentVerbs.load>>["handle"] | undefined
+  let agentPath: string | undefined
+  for (const candidate of candidatePaths) {
+    try {
+      const result = await agentVerbs.load(candidate)
+      handle = result.handle
+      agentPath = candidate
+      break
+    } catch {
+      // try the next candidate
+    }
+  }
+  if (!handle || !agentPath) {
     const e = new Error(
-      `No AGENT.md found for agent '${agentId}' at '${agentPath}'. ` +
-        `Ensure an AGENT.md exists at <workspace>/.agents/${agentId}/AGENT.md.`,
+      `No AGENT.md found for agent '${agentId}' at any of: ${candidatePaths.join(", ")}. ` +
+        `Ensure an AGENT.md exists at <workspace>/.agents/${agentId}/AGENT.md ` +
+        `or <workspace>/.agentproto/agents/${agentId}/AGENT.md.`,
     )
     ;(e as NodeJS.ErrnoException).code = "agent_not_found"
     throw e
@@ -162,7 +178,8 @@ export function registerSelfInspectTool(
     "self_inspect",
     "Return this agent's AIP-42 manifest summary (tools + routines) without requiring knowledge of disk paths. " +
       "Pass the agent's logical `id` (the `id:` field in its AGENT.md frontmatter); the runtime resolves it to " +
-      "`<workspace>/.agents/<agentId>/AGENT.md`. Returns `{ agentPath, tools, routines }` — each item has at " +
+      "`<workspace>/.agents/<agentId>/AGENT.md` or the app-emitted `<workspace>/.agentproto/agents/<agentId>/AGENT.md`. " +
+      "Returns `{ agentPath, tools, routines }` — each item has at " +
       "minimum `{ id, description }`. File refs are loaded; string/ref refs are surfaced as-is.",
     {
       agentId: z
