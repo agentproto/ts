@@ -92,14 +92,14 @@ const deliveryBlock = (delivery, sandboxed, { repo, baseRef, branch }) => {
   ]
 
   if (delivery === "commit") {
-    apply.push(`2. Commit the edits to the working branch:`)
+    apply.push(`2. Commit the edits to a dedicated branch (never straight onto ${baseRef}):`)
     apply.push(
       sandboxed
         ? commitDeliveryBlock({ branch })
         : [
             `   \`\`\`bash`,
-            `   git add -A && git commit -m "docs: sync session-config-axes surface"`,
-            `   git push`,
+            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
+            `   git push origin HEAD:"${branch}"`,
             `   \`\`\``,
           ].join("\n"),
     )
@@ -112,9 +112,9 @@ const deliveryBlock = (delivery, sandboxed, { repo, baseRef, branch }) => {
         : [
             `   \`\`\`bash`,
             `   git checkout -b "${branch}"`,
-            `   git add -A && git commit -m "docs: sync session-config-axes surface"`,
+            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
             `   git push -u origin "${branch}"`,
-            `   gh pr create --base ${baseRef} --title "docs: sync session-config-axes surface" --body-file -`,
+            `   gh pr create --base ${baseRef} --title "<concise PR title for the doc fixes>" --body-file -`,
             `   \`\`\``,
             `   Pipe your drift report (what changed + why) into the PR body. NEVER run \`gh pr merge\`.`,
           ].join("\n"),
@@ -132,8 +132,11 @@ const auditPrompt = (bindings) => {
   const baseRef = String(input.baseRef || "main")
   const repo = String(input.repo || "")
   const reviewConfig = input.reviewConfig || {}
-  const isSandbox = sandboxRefFor(reviewConfig, VERB) !== undefined
-  const branch = "bot/docs-audit-config-axes"
+  const isSandbox = sandboxRefFor(reviewConfig, VERB) !== undefined && Boolean(repo)
+  // Run-specific, not surface-specific: a fresh branch per run so a rerun
+  // with a different `surface`/`docPaths` never collides (non-fast-forward
+  // push) with a still-open branch from a prior run.
+  const branch = `bot/docs-audit-${Date.now().toString(36)}`
 
   return [
     `You are a documentation auditor for the @agentproto/ts monorepo.`,
