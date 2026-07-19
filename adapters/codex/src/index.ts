@@ -92,18 +92,21 @@ export const codex: AgentCliHandle = defineAgentCli({
       id: "default",
       description:
         "Auto mode (default) — Codex executes file edits and shell commands with per-tool prompts.",
+      kind: "posture",
     },
     {
       id: "read-only",
       description:
         "Read-only mode — Codex inspects but does not edit or run commands.",
       bin_args_append: ["--mode", "read-only"],
+      kind: "posture",
     },
     {
       id: "full-access",
       description:
         "Full-access mode — auto-approve all file/shell operations. Use only in trusted sandboxes.",
       bin_args_append: ["--mode", "full-access"],
+      kind: "posture",
     },
   ],
   options: [
