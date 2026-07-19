@@ -175,9 +175,11 @@ const deliverPrompt = (bindings) => {
         : [
             `   \`\`\`bash`,
             `   git checkout -b "${branch}"`,
-            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
+            `   git add -u && git commit -m "<concise conventional-commit title for the doc fixes>"`,
             `   git push -u origin "${branch}"`,
             `   \`\`\``,
+            `   (\`git add -u\` stages only your edits to already-tracked docs — never`,
+            `   sweep unrelated untracked files from a dirty working tree into the commit.)`,
           ].join("\n"),
     )
   } else {
@@ -188,10 +190,12 @@ const deliverPrompt = (bindings) => {
         : [
             `   \`\`\`bash`,
             `   git checkout -b "${branch}"`,
-            `   git add -A && git commit -m "<concise conventional-commit title for the doc fixes>"`,
+            `   git add -u && git commit -m "<concise conventional-commit title for the doc fixes>"`,
             `   git push -u origin "${branch}"`,
             `   gh pr create --base ${baseRef} --title "<concise PR title for the doc fixes>" --body-file -`,
             `   \`\`\``,
+            `   (\`git add -u\` stages only your edits to already-tracked docs — never`,
+            `   sweep unrelated untracked files from a dirty working tree into the commit.)`,
             `   Pipe your drift report (what changed + why) into the PR body. Print the PR URL when done.`,
           ].join("\n"),
     )
