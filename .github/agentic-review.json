@@ -5,7 +5,7 @@
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
-  "cliSource": "npm",
+  "cliSource": "workspace",
   "cliVersion": "0.8.0",
   "reviewerAdapter": "claude-code",
   "reviewerAuthMode": "subscription",
