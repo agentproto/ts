@@ -4,8 +4,9 @@
  * Renders a session as a structured chat timeline reduced from the daemon's
  * durable per-session structured events (GET /sessions/:id/events), hydrating
  * once and then live-polling from a monotonic `seq` cursor. Sessions with no
- * structured capture (terminal/command, or a daemon that predates the events
- * route) fall back to the raw flattened /stream output.
+ * structured capture fall back to the raw flattened /stream output; PTY
+ * Claude/Hermes sessions can instead bridge to the provider-native transcript
+ * and join the structured path.
  *
  * Safety contract (preserved from the original raw-only controller):
  *   - Lines/updates that arrive before the webview finishes loading are
@@ -43,6 +44,7 @@ import {
   stringifyToolValue,
   type PresentedConversation,
 } from "./conversation.js"
+import { isNativeConversationSession, loadNativeConversation } from "./nativeConversation.js"
 import { buildAttachmentName, buildDroppedName, resolveAttachmentsCwd } from "./attachments.logic.js"
 import { filterMentionCandidates, type MentionCandidate } from "./mentions.logic.js"
 import { listRepoFiles } from "./mentionSource.js"
@@ -89,11 +91,6 @@ export interface TranscriptPanelControllerOptions {
    *  Defaults to the global `fetch`; tests override it to control the SSE
    *  connection without a real daemon. */
   fetchImpl?: typeof fetch
-}
-
-/** Sessions that never drive an agent turn have no structured capture. */
-function isRawKind(kind: SessionDescriptor["kind"]): boolean {
-  return kind === "terminal" || kind === "command"
 }
 
 /**
@@ -261,6 +258,7 @@ export class TranscriptPanelController {
   private readonly records: SessionEventRecord[] = []
   private readonly seenSeqs = new Set<number>()
   private eventsCursor = 0
+  private structuredSource: "daemon" | "native" | undefined
   private feed: RecordFeed | undefined
   /** Last conversation posted to the webview — the diff base for the next patch. */
   private lastPresented: PresentedConversation | undefined
@@ -336,14 +334,18 @@ export class TranscriptPanelController {
     // `init` ships this same snapshot, so the first live update diffs
     // against what the webview actually has instead of treating every turn
     // as new.
-    if (loaded.mode === "structured") this.lastPresented = loaded.conversation
+    if (loaded.mode === "structured") {
+      this.lastPresented = this.present()
+    } else {
+      this.lastPresented = undefined
+    }
 
     this.messenger.postMessage({
       type: "init",
       session,
       nonce: "",
       mode: loaded.mode,
-      ...(loaded.conversation ? { conversation: loaded.conversation } : {}),
+      ...(loaded.mode === "structured" ? { conversation: this.lastPresented } : {}),
       ...(loaded.initialHtml !== undefined ? { initialHtml: loaded.initialHtml } : {}),
       ...(resumeChain && resumeChain.length > 0 ? { resumeChain } : {}),
       history: this.promptHistory(),
@@ -375,26 +377,44 @@ export class TranscriptPanelController {
   }
 
   /** Load initial content for the chosen render mode. Prefers the structured
-   *  timeline for agent sessions; a missing route/other daemon error degrades
-   *  to raw, while a NoTranscriptError (no events written yet) stays structured
-   *  so the poll loop can populate it. */
+   *  timeline for agent sessions; terminal PTYs that map to a known native
+   *  conversation store are bridged into the same structured path. A missing
+   *  route/other daemon error degrades to raw, while a NoTranscriptError (no
+   *  events written yet) stays structured so the poll loop can populate it. */
   private async loadContent(preSession: SessionDescriptor): Promise<{
     mode: "structured" | "raw"
-    conversation?: PresentedConversation
     initialHtml?: string
   }> {
-    if (isRawKind(preSession.kind)) {
-      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
-    }
-    try {
-      await this.hydrateStructured()
-      return { mode: "structured", conversation: this.present() }
-    } catch (err) {
-      if (err instanceof NoTranscriptError) {
-        return { mode: "structured", conversation: this.present() }
+    if (preSession.kind === "agent-cli") {
+      this.structuredSource = "daemon"
+      try {
+        await this.hydrateStructured()
+        return { mode: "structured" }
+      } catch (err) {
+        if (err instanceof NoTranscriptError) {
+          return { mode: "structured" }
+        }
+        this.structuredSource = undefined
+        return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
       }
+    }
+    if (isNativeConversationSession(preSession)) {
+      this.structuredSource = "native"
+      const records = await loadNativeConversation(preSession)
+      this.appendRecords(records)
+      this.eventsCursor = records.at(-1)?.seq ?? 0
+      return { mode: "structured" }
+    }
+    if (preSession.kind !== "terminal" && preSession.kind !== "command") {
+      this.structuredSource = undefined
       return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
     }
+    if (preSession.kind === "terminal" && !preSession.pty) {
+      this.structuredSource = undefined
+      return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
+    }
+    this.structuredSource = undefined
+    return { mode: "raw", initialHtml: renderRawContent(await fetchRawContent(this.client, this.sessionId)) }
   }
 
   /** Page through the structured events from the current cursor to the end. */
@@ -485,6 +505,10 @@ export class TranscriptPanelController {
    */
   async pollOnce(): Promise<void> {
     if (this.disposed || this.mode !== "structured") return
+    if (this.structuredSource === "native") {
+      this.applyRecords(await this.fetchNewNativeRecords())
+      return
+    }
     this.applyRecords(await this.fetchNewRecords())
   }
 
@@ -504,6 +528,14 @@ export class TranscriptPanelController {
     }
     if (page.nextSeq > this.eventsCursor) this.eventsCursor = page.nextSeq
     return page.events
+  }
+
+  /** Native PTY bridge: reload the provider transcript and diff by seq. */
+  private async fetchNewNativeRecords(): Promise<readonly SessionEventRecord[]> {
+    const since = this.eventsCursor
+    const records = await loadNativeConversation(this.currentSession)
+    if (records.length > since) this.eventsCursor = records.at(-1)?.seq ?? since
+    return records.filter(rec => rec.seq > since)
   }
 
   /** Fold newly-fetched records in and post a patch if the presented timeline changed. */
@@ -528,19 +560,15 @@ export class TranscriptPanelController {
 
   private startFeed(): void {
     if (!this.autoPoll || this.disposed || this.mode !== "structured") return
+    const isActive = () => !this.disposed && this.mode === "structured" && !this.exited
+    if (this.structuredSource === "native") {
+      this.feed = new PollingRecordFeed(this.pollIntervalMs, isActive, () => this.fetchNewNativeRecords())
+      this.feed.start(records => this.applyRecords(records))
+      return
+    }
     const makePollingFeed = (): RecordFeed =>
-      new PollingRecordFeed(
-        this.pollIntervalMs,
-        () => !this.disposed && this.mode === "structured" && !this.exited,
-        () => this.fetchNewRecords(),
-      )
-    this.feed = new SseRecordFeed(
-      this.client,
-      this.sessionId,
-      this.eventsCursor,
-      makePollingFeed,
-      this.fetchImpl,
-    )
+      new PollingRecordFeed(this.pollIntervalMs, isActive, () => this.fetchNewRecords())
+    this.feed = new SseRecordFeed(this.client, this.sessionId, this.eventsCursor, makePollingFeed, this.fetchImpl)
     this.feed.start(records => this.applyRecords(records))
   }
 
