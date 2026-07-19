@@ -321,20 +321,21 @@ export interface AgentCliMode {
   description?: string
   /**
    * Which orthogonal session-config axis (SPEC-tracked in
-   * `@agentproto/runtime`'s `session-config.ts`) this legacy mode expresses,
-   * so the daemon can classify a `modes[]` entry without hard-coding ids:
-   * `"posture"` (what the agent may DO — plan/accept-edits/bypass/read-only),
-   * `"route"` (endpoint/billing rail), or `"context"` (what enters context).
-   * Omitted ⇒ inferred from the id (gateway-preset ids ⇒ route, known
-   * permission ids ⇒ posture, else ⇒ context — `decomposeMode`).
+   * `@agentproto/runtime`'s `session-config.ts`) this mode expresses. Narrowed
+   * to the single value `"context"` (what enters context — e.g. claude-code's
+   * `lean` env toggle), the only concern with no ACP-protocol home (SPEC §3.4a).
    *
-   * GOING FORWARD (SPEC §3.4a) the manifest declares ONLY `"context"`: routes
-   * are derived from the catalog (`@route`), postures from the harness's own
-   * ACP mode registry (`SessionModeState.availableModes`). The `"posture"` /
-   * `"route"` values remain accepted purely so the back-compat shim can
-   * classify LEGACY tagged manifests during migration.
+   * Route and posture are NO LONGER manifest modes: `"route"` (endpoint/billing
+   * rail) is derived from the model catalog (`@route` route-identity), and
+   * `"posture"` (what the agent may DO — plan/accept-edits/bypass/read-only)
+   * comes from the harness's own ACP mode registry
+   * (`SessionModeState.availableModes`). The legacy `"posture"`/`"route"`
+   * classification survives only inside the daemon's back-compat `decomposeMode`
+   * shim (`@agentproto/runtime`'s `DeclaredAdapterMode`), which still maps the
+   * old ids during migration — it is not a value the manifest may declare.
+   * Omitted ⇒ inferred from the id.
    */
-  kind?: "posture" | "route" | "context"
+  kind?: "context"
   /**
    * Extra argv prepended BEFORE the manifest's default `bin_args` when
    * this mode is active. Needed for CLIs whose global flags must

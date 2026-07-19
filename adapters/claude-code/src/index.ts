@@ -9,10 +9,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
-import {
-  ANTHROPIC_CORE_SCRUB_ENV,
-  ANTHROPIC_GATEWAY_PRESETS,
-} from "@agentproto/provider-presets"
+import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 
 // Cloud-provider redirect toggles that must be scrubbed alongside the core
 // ANTHROPIC_API_KEY whenever the claude binary is pointed at a non-Anthropic
@@ -109,31 +106,32 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // (agentproto#186; the apply is now best-effort, see @agentproto/acp's
   // newSession). Stale native ids that the wrapper no longer offers were
   // removed: `claude-sonnet-4-6` (the old default), `claude-opus-4-7`,
-  // `claude-opus-4-6`. The gateway ids mirror claude-sdk's set — the
-  // claude binary honors ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN exactly
-  // like the SDK does, so the same moonshot/openrouter modes below reach
-  // them; they were simply never declared here before.
+  // `claude-opus-4-6`.
+  //
+  // The gateway (Moonshot/OpenRouter/Requesty) models keep their `provider`
+  // annotation but NO LONGER carry a `mode:` binding: the route to a gateway
+  // is derived from the model catalog's `@route` route-identity, not an
+  // adapter mode (SPEC §3.4a) — the gateway `modes[]` entries were deleted.
+  // The claude binary still reaches those endpoints via the per-spawn
+  // `base_url` / `auth_token` options (below) until the catalog route
+  // apply-path lands.
   models: {
     default: "claude-sonnet-5",
     allowed: [
-      // Native Anthropic — no mode switch needed
+      // Native Anthropic
       { id: "claude-sonnet-5", provider: "anthropic" },
       { id: "claude-opus-4-8", provider: "anthropic" },
       { id: "claude-haiku-4-5", provider: "anthropic" },
       { id: "claude-fable-5", provider: "anthropic" },
-      // Moonshot (Kimi) — mode: moonshot
-      { id: "kimi-k2.7-code", provider: "moonshot", mode: "moonshot" },
-      // OpenRouter — mode: openrouter
-      { id: "z-ai/glm-5.2", provider: "openrouter", mode: "openrouter" },
-      { id: "deepseek/deepseek-v4-pro", provider: "openrouter", mode: "openrouter" },
-      { id: "moonshotai/kimi-k2", provider: "openrouter", mode: "openrouter" },
-      // Requesty — mode: requesty
-      {
-        id: "sference/thinkingcap-qwen3.6-27b",
-        provider: "requesty",
-        mode: "requesty",
-      },
-      { id: "sference/glm-5.2", provider: "requesty", mode: "requesty" },
+      // Moonshot (Kimi) — route resolved from the catalog `@route`
+      { id: "kimi-k2.7-code", provider: "moonshot" },
+      // OpenRouter — route resolved from the catalog `@route`
+      { id: "z-ai/glm-5.2", provider: "openrouter" },
+      { id: "deepseek/deepseek-v4-pro", provider: "openrouter" },
+      { id: "moonshotai/kimi-k2", provider: "openrouter" },
+      // Requesty — route resolved from the catalog `@route`
+      { id: "sference/thinkingcap-qwen3.6-27b", provider: "requesty" },
+      { id: "sference/glm-5.2", provider: "requesty" },
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
@@ -164,34 +162,31 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multimodal round-trip needed; pure file-path injection.
     file_attach: true,
   },
-  // `bin_args_append: ["--permission-mode", ...]` below is a no-op against
-  // the @agentclientprotocol/claude-agent-acp wrapper — it never reads
-  // `--permission-mode` from argv. The wrapper instead resolves
-  // `permissions.defaultMode` exclusively via the SDK's `resolveSettings`,
-  // which merges `${CLAUDE_CONFIG_DIR}/settings.json` (user tier),
-  // `<cwd>/.claude/settings(.local).json` (project tier), and a managed
-  // tier. The driver (`packages/driver/agent-cli/src/define-agent-cli.ts`,
-  // `resolveClaudeCodePermissionMode`) makes the mode actually take effect
-  // by pointing a per-session `CLAUDE_CONFIG_DIR` at a throwaway temp dir
-  // containing `{"permissions":{"defaultMode":"<value>"}}` — reading the
-  // same `--permission-mode <value>` pair declared here as its one source
-  // of truth for the value vocabulary. `bin_args_append` is kept for a
-  // future wrapper version that might start reading argv.
-  //
-  // Known limitation (empirically confirmed, not just theorized): a target
-  // repo that commits its own escalated `.claude/settings.json`
-  // `permissions.defaultMode` (e.g. "bypassPermissions") does NOT let the
-  // repo's escalation win — the wrapper's `filterEscalatingDefaultMode`
-  // strips an escalating project-tier value entirely — but it also means
-  // OUR requested mode is defeated in the same merge pass (project tier
-  // out-prioritizes the user tier for the raw merge, before the filter
-  // ever runs). The net effect for that adversarial case is the session
-  // falls back to "default" (normal per-action prompting) rather than the
-  // requested mode. This does not reintroduce the original bug (silent,
-  // zero-prompt writes) — it just doesn't guarantee plan-only reasoning
-  // against a repo actively trying to escalate its own trust level.
+  // Only the `lean` context mode remains a manifest `modes[]` entry (SPEC
+  // §3.4a). Posture (plan / accept-edits / bypass-permissions) and the gateway
+  // routes (moonshot / openrouter / requesty / deepseek) were BOTH removed from
+  // here:
+  //   - posture now comes from the harness's own ACP mode registry
+  //     (`SessionModeState.availableModes`) plus the daemon's canonical-posture
+  //     layer (step 2c). The `CLAUDE_CONFIG_DIR` ENFORCEMENT MECHANISM in the
+  //     driver (`resolveClaudeCodePermissionMode` in define-agent-cli.ts) is
+  //     unchanged — it still points a per-session `CLAUDE_CONFIG_DIR` at a
+  //     throwaway `settings.json` with `{"permissions":{"defaultMode":
+  //     "<value>"}}` (the ACP wrapper ignores `--permission-mode` on argv). But
+  //     its INPUT changed: it looks the value up in `modes[]` by `config.mode`,
+  //     and with the posture modes removed here that lookup no longer matches
+  //     for `plan`/`accept-edits`/`bypass-permissions` — so the `config.mode`-
+  //     driven path is now DORMANT (returns undefined) until step 2c re-sources
+  //     the requested posture from the canonical layer and feeds it in. The
+  //     known limitation still holds once it does: a target repo that commits
+  //     its own escalated `.claude/settings.json` `permissions.defaultMode`
+  //     defeats OUR requested mode in the same merge pass and the session falls
+  //     back to "default" (never the original silent-write bug).
+  //   - route now comes from the model catalog's `@route` route-identity; the
+  //     gateway endpoint is still reachable per-spawn via the `base_url` /
+  //     `auth_token` options (below), which carry the same ANTHROPIC_API_KEY +
+  //     cloud-toggle scrub via `env_unset`.
   modes: [
-    { id: "default", description: "Standard interactive mode.", kind: "posture" },
     {
       id: "lean",
       description:
@@ -202,99 +197,6 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
         "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
       env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
       kind: "context",
-    },
-    {
-      id: "plan",
-      description:
-        "Plan-only mode — Claude Code reasons and proposes a plan, requesting explicit " +
-        "approval before writing files or running commands. Applied via a per-session " +
-        "CLAUDE_CONFIG_DIR override (see comment above `modes`); can be defeated by a " +
-        "target repo's own committed, escalated .claude/settings.json.",
-      bin_args_append: ["--permission-mode", "plan"],
-      kind: "posture",
-    },
-    {
-      id: "accept-edits",
-      description: "Auto-accept file edits; commands still prompt.",
-      bin_args_append: ["--permission-mode", "acceptEdits"],
-      kind: "posture",
-    },
-    {
-      id: "bypass-permissions",
-      description:
-        "Skip all permission prompts. Use only in trusted automation contexts.",
-      bin_args_append: ["--permission-mode", "bypassPermissions"],
-      kind: "posture",
-    },
-    // ── Gateway modes ───────────────────────────────────────────────
-    // The claude binary honors ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN,
-    // so it can front any Anthropic-compatible gateway (Moonshot, OpenRouter,
-    // LiteLLM, claude-code-router) the same way @agentproto/adapter-claude-sdk
-    // does. These modes pre-wire the endpoint and — critically — scrub the
-    // ambient ANTHROPIC_API_KEY plus the cloud-provider redirect toggles
-    // (CLAUDE_CODE_USE_BEDROCK/_VERTEX/…) via env_unset so the real Anthropic
-    // credential can neither leak to nor 401 against a third-party host, and
-    // a leftover cloud toggle can't override the gateway base_url. The
-    // operator supplies the gateway key via the `auth_token` option (injected
-    // as ANTHROPIC_AUTH_TOKEN, sent as `Authorization: Bearer`) and picks a
-    // model via `model` (e.g. 'kimi-k2.7-code', 'z-ai/glm-5.2') — the ACP
-    // wrapper applies it via session/set_config_option after newSession.
-    {
-      id: ANTHROPIC_GATEWAY_PRESETS.moonshot.id,
-      description:
-        "Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's " +
-        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
-        "so it can't leak to the third-party host. Supply the Moonshot key via " +
-        "the `auth_token` option and pick a model via `model` (conventional: " +
-        "'kimi-k2.7-code'). Without auth_token the spawn has no credentials and " +
-        "fails cleanly — the real Anthropic key is never sent.",
-      env: {
-        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.moonshot.baseUrl,
-      },
-      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
-      kind: "route",
-    },
-    {
-      id: ANTHROPIC_GATEWAY_PRESETS.openrouter.id,
-      description:
-        "OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's " +
-        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
-        "(same auth-hygiene rationale as `moonshot`). Pick a model via `model` " +
-        "(e.g. 'z-ai/glm-5.2', 'deepseek/deepseek-v4-pro', 'moonshotai/kimi-k2') " +
-        "and supply the OpenRouter key via `auth_token`.",
-      env: {
-        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.openrouter.baseUrl,
-      },
-      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
-      kind: "route",
-    },
-    {
-      id: ANTHROPIC_GATEWAY_PRESETS.requesty.id,
-      description:
-        "Requesty gateway. Pre-wires ANTHROPIC_BASE_URL to Requesty's " +
-        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
-        "(same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model " +
-        "via `model` (e.g. 'sference/thinkingcap-qwen3.6-27b', " +
-        "'sference/glm-5.2') and supply the Requesty key via `auth_token`.",
-      env: {
-        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.requesty.baseUrl,
-      },
-      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
-      kind: "route",
-    },
-    {
-      id: ANTHROPIC_GATEWAY_PRESETS.deepseek.id,
-      description:
-        "DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's " +
-        "Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY " +
-        "(same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model " +
-        "via `model` (conventional: 'deepseek-v4-pro', 'deepseek-v4-flash') and " +
-        "supply the DeepSeek key via `auth_token`.",
-      env: {
-        ANTHROPIC_BASE_URL: ANTHROPIC_GATEWAY_PRESETS.deepseek.baseUrl,
-      },
-      env_unset: CLAUDE_CODE_GATEWAY_ENV_UNSET,
-      kind: "route",
     },
   ],
   options: [

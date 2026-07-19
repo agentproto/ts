@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
 import {
+  LEGACY_GATEWAY_MODE_IDS,
+  LEGACY_POSTURE_MODE_IDS,
+} from "@agentproto/driver-agent-cli"
+import {
   composeMode,
   decomposeMode,
   type CanonicalPosture,
@@ -8,8 +12,12 @@ import {
   type SessionConfig,
 } from "../session-config.js"
 
-// Mirrors the claude-code manifest's `modes[]` (kind tags added alongside this
-// shim) — the real-world fixture decomposeMode/composeMode operate on.
+// A LEGACY (pre-migration) claude-code `modes[]`, still carrying the old
+// posture/route kind tags. As of the SPEC §3.4a route/posture extraction the
+// live manifest declares ONLY `kind:"context"` (route → catalog `@route`,
+// posture → ACP mode registry), so this fixture no longer mirrors the shipped
+// adapter — it is deliberately the OLD shape, because `decomposeMode`/
+// `composeMode` must keep classifying these legacy ids for back-compat.
 const CLAUDE_CODE_MODES: DeclaredAdapterMode[] = [
   { id: "default", kind: "posture" },
   { id: "lean", kind: "context" },
@@ -74,6 +82,28 @@ describe("decomposeMode — each legacy id maps to its correct axis", () => {
     // A CanonicalPosture is a string; a raw harness mode would be an object.
     expect(typeof decomposed.posture).toBe("string")
   })
+
+  // Drift guard: the legacy route/posture id sets are single-sourced in
+  // `@agentproto/driver-agent-cli` (`legacy-modes.ts`) and reused by both this
+  // shim and the driver's `composeSpawn` back-compat path. Assert `decomposeMode`
+  // stays consistent with that shared classification — every gateway id ⇒ route,
+  // every posture id ⇒ a canonical posture — so the two sides can't diverge.
+  it.each([...LEGACY_GATEWAY_MODE_IDS])(
+    "classifies the shared gateway id '%s' as the route axis (no kind tag)",
+    id => {
+      expect(decomposeMode([], id)).toEqual({ route: { gateway: id } })
+    }
+  )
+
+  it.each([...LEGACY_POSTURE_MODE_IDS])(
+    "classifies the shared posture id '%s' as a canonical posture (no kind tag)",
+    id => {
+      const decomposed = decomposeMode([], id)
+      expect(decomposed.route).toBeUndefined()
+      expect(decomposed.contextProfile).toBeUndefined()
+      expect(typeof decomposed.posture).toBe("string")
+    }
+  )
 })
 
 describe("composeMode — lossless round-trip on a SINGLE decomposed axis (SPEC §3.8)", () => {

@@ -273,11 +273,14 @@ const capabilitiesSchema = z.object({
 export const modeSchema = z.object({
   id: z.string().regex(MODE_ID_PATTERN),
   description: z.string().optional(),
-  // Which orthogonal session-config axis this legacy mode expresses
-  // (SPEC-tracked in @agentproto/runtime's session-config.ts). Omitted ⇒
-  // inferred from the id. Going forward the manifest declares only "context"
-  // (routes come from the catalog, postures from the ACP registry, SPEC §3.4a).
-  kind: z.enum(["posture", "route", "context"]).optional(),
+  // Which orthogonal session-config axis this mode expresses (SPEC-tracked in
+  // @agentproto/runtime's session-config.ts). Narrowed to only "context" (SPEC
+  // §3.4a): route is derived from the model catalog (@route), not a manifest
+  // mode, and posture comes from the harness's own ACP mode registry
+  // (SessionModeState.availableModes) — neither is a `modes[]` entry anymore.
+  // The legacy "posture"/"route" classification still exists, but only inside
+  // the daemon's back-compat `decomposeMode` shim, not this manifest surface.
+  kind: z.enum(["context"]).optional(),
   bin_args_prepend: z.array(z.string()).optional(),
   bin_args_append: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),

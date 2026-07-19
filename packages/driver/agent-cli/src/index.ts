@@ -78,6 +78,14 @@ export {
   RuntimeConfigError,
   type ComposedSpawn,
 } from "./manifest/compose.js"
+// Legacy AIP-45 mode-id classification (SPEC §3.4a) — the single source the
+// daemon's `decomposeMode` shim reuses so the route/posture id set never drifts.
+export {
+  LEGACY_GATEWAY_MODE_IDS,
+  LEGACY_POSTURE_MODE_IDS,
+  inferLegacyModeKind,
+  isLegacyExtractedModeId,
+} from "./legacy-modes.js"
 export {
   registerContinuationStrategy,
   getContinuationStrategy,

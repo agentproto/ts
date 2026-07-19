@@ -33,6 +33,7 @@ import type {
   AgentCliOption,
   RuntimeConfig,
 } from "../types.js"
+import { isLegacyExtractedModeId } from "../legacy-modes.js"
 
 /**
  * Thrown when `RuntimeConfig` references manifest entries that don't
@@ -116,21 +117,36 @@ export function composeSpawn(
   if (config.mode !== undefined) {
     const mode = (handle.modes ?? []).find(m => m.id === config.mode)
     if (!mode) {
-      const known = (handle.modes ?? []).map(m => m.id).join(", ") || "(none)"
-      throw new RuntimeConfigError(
-        "unknown_mode",
-        "config.mode",
-        `Mode '${config.mode}' is not declared by manifest '${handle.id}'. Known modes: ${known}`
-      )
-    }
-    // "config" modes have no argv/env surface — the CLI doesn't accept a
-    // flag for this mode at all (e.g. opencode's plan/build). The mode id
-    // is instead forwarded to the ACP arm's connect({mode}) by
-    // define-agent-cli.ts and applied via session/set_config_option. Skip
-    // bin_args_prepend/bin_args_append/env here even if an author declared
-    // them alongside apply:"config" — config wins, argv is never composed,
-    // so a typo'd flag can't crash the spawn the way this whole bug did.
-    if ((mode.apply ?? "bin_args") === "bin_args") {
+      // Back-compat (SPEC §3.4a route/posture extraction): route and posture
+      // are no longer manifest `modes[]` entries — route resolves from the
+      // model catalog `@route`, posture from the harness ACP mode registry /
+      // canonical-posture layer. A caller can still pass one of those extracted
+      // legacy ids as `config.mode` (a persisted OPERATOR.md
+      // `runtime.config.mode`, a `defaults.adapters.<slug>` binding, an
+      // in-flight request written against the pre-migration manifest), so a
+      // KNOWN legacy route/posture id DEGRADES to a soft no-op here — its
+      // env/argv patch is gone, and the axis it targeted is applied elsewhere
+      // (or, until step 2c lands, dormant) — rather than hard-failing the spawn.
+      // Only a genuinely-unknown id (never a valid mode) still throws. The
+      // legacy-id set is single-sourced in `../legacy-modes`, shared with the
+      // daemon's `decomposeMode` shim so the two can't drift.
+      if (!isLegacyExtractedModeId(config.mode)) {
+        const known = (handle.modes ?? []).map(m => m.id).join(", ") || "(none)"
+        throw new RuntimeConfigError(
+          "unknown_mode",
+          "config.mode",
+          `Mode '${config.mode}' is not declared by manifest '${handle.id}'. Known modes: ${known}`
+        )
+      }
+      // Known legacy extracted id → soft no-op: fall through with no mode patch.
+    } else if ((mode.apply ?? "bin_args") === "bin_args") {
+      // "config" modes have no argv/env surface — the CLI doesn't accept a
+      // flag for this mode at all (e.g. opencode's plan/build). The mode id
+      // is instead forwarded to the ACP arm's connect({mode}) by
+      // define-agent-cli.ts and applied via session/set_config_option. Skip
+      // bin_args_prepend/bin_args_append/env here even if an author declared
+      // them alongside apply:"config" — config wins, argv is never composed,
+      // so a typo'd flag can't crash the spawn the way this whole bug did.
       if (mode.bin_args_prepend) prepend.push(...mode.bin_args_prepend)
       if (mode.bin_args_append) append.push(...mode.bin_args_append)
       if (mode.env) Object.assign(env, mode.env)

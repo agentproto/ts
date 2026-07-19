@@ -87,28 +87,12 @@ export const codex: AgentCliHandle = defineAgentCli({
     resumable: true,
     bidirectional: true,
   },
-  modes: [
-    {
-      id: "default",
-      description:
-        "Auto mode (default) — Codex executes file edits and shell commands with per-tool prompts.",
-      kind: "posture",
-    },
-    {
-      id: "read-only",
-      description:
-        "Read-only mode — Codex inspects but does not edit or run commands.",
-      bin_args_append: ["--mode", "read-only"],
-      kind: "posture",
-    },
-    {
-      id: "full-access",
-      description:
-        "Full-access mode — auto-approve all file/shell operations. Use only in trusted sandboxes.",
-      bin_args_append: ["--mode", "full-access"],
-      kind: "posture",
-    },
-  ],
+  // No manifest `modes[]`: codex's operation profiles (default / read-only /
+  // full-access) are POSTURE, which no longer lives in the manifest (SPEC
+  // §3.4a) — it is sourced from the harness's own ACP mode registry
+  // (`SessionModeState.availableModes`) plus the daemon's canonical-posture
+  // layer. codex has no context (`kind:"context"`) mode to declare, and route
+  // comes from the model catalog, so the array would be empty — omit it.
   options: [
     {
       id: "model",
