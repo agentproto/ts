@@ -289,7 +289,8 @@ or `evaluate` via **Settings → Rules**, merge, then restore it.
 
 | Name | Kind | Required | Used by |
 |------|------|----------|---------|
-| `ANTHROPIC_API_KEY` | Secret | Yes | Both `pr-review` and `pr-fix` jobs (Claude API calls) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Secret | Yes (subscription mode) | Reviewer sandbox — exported as `ANTHROPIC_AUTH_TOKEN`; the default `reviewerAuthMode` in `.github/agentic-review.json` |
+| `ANTHROPIC_API_KEY` | Secret | Only in `api-key` mode | Both jobs when `reviewerAuthMode` is `api-key` (Claude API calls) |
 | `GITHUB_TOKEN` | Secret (auto) | Yes | Both jobs (posting reviews, comments, pushing commits) |
 | `BOT_APP_PRIVATE_KEY` | Secret | No (App path) | Mint step — PEM private key of the GitHub App |
 | `BOT_PAT` | Secret | No (PAT path) | Checkout fallback if App not configured |
