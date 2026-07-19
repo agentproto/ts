@@ -1,5 +1,22 @@
 # @agentproto/adapter-codex
 
+## 1.0.0
+
+### Major Changes
+
+- 92c1c51: Narrow AgentCliMode.kind to "context"; drop posture/route modes from claude-code, codex, opencode
+
+### Patch Changes
+
+- b16bb83: Add SessionConfig axes type + decomposeMode/composeMode shim (SPEC §3.1)
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [48c55d5]
+  - @agentproto/driver-agent-cli@2.0.0
+
 ## 0.2.2
 
 ### Patch Changes

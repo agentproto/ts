@@ -1,5 +1,62 @@
 # @agentproto/runtime
 
+## 1.0.0
+
+### Major Changes
+
+- 8e99f17: Fix session-bucket clobber on registry-read failure or skewed reload; readRegisteredSlugs now returns {slugs, ok}
+
+### Minor Changes
+
+- cc84da6: Fix claude-code project-slug encoding and add persisted conversation index + `conversation locate` verb
+- 40cd699: Add archivable terminal sessions: session_archive/session_unarchive MCP tools + list({includeArchived})
+- b16bb83: Add SessionConfig axes type + decomposeMode/composeMode shim (SPEC §3.1)
+- b331539: Add read-only GET /catalog/models + catalog_models MCP tool (SPEC §5)
+- 40036de: Add canonical-posture layer (native mode resolution + prompt-injection fallback)
+- 7441a7d: Add descriptor config-axis echo fields (effort/posture/route/contextProfile/accessProfile) + AuthMethod export
+- 57d1499: Route sandboxed agent-step spawns through spawnAgentSession; e2b installPackages boot option
+- d4d515e: Add axis-generic session:config-changed event, emitted from setModel alongside session:model-changed
+- 48c55d5: Add live effort + live posture verbs and a model↔route switch guard
+- 39ace5f: Add restart-with-override: axis overrides on session_restart + POST /sessions/:id/restart
+
+### Patch Changes
+
+- 1411e36: Don't engage native Anthropic billing-auth when a gateway base_url is set without an auth_token
+- 6453ff6: Persist session_restart's resumedFrom/resumeVia on the stored descriptor
+- 336c49c: Expose real agent-step ids/session ids in file-based workflow runs and fail a step on an empty (no-op) turn
+- 92c1c51: Narrow AgentCliMode.kind to "context"; drop posture/route modes from claude-code, codex, opencode
+- c3bfaea: Fix catalog_models 500 on router-prefixed OpenRouter model ids
+- 3d403d7: Fix e2b sandbox timeout issues and add poll resilience.
+
+  Root cause: e2b's per-command timeout defaults to 60s (even for `background: true` commands), killing the daemon mid-turn; sandbox lifetime defaults to 5min, reaped during long turns. Native reviewer failed on every PR, triggering fallback double-reviews.
+
+  Changes:
+  - **harness**: Increase MCP request timeout to long-poll window + 60s grace (client was aborting at 60s while server held 49s windows, leaving ~11s headroom)
+  - **runtime**: Add poll resilience — retries transient failures up to 6x; make output pulls best-effort (offset-diff safe)
+  - **sandbox-e2b**: Set `timeoutMs: 0` on serve command (disables per-command timeout); default sandbox lifetime to 45min (overridable); re-arm timeout on reconnect
+  - **ci**: Add postcheck gate (prevent duplicate reviews when native lane posts then errors post-post); add verify gate (confirm review row exists on GitHub API); integrate Langfuse tracing (soft-fail when creds absent)
+
+- Updated dependencies [9e30ad2]
+- Updated dependencies [5c99163]
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [57d1499]
+- Updated dependencies [48c55d5]
+- Updated dependencies [e3bacf3]
+  - @agentproto/model-catalog@0.6.0
+  - @agentproto/provider-presets@0.4.1
+  - @agentproto/driver-agent-cli@2.0.0
+  - @agentproto/acp@0.6.0
+  - @agentproto/workflow-runtime@0.5.0
+  - @agentproto/mcp-server@0.2.3
+  - @agentproto/providers-store@0.3.1
+  - @agentproto/sandbox@0.1.4
+  - @agentproto/eval-reporters@0.2.3
+  - @agentproto/telemetry-langfuse@0.2.2
+
 ## 0.8.0
 
 ### Minor Changes

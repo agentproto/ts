@@ -1,5 +1,11 @@
 # @agentproto/acp
 
+## 0.6.0
+
+### Minor Changes
+
+- a021138: Add ACP capability read-surface (configOptions/modes) and live setSessionMode
+
 ## 0.5.0
 
 ### Minor Changes

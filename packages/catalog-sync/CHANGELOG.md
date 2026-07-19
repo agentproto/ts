@@ -1,5 +1,14 @@
 # @agentproto/catalog-sync
 
+## 0.5.1
+
+### Patch Changes
+
+- 9e30ad2: Refresh Moonshot/OpenRouter snapshots, add Kimi K3 + K2.7 Code pricing
+- 5c99163: Sync docs (README/manifests) with already-shipped requesty preset, catalog-sync, and permissions watch
+- Updated dependencies [9e30ad2]
+  - @agentproto/model-catalog@0.6.0
+
 ## 0.5.0
 
 ### Minor Changes

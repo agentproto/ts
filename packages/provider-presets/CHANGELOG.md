@@ -1,5 +1,11 @@
 # @agentproto/provider-presets
 
+## 0.4.1
+
+### Patch Changes
+
+- 5c99163: Sync docs (README/manifests) with already-shipped requesty preset, catalog-sync, and permissions watch
+
 ## 0.4.0
 
 ### Minor Changes

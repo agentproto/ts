@@ -1,5 +1,20 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.4.1
+
+### Patch Changes
+
+- 5c99163: Sync docs (README/manifests) with already-shipped requesty preset, catalog-sync, and permissions watch
+- Updated dependencies [5c99163]
+- Updated dependencies [1411e36]
+- Updated dependencies [b16bb83]
+- Updated dependencies [a021138]
+- Updated dependencies [9fab1ad]
+- Updated dependencies [92c1c51]
+- Updated dependencies [48c55d5]
+  - @agentproto/provider-presets@0.4.1
+  - @agentproto/driver-agent-cli@2.0.0
+
 ## 0.4.0
 
 ### Minor Changes

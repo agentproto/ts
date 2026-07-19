@@ -1,5 +1,11 @@
 # @agentproto/corpus-cli
 
+## 0.5.0
+
+### Minor Changes
+
+- f4470d1: Add --lens/--lens-file to corpus distill, with a built-in craft lens
+
 ## 0.4.0
 
 ### Minor Changes

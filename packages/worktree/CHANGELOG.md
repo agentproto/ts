@@ -1,5 +1,14 @@
 # @agentproto/worktree
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [57d1499]
+- Updated dependencies [3d403d7]
+  - @agentproto/workflow-runtime@0.5.0
+  - @agentproto/harness@0.3.0
+
 ## 0.4.1
 
 ### Patch Changes
