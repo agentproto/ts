@@ -8,9 +8,9 @@
   "cliSource": "workspace",
   "cliVersion": "0.8.0",
   "reviewerAdapter": "claude-sdk",
-  "reviewerAuthMode": "api-key",
+  "reviewerAuthMode": "subscription",
   "reviewerSandbox": "e2b",
-  "reviewerSandboxEnv": ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"],
+  "reviewerSandboxEnv": ["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"],
   "describe": {
     "auto": true,
     "minBodyChars": 80
