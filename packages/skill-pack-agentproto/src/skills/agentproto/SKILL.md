@@ -20,6 +20,12 @@ metadata:
   the daemon up? what's imported? why isn't a tool showing up?).
 - "Author / extend an agentproto tool or driver" in `projects/agentproto/ts`.
 - One-shot agent turns from the CLI (`agentproto run <adapter> --prompt …`).
+- "Build / extend the agentic PR review · fix · pr CI lanes" (the sandboxed
+  agent that reviews PRs and opens fixes, billing our subscription) →
+  `reference/ci-review-fix-lanes.md`.
+- "Create / apply an agentproto skill — where does it live, how is it
+  installed" (AIP-3 SKILL.md, the `skill-pack-agentproto` centralizing pack,
+  `.github/agent-skills` CI skills) → `reference/authoring-skills.md`.
 
 If you just need to act in a logged-in web app, go straight to `local-browser` /
 the site skill — they assume this plumbing already works.
@@ -662,6 +668,35 @@ Build/test the workspace: `pnpm -r build && pnpm -r test` from
 — **no Guilde/Katchy/app brand names** in `@agentproto/*` source, READMEs, or
 descriptions. AIP specs are the source of truth; amend the spec rather than
 working around it.
+
+## Agentic CI lanes (review · fix · pr) — see `reference/ci-review-fix-lanes.md`
+
+The `agentproto/ts` repo drives a **sandboxed agent** to review PRs, apply
+review fixes, and open PRs from an issue/request — config-driven, one composable
+block, billing our **subscription** (`CLAUDE_CODE_OAUTH_TOKEN` →
+`ANTHROPIC_AUTH_TOKEN`, adapter `claude-sdk`, e2b sandbox). Four layers:
+`.github/agentic-review.json` (config) → `.github/agentproto-workflows/<lane>/`
+(WORKFLOW.md + entry.mjs, sharing `lib/sandbox-agent.mjs`) →
+`.github/actions/agentproto-run/` (daemon + driver + auth) → `ci.yml` /
+`agent-command.yml` (wiring). The `fixDelivery` knob (`commit` | `pr`) chooses
+push-to-branch vs open-a-PR. The reference file covers the verb model, adding a
+verb/lane, the subscription-auth wiring, sandbox gotchas, the
+native-vs-legacy `@agentproto-bot` discriminator, merge gates + the
+capability model, and verify/smoke-test recipes.
+
+## Authoring skills (AIP-3) — see `reference/authoring-skills.md`
+
+Skills are AIP-3 `SKILL.md` files with three source homes: the **centralizing
+pack** `packages/skill-pack-agentproto/src/skills/<slug>/` (source of truth —
+edit here, `pnpm build` generates the consumable `skills/` + `.claude-plugin/` +
+`dist/*.zip`); `.github/agent-skills/<name>.md` (short prompts for the PR
+review/fix CI lanes, referenced from `agentic-review.json`); and the studio
+`.claude/skills/` + `.agents/skills/` (a local Claude Code INSTALL that can drift
+from the pack). Apply via `agentproto install skill/<slug> --pack
+agentproto-plugin` (fans out into every adapter declaring `metadata.skills`, or
+`--target hermes|claude-code|claude-desktop`) or the release `.zip` for Claude
+Code. The reference covers the frontmatter schema, the build→apply flow, and the
+drift/reconciliation rule (pack `src/skills/` is authoritative).
 
 ## Safety rails
 
