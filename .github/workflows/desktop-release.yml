@@ -1,0 +1,90 @@
+# First/beta rail for the desktop app: builds UN-signed, un-notarized
+# installers for macOS, Linux, and Windows and attaches them to a DRAFT
+# GitHub Release for a human to review and publish.
+#
+# No auto-updater plugin is configured for packages/desktop, so there is no
+# signing key involved and none is set up here (no TAURI_SIGNING_* /
+# APPLE_* env). That also means macOS Gatekeeper and Windows SmartScreen
+# will warn on first launch — see the release notes below for the
+# workaround users need. Signing + notarization is a later hardening step,
+# not a blocker for shipping the first installers.
+#
+# Distribution is a GitHub Release, not npm — packages/desktop is private.
+
+name: Desktop app release
+
+on:
+  workflow_dispatch: # manual (re)run, e.g. to test this workflow
+  push:
+    tags:
+      - 'desktop-v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Add macOS Rust targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: pnpm
+
+      # Tauri's beforeBuildCommand runs `pnpm build` inside packages/desktop,
+      # which needs the workspace's deps installed at the repo root first.
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build and release the desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: packages/desktop
+          tagName: desktop-v__VERSION__
+          releaseName: 'agentproto desktop v__VERSION__'
+          releaseBody: |
+            These installers are UNSIGNED and un-notarized (first/beta rail — no signing key is configured yet):
+
+            - **macOS**: right-click the app → Open (or System Settings → Privacy & Security → Open Anyway) to get past Gatekeeper.
+            - **Windows**: click "More info" → "Run anyway" to get past SmartScreen.
+            - **Linux**: runs directly, no extra step needed.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
