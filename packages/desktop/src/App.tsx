@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { DEFAULT_DAEMON_URL, daemonHealth, daemonSessions } from "./data/daemon"
 import type { SessionDescriptor } from "./data/types"
@@ -17,6 +17,8 @@ import { browserTabsFor } from "./browser/browser-view"
 import { ChangesPanel } from "./changes/ChangesPanel"
 import { useGitDiff } from "./changes/useGitDiff"
 import { FilesPanel } from "./files/FilesPanel"
+import { useShortcuts } from "./shell/useShortcuts"
+import { CommandPalette, type PaletteAction } from "./shell/CommandPalette"
 import "./shell/shell.css"
 import "./browser/browser.css"
 import "./changes/changes.css"
@@ -30,6 +32,8 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<string>("transcript")
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const filterInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -107,6 +111,27 @@ function App() {
   )
   const activeBrowserTab = browserTabs.find((t) => t.id === activeTab) ?? null
 
+  const paletteActions = useMemo<PaletteAction[]>(
+    () => [
+      { id: "tab-transcript", label: "Go to Transcript", run: () => setActiveTab("transcript") },
+      { id: "tab-files", label: "Go to Files", run: () => setActiveTab("files") },
+    ],
+    [],
+  )
+
+  useShortcuts({
+    onPalette: () => setPaletteOpen(true),
+    onFocusFilter: () => filterInputRef.current?.focus(),
+    onSwitchTab: (tabId) => {
+      if (tabId === "browser") {
+        const first = browserTabs[0]
+        if (first) setActiveTab(first.id)
+      } else {
+        setActiveTab(tabId)
+      }
+    },
+  })
+
   const subagents = useMemo(() => {
     if (!selected) return { total: 0, running: 0 }
     const children = sessions.filter((s) => s.parentSessionId === selected.id)
@@ -117,6 +142,7 @@ function App() {
   }, [sessions, selected])
 
   return (
+    <>
     <AppShell
       titlebar={
         <Titlebar
@@ -132,6 +158,7 @@ function App() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           diffFor={diffFor}
+          filterRef={filterInputRef}
         />
       }
       main={
@@ -141,7 +168,7 @@ function App() {
             <TabStrip tabs={browserTabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div className="pane">
               {activeTab === "files" ? (
-                <FilesPanel cwd={selected.cwd ?? ""} />
+                <FilesPanel cwd={selected.cwd ?? ""} diff={diff} />
               ) : activeBrowserTab ? (
                 <BrowserPane tab={activeBrowserTab} />
               ) : (
@@ -163,6 +190,14 @@ function App() {
       }
       changes={<ChangesPanel diff={selected ? diff : null} cwd={selected?.cwd ?? null} />}
     />
+    <CommandPalette
+      open={paletteOpen}
+      onClose={() => setPaletteOpen(false)}
+      sessions={sessions}
+      onSelectSession={setSelectedId}
+      actions={paletteActions}
+    />
+    </>
   )
 }
 
