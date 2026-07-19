@@ -17,10 +17,11 @@
  */
 
 import { execSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadAgentflowConfig, resolveEngine } from './agentflow/config.mjs'
 import { runLlm, parseJsonLoose } from './agentflow/llm.mjs'
+import { publishablePackageMap, changedPublishablePackages } from './check-changeset-coverage.mjs'
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
 
@@ -80,38 +81,13 @@ if (existing.length > 0) {
 }
 
 // ── discover changed packages ─────────────────────────────────────────────────
+// Reuse check-changeset-coverage.mjs's own discovery so the set the model is
+// asked to cover, and the set the CI gate later demands be covered, can never
+// drift apart (see that file's header for the #470 incident this DRYs up).
 
 const changedFiles = run('git diff --name-only origin/main...HEAD').split('\n').filter(Boolean)
-
-// Map file paths → package names by reading their package.json
-const pkgDirs = [
-  ...run('find packages -maxdepth 2 -name "package.json" -not -path "*/node_modules/*"')
-    .split('\n')
-    .filter(Boolean),
-  ...run('find adapters -maxdepth 2 -name "package.json" -not -path "*/node_modules/*"')
-    .split('\n')
-    .filter(Boolean),
-]
-
-const pkgMap = new Map() // prefix → package name
-for (const pkgJson of pkgDirs) {
-  try {
-    const { name, private: priv } = JSON.parse(readFileSync(resolve(ROOT, pkgJson), 'utf8'))
-    if (name && name.startsWith('@agentproto/') && !priv) {
-      const prefix = pkgJson.replace('/package.json', '') + '/'
-      pkgMap.set(prefix, name)
-    }
-  } catch {}
-}
-
-const touchedPackages = new Set()
-for (const file of changedFiles) {
-  for (const [prefix, name] of pkgMap) {
-    if (file.startsWith(prefix)) {
-      touchedPackages.add(name)
-    }
-  }
-}
+const pkgMap = publishablePackageMap()
+const touchedPackages = changedPublishablePackages(changedFiles, pkgMap)
 
 if (touchedPackages.size === 0) {
   console.log('No @agentproto/* packages changed — no changeset needed.')

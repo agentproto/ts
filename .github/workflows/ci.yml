@@ -224,7 +224,17 @@ jobs:
         # `eligibleProfiles` export). Dependency-free node; self-gating on
         # timing (no-ops until a changeset exists, since pr-review writes it
         # after the first push).
-        run: node scripts/check-changeset-coverage.mjs origin/main
+        # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
+        # "Check for changeset" step above for why (shell injection via backticks).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          TITLE="$PR_TITLE"
+          if [[ "$TITLE" == chore\(release\):* ]]; then
+            echo "Version Packages PR — coverage check skipped."
+            exit 0
+          fi
+          node scripts/check-changeset-coverage.mjs origin/main
 
   # On PRs: enforce two conventions that used to rely on remembering to say
   # them in every prompt — no per-worktree scratch docs land in the repo, and
