@@ -473,10 +473,9 @@ export async function restartAgentSession(
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(effModel ? { model: effModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
-      // Legacy AIP-45 mode override only — the decomposed route/posture/
-      // contextProfile spawn-env apply-path rides the driver's mode
-      // decomposition (build step 2), out of scope here; they still round-trip
-      // on the descriptor below.
+      ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
+      // Legacy AIP-45 mode remains a back-compat override only.
       ...(overrides.mode ? { mode: overrides.mode } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
