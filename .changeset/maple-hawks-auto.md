@@ -1,6 +1,6 @@
 ---
 "@agentproto/auth": major
-"@agentproto/cli": patch
+"@agentproto/cli": minor
 "@agentproto/runtime": patch
 ---
 
