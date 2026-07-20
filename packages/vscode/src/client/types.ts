@@ -68,7 +68,7 @@ export type AuthMethod = "oauth-bearer" | "api-key"
 export interface SessionAccessProfileEcho {
   profileRef: string
   label?: string
-  endpoint: string
+  vendor: string
   method: AuthMethod
 }
 
@@ -249,41 +249,59 @@ export interface DaemonHealth {
   uptimeMs?: number
 }
 
-// ── Catalog models (SPEC §5) — GET /catalog/models + catalog_models MCP tool ──
+/** Catalog pricing for a route, surfaced by `catalog_models`. */
+export interface CatalogPricing {
+  inPer1M: number
+  outPer1M: number
+}
 
-/** One route (provider gateway) for a model product. */
-export interface CatalogRouteRow {
+/** One route under a model product in the `catalog_models` response. */
+export interface CatalogRoute {
   route: string
   ref: string
   baseUrl: string | null
-  pricing: { inPer1M: number; outPer1M: number } | null
-  /** True when at least one auth profile can run this (adapter × route). */
+  pricing: CatalogPricing | null
   runnable: boolean
-  /** Named auth profiles that can run this route. */
   eligibleProfiles: string[]
-  /** Adapter mode ids bound to this route. */
   adapterModes: string[]
-  /** Adapters that can drive this model on this route. */
   adapters: string[]
-  /** Curated = first-party / recommended route. */
   curated: boolean
 }
 
-/** One model product (e.g. "claude-sonnet-5") under a vendor. */
-export interface CatalogProductRow {
+/** One product under a vendor in the `catalog_models` response. */
+export interface CatalogProduct {
   product: string
-  routes: CatalogRouteRow[]
+  routes: CatalogRoute[]
 }
 
-/** One vendor (e.g. "anthropic", "moonshot") in the catalog. */
-export interface CatalogVendorRow {
+/** One vendor in the `catalog_models` response. */
+export interface CatalogVendor {
   vendor: string
-  products: CatalogProductRow[]
+  products: CatalogProduct[]
 }
 
-/** Response shape from GET /catalog/models and catalog_models MCP tool. */
-export interface CatalogModelsResult {
-  vendors: CatalogVendorRow[]
+/** Response shape of the `catalog_models` MCP tool. */
+export interface CatalogModelsResponse {
+  vendors: CatalogVendor[]
+}
+
+/** User-facing info of a provider preset, from `list_provider_presets`. */
+export interface ProviderPresetInfo {
+  schemaFlavor: string
+  baseUrl: string
+  keyEnv: string
+  defaultModel?: string
+  homepage?: string
+}
+
+/** One entry from `list_provider_presets`. */
+export interface ProviderPresetEntry {
+  slug: string
+  name?: string
+  description?: string
+  status: "available" | "ready"
+  version?: string
+  info?: ProviderPresetInfo
 }
 
 /** A session lifecycle event from session_events_poll (MCP). */

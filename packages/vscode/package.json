@@ -66,6 +66,14 @@
         {
           "id": "agentproto.permissions",
           "name": "Permissions"
+        },
+        {
+          "id": "agentproto.harnesses",
+          "name": "Harnesses"
+        },
+        {
+          "id": "agentproto.authProfiles",
+          "name": "Auth Profiles"
         }
       ]
     },
@@ -210,13 +218,53 @@
         "command": "agentproto.showHealth",
         "title": "agentproto: Show Daemon Health",
         "category": "agentproto"
+      },
+      {
+        "command": "agentproto.refreshHarnesses",
+        "title": "agentproto: Refresh Harnesses",
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.installHarness",
+        "title": "agentproto: Install Harness",
+        "category": "agentproto",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "agentproto.spawnWithHarness",
+        "title": "agentproto: Spawn with Harness",
+        "category": "agentproto",
+        "icon": "$(play)"
+      },
+      {
+        "command": "agentproto.refreshAuthProfiles",
+        "title": "agentproto: Refresh Auth Profiles",
+        "category": "agentproto",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentproto.configureAuthProfile",
+        "title": "agentproto: Configure Auth Profile",
+        "category": "agentproto",
+        "icon": "$(gear)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "agentproto.refresh",
-          "when": "view == 'agentproto.sessions' || view == 'agentproto.permissions'",
+          "when": "view == 'agentproto.sessions' || view == 'agentproto.permissions' || view == 'agentproto.harnesses' || view == 'agentproto.authProfiles'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.refreshHarnesses",
+          "when": "view == 'agentproto.harnesses'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.refreshAuthProfiles",
+          "when": "view == 'agentproto.authProfiles'",
           "group": "navigation"
         },
         {
@@ -315,6 +363,21 @@
           "command": "agentproto.denyPermission",
           "when": "view == agentproto.permissions && viewItem == permission-pending",
           "group": "inline@2"
+        },
+        {
+          "command": "agentproto.spawnWithHarness",
+          "when": "view == 'agentproto.harnesses' && viewItem == harness",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.installHarness",
+          "when": "view == 'agentproto.harnesses' && viewItem == harness",
+          "group": "inline@2"
+        },
+        {
+          "command": "agentproto.configureAuthProfile",
+          "when": "view == 'agentproto.authProfiles' && (viewItem == auth-preset || viewItem == auth-profile)",
+          "group": "inline@1"
         }
       ],
       "editor/title": [

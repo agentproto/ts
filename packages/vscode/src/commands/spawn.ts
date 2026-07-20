@@ -18,7 +18,7 @@
 
 import * as vscode from "vscode"
 
-import type { DaemonClient, UserPresetInfo } from "../client/daemonClient.js"
+import type { DaemonClient } from "../client/daemonClient.js"
 import type { WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolvePinnedTarget } from "../services/workspacePin.logic.js"
@@ -68,7 +68,7 @@ export function registerSpawnCommand(
 async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspacePin: WorkspacePinStore): Promise<void> {
   // ── Fetch both adapters (for fallback) and catalog (preferred) ────────────
   let adapters: SpawnAdapterInfo[]
-  let catalog: Awaited<ReturnType<DaemonClient["listCatalogModels"]>> | undefined
+  let catalog: Awaited<ReturnType<DaemonClient["catalogModels"]>> | undefined
   try {
     adapters = (await client.listAdapters()) as SpawnAdapterInfo[]
   } catch (err) {
@@ -76,7 +76,7 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
     return
   }
   try {
-    catalog = await client.listCatalogModels({ runnableOnly: false })
+    catalog = await client.catalogModels()
   } catch {
     // Old daemon without /catalog/models — degrade to adapter manifest list
     catalog = undefined
@@ -115,32 +115,28 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
 
   const holdDefault = holdPermissionsSetting()
   let answers: SpawnWizardAnswers
-  // Saved presets lead the spawn flow. The final "Custom configuration" row
-  // deliberately preserves the existing catalog/axis picker for one-off work.
-  const presets = await client.listUserPresets().catch(() => [])
-  const presetItems: Array<vscode.QuickPickItem & { preset?: UserPresetInfo }> = [
-    ...presets.map(preset => ({
-      label: preset.label,
-      description: preset.id,
-      detail: [preset.adapter, preset.model, preset.route?.gateway].filter(Boolean).join(" · "),
-      preset,
-    })),
-    { label: "$(edit) Custom configuration", description: "Pick each axis manually" },
-  ]
-  const presetPick = presets.length > 0
-    ? await vscode.window.showQuickPick(presetItems, {
-        placeHolder: "Choose a saved spawn preset or configure a session",
+  const pickerItems = catalog && catalog.vendors.length > 0
+    ? mapCatalogSpawnQuickPickItems(catalog)
+    : mapSpawnQuickPickItems(adapters)
+  const picked = await vscode.window.showQuickPick(pickerItems, {
+    placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
+  })
+  if (!picked) return
+  if (picked.configure) {
+    const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
+    if (!configured) return
+    answers = configured
+  } else if (picked.adapter) {
+    answers = { adapter: picked.adapter.slug, permissionHold: holdDefault }
+    if (picked.custom) {
+      const custom = await vscode.window.showInputBox({
+        prompt: "Custom model id (leave empty for adapter default)",
       })
-    : undefined
-  if (presets.length > 0 && !presetPick) return
-
-  if (presetPick?.preset) {
-    const preset = presetPick.preset
-    if (!preset.adapter) {
-      vscode.window.showWarningMessage(
-        `agentproto: preset "${preset.label}" has no adapter — use Custom configuration to choose one.`,
-      )
-      return
+      if (custom === undefined) return
+      if (custom) answers.model = custom
+    } else if (picked.model) {
+      answers.model = picked.model
+      if (picked.mode) answers.mode = picked.mode
     }
     if (!defaultCwd) {
       vscode.window.showWarningMessage(
@@ -148,49 +144,9 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
       )
       return
     }
-    answers = {
-      adapter: preset.adapter,
-      presetId: preset.id,
-      cwd: defaultCwd,
-      permissionHold: holdDefault,
-      // A pending row should be useful before the daemon returns; the daemon
-      // still owns final preset expansion and explicit-axis precedence.
-      model: preset.model,
-    }
+    answers.cwd = defaultCwd
   } else {
-    const pickerItems = catalog && catalog.vendors.length > 0
-      ? mapCatalogSpawnQuickPickItems(catalog)
-      : mapSpawnQuickPickItems(adapters)
-    const picked = await vscode.window.showQuickPick(pickerItems, {
-      placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
-    })
-    if (!picked) return
-    if (picked.configure) {
-      const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
-      if (!configured) return
-      answers = configured
-    } else if (picked.adapter) {
-      answers = { adapter: picked.adapter.slug, permissionHold: holdDefault }
-      if (picked.custom) {
-        const custom = await vscode.window.showInputBox({
-          prompt: "Custom model id (leave empty for adapter default)",
-        })
-        if (custom === undefined) return
-        if (custom) answers.model = custom
-      } else if (picked.model) {
-        answers.model = picked.model
-        if (picked.mode) answers.mode = picked.mode
-      }
-      if (!defaultCwd) {
-        vscode.window.showWarningMessage(
-          "agentproto: no folder open and no workspace pinned — pin a target workspace (status bar) or use Configure… to set a working directory.",
-        )
-        return
-      }
-      answers.cwd = defaultCwd
-    } else {
-      return
-    }
+    return
   }
 
   const slug = pinnedSlug ?? resolveWorkspaceSlug(workspaceConfig, answers.cwd)

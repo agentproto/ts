@@ -32,9 +32,10 @@ import { join } from "node:path"
 import type { DaemonConfig } from "../config.js"
 import type {
   AdapterInfo,
-  CatalogModelsResult,
+  CatalogModelsResponse,
   DaemonHealth,
   PendingPermission,
+  ProviderPresetEntry,
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
@@ -75,11 +76,6 @@ export interface SpawnAgentOptions {
   mode?: string
   model?: string
   effort?: string
-  route?: { gateway: string; baseUrl?: string }
-  access?: { profileRef?: string }
-  posture?: string
-  contextProfile?: string
-  presetId?: string
   auth?: {
     mode: "subscription" | "api-key"
     token?: string
@@ -93,20 +89,6 @@ export interface SpawnAgentOptions {
   mcpServers?: unknown[]
   trace?: boolean
   permissionHold?: boolean
-}
-
-/** User-owned saved spawn configuration, returned by the daemon's
- * `/user-presets` route. Deliberately not the static provider preset shape. */
-export interface UserPresetInfo {
-  id: string
-  label: string
-  adapter?: string
-  model?: string
-  route?: { gateway: string; baseUrl?: string }
-  access?: { profileRef?: string }
-  posture?: string
-  effort?: string
-  contextProfile?: string
 }
 
 export interface SpawnTerminalOptions {
@@ -212,11 +194,6 @@ export class DaemonClient {
 
   async spawnAgent(opts: SpawnAgentOptions): Promise<SessionDescriptor> {
     return this.postJson<SessionDescriptor>("/sessions/agent", opts)
-  }
-
-  async listUserPresets(): Promise<UserPresetInfo[]> {
-    const body = await this.getJson<{ presets?: UserPresetInfo[] }>("/user-presets")
-    return body.presets ?? []
   }
 
   async spawnTerminal(opts: SpawnTerminalOptions): Promise<SessionDescriptor> {
@@ -461,24 +438,24 @@ export class DaemonClient {
   }
 
   /**
-   * GET /catalog/models — the daemon's unified model catalog (SPEC §5).
-   * Joins installed adapters with auth profiles to produce a runnable-aware
-   * vendor/product/route tree. The spawn picker uses this instead of the
-   * adapter manifest's hardcoded model list.
+   * `catalog_models` is an MCP-only tool — fetch the daemon's read-only
+   * vendor/product/route model catalog.
    */
-  async listCatalogModels(opts?: {
-    adapter?: string
-    vendor?: string
-    route?: string
-    runnableOnly?: boolean
-  }): Promise<CatalogModelsResult> {
-    const params = new URLSearchParams()
-    if (opts?.adapter) params.set("adapter", opts.adapter)
-    if (opts?.vendor) params.set("vendor", opts.vendor)
-    if (opts?.route) params.set("route", opts.route)
-    if (opts?.runnableOnly) params.set("runnableOnly", "true")
-    const query = params.toString()
-    return this.getJson<CatalogModelsResult>(`/catalog/models${query ? `?${query}` : ""}`)
+  async catalogModels(): Promise<CatalogModelsResponse> {
+    const result = await this.mcpCall<CatalogModelsResponse>("catalog_models")
+    return result ?? { vendors: [] }
+  }
+
+  /**
+   * `list_provider_presets` is an MCP-only tool — fetch the daemon's gateway
+   * provider presets and their key-env availability status.
+   */
+  async listProviderPresets(): Promise<ProviderPresetEntry[]> {
+    const result = await this.mcpCall<{ presets?: ProviderPresetEntry[] } | ProviderPresetEntry[]>(
+      "list_provider_presets",
+    )
+    if (Array.isArray(result)) return result
+    return result.presets ?? []
   }
 
   /**
