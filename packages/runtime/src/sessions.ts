@@ -592,6 +592,13 @@ export interface SessionDescriptor {
    *  `worktreePath` without an id identifies a PATH, which a later worktree
    *  may reuse; the pair identifies one specific worktree. */
   worktreeId?: string
+  /** Pull requests opened while this session was acting on a code host.
+   *
+   * This is deliberately session provenance rather than workspace state: a
+   * session may open more than one PR, and the same workspace can have many
+   * independent sessions. It is append-only and persists with the descriptor
+   * so a restarted daemon can still show the hand-off / review links. */
+  openedPrs?: readonly OpenedPullRequest[]
   /** Adapter slug for agent-cli sessions — restart uses this with
    *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
    *  pty/command kinds. */
@@ -1136,6 +1143,14 @@ export interface SessionsRegistry {
    *  descriptor (and its id) is available immediately, the JSONL write
    *  itself is fire-and-forget internally. */
   recordCommand(input: RecordCommandInput): SessionDescriptor
+  /** Record a successfully-created pull request against an existing session.
+   * Idempotent for the same adapter + URL, which makes a retry after a
+   * response-loss safe without duplicating provenance. Returns undefined
+   * when the session was removed before the result could be recorded. */
+  recordOpenedPr(
+    sessionId: string,
+    input: RecordOpenedPrInput,
+  ): SessionDescriptor | undefined
   /** Read back a `kind:"command"` session's full logged result (the
    *  `CommandLogEntry` `recordCommand` wrote). Resolves to null when the
    *  session isn't a command session or has no recorded entry. Routed
@@ -1578,6 +1593,22 @@ export interface RecordCommandInput {
   stderr: string
   truncated?: boolean
   label?: string
+}
+
+/** A pull request that a session successfully opened through a code-host
+ * driver. `openedAt` is assigned by the registry so callers cannot claim a
+ * different timeline. */
+export interface OpenedPullRequest {
+  adapter: string
+  number: number
+  url: string
+  openedAt: string
+}
+
+export interface RecordOpenedPrInput {
+  adapter: string
+  number: number
+  url: string
 }
 
 /**
@@ -3336,6 +3367,28 @@ export function createSessionsRegistry(opts?: {
       // OS exit event — emit here" rule just below).
       emitExited(rt)
       return desc
+    },
+    recordOpenedPr(sessionId, input) {
+      const rt = sessions.get(sessionId)
+      if (!rt) return undefined
+
+      // A network reply can be lost after the forge accepted the create.
+      // Repeating the reporting call must not manufacture a second
+      // provenance link for the same PR.
+      const existing = rt.desc.openedPrs ?? []
+      if (!existing.some(pr => pr.adapter === input.adapter && pr.url === input.url)) {
+        rt.desc.openedPrs = [
+          ...existing,
+          {
+            adapter: input.adapter,
+            number: input.number,
+            url: input.url,
+            openedAt: new Date().toISOString(),
+          },
+        ]
+        schedulePersist()
+      }
+      return rt.desc
     },
     async readCommandLog(sessionId) {
       const rt = sessions.get(sessionId)

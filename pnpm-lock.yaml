@@ -2867,6 +2867,34 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
 
+  packages/tool-cli:
+    dependencies:
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.6.2
+        version: 25.6.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.13)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.8.4)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@25.6.2)(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.22.4)(yaml@2.8.4)
+
   packages/tooling:
     dependencies:
       tsup:
