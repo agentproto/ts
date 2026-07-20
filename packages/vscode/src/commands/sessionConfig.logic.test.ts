@@ -386,7 +386,7 @@ describe("access chip — surfaces the ineligible-attached-profile re-pick", () 
         route: { gateway: "moonshot" },
         accessProfile: {
           profileRef: "jeremy-max",
-          endpoint: "anthropic",
+          vendor: "anthropic",
           method: "oauth-bearer",
           label: "Jeremy Max",
         },

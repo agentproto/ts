@@ -11,10 +11,10 @@ import type { SpawnAgentOptions } from "../client/daemonClient.js"
 import type {
   AdapterInfo,
   AdapterModelInfo,
-  CatalogModelsResult,
-  CatalogProductRow,
-  CatalogRouteRow,
-  CatalogVendorRow,
+  CatalogModelsResponse,
+  CatalogProduct,
+  CatalogRoute,
+  CatalogVendor,
   WorkspacesConfig,
 } from "../client/types.js"
 import { findWorkspaceByPath, workspaceLabel } from "../services/workspaces.logic.js"
@@ -204,7 +204,7 @@ export function mapSpawnQuickPickItems(adapters: SpawnAdapterInfo[]): SpawnQuick
  * a mysteriously missing model. The first adapter in the route's `adapters`
  * list is used as the default harness.
  */
-export function mapCatalogSpawnQuickPickItems(catalog: CatalogModelsResult): SpawnQuickPickItem[] {
+export function mapCatalogSpawnQuickPickItems(catalog: CatalogModelsResponse): SpawnQuickPickItem[] {
   const items: SpawnQuickPickItem[] = []
 
   for (const vendor of catalog.vendors) {
@@ -472,7 +472,6 @@ export function buildSpawnPlaceHolder(
 /** Assemble the POST /sessions/agent body, omitting unset optional fields. */
 export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOptions {
   const opts: SpawnAgentOptions = { adapter: answers.adapter }
-  if (answers.presetId) opts.presetId = answers.presetId
   if (answers.model) opts.model = answers.model
   if (answers.mode) opts.mode = answers.mode
   if (answers.cwd) opts.cwd = answers.cwd
