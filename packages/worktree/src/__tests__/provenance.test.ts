@@ -66,6 +66,64 @@ describe("readSessionsRegistry", () => {
       { id: "sess_1", startedAt: "2026-01-01T00:00:00.000Z", status: "running", cwd: "/x" },
     ])
   })
+
+  it("parses optional provenance fields and mirrors auth.mode -> authMode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const path = await makeSessionsFile(dir, [
+      {
+        id: "sess_full",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "running",
+        cwd: "/x",
+        adapterSlug: "claude-code",
+        model: "claude-opus-4-8",
+        costUsd: 0.1234,
+        tokensIn: 12345,
+        tokensOut: 67890,
+      },
+      {
+        id: "sess_auth_mirror",
+        startedAt: "2026-01-02T00:00:00.000Z",
+        status: "running",
+        cwd: "/y",
+        auth: { mode: "subscription", fingerprint: "fp" },
+      },
+    ])
+    const sessions = await readSessionsRegistry(path)
+    expect(sessions).toEqual([
+      {
+        id: "sess_full",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "running",
+        cwd: "/x",
+        adapterSlug: "claude-code",
+        model: "claude-opus-4-8",
+        costUsd: 0.1234,
+        tokensIn: 12345,
+        tokensOut: 67890,
+      },
+      {
+        id: "sess_auth_mirror",
+        startedAt: "2026-01-02T00:00:00.000Z",
+        status: "running",
+        cwd: "/y",
+        authMode: "subscription",
+      },
+    ])
+  })
+
+  it("omitting optional provenance fields still parses", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wt-prov-"))
+    cleanupPaths.push(dir)
+    const path = await makeSessionsFile(dir, [
+      { id: "sess_minimal", startedAt: "2026-01-01T00:00:00.000Z", status: "running", cwd: "/x" },
+    ])
+    const sessions = await readSessionsRegistry(path)
+    expect(sessions).toEqual([
+      { id: "sess_minimal", startedAt: "2026-01-01T00:00:00.000Z", status: "running", cwd: "/x" },
+    ])
+  })
 })
 
 describe("computeProvenance", () => {

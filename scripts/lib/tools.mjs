@@ -22,8 +22,10 @@ import {
   existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, mkdtempSync,
 } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { tmpdir, hostname } from 'node:os'
 import { ROOT, run } from './agent-core.mjs'
+import { buildFooter, MARKER } from './provenance-footer.mjs'
+import { computeProvenance } from '../../packages/worktree/dist/index.mjs'
 
 // ── GitHub GraphQL helper (Discussions API is GraphQL-only) ──────────────────
 function ghGraphql(query, fields = {}) {
@@ -614,7 +616,7 @@ function allTools(ctx) {
         },
       },
     },
-    impl: ({ branch, title, body, base, commitMessage }) => {
+    impl: async ({ branch, title, body, base, commitMessage }) => {
       if (!branch || !title || !body) return '(invalid args: branch, title, body required)'
       if (dryRun) {
         console.log(`\n[dry-run] Would open PR "${title}" on branch ${branch} → ${base ?? 'current'}`)
@@ -632,8 +634,33 @@ function allTools(ctx) {
         const msg = commitMessage ?? title
         execFileSync('git', ['commit', '-m', msg], { cwd: ROOT, stdio: 'pipe' })
         execSync(`git push -u origin "${branch}"`, { cwd: ROOT, stdio: 'pipe' })
+        const sha = run('git rev-parse HEAD')
+        let stampedBody = body
+        if (!body.includes(MARKER)) {
+          try {
+            const provInfo = await computeProvenance(ROOT)
+            const sessions = provInfo?.sessions ?? []
+            const primary =
+              sessions
+                .filter((s) => s.adapterSlug)
+                .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0] ??
+              sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0]
+            if (primary) {
+              const suppressHost = process.env.AGENTFLOW_FOOTER_HOST === '0'
+              const prov = { ...primary, source: 'local' }
+              if (!suppressHost) {
+                prov.host = hostname()
+                prov.cwd = ROOT
+              }
+              const footer = buildFooter({ prov, authMode: primary.authMode, sha, kind: 'PR' })
+              stampedBody = `${body}${footer}`
+            }
+          } catch (err) {
+            console.warn(`[gh_open_pr] provenance footer skipped: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
         const url = execFileSync('gh', [
-          'pr', 'create', '--base', target, '--head', branch, '--title', title, '--body', body,
+          'pr', 'create', '--base', target, '--head', branch, '--title', title, '--body', stampedBody,
         ], { cwd: ROOT, encoding: 'utf8' }).trim()
         return `Opened PR: ${url}`
       } catch (e) {
