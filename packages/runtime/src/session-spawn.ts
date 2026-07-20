@@ -139,7 +139,7 @@ function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key"
 function directAuthMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
   const methods: AuthMethod[] = []
   if (descriptor?.authSubscription) methods.push("oauth-bearer")
-  if (descriptor?.provider) methods.push("api-key")
+  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
 
@@ -252,6 +252,8 @@ export interface SpawnAgentSessionDeps {
 
 export interface SpawnAgentSessionInput {
   adapter: string
+  /** Canonical harness slug — recorded on the descriptor; defaults to `adapter`. */
+  harness?: string
   cwd?: string
   workspaceSlug?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
@@ -874,12 +876,15 @@ export async function spawnAgentSession(
   // route field the current driver understands without replacing a caller's
   // explicit option. Catalog-backed routes have their own adapter projection;
   // `baseUrl` exists specifically for custom gateways.
-  const routedOptions =
-    input.route?.baseUrl && spawnDefaults.options?.base_url === undefined
-      ? { ...spawnDefaults.options, base_url: input.route.baseUrl }
-      : spawnDefaults.options
-  const hasGatewayBaseUrlOption =
-    typeof routedOptions?.base_url === "string" && routedOptions.base_url.length > 0
+  // A preset gateway's base_url is resolved by `resolveAuthSpec` below; we
+  // skip resolution only when the caller already supplied a base_url (custom
+  // route or explicit option) because then the descriptor would misrepresent
+  // the billing rail.
+  const hasExplicitBaseUrlOption =
+    typeof spawnDefaults.options?.base_url === "string" && spawnDefaults.options.base_url.length > 0
+  const hasCustomRouteBaseUrl =
+    typeof input.route?.baseUrl === "string" && input.route.baseUrl.length > 0
+  const shouldSkipAuthResolution = hasExplicitBaseUrlOption || hasCustomRouteBaseUrl
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
   let accessProfileEcho:
@@ -924,7 +929,8 @@ export async function spawnAgentSession(
       const result = resolveAuthSpec({
         descriptor: resolved.authDescriptor,
         ...(input.model ? { model: input.model } : {}),
-        requestedProvider: profile.endpoint as CatalogProvider,
+        ...(input.route?.gateway ? { routeGateway: input.route.gateway } : {}),
+        ...(!input.route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
         requestedMode: authMode,
         // A profile reference is an explicit billing choice. Never consult the
         // ambient environment or a different provider-store key as fallback.
@@ -961,7 +967,7 @@ export async function spawnAgentSession(
     resolved &&
     input.sandbox === undefined &&
     resolved.authDescriptor &&
-    !hasGatewayBaseUrlOption
+    !shouldSkipAuthResolution
   ) {
     const authModel = input.model ?? resolved.defaultModel
     const pinnedProvider = spawnDefaults.auth.provider
@@ -969,6 +975,11 @@ export async function spawnAgentSession(
       pinnedProvider ??
       resolved.authDescriptor.provider ??
       (authModel ? getModelProvider(authModel) : undefined)
+    // When an explicit gateway route is set, the provider-store key is looked
+    // up under the gateway id (e.g. "moonshot") rather than the model-derived
+    // vendor, because the gateway preset/custom route defines the credential
+    // env var and the billing endpoint.
+    const apiKeyStoreProvider = input.route?.gateway ?? resolvedProvider
     // Consult providers.json (the EXPLICIT store — never ambient env) ONLY
     // when the operator explicitly opted into auth for this spawn (`explicit`)
     // AND no explicit config key was already supplied. Gating on `explicit` is
@@ -980,15 +991,16 @@ export async function spawnAgentSession(
     // still means ambient (boot injection already placed keys in ambient env),
     // so gating on `explicit` is correct for every adapter.
     const apiKeyStoreCredential =
-      resolvedProvider &&
+      apiKeyStoreProvider &&
       spawnDefaults.auth.explicit &&
       spawnDefaults.auth.apiKeyCredential === undefined
-        ? await getProviderKey(resolvedProvider)
+        ? await getProviderKey(apiKeyStoreProvider)
         : undefined
     try {
       const result = resolveAuthSpec({
         descriptor: resolved.authDescriptor,
         ...(authModel ? { model: authModel } : {}),
+        ...(input.route?.gateway ? { routeGateway: input.route.gateway } : {}),
         ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
         ...(spawnDefaults.auth.requestedMode
           ? { requestedMode: spawnDefaults.auth.requestedMode }
@@ -1029,14 +1041,21 @@ export async function spawnAgentSession(
       authSpec.enforce === "always" &&
       authSpec.credential === undefined &&
       !spawnDefaults.auth.explicit &&
-      resolvedProvider !== undefined
+      apiKeyStoreProvider !== undefined
     ) {
-      const ignored = await getProviderKey(resolvedProvider)
+      const ignored = await getProviderKey(apiKeyStoreProvider)
       if (ignored !== undefined) {
         authSpec = { ...authSpec, ignoredApiKeyInStore: true }
       }
     }
   }
+  const resolvedBaseUrl = authSpec?.baseUrl ?? input.route?.baseUrl
+  const routedOptions =
+    !hasExplicitBaseUrlOption &&
+    typeof resolvedBaseUrl === "string" &&
+    resolvedBaseUrl.length > 0
+      ? { ...spawnDefaults.options, base_url: resolvedBaseUrl }
+      : spawnDefaults.options
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
     routedOptions,
@@ -1220,6 +1239,7 @@ export async function spawnAgentSession(
       cwd,
       agentSession,
       adapterSlug: input.adapter,
+      harness: input.harness ?? input.adapter,
       ...(input.model ? { model: input.model } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),

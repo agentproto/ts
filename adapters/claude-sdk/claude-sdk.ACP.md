@@ -62,6 +62,11 @@ single-model gateway (e.g. Moonshot serving only `kimi-k2.7-code`) from
 receiving a background `claude-haiku-*` request it can't serve. Native Anthropic
 (no `base_url`) leaves tier routing untouched.
 
+Gateway routing is no longer hard-coded in this adapter. The runtime resolver
+injects the correct `ANTHROPIC_BASE_URL` and credential for registered gateway
+providers. You can still override manually with `base_url` + `auth_token` for an
+unregistered gateway.
+
 ## Auth / secrets
 
 `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` on the spawn env (direct or via an
@@ -69,7 +74,8 @@ Anthropic-compatible gateway), or the cloud-provider toggles above. No ACP-level
 auth handshake. The `auth_token` option sets `ANTHROPIC_AUTH_TOKEN` in the child
 env (manifest `auth_token` option's `env` template) — the SDK sends it as
 `Authorization: Bearer <token>`, letting one spawn target a gateway (Moonshot,
-OpenRouter, DeepSeek) with a per-spawn Bearer key. The token value is never logged.
+OpenRouter, DeepSeek, `llm-endpoint`) with a per-spawn Bearer key. The token
+value is never logged.
 
 ## Thinking
 

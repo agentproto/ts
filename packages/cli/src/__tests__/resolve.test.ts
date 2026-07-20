@@ -78,7 +78,7 @@ describe("listInstalledAdapters — mode status projection", () => {
 // `AdapterInfo` had no `modelDetails` field at all and the manifest could
 // only declare bare strings, so there was no `mode`/`provider` to assert.
 describe("listInstalledAdapters — structured models.allowed (provider/mode)", () => {
-  it("projects claude-sdk's kimi-k2.7-code with its moonshot provider+mode binding", async () => {
+  it("projects claude-sdk's kimi-k2.7-code with its moonshot provider (runtime-routed, no manifest mode binding)", async () => {
     const adapters = await listInstalledAdapters()
     const claudeSdk = adapters.find((a) => a.slug === "claude-sdk")
     expect(claudeSdk).toBeDefined()
@@ -86,7 +86,9 @@ describe("listInstalledAdapters — structured models.allowed (provider/mode)", 
     const kimi = claudeSdk?.modelDetails.find((m) => m.id === "kimi-k2.7-code")
     expect(kimi).toBeDefined()
     expect(kimi?.provider).toBe("moonshot")
-    expect(kimi?.mode).toBe("moonshot")
+    // Gateway routing is now resolved at runtime from the session `route` axis;
+    // the manifest no longer hard-codes a gateway mode binding.
+    expect(kimi?.mode).toBeUndefined()
 
     // The flat `models: string[]` field is untouched by this change — every
     // existing consumer of that contract keeps working, id-for-id.

@@ -85,6 +85,19 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "deepseek-v4-pro",
     homepage: "https://api-docs.deepseek.com",
   },
+  "llm-endpoint": {
+    id: "llm-endpoint",
+    label: "LLM Endpoint",
+    description:
+      "Local llm-endpoint Anthropic-compatible proxy. Upstream routing is " +
+      "decided by the runtime resolver; the client just sees an Anthropic " +
+      "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_API_KEY.",
+    schemaFlavor: "anthropic",
+    baseUrl: "http://localhost:18090",
+    keyEnv: "LLM_ENDPOINT_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "kimi-k2.7-code",
+  },
   xai: {
     id: "xai",
     label: "xAI (Grok)",
@@ -144,7 +157,7 @@ export const anthropicGatewayPresetList: ProviderPreset[] = [
 export function getAnthropicGatewayPreset(
   id: AnthropicGatewayPresetId
 ): ProviderPreset {
-  const preset = ANTHROPIC_GATEWAY_PRESETS[id]
+  const preset = findAnthropicGatewayPreset(id)
   if (!preset) {
     throw new Error(
       `Unknown Anthropic gateway preset: "${id}". Known: ${Object.keys(
@@ -153,4 +166,12 @@ export function getAnthropicGatewayPreset(
     )
   }
   return preset
+}
+
+/**
+ * Safe preset lookup — returns undefined for unknown ids so runtime resolvers
+ * can fall back to model/provider/custom-route resolution.
+ */
+export function findAnthropicGatewayPreset(id: string): ProviderPreset | undefined {
+  return ANTHROPIC_GATEWAY_PRESETS[id as AnthropicGatewayPresetId]
 }

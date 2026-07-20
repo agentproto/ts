@@ -313,7 +313,9 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
       overrides: {
         model: "claude-opus-4-8",
         effort: "ultracode",
-        route: { gateway: "moonshot" },
+        // Use the direct anthropic gateway so the prior subscription mode
+        // remains valid (gateway presets like moonshot are api-key only).
+        route: { gateway: "anthropic" },
         posture: "plan",
         contextProfile: "lean",
       },
@@ -322,7 +324,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     // Each axis round-trips onto the new descriptor (SPEC §3.7).
     expect(restarted.desc.model).toBe("claude-opus-4-8")
     expect(restarted.desc.effort).toBe("ultracode")
-    expect(restarted.desc.route).toEqual({ gateway: "moonshot" })
+    expect(restarted.desc.route).toEqual({ gateway: "anthropic" })
     expect(restarted.desc.posture).toBe("plan")
     expect(restarted.desc.contextProfile).toBe("lean")
 

@@ -419,6 +419,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.authSubscription
           ? { authSubscription: adapter.handle.authSubscription }
           : {}),
+        ...(adapter.handle.modelDerivedApiKey
+          ? { modelDerivedApiKey: adapter.handle.modelDerivedApiKey }
+          : {}),
       }
       return {
         async startSession({ cwd, resumeSessionId, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth }) {

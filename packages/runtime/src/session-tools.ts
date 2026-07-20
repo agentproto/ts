@@ -1056,6 +1056,11 @@ export function registerSessionTools(
         .min(1)
         .optional()
         .describe("Override what enters context (full|lean|…) on restart."),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override the canonical harness slug on restart."),
       mode: z
         .string()
         .min(1)
@@ -1119,6 +1124,7 @@ export function registerSessionTools(
         ...(input.route !== undefined ? { route: input.route } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
         ...(input.contextProfile !== undefined ? { contextProfile: input.contextProfile } : {}),
+        ...(input.harness !== undefined ? { harness: input.harness } : {}),
         ...(input.mode !== undefined ? { mode: input.mode } : {}),
       }
       if (Object.keys(overrides).length > 0) {

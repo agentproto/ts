@@ -1,7 +1,7 @@
 ---
 name: pi
 id: pi
-description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google), streaming, live-duplex (steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP servers are bridged into pi tools via a generated pi extension (see MCP-BRIDGE.md).
+description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google/Moonshot), streaming, live-duplex (steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP servers are bridged into pi tools via a generated pi extension (see MCP-BRIDGE.md).
 version: 0.1.0
 bin: pi
 install:
@@ -18,7 +18,7 @@ version_check:
 auth:
   ref: ./SECRETS.md
   state:
-    env: [ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY]
+    env: [ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, MOONSHOT_API_KEY]
 sandbox: ./SANDBOX.md
 protocol: proprietary
 adapter: "@agentproto/adapter-pi"
@@ -69,9 +69,9 @@ and translates the stream. See [`PI-RPC.md`](./PI-RPC.md) for the wire profile.
 
 Default `anthropic/claude-sonnet-4-5`. `allowed` is a curated cross-provider
 menu (`anthropic/claude-sonnet-4-5`, `openai/gpt-5.1`,
-`google/gemini-2.5-flash`); the free-form `model` option accepts any pattern
-pi's `--model` understands (`provider/id`, verified against pi's
-`core/model-resolver.ts`). `env` maps provider → key env var.
+`google/gemini-2.5-flash`, `moonshotai/kimi-k2.7-code`); the free-form `model`
+option accepts any pattern pi's `--model` understands (`provider/id`, verified
+against pi's `core/model-resolver.ts`). `env` maps provider → key env var.
 
 ## Options
 

@@ -1042,14 +1042,19 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
     enforce: "always" | "when-configured"
   }
 
+  type CapturedStartSession = {
+    auth?: CapturedAuth
+    options?: Record<string, boolean | number | string>
+  }
+
   function makeAuthResolver(
     descriptor: AdapterAuthDescriptor | undefined,
     opts: { defaultModel?: string } = {},
-  ): { resolver: AgentAdapterResolver; captured: { auth?: CapturedAuth }[] } {
-    const captured: { auth?: CapturedAuth }[] = []
+  ): { resolver: AgentAdapterResolver; captured: CapturedStartSession[] } {
+    const captured: CapturedStartSession[] = []
     const resolver: AgentAdapterResolver = async () => ({
-      startSession: vi.fn(async (o: { auth?: CapturedAuth }) => {
-        captured.push({ auth: o.auth })
+      startSession: vi.fn(async (o: { auth?: CapturedAuth; options?: Record<string, boolean | number | string> }) => {
+        captured.push({ auth: o.auth, options: o.options })
         return fakeAgentSession()
       }),
       commandPreview: "mock-adapter",
@@ -1199,14 +1204,74 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
     expect(captured[0]?.auth).toBeUndefined()
   })
 
-  it("a base_url option targeting a foreign gateway skips auth resolution entirely — no spec passed to the adapter, nothing echoed on the descriptor", async () => {
-    // claude-code's authDescriptor is `enforce: "always"` — without this
-    // check it would resolve+echo a native-Anthropic subscription spec even
-    // though this spawn's own `base_url` option targets Moonshot. The
-    // driver-level fix (define-agent-cli.ts) already guarantees the
-    // credential never actually lands in the child env; this covers the
-    // separate, purely-cosmetic bug where the descriptor's `auth` field
-    // still claimed one would be used.
+  it("route.gateway = moonshot resolves the gateway preset: MOONSHOT_API_KEY + base_url injected into options", async () => {
+    storeKeys.value = { moonshot: "mk-fromstore-9999" }
+    const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "opencode",
+        cwd: "/tmp",
+        model: "claude-sonnet-5",
+        route: { gateway: "moonshot" },
+        auth: { mode: "api-key" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "MOONSHOT_API_KEY",
+      credential: "mk-fromstore-9999",
+    })
+    expect(captured[0]?.auth?.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(captured[0]?.options?.base_url).toBe("https://api.moonshot.ai/anthropic")
+    expect(registry.list()[0]?.auth?.provider).toBe("moonshot")
+    expect(registry.list()[0]?.auth?.credentialSource).toBe("providers-store")
+  })
+
+  it("route.gateway = moonshot with explicit apiKey uses the explicit credential", async () => {
+    const { resolver, captured } = makeAuthResolver({ modelDerivedApiKey: true })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "opencode",
+        cwd: "/tmp",
+        model: "claude-sonnet-5",
+        route: { gateway: "moonshot" },
+        auth: { mode: "api-key", apiKey: "mk-explicit-1234" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "MOONSHOT_API_KEY",
+      credential: "mk-explicit-1234",
+    })
+    expect(captured[0]?.options?.base_url).toBe("https://api.moonshot.ai/anthropic")
+    expect(registry.list()[0]?.auth?.credentialSource).toBe("explicit-config")
+  })
+
+  it("route.gateway rejects subscription mode (gateways are api-key only)", async () => {
+    const { resolver } = makeAuthResolver(CLAUDE_CODE_DESC)
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "claude-code",
+        cwd: "/tmp",
+        route: { gateway: "moonshot" },
+        auth: { mode: "subscription" },
+      },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("unsupported_auth_mode")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an explicit options.base_url still skips auth resolution (backward compat)", async () => {
     const { resolver, captured } = makeAuthResolver(CLAUDE_CODE_DESC)
     const { registry } = baseDeps()
     const result = await spawnAgentSession(
@@ -1214,12 +1279,13 @@ describe("spawnAgentSession — billing-auth resolution wiring", () => {
       {
         adapter: "claude-code",
         cwd: "/tmp",
-        options: { base_url: "https://api.moonshot.ai/anthropic" },
+        route: { gateway: "moonshot" },
+        options: { base_url: "https://custom.example.com/anthropic" },
       },
     )
     expect(result.ok).toBe(true)
     expect(captured[0]?.auth).toBeUndefined()
-    expect(registry.list()[0]?.auth).toBeUndefined()
+    expect(captured[0]?.options?.base_url).toBe("https://custom.example.com/anthropic")
   })
 })
 

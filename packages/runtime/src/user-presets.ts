@@ -36,6 +36,8 @@ export interface UserPreset extends Partial<SessionConfig> {
   label: string
   /** Adapter harness to use. Omitted means the caller selects one. */
   adapter?: string
+  /** Canonical harness slug — alias for `adapter`. */
+  harness?: string
   model?: string
   route?: RouteSpec
   access?: { profileRef?: string }
@@ -48,6 +50,7 @@ const userPresetSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   label: z.string().min(1),
   adapter: z.string().min(1).optional(),
+  harness: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   route: routeSchema.optional(),
   access: z.object({ profileRef: z.string().min(1).optional() }).optional(),

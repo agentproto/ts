@@ -4,5 +4,6 @@ export {
   ANTHROPIC_CORE_SCRUB_ENV,
   anthropicGatewayPresetList,
   getAnthropicGatewayPreset,
+  findAnthropicGatewayPreset,
   type AnthropicGatewayPresetId,
 } from "./anthropic-gateways.js"

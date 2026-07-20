@@ -28,16 +28,20 @@ session:
 models:
   default: claude-sonnet-5
   allowed:
+    # Native Anthropic models
     - { id: claude-sonnet-5, provider: anthropic }
     - { id: claude-opus-4-8, provider: anthropic }
     - { id: claude-haiku-4-5, provider: anthropic }
     - { id: claude-fable-5, provider: anthropic }
-    - { id: kimi-k2.7-code, provider: moonshot, mode: moonshot }
-    - { id: z-ai/glm-5.2, provider: openrouter, mode: openrouter }
-    - { id: deepseek/deepseek-v4-pro, provider: openrouter, mode: openrouter }
-    - { id: moonshotai/kimi-k2, provider: openrouter, mode: openrouter }
-    - { id: sference/thinkingcap-qwen3.6-27b, provider: requesty, mode: requesty }
-    - { id: sference/glm-5.2, provider: requesty, mode: requesty }
+    # Gateway models — routing is derived from the model catalog `@route`
+    # identity (or the per-spawn `base_url` / `auth_token` options), not from
+    # a manifest mode binding.
+    - { id: kimi-k2.7-code, provider: moonshot }
+    - { id: z-ai/glm-5.2, provider: openrouter }
+    - { id: deepseek/deepseek-v4-pro, provider: openrouter }
+    - { id: moonshotai/kimi-k2, provider: openrouter }
+    - { id: sference/thinkingcap-qwen3.6-27b, provider: requesty }
+    - { id: sference/glm-5.2, provider: requesty }
   env:
     anthropic: ANTHROPIC_API_KEY
 capabilities:
@@ -80,75 +84,6 @@ modes:
   - id: bypass-permissions
     description: Skip all permission prompts. Use only in trusted automation contexts.
     bin_args_append: ["--permission-mode", "bypassPermissions"]
-  - id: moonshot
-    description: >-
-      Moonshot (Kimi) gateway. Pre-wires ANTHROPIC_BASE_URL to Moonshot's
-      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
-      (via env_unset) so it can't leak to the third-party host. Supply the
-      Moonshot key via the `auth_token` option and pick a model via `model`
-      (conventional: 'kimi-k2.7-code'). Without auth_token the spawn has no
-      credentials and fails cleanly.
-    env:
-      ANTHROPIC_BASE_URL: https://api.moonshot.ai/anthropic
-    env_unset:
-      - ANTHROPIC_API_KEY
-      - CLAUDE_CODE_USE_BEDROCK
-      - CLAUDE_CODE_USE_VERTEX
-      - CLAUDE_CODE_USE_FOUNDRY
-      - CLAUDE_CODE_USE_ANTHROPIC_AWS
-      - CLAUDE_CODE_USE_MANTLE
-      - CLAUDE_CODE_USE_GATEWAY
-  - id: openrouter
-    description: >-
-      OpenRouter gateway. Pre-wires ANTHROPIC_BASE_URL to OpenRouter's
-      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
-      (same auth-hygiene rationale as `moonshot`). Pick a model via `model`
-      (e.g. 'z-ai/glm-5.2', 'moonshotai/kimi-k2') and supply the OpenRouter
-      key via `auth_token`.
-    env:
-      ANTHROPIC_BASE_URL: https://openrouter.ai/api
-    env_unset:
-      - ANTHROPIC_API_KEY
-      - CLAUDE_CODE_USE_BEDROCK
-      - CLAUDE_CODE_USE_VERTEX
-      - CLAUDE_CODE_USE_FOUNDRY
-      - CLAUDE_CODE_USE_ANTHROPIC_AWS
-      - CLAUDE_CODE_USE_MANTLE
-      - CLAUDE_CODE_USE_GATEWAY
-  - id: requesty
-    description: >-
-      Requesty gateway. Pre-wires ANTHROPIC_BASE_URL to Requesty's
-      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
-      (same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model
-      via `model` (e.g. 'sference/thinkingcap-qwen3.6-27b',
-      'sference/glm-5.2') and supply the Requesty key via `auth_token`.
-    env:
-      ANTHROPIC_BASE_URL: https://router.requesty.ai
-    env_unset:
-      - ANTHROPIC_API_KEY
-      - CLAUDE_CODE_USE_BEDROCK
-      - CLAUDE_CODE_USE_VERTEX
-      - CLAUDE_CODE_USE_FOUNDRY
-      - CLAUDE_CODE_USE_ANTHROPIC_AWS
-      - CLAUDE_CODE_USE_MANTLE
-      - CLAUDE_CODE_USE_GATEWAY
-  - id: deepseek
-    description: >-
-      DeepSeek gateway. Pre-wires ANTHROPIC_BASE_URL to DeepSeek's
-      Anthropic-compatible endpoint and scrubs the ambient ANTHROPIC_API_KEY
-      (same auth-hygiene rationale as `moonshot`/`openrouter`). Pick a model
-      via `model` (conventional: 'deepseek-v4-pro', 'deepseek-v4-flash') and
-      supply the DeepSeek key via `auth_token`.
-    env:
-      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-    env_unset:
-      - ANTHROPIC_API_KEY
-      - CLAUDE_CODE_USE_BEDROCK
-      - CLAUDE_CODE_USE_VERTEX
-      - CLAUDE_CODE_USE_FOUNDRY
-      - CLAUDE_CODE_USE_ANTHROPIC_AWS
-      - CLAUDE_CODE_USE_MANTLE
-      - CLAUDE_CODE_USE_GATEWAY
 options:
   - id: model
     type: string
@@ -157,9 +92,6 @@ options:
       'opus'), applied via ACP session/set_config_option after the session is
       created. An id the wrapper can't resolve is warned about and ignored
       (the session keeps the claude-code default). Omit to use the default.
-      Required for non-Claude models reached through a gateway mode
-      (e.g. 'deepseek-v4-pro' under `deepseek`, 'kimi-k2.7-code' under `moonshot`,
-      'sference/glm-5.2' under `requesty`).
   - id: max_turns
     type: integer
     min: 1
@@ -173,9 +105,7 @@ options:
       Anthropic, Bedrock/Vertex/Azure, or an Anthropic-compatible gateway.
       Setting it auto-scrubs the ambient ANTHROPIC_API_KEY and all cloud-provider
       toggles (Bedrock/Vertex/Foundry/Mantle) so it can't leak to a third-party
-      host — pair with `auth_token` to supply a per-spawn gateway key. The
-      `moonshot`/`openrouter`/`requesty`/`deepseek` modes are pre-wired presets over this
-      same shape.
+      host — pair with `auth_token` to supply a per-spawn gateway key.
     env:
       ANTHROPIC_BASE_URL: "{value}"
     env_unset:
@@ -191,8 +121,8 @@ options:
     description: >-
       Bearer token for the Anthropic API or a compatible gateway, injected as
       ANTHROPIC_AUTH_TOKEN (sent as `Authorization: Bearer`). Pair with
-      `base_url` (or a `moonshot`/`openrouter`/`requesty`/`deepseek` mode) to target a
-      gateway with a per-spawn key instead of the ambient ANTHROPIC_API_KEY.
+      `base_url` to target a gateway with a per-spawn key instead of the
+      ambient ANTHROPIC_API_KEY.
     env:
       ANTHROPIC_AUTH_TOKEN: "{value}"
 continuation:
@@ -237,3 +167,22 @@ fresh install isn't strictly required if `npx` is available.
 
 Claude Code reads `ANTHROPIC_API_KEY` at boot. The runner forwards it
 via `sandbox.env.set` (never argv).
+
+## Gateway routing
+
+Gateway routing is no longer selected through manifest modes. The route to a
+third-party endpoint (Moonshot, OpenRouter, Requesty, etc.) is derived at
+runtime from the session `route` axis / the model catalog's `@route` identity,
+which supplies the base URL and credential profile for the chosen model.
+
+Until the catalog route apply-path is live, you can still reach a gateway
+per-spawn by setting the `--base-url` and `--auth-token` options:
+
+- `--base-url <url>` injects `ANTHROPIC_BASE_URL` and scrubs the ambient
+  `ANTHROPIC_API_KEY` plus all cloud-provider redirect toggles, so the real
+  credential cannot leak to the gateway host.
+- `--auth-token <token>` injects `ANTHROPIC_AUTH_TOKEN` (sent as
+  `Authorization: Bearer`) to authenticate with the gateway.
+
+Pair the two options when targeting a non-Anthropic endpoint. Omit both to use
+the default Anthropic endpoint with the ambient `ANTHROPIC_API_KEY`.
