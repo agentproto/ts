@@ -106,6 +106,11 @@ function basenameOf(path: string): string {
  * match), the same rule `workspaceLabelFor` uses for a single session. A
  * session with no cwd, or a cwd matching no registered workspace, lands in
  * `unassigned` rather than being dropped.
+ *
+ * Fallback: when cwd yields no match, we trust the session's `workspaceSlug`
+ * (unless it is the daemon's generic "default"). This fixes the common case
+ * where a session spawned from a symlinked or containerised path resolves to
+ * nothing by cwd but still carries the correct slug from its spawner.
  */
 export function partitionSessionsByWorkspace(
   sessions: readonly SessionDescriptor[],
@@ -114,7 +119,10 @@ export function partitionSessionsByWorkspace(
   const bySlug = new Map<string, SessionDescriptor[]>()
   const unassigned: SessionDescriptor[] = []
   for (const session of sessions) {
-    const entry = session.cwd ? findWorkspaceByPath(config, session.cwd) : undefined
+    let entry = session.cwd ? findWorkspaceByPath(config, session.cwd) : undefined
+    if (!entry && session.workspaceSlug && session.workspaceSlug !== "default") {
+      entry = config.workspaces.find(w => w.slug === session.workspaceSlug)
+    }
     if (!entry) {
       unassigned.push(session)
       continue

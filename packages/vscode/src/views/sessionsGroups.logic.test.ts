@@ -64,9 +64,26 @@ describe("partitionSessionsByWorkspace", () => {
     expect(unassigned.map(s => s.id).sort()).toEqual(["elsewhere", "no-cwd"])
   })
 
-  it("ignores the unreliable per-session workspaceSlug — cwd is authoritative", () => {
-    // workspaceSlug claims "studio" but the cwd matches nothing registered.
+  it("cwd wins over a mismatched workspaceSlug", () => {
+    // workspaceSlug claims "studio" but cwd lives under "guilde" — cwd is authoritative.
+    const sessions = [session({ id: "a", workspaceSlug: "studio", cwd: "/Code/guilde" })]
+    const { bySlug, unassigned } = partitionSessionsByWorkspace(sessions, config)
+    expect(bySlug.get("guilde")?.map(s => s.id)).toEqual(["a"])
+    expect(unassigned).toEqual([])
+  })
+
+  it("falls back to workspaceSlug when cwd matches nothing", () => {
+    // cwd is under a symlinked / containerised path that resolves to nothing,
+    // but the session was spawned with an explicit workspaceSlug.
     const sessions = [session({ id: "a", workspaceSlug: "studio", cwd: "/Code/unregistered" })]
+    const { bySlug, unassigned } = partitionSessionsByWorkspace(sessions, config)
+    expect(bySlug.get("studio")?.map(s => s.id)).toEqual(["a"])
+    expect(unassigned).toEqual([])
+  })
+
+  it("ignores the generic 'default' workspaceSlug fallback", () => {
+    // The daemon uses "default" as a generic fallback — it carries no info.
+    const sessions = [session({ id: "a", workspaceSlug: "default", cwd: "/Code/unregistered" })]
     const { bySlug, unassigned } = partitionSessionsByWorkspace(sessions, config)
     expect(bySlug.size).toBe(0)
     expect(unassigned.map(s => s.id)).toEqual(["a"])
