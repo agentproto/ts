@@ -179,6 +179,12 @@
         "icon": "$(terminal)"
       },
       {
+        "command": "agentproto.moveTerminalLocation",
+        "title": "agentproto: Move Terminal to Panel/Editor",
+        "category": "agentproto",
+        "icon": "$(layout)"
+      },
+      {
         "command": "agentproto.switchHarness",
         "title": "agentproto: Switch Harness",
         "category": "agentproto"
@@ -315,6 +321,13 @@
         {
           "command": "agentproto.openTerminal",
           "when": "activeWebviewPanelId == 'agentproto.transcript'",
+          "group": "navigation"
+        }
+      ],
+      "terminal/title": [
+        {
+          "command": "agentproto.moveTerminalLocation",
+          "when": "agentproto.terminalFocused",
           "group": "navigation"
         }
       ]
