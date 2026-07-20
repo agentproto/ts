@@ -1951,3 +1951,37 @@ describe("transcriptPanel webview — header detail popovers", () => {
     expect(el(panel, "context-popover").hidden).toBe(true)
   })
 })
+
+describe("header view toggle", () => {
+  function el(panel: Panel, id: string): DomElement {
+    const found = panel.document.getElementById(id)
+    if (!found) throw new Error(`missing #${id}`)
+    return found
+  }
+
+  it("WP3: Terminal segment posts openTerminal, Conversation segment posts setView conversation", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: msg => posted.push(msg) })
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      canToggle: true,
+    })
+
+    // The webview posts `ready` on init; clear it so the assertions below
+    // only see messages from the toggle clicks.
+    posted.length = 0
+
+    const toggle = el(panel, "view-toggle")
+    expect(toggle.hidden).toBe(false)
+
+    el(panel, "view-terminal").dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toEqual([{ type: "openTerminal" }])
+
+    posted.length = 0
+    el(panel, "view-conversation").dispatchEvent(new panel.window.Event("click"))
+    expect(posted).toEqual([{ type: "setView", view: "conversation" }])
+  })
+})

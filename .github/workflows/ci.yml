@@ -381,6 +381,15 @@ jobs:
     if: |
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
+    # Own concurrency group — must NOT cancel-in-progress.
+    # The reviewer pushes a changeset commit back to the PR branch, which
+    # re-triggers CI. The workflow-level concurrency cancels every in-flight
+    # PR run (including THIS job) on each push → the review self-cancels.
+    # Giving pr-review its own group with cancel-in-progress:false lets the
+    # review finish posting even after its own changeset push re-triggers CI.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-review
+      cancel-in-progress: false
     permissions:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
