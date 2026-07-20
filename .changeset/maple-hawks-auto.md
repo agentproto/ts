@@ -1,7 +1,7 @@
 ---
 "@agentproto/auth": major
 "@agentproto/cli": minor
-"@agentproto/runtime": patch
+"@agentproto/runtime": minor
 ---
 
 rename auth 'vendor' axis to 'endpoint' in profiles and manifests. The v1
