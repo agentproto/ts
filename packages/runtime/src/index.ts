@@ -51,6 +51,9 @@ import {
   findWorkspace,
   getActiveWorkspace,
 } from "./workspaces-config.js"
+import {
+  type WorktreeStatusLister,
+} from "./worktree-status.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -99,6 +102,11 @@ export type {
   AdapterListEntry,
   CatalogModelsLister,
 } from "./http-server.js"
+export type {
+  WorktreeStatusLister,
+  WorktreeStatusView,
+} from "./worktree-status.js"
+export { toWorktreeStatusView } from "./worktree-status.js"
 export {
   buildCatalogModels,
   type CatalogAdapterInput,
@@ -481,6 +489,14 @@ export interface CreateGatewayOptions {
    * `worktree_provisioner_not_enabled` (never silently spawned unisolated).
    */
   provisionWorktree?: WorktreeProvisioner
+  /**
+   * Optional git-worktree status lister powering `worktree_status`.
+   * Injected here (rather than defaulted inside the runtime) because the join
+   * runs over `@agentproto/worktree`, a dependency the runtime deliberately
+   * does NOT take. The CLI wires it. Omitted → `worktree_status` returns a
+   * clear "not enabled" error.
+   */
+  listWorktreeStatuses?: WorktreeStatusLister
   /**
    * Optional E2E pairing registry (see `createPairingRegistry`). When wired,
    * the gateway mounts the `/pairings/*` REST routes and the `pair_*` MCP
@@ -980,6 +996,9 @@ export async function createGateway(
       ...(opts.listCatalogModels
         ? { listCatalogModels: opts.listCatalogModels }
         : {}),
+      ...(opts.listWorktreeStatuses
+        ? { listWorktreeStatuses: opts.listWorktreeStatuses }
+        : {}),
     })
     registerBrowserTools(server, {
       registry: sessions,
@@ -1183,6 +1202,9 @@ export async function createGateway(
       : {}),
     ...(opts.listCatalogModels
       ? { listCatalogModels: opts.listCatalogModels }
+      : {}),
+    ...(opts.listWorktreeStatuses
+      ? { listWorktreeStatuses: opts.listWorktreeStatuses }
       : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }

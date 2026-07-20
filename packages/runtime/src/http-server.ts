@@ -95,6 +95,10 @@ import { parsePostureInput } from "./canonical-posture.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
+import {
+  resolveWorktreeQueryRoot,
+  type WorktreeStatusLister,
+} from "./worktree-status.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -416,6 +420,11 @@ export interface RuntimeHttpServerOptions {
    *  SessionsRegistry. When false, the terminal HTTP route returns
    *  501 and the WS upgrade rejects. */
   ptyEnabled?: boolean
+  /** Optional — mirrors `RegisterSessionToolsOptions.listWorktreeStatuses`.
+   *  When wired, enables `GET /worktrees` + the `worktree_status` MCP tool.
+   *  Injected because the join lives in `@agentproto/worktree`, a dependency
+   *  the runtime deliberately does NOT take. */
+  listWorktreeStatuses?: WorktreeStatusLister
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
@@ -1076,6 +1085,61 @@ export async function startHttpServer(
             res.end(
               JSON.stringify({
                 error: "workspaces_load_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        if (path === "/worktrees" && req.method === "GET") {
+          // Read-only worktree status surface — lists linked worktrees,
+          // their live PR integration, and the sessions whose cwd sits in
+          // each worktree. The heavy join is delegated to an injected lister
+          // so the runtime stays free of `@agentproto/worktree`.
+          if (!opts.listWorktreeStatuses) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "worktree_status_not_configured",
+                message:
+                  "GET /worktrees is not enabled — the daemon was started " +
+                  "without a worktree status lister. The host must wire " +
+                  "`listWorktreeStatuses` in createGateway.",
+              })
+            )
+            return
+          }
+          const reqUrl = req.url ?? ""
+          const queryString = reqUrl.includes("?")
+            ? reqUrl.slice(reqUrl.indexOf("?") + 1)
+            : ""
+          const qs = new URLSearchParams(queryString)
+          const repoRoot = qs.get("repoRoot") ?? undefined
+          const workspaceSlug = qs.get("workspaceSlug") ?? undefined
+          const openOnly =
+            qs.get("openOnly") === "1" || qs.get("openOnly") === "true"
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot: repoRoot ?? undefined,
+            workspaceSlug: workspaceSlug ?? undefined,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            let worktrees = await opts.listWorktreeStatuses(resolved.repoRoot)
+            if (openOnly) {
+              worktrees = worktrees.filter(w => w.pr?.state === "open")
+            }
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ worktrees }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "worktree_status_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
             )

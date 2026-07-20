@@ -58,6 +58,10 @@ import {
   findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
+import {
+  resolveWorktreeQueryRoot,
+  type WorktreeStatusLister,
+} from "./worktree-status.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -193,6 +197,14 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
   resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
+  /**
+   * Optional git-worktree status lister powering `worktree_status`.
+   * Injected here (rather than defaulted inside the runtime) because the join
+   * runs over `@agentproto/worktree`, a dependency the runtime deliberately
+   * does NOT take. The CLI wires it. Omitted → `worktree_status` returns a
+   * clear "not enabled" error.
+   */
+  listWorktreeStatuses?: WorktreeStatusLister
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -218,6 +230,7 @@ export function registerSessionTools(
     mcpProxy,
     callerScope,
     resolveAgentAdapter,
+    listWorktreeStatuses,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -832,6 +845,101 @@ export function registerSessionTools(
         content: [
           { type: "text", text: JSON.stringify({ tree }, null, 2) },
         ],
+      }
+    },
+  )
+
+  // ── worktree_status ─────────────────────────────────────────────
+  // Read-only view of the repo's linked worktrees + their live PR
+  // integration + the sessions that opened them. The heavy join is
+  // delegated to an injected `listWorktreeStatuses` port so the runtime
+  // stays free of `@agentproto/worktree`.
+
+  server.tool(
+    "worktree_status",
+    "List the linked git worktrees for a repo and their live PR/session " +
+      "linkage. Each entry includes path, branch, class, reclaimability, " +
+      "PR state/number, the sessions whose cwd sits in the worktree, and " +
+      "liveness. Use this to power a 'PRs in progress + linked sub-agents' " +
+      "panel. Pass `openOnly: true` to surface only worktrees whose PR is " +
+      "still open.",
+    {
+      repoRoot: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to the git repo root whose worktrees to list. " +
+            "Wins over `workspaceSlug` when both are set."
+        ),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe(
+          "Workspace slug from `agentproto workspace list`. Resolves the " +
+            "repo root via the active workspace when omitted."
+        ),
+      openOnly: mcpBool
+        .optional()
+        .describe(
+          "When true, only return worktrees whose `pr.state` is `open`. " +
+            "Default false."
+        ),
+    },
+    async input => {
+      if (!listWorktreeStatuses) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "worktree_status is not enabled — the daemon was started without " +
+                "a worktree status lister. The host must wire `listWorktreeStatuses` " +
+                "in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: resolved.error }, null, 2),
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      try {
+        let worktrees = await listWorktreeStatuses(resolved.repoRoot)
+        if (input.openOnly) {
+          worktrees = worktrees.filter(w => w.pr?.state === "open")
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ worktrees }, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `worktree_status failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
       }
     },
   )

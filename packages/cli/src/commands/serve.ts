@@ -47,7 +47,7 @@ import {
 } from "../util/credentials.js"
 import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
-import { makeWorktreeProvisioner } from "./worktree.js"
+import { makeWorktreeProvisioner, makeWorktreeStatusLister } from "./worktree.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import {
@@ -613,6 +613,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // runtime deliberately doesn't take (so it's wired here, at the daemon's
       // composition root).
       provisionWorktree: makeWorktreeProvisioner(),
+      // Injected port behind `worktree_status` + `GET /worktrees`: runs the
+      // `listWorktreeStatuses` join over @agentproto/worktree, same dep
+      // reasoning as above.
+      listWorktreeStatuses: makeWorktreeStatusLister(),
       // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed, and
