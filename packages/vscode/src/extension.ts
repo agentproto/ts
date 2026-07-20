@@ -2,15 +2,17 @@
  * agentproto VS Code extension — activation entrypoint.
  *
  * Wires config → DaemonClient → SessionStore, then the views (sessions tree,
- * permissions inbox, status bar) and commands (spawn / prompt / interrupt /
- * kill / permissions / transcript). `agentproto.openTranscript` opens the
- * webview chat panel; `agentproto.openTranscriptChannel` is the raw
- * output-channel variant.
+ * permissions inbox, harnesses, auth profiles, status bar) and commands
+ * (spawn / prompt / interrupt / kill / permissions / transcript / harness /
+ * auth profile). `agentproto.openTranscript` opens the webview chat panel;
+ * `agentproto.openTranscriptChannel` is the raw output-channel variant.
  */
 
 import * as vscode from "vscode"
 
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
+import { registerHarnessCommands } from "./commands/harnesses.js"
+import { registerAuthProfileCommands } from "./commands/authProfiles.js"
 import { registerCreateWorkspaceCommand } from "./commands/createWorkspace.js"
 import { registerPermissionCommands } from "./commands/permissions.js"
 import {
@@ -32,6 +34,8 @@ import { SessionStore } from "./services/sessionStore.js"
 import { WorkspacePinStore } from "./services/workspacePin.js"
 import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
+import { registerHarnessesView } from "./views/harnessesTree.js"
+import { registerAuthProfilesView } from "./views/authProfilesTree.js"
 import { registerStatusBar } from "./views/statusBar.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
@@ -64,6 +68,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(seen)
   registerSessionsView(ctx, store, filter, seen)
   registerPermissionsView(ctx, store)
+  const harnessesProvider = registerHarnessesView(ctx, client)
+  const authProfilesProvider = registerAuthProfilesView(ctx, client)
   registerStatusBar(ctx, store)
 
   // Per-window "target workspace" pin — client-side only, never the daemon's
@@ -87,6 +93,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionRename(ctx, client, store) // agentproto.renameSession
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
+  registerHarnessCommands(ctx, harnessesProvider)
+  registerAuthProfileCommands(ctx, authProfilesProvider)
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())

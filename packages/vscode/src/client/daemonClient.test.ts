@@ -101,6 +101,12 @@ describe("DaemonClient — URL + auth header mapping", () => {
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "catalog_models") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ vendors: [{ vendor: "anthropic", products: [{ product: "claude-opus-4-8", routes: [{ route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }] }] }) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "list_provider_presets") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ presets: [{ slug: "moonshot", name: "Moonshot", status: "available", info: { schemaFlavor: "anthropic", baseUrl: "https://api.moonshot.ai/anthropic", keyEnv: "MOONSHOT_API_KEY" } }] }) }] } } }
+        }
         if (rpc.method === "tools/call" && rpc.params.name === "session_events_poll") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ events: [], nextCursor: 7 }) }] } } }
         }
@@ -291,6 +297,18 @@ describe("DaemonClient — URL + auth header mapping", () => {
   it("listAdapters() routes through mcpCall adapter_list", async () => {
     const adapters = await client().listAdapters()
     expect(adapters[0]?.slug).toBe("claude-code")
+  })
+
+  it("catalogModels() routes through mcpCall catalog_models", async () => {
+    const catalog = await client().catalogModels()
+    expect(catalog.vendors[0]?.vendor).toBe("anthropic")
+    expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["personal"])
+  })
+
+  it("listProviderPresets() routes through mcpCall list_provider_presets", async () => {
+    const presets = await client().listProviderPresets()
+    expect(presets[0]?.slug).toBe("moonshot")
+    expect(presets[0]?.info?.keyEnv).toBe("MOONSHOT_API_KEY")
   })
 
   it("loopback (no token file): requests are sent without an Authorization header", async () => {
