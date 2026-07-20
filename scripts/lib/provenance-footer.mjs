@@ -7,6 +7,7 @@
  * box can't know about itself.
  */
 
+// Marker string used as the native-vs-legacy footer discriminator
 export const MARKER = "@agentproto-bot"
 
 export const fmtTokens = (n) => {
