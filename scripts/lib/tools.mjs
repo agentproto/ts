@@ -27,6 +27,24 @@ import { ROOT, run } from './agent-core.mjs'
 import { buildFooter, MARKER } from './provenance-footer.mjs'
 import { computeProvenance } from '../../packages/worktree/dist/index.mjs'
 
+/**
+ * Map a raw SessionRef (as returned by computeProvenance) to the provenance
+ * shape expected by buildFooter. This is the seam that was silently dropping
+ * session id, adapter slug, and model because the field names differ.
+ */
+export function sessionRefToProv(primary) {
+  return {
+    sessionId: primary.id,
+    label: primary.label,
+    adapter: primary.adapterSlug,
+    model: primary.model,
+    costUsd: primary.costUsd,
+    tokensIn: primary.tokensIn,
+    tokensOut: primary.tokensOut,
+    source: 'local',
+  }
+}
+
 // ── GitHub GraphQL helper (Discussions API is GraphQL-only) ──────────────────
 function ghGraphql(query, fields = {}) {
   const args = ['api', 'graphql', '-f', `query=${query}`]
@@ -647,7 +665,7 @@ function allTools(ctx) {
               sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0]
             if (primary) {
               const suppressHost = process.env.AGENTFLOW_FOOTER_HOST === '0'
-              const prov = { ...primary, source: 'local' }
+              const prov = sessionRefToProv(primary)
               if (!suppressHost) {
                 prov.host = hostname()
                 prov.cwd = ROOT

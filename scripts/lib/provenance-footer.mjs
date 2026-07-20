@@ -27,6 +27,7 @@ export const buildFooter = ({ prov, authMode, runId, runUrl, sha, kind = "review
   if (prov?.adapter) parts.push([prov.adapter, authMode].filter(Boolean).join(" / "))
   else if (!prov?.sessionId) parts.push(`legacy fallback${authMode ? ` (${authMode})` : ""}`)
   else if (authMode) parts.push(authMode)
+  if (prov?.model) parts.push(`model \`${prov.model}\``)
   if (prov?.sandboxId) parts.push(`e2b \`${prov.sandboxId}\``)
   if (prov?.parentSessionId) parts.push(`supervisor \`${prov.parentSessionId}\``)
   const tin = fmtTokens(prov?.tokensIn)
