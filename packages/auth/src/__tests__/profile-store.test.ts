@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -50,6 +50,11 @@ describe("auth profile store", () => {
       credentialRef: "keychain:anthropic:jeremy-max",
       label: "Jeremy Max",
     })
+    // The public TypeScript shape is endpoint-based, but v1 disk data keeps
+    // `vendor` so hand-written config and older external scripts remain valid.
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["jeremy-max"]).toMatchObject({ vendor: "anthropic" })
+    expect(disk.profiles["jeremy-max"]).not.toHaveProperty("endpoint")
   })
 
   it("supports N named profiles per endpoint", async () => {
