@@ -68,6 +68,11 @@ import {
   type GcPlanEntry,
   type GcApplyOutcome,
 } from "@agentproto/worktree"
+import {
+  toWorktreeStatusView,
+  type WorktreeStatusLister,
+  type WorktreeStatusView,
+} from "@agentproto/runtime"
 
 const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
 
@@ -369,6 +374,38 @@ export function makeWorktreeProvisioner(): WorktreeProvisioner {
       },
     })
     return { isolated: true, cwd: provisioned.cwd, branch: provisioned.branch }
+  }
+}
+
+/**
+ * Concrete `WorktreeStatusLister` for the daemon — the injected port behind
+ * `worktree_status` and `GET /worktrees`. Lives in the CLI (not the runtime)
+ * because it runs the `listWorktreeStatuses` join over `@agentproto/worktree`,
+ * the heavy dependency the runtime deliberately refuses to take. Mirrors the
+ * construction used by `agentproto worktree ls --status`: resolves the owning
+ * repo from the requested path, builds a forge client + file verdict memo, and
+ * projects the raw entries through `toWorktreeStatusView`.
+ */
+export function makeWorktreeStatusLister(): WorktreeStatusLister {
+  return async (repoRootCandidate: string): Promise<WorktreeStatusView[]> => {
+    const repoRoot = repoRootOf(resolve(repoRootCandidate))
+    if (!repoRoot) {
+      throw new Error(
+        `worktree_status: "${repoRootCandidate}" is not inside a git repository.`
+      )
+    }
+    const [forge, defaultBranch] = await Promise.all([
+      createForgeClient(repoRoot),
+      detectDefaultBranch(repoRoot),
+    ])
+    const entries = await listWorktreeStatuses({
+      repoRoot,
+      repoName: repoLabel(repoRoot),
+      forge,
+      memo: new FileVerdictMemoStore(),
+      defaultBranchRef: `origin/${defaultBranch}`,
+    })
+    return entries.map(toWorktreeStatusView)
   }
 }
 
