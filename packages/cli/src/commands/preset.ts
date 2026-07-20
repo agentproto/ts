@@ -30,6 +30,7 @@ Axis flags for add:
   --base-url <url>          custom gateway URL (requires --gateway)
   --profile <profileRef>    named auth profile
   --posture <value>         default|plan|accept-edits|bypass|read-only
+  --mode-id <id>            raw harness posture mode (mutually exclusive with --posture)
   --effort <value>          low|medium|high|xhigh|max|ultracode
   --context <profile>       full|lean or an adapter-specific profile
 
@@ -119,6 +120,7 @@ async function add(args: readonly string[]): Promise<number> {
       "base-url": { type: "string" },
       profile: { type: "string" },
       posture: { type: "string" },
+      "mode-id": { type: "string" },
       effort: { type: "string" },
       context: { type: "string" },
     },
@@ -133,6 +135,10 @@ async function add(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto preset add: --base-url requires --gateway.\n")
     return 2
   }
+  if (values.posture && values["mode-id"]) {
+    process.stderr.write("agentproto preset add: --posture and --mode-id are mutually exclusive.\n")
+    return 2
+  }
   const preset: UserPreset = {
     id,
     label: values.label,
@@ -143,6 +149,7 @@ async function add(args: readonly string[]): Promise<number> {
       : {}),
     ...(values.profile ? { access: { profileRef: values.profile } } : {}),
     ...(values.posture ? { posture: values.posture as UserPreset["posture"] } : {}),
+    ...(values["mode-id"] ? { posture: { harnessModeId: values["mode-id"] } } : {}),
     ...(values.effort ? { effort: values.effort as UserPreset["effort"] } : {}),
     ...(values.context ? { contextProfile: values.context } : {}),
   }

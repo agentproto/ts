@@ -11,6 +11,10 @@ Manage user-owned, saved spawn configurations. A preset stores any subset of
 the adapter, model, route, auth-profile, posture, effort and context axes in
 `~/.agentproto/presets.json`; omitted axes keep the adapter default.
 
+`--posture` accepts the portable canonical values. For an adapter-specific
+native posture, use `--mode-id <id>` instead (for example `--mode-id architect`);
+the two flags are mutually exclusive.
+
 This is not a provider preset. Static gateway definitions such as OpenRouter
 and Moonshot are listed with `agentproto provider-preset list`.
 
