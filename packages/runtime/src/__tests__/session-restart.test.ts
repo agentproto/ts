@@ -54,9 +54,21 @@ function makeResolver(opts: {
   rejectResumeOnce?: boolean
 } = {}): {
   resolver: AgentAdapterResolver
-  calls: Array<{ adapter: string; cwd: string; resumeSessionId?: string }>
+  calls: Array<{
+    adapter: string
+    cwd: string
+    resumeSessionId?: string
+    posture?: string | { harnessModeId: string }
+    contextProfile?: string
+  }>
 } {
-  const calls: Array<{ adapter: string; cwd: string; resumeSessionId?: string }> = []
+  const calls: Array<{
+    adapter: string
+    cwd: string
+    resumeSessionId?: string
+    posture?: string | { harnessModeId: string }
+    contextProfile?: string
+  }> = []
   let rejected = false
   const resolver: AgentAdapterResolver = async slug => ({
     async startSession(sessOpts) {
@@ -64,6 +76,8 @@ function makeResolver(opts: {
         adapter: slug,
         cwd: sessOpts.cwd,
         ...(sessOpts.resumeSessionId ? { resumeSessionId: sessOpts.resumeSessionId } : {}),
+        ...(sessOpts.posture !== undefined ? { posture: sessOpts.posture } : {}),
+        ...(sessOpts.contextProfile ? { contextProfile: sessOpts.contextProfile } : {}),
       })
       if (opts.rejectResumeOnce && sessOpts.resumeSessionId && !rejected) {
         rejected = true
@@ -590,6 +604,7 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(desc.posture).toBe("plan")
     expect(desc.route).toEqual({ gateway: "moonshot" })
     expect(desc.contextProfile).toBe("lean")
+    expect(calls[0]).toMatchObject({ posture: "plan", contextProfile: "lean" })
 
     await close()
     registry.shutdown()

@@ -41,6 +41,7 @@ import {
   type AdapterAuthManifest,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
+import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
@@ -1047,7 +1048,7 @@ export async function spawnAgentSession(
   // separate system-prompt field on `startSession`). No `prompt` at all
   // ⇒ nothing to compose onto; the child still gets the tool gate above,
   // it just doesn't see the disposition until its first turn.
-  const effectivePrompt = input.prompt
+  let effectivePrompt = input.prompt
     ? `${composeRoleContext(role, input.promptAppend, roleRegistry)}\n\n${input.prompt}`
     : input.prompt
   // The session's title must name the CALLER's ask, not whatever text
@@ -1183,6 +1184,8 @@ export async function spawnAgentSession(
           : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(authSpec ? { auth: authSpec } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
@@ -1190,6 +1193,21 @@ export async function spawnAgentSession(
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
       })
+      // A harness that advertises a matching ACP mode gets the canonical
+      // posture as a real boundary before the initial prompt is sent. When no
+      // native mode exists, the initial prompt carries the advisory preamble;
+      // with no initial prompt there is no system-prompt channel to inject.
+      if (input.posture !== undefined) {
+        const resolution = resolvePosture(
+          input.posture,
+          agentSession.availableModes ?? [],
+        )
+        if (resolution.kind === "native" && agentSession.setSessionMode) {
+          await agentSession.setSessionMode(resolution.mode.id)
+        } else if (resolution.kind === "prompt" && effectivePrompt) {
+          effectivePrompt = `${resolution.preamble}\n\n${effectivePrompt}`
+        }
+      }
       commandPreview = resolved!.commandPreview
       if (resolved!.readUsage) {
         const startedSession = agentSession

@@ -65,6 +65,7 @@ const claudeCodeLike = (): AgentCliDefinition => ({
   acp: "./claude-code-acp.ACP.md",
   modes: [
     { id: "default", description: "Standard interactive mode." },
+    { id: "lean", description: "Lean context.", kind: "context", env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" } },
     { id: "plan", description: "Plan-only.", bin_args_append: ["--permission-mode", "plan"] },
     {
       id: "bypass-permissions",
@@ -121,6 +122,22 @@ describe("claude-code CLAUDE_CONFIG_DIR permission-mode override", () => {
     expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
       permissions: { defaultMode: "bypassPermissions" },
     })
+  })
+
+  it("applies decomposed posture and contextProfile independently", async () => {
+    const handle = defineAgentCli(claudeCodeLike())
+    const runtime = createAgentCliRuntime(handle)
+    await runtime.start({
+      cwd: "/scratch",
+      posture: "bypass",
+      contextProfile: "lean",
+    })
+
+    const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
+    expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
+      permissions: { defaultMode: "bypassPermissions" },
+    })
+    expect(spawnCalls[0]!.env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBe("1")
   })
 
   it("does not set CLAUDE_CONFIG_DIR when no mode is requested", async () => {

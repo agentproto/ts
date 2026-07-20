@@ -85,6 +85,7 @@ import type {
   AdapterAuthDescriptor,
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
+import type { ContextProfile, Posture } from "./session-config.js"
 import { spawnAgentSession, type BuildOrchestratorMcp } from "./session-spawn.js"
 import {
   restartAgentSession,
@@ -181,6 +182,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  differ by model. Omit to keep the model's own default. Applied
      *  via session/set_config_option on ACP adapters; others ignore it. */
     effort?: string
+    /** Decomposed permission posture. The host maps canonical string values
+     * to the adapter's native spawn mechanism; raw harness ids may instead be
+     * applied through the live ACP mode surface after connect. */
+    posture?: Posture
+    /** Decomposed context profile. A matching manifest `kind:"context"` mode
+     * is projected independently of the legacy `mode` field. */
+    contextProfile?: ContextProfile
     /** MCP servers to mount into the spawned agent's session at spawn
      *  time. Forwarded verbatim to the driver's `start({ mcpServers })`
      *  → the ACP arm's `session/new.mcpServers`, giving the child agent

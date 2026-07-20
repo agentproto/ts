@@ -421,7 +421,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, mode, options, model, effort, mcpServers, onActivity, permissionHold, auth }) {
+        async startSession({ cwd, resumeSessionId, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -453,6 +453,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(onActivity ? { onActivity } : {}),
             ...(permissionHold ? { permissionHold: true } : {}),
             ...(auth ? { auth } : {}),
+            ...(typeof posture === "string" ? { posture } : {}),
+            ...(contextProfile ? { contextProfile } : {}),
           })
         },
         commandPreview:
