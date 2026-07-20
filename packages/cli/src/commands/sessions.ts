@@ -222,6 +222,7 @@ async function runStart(args: readonly string[]): Promise<number> {
     options: {
       cwd: { type: "string" },
       workspace: { type: "string" },
+      preset: { type: "string" },
       model: { type: "string" },
       auth: { type: "string" },
       "base-url": { type: "string" },
@@ -240,10 +241,11 @@ async function runStart(args: readonly string[]): Promise<number> {
     },
   })
   const slug = positionals[0]
-  if (!slug) {
+  if (!slug && !values.preset) {
     process.stderr.write(
-      "agentproto sessions start: missing adapter slug.\n" +
-        "  Try: agentproto sessions start claude-code --attach\n"
+      "agentproto sessions start: missing adapter slug or --preset.\n" +
+        "  Try: agentproto sessions start claude-code --attach\n" +
+        "       agentproto sessions start --preset fast-deepseek --attach\n"
     )
     return 2
   }
@@ -362,7 +364,9 @@ async function runStart(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  const body: Record<string, unknown> = { adapter: slug }
+  const body: Record<string, unknown> = {}
+  if (slug) body.adapter = slug
+  if (values.preset) body.presetId = values.preset
   if (values.cwd) body.cwd = resolve(values.cwd)
   if (values.workspace) body.workspaceSlug = values.workspace
   if (values.model) body.model = values.model
@@ -3281,4 +3285,3 @@ async function explain401(
   }
   return lines.join("\n")
 }
-

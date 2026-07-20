@@ -68,7 +68,7 @@ export type AuthMethod = "oauth-bearer" | "api-key"
 export interface SessionAccessProfileEcho {
   profileRef: string
   label?: string
-  vendor: string
+  endpoint: string
   method: AuthMethod
 }
 
@@ -247,6 +247,43 @@ export interface DaemonHealth {
   workspace: string
   registered: readonly string[]
   uptimeMs?: number
+}
+
+// ── Catalog models (SPEC §5) — GET /catalog/models + catalog_models MCP tool ──
+
+/** One route (provider gateway) for a model product. */
+export interface CatalogRouteRow {
+  route: string
+  ref: string
+  baseUrl: string | null
+  pricing: { inPer1M: number; outPer1M: number } | null
+  /** True when at least one auth profile can run this (adapter × route). */
+  runnable: boolean
+  /** Named auth profiles that can run this route. */
+  eligibleProfiles: string[]
+  /** Adapter mode ids bound to this route. */
+  adapterModes: string[]
+  /** Adapters that can drive this model on this route. */
+  adapters: string[]
+  /** Curated = first-party / recommended route. */
+  curated: boolean
+}
+
+/** One model product (e.g. "claude-sonnet-5") under a vendor. */
+export interface CatalogProductRow {
+  product: string
+  routes: CatalogRouteRow[]
+}
+
+/** One vendor (e.g. "anthropic", "moonshot") in the catalog. */
+export interface CatalogVendorRow {
+  vendor: string
+  products: CatalogProductRow[]
+}
+
+/** Response shape from GET /catalog/models and catalog_models MCP tool. */
+export interface CatalogModelsResult {
+  vendors: CatalogVendorRow[]
 }
 
 /** A session lifecycle event from session_events_poll (MCP). */

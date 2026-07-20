@@ -118,7 +118,7 @@ export interface SessionConfig {
 
   // ── RESTART-only (spawn-time env/argv rewrite) ──
   /** Attach a NAMED auth profile by id (SPEC §1c). The profile record —
-   *  `AuthProfile { id, vendor, method, credentialRef, label? }` — lives in
+   *  `AuthProfile { id, endpoint, method, credentialRef, label? }` — lives in
    *  `@agentproto/auth` (`packages/auth/src/profile-types.ts:24`, #470), NOT on
    *  the session and NOT in `providers.json`. Omit ⇒ default profile. */
   access?: { profileRef?: string }

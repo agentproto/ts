@@ -41,19 +41,19 @@ const MOONSHOT_ROUTED: CatalogAdapterInput = {
 
 const anthropicOauth: AuthProfile = {
   id: "jeremy-max",
-  vendor: "anthropic",
+  endpoint: "anthropic",
   method: "oauth-bearer",
   credentialRef: "ref-oauth",
 }
 const anthropicApiKey: AuthProfile = {
   id: "work-anthropic-key",
-  vendor: "anthropic",
+  endpoint: "anthropic",
   method: "api-key",
   credentialRef: "ref-api-key",
 }
 const moonshotApiKey: AuthProfile = {
   id: "personal-moonshot",
-  vendor: "moonshot",
+  endpoint: "moonshot",
   method: "api-key",
   credentialRef: "ref-moonshot",
 }
@@ -116,7 +116,7 @@ describe("buildCatalogModels — runnable is profile-aware (SPEC §5.3)", () => 
   it("a gateway route never accepts an oauth-bearer profile, even for the right vendor id", () => {
     const bogusOauthMoonshot: AuthProfile = {
       id: "bogus",
-      vendor: "moonshot",
+      endpoint: "moonshot",
       method: "oauth-bearer",
       credentialRef: "x",
     }
@@ -158,7 +158,7 @@ describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5
   it("a non-curated route is still runnable given an eligible profile — it's just reached via route+model+base_url, not a specific adapter", () => {
     const response = buildCatalogModels({
       adapters: [CLAUDE_CODE],
-      profiles: [{ id: "requesty-key", vendor: "requesty", method: "api-key", credentialRef: "x" }],
+      profiles: [{ id: "requesty-key", endpoint: "requesty", method: "api-key", credentialRef: "x" }],
     })
     const requesty = findRoute(response, "anthropic", "claude-opus-4-8", "requesty")
     expect(requesty?.runnable).toBe(true)
@@ -319,7 +319,7 @@ describe("buildCatalogModels — router-prefixed OpenRouter ids (regression)", (
   it("marks the z-ai/glm route runnable for an openrouter api-key profile", () => {
     const openrouterKey: AuthProfile = {
       id: "personal-openrouter",
-      vendor: "openrouter",
+      endpoint: "openrouter",
       method: "api-key",
       credentialRef: "ref-or",
     }

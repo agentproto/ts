@@ -28,9 +28,20 @@ import {
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
   type AuthEcho,
+  type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
+import type { CatalogProvider } from "@agentproto/model-catalog"
+import {
+  getAuthProfile,
+  eligibleProfiles,
+  KeychainStore,
+  type AuthMethod,
+  type AdapterAuthManifest,
+} from "@agentproto/auth"
+import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
+import type { UserPreset } from "./user-presets.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -118,6 +129,41 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
     spawnClaimsByRegistry.set(registry, claims)
   }
   return claims
+}
+
+function profileMethodToAuthMode(method: AuthMethod): "subscription" | "api-key" {
+  return method === "oauth-bearer" ? "subscription" : "api-key"
+}
+
+function directAuthMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+  const methods: AuthMethod[] = []
+  if (descriptor?.authSubscription) methods.push("oauth-bearer")
+  if (descriptor?.provider) methods.push("api-key")
+  return methods
+}
+
+/** Build the one-route eligibility projection used for an initial spawn.
+ * Keep this deliberately identical to restart's projection: a gateway bills
+ * the gateway endpoint and accepts only its API key; a direct route uses the
+ * adapter's native auth vocabulary. */
+function spawnEligibilityManifest(
+  adapter: string,
+  descriptor: AdapterAuthDescriptor | undefined,
+  route: RouteSpec | undefined,
+  model: string | undefined,
+): { manifest: AdapterAuthManifest; routeId: string } | undefined {
+  const directEndpoint = descriptor?.provider ?? (model ? getModelProvider(model) : undefined)
+  const routeId = route?.gateway ?? directEndpoint
+  if (!routeId) return undefined
+  const direct = directEndpoint !== undefined && routeId === directEndpoint
+  return {
+    manifest: {
+      id: adapter,
+      endpointByRoute: { [routeId]: direct ? directEndpoint : routeId },
+      methodsByRoute: { [routeId]: direct ? directAuthMethods(descriptor) : ["api-key"] },
+    },
+    routeId,
+  }
 }
 
 /** Matches `RegisterAgentToolsOptions.buildOrchestratorMcp` in
@@ -236,6 +282,17 @@ export interface SpawnAgentSessionInput {
   skills?: string[]
   model?: string
   effort?: string
+  /** Decomposed route identity.  This is canonical transport; `mode` remains
+   * a legacy adapter projection only. */
+  route?: RouteSpec
+  /** Named billing credential. Resolved from auth-profiles + keychain at the
+   * final spawn boundary; the secret never crosses HTTP/MCP. */
+  access?: { profileRef?: string }
+  posture?: Posture
+  contextProfile?: ContextProfile
+  /** A preloaded user preset. Callers resolve its id at their boundary so a
+   * preset can also provide the adapter before this core is invoked. */
+  preset?: UserPreset
   /**
    * Deterministic billing-auth mode + EXPLICIT credential for adapters that
    * declare an env-var vocabulary for it (today: claude-code — see
@@ -328,6 +385,8 @@ export type SpawnAgentSessionResult =
         | "invalid_role"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
+        | "access_profile_not_found"
+        | "access_profile_ineligible"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
@@ -345,6 +404,21 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  // Presets are a lower-precedence layer than an explicit spawn request. Do
+  // this once, at the common core, so HTTP, MCP and future clients have the
+  // same semantics rather than each expanding a preset slightly differently.
+  if (input.preset) {
+    const { preset, ...explicit } = input
+    input = {
+      ...explicit,
+      model: explicit.model ?? preset.model,
+      route: explicit.route ?? preset.route,
+      access: explicit.access ?? preset.access,
+      posture: explicit.posture ?? preset.posture,
+      effort: explicit.effort ?? preset.effort,
+      contextProfile: explicit.contextProfile ?? preset.contextProfile,
+    }
+  }
   const {
     registry,
     resolveAgentAdapter,
@@ -795,12 +869,94 @@ export async function spawnAgentSession(
   // not checked here — that would require introspecting the adapter's mode
   // declarations for whichever env keys the mode sets; the driver-level fix
   // covers that case regardless of whether the echo is accurate.)
+  // A custom route is transport data, not a legacy `mode`. Project the one
+  // route field the current driver understands without replacing a caller's
+  // explicit option. Catalog-backed routes have their own adapter projection;
+  // `baseUrl` exists specifically for custom gateways.
+  const routedOptions =
+    input.route?.baseUrl && spawnDefaults.options?.base_url === undefined
+      ? { ...spawnDefaults.options, base_url: input.route.baseUrl }
+      : spawnDefaults.options
   const hasGatewayBaseUrlOption =
-    typeof spawnDefaults.options?.base_url === "string" &&
-    spawnDefaults.options.base_url.length > 0
+    typeof routedOptions?.base_url === "string" && routedOptions.base_url.length > 0
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
-  if (
+  let accessProfileEcho:
+    | { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
+    | undefined
+  if (resolved && input.sandbox === undefined && input.access?.profileRef) {
+    const profileRef = input.access.profileRef
+    const profile = await getAuthProfile(profileRef)
+    if (!profile) {
+      return {
+        ok: false,
+        code: "access_profile_not_found",
+        message: `agent_start: no auth profile "${profileRef}" found.`,
+      }
+    }
+    if (!resolved.authDescriptor) {
+      return {
+        ok: false,
+        code: "access_profile_ineligible",
+        message: `agent_start: adapter "${input.adapter}" presents no billing-auth; profile "${profile.id}" cannot be attached.`,
+      }
+    }
+    const projected = spawnEligibilityManifest(
+      input.adapter,
+      resolved.authDescriptor,
+      input.route,
+      input.model ?? resolved.defaultModel,
+    )
+    if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
+      const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
+      return {
+        ok: false,
+        code: "access_profile_ineligible",
+        message:
+          `agent_start: profile "${profile.id}" (${profile.endpoint}/${profile.method}) is not eligible ` +
+          `for adapter "${input.adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
+      }
+    }
+    const stored = await new KeychainStore().read({ path: profile.credentialRef })
+    const authMode = profileMethodToAuthMode(profile.method)
+    try {
+      const result = resolveAuthSpec({
+        descriptor: resolved.authDescriptor,
+        ...(input.model ? { model: input.model } : {}),
+        requestedProvider: profile.endpoint as CatalogProvider,
+        requestedMode: authMode,
+        // A profile reference is an explicit billing choice. Never consult the
+        // ambient environment or a different provider-store key as fallback.
+        explicit: true,
+        ...(authMode === "subscription" && stored?.value !== undefined
+          ? { subscriptionCredential: stored.value }
+          : {}),
+        ...(authMode === "api-key" && stored?.value !== undefined
+          ? { apiKeyConfigCredential: stored.value }
+          : {}),
+      })
+      if (result) {
+        authSpec = result.spec
+        authEcho = result.echo
+      }
+    } catch (err) {
+      if (err instanceof AuthResolutionError) {
+        return {
+          ok: false,
+          code: "unsupported_auth_mode",
+          message: `agent_start: ${err.message}`,
+          details: { adapter: input.adapter, provider: profile.endpoint },
+        }
+      }
+      throw err
+    }
+    accessProfileEcho = {
+      profileRef: profile.id,
+      ...(profile.label !== undefined ? { label: profile.label } : {}),
+      endpoint: profile.endpoint,
+      method: profile.method,
+    }
+  } else if (
     resolved &&
     input.sandbox === undefined &&
     resolved.authDescriptor &&
@@ -882,7 +1038,7 @@ export async function spawnAgentSession(
   }
   const effectiveOptions = normalizeSkillsOption(
     spawnDefaults.skills,
-    spawnDefaults.options,
+    routedOptions,
     resolved?.declaredOptions,
   )
   // Compose the role's disposition (+ optional promptAppend, layered on
@@ -1048,6 +1204,11 @@ export async function spawnAgentSession(
       adapterSlug: input.adapter,
       ...(input.model ? { model: input.model } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
+      ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
+      ...(input.posture !== undefined ? { posture: input.posture } : {}),
+      ...(input.route ? { route: input.route } : {}),
+      ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+      ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),

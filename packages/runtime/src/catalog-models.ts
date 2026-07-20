@@ -423,7 +423,7 @@ export function buildCatalogModels(
 
     const manifest: AdapterAuthManifest = {
       id: `${row.vendor}/${row.product}@${row.route}`,
-      vendorByRoute: { [row.route]: billedVendor(row.vendor, row.route) },
+      endpointByRoute: { [row.route]: billedVendor(row.vendor, row.route) },
       methodsByRoute: { [row.route]: row.methods },
     }
     const eligible = eligibleProfiles(input.profiles, manifest, row.route)

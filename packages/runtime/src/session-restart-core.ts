@@ -97,7 +97,7 @@ export type RestartOverrides = Partial<SessionConfig> & {
 
 /**
  * Resolve an `access` override's `profileRef` to the named profile's metadata
- * (vendor/method/label) + its actual secret. Injected onto
+ * (endpoint/method/label) + its actual secret. Injected onto
  * {@link RestartAgentSessionOptions} so tests inject a deterministic stub and
  * the money-safety path stays provable; the default
  * ({@link resolveAccessProfileFromStore}) reads `@agentproto/auth`'s profile
@@ -189,7 +189,7 @@ function eligibilityManifest(
   return {
     manifest: {
       id: adapterSlug,
-      vendorByRoute: { [routeId]: billedVendor },
+      endpointByRoute: { [routeId]: billedVendor },
       methodsByRoute: { [routeId]: methods },
     },
     routeId,
@@ -364,20 +364,20 @@ export async function restartAgentSession(
     // present on that route, is REJECTED (400) — never silently swapped for a
     // wallet that happens to fit.
     if (eligibleProfiles([profile], manifest, routeId).length === 0) {
-      const billed = manifest.vendorByRoute[routeId]
+      const billed = manifest.endpointByRoute[routeId]
       const methods = manifest.methodsByRoute[routeId] ?? []
       throw new RestartOverrideError(
-        `restart access override: profile "${profile.id}" (${profile.vendor}/${profile.method}) ` +
+        `restart access override: profile "${profile.id}" (${profile.endpoint}/${profile.method}) ` +
           `is not eligible for adapter "${adapterSlug}" on route "${routeId}" — that endpoint ` +
           `bills "${billed}" via [${methods.join(", ") || "no presentable methods"}]. ` +
-          `Attach a profile whose vendor + method match the route.`,
+          `Attach a profile whose endpoint + method match the route.`,
       )
     }
     const mode = methodToMode(profile.method)
     const result = resolveAuthSpec({
       descriptor: resolved.authDescriptor,
       ...(effModel ? { model: effModel } : {}),
-      requestedProvider: profile.vendor as CatalogProvider,
+      requestedProvider: profile.endpoint as CatalogProvider,
       requestedMode: mode,
       // Attaching a named profile is always an EXPLICIT billing choice — so a
       // missing credential fails loud (driver `missing_auth_credential`) rather
@@ -397,7 +397,7 @@ export async function restartAgentSession(
     accessProfileEcho = {
       profileRef: profile.id,
       ...(profile.label !== undefined ? { label: profile.label } : {}),
-      vendor: profile.vendor,
+      endpoint: profile.endpoint,
       method: profile.method,
     }
   } else if (resolved.authDescriptor) {

@@ -2,7 +2,7 @@
  * Named auth-profile store — CRUD over `~/.agentproto/auth-profiles.json`
  * (mode 0600), generalizing `providers-store`'s single-key-per-provider file
  * (`packages/providers-store/src/index.ts:68-90`, `ProviderEntry`/
- * `ProvidersFile`) to N named `AuthProfile`s per vendor, keyed by `id`.
+ * `ProvidersFile`) to N named `AuthProfile`s per billing endpoint, keyed by `id`.
  *
  * This is the profile-metadata store, not the credential store: entries hold
  * `credentialRef` (a pointer), never a secret, so — unlike `FileStore`
@@ -22,13 +22,15 @@ import type { AuthMethod, AuthProfile } from "./profile-types.js"
 
 const authMethodSchema = z.enum(["oauth-bearer", "api-key"]) satisfies z.ZodType<AuthMethod>
 
+/** Version-1 on-disk shape. Keep `vendor` here permanently for compatibility:
+ * callers only ever see the unambiguous in-memory `endpoint` field. */
 const authProfileSchema = z.object({
   id: z.string(),
   vendor: z.string(),
   method: authMethodSchema,
   credentialRef: z.string(),
   label: z.string().optional(),
-}) satisfies z.ZodType<AuthProfile>
+}).transform(({ vendor, ...profile }): AuthProfile => ({ ...profile, endpoint: vendor }))
 
 const authProfilesFileSchema = z.object({
   version: z.literal(1),
@@ -61,17 +63,26 @@ async function writeAuthProfiles(file: AuthProfilesFile): Promise<void> {
   const dir = join(homedir(), ".agentproto")
   await mkdir(dir, { recursive: true })
   // mode 0600 so other local users can't read the profile metadata.
-  await writeFile(authProfilesPath(), JSON.stringify(file, null, 2) + "\n", {
+  const diskFile = {
+    version: file.version,
+    profiles: Object.fromEntries(
+      Object.entries(file.profiles).map(([id, { endpoint, ...profile }]) => [
+        id,
+        { ...profile, vendor: endpoint },
+      ]),
+    ),
+  }
+  await writeFile(authProfilesPath(), JSON.stringify(diskFile, null, 2) + "\n", {
     encoding: "utf8",
     mode: 0o600,
   })
 }
 
-/** List all profiles, optionally filtered to one vendor. */
-export async function listAuthProfiles(vendor?: string): Promise<AuthProfile[]> {
+/** List all profiles, optionally filtered to one billing endpoint. */
+export async function listAuthProfiles(endpoint?: string): Promise<AuthProfile[]> {
   const file = await loadAuthProfiles()
   const all = Object.values(file.profiles)
-  return vendor === undefined ? all : all.filter(p => p.vendor === vendor)
+  return endpoint === undefined ? all : all.filter(p => p.endpoint === endpoint)
 }
 
 /** Look up a single profile by id, or undefined if none exists. */

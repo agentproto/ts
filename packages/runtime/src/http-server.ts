@@ -92,6 +92,7 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
+import { getUserPreset, listUserPresets } from "./user-presets.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
@@ -1514,6 +1515,15 @@ export async function startHttpServer(
           return
         }
 
+        // User presets are private saved spawn configurations. Keep this
+        // deliberately distinct from `/presets` below, which is the static
+        // provider-preset catalog retained for compatibility.
+        if (path === "/user-presets" && req.method === "GET") {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify({ presets: await listUserPresets() }))
+          return
+        }
+
         // Preset routes — static data, always available (no registry opt-in).
         // GET /presets → { presets: AdapterEntry<PresetInfo>[] }
         if (path === "/presets" && req.method === "GET") {
@@ -2117,6 +2127,24 @@ function parseAuthField(
   }
 }
 
+function parseRouteField(raw: unknown): { gateway: string; baseUrl?: string } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  if (typeof obj.gateway !== "string" || obj.gateway.length === 0) return undefined
+  return {
+    gateway: obj.gateway,
+    ...(typeof obj.baseUrl === "string" && obj.baseUrl.length > 0 ? { baseUrl: obj.baseUrl } : {}),
+  }
+}
+
+function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const profileRef = (value as Record<string, unknown>).profileRef
+  return typeof profileRef === "string" && profileRef.length > 0 ? { profileRef } : {}
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -2195,7 +2223,13 @@ async function handleSessions(
       return true
     }
     const b = body as Record<string, unknown>
-    const adapter = typeof b.adapter === "string" ? b.adapter : ""
+    const presetId = typeof b.presetId === "string" && b.presetId.length > 0 ? b.presetId : undefined
+    const preset = presetId ? await getUserPreset(presetId) : undefined
+    if (presetId && !preset) {
+      json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
+      return true
+    }
+    const adapter = typeof b.adapter === "string" ? b.adapter : (preset?.adapter ?? "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -2220,6 +2254,25 @@ async function handleSessions(
         ...(typeof b.mode === "string" && b.mode.length > 0 ? { mode: b.mode } : {}),
         ...(typeof b.model === "string" && b.model.length > 0 ? { model: b.model } : {}),
         ...(typeof b.effort === "string" && b.effort.length > 0 ? { effort: b.effort } : {}),
+        ...(b.route !== undefined
+          ? (() => {
+              const parsed = parseRouteField(b.route)
+              return parsed !== undefined ? { route: parsed } : {}
+            })()
+          : {}),
+        ...(b.access !== undefined
+          ? (() => {
+              const parsed = parseAccessField(b.access)
+              return parsed !== undefined ? { access: parsed } : {}
+            })()
+          : {}),
+        ...(typeof b.posture === "string" && b.posture.length > 0
+          ? { posture: parsePostureInput(b.posture) }
+          : {}),
+        ...(typeof b.contextProfile === "string" && b.contextProfile.length > 0
+          ? { contextProfile: b.contextProfile }
+          : {}),
+        ...(preset ? { preset } : {}),
         ...(b.options !== undefined
           ? (() => {
               const parsed = parseOptionsField(b.options)
@@ -2309,7 +2362,10 @@ async function handleSessions(
                 result.code === "orchestrator_child_quota_exceeded" ||
                 result.code === "role_spawn_denied"
               ? 409
-              : result.code === "invalid_role" || result.code === "worktree_requires_explicit_repo"
+            : result.code === "invalid_role" ||
+                result.code === "worktree_requires_explicit_repo" ||
+                result.code === "access_profile_not_found" ||
+                result.code === "access_profile_ineligible"
                 ? 400
                 : 500
       json(status, {

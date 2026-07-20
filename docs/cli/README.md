@@ -53,7 +53,8 @@ Pick whichever matches what you're trying to do:
 - [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
 - [`agentproto plugins`](./verbs/plugins.md) — manage runtime plugins
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
-- [`agentproto presets`](./verbs/presets.md) — list provider gateway presets + key-env status
+- [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
+- [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations
 - [`agentproto rendezvous`](./verbs/rendezvous.md) — self-host the untrusted pairing broker
 - [`agentproto run`](./verbs/run.md) — one-shot adapter turn
 - [`agentproto run-swarm`](./verbs/run-swarm.md) — kernel-routed multi-agent loop

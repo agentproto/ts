@@ -1,10 +1,10 @@
 /**
  * Named auth-profile types (SPEC §1c/§3.1 — `agentproto-session-config-axes`).
  *
- * A profile is a named credential `{ vendor, method, credentialRef }` that
+ * A profile is a named credential `{ endpoint, method, credentialRef }` that
  * lives independently of any adapter, generalizing `providers-store`'s
  * `ProviderEntry` (one api-key per provider, `packages/providers-store/src/
- * index.ts:68-80`) to N named profiles per vendor. `subscription|api-key` is
+ * index.ts:68-80`) to N named profiles per billing endpoint. `subscription|api-key` is
  * not a session property — it demotes to the `method` facet of a profile.
  *
  * The secret itself is NEVER inlined here — `credentialRef` is an opaque
@@ -20,16 +20,18 @@
  *  new methods are additive. */
 export type AuthMethod = "oauth-bearer" | "api-key"
 
-/** A named, vendor-scoped credential reference. */
+/** A named, billing-endpoint-scoped credential reference. */
 export interface AuthProfile {
   /** Stable id, unique across all profiles (the `profileRef` a session
    *  attaches). */
   id: string
-  /** Which vendor this credential bills against (`anthropic`, `moonshot`, …) —
-   *  a `CatalogProvider` id, kept as `string` here to stay decoupled from
+  /** Which billing endpoint this credential authenticates against
+   *  (`anthropic`, `openrouter`, `moonshot`, …). This deliberately does NOT
+   *  mean the model builder: OpenRouter can serve a z-ai model, for example.
+   *  Kept as `string` here to stay decoupled from
    *  `@agentproto/model-catalog`, same rationale as the driver's
    *  `AgentCliDefinition.provider`. */
-  vendor: string
+  endpoint: string
   /** How this profile authenticates. */
   method: AuthMethod
   /** Opaque handle into this package's credential storage — NEVER the secret

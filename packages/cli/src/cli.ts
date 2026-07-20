@@ -32,7 +32,8 @@ import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runTunnel } from "./commands/tunnel.js"
-import { runPresets } from "./commands/presets.js"
+import { runProviderPresets } from "./commands/presets.js"
+import { runPreset } from "./commands/preset.js"
 import { runBrowser } from "./commands/browser.js"
 import { runMcpBridge } from "./commands/mcp-bridge.js"
 import { runInstallMcp } from "./commands/install-mcp.js"
@@ -90,7 +91,9 @@ Usage:
   agentproto tunnel    list   [--active] [--json]
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
-  agentproto presets  list [--json]          provider gateway presets + key-env status
+  agentproto provider-preset list [--json]   provider gateway definitions + key-env status
+  agentproto presets  list [--json]          deprecated alias for provider-preset
+  agentproto preset   <list|show|add|delete> saved user spawn configurations
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
                                            register the daemon's MCP server with coding CLIs
@@ -161,6 +164,8 @@ const VERBS = new Set([
   "conversation",
   "tunnel",
   "presets",
+  "provider-preset",
+  "preset",
   "browser",
   "mcp-bridge",
   "install-mcp",
@@ -238,7 +243,12 @@ async function main(argv: readonly string[]): Promise<number> {
     case "tunnel":
       return runTunnel(rest)
     case "presets":
-      return runPresets(rest)
+      process.stderr.write("agentproto presets is deprecated; use `agentproto provider-preset list`.\n")
+      return runProviderPresets(rest)
+    case "provider-preset":
+      return runProviderPresets(rest)
+    case "preset":
+      return runPreset(rest)
     case "browser":
       return runBrowser(rest)
     case "mcp-bridge":
