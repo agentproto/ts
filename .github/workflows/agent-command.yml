@@ -242,6 +242,23 @@ jobs:
             git push origin "HEAD:${{ steps.ctx.outputs.head_ref }}"
           fi
 
+      - name: Stamp PR provenance footer
+        if: >
+          steps.parse.outputs.sandboxable == 'true' &&
+          steps.sandbox-verb.outputs.status == 'done' &&
+          (steps.parse.outputs.verb == 'pr' ||
+           steps.parse.outputs.verb == 'implement' ||
+           (steps.parse.outputs.verb == 'fix' && steps.parse.outputs.force_pr_delivery == 'true'))
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          AUTH_MODE: ${{ steps.compose.outputs.auth_mode }}
+          PROVENANCE: ${{ steps.sandbox-verb.outputs.provenance }}
+        run: node scripts/stamp-pr-footer.mjs
+
       - name: React result (✅ / ❌)
         if: always()
         env:

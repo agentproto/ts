@@ -136,7 +136,9 @@ export const restOpenPrBlock = ({ repo, branch, base, titleHint }) => [
   `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
   `     "https://api.github.com/repos/${repo}/pulls" --data @pr.json`,
   `   \`\`\``,
-  `   Write \`pr-body.md\` BEFORE the curl: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Check the response has an "id"/"number" field; anything else, print it and retry once.`,
+  `   Write \`pr-body.md\` BEFORE the curl: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}.`,
+  `   The LAST line of \`pr-body.md\` must be exactly the hidden placeholder \`<!-- agentproto-bot:provenance -->\` — the CI runner replaces it with a provenance footer (session id, cost, run link); do not omit it.`,
+  `   Check the response has an "id"/"number" field; anything else, print it and retry once.`,
 ].join("\n")
 
 /** Commit-mode delivery: push the change directly onto an existing branch. */

@@ -21,7 +21,7 @@
  * must not turn a green review red.
  */
 
-const MARKER = "@agentproto-bot"
+import { MARKER, buildFooter } from "./lib/provenance-footer.mjs"
 
 const env = (k) => (process.env[k] ?? "").trim()
 
@@ -52,35 +52,6 @@ const findReview = async (repo, pr, sha) => {
   return reviews
     .filter((r) => r?.commit_id === sha && r?.user?.type === "Bot")
     .sort((a, b) => Date.parse(b.submitted_at ?? 0) - Date.parse(a.submitted_at ?? 0))[0]
-}
-
-const fmtTokens = (n) => {
-  if (typeof n !== "number" || !Number.isFinite(n)) return null
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
-}
-
-const buildFooter = ({ prov, authMode, runId, runUrl, sha }) => {
-  const parts = [`🤖 **${MARKER}** — review`]
-  if (prov?.sessionId) {
-    parts.push(`session \`${prov.sessionId}\`${prov.label ? ` (\`${prov.label}\`)` : ""}`)
-  }
-  // Engine label: "adapter / authMode" when an adapter ran; "legacy fallback
-  // (authMode)" when no agent session exists at all (the API-key fallback path);
-  // bare authMode only if a session ran without a resolved adapter slug.
-  if (prov?.adapter) parts.push([prov.adapter, authMode].filter(Boolean).join(" / "))
-  else if (!prov?.sessionId) parts.push(`legacy fallback${authMode ? ` (${authMode})` : ""}`)
-  else if (authMode) parts.push(authMode)
-  if (prov?.sandboxId) parts.push(`e2b \`${prov.sandboxId}\``)
-  if (prov?.parentSessionId) parts.push(`supervisor \`${prov.parentSessionId}\``)
-  const tin = fmtTokens(prov?.tokensIn)
-  const tout = fmtTokens(prov?.tokensOut)
-  if (tin || tout) parts.push(`${tin ?? "?"} in / ${tout ?? "?"} out`)
-  if (typeof prov?.costUsd === "number") {
-    parts.push(`$${prov.costUsd.toFixed(4)}${prov.source && prov.source !== "adapter" ? ` (${prov.source})` : ""}`)
-  }
-  if (runId) parts.push(`run [${runId}](${runUrl})`)
-  if (sha) parts.push(`sha \`${sha.slice(0, 7)}\``)
-  return `\n\n---\n<sub>${parts.join(" · ")}</sub>`
 }
 
 async function main() {
@@ -118,6 +89,7 @@ async function main() {
     runId: env("RUN_ID"),
     runUrl: `${env("SERVER_URL") || "https://github.com"}/${repo}/actions/runs/${env("RUN_ID")}`,
     sha,
+    kind: "review",
   })
 
   const { ok, status, json } = await api(
