@@ -39,6 +39,8 @@ agentproto sessions start claude-code --cwd . --prompt "refactor the payments mo
 agentproto sessions --watch
 ```
 
+<!-- footer smoke test -->
+
 Then gate it: attach a policy to any session's turn-end and stage the commit
 behind a human ack. See [agentproto.sh](https://agentproto.sh) for the full
 pitch, or jump straight to [agentproto.sh/features](https://agentproto.sh/features)
