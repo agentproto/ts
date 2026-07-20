@@ -295,3 +295,5 @@ Spec evolution happens at
 tracks AIP progression — implementations follow as AIPs reach Review/Final
 status. PRs welcome for runtime bugfixes, perf, and adapter coverage — see
 "Contributing an adapter" above.
+
+<!-- footer local demo -->
