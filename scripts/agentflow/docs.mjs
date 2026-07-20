@@ -55,7 +55,7 @@ const VERBS_DIR = join(DOCS_DIR, 'verbs')
 // The ONLY exception to "one verb, one page": verbs that legitimately share
 // another verb's page (a rendering variant, not a distinct operation). Keep
 // this tiny and explicit — every entry is a decision to NOT write a page.
-const PAGE_ALIASES = { 'chat-tui': 'chat' }
+const PAGE_ALIASES = { 'chat-tui': 'chat', 'provider-preset': 'presets' }
 
 // ── detector (deterministic, no LLM) ──────────────────────────────────────
 
