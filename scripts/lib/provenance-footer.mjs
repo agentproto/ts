@@ -7,6 +7,8 @@
  * box can't know about itself.
  */
 
+import { basename } from "node:path"
+
 export const MARKER = "@agentproto-bot"
 
 export const fmtTokens = (n) => {
@@ -33,7 +35,12 @@ export const buildFooter = ({ prov, authMode, runId, runUrl, sha, kind = "review
   if (typeof prov?.costUsd === "number") {
     parts.push(`$${prov.costUsd.toFixed(4)}${prov.source && prov.source !== "adapter" ? ` (${prov.source})` : ""}`)
   }
-  if (runId) parts.push(`run [${runId}](${runUrl})`)
+  const showLocalHostCwd = prov?.source === "local" || !runId
+  if (runId && !showLocalHostCwd) parts.push(`run [${runId}](${runUrl})`)
+  if (showLocalHostCwd) {
+    if (prov?.host) parts.push(`host \`${prov.host}\``)
+    if (prov?.cwd) parts.push(`cwd \`${basename(prov.cwd)}\``)
+  }
   if (sha) parts.push(`sha \`${sha.slice(0, 7)}\``)
   return `\n\n---\n<sub>${parts.join(" · ")}</sub>`
 }

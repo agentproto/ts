@@ -69,6 +69,15 @@ const sessionRefSchema = z.object({
   endedAt: z.string().optional(),
   status: z.string(),
   cwd: z.string().optional(),
+  // Optional echoes from SessionDescriptor; kept optional for back-compat with
+  // registry rows written before these fields were persisted. The GC logic
+  // ignores them; they are surfaced in local provenance footers.
+  adapterSlug: z.string().optional(),
+  model: z.string().optional(),
+  authMode: z.string().optional(),
+  costUsd: z.number().optional(),
+  tokensIn: z.number().optional(),
+  tokensOut: z.number().optional(),
 })
 export type SessionRef = z.infer<typeof sessionRefSchema>
 
@@ -148,7 +157,13 @@ async function readSessionsFile(path: string): Promise<SessionRef[] | null> {
   if (!file.success) return null
   const refs: SessionRef[] = []
   for (const entry of file.data.sessions) {
-    const ref = sessionRefSchema.safeParse(entry)
+    const rawEntry = entry as Record<string, unknown> | undefined
+    const ref = sessionRefSchema.safeParse({
+      ...rawEntry,
+      // SessionDescriptor stores billing-auth mode under `auth.mode`; mirror it
+      // onto the flattened `authMode` field for footer consumers.
+      authMode: rawEntry?.authMode ?? (rawEntry?.auth as { mode?: string } | undefined)?.mode,
+    })
     if (ref.success) refs.push(ref.data)
   }
   return refs
