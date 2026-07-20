@@ -255,6 +255,14 @@ export type WebviewMessage =
    */
   | { type: "changeModel" }
   /**
+   * The header's Terminal segment was clicked — open a REAL VS Code terminal
+   * for this session beside the conversation panel (WP1). Distinct from the
+   * raw-HTML view switch (`setView`), which remains available as an internal
+   * fallback. The host resolves the session from the controller and invokes
+   * `agentproto.openTerminal`.
+   */
+  | { type: "openTerminal" }
+  /**
    * The header's Conversation⇄Terminal segmented toggle was clicked. A PURE
    * display switch for THIS session — the host re-renders the SAME session's
    * other representation (structured conversation ⇄ raw terminal) and re-arms
@@ -283,6 +291,7 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "stop":
     case "restart":
     case "changeModel":
+    case "openTerminal":
       return true
     case "send":
     case "interruptSend":

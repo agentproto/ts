@@ -84,7 +84,7 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
   })
 
-  it("accepts changeModel (the model chip was clicked) with no payload", () => {
-    expect(isWebviewMessage({ type: "changeModel" })).toBe(true)
+  it("accepts openTerminal (header Terminal segment) with no payload", () => {
+    expect(isWebviewMessage({ type: "openTerminal" })).toBe(true)
   })
 })

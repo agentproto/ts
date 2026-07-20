@@ -24,6 +24,7 @@ import { pickTransport, terminalDisplayName } from "./terminalSwitch.logic.js"
 
 export interface TerminalSwitch {
   open(session: SessionDescriptor): void
+  moveLocation(): Promise<void>
 }
 
 export function registerTerminalSwitch(
@@ -39,16 +40,27 @@ export function registerTerminalSwitch(
   getActiveTranscriptSessionId: () => string | undefined = () => undefined,
 ): TerminalSwitch {
   const terminals = new Map<string, vscode.Terminal>()
+  /** Tracked location of each agentproto terminal we created. Default is editor (WP1). */
+  const locations = new Map<string, "editor" | "panel">()
+
+  function updateTerminalContext(): void {
+    const active = vscode.window.activeTerminal
+    const isOurs = active ? [...terminals.values()].some(term => term === active) : false
+    void vscode.commands.executeCommand("setContext", "agentproto.terminalFocused", isOurs)
+  }
 
   ctx.subscriptions.push(
     vscode.window.onDidCloseTerminal(closed => {
       for (const [id, term] of terminals) {
         if (term === closed) {
           terminals.delete(id)
+          locations.delete(id)
+          updateTerminalContext()
           return
         }
       }
     }),
+    vscode.window.onDidChangeActiveTerminal(() => updateTerminalContext()),
   )
 
   const terminalSwitch: TerminalSwitch = {
@@ -62,9 +74,43 @@ export function registerTerminalSwitch(
         pickTransport(session) === "pty"
           ? createPtyMirrorPty(client, session)
           : createAgentMirrorPty(client, store, session)
-      const terminal = vscode.window.createTerminal({ name: terminalDisplayName(session), pty })
+      const terminal = vscode.window.createTerminal({
+        name: terminalDisplayName(session),
+        pty,
+        location: { viewColumn: vscode.ViewColumn.Beside },
+      })
       terminals.set(session.id, terminal)
+      locations.set(session.id, "editor")
       terminal.show()
+    },
+
+    async moveLocation(): Promise<void> {
+      const active = vscode.window.activeTerminal
+      if (!active) {
+        void vscode.window.showInformationMessage("agentproto: no active terminal to move.")
+        return
+      }
+      let sessionId: string | undefined
+      for (const [id, term] of terminals) {
+        if (term === active) {
+          sessionId = id
+          break
+        }
+      }
+      if (!sessionId) {
+        void vscode.window.showInformationMessage(
+          "agentproto: the active terminal is not an agentproto terminal.",
+        )
+        return
+      }
+      const current = locations.get(sessionId) ?? "editor"
+      if (current === "editor") {
+        await vscode.commands.executeCommand("workbench.action.terminal.moveToPanel")
+        locations.set(sessionId, "panel")
+      } else {
+        await vscode.commands.executeCommand("workbench.action.terminal.moveToEditor")
+        locations.set(sessionId, "editor")
+      }
     },
   }
 
@@ -79,6 +125,7 @@ export function registerTerminalSwitch(
       )
       if (session) terminalSwitch.open(session)
     }),
+    vscode.commands.registerCommand("agentproto.moveTerminalLocation", () => terminalSwitch.moveLocation()),
   )
 
   return terminalSwitch

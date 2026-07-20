@@ -182,7 +182,7 @@ export function registerTranscriptPanels(
         panel.webview.onDidReceiveMessage(async (raw: unknown) => {
           if (!isWebviewMessage(raw)) return
           try {
-            await handleWebviewMessage(raw, controller, outputDocs, client)
+            await handleWebviewMessage(raw, panel, controller, outputDocs, client)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             void vscode.window.showErrorMessage(`agentproto: ${message}`)
@@ -223,8 +223,9 @@ export function registerTranscriptPanels(
   }
 }
 
-async function handleWebviewMessage(
+export async function handleWebviewMessage(
   msg: WebviewMessage,
+  panel: vscode.WebviewPanel,
   controller: TranscriptPanelController,
   outputDocs: OutputDocuments,
   client: DaemonClient,
@@ -248,8 +249,12 @@ async function handleWebviewMessage(
     case "restart":
       await controller.onRestart()
       return
+    case "openTerminal":
+      await vscode.commands.executeCommand("agentproto.openTerminal", controller.session.id)
+      return
     case "setView":
       await controller.onSetView(msg.view)
+      panel.reveal(vscode.ViewColumn.One, false)
       return
     case "rename":
       await controller.onRename(msg.name)
@@ -2291,7 +2296,7 @@ export function buildHtml(nonce: string): string {
         vscode.postMessage({ type: 'setView', view: 'conversation' });
       });
       viewTerminalBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'setView', view: 'terminal' });
+        vscode.postMessage({ type: 'openTerminal' });
       });
       // Click-to-edit rename (FIX B). Clicking the header title swaps its text
       // for an inline input prefilled with the CURRENT editable name (label,
