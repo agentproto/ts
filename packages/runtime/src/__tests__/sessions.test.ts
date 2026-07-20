@@ -1423,6 +1423,57 @@ describe("createSessionsRegistry", () => {
     })
   })
 
+  describe("recordOpenedPr", () => {
+    it("records session provenance idempotently and restores it from history", () => {
+      const reg = createSessionsRegistry({ persistPath })
+      const session = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        command: "git",
+        args: ["status"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+
+      const recorded = reg.recordOpenedPr(session.id, {
+        adapter: "github",
+        number: 538,
+        url: "https://github.com/agentproto/agentproto/pull/538",
+      })
+      expect(recorded?.openedPrs).toEqual([
+        expect.objectContaining({
+          adapter: "github",
+          number: 538,
+          url: "https://github.com/agentproto/agentproto/pull/538",
+          openedAt: expect.any(String),
+        }),
+      ])
+
+      // A retried report is not a second opened pull request.
+      reg.recordOpenedPr(session.id, {
+        adapter: "github",
+        number: 538,
+        url: "https://github.com/agentproto/agentproto/pull/538",
+      })
+      expect(reg.get(session.id)?.openedPrs).toHaveLength(1)
+      expect(reg.recordOpenedPr("sess_missing", {
+        adapter: "github",
+        number: 539,
+        url: "https://github.com/agentproto/agentproto/pull/539",
+      })).toBeUndefined()
+
+      // shutdown() flushes the descriptor snapshot synchronously; the
+      // reloaded registry is the real persistence boundary.
+      reg.shutdown()
+      const restored = createSessionsRegistry({ persistPath })
+      expect(restored.get(session.id)?.openedPrs).toEqual(recorded?.openedPrs)
+      restored.shutdown()
+    })
+  })
+
   describe("priorCommandSessionId", () => {
     let workspace: string
 

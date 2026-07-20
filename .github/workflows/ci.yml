@@ -10,15 +10,24 @@ on:
     # (review-if-needed → merge-gate) instead of the handoff dead-ending.
     types: [opened, synchronize, reopened, ready_for_review]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# ── Concurrency ───────────────────────────────────────────────────────────
+# Per-job, not workflow-level: the agentic reviewer (pr-review) runs for
+# several minutes and is cancelled when another push lands on the branch
+# (including CI's own changeset commit). Workflow-level cancel-in-progress
+# kills the running review → review never posts → changeset commit was
+# pointless. Instead, each job declares its own policy:
+#   - fast deterministic jobs (build/test/hygiene/changeset) may cancel
+#   - pr-review NEVER cancels — wait for it to finish
+#   - pr-fix / auto-merge queue behind pr-review's group
 
 jobs:
   build-and-test:
     name: Build + test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-build
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
