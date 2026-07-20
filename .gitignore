@@ -28,6 +28,9 @@ packages/skill-pack-bureau/.claude-plugin/
 # Never commit its output (that was the disease this repo used to have).
 /.skills/
 
+# catalog-sync local generator output (not the consumed model-catalog artifacts)
+packages/catalog-sync/generated/
+
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 
