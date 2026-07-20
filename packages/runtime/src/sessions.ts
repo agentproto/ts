@@ -479,7 +479,8 @@ export interface SessionAuthEcho {
 export interface SessionAccessProfileEcho {
   profileRef: string
   label?: string
-  vendor: string
+  /** Billing endpoint, deliberately distinct from the model's vendor. */
+  endpoint: string
   method: AuthMethod
 }
 

@@ -181,9 +181,9 @@ describe("resolveRouteRows / currentRouteOf — catalog-derived, non-runnable fl
 
 describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC Rx)", () => {
   const profiles = [
-    { id: "jeremy-max", vendor: "anthropic", method: "oauth-bearer" as const, label: "Jeremy Max" },
-    { id: "work-anthropic-key", vendor: "anthropic", method: "api-key" as const, label: "Work key" },
-    { id: "work-moonshot", vendor: "moonshot", method: "api-key" as const, label: "Moonshot" },
+    { id: "jeremy-max", endpoint: "anthropic", method: "oauth-bearer" as const, label: "Jeremy Max" },
+    { id: "work-anthropic-key", endpoint: "anthropic", method: "api-key" as const, label: "Work key" },
+    { id: "work-moonshot", endpoint: "moonshot", method: "api-key" as const, label: "Moonshot" },
   ]
 
   it("lists only the profiles eligible for the current route + a '+ add profile' row", () => {
@@ -239,8 +239,8 @@ describe("resolveCapabilities — the §3.9 bundle re-resolves per model", () =>
 
   it("methods reflect the eligible profiles for the current route", () => {
     const profiles = [
-      { id: "jeremy-max", vendor: "anthropic", method: "oauth-bearer" as const },
-      { id: "work-anthropic-key", vendor: "anthropic", method: "api-key" as const },
+      { id: "jeremy-max", endpoint: "anthropic", method: "oauth-bearer" as const },
+      { id: "work-anthropic-key", endpoint: "anthropic", method: "api-key" as const },
     ]
     const caps = resolveCapabilities(
       { model: "claude-opus-4-8" },
@@ -263,7 +263,7 @@ describe("buildSessionConfigChips — dynamic set, empty capability ⇒ hidden",
       effortsByModel: { "claude-opus-4-8": ["low", "high", "ultracode"] },
       availableModes: [{ id: "plan", name: "Plan" }],
       catalog: catalog(),
-      profiles: [{ id: "jeremy-max", vendor: "anthropic", method: "oauth-bearer" as const }],
+      profiles: [{ id: "jeremy-max", endpoint: "anthropic", method: "oauth-bearer" as const }],
       contextProfiles: ["full", "lean"],
     })
 
@@ -386,14 +386,14 @@ describe("access chip — surfaces the ineligible-attached-profile re-pick", () 
         route: { gateway: "moonshot" },
         accessProfile: {
           profileRef: "jeremy-max",
-          vendor: "anthropic",
+          endpoint: "anthropic",
           method: "oauth-bearer",
           label: "Jeremy Max",
         },
       }),
       baseInput({
         catalog: catalog(),
-        profiles: [{ id: "jeremy-max", vendor: "anthropic", method: "oauth-bearer" as const }],
+        profiles: [{ id: "jeremy-max", endpoint: "anthropic", method: "oauth-bearer" as const }],
       }),
     )
     const access = chips.find(c => c.axis === "access")!

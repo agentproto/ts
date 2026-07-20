@@ -108,6 +108,15 @@ export type {
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
 export {
+  userPresetsPath,
+  loadUserPresets,
+  listUserPresets,
+  getUserPreset,
+  saveUserPreset,
+  deleteUserPreset,
+} from "./user-presets.js"
+export type { UserPreset, UserPresetsFile } from "./user-presets.js"
+export {
   buildCatalogModels,
   type CatalogAdapterInput,
   type CatalogAdapterModelInput,

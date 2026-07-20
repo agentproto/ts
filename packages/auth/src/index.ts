@@ -19,11 +19,11 @@
  *   KeychainStore / MemoryStore / FileStore — built-in CredentialStore backends
  *   resolveStoreRef(spec, server)     — map a TokenStoreSpec to a StoreRef
  *   CredentialBroker                  — path → ready-to-use auth headers
- *   AuthProfile / AuthMethod          — named, vendor-scoped credential ref
+ *   AuthProfile / AuthMethod          — named, endpoint-scoped credential ref
  *   listAuthProfiles/getAuthProfile/
  *   addAuthProfile/removeAuthProfile  — named-profile store CRUD
  *   resolveEndpoint/methodsPresentable/
- *   eligibleProfiles                  — (adapter × route) → vendor + the
+ *   eligibleProfiles                  — (adapter × route) → endpoint + the
  *                                        profile eligibility predicate
  */
 

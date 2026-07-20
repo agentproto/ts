@@ -59,7 +59,7 @@ describe("SessionDescriptor config-axis persistence round-trip", () => {
       accessProfile: {
         profileRef: "work-moonshot",
         label: "Work Moonshot",
-        vendor: "moonshot",
+        endpoint: "moonshot",
         method: "api-key",
       },
     })
@@ -85,7 +85,7 @@ describe("SessionDescriptor config-axis persistence round-trip", () => {
     expect(reloaded?.accessProfile).toEqual({
       profileRef: "work-moonshot",
       label: "Work Moonshot",
-      vendor: "moonshot",
+      endpoint: "moonshot",
       method: "api-key",
     })
     reg2.shutdown()

@@ -37,6 +37,7 @@ import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
 import { parsePostureInput } from "./canonical-posture.js"
+import { getUserPreset } from "./user-presets.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -248,9 +249,19 @@ export function registerAgentTools(
       adapter: z
         .string()
         .min(1)
+        .optional()
         .describe(
           "Adapter slug — one of the installed `@agentproto/adapter-*` packages " +
-            "(e.g. 'claude-code', 'hermes', 'aider')."
+            "(e.g. 'claude-code', 'hermes', 'aider'). Omit only when `presetId` names " +
+            "a saved preset with an adapter."
+        ),
+      presetId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Saved user spawn preset id from `agentproto preset list`. Its adapter and " +
+            "decomposed axes are applied first; explicit fields on this call override it."
         ),
       workspaceSlug: z
         .string()
@@ -359,6 +370,22 @@ export function registerAgentTools(
             "(Sonnet 4.6 / Opus 4.8 default 'high'; Opus 4.7 default 'xhigh'). " +
             "'max' and 'ultracode' are session-only. Omit to keep the model's own default."
         ),
+      route: jsonTolerant(
+        z.object({ gateway: z.string().min(1), baseUrl: z.string().url().optional() })
+      )
+        .optional()
+        .describe("Billing route/gateway. This is independent of model and named access profile."),
+      access: jsonTolerant(z.object({ profileRef: z.string().min(1).optional() }))
+        .optional()
+        .describe("Named auth profile to bill at initial spawn; resolved from the local keychain."),
+      posture: z
+        .string()
+        .optional()
+        .describe("Canonical agent posture (plan, bypass, accept-edits, read-only) or native harness mode."),
+      contextProfile: z
+        .string()
+        .optional()
+        .describe("Context intake profile (for example full or lean)."),
       auth: jsonTolerant(
         z.object({
           mode: z.enum(["subscription", "api-key"]).optional(),
@@ -607,6 +634,21 @@ export function registerAgentTools(
           isError: true,
         }
       }
+      const preset = input.presetId ? await getUserPreset(input.presetId) : undefined
+      if (input.presetId && !preset) {
+        return {
+          content: [{ type: "text", text: `agent_start: no user preset "${input.presetId}" found.` }],
+          isError: true,
+        }
+      }
+      const adapter = input.adapter ?? preset?.adapter
+      if (!adapter) {
+        return {
+          content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],
+          isError: true,
+        }
+      }
+      const { presetId: _presetId, posture: rawPosture, ...spawnInput } = input
       const result = await spawnAgentSession(
         {
           registry,
@@ -620,7 +662,12 @@ export function registerAgentTools(
           ...(provisionWorktree ? { provisionWorktree } : {}),
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
         },
-        input,
+        {
+          ...spawnInput,
+          adapter,
+          ...(rawPosture ? { posture: parsePostureInput(rawPosture) } : {}),
+          ...(preset ? { preset } : {}),
+        },
       )
       if (result.ok) {
         const body = {

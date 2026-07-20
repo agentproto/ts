@@ -30,7 +30,7 @@ import type { AuthProfile } from "../profile-types.js"
  */
 const CLAUDE_CODE_MANIFEST: AdapterAuthManifest = {
   id: "claude-code",
-  vendorByRoute: {
+  endpointByRoute: {
     direct: "anthropic",
     moonshot: "moonshot",
   },
@@ -42,7 +42,7 @@ const CLAUDE_CODE_MANIFEST: AdapterAuthManifest = {
 
 const HERMES_MANIFEST: AdapterAuthManifest = {
   id: "hermes",
-  vendorByRoute: {
+  endpointByRoute: {
     direct: "anthropic",
   },
   methodsByRoute: {
@@ -52,30 +52,30 @@ const HERMES_MANIFEST: AdapterAuthManifest = {
 
 const anthropicOauth: AuthProfile = {
   id: "jeremy-max",
-  vendor: "anthropic",
+  endpoint: "anthropic",
   method: "oauth-bearer",
   credentialRef: "ref-oauth",
 }
 const anthropicApiKey: AuthProfile = {
   id: "work-anthropic-key",
-  vendor: "anthropic",
+  endpoint: "anthropic",
   method: "api-key",
   credentialRef: "ref-api-key",
 }
 const moonshotApiKey: AuthProfile = {
   id: "personal-moonshot",
-  vendor: "moonshot",
+  endpoint: "moonshot",
   method: "api-key",
   credentialRef: "ref-moonshot",
 }
 
 describe("resolveEndpoint", () => {
-  it("resolves the vendor billed for a given (adapter, route)", () => {
+  it("resolves the billing endpoint for a given (adapter, route)", () => {
     expect(resolveEndpoint(CLAUDE_CODE_MANIFEST, "direct")).toEqual({
-      vendor: "anthropic",
+      endpoint: "anthropic",
     })
     expect(resolveEndpoint(CLAUDE_CODE_MANIFEST, "moonshot")).toEqual({
-      vendor: "moonshot",
+      endpoint: "moonshot",
     })
   })
 

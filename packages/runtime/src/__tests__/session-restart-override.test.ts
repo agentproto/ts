@@ -131,7 +131,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     const requested: AuthProfile = {
       id: "work-anthropic-key",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "kc:work-anthropic-key",
       label: "Work Anthropic key",
@@ -172,7 +172,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     expect(restarted.desc.accessProfile).toEqual({
       profileRef: "work-anthropic-key",
       label: "Work Anthropic key",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
     })
   })
@@ -184,7 +184,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     const otherMax: AuthProfile = {
       id: "personal-max",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "kc:personal-max",
       label: "Personal Max",
@@ -217,7 +217,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     const wrongVendor: AuthProfile = {
       id: "my-openai-key",
-      vendor: "openai",
+      endpoint: "openai",
       method: "api-key",
       credentialRef: "kc:my-openai-key",
     }
@@ -260,7 +260,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     const bearerForApiKeyOnly: AuthProfile = {
       id: "openai-bearer",
-      vendor: "openai",
+      endpoint: "openai",
       method: "oauth-bearer",
       credentialRef: "kc:openai-bearer",
     }

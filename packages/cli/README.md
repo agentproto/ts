@@ -27,7 +27,8 @@ agentproto workspace    <add|list|remove|use>                       register spa
 agentproto sessions     [start|terminal|mirror|stop|...]            browse / control live sessions
 agentproto browser      <install|start|list|stop|status>            manage browser sessions
 agentproto tunnel       <create|list|stop|status>                   public URL tunnels
-agentproto presets      list [--json]                               provider gateway presets
+agentproto provider-preset list [--json]                            provider gateway definitions
+agentproto preset       <list|show|add|delete>                       saved user spawn configurations
 agentproto mcp-bridge                                               stdio MCP proxy to daemon /mcp
 agentproto install-mcp  [--agent <name>...] [--all] [--yes]         register daemon MCP with coding CLIs
 agentproto onboard      [--yes] [--no-skills] [--skills <slug>]     first-run setup

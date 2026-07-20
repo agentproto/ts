@@ -1034,6 +1034,22 @@ export interface AgentCliStartOptions {
    * this driver injects nothing and runs ambient.
    */
   auth?: ResolvedAuthSpec
+  /**
+   * Decomposed posture axis (SPEC §3.4a) — what the agent may DO, in the
+   * agentproto-canonical vocabulary (`"plan"`, `"accept-edits"`, `"bypass"`,
+   * `"read-only"`, `"default"`). Applied at spawn-time via the adapter's
+   * existing mechanism (e.g. claude-code's CLAUDE_CONFIG_DIR permission
+   * settings), independently of a legacy `config.mode`. When undefined, the
+   * adapter spawns in its own default posture.
+   */
+  posture?: string
+  /**
+   * Decomposed contextProfile axis (SPEC §3.1) — what enters context. When it
+   * matches a manifest-declared mode with `kind: "context"` (e.g. claude-code's
+   * `"lean"`), that mode's env/argv patches are applied at spawn. Distinct from
+   * both `posture` and legacy `config.mode` — each axis is independent.
+   */
+  contextProfile?: string
 }
 
 /**

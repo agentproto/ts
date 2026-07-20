@@ -1,7 +1,7 @@
-# `agentproto presets`
+# `agentproto provider-preset`
 
 ```text
-agentproto presets list [--json]
+agentproto provider-preset list [--json]
 ```
 
 List the built-in provider gateway presets shipped in
@@ -46,10 +46,10 @@ per session with `--model`.
 
 ```bash
 # What's shipped, and which keys the daemon can see
-agentproto presets list
+agentproto provider-preset list
 
 # Machine-readable — e.g. which presets are ready
-agentproto presets list --json | jq -r '.[] | select(.status=="ready") | .slug'
+agentproto provider-preset list --json | jq -r '.[] | select(.status=="ready") | .slug'
 ```
 
 ```text

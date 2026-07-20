@@ -8,7 +8,15 @@
  */
 
 import type { SpawnAgentOptions } from "../client/daemonClient.js"
-import type { AdapterInfo, AdapterModelInfo, WorkspacesConfig } from "../client/types.js"
+import type {
+  AdapterInfo,
+  AdapterModelInfo,
+  CatalogModelsResult,
+  CatalogProductRow,
+  CatalogRouteRow,
+  CatalogVendorRow,
+  WorkspacesConfig,
+} from "../client/types.js"
 import { findWorkspaceByPath, workspaceLabel } from "../services/workspaces.logic.js"
 
 /**
@@ -184,6 +192,47 @@ export function mapSpawnQuickPickItems(adapters: SpawnAdapterInfo[]): SpawnQuick
   return items
 }
 
+// ── Catalog-based spawn picker (SPEC §5) ────────────────────────────────────
+
+/**
+ * Build spawn picker items from the daemon's unified model catalog instead
+ * of adapter manifest `models.allowed[]`. Groups by vendor, shows runnable
+ * status, and carries route info for spawn-time routing.
+ *
+ * Every runnable model gets one row per route; non-runnable models are shown
+ * with a "(no profile)" description so the user sees the gap rather than
+ * a mysteriously missing model. The first adapter in the route's `adapters`
+ * list is used as the default harness.
+ */
+export function mapCatalogSpawnQuickPickItems(catalog: CatalogModelsResult): SpawnQuickPickItem[] {
+  const items: SpawnQuickPickItem[] = []
+
+  for (const vendor of catalog.vendors) {
+    items.push({ label: vendor.vendor, kind: SEPARATOR_KIND })
+
+    for (const product of vendor.products) {
+      for (const route of product.routes) {
+        const ref = route.ref
+        const isRunnable = route.runnable
+        const profileHint = isRunnable ? route.route : `${route.route} · no profile`
+        const adapters = route.adapters
+        const defaultAdapter = adapters[0] ?? vendor.vendor
+
+        items.push({
+          label: product.product,
+          description: `${defaultAdapter} · ${profileHint}`,
+          adapter: { slug: defaultAdapter, name: defaultAdapter } as SpawnAdapterInfo,
+          model: ref,
+          mode: route.adapterModes[0],
+        })
+      }
+    }
+  }
+
+  items.push({ label: CONFIGURE_LABEL, configure: true })
+  return items
+}
+
 export interface ProviderQuickPickItem {
   label: string
   description?: string
@@ -307,6 +356,9 @@ export function resolveWorkspaceSlug(config: WorkspacesConfig, cwd: string | und
 
 export interface SpawnWizardAnswers {
   adapter: string
+  /** Saved user preset selected before the custom axis picker. The daemon
+   * expands it; fields selected by the wizard remain higher precedence. */
+  presetId?: string
   model?: string
   mode?: string
   cwd?: string
@@ -420,6 +472,7 @@ export function buildSpawnPlaceHolder(
 /** Assemble the POST /sessions/agent body, omitting unset optional fields. */
 export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOptions {
   const opts: SpawnAgentOptions = { adapter: answers.adapter }
+  if (answers.presetId) opts.presetId = answers.presetId
   if (answers.model) opts.model = answers.model
   if (answers.mode) opts.mode = answers.mode
   if (answers.cwd) opts.cwd = answers.cwd

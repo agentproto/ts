@@ -82,6 +82,60 @@ function baseDeps(overrides: Partial<SpawnAgentSessionDeps> = {}): {
 }
 
 describe("spawnAgentSession", () => {
+  it("expands a user preset at the shared spawn boundary and records every axis", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      preset: {
+        id: "fast-route",
+        label: "Fast route",
+        model: "deepseek/deepseek-v4-pro",
+        effort: "high",
+        route: { gateway: "openrouter" },
+        posture: "bypass",
+        contextProfile: "lean",
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor).toMatchObject({
+      model: "deepseek/deepseek-v4-pro",
+      effort: "high",
+      route: { gateway: "openrouter" },
+      posture: "bypass",
+      contextProfile: "lean",
+    })
+  })
+
+  it("forwards decomposed posture/contextProfile and applies a native posture before the opening prompt", async () => {
+    const switched: string[] = []
+    const startSession = vi.fn(async () => ({
+      ...fakeAgentSession(),
+      availableModes: [{ id: "plan", name: "Plan" }],
+      async setSessionMode(modeId: string) {
+        switched.push(modeId)
+        return { applied: true, modeId }
+      },
+    }))
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "Inspect this repository",
+      posture: "plan",
+      contextProfile: "lean",
+    })
+
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({
+      posture: "plan",
+      contextProfile: "lean",
+    }))
+    expect(switched).toEqual(["plan"])
+  })
+
   it("(a) rejects a spawn that would exceed the caller scope's maxDepth", async () => {
     const { registry, deps } = baseDeps()
     const callerScope: OrchestratorScope = {

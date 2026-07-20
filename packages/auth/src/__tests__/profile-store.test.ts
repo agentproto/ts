@@ -38,36 +38,36 @@ describe("auth profile store", () => {
   it("add → get round-trips a profile", async () => {
     await addAuthProfile({
       id: "jeremy-max",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "keychain:anthropic:jeremy-max",
       label: "Jeremy Max",
     })
     await expect(getAuthProfile("jeremy-max")).resolves.toEqual({
       id: "jeremy-max",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "keychain:anthropic:jeremy-max",
       label: "Jeremy Max",
     })
   })
 
-  it("supports N named profiles per vendor", async () => {
+  it("supports N named profiles per endpoint", async () => {
     await addAuthProfile({
       id: "jeremy-max",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "ref-1",
     })
     await addAuthProfile({
       id: "work-anthropic-key",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "ref-2",
     })
     await addAuthProfile({
       id: "personal-moonshot",
-      vendor: "moonshot",
+      endpoint: "moonshot",
       method: "api-key",
       credentialRef: "ref-3",
     })
@@ -83,19 +83,19 @@ describe("auth profile store", () => {
   it("add replaces an existing profile with the same id", async () => {
     await addAuthProfile({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "ref-old",
     })
     await addAuthProfile({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "ref-new",
     })
     await expect(getAuthProfile("p1")).resolves.toEqual({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "oauth-bearer",
       credentialRef: "ref-new",
     })
@@ -105,7 +105,7 @@ describe("auth profile store", () => {
   it("remove deletes a profile and reports prior existence", async () => {
     await addAuthProfile({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "ref",
     })
@@ -117,7 +117,7 @@ describe("auth profile store", () => {
   it("writes auth-profiles.json with mode 0600", async () => {
     await addAuthProfile({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "ref",
     })
@@ -128,7 +128,7 @@ describe("auth profile store", () => {
   it("never inlines a secret — only credentialRef is stored", async () => {
     await addAuthProfile({
       id: "p1",
-      vendor: "anthropic",
+      endpoint: "anthropic",
       method: "api-key",
       credentialRef: "keychain:anthropic:p1",
     })

@@ -1,14 +1,14 @@
 /**
- * (adapter × route) → vendor resolution + the profile eligibility predicate
+ * (adapter × route) → billing-endpoint resolution + the profile eligibility predicate
  * (SPEC §1c, `agentproto-session-config-axes/SPEC.md:102-125`).
  *
  *   profile eligible for (adapter, route) iff
- *        profile.vendor  == resolveEndpoint(adapter, route).vendor
+ *        profile.endpoint == resolveEndpoint(adapter, route).endpoint
  *    AND profile.method  ∈ methodsPresentable(adapter, route)
  *
  * `route` is the endpoint selector (SPEC axis #4 — direct vs a gateway mode
  * like `moonshot`/`openrouter`), so access is deliberately downstream of it:
- * which vendor (and thus which profiles) are eligible changes when route
+ * which endpoint (and thus which profiles) are eligible changes when route
  * changes. `AdapterAuthManifest` is a narrow, package-local projection of
  * exactly what this predicate needs from an adapter's real AIP-45 manifest
  * (`packages/driver/agent-cli/src/types.ts`'s `AgentCliDefinition`) — this
@@ -17,7 +17,7 @@
  * runtime is the one that will later project a real manifest into this
  * shape (out of scope here — foundation only, no live spawn-path wiring).
  *
- * `methodsByRoute` is the static per-vendor method table ADR'd in SPEC §3.4:
+ * `methodsByRoute` is the static per-endpoint method table ADR'd in SPEC §3.4:
  * "which auth methods this adapter can present for a resolved route." It is
  * the derivable replacement for two hand-maintained artifacts SPEC §1c calls
  * out for eventual removal — the per-adapter `authSubscription` boolean
@@ -34,34 +34,34 @@
 import type { AuthMethod, AuthProfile } from "./profile-types.js"
 
 /** A narrow, package-local projection of an adapter's declared auth
- *  capability — enough to resolve (adapter, route) → vendor and the auth
+ *  capability — enough to resolve (adapter, route) → endpoint and the auth
  *  methods presentable on that route. Not the real AIP-45 manifest type. */
 export interface AdapterAuthManifest {
   /** Adapter id (e.g. "claude-code", "hermes"), for error messages only. */
   id: string
   /** route id (e.g. "direct", or a gateway mode id like "moonshot") →
-   *  the vendor billed when spawned on that route. */
-  vendorByRoute: Readonly<Record<string, string>>
+   *  the billing endpoint used when spawned on that route. */
+  endpointByRoute: Readonly<Record<string, string>>
   /** route id → the auth methods this adapter can present when spawned on
    *  that route — the method-side of the eligibility predicate. */
   methodsByRoute: Readonly<Record<string, readonly AuthMethod[]>>
 }
 
-/** Resolve which vendor a given (adapter, route) pair bills against. Throws
- *  when the manifest declares no vendor for `route` — an unresolvable route
+/** Resolve which billing endpoint a given (adapter, route) pair uses. Throws
+ *  when the manifest declares no endpoint for `route` — an unresolvable route
  *  is a caller bug (a bad/unknown route id), not a "no profiles eligible"
- *  case, so this fails loud rather than returning an empty vendor. */
+ *  case, so this fails loud rather than returning an empty endpoint. */
 export function resolveEndpoint(
   manifest: AdapterAuthManifest,
   route: string,
-): { vendor: string } {
-  const vendor = manifest.vendorByRoute[route]
-  if (vendor === undefined) {
+): { endpoint: string } {
+  const endpoint = manifest.endpointByRoute[route]
+  if (endpoint === undefined) {
     throw new Error(
-      `resolveEndpoint: adapter "${manifest.id}" declares no vendor for route "${route}"`,
+      `resolveEndpoint: adapter "${manifest.id}" declares no endpoint for route "${route}"`,
     )
   }
-  return { vendor }
+  return { endpoint }
 }
 
 /** Which auth methods `manifest`'s adapter can present on `route`. Empty
@@ -75,7 +75,7 @@ export function methodsPresentable(
   return [...(manifest.methodsByRoute[route] ?? [])]
 }
 
-/** The eligibility predicate: profiles whose vendor matches the route's
+/** The eligibility predicate: profiles whose endpoint matches the route's
  *  resolved endpoint AND whose method the adapter can present on that
  *  route. */
 export function eligibleProfiles(
@@ -83,7 +83,7 @@ export function eligibleProfiles(
   manifest: AdapterAuthManifest,
   route: string,
 ): AuthProfile[] {
-  const { vendor } = resolveEndpoint(manifest, route)
+  const { endpoint } = resolveEndpoint(manifest, route)
   const methods = methodsPresentable(manifest, route)
-  return profiles.filter(p => p.vendor === vendor && methods.includes(p.method))
+  return profiles.filter(p => p.endpoint === endpoint && methods.includes(p.method))
 }

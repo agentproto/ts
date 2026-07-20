@@ -79,12 +79,12 @@ export interface CatalogModelsResult {
 /**
  * Non-secret projection of a named auth profile (mirror of `@agentproto/auth`'s
  * `AuthProfile`) the access chip lists. NEVER carries the credential — only the
- * `id` (the `profileRef` a restart-override attaches, §4.3), the `vendor`/`method`
+ * `id` (the `profileRef` a restart-override attaches, §4.3), the `endpoint`/`method`
  * eligibility facets (§1c), and a display `label`.
  */
 export interface AuthProfileRow {
   id: string
-  vendor: string
+  endpoint: string
   method: AuthMethod
   label?: string
 }
@@ -384,7 +384,7 @@ export function resolveAccessRows(input: {
     return {
       value: id,
       label: profile?.label ?? id,
-      description: profile ? `${profile.vendor} · ${profile.method}` : undefined,
+      description: profile ? `${profile.endpoint} · ${profile.method}` : undefined,
     }
   })
   rows.push({ label: "+ add profile", addProfile: true })

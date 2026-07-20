@@ -75,6 +75,11 @@
       "types": "./dist/session-story.d.ts",
       "import": "./dist/session-story.mjs",
       "default": "./dist/session-story.mjs"
+    },
+    "./user-presets": {
+      "types": "./dist/user-presets.d.ts",
+      "import": "./dist/user-presets.mjs",
+      "default": "./dist/user-presets.mjs"
     }
   },
   "files": [

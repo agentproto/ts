@@ -116,10 +116,24 @@ export function createAgentCliRuntime(
       // when the manifest also touches the same env key (operator
       // intent wins). Validation runs here too — a misconfigured
       // operator throws RuntimeConfigError before we exec anything.
-      const composed = composeSpawn(definition, opts?.config, {
+      // `contextProfile` is the one decomposed axis that still has a
+      // manifest-level spawn projection.  Preserve an explicit legacy mode
+      // for backwards compatibility; otherwise select the declared context
+      // mode (for example claude-code's `lean`) without overloading posture
+      // or route into `config.mode` again.
+      const contextMode = opts?.contextProfile
+        ? (definition.modes ?? []).find(
+            mode => mode.id === opts.contextProfile && mode.kind === "context",
+          )
+        : undefined
+      const config =
+        opts?.config?.mode || !contextMode
+          ? opts?.config
+          : { ...opts?.config, mode: contextMode.id }
+      const composed = composeSpawn(definition, config, {
         skipModelArg,
       })
-      const requestedModel = opts?.config?.options?.model
+      const requestedModel = config?.options?.model
       if (skipModelArg && typeof requestedModel === "string") {
         console.warn(
           `[agent-cli] codex: skipped model override "${requestedModel}" for ChatGPT-account auth; using Codex's default model.`,
@@ -244,7 +258,8 @@ export function createAgentCliRuntime(
       // documented limitation, not a bug in this override.
       const permissionMode = resolveClaudeCodePermissionMode(
         definition,
-        opts?.config?.mode,
+        opts?.posture,
+        config?.mode,
       )
       if (permissionMode) {
         const configDir = mkdtempSync(
@@ -310,7 +325,7 @@ export function createAgentCliRuntime(
         definition,
         child,
         cwd,
-        opts?.config?.mode,
+        config?.mode,
         opts?.permissionHold ?? false,
       )
       arm._stderrTail = () => stderrBuf.join("\n")
@@ -327,8 +342,8 @@ export function createAgentCliRuntime(
       // forward them to claude, so bin_args_template alone is not
       // sufficient. The compose step still adds them to binArgs as a
       // best-effort fallback for non-ACP arms.
-      const optModel = opts?.config?.options?.model
-      const optEffort = opts?.config?.options?.effort
+      const optModel = config?.options?.model
+      const optEffort = config?.options?.effort
       // Model-selection strategy (AgentCliModels.apply, default "config"):
       //   "config"  → apply via ACP session config (set_config_option) at
       //               connect — works for claude-code.
@@ -351,7 +366,7 @@ export function createAgentCliRuntime(
       //               bin_args/env, so forward the mode id to the ACP arm's
       //               connect({mode}) instead, applied via
       //               session/set_config_option(configId:"mode").
-      const requestedModeId = opts?.config?.mode
+      const requestedModeId = config?.mode
       const requestedModeDecl = requestedModeId
         ? (definition.modes ?? []).find(m => m.id === requestedModeId)
         : undefined
@@ -650,9 +665,28 @@ async function buildProtocolArm(
  */
 function resolveClaudeCodePermissionMode(
   definition: AgentCliHandle,
+  posture: string | undefined,
   configMode: string | undefined,
 ): string | undefined {
-  if (definition.id !== "claude-code" || !configMode) return undefined
+  if (definition.id !== "claude-code") return undefined
+
+  // Canonical posture is a first-class axis. It deliberately does not depend
+  // on the retired claude-code posture entries in `modes[]`: context profiles
+  // can therefore select `lean` at the same time as a permission posture.
+  // `read-only` maps to Claude Code's plan permission boundary; Claude Code
+  // does not expose a stricter read-only native mode.
+  const canonicalPermissionMode: Record<string, string | undefined> = {
+    plan: "plan",
+    "read-only": "plan",
+    "accept-edits": "acceptEdits",
+    bypass: "bypassPermissions",
+  }
+  if (posture && canonicalPermissionMode[posture]) {
+    return canonicalPermissionMode[posture]
+  }
+
+  // Legacy callers that still send a single AIP-45 mode remain supported.
+  if (!configMode) return undefined
   const mode = (definition.modes ?? []).find((m) => m.id === configMode)
   const args = mode?.bin_args_append ?? []
   const flagIndex = args.indexOf("--permission-mode")

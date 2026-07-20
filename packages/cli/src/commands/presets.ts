@@ -1,5 +1,5 @@
 /**
- * `agentproto presets list [--json]`
+ * `agentproto provider-preset list [--json]`
  *
  * List built-in provider gateway presets (moonshot, openrouter, …) with their
  * live status in the daemon's environment. Presets are static data — no install
@@ -20,10 +20,10 @@ import {
   httpGetJson,
 } from "./_daemon-helpers.js"
 
-const USAGE = `agentproto presets — list built-in provider gateway presets
+const USAGE = `agentproto provider-preset — list built-in provider gateway presets
 
 Usage:
-  agentproto presets list [--json]
+  agentproto provider-preset list [--json]
 
 Lists the Anthropic-compatible gateway presets shipped in
 @agentproto/provider-presets (moonshot, openrouter, …). Each preset is static
@@ -38,11 +38,11 @@ preset that shows "available", export its key env var in the daemon's
 environment (or pass an auth_token at spawn).
 
 Examples:
-  agentproto presets list
-  agentproto presets list --json
+  agentproto provider-preset list
+  agentproto provider-preset list --json
 `
 
-export async function runPresets(args: readonly string[]): Promise<number> {
+export async function runProviderPresets(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE)
     return 0
@@ -56,7 +56,7 @@ export async function runPresets(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stderr.write(
-    `agentproto presets: unknown subcommand "${sub}"\n` +
+    `agentproto provider-preset: unknown subcommand "${sub}"\n` +
       `  Known: list\n`,
   )
   return 2
@@ -76,7 +76,7 @@ async function runList(args: readonly string[]): Promise<number> {
 
   const report = await discoverDaemon()
   if (!report.found) {
-    printNoDaemonError(report, "agentproto presets list")
+    printNoDaemonError(report, "agentproto provider-preset list")
     return 2
   }
   const endpoint = report.found
@@ -88,7 +88,7 @@ async function runList(args: readonly string[]): Promise<number> {
     )
   } catch (err) {
     process.stderr.write(
-      `agentproto presets list: ${err instanceof Error ? err.message : String(err)}\n`,
+      `agentproto provider-preset list: ${err instanceof Error ? err.message : String(err)}\n`,
     )
     return 1
   }
@@ -119,3 +119,6 @@ async function runList(args: readonly string[]): Promise<number> {
   }
   return 0
 }
+
+/** @deprecated Use {@link runProviderPresets}. Kept for the legacy plural CLI alias. */
+export const runPresets = runProviderPresets
