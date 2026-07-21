@@ -19,8 +19,10 @@
  * Strictly best-effort: every handler is wrapped so a missing session, an
  * unreachable forge, or a failed `gh` can never throw out of a bus callback.
  * Idempotent by construction — the footer's `MARKER` guard (inside
- * `stampFooterOnPr`) plus `SessionDescriptor.openedPrs` and an in-memory
- * `handled` set mean a session is stamped at most once.
+ * `stampFooterOnPr`) plus `SessionDescriptor.openedPrs` and an in-memory set of
+ * already-stamped PR urls mean each PR is stamped at most once. The dedupe is
+ * per-PR, not per-session, so a session that opens several PRs (across
+ * branches) stamps each of them exactly once.
  */
 
 import type { SessionEventBus } from "./session-event-bus.js"
@@ -42,7 +44,7 @@ export type OpenPrResolver = (cwd: string) => Promise<{ number: number; url: str
  *  full `SessionDescriptor` satisfies this structurally. */
 export interface ReconcilerSession extends FooterSession {
   worktreePath?: string
-  openedPrs?: readonly unknown[]
+  openedPrs?: readonly { url: string }[]
 }
 
 /** The registry slice the reconciler needs — structurally satisfied by the full
@@ -71,28 +73,23 @@ export function createPrProvenanceReconciler(opts: {
   run?: GhRunner
   host?: string
 }): PrProvenanceReconciler {
-  // Sessions already stamped (or terminally confirmed to have no PR) — never
-  // re-polled. Seeded lazily from each event; also short-circuited by the
-  // descriptor's own `openedPrs`, which survives daemon restarts.
-  const handled = new Set<string>()
+  // PR urls already stamped this daemon run — the dedupe is per-PR, not per
+  // session, so a session that opens several PRs stamps each one once. Also
+  // short-circuited by the descriptor's own `openedPrs` (survives restarts).
+  const stampedPrUrls = new Set<string>()
   const lastPollAt = new Map<string, number>()
 
   const reconcile = async (sessionId: string, terminal: boolean): Promise<void> => {
-    if (handled.has(sessionId)) return
     const desc = opts.registry.get(sessionId)
     // Only executor agent-cli sessions open PRs; a command/terminal session
     // never does.
     if (!desc || desc.kind !== "agent-cli") return
-    // Already carries a recorded PR (this or a prior daemon generation stamped
-    // it) — done, and cheap to re-confirm without a `gh` poll.
-    if (desc.openedPrs && desc.openedPrs.length > 0) {
-      handled.add(sessionId)
-      return
-    }
     const cwd = desc.cwd ?? desc.worktreePath
     if (!cwd) return
 
     // Throttle the turn-end path only; a terminal exit always gets its look.
+    // This also bounds re-polling for a long-lived session that already stamped
+    // one PR but might still open another on a later branch.
     if (!terminal) {
       const last = lastPollAt.get(sessionId)
       if (last !== undefined && Date.now() - last < POLL_THROTTLE_MS) return
@@ -100,10 +97,15 @@ export function createPrProvenanceReconciler(opts: {
     }
 
     const pr = await opts.resolveOpenPr(cwd)
-    if (!pr) {
-      // No PR now. On a turn-end one may still open on a later turn; on a
-      // terminal exit none ever will, so stop looking.
-      if (terminal) handled.add(sessionId)
+    if (!pr) return
+
+    // Per-PR dedupe: skip a PR already stamped this run, or one already recorded
+    // on the descriptor (a prior daemon generation, or the command_execute
+    // path). A session may legitimately open more than one PR — each distinct
+    // url is stamped exactly once.
+    if (stampedPrUrls.has(pr.url)) return
+    if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === pr.url)) {
+      stampedPrUrls.add(pr.url)
       return
     }
 
@@ -122,9 +124,10 @@ export function createPrProvenanceReconciler(opts: {
       ...(opts.run ? { run: opts.run } : {}),
       ...(opts.host ? { host: opts.host } : {}),
     })
-    // Mark handled only on a real stamp (or an already-stamped body). A
-    // transient `gh` failure leaves it unhandled so a later event retries.
-    if (outcome.stamped) handled.add(sessionId)
+    // Record this PR as stamped only on a real stamp (or an already-stamped
+    // body). A transient `gh` failure leaves it unstamped so a later event
+    // retries.
+    if (outcome.stamped) stampedPrUrls.add(pr.url)
   }
 
   const safeReconcile = (sessionId: string, terminal: boolean): void => {
@@ -147,7 +150,7 @@ export function createPrProvenanceReconciler(opts: {
   return {
     dispose() {
       for (const unsubscribe of unsubscribes) unsubscribe()
-      handled.clear()
+      stampedPrUrls.clear()
       lastPollAt.clear()
     },
   }

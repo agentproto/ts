@@ -94,23 +94,47 @@ describe("createPrProvenanceReconciler", () => {
     expect(editBodies[0]).toContain(MARKER)
     expect(editBodies[0]).toContain("supervisor `sess_super`")
 
-    // A later event does not re-poll or re-stamp.
+    // A later event re-polls but de-dupes by url — no second stamp.
     bus.emit(exited("sess_exec"))
     await flush()
     expect(recorded).toHaveLength(1)
-    expect(resolveOpenPr).toHaveBeenCalledTimes(1)
+    expect(resolveOpenPr).toHaveBeenCalledTimes(2)
   })
 
-  it("skips a session that already recorded a PR (openedPrs) without polling", async () => {
-    const { reg, recorded } = fakeRegistry([execSession({ openedPrs: [{ url: PR.url }] })])
-    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+  it("stamps each distinct PR a session opens (multi-PR)", async () => {
+    const { reg, recorded } = fakeRegistry([execSession(), SUPER])
+    const A = { number: 42, url: "https://github.com/o/r/pull/42" }
+    const B = { number: 43, url: "https://github.com/o/r/pull/43" }
+    let call = 0
+    const resolveOpenPr: OpenPrResolver = async () => (call++ === 0 ? A : B)
     const bus = createSessionEventBus()
     createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
 
     bus.emit(turnEnd("sess_exec"))
     await flush()
+    bus.emit(exited("sess_exec")) // terminal → bypasses the turn-end throttle
+    await flush()
 
-    expect(resolveOpenPr).not.toHaveBeenCalled()
+    expect(recorded.map(r => r.url)).toEqual([A.url, B.url])
+  })
+
+  it("does not re-stamp a PR already recorded on the descriptor", async () => {
+    const { reg, recorded } = fakeRegistry([execSession({ openedPrs: [{ url: PR.url }] })])
+    const edits: number[] = []
+    const run: GhRunner = async args => {
+      if (args[1] === "edit") edits.push(1)
+      return { exitCode: 0, stdout: "Body." }
+    }
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    // Resolved, then de-duped by url against openedPrs — no view/edit/record.
+    expect(resolveOpenPr).toHaveBeenCalledTimes(1)
+    expect(edits).toHaveLength(0)
     expect(recorded).toHaveLength(0)
   })
 
@@ -125,21 +149,6 @@ describe("createPrProvenanceReconciler", () => {
 
     expect(resolveOpenPr).toHaveBeenCalledTimes(1)
     expect(recorded).toHaveLength(0)
-  })
-
-  it("stops polling after a terminal exit with no PR", async () => {
-    const { reg } = fakeRegistry([execSession()])
-    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => null)
-    const bus = createSessionEventBus()
-    createPrProvenanceReconciler({ registry: reg, sessionEvents: bus, resolveOpenPr, run: okRun })
-
-    bus.emit(exited("sess_exec"))
-    await flush()
-    bus.emit(turnEnd("sess_exec"))
-    await flush()
-
-    // The exit marked the session handled → the later turn-end never re-polls.
-    expect(resolveOpenPr).toHaveBeenCalledTimes(1)
   })
 
   it("throttles repeated turn-end polls for the same session", async () => {
