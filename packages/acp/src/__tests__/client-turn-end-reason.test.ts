@@ -67,8 +67,12 @@ describe("createAcpClient — stopReason → turn-end reason mapping", () => {
     expect(await turnEndReasonFor("cancelled")).toBe("cancelled")
   })
 
-  it("maps max_turns to max_turns", async () => {
-    expect(await turnEndReasonFor("max_turns")).toBe("max_turns")
+  it("maps the max_tokens budget cap to max_turns (a completion, not an error)", async () => {
+    expect(await turnEndReasonFor("max_tokens")).toBe("max_turns")
+  })
+
+  it("maps the max_turn_requests budget cap to max_turns (a completion, not an error)", async () => {
+    expect(await turnEndReasonFor("max_turn_requests")).toBe("max_turns")
   })
 
   it("maps refusal (e.g. a 401 auth failure) to error, NOT completed", async () => {
