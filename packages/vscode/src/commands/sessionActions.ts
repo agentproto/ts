@@ -34,6 +34,9 @@ export function registerSessionActions(
     vscode.commands.registerCommand("agentproto.killSession", (arg: unknown) =>
       killSessionCommand(client, store, arg),
     ),
+    vscode.commands.registerCommand("agentproto.copySessionId", (arg: unknown) =>
+      copySessionIdCommand(store, arg),
+    ),
   )
 }
 
@@ -165,6 +168,22 @@ async function killSessionCommand(
   } catch (err) {
     vscode.window.showErrorMessage(`agentproto: stop failed — ${describeError(err)}`)
   }
+}
+
+/**
+ * Copy a session's daemon id (`sess_…`) to the clipboard. The row's secondary
+ * line trades the id for isolation info (worktree/in-place), and the tooltip
+ * shows it but can't be selected — so this is the affordance that hands the
+ * full handle to a `curl`/`agentproto sessions` invocation. Accepts a tree
+ * node, a descriptor, or a bare id, same as the other session commands; with
+ * no arg it quick-picks over ALL sessions (id is as meaningful on a finished
+ * session as a live one).
+ */
+async function copySessionIdCommand(store: SessionStore, arg: unknown): Promise<void> {
+  const session = await resolveSessionArg(arg, store, "Select a session to copy its id", () => true)
+  if (!session) return
+  await vscode.env.clipboard.writeText(session.id)
+  vscode.window.showInformationMessage(`agentproto: copied session id ${session.id}`)
 }
 
 /** Read fresh each stop — it's a setting the user can flip from the modal itself mid-session. */

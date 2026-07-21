@@ -65,6 +65,48 @@ describe("listInstalledAdapters — mode status projection", () => {
   })
 })
 
+// `routeSelection` (AIP-45 launch-menu drill-down, WP1) rides the same
+// `adapter_list` projection as `modes`/`modelDetails`: a capability-derived
+// spawn/config drill-down reads it to decide whether the connection step is a
+// real route choice (`"free"`) or a read-only badge (`"derived-from-model"`,
+// where the endpoint falls out of the model id's vendor prefix). This asserts
+// the shipped manifests are classified — and projected — as intended.
+describe("listInstalledAdapters — routeSelection projection", () => {
+  it("projects the Claude adapters as free (route is an independent choice)", { timeout: 15_000 }, async () => {
+    const adapters = await listInstalledAdapters()
+    for (const slug of ["claude-code", "claude-sdk"]) {
+      const a = adapters.find((x) => x.slug === slug)
+      expect(a, `${slug} should be installed`).toBeDefined()
+      expect(a?.routeSelection).toBe("free")
+    }
+  })
+
+  it("projects hermes as derived-from-model (route falls out of the model prefix)", async () => {
+    const adapters = await listInstalledAdapters()
+    const hermes = adapters.find((a) => a.slug === "hermes")
+    expect(hermes).toBeDefined()
+    expect(hermes?.routeSelection).toBe("derived-from-model")
+  })
+
+  it("classifies every by-model router present as derived-from-model", async () => {
+    const adapters = await listInstalledAdapters()
+    // Any of these that resolved in this checkout must be derived-from-model —
+    // a present-but-misclassified router fails loudly; an absent one is skipped
+    // (not every optional adapter is built in every checkout).
+    for (const slug of ["mastracode", "mastracode-inprocess", "pi", "opencode", "mastra-agent"]) {
+      const a = adapters.find((x) => x.slug === slug)
+      if (a) expect(a.routeSelection, `${slug}`).toBe("derived-from-model")
+    }
+  })
+
+  it("back-compat: an adapter that declares no routeSelection (codex) leaves it undefined ⇒ free default", async () => {
+    const adapters = await listInstalledAdapters()
+    const codex = adapters.find((a) => a.slug === "codex")
+    expect(codex).toBeDefined()
+    expect(codex?.routeSelection).toBeUndefined()
+  })
+})
+
 // The operator-visible bug this splits apart: `models.allowed` used to be a
 // flat string, so a manifest could declare a gateway model id (Moonshot's
 // kimi-k2.7-code) but had nowhere to say it needs claude-sdk's `moonshot`

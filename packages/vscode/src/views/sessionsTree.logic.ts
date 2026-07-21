@@ -66,10 +66,50 @@ export function isSeparatorNode(node: unknown): node is SeparatorNode {
 
 /** Description-string extras for the richer (post-filter) row rendering — see descriptionFor. */
 export interface DescriptionContext {
-  workspaceLabel?: string
   now?: number
   /** Direct children in the RENDERED tree — drives the "N subagents" suffix. */
   childCount?: number
+}
+
+/**
+ * Leaf directory name of a session's worktree — what identifies a worktree to a
+ * human (`sessions-tree-id-isolation`, a branch-shaped name), not the whole
+ * path. Undefined when the session isn't inside a linked worktree. Mirrors the
+ * CLI's `worktreeCell` (packages/cli sessions.ts), which shows the same
+ * basename in its WORKTREE column. Handles both `/` and `\` separators and a
+ * trailing slash so it's platform-agnostic without importing node:path (this
+ * module stays vscode/node-free for the vitest suite).
+ */
+export function worktreeName(session: SessionDescriptor): string | undefined {
+  const path = session.worktreePath
+  if (!path) return undefined
+  const trimmed = path.replace(/[/\\]+$/, "")
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"))
+  const leaf = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  return leaf || undefined
+}
+
+/** The git-fork glyph prefixing a worktree row — a plain unicode char, NOT a
+ *  `$(codicon)`, because a TreeItem.description renders codicon markup
+ *  literally. It's the visual tell that separates an isolated row from the
+ *  bare-text "in-place". */
+const WORKTREE_GLYPH = "⑂"
+
+/**
+ * A session's isolation posture as one compact row segment, REPLACING the
+ * always-identical workspace name that used to sit here (redundant on every
+ * row of the same monorepo). Two shapes:
+ *   - in a worktree: `⑂ <leaf-name>` — which worktree, at a glance.
+ *   - otherwise: `in-place` — spawned in the checkout itself.
+ *
+ * Absence of `worktreePath` is read as in-place: true for a plain checkout or
+ * a non-repo dir (the common case), and — for the rare session persisted
+ * before the runtime recorded the field — the honest best guess. The full
+ * path + generation id live in the tooltip (`tooltipFieldsFor`).
+ */
+export function isolationLabelFor(session: SessionDescriptor): string {
+  const name = worktreeName(session)
+  return name ? `${WORKTREE_GLYPH} ${name}` : "in-place"
 }
 
 const TERMINAL_STATUSES = new Set<SessionDescriptor["status"]>(["exited", "killed", "error"])
@@ -102,8 +142,14 @@ export function labelFor(session: SessionDescriptor): string {
  * Item description.
  *  - Without ctx (default): `adapterSlug ?? kind` + model (if any) + status —
  *    byte-identical to the pre-filter behavior existing call sites depend on.
- *  - With ctx: `workspace · relative time`, omitting any part whose backing
- *    data is absent (never a literal "undefined").
+ *  - With ctx: `isolation · relative time`, omitting the time when `ctx.now` is
+ *    absent (never a literal "undefined"). The lead segment is the session's
+ *    isolation posture (`isolationLabelFor` — `⑂ <worktree>` or `in-place`),
+ *    which REPLACED the workspace name that used to sit here: on a tree whose
+ *    rows are almost all the same monorepo, the workspace was identical on
+ *    every row (and, in grouped mode, already named by the group header),
+ *    whereas which worktree a session runs in genuinely varies and is what a
+ *    technical operator reads to tell isolated work from in-place work.
  *
  * Deliberately NOT the token counts. `+68694 -141` on every row is a raw
  * number nobody acts on — it can't be compared across sessions (different
@@ -119,8 +165,7 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
     parts.push(session.status)
     return parts.join(" · ")
   }
-  const parts: string[] = []
-  if (ctx.workspaceLabel) parts.push(ctx.workspaceLabel)
+  const parts: string[] = [isolationLabelFor(session)]
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
   // A spawner says so on its own row. Indentation already nests the children,
   // but indentation is invisible the moment the row is collapsed or its
@@ -360,10 +405,23 @@ export function contextPercent(used?: number, size?: number): string | undefined
   return `${Math.round((used / size) * 100)}%`
 }
 
-/** Ordered tooltip fields: id, cwd, pid, startedAt, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
+/** Ordered tooltip fields: id, cwd, isolation, pid, startedAt, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
 export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   const fields: TooltipField[] = [{ label: "id", value: session.id }]
   if (session.cwd) fields.push({ label: "cwd", value: session.cwd })
+  // The row shows only the worktree's leaf name (or "in-place"); the tooltip
+  // carries the full worktree path and its generation id — the pair that pins
+  // one specific worktree, since a later worktree may reuse the same path.
+  if (session.worktreePath) {
+    fields.push({
+      label: "worktree",
+      value: session.worktreeId
+        ? `${session.worktreePath} (${session.worktreeId})`
+        : session.worktreePath,
+    })
+  } else {
+    fields.push({ label: "isolation", value: "in-place" })
+  }
   fields.push({ label: "pid", value: session.pid == null ? "—" : String(session.pid) })
   fields.push({ label: "startedAt", value: session.startedAt })
   if (typeof session.turnsCompleted === "number") {
