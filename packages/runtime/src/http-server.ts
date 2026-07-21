@@ -628,6 +628,33 @@ export async function startHttpServer(
     return true
   }
 
+  /**
+   * Loopback `Host` values this daemon answers to. A DNS-rebinding page points
+   * `evil.com` at `127.0.0.1` and fetches it — but the browser still sends the
+   * page's own hostname in `Host` (`evil.com:<port>`), which is not in this
+   * set. The port is always present (the daemon runs on a non-default port).
+   */
+  const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
+    `127.0.0.1:${opts.port}`,
+    `localhost:${opts.port}`,
+    `[::1]:${opts.port}`,
+  ])
+
+  /**
+   * DNS-rebinding defense. A request that reached us on the loopback socket
+   * must carry a loopback `Host`; a rebinding page's request carries its own
+   * hostname instead → refused. This complements the Origin guards
+   * (`authorizeMcp`/`guardBrowserOrigin`): those stop the browser drive-by,
+   * this stops the non-browser / rebinding vector. Skipped for forwarded/
+   * tunnel traffic — that carries a dynamic public `Host` we can't enumerate
+   * and is gated by the bearer token instead.
+   */
+  function validateHost(req: IncomingMessage): boolean {
+    if (!isLoopback(req)) return true
+    const host = (req.headers.host ?? "").toLowerCase()
+    return LOOPBACK_HOSTS.has(host)
+  }
+
   function authorize(req: IncomingMessage, res: ServerResponse): boolean {
     const auth = readAuth()
     if (auth.mode === "none") return true
@@ -1216,6 +1243,22 @@ export async function startHttpServer(
         if (req.method === "OPTIONS") {
           res.writeHead(204)
           res.end()
+          return
+        }
+
+        // DNS-rebinding guard on the loopback path. /health is exempt — it's a
+        // harmless public probe uptime monitors may hit via any hostname.
+        if (path !== "/health" && !validateHost(req)) {
+          res.writeHead(403, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              error: "forbidden_host",
+              message:
+                "Request rejected: a loopback request must use a loopback Host " +
+                "(127.0.0.1/localhost). This blocks DNS-rebinding against the " +
+                "local daemon.",
+            }),
+          )
           return
         }
 
