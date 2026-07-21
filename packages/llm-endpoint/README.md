@@ -61,9 +61,61 @@ you would send to the upstream provider). Real Claude model IDs are preserved
 only when they route to an actual Anthropic target.
 
 If you need the `claude` CLI or another Anthropic-only client to accept
-non-Anthropic backends, create a **local compatibility pack** (see below). Local
-packs can define `equivalentClaudeName` aliases; those aliases are matched **only**
-when that pack is explicitly selected.
+non-Anthropic backends, either flip on the **Anthropic-style format** (below —
+works with any pack) or create a **local compatibility pack** (further below).
+Both surface `equivalentClaudeName` aliases that are matched **only** when
+enabled.
+
+### `coding` pack (curated OpenRouter coding models)
+
+The committed `coding` pack is a small, production-only portfolio of coding
+models, all routed through OpenRouter's native Anthropic-compatible endpoint:
+
+| Code (transparent id) | Tier → family |
+| :--- | :--- |
+| `openai/gpt-5.5` | extra-high → fable |
+| `anthropic/claude-opus-4.8` | high → opus |
+| `deepseek/deepseek-v4-pro` | high → opus |
+| `anthropic/claude-sonnet-5` | medium → sonnet |
+| `z-ai/glm-5.2` | medium → sonnet |
+| `minimax/minimax-m3` | small → haiku |
+
+Select it like any pack (`X-Proxy-Pack: coding`, `?pack=coding`, or
+`/v1/coding/messages`). The list is curated by hand against OpenRouter's live
+Models API/rankings (`GET https://openrouter.ai/api/v1/models?supported_parameters=tools`);
+availability and pricing drift, so re-check before relying on a route. Anything
+outside the pack is still reachable via transparent `openrouter/vendor/model`
+routing.
+
+### Anthropic-style format (`?format=anthropic`)
+
+Any pack can be relabeled on the fly so an Anthropic-only client gets
+Claude-shaped model ids — **without impersonating a real Anthropic model**.
+Send `X-Proxy-Format: anthropic` (or `?format=anthropic`) and each route's id
+becomes an opaque, deterministic `claude-<family>-<sha>` value, where the family
+comes from the route's tier (`extra-high→fable`, `high→opus`, `medium→sonnet`,
+`small→haiku`) and the suffix is a sha of the upstream id. The real route stays
+as the model's `display_name`.
+
+Discover the current ids, then use one as the model:
+
+```bash
+# Discover (Anthropic-formatted model list)
+curl -s -H 'anthropic-version: 2023-06-01' -H 'X-Proxy-Format: anthropic' \
+  http://localhost:18090/v1/coding/models
+# → { "data": [ { "id": "claude-opus-5246108", "display_name": "anthropic/claude-opus-4.8", … }, … ] }
+
+# Use it (Messages path resolves the id back to the real OpenRouter route)
+env -u ANTHROPIC_API_KEY \
+  ANTHROPIC_BASE_URL="http://localhost:18090" \
+  ANTHROPIC_CUSTOM_HEADERS="X-Proxy-Pack: coding, X-Proxy-Format: anthropic" \
+  ANTHROPIC_AUTH_TOKEN="unused-the-proxy-holds-the-real-key" \
+  ANTHROPIC_MODEL="claude-opus-5246108" \
+  claude -p "…"
+```
+
+The ids are stable across restarts (they are derived from the upstream id, not
+random), so a discovered id keeps working until the underlying route changes.
 
 ---
 
@@ -128,6 +180,7 @@ empty `content` with `stop_reason: max_tokens`.
 | :--- | :--- |
 | `?p=<provider>` | Force the provider (`moonshot`, `openrouter`, `zai`, `groq`, `xai`, `openai`) |
 | `?m=<code>` | Force a pack code on the **Messages** path |
+| `?format=anthropic` | Relabel the active pack to opaque `claude-<family>-<sha>` ids (also via `X-Proxy-Format: anthropic`) |
 | `?tools=<names>` | Tool allow-list (e.g. `?tools=Bash,Read,Write`) — drop everything else |
 | `?notools=1` | Strip **all** tools (+ `tool_choice`) → "lean" mode for strict-cap backends |
 

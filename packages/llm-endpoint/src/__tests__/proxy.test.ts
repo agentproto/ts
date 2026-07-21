@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolTrimOptions } from '../index.js';
 import { request } from 'http';
-import { xaiPack } from '../packs.js';
+import { xaiPack, codingPack, toAnthropicStyle } from '../packs.js';
 
 // Provide dummy upstream keys so that any test exercising the outbound proxy
 // path does not short-circuit with a missing-key 401.
@@ -12,7 +12,7 @@ process.env.GROQ_API_KEY = 'test-groq';
 process.env.XAI_API_KEY = 'test-xai';
 process.env.OPENAI_API_KEY = 'test-openai';
 
-const { trimTools, server } = await import('../index.js');
+const { trimTools, server, resolveModelRoute } = await import('../index.js');
 
 // ── trimTools ─────────────────────────────────────────────────────────────
 
@@ -392,5 +392,108 @@ describe('Proxy HTTP Server', () => {
       expect(res.status).toBe(200);
       expect(res.body.object).toBe('list');
     } finally { srv.close(); }
+  });
+
+  it('GET /v1/coding/models (OpenAI style) lists transparent codes', async () => {
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/coding/models');
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((m: any) => m.id);
+      expect(ids).toContain('anthropic/claude-sonnet-5');
+      expect(ids).toContain('z-ai/glm-5.2');
+      // No Anthropic-style transform without the format toggle.
+      expect(ids.some((id: string) => /^claude-(fable|opus|sonnet|haiku)-\d+$/.test(id))).toBe(false);
+    } finally { srv.close(); }
+  });
+
+  it('GET /v1/coding/models?format=anthropic (Anthropic style) lists claude-<family>-<sha> ids with real display names', async () => {
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/coding/models?format=anthropic', {
+        headers: { 'anthropic-version': '2023-06-01' },
+      });
+      expect(res.status).toBe(200);
+      const styled = toAnthropicStyle(codingPack);
+      const expectedIds = Object.values(styled.models).map(m => m.equivalentClaudeName).sort();
+      const ids = res.body.data.map((m: any) => m.id).sort();
+      expect(ids).toEqual(expectedIds);
+      // display_name stays the transparent code.
+      for (const m of res.body.data) {
+        expect(codingPack.models[m.display_name as string]).toBeDefined();
+      }
+    } finally { srv.close(); }
+  });
+
+  it('GET /v1/coding/models with X-Proxy-Format header matches the query toggle', async () => {
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpRequest(port, '/v1/coding/models', {
+        headers: { 'anthropic-version': '2023-06-01', 'X-Proxy-Format': 'anthropic' },
+      });
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((m: any) => m.id);
+      expect(ids.every((id: string) => /^claude-(fable|opus|sonnet|haiku)-\d+$/.test(id))).toBe(true);
+    } finally { srv.close(); }
+  });
+});
+
+// ── resolveModelRoute — Anthropic-style alias resolution ────────────────────
+
+describe('resolveModelRoute (anthropic format)', () => {
+  const styled = toAnthropicStyle(codingPack);
+  // The opaque id the client would discover from /v1/coding/models?format=anthropic
+  const opusAlias = styled.models['anthropic/claude-opus-4.8']!.equivalentClaudeName!;
+
+  it('resolves a claude-<family>-<sha> alias back to its OpenRouter route when anthropicFormat is on', () => {
+    const target = resolveModelRoute(
+      { model: opusAlias },
+      {
+        activePack: styled,
+        queryModelCode: null,
+        queryProvider: null,
+        forcedAliasCode: null,
+        allowAliases: true,
+        anthropicFormat: true,
+      },
+      {}, // no local packs — proves the official transformed pack resolves
+    );
+    expect(target).toEqual({ provider: 'openrouter', model: 'anthropic/claude-opus-4.8' });
+  });
+
+  it('does NOT resolve the opaque alias without the format toggle', () => {
+    expect(() =>
+      resolveModelRoute(
+        { model: opusAlias },
+        {
+          activePack: codingPack, // untransformed
+          queryModelCode: null,
+          queryProvider: null,
+          forcedAliasCode: null,
+          allowAliases: true,
+          anthropicFormat: false,
+        },
+        {},
+      ),
+    ).toThrow(/Unable to resolve model/);
+  });
+
+  it('still resolves the transparent code directly when the format is on', () => {
+    const target = resolveModelRoute(
+      { model: 'z-ai/glm-5.2' },
+      {
+        activePack: styled,
+        queryModelCode: null,
+        queryProvider: null,
+        forcedAliasCode: null,
+        allowAliases: true,
+        anthropicFormat: true,
+      },
+      {},
+    );
+    expect(target).toEqual({ provider: 'openrouter', model: 'z-ai/glm-5.2' });
   });
 });
