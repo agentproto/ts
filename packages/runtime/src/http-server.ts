@@ -105,6 +105,13 @@ import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
 } from "./catalog-models.js"
+import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
+import {
+  createAuthProfile,
+  deleteAuthProfile,
+  listAuthProfiles,
+  AuthProfileValidationError,
+} from "@agentproto/auth"
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -1528,6 +1535,97 @@ export async function startHttpServer(
                 error: "list_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
+            )
+          }
+          return
+        }
+
+        // Named auth-profile lifecycle (SPEC §1c). The daemon owns the
+        // keychain + `~/.agentproto/auth-profiles.json`, so a remote client
+        // (VS Code, cloud operator) provisions through these routes rather
+        // than writing the files itself. The credential is INPUT-only: the
+        // create response returns metadata + a fingerprint, never the secret.
+        // Same auth policy as the peer read routes above (no session gate).
+        if (path === "/auth/profiles" && req.method === "GET") {
+          try {
+            const qs = new URLSearchParams(
+              url.includes("?") ? url.slice(url.indexOf("?") + 1) : "",
+            )
+            const endpoint = qs.get("endpoint")
+            const profiles = await listAuthProfiles(endpoint ?? undefined)
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ profiles }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "list_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        if (path === "/auth/profiles" && req.method === "POST") {
+          const body = (await readJsonBody(req)) as {
+            id?: unknown
+            endpoint?: unknown
+            method?: unknown
+            credential?: unknown
+            label?: unknown
+            credentialRef?: unknown
+          } | null
+          try {
+            const created = await createAuthProfile(
+              {
+                id: String(body?.id ?? ""),
+                endpoint: String(body?.endpoint ?? ""),
+                method: body?.method as "oauth-bearer" | "api-key",
+                credential: String(body?.credential ?? ""),
+                ...(typeof body?.label === "string" ? { label: body.label } : {}),
+                ...(typeof body?.credentialRef === "string"
+                  ? { credentialRef: body.credentialRef }
+                  : {}),
+              },
+              defaultProfileProvisionDeps(),
+            )
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify({ profile: created }))
+          } catch (err) {
+            const status = err instanceof AuthProfileValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error:
+                  err instanceof AuthProfileValidationError
+                    ? "invalid_input"
+                    : "create_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        const authProfileMatch = path.match(/^\/auth\/profiles\/(.+)$/)
+        if (authProfileMatch && req.method === "DELETE") {
+          const id = decodeURIComponent(authProfileMatch[1] ?? "")
+          try {
+            const result = await deleteAuthProfile(id, defaultProfileProvisionDeps())
+            res.writeHead(result.deleted ? 200 : 404, {
+              "content-type": "application/json",
+            })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            const status = err instanceof AuthProfileValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error:
+                  err instanceof AuthProfileValidationError
+                    ? "invalid_input"
+                    : "delete_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
             )
           }
           return

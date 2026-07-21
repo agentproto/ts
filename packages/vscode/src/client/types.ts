@@ -308,6 +308,38 @@ export interface ProviderPresetInfo {
   homepage?: string
 }
 
+/** A named auth profile's non-secret metadata, as returned by
+ *  `auth_profile_list` (never carries the credential). */
+export interface AuthProfileSummary {
+  id: string
+  endpoint: string
+  method: AuthMethod
+  credentialRef: string
+  label?: string
+}
+
+/** Request body for `auth_profile_create`. `credential` is INPUT-only — the
+ *  daemon stores it in the keychain and never echoes it back. */
+export interface CreateAuthProfileRequest {
+  id: string
+  endpoint: string
+  method: AuthMethod
+  credential: string
+  label?: string
+  credentialRef?: string
+}
+
+/** Non-secret result of `auth_profile_create` — metadata + a one-way
+ *  fingerprint of the stored credential, never the credential itself. */
+export interface CreatedAuthProfileResult {
+  id: string
+  endpoint: string
+  method: AuthMethod
+  credentialRef: string
+  label?: string
+  fingerprint: string
+}
+
 /** One entry from `list_provider_presets`. */
 export interface ProviderPresetEntry {
   slug: string
