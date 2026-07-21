@@ -317,6 +317,16 @@ export function registerAgentTools(
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
         ),
+      origin: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Source label for this spawn — the calling channel/harness " +
+            "(codex, cowork, vscode, cron, …). Descriptor-only: groups the " +
+            "session under a source node in the tree. In-repo callers set it; " +
+            "the mcp-bridge can auto-stamp it from the host clientInfo."
+        ),
       parentSessionId: z
         .string()
         .min(1)

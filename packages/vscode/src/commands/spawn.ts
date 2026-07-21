@@ -166,7 +166,7 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
   })
   await vscode.commands.executeCommand("agentproto.sessions.focus")
   try {
-    const session = await client.spawnAgent(assembleSpawnOptions(answers))
+    const session = await client.spawnAgent({ ...assembleSpawnOptions(answers), origin: "vscode" })
     void vscode.window
       .showInformationMessage(`agentproto: spawned ${session.label ?? session.id}`, "Open transcript")
       .then(choice => {

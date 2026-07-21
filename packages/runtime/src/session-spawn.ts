@@ -276,6 +276,8 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Source label for this spawn (channel/harness). Descriptor-only. */
+  origin?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
@@ -1354,6 +1356,7 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),

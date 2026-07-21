@@ -93,6 +93,8 @@ export interface SpawnAgentOptions {
   mcpServers?: unknown[]
   trace?: boolean
   permissionHold?: boolean
+  /** Source label recorded on the descriptor (this client stamps "vscode"). */
+  origin?: string
 }
 
 export interface SpawnTerminalOptions {

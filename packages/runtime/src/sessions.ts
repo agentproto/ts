@@ -786,6 +786,10 @@ export interface SessionDescriptor {
    *  list/kill and the per-parent child quota (orchestrator WP4).
    *  Persisted so the tree survives a daemon restart. */
   parentSessionId?: string
+  /** Source label — the channel/harness this session was spawned from
+   *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
+   *  session under a source node in the tree. */
+  origin?: string
   /** Recursion depth in the orchestrator tree: a direct (root) spawn is
    *  depth 0; a session spawned by a depth-d orchestrator is d+1. Used
    *  by the depth-cap guard. Persisted alongside `parentSessionId`.
@@ -1488,6 +1492,8 @@ export interface SpawnAgentInput {
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
   parentSessionId?: string
+  /** Source label for the new session (channel/harness). */
+  origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
    *  0 when omitted (direct/root spawn). */
   depth?: number
@@ -1597,6 +1603,8 @@ export interface SpawnPtyInput {
    *  (orchestrator WP4): set when the spawn came through a scoped
    *  sub-gateway so `session_tree` shows the PTY under its spawner. */
   parentSessionId?: string
+  /** Source label for the new session (channel/harness). */
+  origin?: string
   depth?: number
   /** Restart lineage — same semantics as `SpawnAgentInput.resumedFrom` /
    *  `resumeVia`, recorded onto {@link SessionDescriptor.resumedFrom} /
@@ -3185,6 +3193,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         ...(input.model ? { model: input.model } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
@@ -3328,6 +3337,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         // Restart lineage — same gating rule as spawnAgent above (`resumeVia`
         // can legitimately be "").
