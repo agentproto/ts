@@ -39,6 +39,7 @@ import {
   tryParseModelRef,
   formatModelRef,
 } from "@agentproto/model-catalog/route-identity"
+import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
@@ -521,4 +522,104 @@ export function buildCatalogModels(
     }))
 
   return { vendors: result, routes }
+}
+
+/**
+ * The billing routes that can service `model`, reusing the SAME route-identity
+ * resolution this module's catalog join uses (SPEC §1c serviceability) — never
+ * a parallel per-model provider table. A route R services the model iff:
+ *   - R is the model's catalog billing provider (`getModelProvider` — the native
+ *     vendor SDK for a bare/direct id, or the router for a gateway-only slash id
+ *     like `deepseek/deepseek-v4-pro` ⇒ `openrouter`),
+ *   - R is an explicit `@route` carried in the id (`…@openrouter`), or
+ *   - the model resolves on R as one of the {@link WIDENING_ROUTES} router routes
+ *     (catches requesty-only ids like `sference/…` that carry no pricing-catalog
+ *     `provider` for `getModelProvider` to return).
+ *
+ * Returns the DISTINCT serviceable routes; EMPTY when the model is unknown to
+ * the catalog — a mismatch cannot then be positively proven, so a money-safety
+ * caller MUST NOT reject on an empty result (only on a non-empty set that
+ * excludes the resolved wallet). See {@link checkModelWalletEligibility}.
+ */
+export function serviceableModelRoutes(model: string): string[] {
+  const routes = new Set<string>()
+  const provider = getModelProvider(model)
+  if (provider) routes.add(provider)
+  const parsed = tryParseModelRef(normalizeRouterPrefixedId(model))
+  if (parsed) {
+    // An explicit `@route` in the id is itself a serviceable route (and keeps
+    // the `getModelProvider` quirk on `<vendor>/<product>@<router>` forms from
+    // hiding the route the operator literally named).
+    if (parsed.route !== parsed.vendor) routes.add(parsed.route)
+    for (const router of WIDENING_ROUTES) {
+      if (tryResolveLlmModelRoute(`${parsed.vendor}/${parsed.product}@${router}`)) {
+        routes.add(router)
+      }
+    }
+  }
+  return [...routes]
+}
+
+/** Verdict of the spawn-time money-safety guard ({@link checkModelWalletEligibility}). */
+export interface ModelWalletEligibility {
+  ok: boolean
+  /** Serviceable routes for the model that DIFFER from the resolved wallet —
+   *  the actionable set to re-spawn onto. Empty when `ok`. */
+  suggestedRoutes: string[]
+}
+
+/**
+ * Money-safety spawn guard (SPEC §1c): can the resolved billing wallet
+ * `walletRoute` (the gateway id when a `route.gateway` is set, else the resolved
+ * billing provider) service `model`? Reuses {@link serviceableModelRoutes} — no
+ * parallel table. Returns `ok:true` when the model is serviceable on the wallet,
+ * OR when the model is unknown to the catalog (empty serviceable set — a mismatch
+ * cannot be positively proven, so the guard must not reject a possibly-legitimate
+ * new model). Returns `ok:false` with the serviceable alternative routes ONLY
+ * when the model IS serviceable on some route but NOT the resolved wallet — the
+ * exact 404-upstream case (`deepseek/deepseek-v4-pro` on the Anthropic sub). The
+ * guard only REJECTS; it never substitutes a wallet the operator didn't name.
+ */
+export function checkModelWalletEligibility(
+  model: string,
+  walletRoute: string,
+): ModelWalletEligibility {
+  const serviceable = serviceableModelRoutes(model)
+  if (serviceable.length === 0 || serviceable.includes(walletRoute)) {
+    return { ok: true, suggestedRoutes: [] }
+  }
+  return { ok: false, suggestedRoutes: serviceable.filter(r => r !== walletRoute) }
+}
+
+/**
+ * The actionable fail-fast message shared by both spawn paths (session-spawn +
+ * session-restart-core) so they never drift. Names the wallet that couldn't
+ * service the model AND the required route + api-key profile to re-spawn onto —
+ * never a wallet the guard picked for the operator.
+ */
+export function modelWalletIneligibleMessage(opts: {
+  prefix: string
+  adapter: string
+  model: string
+  walletRoute: string
+  walletMode?: "subscription" | "api-key"
+  suggestedRoutes: string[]
+}): string {
+  const wallet = opts.walletMode
+    ? `"${opts.walletRoute}" ${opts.walletMode} wallet`
+    : `"${opts.walletRoute}" wallet`
+  const primary = opts.suggestedRoutes[0] ?? "a gateway route"
+  const also =
+    opts.suggestedRoutes.length > 1
+      ? ` (also serviceable via ${opts.suggestedRoutes
+          .slice(1)
+          .map(r => `"${r}"`)
+          .join(", ")})`
+      : ""
+  return (
+    `${opts.prefix}: model "${opts.model}" is not serviceable on the resolved ${wallet} ` +
+    `(adapter "${opts.adapter}") and would 404 upstream. This model bills route "${primary}"${also} — ` +
+    `re-spawn on it: set route.gateway="${primary}" with an eligible "${primary}" api-key profile ` +
+    `(access.profileRef). This guard only rejects; it never switches wallets for you.`
+  )
 }

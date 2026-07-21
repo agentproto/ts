@@ -67,6 +67,10 @@ import {
 } from "./spawn-defaults.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
+import {
+  checkModelWalletEligibility,
+  modelWalletIneligibleMessage,
+} from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { loadConfig } from "./config.js"
 import type { SessionConfig, RouteSpec } from "./session-config.js"
@@ -453,6 +457,35 @@ export async function restartAgentSession(
     if (result) {
       authSpec = result.spec
       authEcho = result.echo
+    }
+    // Same money-safety spawn guard as session-spawn.ts (SPEC §1c), mirrored
+    // here so a restart-with-override can't reopen the hole the base path
+    // closes: the auth-MODE path validates only provider→mode support, never
+    // that the resolved wallet can bill THIS model. A gateway/router model
+    // (e.g. `deepseek/deepseek-v4-pro`, billing `openrouter`) restarted onto
+    // claude-code's FIXED `anthropic` wallet with NO `route.gateway` would 404
+    // upstream. Scoped to the UNNAMED-wallet case (an explicit `route.gateway`
+    // is a deliberate operator wallet choice — see session-spawn.ts for the
+    // full rationale). FAIL LOUD (RestartOverrideError ⇒ 400); NEVER swap in an
+    // eligible wallet the operator didn't name.
+    if (
+      effRoute?.gateway === undefined &&
+      authModel !== undefined &&
+      resolvedProvider !== undefined
+    ) {
+      const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
+      if (!verdict.ok) {
+        throw new RestartOverrideError(
+          modelWalletIneligibleMessage({
+            prefix: "restart",
+            adapter: adapterSlug,
+            model: authModel,
+            walletRoute: resolvedProvider,
+            ...(authSpec?.mode ? { walletMode: authSpec.mode } : {}),
+            suggestedRoutes: verdict.suggestedRoutes,
+          }),
+        )
+      }
     }
     // Same non-authenticating hint as session-spawn.ts (kept in sync by
     // inspection, per this module's own doc comment above): only checked

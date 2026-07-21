@@ -32,6 +32,10 @@ import {
 } from "./spawn-defaults.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
+import {
+  checkModelWalletEligibility,
+  modelWalletIneligibleMessage,
+} from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -390,6 +394,7 @@ export type SpawnAgentSessionResult =
         | "unsupported_auth_mode"
         | "access_profile_not_found"
         | "access_profile_ineligible"
+        | "model_wallet_ineligible"
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
@@ -1028,6 +1033,50 @@ export async function spawnAgentSession(
         }
       }
       throw err
+    }
+    // Money-safety spawn guard (SPEC §1c): now that the provider is resolved,
+    // verify the requested MODEL is actually serviceable on the resolved
+    // wallet. The auth-MODE path above validates only provider→mode support —
+    // it never checks that the wallet can bill THIS model, so a gateway/router
+    // model (e.g. `deepseek/deepseek-v4-pro`, which bills `openrouter`) spawned
+    // with NO `route.gateway` resolves to claude-code's FIXED `anthropic`
+    // wallet and 404s upstream with a confusing "model may not exist".
+    //
+    // Deliberately scoped to the UNNAMED-wallet case (`route.gateway`
+    // undefined): an explicit `route.gateway` is the operator NAMING a wallet
+    // — a deliberate billing choice this guard must not second-guess (routing
+    // any model through any gateway's base_url + api-key is legitimate, e.g.
+    // `claude-sonnet-5` via `moonshot`). The bug is exactly the silent fall-
+    // through to the fixed provider when no wallet was named. FAIL LOUD when
+    // the model bills a route that provider can't service; NEVER auto-switch to
+    // an eligible wallet the operator didn't name. Reusing the catalog's own
+    // route-resolution keeps this from re-deriving a parallel per-model table.
+    if (
+      input.route?.gateway === undefined &&
+      authModel !== undefined &&
+      resolvedProvider !== undefined
+    ) {
+      const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          code: "model_wallet_ineligible",
+          message: modelWalletIneligibleMessage({
+            prefix: "agent_start",
+            adapter: input.adapter,
+            model: authModel,
+            walletRoute: resolvedProvider,
+            ...(authSpec?.mode ? { walletMode: authSpec.mode } : {}),
+            suggestedRoutes: verdict.suggestedRoutes,
+          }),
+          details: {
+            adapter: input.adapter,
+            model: authModel,
+            walletRoute: resolvedProvider,
+            suggestedRoutes: verdict.suggestedRoutes,
+          },
+        }
+      }
     }
     // Non-authenticating hint for the driver's fail-fast message — NEVER fed
     // back into resolution. Only checked when the spec is about to hard-fail
