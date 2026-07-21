@@ -310,6 +310,19 @@ export function registerAgentTools(
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
         ),
+      parentSessionId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Parent-lineage hint: attribute this spawn to a logical parent session " +
+            "so it nests under that node in the sessions tree instead of appearing " +
+            "as a depth-0 root. Pass the `id` of the session doing the spawning " +
+            "(e.g. an agent-to-agent `agent_start`). The child's `depth` is derived " +
+            "from the parent (parent depth + 1); you don't set it. Ignored when this " +
+            "call arrives through the scoped orchestrator gateway — that path derives " +
+            "the parent from its own token, which always wins over this hint."
+        ),
       idempotencyKey: z
         .string()
         .min(1)
