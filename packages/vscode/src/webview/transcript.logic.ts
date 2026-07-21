@@ -98,7 +98,7 @@ export function formatCostLine(
  *  `sessionDisplayName` (SPEC-3 FIX D) so the tab, the tree row, and the
  *  in-panel header all resolve a name the same way. */
 export function formatTitle(
-  session: Pick<SessionDescriptor, "label" | "title" | "id" | "adapterSlug" | "kind">,
+  session: Pick<SessionDescriptor, "label" | "title" | "id" | "adapterSlug" | "kind" | "renamedByUser">,
 ): string {
   return sessionDisplayName(session)
 }

@@ -54,8 +54,8 @@ function truncate(text: string, maxLength: number): string {
 
 /**
  * Derives a session title from its first prompt. Returns `undefined`
- * (never `""`) when nothing usable survives, so the caller's
- * `label ?? title ?? command` chain falls through to `command`.
+ * (never `""`) when nothing usable survives, so `sessionDisplayName` below
+ * falls through to the spawn label / friendly `adapter · id` fallback.
  */
 export function deriveSessionTitle(message: unknown): string | undefined {
   const raw = extractText(message)
@@ -74,4 +74,58 @@ export function deriveSessionTitle(message: unknown): string | undefined {
   const sentence = collapsed.replace(/[.?!](\s.*)?$/, "").trim()
   if (sentence === "" || !/[\p{L}\p{N}]/u.test(sentence)) return undefined
   return Array.from(sentence).length > MAX_LENGTH ? truncate(sentence, MAX_LENGTH) : sentence
+}
+
+/**
+ * A short, stable tail of a session id for the friendly fallback name —
+ * enough to tell two same-adapter sessions apart without printing the full
+ * `sess_…` handle. Short ids (test fixtures like `s1`) are returned whole;
+ * longer real ids collapse to their last 6 chars. Mirror of the VS Code
+ * `shortSessionId` (packages/vscode/src/client/sessionName.ts) — keep in sync.
+ */
+export function shortSessionId(id: string): string {
+  return id.length <= 8 ? id : id.slice(-6)
+}
+
+/** The display-fields subset `sessionDisplayName` reads. */
+export interface SessionNameFields {
+  id: string
+  kind: string
+  label?: string
+  title?: string
+  renamedByUser?: boolean
+  adapterSlug?: string
+}
+
+/**
+ * The ONE precedence the daemon and every client resolve a session's
+ * human-facing name through. Order:
+ *
+ *   1. a **user-renamed label** — a `label` a human wrote via `session_rename`,
+ *      flagged `renamedByUser`. A deliberate rename always wins.
+ *   2. the derived **title** — the first sentence of the caller's ask
+ *      (`deriveSessionTitle`). This now OUTRANKS a spawn label, fixing the
+ *      shadowing where a slug ("auto-title-precedence-fix") hid the useful
+ *      title forever.
+ *   3. the spawn **label** — a spawner-supplied slug, shown only when there's
+ *      no derived title to prefer.
+ *   4. `<adapterSlug ?? kind> · <short id>` — a friendly fallback, never a bare
+ *      `sess_…` handle or raw argv.
+ *
+ * Back-compat: a session persisted before `renamedByUser` existed carries a
+ * `label` and NO flag. The pre-flag rename write-path also targeted `label`,
+ * so an old spawn slug and an old user rename are indistinguishable on disk —
+ * an absent flag on a labelled session is therefore treated as "user-renamed"
+ * so no prior rename is lost. Only NEW spawns (which stamp `renamedByUser:
+ * false`) let the derived title win over their label.
+ *
+ * The VS Code mirror (`sessionName.ts`) hand-copies this chain — keep both in
+ * sync.
+ */
+export function sessionDisplayName(session: SessionNameFields): string {
+  const userRenamed = session.renamedByUser ?? session.label !== undefined
+  if (userRenamed && session.label !== undefined) return session.label
+  if (session.title !== undefined) return session.title
+  if (session.label !== undefined) return session.label
+  return `${session.adapterSlug ?? session.kind} · ${shortSessionId(session.id)}`
 }

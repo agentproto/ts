@@ -1400,14 +1400,19 @@ export function buildHtml(nonce: string): string {
 
       // Mirrors sessionDisplayName in client/sessionName.ts — this inline
       // script has no module system to import it from, so the precedence
-      // (label, then the derived title, then a friendly adapter · short-id
-      // fallback) is duplicated here (FIX D) and the two must stay in sync.
+      // (user-renamed-label, then the derived title, then a spawn label, then a
+      // friendly adapter · short-id fallback) is duplicated here (FIX D) and
+      // the two must stay in sync. Back-compat: an absent renamedByUser on a
+      // labelled session is treated as a user rename (see sessionName.ts).
       function shortSessionId(id) {
         return id && id.length > 8 ? id.slice(-6) : (id || '');
       }
       function displayName(session) {
-        return session.label ?? session.title
-          ?? ((session.adapterSlug || session.kind) + ' · ' + shortSessionId(session.id));
+        const userRenamed = session.renamedByUser ?? session.label !== undefined;
+        if (userRenamed && session.label !== undefined) return session.label;
+        if (session.title !== undefined) return session.title;
+        if (session.label !== undefined) return session.label;
+        return (session.adapterSlug || session.kind) + ' · ' + shortSessionId(session.id);
       }
 
       function updateHeader(session) {

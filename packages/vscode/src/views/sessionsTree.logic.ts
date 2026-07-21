@@ -130,10 +130,11 @@ export function isAwaiting(session: SessionDescriptor): boolean {
 }
 
 /** Item label. Thin alias over the shared `sessionDisplayName` (SPEC-3 FIX D):
- *  `label ?? title ?? <adapter · short-id>`. `label` is spawner-supplied (and
- *  what a user rename writes) and always wins; `title` is derived from the
- *  session's first prompt; the fallback names it by adapter + short id rather
- *  than the raw argv `command`, which read as noise in a tree row. */
+ *  `user-renamed-label > title > spawn-label > <adapter · short-id>`. A `label`
+ *  a human wrote via `session_rename` (flagged `renamedByUser`) wins; otherwise
+ *  the `title` derived from the session's first prompt outranks a spawn slug;
+ *  the fallback names it by adapter + short id rather than the raw argv
+ *  `command`, which reads as noise in a tree row. */
 export function labelFor(session: SessionDescriptor): string {
   return sessionDisplayName(session)
 }

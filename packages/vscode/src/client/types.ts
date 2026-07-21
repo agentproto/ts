@@ -102,8 +102,15 @@ export interface SessionDescriptor {
   processAlive?: boolean
   label?: string
   /** Derived from the session's FIRST prompt — see the runtime's
-   *  SessionDescriptor.title doc for the derivation + overwrite rules. */
+   *  SessionDescriptor.title doc for the derivation + overwrite rules. Now
+   *  OUTRANKS a spawn `label` in `sessionDisplayName`. */
   title?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.renamedByUser: `true`
+   *  only when a human renamed the session via `session_rename`. Makes a
+   *  `label` outrank the derived `title` in `sessionDisplayName`; a spawn
+   *  `label` (flagged `false`) does not. Absent on pre-flag sessions —
+   *  treated as `true` when a `label` is present (see `sessionDisplayName`). */
+  renamedByUser?: boolean
   /** Mirrors `@agentproto/runtime` SessionDescriptor.archived — housekeeping
    *  flag hiding the row from the daemon's default `list()` view (and so
    *  from `listSessions()` here too, unless `includeArchived` is passed).

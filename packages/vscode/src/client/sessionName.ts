@@ -24,17 +24,33 @@ export function shortSessionId(id: string): string {
 }
 
 /**
- * `label ?? title ?? <adapterSlug ?? kind> · <short id>`.
+ * `user-renamed-label > title > spawn-label > <adapterSlug ?? kind> · <short id>`.
+ * Hand-mirror of the runtime's `sessionDisplayName` (packages/runtime/src/
+ * session-title.ts) — keep the two in sync.
  *
- *  - `label` is spawner-supplied and always wins — it's also what a user
- *    rename writes (SPEC-3 fork-1), so an edit is guaranteed to show.
+ *  - A `label` a HUMAN wrote via `session_rename` (flagged `renamedByUser`)
+ *    always wins — a deliberate rename must show.
  *  - `title` is the mechanically-derived first sentence of the first prompt.
+ *    It now OUTRANKS a spawn label, so a spawn slug
+ *    ("auto-title-precedence-fix") no longer shadows the useful derived title.
+ *  - A spawn `label` shows only when there's no derived title to prefer.
  *  - The fallback names the session by WHAT it is + a short id, rather than a
  *    bare `sess_…` handle (the old `formatTitle`) or the raw argv (the old
  *    `labelFor`) — both of which read as noise in a tree row or a tab.
+ *
+ * Back-compat: a session persisted before `renamedByUser` existed carries a
+ * `label` and NO flag. Since the pre-flag rename path also wrote `label`, an
+ * old spawn slug and an old user rename can't be told apart on disk — so an
+ * absent flag on a labelled session is treated as "user-renamed" to avoid
+ * losing a prior rename. Only NEW spawns (`renamedByUser: false`) let the
+ * derived title win over their label.
  */
 export function sessionDisplayName(
-  session: Pick<SessionDescriptor, "label" | "title" | "id" | "adapterSlug" | "kind">,
+  session: Pick<SessionDescriptor, "label" | "title" | "id" | "adapterSlug" | "kind" | "renamedByUser">,
 ): string {
-  return session.label ?? session.title ?? `${session.adapterSlug ?? session.kind} · ${shortSessionId(session.id)}`
+  const userRenamed = session.renamedByUser ?? session.label !== undefined
+  if (userRenamed && session.label !== undefined) return session.label
+  if (session.title !== undefined) return session.title
+  if (session.label !== undefined) return session.label
+  return `${session.adapterSlug ?? session.kind} · ${shortSessionId(session.id)}`
 }
