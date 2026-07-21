@@ -28,6 +28,28 @@ export function sortAdapters(adapters: AdapterInfo[]): AdapterInfo[] {
   return adapters.slice().sort((a, b) => rankFor(a.status) - rankFor(b.status))
 }
 
+/**
+ * Whether the "Install" action applies to a harness row. Only a
+ * not-yet-installed harness is installable: `available` (resolves but
+ * setup/auth pending) and `supported` (known but package absent) both offer
+ * it; `ready` (nothing to do) and `unresolvable` (package present but
+ * mid-rebuild — reinstalling is the wrong advice) do not. An absent status
+ * is treated as not-installable (we can't tell). This gates both the tree
+ * row's contextValue and the command, so they can't drift.
+ */
+export function canInstallHarness(status?: string): boolean {
+  return status === "available" || status === "supported"
+}
+
+/** The tree item `contextValue` for a harness row, which drives the
+ *  package.json `when` clauses. Installable rows get a distinct value so the
+ *  inline "Install" action only shows where {@link canInstallHarness} is
+ *  true; every harness row keeps the base `harness` prefix so the
+ *  always-applicable "Spawn" action still matches. */
+export function harnessContextValue(adapter: AdapterInfo): string {
+  return canInstallHarness(adapter.status) ? "harness-installable" : "harness"
+}
+
 export function harnessIcon(adapter: AdapterInfo): { id: string; color?: string } {
   if (adapter.status === "ready") return { id: "check" }
   if (adapter.status === "available") return { id: "circle-filled" }

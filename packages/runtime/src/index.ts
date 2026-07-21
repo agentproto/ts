@@ -60,6 +60,7 @@ import {
   type AuthOptions,
   type AgentAdapterResolver,
   type AgentAdapterLister,
+  type AgentAdapterInstaller,
   type CatalogModelsLister,
 } from "./http-server.js"
 import {
@@ -99,6 +100,8 @@ import {
 export type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  AgentAdapterInstaller,
+  AdapterInstallResult,
   AdapterListEntry,
   CatalogModelsLister,
 } from "./http-server.js"
@@ -413,6 +416,11 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional adapter installer — when provided, enables
+   *  `POST /adapters/:slug/install` HTTP route + `adapter_install` MCP
+   *  tool so UIs can install a not-yet-installed harness. Hosts ship the
+   *  cli's `installAdapter`. */
+  installAgentAdapter?: AgentAdapterInstaller
   /** Optional catalog lister — when provided, enables
    *  `GET /catalog/models` HTTP route + `catalog_models` MCP tool
    *  (SPEC §5) so UIs can discover every runnable model + route without
@@ -1003,6 +1011,9 @@ export async function createGateway(
       ...(opts.listAgentAdapters
         ? { listAgentAdapters: opts.listAgentAdapters }
         : {}),
+      ...(opts.installAgentAdapter
+        ? { installAgentAdapter: opts.installAgentAdapter }
+        : {}),
       ...(opts.listCatalogModels
         ? { listCatalogModels: opts.listCatalogModels }
         : {}),
@@ -1209,6 +1220,9 @@ export async function createGateway(
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    ...(opts.installAgentAdapter
+      ? { installAgentAdapter: opts.installAgentAdapter }
       : {}),
     ...(opts.listCatalogModels
       ? { listCatalogModels: opts.listCatalogModels }

@@ -29,7 +29,7 @@ import { findWorkspaceByPath, workspaceLabel } from "../services/workspaces.logi
  */
 export interface SpawnAdapterInfo extends AdapterInfo {
   models?: string[]
-  status?: "supported" | "available" | "ready"
+  status?: "supported" | "available" | "ready" | "unresolvable"
   hint?: string
 }
 

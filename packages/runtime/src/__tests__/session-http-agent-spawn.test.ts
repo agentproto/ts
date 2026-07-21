@@ -222,4 +222,48 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
       await http.stop()
     }
   })
+
+  it("parentSessionId lineage hint (WP-R1) is honoured on the root HTTP route", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    // Seed a parent at depth 2 so the hint-derived child depth is observable.
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      harness: "mock",
+      depth: 2,
+    })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", parentSessionId: parent.id }),
+      })
+      expect(res.status).toBe(201)
+      const desc = (await res.json()) as SessionDescriptor
+      expect(desc.parentSessionId).toBe(parent.id)
+      expect(desc.depth).toBe(3) // parent depth (2) + 1
+    } finally {
+      await http.stop()
+    }
+  })
 })

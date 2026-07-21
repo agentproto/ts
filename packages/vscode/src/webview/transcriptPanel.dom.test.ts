@@ -1056,7 +1056,7 @@ describe("transcriptPanel webview — honest session state", () => {
     return node
   }
 
-  it("renders the context percent on the context button, keeping the raw counts for the popover", () => {
+  it("renders the context percent as a compact ring gauge, keeping the raw counts for the popover", () => {
     const panel = renderPanel()
     panel.send({
       type: "init",
@@ -1070,9 +1070,27 @@ describe("transcriptPanel webview — honest session state", () => {
         usage: { seq: 1, contextUsed: 206_115, contextSize: 1_000_000, tokensIn: 5, tokensOut: 7 },
       },
     })
-    // in/out dropped: they repeated the cost button in the same header, and a
-    // raw token total isn't a number anyone acts on.
-    expect(el(panel, "context-btn").textContent).toBe("ctx 21%")
+    // The percent moved off the button text and into the gauge's #ctx-pct
+    // label; the ring itself carries the fill visually (FIX 5). in/out dropped:
+    // they repeated the cost button in the same header.
+    expect(el(panel, "ctx-pct").textContent).toBe("21%")
+    expect(el(panel, "context-btn").hidden).toBe(false)
+    // 21% is a calm fill — the arc stays at the default (green) level.
+    expect(el(panel, "ctx-arc").classList.contains("mid")).toBe(false)
+    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(false)
+  })
+
+  it("colours the gauge arc as the context fills toward the ceiling", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 95, contextSize: 100 } },
+    })
+    expect(el(panel, "ctx-pct").textContent).toBe("95%")
+    expect(el(panel, "ctx-arc").classList.contains("high")).toBe(true)
   })
 
   it("hides the context button rather than dividing by zero", () => {
@@ -1084,8 +1102,8 @@ describe("transcriptPanel webview — honest session state", () => {
       mode: "structured",
       conversation: { version: 1, sessionId: "s1", turns: [], usage: { seq: 1, contextUsed: 5, contextSize: 0 } },
     })
-    // A button reading "undefined" is worse than a button that isn't there.
-    expect(el(panel, "context-btn").textContent).toBe("")
+    // A gauge with nothing to show is worse than a button that isn't there.
+    expect(el(panel, "context-btn").hidden).toBe(true)
   })
 
   it("shows the working row with a ticking elapsed only while busy", () => {
@@ -1282,7 +1300,7 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "error-banner").hidden).toBe(true)
   })
 
-  it("names the harness, model and auth mode in the composer bar", () => {
+  it("names the harness and model in the composer bar, with auth moved to the detail popover", () => {
     const panel = renderPanel()
     init(panel, {
       adapterSlug: "claude-code",
@@ -1291,7 +1309,16 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     })
     expect(el(panel, "composer-harness").textContent).toBe("claude-code")
     expect(el(panel, "composer-model").textContent).toBe("sonnet-5")
-    expect(el(panel, "composer-auth").textContent).toBe("subscription")
+    // The redundant auth/subscription chip is gone from the footer (FIX 4) —
+    // that identity now lives one click away in the cost detail popover.
+    expect(panel.document.getElementById("composer-auth")).toBeNull()
+  })
+
+  it("wears the harness glyph in the header title, tooltipped with the adapter name", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code" })
+    expect(el(panel, "header-icon").textContent).toBe("❋")
+    expect(el(panel, "header-icon").title).toBe("claude-code")
   })
 })
 
@@ -1360,7 +1387,7 @@ describe("transcriptPanel webview — working / waiting / stalled", () => {
         usage: { seq: 1, contextUsed: 60_000, contextSize: 1_000_000, tokensIn: 68_694, tokensOut: 141 },
       },
     })
-    expect(el(panel, "context-btn").textContent).toBe("ctx 6%")
+    expect(el(panel, "ctx-pct").textContent).toBe("6%")
   })
 })
 
@@ -1885,7 +1912,7 @@ describe("transcriptPanel webview — header detail popovers", () => {
     expect(el(panel, "context-popover").hidden).toBe(true)
   })
 
-  it("opens the cost popover with the tokens/model/harness/auth breakdown", () => {
+  it("opens the cost popover with the tokens/model/harness/access breakdown", () => {
     const panel = renderPanel()
     initWithUsageAndSession(panel)
 
@@ -1896,7 +1923,26 @@ describe("transcriptPanel webview — header detail popovers", () => {
     expect(el(panel, "popover-tokens-out").textContent).toBe("141")
     expect(el(panel, "popover-model").textContent).toBe("sonnet-5")
     expect(el(panel, "popover-harness").textContent).toBe("claude-code")
+    // No named profile echoed → the access row falls back to the auth method.
     expect(el(panel, "popover-auth").textContent).toBe("subscription")
+  })
+
+  it("names the bound wallet profile in the access row when one is echoed (FIX 3)", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({
+        auth: { mode: "subscription", fingerprint: "abc" },
+        accessProfile: { profileRef: "work", label: "Work wallet", vendor: "anthropic", method: "oauth-bearer" },
+      }),
+      nonce: "n",
+      mode: "structured",
+      conversation: { version: 1, sessionId: "s1", turns: [] },
+    })
+
+    el(panel, "cost-btn").dispatchEvent(new panel.window.Event("click"))
+    // The named identity wins over the raw auth method — the wallet, never a secret.
+    expect(el(panel, "popover-auth").textContent).toBe("Work wallet")
   })
 
   it("opens the context popover with the raw used/size counts, not just the percent", () => {
@@ -1952,14 +1998,14 @@ describe("transcriptPanel webview — header detail popovers", () => {
   })
 })
 
-describe("header view toggle", () => {
+describe("header terminal button", () => {
   function el(panel: Panel, id: string): DomElement {
     const found = panel.document.getElementById(id)
     if (!found) throw new Error(`missing #${id}`)
     return found
   }
 
-  it("WP3: Terminal segment posts openTerminal, Conversation segment posts setView conversation", () => {
+  it("FIX 2: a single Terminal button opens the terminal view, shown only when the session has one", () => {
     const posted: unknown[] = []
     const panel = renderPanel({ onPost: msg => posted.push(msg) })
     panel.send({
@@ -1970,18 +2016,26 @@ describe("header view toggle", () => {
       canToggle: true,
     })
 
-    // The webview posts `ready` on init; clear it so the assertions below
-    // only see messages from the toggle clicks.
+    // The webview posts `ready` on init; clear it so the assertion below only
+    // sees the button click.
     posted.length = 0
 
-    const toggle = el(panel, "view-toggle")
-    expect(toggle.hidden).toBe(false)
+    const btn = el(panel, "open-terminal-btn")
+    expect(btn.hidden).toBe(false)
 
-    el(panel, "view-terminal").dispatchEvent(new panel.window.Event("click"))
+    btn.dispatchEvent(new panel.window.Event("click"))
     expect(posted).toEqual([{ type: "openTerminal" }])
+  })
 
-    posted.length = 0
-    el(panel, "view-conversation").dispatchEvent(new panel.window.Event("click"))
-    expect(posted).toEqual([{ type: "setView", view: "conversation" }])
+  it("FIX 2: the Terminal button is hidden when the session has no terminal representation", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session(),
+      nonce: "n",
+      mode: "structured",
+      canToggle: false,
+    })
+    expect(el(panel, "open-terminal-btn").hidden).toBe(true)
   })
 })

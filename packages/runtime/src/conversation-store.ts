@@ -317,6 +317,77 @@ async function readHermes(conversationId: string): Promise<ExportedSession> {
   return exportHermesSession(conversationId)
 }
 
+// ── codex store ───────────────────────────────────────────────────────
+//
+// Native store: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+// The rollout uuid == the ACP session id agentproto records as
+// `adapterSessionId` (verified empirically), so a codex session's export
+// binds by that id directly (step 1 of the conversation-read ladder), and
+// `discover` scopes a PTY-only codex by the session_meta `cwd`. Reader in
+// transcript-export.ts, dynamically imported for the same reason as
+// readClaudeCode above (keep it out of resume-strategies.ts's lean entry).
+
+async function discoverCodex(input: DiscoverInput): Promise<ConversationCandidate[]> {
+  const { discoverCodexSessions } = await import("./transcript-export.js")
+  return discoverCodexSessions(input.cwd, input.since, input.until, input.expectedId)
+}
+
+async function readCodex(conversationId: string): Promise<ExportedSession> {
+  const { exportCodexSession } = await import("./transcript-export.js")
+  return exportCodexSession(conversationId)
+}
+
+// ── opencode store ────────────────────────────────────────────────────
+//
+// Native store: ${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db. The
+// `session` table's id is the `ses_…` id agentproto records as
+// `adapterSessionId` (verified), and its `directory` column is the cwd — so
+// discovery is cwd-scoped like hermes.
+
+async function discoverOpenCode(input: DiscoverInput): Promise<ConversationCandidate[]> {
+  const { discoverOpenCodeSessions } = await import("./transcript-export.js")
+  return discoverOpenCodeSessions(input.cwd, input.since, input.expectedId)
+}
+
+async function readOpenCode(conversationId: string): Promise<ExportedSession> {
+  const { exportOpenCodeSession } = await import("./transcript-export.js")
+  return exportOpenCodeSession(conversationId)
+}
+
+// ── mastracode-inprocess store ────────────────────────────────────────
+//
+// Native store: ${AGENTPROTO_HOME:-~/.agentproto}/mastracode-inprocess/
+// storage.db (Mastra libsql). sessionId is "<resourceId>:<threadId>";
+// `read` splits out the threadId. No cwd column, so `discover` is
+// exact-bind only (this in-process arm always supplies an adapterSessionId).
+
+async function discoverMastracodeInprocess(input: DiscoverInput): Promise<ConversationCandidate[]> {
+  const { discoverMastracodeInprocessSessions } = await import("./transcript-export.js")
+  return discoverMastracodeInprocessSessions(input.cwd, input.since, input.expectedId)
+}
+
+async function readMastracodeInprocess(conversationId: string): Promise<ExportedSession> {
+  const { exportMastracodeInprocessSession } = await import("./transcript-export.js")
+  return exportMastracodeInprocessSession(conversationId)
+}
+
+// ── pi store ──────────────────────────────────────────────────────────
+//
+// Native store: ~/.pi/agent/sessions/<cwd-slug>/<ts>_<uuid>.jsonl. The uuid
+// == pi's RPC sessionId recorded as `adapterSessionId`; discovery keys off
+// each file's authoritative `session.cwd` (the slug encoding is
+// version-dependent, so it is never trusted for scoping).
+
+async function discoverPi(input: DiscoverInput): Promise<ConversationCandidate[]> {
+  const { discoverPiSessions } = await import("./transcript-export.js")
+  return discoverPiSessions(input.cwd, input.since, input.until, input.expectedId)
+}
+
+async function readPi(conversationId: string): Promise<ExportedSession> {
+  const { exportPiSession } = await import("./transcript-export.js")
+  return exportPiSession(conversationId)
+}
+
 export const CONVERSATION_STORES: Record<string, ConversationStore> = {
   "claude-code": {
     storeAs: "claudeResumeId",
@@ -337,5 +408,27 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     attachArgv: (conversationId: string) => ["hermes", "--resume", conversationId, "--tui"],
     discover: discoverHermes,
     read: readHermes,
+  },
+  // codex-acp writes no resume flag we sniff, and there's no native PTY
+  // reattach argv to declare — export/read only, so no outputHint/attachArgv.
+  codex: {
+    storeAs: "codexResumeId",
+    discover: discoverCodex,
+    read: readCodex,
+  },
+  opencode: {
+    storeAs: "openCodeResumeId",
+    discover: discoverOpenCode,
+    read: readOpenCode,
+  },
+  "mastracode-inprocess": {
+    storeAs: "mastracodeInprocessResumeId",
+    discover: discoverMastracodeInprocess,
+    read: readMastracodeInprocess,
+  },
+  pi: {
+    storeAs: "piResumeId",
+    discover: discoverPi,
+    read: readPi,
   },
 }
