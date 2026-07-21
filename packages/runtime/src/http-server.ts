@@ -912,6 +912,7 @@ export async function startHttpServer(
   }
 
   function handleEvents(req: IncomingMessage, res: ServerResponse): void {
+    if (guardBrowserOrigin(req, res)) return
     if (!authorize(req, res)) return
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -929,6 +930,7 @@ export async function startHttpServer(
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
+    if (guardBrowserOrigin(req, res)) return
     if (!authorize(req, res)) return
     const list = await opts.conversations.list()
     res.writeHead(200, { "content-type": "application/json" })
@@ -940,6 +942,7 @@ export async function startHttpServer(
     res: ServerResponse,
     id: string,
   ): Promise<void> {
+    if (guardBrowserOrigin(req, res)) return
     if (!authorize(req, res)) return
     try {
       const data = await opts.conversations.read(id)
@@ -1076,23 +1079,75 @@ export async function startHttpServer(
     }
   }
 
-  // Permissive CORS for the loopback gateway. The Guilde web app
-  // (localhost:3041) probes /health from the browser; without these
-  // headers the browser blocks the response and the panel says
-  // "not reachable" even though curl works. Auth still gates the
-  // sensitive routes — this just lifts the cross-origin block.
+  /**
+   * Browser drive-by guard for Origin-sensitive READ routes that leak local
+   * session state (`/conversations`, `/events`, `/workspaces`, `/worktrees`).
+   * These are otherwise gated only by `authorize()` (loopback bypass) or not
+   * at all, so — combined with CORS — a malicious page the user visits could
+   * `fetch()` them cross-origin and read conversation transcripts, the live
+   * event stream, and local workspace/worktree paths. Same threat and signal
+   * as `authorizeMcp`: a browser ALWAYS sets `Origin` cross-origin and can't
+   * forge it to a trusted value; native clients (CLI, curl) send none.
+   *
+   * Returns `true` when it has REJECTED the request (wrote a 403) — the caller
+   * must stop. Returns `false` when the request may proceed to its normal
+   * auth path (no Origin, an allowlisted Origin, or a valid bearer token).
+   */
+  function guardBrowserOrigin(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): boolean {
+    const origin = req.headers.origin
+    if (
+      typeof origin === "string" &&
+      origin.length > 0 &&
+      !originAllowed(origin)
+    ) {
+      const auth = readAuth()
+      const header = req.headers.authorization
+      if (auth.mode === "bearer" && header === `Bearer ${auth.token}`) {
+        return false
+      }
+      res.writeHead(403, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "forbidden_origin",
+          message:
+            "Cross-origin browser access to this route is refused. It " +
+            "exposes local session state (transcripts, events, workspace " +
+            "paths); a web page cannot read it. Add the origin to the " +
+            "daemon's allowlist or present the bearer token.",
+        }),
+      )
+      return true
+    }
+    return false
+  }
+
+  // CORS for the loopback gateway. The Guilde web app (localhost:3041) and
+  // the hosted panel probe /health + read-only routes from the browser;
+  // without these headers the browser blocks the response. But a credentialed
+  // response reflected back to an ARBITRARY origin lets an untrusted page read
+  // it (data exfil) — so we only reflect + allow credentials for allowlisted
+  // origins (localhost dev, cli.agentproto.sh). Everything else gets a bare
+  // `*` with NO credentials: enough for a public /health probe, useless for
+  // reading a credentialed/sensitive response (which the route gate also 403s).
   //
-  // Private Network Access (Chrome 105+): when an HTTPS page like
-  // https://guilde.work fetches a loopback URL, Chrome sends a
-  // preflight with `Access-Control-Request-Private-Network: true`.
-  // Without `Access-Control-Allow-Private-Network: true` in the
-  // response, the browser blocks the actual GET. Mirror the flag
-  // when the request asked for it.
+  // Private Network Access (Chrome 105+): an HTTPS page fetching a loopback
+  // URL sends a preflight with `Access-Control-Request-Private-Network: true`.
+  // We only grant `Access-Control-Allow-Private-Network` to allowlisted
+  // origins — an untrusted page shouldn't be waved through the PNA gate.
   function applyCors(req: IncomingMessage, res: ServerResponse): void {
-    const origin = (req.headers.origin as string | undefined) ?? "*"
-    res.setHeader("Access-Control-Allow-Origin", origin)
+    const origin = req.headers.origin
+    const trusted =
+      typeof origin === "string" && origin.length > 0 && originAllowed(origin)
+    if (trusted) {
+      res.setHeader("Access-Control-Allow-Origin", origin as string)
+      res.setHeader("Access-Control-Allow-Credentials", "true")
+    } else {
+      res.setHeader("Access-Control-Allow-Origin", "*")
+    }
     res.setHeader("Vary", "Origin")
-    res.setHeader("Access-Control-Allow-Credentials", "true")
     res.setHeader(
       "Access-Control-Allow-Headers",
       req.headers["access-control-request-headers"] ??
@@ -1102,7 +1157,10 @@ export async function startHttpServer(
       "Access-Control-Allow-Methods",
       "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     )
-    if (req.headers["access-control-request-private-network"] === "true") {
+    if (
+      trusted &&
+      req.headers["access-control-request-private-network"] === "true"
+    ) {
       res.setHeader("Access-Control-Allow-Private-Network", "true")
     }
   }
@@ -1117,10 +1175,15 @@ export async function startHttpServer(
         // actually sends. Loopback-only traffic stays quiet to avoid
         // flooding subscribers during normal local use.
         if (req.headers["x-forwarded-for"]) {
+          // Redact the query string: it can carry secrets (`?token=`,
+          // `?scope=`) that must not land in the event log / stderr.
+          const loggedUrl = url.includes("?")
+            ? url.slice(0, url.indexOf("?")) + "?<redacted>"
+            : url
           opts.events.emit({
             type: "remote-log",
             at: new Date().toISOString(),
-            line: `[http-in] ${req.method} ${url} host=${req.headers.host ?? "?"} xff=${String(req.headers["x-forwarded-for"])}`,
+            line: `[http-in] ${req.method} ${loggedUrl} host=${req.headers.host ?? "?"} xff=${String(req.headers["x-forwarded-for"])}`,
           })
         }
 
@@ -1204,6 +1267,7 @@ export async function startHttpServer(
         }
 
         if (path === "/workspaces" && req.method === "GET") {
+          if (guardBrowserOrigin(req, res)) return
           // Surface ~/.agentproto/workspaces.json for UIs that
           // want a workspace dropdown (spawn dialog, MCP discovery
           // grouping, etc.). Read-only variant; mutation lives just
@@ -1228,6 +1292,7 @@ export async function startHttpServer(
         }
 
         if (path === "/worktrees" && req.method === "GET") {
+          if (guardBrowserOrigin(req, res)) return
           // Read-only worktree status surface — lists linked worktrees,
           // their live PR integration, and the sessions whose cwd sits in
           // each worktree. The heavy join is delegated to an injected lister
