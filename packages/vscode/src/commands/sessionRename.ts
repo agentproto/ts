@@ -3,11 +3,13 @@
  * transcript header's click-to-edit (SPEC-3 FIX B). Prompts for a new name and
  * writes it via `PATCH /sessions/:id` (`DaemonClient.renameSession`).
  *
- * Writes `label`, not `title`: `label` out-ranks `title` in every display
- * chain (`sessionDisplayName`), so writing it guarantees the rename shows,
- * while the auto-derived `title` stays as the fallback (SPEC-3 fork-1). An
- * emptied box clears the label — the row reverts to the derived title / the
- * friendly `adapter · id` fallback.
+ * Writes `label`, not `title`: the daemon flags a `session_rename` write with
+ * `renamedByUser`, which makes a user's `label` out-rank the derived `title`
+ * in every display chain (`sessionDisplayName`) — so writing it guarantees the
+ * rename shows, while the auto-derived `title` stays as the fallback (a SPAWN
+ * label, unflagged, now sorts BELOW the title instead). An emptied box clears
+ * the label — the row reverts to the derived title / the friendly `adapter ·
+ * id` fallback.
  *
  * Any session can be renamed (live, awaiting, done, archived) — it's pure
  * display state, never a daemon action, so there's no status guard. The live

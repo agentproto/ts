@@ -210,6 +210,10 @@ export interface SessionRenamedEvent {
   sessionId: string
   title?: string
   label?: string
+  /** Always `true` — this event only fires from the human-driven rename
+   *  write-path. Lets a live client update `renamedByUser` on its cached
+   *  descriptor so the label wins the display chain without a full re-poll. */
+  renamedByUser?: boolean
   ts: string
 }
 

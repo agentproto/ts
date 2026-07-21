@@ -544,8 +544,25 @@ export interface SessionDescriptor {
   label?: string
   /** Derived from the session's FIRST prompt — what this conversation is
    *  about, for a UI that would otherwise show the adapter's argv. Distinct
-   *  from `label`, which the spawner supplies and which always wins. */
+   *  from `label`, which the spawner supplies. A derived `title` now OUTRANKS
+   *  a spawn-supplied `label` in the display chain (see `sessionDisplayName`
+   *  in session-title.ts) — only a `label` a *human* wrote via `session_rename`
+   *  (flagged `renamedByUser`) beats it. */
   title?: string
+  /** True only when a HUMAN renamed this session via `session_rename`
+   *  (`renameSession`) — never for a spawner-supplied `label`. It's the one
+   *  signal that makes a `label` outrank the derived `title` in
+   *  `sessionDisplayName`: a spawn slug ("auto-title-precedence-fix") must not
+   *  shadow the useful derived title, but a user's deliberate rename must.
+   *
+   *  Back-compat: sessions persisted before this flag existed carry a `label`
+   *  (possibly a stale spawn slug, possibly an old user rename — the pre-flag
+   *  rename write-path targeted `label` too, so the two are indistinguishable
+   *  on disk) with NO flag. `sessionDisplayName` treats an absent flag on a
+   *  labelled session as `true` so those old renames are never lost — only
+   *  NEW spawns, which now stamp `renamedByUser: false` explicitly, let the
+   *  derived title win over the spawn label. */
+  renamedByUser?: boolean
   /** Housekeeping-only visibility flag: hides the session from `list()`'s
    *  default view (`session_list`, `GET /sessions`, panels) once set. Never
    *  touches the daemon otherwise — the process is already gone by the time
@@ -1456,6 +1473,11 @@ export interface SpawnAgentInput {
    *  buffer. Skip to spawn idle. */
   initialPrompt?: string
   label?: string
+  /** Title to stamp on the descriptor up-front, BEFORE the `initialPrompt`
+   *  turn runs. Set by the spawn path from the CALLER's ask (`input.prompt`),
+   *  so the self-heal in `runAgentTurn` never derives a title from the
+   *  role-prefixed COMPOSED prompt it dispatches as the first turn. */
+  title?: string
   /** Pretty command for the descriptor (display only). */
   commandPreview?: string
   /** MCP servers mounted at spawn time. Persisted on the descriptor so
@@ -2676,6 +2698,13 @@ export function createSessionsRegistry(opts?: {
     // leave them unnamed forever. This way they self-heal on their NEXT
     // prompt — free, gradual adoption, no backfill. Never overwrites: a
     // conversation is named by what it was first about.
+    //
+    // `message` is the USER's turn text, NOT a role-prefixed composition — so
+    // this derives the title from the actual ask. The one turn where `message`
+    // *is* the composed prompt is a spawn's `initialPrompt` (it carries the
+    // role disposition ahead of the caller's ask); the spawn path forecloses
+    // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
+    // `rt.desc.title` is already set and this line is skipped for that turn.
     if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
@@ -3140,6 +3169,13 @@ export function createSessionsRegistry(opts?: {
         // conversation rather than starting blank.
         adapterSessionId: input.agentSession.sessionId,
         ...(input.label ? { label: input.label } : {}),
+        // Stamp the caller-derived title BEFORE `runAgentTurn` fires below, so
+        // the self-heal there never claims the title from the composed prompt.
+        ...(input.title ? { title: input.title } : {}),
+        // A spawn `label` is NOT a user rename — flag it so the display chain
+        // (`sessionDisplayName`) lets the derived `title` outrank it. Only
+        // `renameSession` sets this `true`.
+        ...(input.label ? { renamedByUser: false } : {}),
         // Persist the spawn-time MCP mounts so resume re-mounts the same
         // toolset (orchestrator WP1). Reference-only shape — no secrets.
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
@@ -3885,6 +3921,12 @@ export function createSessionsRegistry(opts?: {
       }
       apply("title")
       apply("label")
+      // This IS the explicit-user-rename write-path (both callers —
+      // `PATCH /sessions/:id` and the `session_rename` MCP verb — are
+      // human-driven). Flag it so a user's `label` outranks the derived
+      // `title` in `sessionDisplayName`; a spawn `label`, set by `spawnAgent`
+      // with `renamedByUser: false`, does not.
+      rt.desc.renamedByUser = true
       schedulePersist()
       // Announce it so a live UI repaints the name without waiting for its
       // next snapshot poll — same bus every other lifecycle event rides.
@@ -3895,6 +3937,7 @@ export function createSessionsRegistry(opts?: {
         sessionId: id,
         ...(rt.desc.title !== undefined ? { title: rt.desc.title } : {}),
         ...(rt.desc.label !== undefined ? { label: rt.desc.label } : {}),
+        renamedByUser: true,
         ts: new Date().toISOString(),
       })
       stampProcessAlive(rt.desc)

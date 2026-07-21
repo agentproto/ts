@@ -1289,6 +1289,14 @@ export async function spawnAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
+      // Hand the caller-derived title to `spawnAgent` so it lands on the
+      // descriptor BEFORE the `initialPrompt` (the ROLE-PREFIXED composed
+      // prompt) is dispatched — otherwise `runAgentTurn`'s self-heal derives
+      // the title from that composition's first sentence (the role
+      // disposition) instead of the caller's ask. The overwrite below stays
+      // as a belt-and-braces for the `wait` path (which sends the prompt
+      // itself, not via `initialPrompt`).
+      ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback

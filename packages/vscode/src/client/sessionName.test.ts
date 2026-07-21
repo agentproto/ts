@@ -17,10 +17,40 @@ function session(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
 }
 
 describe("sessionDisplayName (FIX D — the one name source of truth)", () => {
-  it("prefers label over everything", () => {
+  it("prefers a USER-renamed label over the derived title", () => {
     expect(
-      sessionDisplayName(session({ label: "sales", title: "Fix bug", adapterSlug: "claude-code" })),
+      sessionDisplayName(
+        session({ label: "sales", title: "Fix bug", renamedByUser: true, adapterSlug: "claude-code" }),
+      ),
     ).toBe("sales")
+  })
+
+  it("lets the derived title outrank a SPAWN label (renamedByUser: false)", () => {
+    expect(
+      sessionDisplayName(
+        session({
+          label: "auto-title-precedence-fix",
+          title: "Fix session auto-titling",
+          renamedByUser: false,
+          adapterSlug: "claude-code",
+        }),
+      ),
+    ).toBe("Fix session auto-titling")
+  })
+
+  it("shows a spawn label when there is no derived title to prefer", () => {
+    expect(
+      sessionDisplayName(session({ label: "worker-3", title: undefined, renamedByUser: false })),
+    ).toBe("worker-3")
+  })
+
+  it("treats a pre-flag labelled session (no renamedByUser) as user-renamed for back-compat", () => {
+    // An old persisted session: a `label`, no flag. The pre-flag rename path
+    // also wrote `label`, so we can't tell an old rename from an old spawn slug
+    // — keep the label winning so no prior rename is silently lost.
+    expect(
+      sessionDisplayName(session({ label: "My Old Rename", title: "derived", renamedByUser: undefined })),
+    ).toBe("My Old Rename")
   })
 
   it("falls back to the derived title when label is unset", () => {

@@ -54,6 +54,45 @@ describe("renameSession", () => {
     reg.shutdown()
   })
 
+  it("flags renamedByUser=true — a user rename must outrank the derived title", () => {
+    const reg = createSessionsRegistry({ persistPath, persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      label: "spawn-slug",
+    })
+    // A spawn label is not a user rename — it's flagged false so the title wins.
+    expect(reg.get(desc.id)?.renamedByUser).toBe(false)
+    const renamed = reg.renameSession(desc.id, { label: "My Session" })
+    expect(renamed.renamedByUser).toBe(true)
+    reg.shutdown()
+  })
+
+  it("carries renamedByUser onto the session:renamed event", () => {
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(ev => events.push(ev))
+    const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+    const desc = spawn(reg)
+    reg.renameSession(desc.id, { label: "Named" })
+    const renamed = events.find(e => e.type === "session:renamed")
+    expect(renamed).toMatchObject({ type: "session:renamed", renamedByUser: true })
+    reg.shutdown()
+  })
+
+  it("persists renamedByUser across a reload", () => {
+    const reg1 = createSessionsRegistry({ persistPath })
+    const desc = spawn(reg1)
+    reg1.renameSession(desc.id, { label: "Persisted Rename" })
+    reg1.shutdown()
+
+    const reg2 = createSessionsRegistry({ persistPath })
+    expect(reg2.get(desc.id)?.renamedByUser).toBe(true)
+    reg2.shutdown()
+  })
+
   it("writes title independently", () => {
     const reg = createSessionsRegistry({ persistPath, persist: false })
     const desc = spawn(reg)

@@ -76,6 +76,44 @@ describe("runAgentTurn — derived session title", () => {
     reg.shutdown()
   })
 
+  it("stamps a spawn-supplied title up-front, so the self-heal never sees the initialPrompt", async () => {
+    // FIX 1: the spawn path derives the title from the CALLER's ask and hands
+    // it to spawnAgent, which lands it on the descriptor BEFORE the composed,
+    // role-prefixed `initialPrompt` turn fires. Without the pre-stamp, the
+    // self-heal would name the session after that composition's first sentence
+    // (the role disposition) instead of the ask.
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+      title: "Fix session auto-titling",
+      initialPrompt: "You are the leaf executor. Fix session auto-titling.",
+    })
+    // The descriptor carries the caller-derived title, not the composed
+    // prompt's "You are the leaf executor".
+    expect(desc.title).toBe("Fix session auto-titling")
+    // Give the fire-and-forget initial turn a tick — it must NOT overwrite.
+    await new Promise(res => setTimeout(res, 10))
+    expect(reg.get(desc.id)?.title).toBe("Fix session auto-titling")
+    reg.shutdown()
+  })
+
+  it("flags a spawn label renamedByUser: false so the title can outrank it", () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+      label: "auto-title-precedence-fix",
+    })
+    expect(desc.label).toBe("auto-title-precedence-fix")
+    expect(reg.get(desc.id)?.renamedByUser).toBe(false)
+    reg.shutdown()
+  })
+
   it("leaves title undefined when the prompt has no usable text", async () => {
     const reg = createSessionsRegistry({ persist: false })
     const desc = reg.spawnAgent({
