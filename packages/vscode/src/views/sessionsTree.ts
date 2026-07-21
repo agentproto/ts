@@ -42,7 +42,6 @@
 import * as vscode from "vscode"
 
 import type { SessionFilterController } from "../commands/sessionFilter.js"
-import { workspaceLabelFor } from "../services/workspaces.logic.js"
 import type { SessionDescriptor } from "../client/types.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
@@ -186,7 +185,6 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     const item = new vscode.TreeItem(labelFor(session), collapsibleState)
     item.id = session.id
     const baseDescription = descriptionFor(session, {
-      workspaceLabel: workspaceLabelFor(this.filter.workspaces, session),
       now: this.now,
       childCount: element.children.length,
     })

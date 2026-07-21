@@ -16,8 +16,10 @@ import {
   activityFor,
   iconFor,
   isStalled,
+  isolationLabelFor,
   labelFor,
   relativeTime,
+  worktreeName,
   silentForMs,
   tooltipFieldsFor,
   treeContextValueFor,
@@ -80,25 +82,50 @@ describe("descriptionFor", () => {
   describe("with a DescriptionContext", () => {
     const now = Date.parse("2026-01-06T00:00:00Z")
 
-    it("renders workspace · relative time", () => {
-      const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 120, tokensOut: 45 })
+    it("renders isolation · relative time, worktree first", () => {
+      const s = session({
+        startedAt: "2026-01-01T00:00:00Z",
+        worktreePath: "/repo/.worktrees/fix-login",
+        tokensIn: 120,
+        tokensOut: 45,
+      })
       // Token counts are deliberately absent: a raw +in -out per row is a
       // number nobody acts on. See descriptionFor's docblock.
-      expect(descriptionFor(s, { workspaceLabel: "Agentik Studio", now })).toBe(
-        "Agentik Studio · 5 days ago",
-      )
+      expect(descriptionFor(s, { now })).toBe("⑂ fix-login · 5 days ago")
     })
-    it("omits workspace when unset", () => {
+    it("leads with `in-place` when the session isn't in a worktree", () => {
       const s = session({ startedAt: "2026-01-01T00:00:00Z", tokensIn: 10, tokensOut: 5 })
-      expect(descriptionFor(s, { now })).toBe("5 days ago")
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago")
     })
     it("omits relative time when ctx.now is unset", () => {
-      const s = session({ startedAt: "2026-01-01T00:00:00Z" })
-      expect(descriptionFor(s, { workspaceLabel: "ws" })).toBe("ws")
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", worktreePath: "/repo/.worktrees/wt-a" })
+      expect(descriptionFor(s, {})).toBe("⑂ wt-a")
     })
-    it("returns an empty string when ctx has no resolvable parts", () => {
-      expect(descriptionFor(session(), {})).toBe("")
+    it("still renders the isolation lead when ctx has no other resolvable parts", () => {
+      // Isolation is always present — there is no "empty" description with ctx.
+      expect(descriptionFor(session(), {})).toBe("in-place")
     })
+  })
+})
+
+describe("worktreeName / isolationLabelFor", () => {
+  it("returns the leaf directory name of the worktree path", () => {
+    expect(worktreeName(session({ worktreePath: "/repo/.worktrees/fix-login" }))).toBe("fix-login")
+  })
+  it("handles a trailing slash and backslash separators", () => {
+    expect(worktreeName(session({ worktreePath: "/repo/.worktrees/wt-a/" }))).toBe("wt-a")
+    expect(worktreeName(session({ worktreePath: "C:\\repo\\.worktrees\\wt-b" }))).toBe("wt-b")
+  })
+  it("is undefined when there is no worktree path", () => {
+    expect(worktreeName(session({ worktreePath: undefined }))).toBeUndefined()
+  })
+  it("labels a worktree session with the fork glyph and its leaf name", () => {
+    expect(isolationLabelFor(session({ worktreePath: "/repo/.worktrees/fix-login" }))).toBe(
+      "⑂ fix-login",
+    )
+  })
+  it("labels a non-worktree session `in-place`", () => {
+    expect(isolationLabelFor(session({ worktreePath: undefined }))).toBe("in-place")
   })
 })
 
@@ -166,10 +193,12 @@ describe("subagents nest under their spawner", () => {
     )
     const root = rows[0] as SessionNode
     expect(descriptionFor(root.session, { now, childCount: root.children.length })).toBe(
-      "1 hr ago · 2 subagents",
+      "in-place · 1 hr ago · 2 subagents",
     )
-    // A leaf claims nothing.
-    expect(descriptionFor(root.children[0]!.session, { now, childCount: 0 })).toBe("1 hr ago")
+    // A leaf claims no subagents (isolation still leads).
+    expect(descriptionFor(root.children[0]!.session, { now, childCount: 0 })).toBe(
+      "in-place · 1 hr ago",
+    )
   })
 
   it("keeps a subtree with its spawner across the 24h divider", () => {
@@ -405,6 +434,20 @@ describe("tooltipFieldsFor", () => {
       expect.objectContaining({ label: "cwd" }),
     )
     expect(tooltipFieldsFor(session({ cwd: "/tmp/x" }))).toContainEqual({ label: "cwd", value: "/tmp/x" })
+  })
+  it("shows the full worktree path (with generation id when present)", () => {
+    expect(
+      tooltipFieldsFor(session({ worktreePath: "/repo/.worktrees/wt-a", worktreeId: "gen-7" })),
+    ).toContainEqual({ label: "worktree", value: "/repo/.worktrees/wt-a (gen-7)" })
+    expect(tooltipFieldsFor(session({ worktreePath: "/repo/.worktrees/wt-a" }))).toContainEqual({
+      label: "worktree",
+      value: "/repo/.worktrees/wt-a",
+    })
+  })
+  it("reports `in-place` isolation when there is no worktree", () => {
+    const fields = tooltipFieldsFor(session({ worktreePath: undefined }))
+    expect(fields).toContainEqual({ label: "isolation", value: "in-place" })
+    expect(fields).not.toContainEqual(expect.objectContaining({ label: "worktree" }))
   })
   it("formats cost to 4 decimal places", () => {
     expect(tooltipFieldsFor(session({ costUsd: 0.1 }))).toContainEqual({ label: "cost", value: "$0.1000" })

@@ -181,6 +181,12 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "agentproto.copySessionId",
+        "title": "agentproto: Copy Session ID",
+        "category": "agentproto",
+        "icon": "$(copy)"
+      },
+      {
         "command": "agentproto.openTerminal",
         "title": "agentproto: Open Terminal",
         "category": "agentproto",
@@ -328,6 +334,11 @@
           "command": "agentproto.renameSession",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
           "group": "modify@1"
+        },
+        {
+          "command": "agentproto.copySessionId",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "group": "modify@2"
         },
         {
           "command": "agentproto.archiveSession",
