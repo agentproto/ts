@@ -55,6 +55,11 @@ export const hermes: AgentCliHandle = defineAgentCli({
   // ("openrouter") = OPENROUTER_API_KEY, derived from the catalog. No
   // authSubscription ⇒ `subscription` fails loud with `unsupported_auth_mode`.
   provider: "openrouter",
+  // The endpoint falls out of the model id's vendor prefix — `openai/*` is
+  // routed through OpenAI, everything else through OpenRouter (see the
+  // `model` option) — so there is nothing independent to choose: picking the
+  // model already fixes the route → derived-from-model.
+  routeSelection: "derived-from-model",
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./hermes-acp.ACP.md",

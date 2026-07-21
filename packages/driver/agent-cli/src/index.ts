@@ -124,6 +124,7 @@ export type {
   AgentCliModelEntry,
   AgentCliMcpBlock,
   AgentCliMode,
+  AgentCliRouteSelection,
   AgentCliOption,
   AgentCliOptionType,
   AgentCliPresetDeclaration,

@@ -77,12 +77,14 @@ const FAKE_RESPONSE: CatalogModelsResponse = {
               adapterModes: [],
               adapters: ["claude-code"],
               curated: true,
+              multiModel: false,
             },
           ],
         },
       ],
     },
   ],
+  routes: [{ route: "anthropic", servableModels: ["anthropic/claude-opus-4-8"], multiModel: false }],
 }
 
 describe("GET /catalog/models — HTTP route", () => {

@@ -18,7 +18,11 @@ import { join } from "node:path"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
 import { pathToFileURL } from "node:url"
-import type { AgentCliHandle, AgentCliMode } from "@agentproto/driver-agent-cli"
+import type {
+  AgentCliHandle,
+  AgentCliMode,
+  AgentCliRouteSelection,
+} from "@agentproto/driver-agent-cli"
 import {
   makeAdapterResolver,
   makeAdapterLister,
@@ -123,6 +127,17 @@ export interface AdapterInfo {
    * the same default the manifest schema applies.
    */
   modelApply?: "config" | "command" | "arg"
+  /**
+   * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   * launch-menu drill-down, WP1) — projected verbatim from the manifest's
+   * `routeSelection`. A capability-derived spawn/config drill-down reads
+   * this to decide whether the connection step is a real choice (`"free"`)
+   * or a read-only badge (`"derived-from-model"`, the route falls out of the
+   * model id's vendor prefix). Undefined ⇒ `"free"` (back-compat: an adapter
+   * that never declared the axis keeps presenting a route choice). Distinct
+   * from the auth-derivation axis (`modelDerivedApiKey`).
+   */
+  routeSelection?: AgentCliRouteSelection
 }
 
 /** One entry of an adapter's declared model menu, projected from a
@@ -180,6 +195,14 @@ function toModelDetails(allowed: unknown): AdapterModelInfo[] {
 function toModelApply(models: unknown): "config" | "command" | "arg" {
   const apply = (models as { apply?: unknown } | undefined)?.apply
   return apply === "command" || apply === "arg" ? apply : "config"
+}
+
+/** Read a manifest's `routeSelection` off a loosely-typed handle field,
+ *  narrowing to the known union (an unrecognised value ⇒ undefined, which
+ *  a consumer treats as the `"free"` default — never guessed to a route
+ *  choice that isn't there). */
+function toRouteSelection(value: unknown): AgentCliRouteSelection | undefined {
+  return value === "free" || value === "derived-from-model" ? value : undefined
 }
 
 const slugToCamel = (slug: string): string =>
@@ -533,6 +556,9 @@ export async function listInstalledAdapters(opts?: {
           modes: toAdapterModes(resolved.handle.modes),
           modelDetails,
           modelApply: toModelApply(handle.models),
+          ...(toRouteSelection(handle.routeSelection)
+            ? { routeSelection: toRouteSelection(handle.routeSelection) }
+            : {}),
         }
         out.push(info)
       } catch (err) {
@@ -598,7 +624,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
 type AgentCliInfo = Pick<
   AdapterInfo,
-  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply"
+  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply" | "routeSelection"
 > & { stale?: true; authRequired?: boolean; provider?: string }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
@@ -613,6 +639,9 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     ...(h.stale ? { stale: true } : {}),
     ...(h.authRequired ? { authRequired: true } : {}),
     ...(typeof h.originalHandle.provider === "string" ? { provider: h.originalHandle.provider } : {}),
+    ...(toRouteSelection(h.originalHandle.routeSelection)
+      ? { routeSelection: toRouteSelection(h.originalHandle.routeSelection) }
+      : {}),
   }
 }
 
@@ -800,6 +829,7 @@ export async function listAdaptersWithCatalog(
       modes: e.info?.modes ?? [],
       modelDetails: e.info?.modelDetails ?? [],
       modelApply: e.info?.modelApply ?? "config",
+      ...(e.info?.routeSelection ? { routeSelection: e.info.routeSelection } : {}),
       status: stale ? ("unresolvable" as const) : e.status,
       ...(stale
         ? {

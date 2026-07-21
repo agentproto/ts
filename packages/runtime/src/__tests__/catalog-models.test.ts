@@ -347,3 +347,78 @@ describe("buildCatalogModels — router-prefixed OpenRouter ids (regression)", (
     expect(findRoute(response, "z-ai", "glm-5.2", "openrouter")).toBeDefined()
   })
 })
+
+describe("buildCatalogModels — multiModel + servable-models-per-route (WP1 / SPEC §3)", () => {
+  // Two Anthropic products on the direct `anthropic` route + one Kimi routed
+  // through the single-model `moonshot` gateway mode.
+  const MULTI: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [
+      { id: "claude-opus-4-8" },
+      { id: "claude-sonnet-5" },
+      { id: "moonshot/kimi-k2.7-code", mode: "moonshot" },
+    ],
+    authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "x" } },
+  }
+
+  it("marks a route serving >1 distinct model multiModel:true", () => {
+    const response = buildCatalogModels({ adapters: [MULTI], profiles: [] })
+    expect(findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")?.multiModel).toBe(true)
+    expect(findRoute(response, "anthropic", "claude-sonnet-5", "anthropic")?.multiModel).toBe(true)
+  })
+
+  it("marks a single-model gateway route multiModel:false (drives tier pinning, SPEC §5.3)", () => {
+    const response = buildCatalogModels({ adapters: [MULTI], profiles: [] })
+    const kimi = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(kimi).toBeDefined()
+    expect(kimi?.multiModel).toBe(false)
+  })
+
+  it("exposes servable-models-per-route in the top-level, route-sorted `routes` index (SPEC §3.9)", () => {
+    const response = buildCatalogModels({ adapters: [MULTI], profiles: [] })
+    const anthropic = response.routes.find(r => r.route === "anthropic")
+    expect(anthropic?.multiModel).toBe(true)
+    expect(anthropic?.servableModels).toEqual(
+      expect.arrayContaining(["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-5"]),
+    )
+    const moonshot = response.routes.find(r => r.route === "moonshot")
+    expect(moonshot?.servableModels).toEqual(["moonshot/kimi-k2.7-code"])
+    expect(moonshot?.multiModel).toBe(false)
+    // The index is sorted by route id.
+    const ids = response.routes.map(r => r.route)
+    expect(ids).toEqual([...ids].sort((a, b) => a.localeCompare(b)))
+  })
+
+  it("counts a product served by several adapters once (dedup by vendor/product)", () => {
+    // Two adapters both curate anthropic/claude-opus-4-8 on the direct route:
+    // it's one servable model, so a lone shared product must NOT read as
+    // multiModel just because two adapters offer it.
+    const response = buildCatalogModels({
+      adapters: [
+        { slug: "claude-code", models: [{ id: "claude-opus-4-8" }] },
+        { slug: "claude-sdk", models: [{ id: "claude-opus-4-8" }] },
+      ],
+      profiles: [],
+    })
+    const anthropic = response.routes.find(r => r.route === "anthropic")
+    expect(anthropic?.servableModels).toEqual(["anthropic/claude-opus-4-8"])
+    expect(anthropic?.multiModel).toBe(false)
+    expect(findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")?.multiModel).toBe(false)
+  })
+
+  it("keeps multiModel intrinsic — a route shared across vendors stays multiModel under a vendor filter", () => {
+    // openrouter serves BOTH z-ai/glm-5.2 and deepseek/deepseek-v4-pro across
+    // the full join. Filtering the tree to one vendor must not flip the
+    // route's multiModel: the count is the route's real capacity, not a view
+    // of the filtered result.
+    const filtered = buildCatalogModels({
+      adapters: [MASTRA_AGENT],
+      profiles: [],
+      query: { vendor: "z-ai" },
+    })
+    expect(filtered.vendors.map(v => v.vendor)).toEqual(["z-ai"])
+    expect(findRoute(filtered, "z-ai", "glm-5.2", "openrouter")?.multiModel).toBe(true)
+    // The unfiltered `routes` index still reports openrouter as multiModel.
+    expect(filtered.routes.find(r => r.route === "openrouter")?.multiModel).toBe(true)
+  })
+})

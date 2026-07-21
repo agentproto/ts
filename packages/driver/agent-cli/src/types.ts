@@ -604,6 +604,14 @@ export interface AgentCliPrintConfig {
   event_schema?: "claude-stream-json" | "mastra-jsonl"
 }
 
+/**
+ * How a spawn's ROUTE (billing endpoint / gateway) relates to the chosen
+ * model — the UI-facing route-choice axis a capability-derived spawn
+ * drill-down dispatches off (AIP-45 launch-menu drill-down, WP1). See
+ * {@link AgentCliDefinition.routeSelection}.
+ */
+export type AgentCliRouteSelection = "free" | "derived-from-model"
+
 export interface AgentCliDefinition {
   name: string
   id: string
@@ -652,6 +660,30 @@ export interface AgentCliDefinition {
    * endpoint and includes it in eligibility manifests for by-model routers.
    */
   modelDerivedApiKey?: boolean
+  /**
+   * How this adapter's spawn ROUTE (billing endpoint / gateway) relates to
+   * the chosen model — the UI-facing route-choice axis a capability-derived
+   * spawn drill-down dispatches off (AIP-45 launch-menu drill-down, WP1):
+   *
+   *   - `"free"` (default) — the same model can take different routes; the
+   *     route is an independent user choice. The Claude adapters route to a
+   *     gateway by pre-wiring `ANTHROPIC_BASE_URL` through a mode, so e.g.
+   *     `claude-opus-4-8` can go direct-Anthropic OR via any gateway.
+   *   - `"derived-from-model"` — the endpoint falls out of the model id's
+   *     own vendor prefix, so there is nothing independent to choose. A
+   *     by-model router (`hermes`, `mastracode`, `pi`, `opencode`) reads the
+   *     provider straight off the `<provider>/<id>` prefix; picking the model
+   *     already fixes the route, so the connection step is a read-only badge
+   *     rather than a choice.
+   *
+   * Absent ⇒ `"free"` (back-compat: an adapter that never declared this axis
+   * keeps presenting a route choice). This is the ROUTE-CHOICE axis and is
+   * DISTINCT from {@link modelDerivedApiKey} (the AUTH-derivation axis, #553):
+   * an adapter can derive its route from the model without deriving its
+   * api-key from it, and vice versa. Where both apply they agree — a
+   * model-derived-auth by-model router is also route-derived.
+   */
+  routeSelection?: AgentCliRouteSelection
   /**
    * When the runtime billing-auth resolver ENGAGES credential injection:
    *   - `"when-configured"` (default) — only when an operator explicitly set

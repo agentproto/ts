@@ -270,6 +270,16 @@ export interface AdapterListEntry {
    *  client can see e.g. hermes' `lean` mode is a measured no-op instead
    *  of being silently accepted. Empty when the adapter declares none. */
   modes: AdapterListMode[]
+  /**
+   * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   * launch-menu drill-down): `"free"` = the route is an independent choice;
+   * `"derived-from-model"` = the endpoint falls out of the model id's vendor
+   * prefix (a read-only badge, not a choice). Absent ⇒ `"free"` (back-compat).
+   * A capability-derived spawn/config drill-down reads this so no UI surface
+   * has to re-infer it from the model list and drift. Mirrors `@agentproto/
+   * cli`'s `AdapterInfo.routeSelection` without importing it.
+   */
+  routeSelection?: "free" | "derived-from-model"
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
