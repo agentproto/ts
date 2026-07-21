@@ -13,7 +13,9 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  buildBwrapArgs,
   buildSeatbeltProfile,
+  bwrapSandbox,
   loadSandboxConfig,
   resolveCommandSandbox,
   seatbeltSandbox,
@@ -108,14 +110,73 @@ describe("loadSandboxConfig", () => {
   })
 })
 
+function bwrapPath(): string | null {
+  for (const p of ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"]) {
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
 describe("resolveCommandSandbox", () => {
-  it("returns the seatbelt backend on macOS, null elsewhere", () => {
+  it("picks seatbelt on macOS, bwrap on Linux (when installed), null otherwise", () => {
     const backend = resolveCommandSandbox()
     if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
       expect(backend?.id).toBe("seatbelt")
+    } else if (process.platform === "linux" && bwrapPath()) {
+      expect(backend?.id).toBe("bwrap")
     } else {
       expect(backend).toBeNull()
     }
+  })
+})
+
+describe("buildBwrapArgs", () => {
+  it("ro-binds system dirs, binds the workspace + extras, ends with -- argv", () => {
+    const args = buildBwrapArgs(["node", "-e", "1"], {
+      workspace: "/home/u/proj",
+      extraReadPaths: ["/opt/cache"],
+      network: "allow",
+    })
+    expect(args).toContain("--die-with-parent")
+    // system dir bound read-only
+    const usr = args.indexOf("--ro-bind-try")
+    expect(args.slice(usr, usr + 3)).toEqual(["--ro-bind-try", "/usr", "/usr"])
+    // workspace bound read-write
+    const b = args.indexOf("--bind")
+    expect(args.slice(b, b + 3)).toEqual([
+      "--bind",
+      "/home/u/proj",
+      "/home/u/proj",
+    ])
+    expect(args).toContain("/opt/cache")
+    // no network isolation when allowed
+    expect(args).not.toContain("--unshare-net")
+    // command runs after the `--` terminator
+    const sep = args.indexOf("--")
+    expect(args.slice(sep)).toEqual(["--", "node", "-e", "1"])
+  })
+
+  it("adds --unshare-net for strict (network=deny)", () => {
+    const args = buildBwrapArgs(["node"], {
+      workspace: "/home/u/proj",
+      extraReadPaths: [],
+      network: "deny",
+    })
+    expect(args).toContain("--unshare-net")
+  })
+})
+
+describe("bwrapSandbox.wrap", () => {
+  const policy = { workspace: "/home/u/proj", extraReadPaths: [], network: "allow" as const }
+
+  it("prepends bwrap and ends with the original argv", () => {
+    const argv = bwrapSandbox.wrap(["node", "-e", "1"], policy)
+    expect(argv[0]).toBe("bwrap")
+    expect(argv.slice(-3)).toEqual(["node", "-e", "1"])
+  })
+
+  it("leaves an empty argv unchanged", () => {
+    expect(bwrapSandbox.wrap([], policy)).toEqual([])
   })
 })
 
@@ -156,6 +217,48 @@ describe.runIf(canRunSeatbelt)("seatbelt end-to-end", () => {
         execFileSync(
           "sandbox-exec",
           ["-p", profile, "/bin/cat", join(secretDir, "secret.txt")],
+          { stdio: "pipe" },
+        )
+      } catch {
+        denied = true
+      }
+      expect(denied).toBe(true)
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+})
+
+// End-to-end: only where bubblewrap actually exists. Skipped on macOS.
+const canRunBwrap = process.platform === "linux" && bwrapPath() !== null
+
+describe.runIf(canRunBwrap)("bwrap end-to-end", () => {
+  it("allows a bound workspace read but denies an unbound sibling", async () => {
+    const base = await mkdtemp(join(tmpdir(), "bwraptest-"))
+    try {
+      const ws = join(base, "ws")
+      const secretDir = join(base, "secret")
+      await mkdir(ws)
+      await mkdir(secretDir)
+      await writeFile(join(ws, "inside.txt"), "workspace-ok")
+      await writeFile(join(secretDir, "secret.txt"), "top-secret")
+
+      const policy = { workspace: ws, extraReadPaths: [], network: "allow" as const }
+
+      // Allowed: the workspace is bound.
+      const out = execFileSync(
+        "bwrap",
+        buildBwrapArgs(["cat", join(ws, "inside.txt")], policy),
+        { encoding: "utf8" },
+      )
+      expect(out).toContain("workspace-ok")
+
+      // Denied: the sibling dir is not bound, so the path is invisible inside.
+      let denied = false
+      try {
+        execFileSync(
+          "bwrap",
+          buildBwrapArgs(["cat", join(secretDir, "secret.txt")], policy),
           { stdio: "pipe" },
         )
       } catch {
