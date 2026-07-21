@@ -59,11 +59,33 @@ describe("planHarnessSwitch", () => {
     expect(plan.disabledReason).toContain("no recoverable resume id")
   })
 
-  it("refuses to switch an agent session without native resume metadata", () => {
+  it("switches a claude-code agent session with only an adapterSessionId (no resume metadata)", () => {
+    const plan = planHarnessSwitch(
+      session({ adapterSlug: "claude-code", adapterSessionId: "uuid-abc" }),
+    )
+
+    expect(plan.target).toBe("terminal")
+    expect(plan.disabledReason).toBeUndefined()
+  })
+
+  it("refuses to switch a claude-code agent session with neither resume metadata nor adapterSessionId", () => {
     const plan = planHarnessSwitch(session({ adapterSlug: "claude-code" }))
 
     expect(plan.target).toBe("terminal")
-    expect(plan.disabledReason).toContain("no native resume id")
+    expect(plan.disabledReason).toContain("no native resume id and no adapter session id")
+  })
+
+  it("refuses to switch a hermes agent session — no pty-native resume strategy exists", () => {
+    const plan = planHarnessSwitch(
+      session({
+        adapterSlug: "hermes",
+        resumeMetadata: { hermesResumeId: "conv_123" },
+        adapterSessionId: "uuid-abc",
+      }),
+    )
+
+    expect(plan.target).toBe("terminal")
+    expect(plan.disabledReason).toContain("no provider-native PTY resume strategy")
   })
 })
 
