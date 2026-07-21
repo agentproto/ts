@@ -14,9 +14,14 @@ export interface HarnessSwitchPlan {
   disabledReason?: string
 }
 
+// Lists ONLY adapters that have a real `pty-native` restart strategy — a
+// `RESUME_STRATEGIES` entry with `spawnArgs` (runtime/src/resume-strategies.ts).
+// Only `claude-code` qualifies today; `decideRestartStrategy` can never return
+// `pty-native` for an adapter absent here, so a switch to a PTY would silently
+// yield another agent-cli session. Re-add `hermes` once it gains a `pty-native`
+// strategy in `resume-strategies.ts`.
 const NATIVE_RESUME_KEYS: Record<string, string> = {
   "claude-code": "claudeResumeId",
-  hermes: "hermesResumeId",
 }
 
 function parseResumeArgv(argv: readonly string[] | undefined): string | undefined {
@@ -86,11 +91,26 @@ export function planHarnessSwitch(session: SessionDescriptor): HarnessSwitchPlan
   }
 
   if (session.kind === "agent-cli") {
-    if (!nativeResumeId(session)) {
+    const key = session.adapterSlug ? NATIVE_RESUME_KEYS[session.adapterSlug] : undefined
+    if (!key) {
       return {
         target: "terminal",
         disabledReason:
-          "this agent session has no native resume id yet — the switch to a PTY needs provider-native resume metadata.",
+          "this agent adapter has no provider-native PTY resume strategy — the switch to a terminal needs an adapter with a pty-native restart strategy.",
+      }
+    }
+    // The daemon's `session_restart` runs `augmentWithFsResume` before
+    // `decideRestartStrategy`, recovering the native id from disk via the
+    // `adapterSessionId` (which for claude-code IS the on-disk transcript uuid),
+    // so a live session with an `adapterSessionId` is switchable even before the
+    // graceful-exit sniffer has populated `resumeMetadata`. Mirrors the
+    // `recoverableConversationId` fallback used for the PTY→conversation path.
+    const recoverable = nativeResumeId(session) ?? session.adapterSessionId
+    if (!recoverable) {
+      return {
+        target: "terminal",
+        disabledReason:
+          "this agent session has no native resume id and no adapter session id yet — the switch to a PTY needs a recoverable provider-native resume id.",
       }
     }
     return { target: "terminal" }
