@@ -38,6 +38,7 @@ import {
   ListResourceTemplatesRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { loadConfig } from "@agentproto/runtime/config"
+import { stampOrigin } from "./mcp-bridge.logic.js"
 
 export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   const url = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
@@ -92,8 +93,12 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   server.setRequestHandler(ListToolsRequestSchema, () => client.listTools())
 
   // Pass-through: forward call-tool requests verbatim to the daemon.
+  // Auto-stamp origin: the host announced itself in initialize
+  // (clientInfo.name); ride it onto any spawn we forward so a bridge-routed
+  // host gets a source node in the tree (#575). Never overrides an explicit
+  // origin; only session-creating tools (mcp-bridge.logic.ts).
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.callTool(req.params)
+    client.callTool(stampOrigin(req.params, server.getClientVersion()?.name))
   )
 
   // Pass-through: resources (ui:// panels for MCP Apps hosts).
