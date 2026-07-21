@@ -105,6 +105,14 @@ export interface EnableResult {
   provider: "quick"
   target: { host: string; port: number }
   exposesGateway: boolean
+  /**
+   * Present ONLY for passthrough tunnels (`exposesGateway === false`):
+   * the daemon does not gate that traffic, so the public URL reaches the
+   * upstream service with no auth from the daemon. A machine-readable flag
+   * so UIs/agents can surface the exposure instead of it being buried in
+   * the tool's prose description.
+   */
+  warning?: string
 }
 
 export interface RemoteStatus {
@@ -237,6 +245,17 @@ export class RemoteController {
       result.bearerToken = bearerToken
       result.mcpEndpoint = mcpEndpoint
       result.mcpConfigSnippet = buildMcpConfigSnippet(mcpEndpoint, bearerToken)
+    } else {
+      // Passthrough tunnel: the daemon gates nothing on this URL. Make the
+      // unauthenticated exposure explicit (structured + logged) rather than
+      // leaving it to the tool description no one reads.
+      const warning =
+        `⚠ ${started.publicUrl} forwards to ${target.host}:${target.port} with NO ` +
+        `authentication from the daemon — anyone with the URL can reach it. ` +
+        `Ensure the upstream service enforces its own auth, and run ` +
+        `remote_disable when done.`
+      result.warning = warning
+      this.opts.onLog?.(`[remote] ${warning}`)
     }
     return result
   }

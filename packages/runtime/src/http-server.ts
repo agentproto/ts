@@ -136,6 +136,25 @@ const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
 ]
 
 /**
+ * Request headers whose mere presence proves a proxy/tunnel forwarded the
+ * request — so a loopback socket carrying any of them did NOT originate on
+ * this machine and must not get the loopback auth bypass (`isLoopback`).
+ * Cloudflared sets X-Forwarded-For; other proxies set X-Real-IP / Forwarded /
+ * CF-* even when they strip XFF, so the bypass keys on the whole family.
+ */
+const PROXY_FORWARDING_HEADERS: readonly string[] = [
+  "x-forwarded-for",
+  "forwarded",
+  "x-real-ip",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "cf-connecting-ip",
+  "cf-ray",
+  "via",
+]
+
+/**
  * Pluggable adapter resolver — keeps the runtime package free of any
  * @agentproto/cli dep. The host (cli `serve`, playground, embedding
  * apps) builds the resolver and hands it in. Returning null means
@@ -597,9 +616,15 @@ export async function startHttpServer(
     const isLocalAddr =
       addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1"
     if (!isLocalAddr) return false
-    // X-Forwarded-For present ⇒ a tunnel is in front of us; the
-    // request crossed the public internet to reach this socket.
-    if (req.headers["x-forwarded-for"]) return false
+    // Any forwarding/proxy header ⇒ a tunnel or reverse proxy is in front
+    // of us; the request crossed a network boundary to reach this loopback
+    // socket, so it must NOT inherit the loopback auth bypass. Checking the
+    // whole header family (not just X-Forwarded-For) closes the gap where a
+    // proxy strips XFF but still sets X-Real-IP / Forwarded / CF-* — a lone
+    // XFF check would wave those straight through.
+    for (const h of PROXY_FORWARDING_HEADERS) {
+      if (req.headers[h] !== undefined) return false
+    }
     return true
   }
 
