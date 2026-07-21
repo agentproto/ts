@@ -618,6 +618,58 @@ export async function startHttpServer(
   }
 
   /**
+   * Auth gate for `/mcp`. Unlike `authorize()`, it does NOT let a browser
+   * drive-by inherit the loopback bypass: `/mcp` registers `command_execute`,
+   * `file_read`/`file_write`, `agent_start`, … (see index.ts's
+   * `mcpServerFactory`), so a malicious web page that `fetch()`es
+   * `http://127.0.0.1:<port>/mcp` must be refused even though it rides the
+   * loopback socket. This is the CVE-2026-22812 class hole the `/sessions/*`
+   * routes already close via `checkSessionsToken`.
+   *
+   * The distinguishing signal is the `Origin` header: a browser ALWAYS sets
+   * it on a cross-origin `fetch`/POST and cannot forge it to a trusted value;
+   * native MCP clients (the CLI, Claude Desktop's HTTP bridge, curl) send
+   * none. So:
+   *
+   *   - `Origin` present AND not allowlisted → require a valid bearer token
+   *     (which a browser can't read from runtime.json, mode 0600). No
+   *     loopback bypass. Missing/invalid ⇒ 403. This branch is what blocks
+   *     the drive-by that `authorize()` would otherwise wave through.
+   *   - `Origin` absent, or an allowlisted Origin (localhost dev origins,
+   *     the hosted panel) → fall through to `authorize()`, so today's
+   *     native-local-client path and trusted browser pages keep working
+   *     unchanged.
+   */
+  function authorizeMcp(req: IncomingMessage, res: ServerResponse): boolean {
+    const origin = req.headers.origin
+    if (
+      typeof origin === "string" &&
+      origin.length > 0 &&
+      !originAllowed(origin)
+    ) {
+      const auth = readAuth()
+      const header = req.headers.authorization
+      if (auth.mode === "bearer" && header === `Bearer ${auth.token}`) {
+        return true
+      }
+      res.writeHead(403, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "mcp_forbidden_origin",
+          message:
+            "Cross-origin browser requests to /mcp are refused. This " +
+            "endpoint exposes shell + filesystem tools; a web page cannot " +
+            "drive it. Add the origin to the daemon's allowlist " +
+            "(`agentproto config set daemon.allowedOrigins <url>`) or present " +
+            "the bearer token from <workspace>/.agentproto/runtime.json.",
+        }),
+      )
+      return false
+    }
+    return authorize(req, res)
+  }
+
+  /**
    * Per-boot auth gate for mutating /sessions/* routes and the WS
    * upgrade for /sessions/:id/pty. Accepts EITHER:
    *
@@ -786,7 +838,7 @@ export async function startHttpServer(
   }
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!authorize(req, res)) return
+    if (!authorizeMcp(req, res)) return
     const denyTools = parseDenyToolsQuery(req.url ?? "")
     const server = await opts.mcpServerFactory(denyTools)
     await serveMcp(req, res, server)
