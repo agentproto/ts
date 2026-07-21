@@ -174,6 +174,9 @@ export interface SessionDescriptor {
   busy?: boolean
   blockedOn?: "subagent" | "command"
   pendingToolCallId?: string
+  /** Source label — the channel/harness this session was spawned from
+   *  ("codex", "cowork", "vscode", …). Mirrors runtime SessionDescriptor.origin. */
+  origin?: string
   parentSessionId?: string
   depth?: number
   priorCommandSessionId?: string

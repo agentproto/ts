@@ -2610,6 +2610,7 @@ async function handleSessions(
       },
       {
         adapter,
+        ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
         ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
         ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
         ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0

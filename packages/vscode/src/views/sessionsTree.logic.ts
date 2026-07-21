@@ -167,6 +167,7 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
     return parts.join(" · ")
   }
   const parts: string[] = [isolationLabelFor(session)]
+  if (session.origin) parts.push(`via ${session.origin}`)
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
   // A spawner says so on its own row. Indentation already nests the children,
   // but indentation is invisible the moment the row is collapsed or its

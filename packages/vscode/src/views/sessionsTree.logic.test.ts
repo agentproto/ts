@@ -105,6 +105,11 @@ describe("descriptionFor", () => {
       // Isolation is always present — there is no "empty" description with ctx.
       expect(descriptionFor(session(), {})).toBe("in-place")
     })
+
+    it("appends the origin source after the isolation lead", () => {
+      expect(descriptionFor(session({ origin: "codex" }), {})).toBe("in-place · via codex")
+      expect(descriptionFor(session({ origin: "cron" }), { now: undefined })).toContain("via cron")
+    })
   })
 })
 
