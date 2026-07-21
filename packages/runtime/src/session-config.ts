@@ -128,6 +128,11 @@ export interface SessionConfig {
   posture?: Posture
   /** What enters context. */
   contextProfile?: ContextProfile
+  /** Adapter harness slug — the canonical name for the adapter that runs the
+   *  session (e.g. 'claude-code', 'hermes'). This is the same value historically
+   *  carried on the wire as `adapter` / `adapterSlug`; the `harness` field is the
+   *  canonical descriptor identity and remains optional for back-compat. */
+  harness?: string
 }
 
 /**

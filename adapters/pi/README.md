@@ -47,7 +47,7 @@ Unlike `@agentproto/adapter-mastracode-inprocess` (the in-process proprietary
 arm), **this arm spawns a real child** (`pi --mode rpc`) and translates pi's
 RPC event stream into the canonical `StreamEvent` taxonomy.
 
-- **Multi-provider** — Anthropic, OpenAI, Google (Gemini). One provider key
+- **Multi-provider** — Anthropic, OpenAI, Google (Gemini), Moonshot AI. One provider key
   minimum. See [`SECRETS.md`](./SECRETS.md).
 - **Streaming** — text + thinking deltas, tool-call/result lifecycle.
 - **Live duplex** — pi's RPC mode supports `steer` / `follow_up` / `abort`
@@ -60,7 +60,7 @@ RPC event stream into the canonical `StreamEvent` taxonomy.
 
 | Option   | Type   | Notes |
 | -------- | ------ | ----- |
-| `model`  | string | Passed to pi's `--model` (accepts `provider/id`, e.g. `anthropic/claude-sonnet-4-5`). |
+| `model`  | string | Passed to pi's `--model` (accepts `provider/id`, e.g. `anthropic/claude-sonnet-4-5`, `moonshotai/kimi-k2.7-code`). |
 | `effort` | enum   | Thinking level, mapped 1:1 to pi's `set_thinking_level`: `off \| minimal \| low \| medium \| high \| xhigh`. |
 
 The pi binary is resolved from `definition.bin` (`pi`), overridable via the

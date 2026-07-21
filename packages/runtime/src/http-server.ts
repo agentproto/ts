@@ -2237,7 +2237,7 @@ async function handleSessions(
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
     }
-    const adapter = typeof b.adapter === "string" ? b.adapter : (preset?.adapter ?? "")
+    const adapter = typeof b.adapter === "string" ? b.adapter : (typeof b.harness === "string" ? b.harness : (preset?.adapter ?? preset?.harness ?? ""))
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -2252,6 +2252,7 @@ async function handleSessions(
       },
       {
         adapter,
+        ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
         ...(typeof b.cwd === "string" && b.cwd.length > 0 ? { cwd: b.cwd } : {}),
         ...(typeof b.workspaceSlug === "string" && b.workspaceSlug.length > 0
           ? { workspaceSlug: b.workspaceSlug }

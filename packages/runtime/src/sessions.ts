@@ -605,6 +605,11 @@ export interface SessionDescriptor {
    *  pty/command kinds. */
   adapterSlug?: string
   /**
+   * Canonical harness slug for agent-cli sessions — the same identity as
+   *  `adapterSlug`, recorded under the canonical axis name. Falls back to
+   *  `adapterSlug` when not explicitly set. Undefined for pty/command kinds. */
+  harness?: string
+  /**
    * AIP-45 mode the session was spawned with (`AgentCliStartOptions.config.
    * mode` — e.g. claude-code's `plan`/`accept-edits`, a gateway preset mode
    * like `moonshot`). Undefined for the adapter's default/native mode.
@@ -1443,6 +1448,8 @@ export interface SpawnAgentInput {
   agentSession: AgentSessionLike
   /** Adapter slug for the descriptor (display only). */
   adapterSlug: string
+  /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
+  harness?: string
   /** Optional initial prompt to dispatch immediately. The promise
    *  the registry returns resolves AFTER the spawn — the prompt
    *  runs in the background, projecting events into the ring
@@ -3126,6 +3133,7 @@ export function createSessionsRegistry(opts?: {
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
         adapterSlug: input.adapterSlug,
+        harness: input.harness ?? input.adapterSlug,
         // ACP-level session id — sticks across daemon restart so
         // `agentproto sessions restart <id>` can pass it as
         // `resumeSessionId` and the adapter reattaches to the prior

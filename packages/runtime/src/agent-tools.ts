@@ -255,6 +255,14 @@ export function registerAgentTools(
             "(e.g. 'claude-code', 'hermes', 'aider'). Omit only when `presetId` names " +
             "a saved preset with an adapter."
         ),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Canonical harness slug — alias for `adapter`. Accepts the same values; " +
+            "use whichever field your caller produces."
+        ),
       presetId: z
         .string()
         .min(1)
@@ -641,7 +649,7 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const adapter = input.adapter ?? preset?.adapter
+      const adapter = input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness
       if (!adapter) {
         return {
           content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],

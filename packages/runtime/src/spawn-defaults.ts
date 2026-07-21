@@ -24,6 +24,8 @@
 
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
+import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
+import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
 
 /**
@@ -237,6 +239,11 @@ export interface AdapterAuthDescriptor {
     conflictEnv?: string[]
     unsetEnvAdd?: string[]
   }
+  /** True when the adapter's api-key auth is derived from the requested
+   *  model rather than a fixed provider (e.g. `pi`, `opencode`). When set,
+   *  the adapter supports `"api-key"` on the model-derived direct endpoint,
+   *  and `spawnEligibilityManifest` includes it for direct routes. */
+  modelDerivedApiKey?: boolean
 }
 
 /** The fully-resolved spec the driver applies mechanically. Structurally
@@ -268,6 +275,9 @@ export interface ResolvedAuthSpec {
    *  wired in" instead of staying silent about it. `resolveAuthSpec` itself
    *  never sets this (it does no I/O). */
   ignoredApiKeyInStore?: boolean
+  /** When a gateway preset or custom route was matched, the `base_url` to
+   *  inject into adapter options so the client hits the gateway endpoint. */
+  baseUrl?: string
 }
 
 /** Where the resolved credential came from — the observable billing axis
@@ -280,7 +290,11 @@ export type CredentialSource = "explicit-config" | "providers-store" | "none"
  * self-report. Never carries the raw credential (only its fingerprint).
  */
 export interface AuthEcho {
-  provider: CatalogProvider
+  /** Billing endpoint / provider recorded for observability. Kept as `string`
+   *  (not the catalog enum) so gateway preset ids (e.g. "moonshot",
+   *  "openai-direct") that are not `CatalogProvider` values can still be
+   *  echoed on the session descriptor. */
+  provider: string
   authMode: "subscription" | "api-key"
   credentialSource: CredentialSource
   setEnv: string
@@ -316,6 +330,11 @@ export interface ResolveAuthSpecInput {
   apiKeyConfigCredential?: string
   /** api-key credential from `providers.json` (fetched by the caller). */
   apiKeyStoreCredential?: string
+  /** Explicit gateway route from `SessionConfig.route.gateway`. When this
+   *  matches a `ProviderPreset` or a registered custom route, the route's
+   *  `baseUrl`/`keyEnv`/`scrubEnv` drive resolution instead of the model-
+   *  derived or fixed provider. */
+  routeGateway?: string
 }
 
 /**
@@ -334,18 +353,48 @@ export interface ResolveAuthSpecInput {
 export function resolveAuthSpec(
   input: ResolveAuthSpecInput,
 ): { spec: ResolvedAuthSpec; echo: AuthEcho } | undefined {
+  // 0. Gateway route: a preset or custom route wins over model-derived/fixed
+  //    provider because the operator explicitly chose a billing rail. It drives
+  //    base_url, the API-key env var, and the scrub set.
+  const gatewayPreset = input.routeGateway
+    ? findAnthropicGatewayPreset(input.routeGateway)
+    : undefined
+  const customRoute =
+    input.routeGateway && !gatewayPreset
+      ? resolveCustomRoute(input.routeGateway)
+      : undefined
+  const gatewayRoute = gatewayPreset ?? customRoute
+
   // 1. Provider: per-spawn pin → adapter-fixed → model-derived. None ⇒
   //    ambient (no injection); an unknown/free-form model id lands here too.
-  const provider =
-    input.requestedProvider ??
-    input.descriptor.provider ??
-    (input.model ? getModelProvider(input.model) : undefined)
+  //    A matched gateway route overrides all three — the route IS the provider.
+  let provider: string | undefined
+  let baseUrl: string | undefined
+  let apiKeyEnv: string
+  let gatewayScrub: string[] = []
+  if (gatewayRoute) {
+    provider = input.routeGateway
+    baseUrl = gatewayPreset?.baseUrl ?? customRoute?.baseUrl
+    apiKeyEnv =
+      gatewayPreset?.keyEnv ??
+      customRoute?.authEnv ??
+      (provider ? providerEnvVar(provider) : "")
+    gatewayScrub = gatewayPreset ? [...gatewayPreset.scrubEnv] : []
+  } else {
+    provider =
+      input.requestedProvider ??
+      input.descriptor.provider ??
+      (input.model ? getModelProvider(input.model) : undefined)
+    if (!provider) return undefined
+    apiKeyEnv = providerEnvVar(provider)
+  }
   if (!provider) return undefined
 
   const sub = input.descriptor.authSubscription
-  const supportsSub = sub !== undefined
+  // Gateway routes are API-key only; subscription mode is only supported on
+  // direct routes where the adapter declares authSubscription.
+  const supportsSub = sub !== undefined && gatewayRoute === undefined
   const enforce = input.descriptor.authEnforce ?? "when-configured"
-  const apiKeyEnv = providerEnvVar(provider)
 
   const subCredAvailable = input.subscriptionCredential !== undefined
   const apiCredAvailable =
@@ -409,15 +458,23 @@ export function resolveAuthSpec(
   // 4. Derived scrub: every conflicting billing-credential var EXCEPT the one
   //    being set, plus (native/subscription mode only) the adapter's gateway
   //    hygiene. Single-credential provider (no authSubscription) → empty scrub
-  //    (the setEnv overwrite already prevents a leak).
+  //    (the setEnv overwrite already prevents a leak). Gateway routes also
+  //    apply the preset's scrubEnv (e.g. ANTHROPIC_API_KEY when fronting
+  //    Moonshot) so native credentials don't leak to third-party hosts.
+  const unsetEnvSet = new Set<string>()
+  if (mode === "subscription" && sub?.unsetEnvAdd) {
+    for (const e of sub.unsetEnvAdd) unsetEnvSet.add(e)
+  }
+  for (const e of gatewayScrub) unsetEnvSet.add(e)
+
   const credVars = new Set<string>([apiKeyEnv])
   if (sub) {
     credVars.add(sub.setEnv)
     for (const c of sub.conflictEnv ?? []) credVars.add(c)
   }
   credVars.delete(setEnv)
-  const unsetEnv = [...credVars]
-  if (mode === "subscription" && sub?.unsetEnvAdd) unsetEnv.push(...sub.unsetEnvAdd)
+  for (const c of credVars) unsetEnvSet.add(c)
+  const unsetEnv = [...unsetEnvSet]
 
   const spec: ResolvedAuthSpec = {
     mode,
@@ -427,6 +484,7 @@ export function resolveAuthSpec(
     explicit: input.explicit,
     enforce,
     ...(neitherConfigured ? { neitherConfigured } : {}),
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
   }
   const echo: AuthEcho = {
     provider,

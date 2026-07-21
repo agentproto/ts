@@ -158,14 +158,13 @@ function flattenPairs(
  * - Gateway mode (`base_url` set → a non-Anthropic host): the ambient
  *   `ANTHROPIC_API_KEY` is SCRUBBED (it must never be sent to a third-party
  *   gateway — that both 401s and leaks the real key). The gateway bearer is
- *   resolved from, in order, the explicit `auth_token`, an explicit
- *   `ANTHROPIC_AUTH_TOKEN`, or the gateway's conventional key env named by the
- *   mode via `CLAUDE_SDK_GATEWAY_KEY_ENV` (e.g. `MOONSHOT_API_KEY`). Every
- *   internal model tier is also pinned to the resolved model so a single-model
- *   gateway never gets a tier it can't serve (e.g. Moonshot rejecting
- *   `claude-haiku-*`). The {@link CLOUD_PROVIDER_REDIRECT_TOGGLES} leaked from
- *   a Claude-Code parent shell are also scrubbed so the gateway `base_url`
- *   isn't overridden.
+ *   resolved from the explicit `auth_token` or `ANTHROPIC_AUTH_TOKEN` in the
+ *   spawn env; if neither resolves, no credential is presented (fail clean,
+ *   never leak). Every internal model tier is also pinned to the resolved
+ *   model so a single-model gateway never receives a tier it can't serve
+ *   (e.g. Moonshot rejecting `claude-haiku-*`). The
+ *   {@link CLOUD_PROVIDER_REDIRECT_TOGGLES} leaked from a Claude-Code parent
+ *   shell are also scrubbed so the gateway `base_url` isn't overridden.
  */
 export function buildQueryOptions(args: {
   config: ClaudeSdkConfig
@@ -184,18 +183,12 @@ export function buildQueryOptions(args: {
   if (config.baseUrl) {
     // Gateway mode (non-Anthropic host). Auth hygiene: an ambient
     // ANTHROPIC_API_KEY must NEVER reach a third-party gateway (it 401s AND
-    // leaks the real Anthropic key). Resolve the gateway bearer from, in order,
-    // the explicit auth_token, an explicit ANTHROPIC_AUTH_TOKEN, or the
-    // gateway's conventional key env named by the mode via
-    // CLAUDE_SDK_GATEWAY_KEY_ENV (e.g. MOONSHOT_API_KEY). Then scrub the
-    // Anthropic key so exactly the gateway's own credential is presented; if
-    // none resolves, present no credential (fail clean, never leak).
+    // leaks the real Anthropic key). Resolve the gateway bearer from the
+    // explicit auth_token or ANTHROPIC_AUTH_TOKEN in the spawn env, then scrub
+    // the Anthropic key so exactly the gateway's own credential is presented;
+    // if neither resolves, present no credential (fail clean, never leak).
     env.ANTHROPIC_BASE_URL = config.baseUrl
-    const gatewayKeyEnv = baseEnv.CLAUDE_SDK_GATEWAY_KEY_ENV
-    const bearer =
-      config.authToken ??
-      baseEnv.ANTHROPIC_AUTH_TOKEN ??
-      (gatewayKeyEnv ? baseEnv[gatewayKeyEnv] : undefined)
+    const bearer = config.authToken ?? baseEnv.ANTHROPIC_AUTH_TOKEN
     delete env.ANTHROPIC_API_KEY
     if (bearer) env.ANTHROPIC_AUTH_TOKEN = bearer
     else delete env.ANTHROPIC_AUTH_TOKEN

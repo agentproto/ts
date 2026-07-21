@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest"
 import { buildQueryOptions, DEFAULT_MODEL, type ClaudeSdkConfig } from "../options.js"
 
-/** Build options with a controlled (empty) base env so assertions on injected
+/** Build options with a controlled base env so assertions on injected
  *  vars don't inherit anything from the test process's `process.env`. */
-function build(config: ClaudeSdkConfig): ReturnType<typeof buildQueryOptions> {
+function build(
+  config: ClaudeSdkConfig,
+  env: Record<string, string | undefined> = {},
+): ReturnType<typeof buildQueryOptions> {
   return buildQueryOptions({
     config,
     abortController: new AbortController(),
-    env: {},
+    env,
   })
 }
+
+const MOONSHOT_BASE_URL = "https://api.moonshot.ai/anthropic"
 
 /** The five internal model tiers the harness may request; a single-model
  *  gateway can only serve one, so gateway mode pins them all. */
@@ -53,6 +58,84 @@ describe("buildQueryOptions — gateway model-tier pinning", () => {
     for (const v of TIER_VARS) expect(opts.env?.[v]).toBeUndefined()
     // Native mode still pins the primary SDK model, just not the env tiers.
     expect(opts.model).toBe("claude-opus-4-8")
+  })
+})
+
+describe("buildQueryOptions — gateway auth hygiene", () => {
+  it("SCRUBS the ambient Anthropic key under a gateway base_url (no leak)", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL },
+      { ANTHROPIC_API_KEY: "sk-ant-REAL" },
+    )
+    expect(opts.env?.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it("resolves the bearer from auth_token when base_url is set", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL, authToken: "sk-explicit" },
+      { ANTHROPIC_API_KEY: "sk-ant-REAL" },
+    )
+    expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe("sk-explicit")
+    expect(opts.env?.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it("resolves the bearer from ANTHROPIC_AUTH_TOKEN env when base_url is set", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL },
+      { ANTHROPIC_AUTH_TOKEN: "sk-env-bearer", ANTHROPIC_API_KEY: "sk-ant-REAL" },
+    )
+    expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe("sk-env-bearer")
+    expect(opts.env?.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it("prefers an explicit auth_token over ANTHROPIC_AUTH_TOKEN env", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL, authToken: "sk-explicit" },
+      { ANTHROPIC_AUTH_TOKEN: "sk-env-bearer" },
+    )
+    expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe("sk-explicit")
+  })
+
+  it("presents NO credential when a gateway has none — fail clean, never leak", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL },
+      { ANTHROPIC_API_KEY: "sk-ant-REAL" },
+    )
+    expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(opts.env?.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it("SCRUBS leaked Claude-Code cloud-provider redirect toggles under a gateway base_url", () => {
+    const opts = build(
+      { baseUrl: MOONSHOT_BASE_URL },
+      {
+        ANTHROPIC_API_KEY: "sk-ant-REAL",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+        CLAUDE_CODE_USE_ANTHROPIC_AWS: "1",
+        CLAUDE_CODE_USE_MANTLE: "1",
+        CLAUDE_CODE_USE_GATEWAY: "1",
+      },
+    )
+    expect(opts.env?.CLAUDE_CODE_USE_BEDROCK).toBeUndefined()
+    expect(opts.env?.CLAUDE_CODE_USE_VERTEX).toBeUndefined()
+    expect(opts.env?.CLAUDE_CODE_USE_FOUNDRY).toBeUndefined()
+    expect(opts.env?.CLAUDE_CODE_USE_ANTHROPIC_AWS).toBeUndefined()
+    expect(opts.env?.CLAUDE_CODE_USE_MANTLE).toBeUndefined()
+    expect(opts.env?.CLAUDE_CODE_USE_GATEWAY).toBeUndefined()
+  })
+
+  it("leaves Claude-Code cloud-provider redirect toggles intact in native mode", () => {
+    const opts = build(
+      {},
+      {
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+      },
+    )
+    expect(opts.env?.CLAUDE_CODE_USE_BEDROCK).toBe("1")
+    expect(opts.env?.CLAUDE_CODE_USE_VERTEX).toBe("1")
   })
 })
 

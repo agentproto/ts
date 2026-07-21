@@ -154,7 +154,7 @@ function methodToMode(method: AuthMethod): "subscription" | "api-key" {
 function directMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
   const methods: AuthMethod[] = []
   if (descriptor?.authSubscription) methods.push("oauth-bearer")
-  if (descriptor?.provider) methods.push("api-key")
+  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
 
@@ -299,6 +299,7 @@ export async function restartAgentSession(
   const effRoute = overrides.route ?? prev.route
   const effPosture = overrides.posture ?? prev.posture
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
+  const effHarness = overrides.harness ?? prev.harness ?? prev.adapterSlug
   const effMode = overrides.mode ?? prev.mode
   // An `access` override is present iff a `profileRef` was explicitly requested.
   const accessOverrideRef = overrides.access?.profileRef
@@ -377,7 +378,8 @@ export async function restartAgentSession(
     const result = resolveAuthSpec({
       descriptor: resolved.authDescriptor,
       ...(effModel ? { model: effModel } : {}),
-      requestedProvider: profile.endpoint as CatalogProvider,
+      ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
+      ...(!effRoute?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
       requestedMode: mode,
       // Attaching a named profile is always an EXPLICIT billing choice — so a
       // missing credential fails loud (driver `missing_auth_credential`) rather
@@ -416,19 +418,25 @@ export async function restartAgentSession(
       pinnedProvider ??
       resolved.authDescriptor.provider ??
       (authModel ? getModelProvider(authModel) : undefined)
+    // When an explicit gateway route is set, the provider-store key is looked
+    // up under the gateway id (e.g. "moonshot") rather than the model-derived
+    // vendor, because the gateway preset/custom route defines the credential
+    // env var and the billing endpoint.
+    const apiKeyStoreProvider = effRoute?.gateway ?? resolvedProvider
     // Same money-safety gate as session-spawn.ts: the providers.json store
     // is only consulted when the resolved auth is EXPLICIT (never for an
     // unconfigured `always`-enforcing adapter, which must fail-fast instead
     // of silently picking up a leftover store key).
     const apiKeyStoreCredential =
-      resolvedProvider &&
+      apiKeyStoreProvider &&
       spawnDefaults.auth.explicit &&
       spawnDefaults.auth.apiKeyCredential === undefined
-        ? await getProviderKey(resolvedProvider)
+        ? await getProviderKey(apiKeyStoreProvider)
         : undefined
     const result = resolveAuthSpec({
       descriptor: resolved.authDescriptor,
       ...(authModel ? { model: authModel } : {}),
+      ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
       ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
       ...(spawnDefaults.auth.requestedMode
         ? { requestedMode: spawnDefaults.auth.requestedMode }
@@ -455,9 +463,9 @@ export async function restartAgentSession(
       authSpec.enforce === "always" &&
       authSpec.credential === undefined &&
       !spawnDefaults.auth.explicit &&
-      resolvedProvider !== undefined
+      apiKeyStoreProvider !== undefined
     ) {
-      const ignored = await getProviderKey(resolvedProvider)
+      const ignored = await getProviderKey(apiKeyStoreProvider)
       if (ignored !== undefined) {
         authSpec = { ...authSpec, ignoredApiKeyInStore: true }
       }
@@ -468,6 +476,7 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     let liveSessionId: string | undefined
+    const resolvedBaseUrl = authSpec?.baseUrl ?? effRoute?.baseUrl
     const agentSession = await resolved.startSession({
       cwd,
       ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -479,6 +488,9 @@ export async function restartAgentSession(
       ...(overrides.mode ? { mode: overrides.mode } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
+      ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
+        ? { options: { base_url: resolvedBaseUrl } }
+        : {}),
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -499,6 +511,7 @@ export async function restartAgentSession(
       cwd,
       agentSession,
       adapterSlug,
+      harness: effHarness,
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(effModel ? { model: effModel } : {}),
@@ -572,6 +585,7 @@ export async function restartAgentSession(
   if (overrides.route !== undefined) emit("route", overrides.route)
   if (overrides.posture !== undefined) emit("posture", overrides.posture)
   if (overrides.contextProfile !== undefined) emit("contextProfile", overrides.contextProfile)
+  if (overrides.harness !== undefined) emit("harness", overrides.harness)
 
   return {
     desc,

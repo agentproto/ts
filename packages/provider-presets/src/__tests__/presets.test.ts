@@ -2,14 +2,16 @@ import { describe, it, expect } from "vitest"
 import {
   ANTHROPIC_GATEWAY_PRESETS,
   anthropicGatewayPresetList,
+  findAnthropicGatewayPreset,
   getAnthropicGatewayPreset,
 } from "../anthropic-gateways.js"
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, requesty, deepseek, xai, openai and openai-direct", () => {
+  it("exposes moonshot, openrouter, requesty, deepseek, llm-endpoint, xai, openai and openai-direct", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
       "deepseek",
+      "llm-endpoint",
       "moonshot",
       "openai",
       "openai-direct",
@@ -77,6 +79,15 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     )
   })
 
+  it("llm-endpoint points at the local Anthropic-compatible proxy with no /v1 suffix", () => {
+    const ep = getAnthropicGatewayPreset("llm-endpoint")
+    expect(ep.baseUrl).toBe("http://localhost:18090")
+    expect(ep.schemaFlavor).toBe("anthropic")
+    expect(ep.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+    expect(ep.defaultModel).toBe("kimi-k2.7-code")
+    expect(ep.scrubEnv).toContain("ANTHROPIC_API_KEY")
+  })
+
   it("xai pins the conventional default model", () => {
     expect(getAnthropicGatewayPreset("xai").defaultModel).toBe("grok-4.5")
   })
@@ -122,5 +133,16 @@ describe("getAnthropicGatewayPreset", () => {
     expect(() =>
       getAnthropicGatewayPreset("litellm" as never)
     ).toThrow(/Unknown Anthropic gateway preset/)
+  })
+})
+
+describe("findAnthropicGatewayPreset", () => {
+  it("returns a built-in preset for a known id", () => {
+    expect(findAnthropicGatewayPreset("moonshot")?.keyEnv).toBe("MOONSHOT_API_KEY")
+    expect(findAnthropicGatewayPreset("llm-endpoint")?.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+  })
+
+  it("returns undefined for an unknown id", () => {
+    expect(findAnthropicGatewayPreset("not-a-preset")).toBeUndefined()
   })
 })

@@ -646,6 +646,13 @@ export interface AgentCliDefinition {
    */
   authSubscription?: AgentCliAuthSubscription
   /**
+   * True when the adapter's api-key auth is derived from the requested model
+   * rather than a fixed `provider` (e.g. `pi`, `opencode`). When set, the
+   * runtime resolver allows `"api-key"` mode on the model-derived direct
+   * endpoint and includes it in eligibility manifests for by-model routers.
+   */
+  modelDerivedApiKey?: boolean
+  /**
    * When the runtime billing-auth resolver ENGAGES credential injection:
    *   - `"when-configured"` (default) — only when an operator explicitly set
    *     `auth` (per-spawn or in `defaults.adapters.<slug>.auth`). Non-breaking:

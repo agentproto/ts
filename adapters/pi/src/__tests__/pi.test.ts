@@ -28,11 +28,12 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(pi.capabilities?.sub_agents).toBe(true)
   })
 
-  it("declares the 3 provider env slots and a native-resume continuation", () => {
+  it("declares the 4 provider env slots and a native-resume continuation", () => {
     expect(pi.auth?.state?.env).toEqual([
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
       "GOOGLE_GENERATIVE_AI_API_KEY",
+      "MOONSHOT_API_KEY",
     ])
     expect(pi.continuation?.default).toBe("native-resume")
     expect(pi.continuation?.supported).toContain("native-resume")
@@ -42,6 +43,11 @@ describe("@agentproto/adapter-pi — manifest", () => {
     const effort = pi.options?.find(o => o.id === "effort")
     expect(effort?.enum).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"])
     expect(pi.options?.some(o => o.id === "model")).toBe(true)
+  })
+
+  it("declares the Moonshot model entry", () => {
+    expect(pi.models?.allowed?.some(m => typeof m === "object" && m.id === "moonshotai/kimi-k2.7-code" && m.provider === "moonshotai")).toBe(true)
+    expect(pi.models?.env?.moonshotai).toBe("MOONSHOT_API_KEY")
   })
 
   it("piRuntime returns a runtime bound to the pi handle", () => {

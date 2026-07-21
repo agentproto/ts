@@ -42,13 +42,15 @@ describe("SessionDescriptor config-axis persistence round-trip", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  it("round-trips every axis (effort/posture/route/contextProfile/accessProfile) unchanged through a reload", () => {
+  it("round-trips every axis (harness/model/effort/posture/route/contextProfile/accessProfile) unchanged through a reload", () => {
     const reg1 = createSessionsRegistry({ persistPath })
     const desc = reg1.spawnAgent({
       workspaceSlug: "default",
       cwd: "/tmp",
       agentSession: fakeAgent,
       adapterSlug: "fake",
+      harness: "fake",
+      model: "claude-sonnet-4",
       // Orthogonal axes that have NO single legacy `mode` id between them
       // (plan + moonshot) — the exact combination §3.8 says must round-trip
       // through the decomposed descriptor fields, not a recomposed string.
@@ -75,6 +77,8 @@ describe("SessionDescriptor config-axis persistence round-trip", () => {
     const reg2 = createSessionsRegistry({ persistPath })
     const reloaded = reg2.get(desc.id)
     expect(reloaded).toBeDefined()
+    expect(reloaded?.harness).toBe("fake")
+    expect(reloaded?.model).toBe("claude-sonnet-4")
     expect(reloaded?.effort).toBe("ultracode")
     expect(reloaded?.posture).toBe("plan")
     expect(reloaded?.route).toEqual({

@@ -162,6 +162,16 @@ describe("SessionConfig axis composition (explicit fields win over legacy mode)"
   })
 })
 
+describe("harness axis", () => {
+  it("is part of SessionConfig", () => {
+    const cfg: SessionConfig = {
+      harness: "claude-code",
+      model: "claude-sonnet-4",
+    }
+    expect(cfg.harness).toBe("claude-code")
+  })
+})
+
 describe("Posture type — canonical | { harnessModeId } (SPEC §3.1/§3.4a)", () => {
   it("accepts both a canonical posture and a raw harness mode id", () => {
     const canonical: Posture = "plan"

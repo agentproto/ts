@@ -44,7 +44,7 @@ export const pi: AgentCliHandle = defineAgentCli({
   description:
     "earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's " +
     "persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. " +
-    "Multi-provider (Anthropic/OpenAI/Google), streaming, live-duplex " +
+    "Multi-provider (Anthropic/OpenAI/Google/Moonshot), streaming, live-duplex " +
     "(steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP " +
     "servers are BRIDGED into pi tools via a generated pi extension (see " +
     "MCP-BRIDGE.md); otherwise pi runs only its own built-in file/shell tools.",
@@ -67,7 +67,7 @@ export const pi: AgentCliHandle = defineAgentCli({
   auth: {
     ref: "./SECRETS.md",
     state: {
-      env: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+      env: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "MOONSHOT_API_KEY"],
     },
   },
   sandbox: "./SANDBOX.md",
@@ -92,11 +92,13 @@ export const pi: AgentCliHandle = defineAgentCli({
       { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
       { id: "openai/gpt-5.1", provider: "openai" },
       { id: "google/gemini-2.5-flash", provider: "google" },
+      { id: "moonshotai/kimi-k2.7-code", provider: "moonshotai" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
       openai: "OPENAI_API_KEY",
       google: "GOOGLE_GENERATIVE_AI_API_KEY",
+      moonshotai: "MOONSHOT_API_KEY",
     },
   },
   capabilities: {

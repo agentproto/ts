@@ -50,8 +50,8 @@ arm.
 `base_url` + `auth_token` point one spawn at an Anthropic-compatible gateway
 with a per-spawn Bearer key (the ambient `ANTHROPIC_API_KEY` is for real
 Anthropic). `auth_token` becomes `ANTHROPIC_AUTH_TOKEN`, which the SDK sends as
-`Authorization: Bearer <token>` — accepted by Moonshot, OpenRouter, and DeepSeek.
-The token value is never logged.
+`Authorization: Bearer <token>` — accepted by Moonshot, OpenRouter, DeepSeek,
+and the local `llm-endpoint` proxy. The token value is never logged.
 
 When `base_url` is set the adapter enters **gateway mode**: it pins every model
 tier the harness might internally request — `ANTHROPIC_MODEL`,
@@ -61,39 +61,16 @@ tier the harness might internally request — `ANTHROPIC_MODEL`,
 `kimi-k2.7-code`) rejects the harness's background `claude-haiku-*` requests.
 Native Anthropic (no `base_url`) leaves tier routing untouched.
 
-Verified live: Moonshot `https://api.moonshot.ai/anthropic` +
-`model=kimi-k2.7-code`, OpenRouter `https://openrouter.ai/api`, and Requesty
-`https://router.requesty.ai` all return valid Anthropic Messages format under
-`Authorization: Bearer`.
+The runtime resolver injects the correct `ANTHROPIC_BASE_URL` and credential for
+registered gateway providers (Moonshot, OpenRouter, Requesty, DeepSeek,
+`llm-endpoint`, etc.), so the adapter no longer hard-codes gateway URLs or modes.
+You can still override manually with `base_url` + `auth_token` for a gateway that
+is not yet in the catalog.
 
-Note the base URLs carry no `/v1`: the SDK appends `/v1/messages` itself, so a
-`/v1` in the preset yields `…/v1/v1/messages` → 404. Verify a gateway by
-POSTing to `<base_url>/v1/messages` — NOT by curling the endpoint you think it
-serves. An earlier "verified live" note recorded OpenRouter as `…/api/v1` on
-the strength of a direct curl to `/api/v1/messages`, which left every
-openrouter-mode spawn 404ing behind the misleading gateway error "model may not
-exist or you may not have access to it".
-
-### Gateway presets (modes)
-
-So you don't hand-type the base URL each spawn, four modes pre-wire the gateway
-endpoint (`base_url`/`auth_token`/`thinking` still work manually for anything
-else):
-
-| mode        | pre-wires                                                        | you supply                          |
-| ----------- | --------------------------------------------------------------- | ----------------------------------- |
-| `default`   | nothing — native Anthropic                                       | `ANTHROPIC_API_KEY`                 |
-| `moonshot`  | `ANTHROPIC_BASE_URL` + `model=kimi-k2.7-code` + `--thinking`     | `auth_token` (Moonshot key)         |
-| `openrouter`| `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
-| `requesty`  | `ANTHROPIC_BASE_URL`                                             | `model` (slug) + `auth_token` (key) |
-| `deepseek`  | `ANTHROPIC_BASE_URL` + `model=deepseek-v4-pro`                   | `auth_token` (DeepSeek key)         |
-
-`mode: moonshot` is a one-pick Kimi run; override `model` for another Moonshot
-model. `mode: openrouter` still needs a `model` (e.g. `z-ai/glm-5.2`,
-`deepseek/deepseek-v4-pro`, `moonshotai/kimi-k2`). `mode: deepseek` defaults to
-`deepseek-v4-pro`; override `model` for `deepseek-v4-flash`. The `auth_token`
-is the gateway key — the ambient `ANTHROPIC_API_KEY` stays for real Anthropic.
-DeepSeek isn't thinking-gated, so unlike `moonshot` no `--thinking` is forced.
+Note the Anthropic-flavored base URLs carry no `/v1`: the SDK appends
+`/v1/messages` itself, so a `/v1` in the preset yields `…/v1/v1/messages` → 404.
+Verify a gateway by POSTing to `<base_url>/v1/messages` — NOT by curling the
+endpoint you think it serves.
 
 ### Extended thinking
 

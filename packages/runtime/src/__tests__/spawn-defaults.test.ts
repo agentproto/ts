@@ -244,6 +244,92 @@ describe("resolveAuthSpec — provider resolution", () => {
   })
 })
 
+describe("resolveAuthSpec — modelDerivedApiKey", () => {
+  it("resolves api-key from the model when adapter declares modelDerivedApiKey", () => {
+    const r = resolveAuthSpec({
+      descriptor: { modelDerivedApiKey: true },
+      model: "claude-sonnet-5",
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "sk-ant-api03-x",
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.spec.setEnv).toBe("ANTHROPIC_API_KEY")
+    expect(r?.echo.credentialSource).toBe("explicit-config")
+  })
+
+  it("still resolves model-derived provider even without the flag (backward compatible)", () => {
+    const r = resolveAuthSpec({
+      descriptor: {},
+      model: "claude-sonnet-5",
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "sk-ant-api03-x",
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.spec.setEnv).toBe("ANTHROPIC_API_KEY")
+  })
+})
+
+describe("resolveAuthSpec — gateway route injection", () => {
+  it("route.gateway = moonshot -> MOONSHOT_API_KEY + base_url + anthropic scrub", () => {
+    const r = resolveAuthSpec({
+      descriptor: { modelDerivedApiKey: true },
+      model: "claude-sonnet-5",
+      routeGateway: "moonshot",
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "mk-test-key",
+    })
+    expect(r?.echo.provider).toBe("moonshot")
+    expect(r?.spec.setEnv).toBe("MOONSHOT_API_KEY")
+    expect(r?.spec.baseUrl).toBe("https://api.moonshot.ai/anthropic")
+    expect(r?.spec.credential).toBe("mk-test-key")
+    // Native Anthropic credential must not leak to the gateway host.
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.echo.credentialSource).toBe("explicit-config")
+  })
+
+  it("gateway route forces api-key and rejects subscription mode", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: CLAUDE_CODE_DESCRIPTOR,
+        routeGateway: "moonshot",
+        explicit: true,
+        requestedMode: "subscription",
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+
+  it("gateway route prefers api-key even when a subscription credential is present", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      routeGateway: "moonshot",
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+      apiKeyConfigCredential: "mk-test-key",
+    })
+    expect(r?.echo.authMode).toBe("api-key")
+    expect(r?.spec.setEnv).toBe("MOONSHOT_API_KEY")
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.spec.unsetEnv).toContain("CLAUDE_CODE_OAUTH_TOKEN")
+  })
+
+  it("unknown routeGateway falls back to model-derived provider", () => {
+    const r = resolveAuthSpec({
+      descriptor: { modelDerivedApiKey: true },
+      model: "claude-sonnet-5",
+      routeGateway: "not-a-real-gateway",
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "sk-ant-api03-x",
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.spec.setEnv).toBe("ANTHROPIC_API_KEY")
+    expect(r?.spec.baseUrl).toBeUndefined()
+  })
+})
+
 describe("resolveAuthSpec — mode validation + ordered preference", () => {
   it("subscription requested on an adapter with no authSubscription ⇒ unsupported_auth_mode", () => {
     expect(() =>
