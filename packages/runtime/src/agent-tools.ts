@@ -428,6 +428,7 @@ export function registerAgentTools(
         z.object({
           mode: z.enum(["subscription", "api-key"]).optional(),
           token: z.string().optional(),
+          source: z.string().optional(),
           apiKey: z.string().optional(),
         })
       )
@@ -449,7 +450,10 @@ export function registerAgentTools(
             "fallback) when the resolved mode has no credential configured anywhere. " +
             "The secret is never logged or echoed back — only a fingerprint appears on " +
             "the session descriptor / `agent_sessions_list`. Adapters that don't declare " +
-            "this vocabulary ignore this field entirely."
+            "this vocabulary ignore this field entirely. `source: \"claude-code-oauth\"` " +
+            "(subscription mode, opt-in) instead reads the bearer FRESH on every spawn " +
+            "from the local Claude Code login (Keychain / ~/.claude/.credentials.json) — " +
+            "effectively self-refreshing; an explicit `token` still wins over it."
         ),
       mcpServers: jsonTolerant(
         z.array(

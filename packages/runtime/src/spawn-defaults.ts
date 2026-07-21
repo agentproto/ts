@@ -46,6 +46,17 @@ export interface DefaultsAdapterAuthConfig {
    *  `claude setup-token` (bills the Max/Pro subscription, not API credits),
    *  SET to the adapter's `authSubscription.setEnv`. */
   token?: string
+  /** Opt-in SELF-REFRESHING subscription source (Mode 3). When set to
+   *  `"claude-code-oauth"` and no static `token` is supplied per-spawn, the
+   *  subscription bearer is read FRESH on every spawn from the local Claude
+   *  Code login (macOS Keychain `Claude Code-credentials` → jsonPath
+   *  `claudeAiOauth.accessToken`, falling back to `~/.claude/.credentials.json`)
+   *  via the `claude-code-oauth` provision recipe — because Claude Code keeps
+   *  that item refreshed, agentproto gets a fresh token each spawn. Absent ⇒
+   *  today's static-bearer behavior (Mode 2). Only `"claude-code-oauth"` is
+   *  understood; any other value fails LOUD (never a silent fallthrough). See
+   *  {@link resolveSubscriptionCredential} for the precedence with `token`. */
+  source?: string
   /** Explicit API key for `"api-key"` mode, SET to `providerEnvVar(provider)`.
    *  Wins over the `providers.json` store key for the same provider. */
   apiKey?: string
@@ -127,8 +138,14 @@ export interface ResolvedSpawnAuthMaterial {
    *  key" (fail-fast) from "set nothing" (ambient) — both give no credential.
    *  DECISION 5. */
   explicit: boolean
-  /** Subscription bearer token (per-spawn > config), if configured. */
+  /** Subscription bearer token (per-spawn > config), if configured. STATIC
+   *  material only — the self-refreshing {@link subscriptionSource} is resolved
+   *  separately (and impurely) by the caller. */
   subscriptionCredential?: string
+  /** Opt-in self-refreshing subscription source (per-spawn > config), if
+   *  configured — e.g. `"claude-code-oauth"`. Surfaced RAW; the impure caller
+   *  resolves it to a fresh token via {@link resolveSubscriptionCredential}. */
+  subscriptionSource?: string
   /** Explicit API key (per-spawn > config), if configured — distinct from the
    *  providers.json store key the resolver fetches separately. */
   apiKeyCredential?: string
@@ -159,6 +176,7 @@ export function resolveSpawnDefaults(
   const requestedMode = input.auth?.mode ?? adapterDefaults?.auth?.mode
   const explicit = input.auth !== undefined || adapterDefaults?.auth !== undefined
   const subscriptionCredential = input.auth?.token ?? adapterDefaults?.auth?.token
+  const subscriptionSource = input.auth?.source ?? adapterDefaults?.auth?.source
   const apiKeyCredential = input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
   const authProvider = input.auth?.provider ?? adapterDefaults?.auth?.provider
 
@@ -169,6 +187,7 @@ export function resolveSpawnDefaults(
       explicit,
       ...(requestedMode ? { requestedMode } : {}),
       ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+      ...(subscriptionSource !== undefined ? { subscriptionSource } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyCredential } : {}),
       ...(authProvider ? { provider: authProvider } : {}),
     },
@@ -281,8 +300,14 @@ export interface ResolvedAuthSpec {
 }
 
 /** Where the resolved credential came from — the observable billing axis
- *  (DECISION 10②), never inferred. */
-export type CredentialSource = "explicit-config" | "providers-store" | "none"
+ *  (DECISION 10②), never inferred. `"claude-code-oauth"` is the Mode-3
+ *  self-refreshing source: the subscription bearer was read fresh from the
+ *  local Claude Code login via the `claude-code-oauth` provision recipe. */
+export type CredentialSource =
+  | "explicit-config"
+  | "providers-store"
+  | "claude-code-oauth"
+  | "none"
 
 /**
  * The OBSERVABLE echo (DECISION 9③ / 10②) — recorded on the session
@@ -324,8 +349,15 @@ export interface ResolveAuthSpecInput {
   requestedMode?: "subscription" | "api-key"
   /** Operator explicitly configured `auth` (DECISION 5). */
   explicit: boolean
-  /** Subscription bearer credential, if configured. */
+  /** Subscription bearer credential, if configured (or resolved fresh by the
+   *  caller from a self-refreshing source). */
   subscriptionCredential?: string
+  /** Observable ORIGIN label for `subscriptionCredential`, when it did not come
+   *  from a plain static config token — today only `"claude-code-oauth"` (the
+   *  caller resolved it fresh from the local Claude Code login). Purely a label
+   *  for the echo; NEVER affects mode/credential selection. Omitted ⇒ the
+   *  subscription credential (if any) is treated as `"explicit-config"`. */
+  subscriptionCredentialSource?: CredentialSource
   /** Explicit api-key credential from config, if configured. */
   apiKeyConfigCredential?: string
   /** api-key credential from `providers.json` (fetched by the caller). */
@@ -440,7 +472,10 @@ export function resolveAuthSpec(
     // ordered path only yields "subscription" when supportsSub.
     setEnv = sub!.setEnv
     credential = input.subscriptionCredential
-    credentialSource = credential !== undefined ? "explicit-config" : "none"
+    credentialSource =
+      credential !== undefined
+        ? (input.subscriptionCredentialSource ?? "explicit-config")
+        : "none"
   } else {
     setEnv = apiKeyEnv
     if (input.apiKeyConfigCredential !== undefined) {
@@ -496,6 +531,112 @@ export function resolveAuthSpec(
       : {}),
   }
   return { spec, echo }
+}
+
+/** The only `auth.source` value understood today (Mode 3): read the
+ *  subscription bearer fresh from the local Claude Code login via the
+ *  `claude-code-oauth` provision recipe. */
+export const CLAUDE_CODE_OAUTH_SOURCE = "claude-code-oauth"
+
+/**
+ * Raised when `auth.source` is configured but cannot yield a credential — an
+ * unknown source value (`unsupported_auth_source`) or the recipe resolving to
+ * nothing / not-logged-in (`auth_source_unresolved`). A LOUD, actionable
+ * failure surfaced as a spawn error, NEVER a silent fallthrough to a static or
+ * ambient credential (mirrors {@link AuthResolutionError}'s discipline).
+ */
+export class SubscriptionSourceError extends Error {
+  readonly code: "unsupported_auth_source" | "auth_source_unresolved"
+  constructor(
+    code: "unsupported_auth_source" | "auth_source_unresolved",
+    message: string,
+  ) {
+    super(message)
+    this.name = "SubscriptionSourceError"
+    this.code = code
+  }
+}
+
+export interface ResolveSubscriptionCredentialInput {
+  /** Per-spawn explicit static token (`input.auth.token`) — wins over source. */
+  explicitToken?: string
+  /** Effective opt-in source (`input.auth.source ?? config auth.source`). */
+  source?: string
+  /** Config static token (`defaults.adapters.<slug>.auth.token`) — the
+   *  lowest-precedence fallback, used only when NEITHER an explicit per-spawn
+   *  token nor a source applies. */
+  fallbackStaticToken?: string
+}
+
+export interface SubscriptionCredentialResolution {
+  /** Resolved subscription bearer, or undefined ⇒ nothing configured (the
+   *  driver's fail-fast `missing_auth_credential` still owns that case). */
+  credential?: string
+  /** Observable origin of {@link credential} for the echo. */
+  source?: CredentialSource
+}
+
+/**
+ * Resolve the subscription (oauth-bearer) credential + its observable origin,
+ * placing the self-refreshing `source` (Mode 3) BETWEEN the two static tokens
+ * (SPEC §2):
+ *   a. explicit per-spawn `input.auth.token` (static) — wins over everything.
+ *   b. else `source: "claude-code-oauth"` → resolve FRESH via the injected
+ *      recipe resolver (Keychain / credentials file) ⇒ origin
+ *      `"claude-code-oauth"`.
+ *   c. else config.json static `auth.token` ⇒ origin `"explicit-config"`.
+ *   d. else nothing (⇒ driver fail-fast `missing_auth_credential`, unchanged).
+ *
+ * The recipe I/O is INJECTED (`resolveSourceToken`) so this stays pure and
+ * unit-testable without touching the real Keychain — the impure resolver lives
+ * in `claude-code-oauth-source.ts`. Fails LOUD ({@link SubscriptionSourceError})
+ * on an unknown source or an empty recipe; never a silent fallthrough. Only
+ * touches the subscription path — api-key mode never reaches here.
+ */
+export async function resolveSubscriptionCredential(
+  input: ResolveSubscriptionCredentialInput,
+  resolveSourceToken: (source: string) => Promise<string>,
+): Promise<SubscriptionCredentialResolution> {
+  // (a) An explicit per-spawn token is a deliberate one-off override — it wins
+  //     even over a persisted `source`.
+  if (input.explicitToken !== undefined) {
+    return { credential: input.explicitToken, source: "explicit-config" }
+  }
+  // (b) Opt-in self-refreshing source.
+  if (input.source !== undefined) {
+    if (input.source !== CLAUDE_CODE_OAUTH_SOURCE) {
+      throw new SubscriptionSourceError(
+        "unsupported_auth_source",
+        `auth.source: "${input.source}" is not supported — the only supported ` +
+          `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`,
+      )
+    }
+    let token: string
+    try {
+      token = await resolveSourceToken(input.source)
+    } catch (err) {
+      throw new SubscriptionSourceError(
+        "auth_source_unresolved",
+        `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
+          `found — run \`claude\` and /login (or \`claude setup-token\`) first ` +
+          `(${err instanceof Error ? err.message : String(err)}).`,
+      )
+    }
+    if (!token) {
+      throw new SubscriptionSourceError(
+        "auth_source_unresolved",
+        `auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" but no Claude Code login ` +
+          `found — run \`claude\` and /login (or \`claude setup-token\`) first.`,
+      )
+    }
+    return { credential: token, source: CLAUDE_CODE_OAUTH_SOURCE }
+  }
+  // (c) Config-level static token.
+  if (input.fallbackStaticToken !== undefined) {
+    return { credential: input.fallbackStaticToken, source: "explicit-config" }
+  }
+  // (d) Nothing configured.
+  return {}
 }
 
 /** Manifest-declared AIP-45 option id + type, the minimum an adapter

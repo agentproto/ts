@@ -6,13 +6,16 @@
  * for the wiring into `spawnAgentSession`.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import {
   resolveSpawnDefaults,
   normalizeSkillsOption,
   credentialFingerprint,
   resolveAuthSpec,
   AuthResolutionError,
+  resolveSubscriptionCredential,
+  SubscriptionSourceError,
+  CLAUDE_CODE_OAUTH_SOURCE,
   type SpawnDefaultsConfig,
   type AdapterAuthDescriptor,
 } from "../spawn-defaults.js"
@@ -189,6 +192,44 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     }
     const result = resolveSpawnDefaults(defaults, "hermes", {})
     expect(result.auth).toEqual({ explicit: false })
+  })
+
+  it("surfaces the config `auth.source` opt-in (Mode 3) as raw material", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: { source: "claude-code-oauth" } } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {})
+    expect(result.auth).toEqual({
+      explicit: true,
+      subscriptionSource: "claude-code-oauth",
+    })
+  })
+
+  it("a per-spawn `auth.source` wins over the config source", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: { "claude-code": { auth: { source: "config-source" } } },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {
+      auth: { source: "claude-code-oauth" },
+    })
+    expect(result.auth).toEqual({
+      explicit: true,
+      subscriptionSource: "claude-code-oauth",
+    })
+  })
+
+  it("surfaces BOTH a static token and a source when config sets both (caller decides precedence)", () => {
+    const defaults: SpawnDefaultsConfig = {
+      adapters: {
+        "claude-code": { auth: { token: "sk-ant-oat01-cfg", source: "claude-code-oauth" } },
+      },
+    }
+    const result = resolveSpawnDefaults(defaults, "claude-code", {})
+    expect(result.auth).toEqual({
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-cfg",
+      subscriptionSource: "claude-code-oauth",
+    })
   })
 })
 
@@ -502,6 +543,136 @@ describe("resolveAuthSpec — claude-code byte-identical scrub sets (#312)", () 
     expect(r?.spec.enforce).toBe("always")
     expect(r?.spec.explicit).toBe(false)
     expect(r?.spec.credential).toBeUndefined() // ⇒ driver fail-fast on engage
+  })
+})
+
+describe("resolveAuthSpec — subscriptionCredentialSource label (Mode 3)", () => {
+  it("echoes credentialSource:claude-code-oauth when the caller labels the subscription credential", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+      subscriptionCredential: "sk-ant-oat01-fresh",
+      subscriptionCredentialSource: "claude-code-oauth",
+    })
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.echo.credentialSource).toBe("claude-code-oauth")
+    expect(r?.spec.credential).toBe("sk-ant-oat01-fresh")
+    // The label NEVER alters the mechanical spec — same setEnv/scrub as any
+    // subscription resolution.
+    expect(r?.spec.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+  })
+
+  it("defaults the subscription origin to explicit-config when no label is given (Mode 2 unchanged)", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+      subscriptionCredential: "sk-ant-oat01-static",
+    })
+    expect(r?.echo.credentialSource).toBe("explicit-config")
+  })
+
+  it("never labels a MISSING subscription credential — stays `none`", () => {
+    const r = resolveAuthSpec({
+      descriptor: CLAUDE_CODE_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+      // no credential, but a stray label — must not fabricate a source
+      subscriptionCredentialSource: "claude-code-oauth",
+    })
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.echo.credentialSource).toBe("none")
+  })
+})
+
+describe("resolveSubscriptionCredential — precedence (SPEC §2, Mode 3)", () => {
+  it("(a) an explicit per-spawn token WINS over a source — the recipe is never consulted", async () => {
+    const recipe = vi.fn(async () => "sk-ant-oat01-fresh")
+    const r = await resolveSubscriptionCredential(
+      {
+        explicitToken: "sk-ant-oat01-explicit",
+        source: CLAUDE_CODE_OAUTH_SOURCE,
+        fallbackStaticToken: "sk-ant-oat01-cfg",
+      },
+      recipe,
+    )
+    expect(r).toEqual({ credential: "sk-ant-oat01-explicit", source: "explicit-config" })
+    expect(recipe).not.toHaveBeenCalled()
+  })
+
+  it("(b) source:claude-code-oauth resolves FRESH via the injected recipe → claude-code-oauth origin", async () => {
+    const recipe = vi.fn(async (id: string) => {
+      expect(id).toBe(CLAUDE_CODE_OAUTH_SOURCE)
+      return "  sk-ant-oat01-fresh-from-keychain  " // resolver is expected to hand back trimmed
+    })
+    const r = await resolveSubscriptionCredential(
+      { source: CLAUDE_CODE_OAUTH_SOURCE, fallbackStaticToken: "sk-ant-oat01-cfg" },
+      recipe,
+    )
+    expect(r.source).toBe("claude-code-oauth")
+    expect(r.credential).toBe("  sk-ant-oat01-fresh-from-keychain  ")
+    expect(recipe).toHaveBeenCalledOnce()
+  })
+
+  it("(b) source WINS over a config static token", async () => {
+    const recipe = vi.fn(async () => "sk-ant-oat01-fresh")
+    const r = await resolveSubscriptionCredential(
+      { source: CLAUDE_CODE_OAUTH_SOURCE, fallbackStaticToken: "sk-ant-oat01-cfg" },
+      recipe,
+    )
+    expect(r.credential).toBe("sk-ant-oat01-fresh")
+    expect(r.source).toBe("claude-code-oauth")
+  })
+
+  it("(c) no source ⇒ unchanged static behavior (config token, explicit-config origin)", async () => {
+    const recipe = vi.fn(async () => "unused")
+    const r = await resolveSubscriptionCredential(
+      { fallbackStaticToken: "sk-ant-oat01-cfg" },
+      recipe,
+    )
+    expect(r).toEqual({ credential: "sk-ant-oat01-cfg", source: "explicit-config" })
+    expect(recipe).not.toHaveBeenCalled()
+  })
+
+  it("(d) source set but the recipe RESOLVES TO NOTHING ⇒ clear, loud error (never a silent fallthrough)", async () => {
+    const recipe = vi.fn(async () => {
+      throw new Error("keychain item 'Claude Code-credentials' not found")
+    })
+    await expect(
+      resolveSubscriptionCredential(
+        { source: CLAUDE_CODE_OAUTH_SOURCE, fallbackStaticToken: "sk-ant-oat01-cfg" },
+        recipe,
+      ),
+    ).rejects.toMatchObject({
+      name: "SubscriptionSourceError",
+      code: "auth_source_unresolved",
+    })
+  })
+
+  it("(d') source set but the recipe returns an EMPTY string ⇒ same loud error", async () => {
+    const recipe = vi.fn(async () => "")
+    await expect(
+      resolveSubscriptionCredential({ source: CLAUDE_CODE_OAUTH_SOURCE }, recipe),
+    ).rejects.toBeInstanceOf(SubscriptionSourceError)
+  })
+
+  it("an UNKNOWN source value fails LOUD as unsupported_auth_source (recipe never consulted)", async () => {
+    const recipe = vi.fn(async () => "unused")
+    await expect(
+      resolveSubscriptionCredential({ source: "some-other-source" }, recipe),
+    ).rejects.toMatchObject({
+      name: "SubscriptionSourceError",
+      code: "unsupported_auth_source",
+    })
+    expect(recipe).not.toHaveBeenCalled()
+  })
+
+  it("nothing configured ⇒ empty resolution (driver fail-fast owns missing_auth_credential)", async () => {
+    const recipe = vi.fn(async () => "unused")
+    const r = await resolveSubscriptionCredential({}, recipe)
+    expect(r).toEqual({})
+    expect(recipe).not.toHaveBeenCalled()
   })
 })
 

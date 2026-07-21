@@ -460,7 +460,7 @@ export interface SessionAuthEcho {
   mode: "subscription" | "api-key"
   fingerprint: string
   provider?: string
-  credentialSource?: "explicit-config" | "providers-store" | "none"
+  credentialSource?: "explicit-config" | "providers-store" | "claude-code-oauth" | "none"
   setEnv?: string
 }
 
