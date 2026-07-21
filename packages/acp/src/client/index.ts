@@ -625,15 +625,22 @@ function buildSession(
             )
             return
           }
+          // "refusal" is an adapter's honest "I could not complete this turn"
+          // (e.g. claude-sdk returns it after a 401 auth failure — it emits a
+          // `[claude-sdk error]` chunk, so the turn is NOT empty and the
+          // empty-turn guard can't catch it). Mapping it — and any unknown
+          // stopReason — to "completed" is the false-green that let an
+          // un-authenticated reviewer report success without posting a review.
+          // Map it to "error" so the turn-end propagates as a failure.
+          const stopReason = (response as { stopReason?: string }).stopReason
           enqueue(state, {
             kind: "turn-end",
             sessionId,
             reason:
-              ((response as { stopReason?: string }).stopReason ===
-                "cancelled" && "cancelled") ||
-              ((response as { stopReason?: string }).stopReason ===
-                "max_turns" && "max_turns") ||
-              "completed",
+              (stopReason === "cancelled" && "cancelled") ||
+              (stopReason === "max_turns" && "max_turns") ||
+              (stopReason === "end_turn" && "completed") ||
+              "error",
           })
         })
         .catch((err: unknown) => {

@@ -212,6 +212,17 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
               `session ${sessionId} produced an empty turn — no assistant output or ` +
                 `tool call (commonly an auth failure or an invalid model id)`,
             )
+          } else if (ev.reason === "error") {
+            // A turn that ended in error (e.g. the adapter surfaced a 401 as a
+            // `[claude-sdk error]` chunk then returned stopReason "refusal")
+            // is NOT empty — the error text is output — so the empty-turn
+            // guard above misses it. Fail the step so the workflow reports
+            // `status: "failed"` instead of a false "done", letting the caller
+            // fall back instead of passing blind.
+            fail(
+              `session ${sessionId} ended its turn with reason 'error' — the ` +
+                `adapter reported a failed turn (commonly an auth failure)`,
+            )
           } else {
             done()
           }
