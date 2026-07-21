@@ -377,12 +377,12 @@
         },
         {
           "command": "agentproto.spawnWithHarness",
-          "when": "view == 'agentproto.harnesses' && viewItem == harness",
+          "when": "view == 'agentproto.harnesses' && viewItem =~ /^harness/",
           "group": "inline@1"
         },
         {
           "command": "agentproto.installHarness",
-          "when": "view == 'agentproto.harnesses' && viewItem == harness",
+          "when": "view == 'agentproto.harnesses' && viewItem == harness-installable",
           "group": "inline@2"
         },
         {

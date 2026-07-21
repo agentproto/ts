@@ -32,6 +32,7 @@ import { join } from "node:path"
 import type { DaemonConfig } from "../config.js"
 import type {
   AdapterInfo,
+  AdapterInstallResult,
   CatalogModelsResponse,
   DaemonHealth,
   PendingPermission,
@@ -435,6 +436,17 @@ export class DaemonClient {
     )
     if (Array.isArray(result)) return result
     return result.adapters ?? []
+  }
+
+  /**
+   * Install an adapter (harness) by slug via the `adapter_install` MCP tool.
+   * Returns the daemon's structured outcome — `ok` reflects the install
+   * command's success, `status` the adapter's re-read readiness. An ordinary
+   * install failure comes back as `{ ok:false }` (not a thrown error); only a
+   * transport/protocol fault throws.
+   */
+  async installAdapter(slug: string): Promise<AdapterInstallResult> {
+    return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
   }
 
   /**
