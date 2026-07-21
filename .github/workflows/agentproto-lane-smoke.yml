@@ -14,10 +14,14 @@ name: Agentproto lane smoke test
 # reason — skip it outright rather than produce noise-red on every fork PR.
 
 on:
-  pull_request:
-    paths:
-      - .github/actions/agentproto-run/**
-      - .github/agentproto-workflows/**
+  # PR trigger disabled — the generic agentflow lane is proven, so this smoke
+  # test no longer needs to re-run on every lane-path change. Kept as
+  # `workflow_dispatch`-only for ad-hoc manual re-proving. To re-enable
+  # automatic PR runs, uncomment the block below.
+  # pull_request:
+  #   paths:
+  #     - .github/actions/agentproto-run/**
+  #     - .github/agentproto-workflows/**
   workflow_dispatch: {}
 
 permissions:
