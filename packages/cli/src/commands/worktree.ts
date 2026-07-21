@@ -56,6 +56,7 @@ import {
   cleanupWorktreeTool,
   worktreeProvider,
   createForgeClient,
+  parseGithubOwnerRepo,
   FileVerdictMemoStore,
   listWorktreeStatuses,
   repoLabel,
@@ -72,6 +73,7 @@ import {
   toWorktreeStatusView,
   type WorktreeStatusLister,
   type WorktreeStatusView,
+  type OpenPrResolver,
 } from "@agentproto/runtime"
 
 const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
@@ -406,6 +408,41 @@ export function makeWorktreeStatusLister(): WorktreeStatusLister {
       defaultBranchRef: `origin/${defaultBranch}`,
     })
     return entries.map(toWorktreeStatusView)
+  }
+}
+
+/**
+ * Concrete {@link OpenPrResolver} for the daemon PR-provenance reconciler:
+ * given a session cwd, resolve the OPEN PR whose head is that cwd's git branch,
+ * reusing the same forge client the worktree-status join uses. Any failure —
+ * not a git repo, detached HEAD, unreachable forge, non-GitHub origin — is a
+ * `null` ("no PR right now"), never a throw (the reconciler is best-effort).
+ * The PR url is built from the `origin` remote so no extra `gh` call is needed.
+ */
+export function makeOpenPrResolver(): OpenPrResolver {
+  return async (cwd: string): Promise<{ number: number; url: string } | null> => {
+    try {
+      const repoRoot = repoRootOf(resolve(cwd))
+      if (!repoRoot) return null
+      const branch = worktreeBranch(cwd)
+      if (!branch) return null
+      const forge = await createForgeClient(repoRoot)
+      const open = (await forge.pullRequestsForBranch(branch))
+        .filter(pr => pr.state === "open")
+        .sort((a, b) => a.number - b.number)[0]
+      if (!open) return null
+      const remote = spawnSync("git", ["-C", repoRoot, "remote", "get-url", "origin"], {
+        encoding: "utf8",
+      })
+      const parsed = remote.status === 0 ? parseGithubOwnerRepo(remote.stdout.trim()) : null
+      if (!parsed) return null
+      return {
+        number: open.number,
+        url: `https://github.com/${parsed.owner}/${parsed.repo}/pull/${open.number}`,
+      }
+    } catch {
+      return null
+    }
   }
 }
 

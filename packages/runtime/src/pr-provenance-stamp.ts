@@ -84,38 +84,78 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
         ? input.registry.get(session.parentSessionId) ?? { id: session.parentSessionId }
         : null
 
-    const footer = buildSessionPrFooter(session, {
+    return await stampFooterOnPr({
+      registry: input.registry,
+      session,
       supervisor,
+      prNumber: created.number,
+      prUrl: created.url,
+      cwd: input.cwd,
+      ...(input.run ? { run: input.run } : {}),
+      ...(input.host ? { host: input.host } : {}),
+    })
+  } catch (err) {
+    return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * The tool-agnostic core: given an already-resolved PR (its number + url) and
+ * the executor session (+ supervisor) it belongs to, append the provenance
+ * footer to the PR body once and record the PR against the session. Shared by
+ * {@link stampPrProvenance} (which resolves the PR from a `gh pr create`
+ * stdout) and the daemon reconciler (which resolves it from the session's
+ * branch). Reads the current body first so the footer is APPENDED, not
+ * clobbered — `gh pr edit --body` replaces the whole body — and never edits
+ * when the read fails, so a failed read can't overwrite a real body with just
+ * the footer. Idempotent by the `MARKER` guard; never throws (every failure is
+ * swallowed into the returned {@link StampOutcome}).
+ */
+export async function stampFooterOnPr(input: {
+  registry: StampRegistry
+  session: FooterSession
+  supervisor: { id: string } | null
+  prNumber: number
+  prUrl: string
+  cwd: string
+  run?: GhRunner
+  host?: string
+}): Promise<StampOutcome> {
+  try {
+    const footer = buildSessionPrFooter(input.session, {
+      supervisor: input.supervisor,
       host: input.host ?? hostname(),
       sha: undefined,
     })
 
     const run = input.run ?? defaultGhRunner
-    // Read the current body so the footer is APPENDED, not clobbered. `gh pr
-    // edit --body` replaces the whole body, so we must round-trip it — and if
-    // the read fails we must NOT edit, or we'd overwrite the real body with
-    // just the footer.
-    const view = await run(["pr", "view", created.url, "--json", "body", "--jq", ".body"], input.cwd)
+    const view = await run(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
     if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
     const body = view.stdout.replace(/\n+$/, "")
 
     const alreadyStamped = body.includes(MARKER)
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
-      const edit = await run(["pr", "edit", created.url, "--body", newBody], input.cwd)
+      const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
       if (edit.exitCode !== 0) {
         return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       }
     }
 
     // Record the opened PR against the executor session (idempotent per URL).
-    input.registry.recordOpenedPr(session.id, {
-      adapter: session.harness ?? session.adapterSlug ?? "gh",
-      number: created.number,
-      url: created.url,
+    input.registry.recordOpenedPr(input.session.id, {
+      adapter: input.session.harness ?? input.session.adapterSlug ?? "gh",
+      number: input.prNumber,
+      url: input.prUrl,
     })
 
-    return { stamped: true, url: created.url, number: created.number, sessionId: session.id, alreadyStamped }
+    return {
+      stamped: true,
+      url: input.prUrl,
+      number: input.prNumber,
+      sessionId: input.session.id,
+      alreadyStamped,
+    }
   } catch (err) {
     return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
   }

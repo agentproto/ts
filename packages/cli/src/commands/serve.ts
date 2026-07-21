@@ -47,7 +47,7 @@ import {
 } from "../util/credentials.js"
 import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
-import { makeWorktreeProvisioner, makeWorktreeStatusLister } from "./worktree.js"
+import { makeWorktreeProvisioner, makeWorktreeStatusLister, makeOpenPrResolver } from "./worktree.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import {
@@ -623,6 +623,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // `listWorktreeStatuses` join over @agentproto/worktree, same dep
       // reasoning as above.
       listWorktreeStatuses: makeWorktreeStatusLister(),
+      // Injected port behind the daemon PR-provenance reconciler: resolves the
+      // open PR for a session's branch (branch→PR over @agentproto/worktree),
+      // so an executor's PR gets the provenance footer even though it opened it
+      // through its own shell, not command_execute.
+      resolveOpenPr: makeOpenPrResolver(),
       // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed, and
