@@ -210,6 +210,12 @@
         "category": "agentproto"
       },
       {
+        "command": "agentproto.configureSession",
+        "title": "agentproto: Configure Session",
+        "category": "agentproto",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "agentproto.openTranscriptChannel",
         "title": "agentproto: Open Transcript (Raw Output Channel)",
         "category": "agentproto"
@@ -395,6 +401,11 @@
           "command": "agentproto.configureAuthProfile",
           "when": "view == 'agentproto.authProfiles' && (viewItem == auth-preset || viewItem == auth-profile)",
           "group": "inline@1"
+        },
+        {
+          "command": "agentproto.configureSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)$/",
+          "group": "1_config@2" 
         },
         {
           "command": "agentproto.setSessionAccessProfile",
