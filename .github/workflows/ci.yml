@@ -742,6 +742,39 @@ jobs:
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Sweep the reviewer's per-PR scratch branch. The sandbox bootstrap fetches
+      # the PR head into a LOCAL branch named `pr-<N>`
+      # (.github/agentproto-workflows/lib/sandbox-agent.mjs) — the CI paths push
+      # the changeset to the real head branch, never `pr-<N>`, but ad-hoc/local
+      # lane runs that push the scratch branch leak an orphan `origin/pr-<N>` that
+      # never becomes a PR and lingers. This deterministic sweep deletes it after
+      # review: idempotent (no-op when absent) and guarded so it can never touch a
+      # real head branch that happens to be named `pr-<N>`. Runs even when the PR
+      # already merged (that's when the orphan most needs pruning), so it uses the
+      # always-present GITHUB_TOKEN rather than the skip-gated App token.
+      - name: Prune reviewer scratch branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          SCRATCH="pr-$PR_NUMBER"
+          if [ "$SCRATCH" = "$HEAD_REF" ]; then
+            echo "Head branch is literally $SCRATCH — refusing to delete a real PR head."
+            exit 0
+          fi
+          # One idempotent call: DELETE the ref (plural `git/refs/{ref}` — the
+          # canonical delete endpoint). A missing ref returns 404/422 → non-zero
+          # → the else branch, so this needs no separate existence pre-check
+          # (which would also have to use the SINGULAR `git/ref/{ref}` GET form,
+          # an easy-to-misread inconsistency).
+          if gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$SCRATCH" >/dev/null 2>&1; then
+            echo "Pruned orphan scratch branch $SCRATCH."
+          else
+            echo "No scratch branch $SCRATCH — nothing to prune (or already gone)."
+          fi
+
       # INDEPENDENT API-level guarantee that a review row actually exists for
       # the SHA the reviewer saw — belt-and-suspenders on top of the driver's
       # empty-turn/silent-no-op detection (which watches the SESSION, not the
