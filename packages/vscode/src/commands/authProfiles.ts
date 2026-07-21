@@ -25,6 +25,10 @@ import {
   validateProfileId,
   SUBSCRIPTION_ENDPOINT,
 } from "./authProfileFlow.logic.js"
+import {
+  credentialSourceChoices,
+  loginCommandFor,
+} from "./authProfileConnect.logic.js"
 
 export function registerAuthProfileCommands(
   ctx: vscode.ExtensionContext,
@@ -113,13 +117,37 @@ export async function runCreateAuthProfileFlow(
   })
   if (label === undefined) return
 
-  // Step 5 — credential (password-style; never shown, never logged).
+  // Step 5 — credential. For a subscription endpoint with a first-class
+  // login (`claude setup-token`), offer to run it and capture the token it
+  // prints rather than forcing a hand-found token; everything else pastes.
+  let credentialPrompt =
+    method === "oauth-bearer" ? "Paste the subscription bearer token" : "Paste the API key"
+  const login = loginCommandFor(endpoint, method)
+  if (login) {
+    const sourcePick = await vscode.window.showQuickPick(
+      credentialSourceChoices(login).map(c => ({
+        label: c.label,
+        description: c.description,
+        detail: c.detail,
+        source: c.source,
+      })),
+      {
+        title: "Add auth profile (5/5): credential",
+        placeHolder: "How do you want to supply the token?",
+      },
+    )
+    if (!sourcePick) return
+    if (sourcePick.source === "login") {
+      const terminal = vscode.window.createTerminal({ name: "agentproto: log in" })
+      terminal.show(true)
+      terminal.sendText(login.commandLine)
+      credentialPrompt = login.instruction
+    }
+  }
+
   const credential = await vscode.window.showInputBox({
     title: "Add auth profile (5/5): credential",
-    prompt:
-      method === "oauth-bearer"
-        ? "Paste the subscription bearer token"
-        : "Paste the API key",
+    prompt: credentialPrompt,
     password: true,
     ignoreFocusOut: true,
     validateInput: validateCredential,
