@@ -246,6 +246,7 @@ export function createInboundWatcher(opts: {
         cwd: state.input.cwd,
         agentSession,
         adapterSlug: state.input.adapter,
+        origin: "webhook",
         initialPrompt: prompt,
         label: labelParts.join(":"),
         ...(mcpServers ? { mcpServers } : {}),
