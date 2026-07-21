@@ -121,6 +121,12 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "agentproto.setSessionAccessProfile",
+        "title": "agentproto: Set Session Auth Profile",
+        "category": "agentproto",
+        "icon": "$(key)"
+      },
+      {
         "command": "agentproto.renameSession",
         "title": "agentproto: Rename Session",
         "category": "agentproto",
@@ -389,6 +395,11 @@
           "command": "agentproto.configureAuthProfile",
           "when": "view == 'agentproto.authProfiles' && (viewItem == auth-preset || viewItem == auth-profile)",
           "group": "inline@1"
+        },
+        {
+          "command": "agentproto.setSessionAccessProfile",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "group": "1_config@1"
         }
       ],
       "editor/title": [
