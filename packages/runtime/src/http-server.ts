@@ -284,6 +284,58 @@ export interface AdapterListEntry {
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
 
+/**
+ * Outcome of an `adapter_install` / `POST /adapters/:slug/install` request.
+ * Independent of the lister/resolver above — a host that can drive an
+ * install path wires an `AgentAdapterInstaller`; a host that can't skips it
+ * (the tool/route report "not enabled", same convention as the lister).
+ *
+ * `method` names WHICH install path ran so a client can explain it:
+ *   - `"npm-global"`      — `npm i -g <packageName>` for an acp-catalog CLI
+ *   - `"agentproto-install"` — drove `agentproto install <slug>` (the
+ *                            manifest `install[]` pipeline for a first-party
+ *                            adapter)
+ *   - `"already-installed"` — nothing to do; the slug was already `ready`
+ *   - `"unsupported"`     — no known install path for this slug
+ *
+ * `ok` reflects only whether the install COMMAND succeeded. `status` carries
+ * the adapter's readiness re-read after the attempt (via the same lister the
+ * discovery endpoints use), so a client can refresh a row without a second
+ * round-trip; it's absent when the re-read itself failed.
+ */
+export interface AdapterInstallResult {
+  slug: string
+  ok: boolean
+  method:
+    | "npm-global"
+    | "agentproto-install"
+    | "already-installed"
+    | "unsupported"
+  /** Human-readable one-liner: what ran, and how it ended. */
+  message: string
+  /** The shell command that was run, for surfacing in logs / errors.
+   *  Absent for the `already-installed` / `unsupported` methods. */
+  command?: string
+  /** Exit code of `command` when one ran. */
+  exitCode?: number
+  /** The adapter's readiness re-read after the attempt. Absent if the
+   *  post-install re-list failed (the install itself may still have
+   *  succeeded — read `ok`). */
+  status?: "supported" | "available" | "ready" | "unresolvable"
+}
+
+/**
+ * Installs an agent CLI adapter by slug and reports the outcome. Wired by
+ * the daemon from `@agentproto/cli`'s `installAdapter` (which knows the
+ * catalog + the two install classes); the runtime stays cli-free and only
+ * exposes the verb. Must never throw for an ordinary install failure —
+ * report it via `ok:false` + `message` — so the MCP tool / HTTP route can
+ * return a clean result instead of a 500.
+ */
+export type AgentAdapterInstaller = (
+  slug: string,
+) => Promise<AdapterInstallResult>
+
 /** Loads the read-only vendor/product/route catalog (SPEC §5) for
  *  `GET /catalog/models` + the `catalog_models` MCP tool. A host wires this
  *  from `buildCatalogModels` (`catalog-models.ts`) fed by its installed
@@ -388,6 +440,11 @@ export interface RuntimeHttpServerOptions {
    *  without trial-and-error against the resolver. Hosts ship the
    *  cli's `listInstalledAdapters` via a thin shim. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional — when wired, enables `POST /adapters/:slug/install` + the
+   *  MCP `adapter_install` tool so UIs can install a not-yet-installed
+   *  harness (both acp-catalog `npm i -g` CLIs and first-party workspace
+   *  adapters). Hosts ship the cli's `installAdapter`. */
+  installAgentAdapter?: AgentAdapterInstaller
   /** Optional — when wired, enables `GET /catalog/models` (read-only,
    *  no session) + the `catalog_models` MCP tool (SPEC §5). Hosts ship a
    *  shim over `buildCatalogModels` (`catalog-models.ts`). */
@@ -1490,6 +1547,57 @@ export async function startHttpServer(
             )
           }
           return
+        }
+
+        // Install an adapter by slug. Companion mutation to `GET /adapters`:
+        // drives the cli's install path (npm-global for acp-catalog CLIs, the
+        // manifest install[] pipeline for first-party adapters) and returns
+        // the re-read status. Ordinary install failures come back as
+        // `{ ok:false }` with 200 — a non-2xx is reserved for "not wired" /
+        // "bad slug". `POST /adapters/:slug/install`.
+        {
+          const installMatch = path.match(
+            /^\/adapters\/([^/]+)\/install$/,
+          )
+          if (installMatch && req.method === "POST") {
+            if (!opts.installAgentAdapter) {
+              res.writeHead(501, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "installer_not_configured",
+                  message:
+                    "Daemon was started without `installAgentAdapter` — see " +
+                    "@agentproto/cli's `installAdapter` for the canonical impl.",
+                }),
+              )
+              return
+            }
+            const slug = decodeURIComponent(installMatch[1]!)
+            if (!/^[a-z][a-z0-9-]*$/.test(slug)) {
+              res.writeHead(400, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "invalid_slug",
+                  message: `invalid adapter slug '${slug}' — slugs are lower-kebab.`,
+                }),
+              )
+              return
+            }
+            try {
+              const result = await opts.installAgentAdapter(slug)
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify(result))
+            } catch (err) {
+              res.writeHead(500, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "install_failed",
+                  message: err instanceof Error ? err.message : String(err),
+                }),
+              )
+            }
+            return
+          }
         }
 
         // Read-only catalog/vendor endpoint (SPEC §5) — no session, no auth

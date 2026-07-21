@@ -49,6 +49,7 @@ import type { WebhookNotifier } from "./webhook-notifier.js"
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  AgentAdapterInstaller,
   CatalogModelsLister,
 } from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -140,6 +141,10 @@ export interface RegisterSessionToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional adapter installer — when wired, exposes `adapter_install`
+   *  MCP tool. Without it the tool returns a clear "not configured" error
+   *  pointing at the host wiring. */
+  installAgentAdapter?: AgentAdapterInstaller
   /** Optional catalog lister — when wired, exposes the read-only
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */

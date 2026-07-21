@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  canInstallHarness,
+  harnessContextValue,
   harnessDescription,
   harnessIcon,
   harnessTooltip,
@@ -57,6 +59,39 @@ describe("sortAdapters", () => {
       adapter({ slug: "supported", status: "supported" }),
     ]
     expect(sortAdapters(adapters).map(a => a.slug)).toEqual(["ready", "supported", "unknown"])
+  })
+})
+
+describe("canInstallHarness", () => {
+  it("offers install for a not-yet-installed harness (available/supported)", () => {
+    expect(canInstallHarness("available")).toBe(true)
+    expect(canInstallHarness("supported")).toBe(true)
+  })
+
+  it("does not offer install for a ready harness", () => {
+    expect(canInstallHarness("ready")).toBe(false)
+  })
+
+  it("does not offer install for an unresolvable (mid-rebuild) harness", () => {
+    expect(canInstallHarness("unresolvable")).toBe(false)
+  })
+
+  it("does not offer install for an unknown/absent status", () => {
+    expect(canInstallHarness(undefined)).toBe(false)
+    expect(canInstallHarness("weird")).toBe(false)
+  })
+})
+
+describe("harnessContextValue", () => {
+  it("marks installable rows with a distinct contextValue", () => {
+    expect(harnessContextValue(adapter({ status: "supported" }))).toBe("harness-installable")
+    expect(harnessContextValue(adapter({ status: "available" }))).toBe("harness-installable")
+  })
+
+  it("uses the base harness contextValue for ready/unresolvable/unknown rows", () => {
+    expect(harnessContextValue(adapter({ status: "ready" }))).toBe("harness")
+    expect(harnessContextValue(adapter({ status: "unresolvable" }))).toBe("harness")
+    expect(harnessContextValue(adapter({ status: undefined }))).toBe("harness")
   })
 })
 

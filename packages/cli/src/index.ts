@@ -33,6 +33,15 @@ export {
   listAcpGenericAdapters,
   binOnPath,
 } from "./registry/acp-generic.js"
+export {
+  installAdapter,
+  planAdapterInstall,
+  parseNpmPackageFromHint,
+} from "./registry/install-driver.js"
+export type {
+  AdapterInstallPlan,
+  AdapterInstallCandidate,
+} from "./registry/install-driver.js"
 export type {
   AcpAgentSpec,
   AcpSpecSource,

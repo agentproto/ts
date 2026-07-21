@@ -9,6 +9,7 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { AdapterInfo } from "../client/types.js"
 import {
+  harnessContextValue,
   harnessDescription,
   harnessIcon,
   harnessTooltip,
@@ -53,7 +54,7 @@ export class HarnessesTreeProvider implements vscode.TreeDataProvider<HarnessNod
     const item = new vscode.TreeItem(element.adapter.slug)
     item.description = harnessDescription(element.adapter)
     item.tooltip = new vscode.MarkdownString(harnessTooltip(element.adapter))
-    item.contextValue = "harness"
+    item.contextValue = harnessContextValue(element.adapter)
     item.iconPath = new vscode.ThemeIcon(icon.id)
     return item
   }
