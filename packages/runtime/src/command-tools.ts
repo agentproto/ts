@@ -49,6 +49,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
+import { loadSandboxConfig, resolveCommandSandbox } from "./command-sandbox.js"
+
+/** Warn at most once per process when a sandbox mode is configured but no
+ *  backend exists for this platform — so we never silently pretend to confine. */
+let warnedNoSandboxBackend = false
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
@@ -205,9 +210,37 @@ export function registerCommandTools(
       }
       const resolvedCwd = anchorCwd(cwd)
       const limit = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
+      // OS-level confinement — opt-in via `.agentproto/command-sandbox.json`.
+      // Default mode "off" ⇒ argv unchanged (today's behavior). When enabled
+      // and a backend exists for this platform, wrap so even an allowlisted
+      // interpreter can't read outside the workspace / (strict) reach the
+      // network. The original `command`/`args` are still what's recorded and
+      // provenance-stamped below; only the SPAWNED argv is wrapped.
+      let execCommand = command
+      let execArgs = args ?? []
+      const sandboxCfg = await loadSandboxConfig(opts.workspace)
+      if (sandboxCfg.mode !== "off") {
+        const backend = resolveCommandSandbox()
+        if (backend) {
+          const wrapped = backend.wrap([command, ...(args ?? [])], {
+            workspace: opts.workspace,
+            extraReadPaths: sandboxCfg.extraReadPaths,
+            network: sandboxCfg.network,
+          })
+          execCommand = wrapped[0] ?? command
+          execArgs = wrapped.slice(1)
+        } else if (!warnedNoSandboxBackend) {
+          warnedNoSandboxBackend = true
+          console.error(
+            `[command_execute] ⚠ command-sandbox mode="${sandboxCfg.mode}" is ` +
+              `configured but no sandbox backend is available on ` +
+              `${process.platform}; commands run UNconfined.`,
+          )
+        }
+      }
       const result = await runCommand({
-        command,
-        args: args ?? [],
+        command: execCommand,
+        args: execArgs,
         cwd: resolvedCwd,
         stdin,
         timeoutMs: limit,
