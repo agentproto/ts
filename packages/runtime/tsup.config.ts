@@ -17,6 +17,7 @@ export default createTsupConfig({
     "providers-store": "src/providers-store.ts",
     "session-story": "src/session-story.ts",
     "user-presets": "src/user-presets.ts",
+    "pr-provenance": "src/pr-provenance.ts",
   },
   format: ["esm"],
   splitting: false,
