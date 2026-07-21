@@ -10,6 +10,7 @@ import {
   resolveAccount,
   readKeychainToken,
   writeKeychainToken,
+  deleteKeychainToken,
 } from "../token-store.js"
 
 // The Keychain helpers are guarded to macOS. CI runs on Linux, so the
@@ -95,6 +96,35 @@ describe("writeKeychainToken", () => {
     expect(args).toContain("-U")
     expect(args).toEqual(expect.arrayContaining(["-s", "svc", "-a", "acct"]))
     expect(args).toContain("secret")
+  })
+})
+
+describe("deleteKeychainToken", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pinPlatform("darwin")
+  })
+  afterEach(restorePlatform)
+
+  it("calls security delete-generic-password and returns true", async () => {
+    execFileMock.mockImplementation(
+      (_cmd: string, _args: string[], cb: (e: unknown, r: unknown) => void) =>
+        cb(null, { stdout: "" }),
+    )
+    await expect(deleteKeychainToken("svc", "acct")).resolves.toBe(true)
+    const call = execFileMock.mock.calls[0] as [string, string[]]
+    const [cmd, args] = call
+    expect(cmd).toBe("security")
+    expect(args).toContain("delete-generic-password")
+    expect(args).toEqual(expect.arrayContaining(["-s", "svc", "-a", "acct"]))
+  })
+
+  it("returns false when the entry is missing (no throw)", async () => {
+    execFileMock.mockImplementation(
+      (_cmd: string, _args: string[], cb: (e: unknown) => void) =>
+        cb(new Error("could not be found")),
+    )
+    await expect(deleteKeychainToken("svc", "acct")).resolves.toBe(false)
   })
 })
 

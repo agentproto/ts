@@ -37,6 +37,7 @@ import {
   type BrowserAdapterResolver,
   type BrowserAdapterLister,
 } from "./browser-tools.js"
+import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeSessionsPanelApp } from "./sessions-panel-app.js"
 import {
@@ -1021,6 +1022,11 @@ export async function createGateway(
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
     })
+    // Named auth-profile lifecycle (auth_profile_create/delete/list). No
+    // host wiring — `@agentproto/auth` reads/writes the fixed
+    // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
+    // the profile readers already mounted in session-spawn.ts.
+    registerAuthProfileTools(server)
     registerBrowserTools(server, {
       registry: sessions,
       ...(opts.resolveBrowserAdapter

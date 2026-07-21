@@ -49,6 +49,7 @@ export { CeremonyRequiredError } from "./flow-engines/device-code.js"
 export {
   readKeychainToken,
   writeKeychainToken,
+  deleteKeychainToken,
   resolveAccount,
 } from "./token-store.js"
 export { KeychainStore } from "./store/keychain-store.js"
@@ -71,6 +72,19 @@ export {
   removeAuthProfile,
   type AuthProfilesFile,
 } from "./profile-store.js"
+export {
+  createAuthProfile,
+  deleteAuthProfile,
+  validateCreateInput,
+  deriveCredentialRef,
+  fingerprintCredential,
+  AuthProfileValidationError,
+  type CreateAuthProfileInput,
+  type CreatedAuthProfile,
+  type DeletedAuthProfile,
+  type ProfileProvisionDeps,
+  type ValidatedCreateInput,
+} from "./profile-provision.js"
 export {
   resolveEndpoint,
   methodsPresentable,

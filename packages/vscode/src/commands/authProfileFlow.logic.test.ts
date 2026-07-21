@@ -1,0 +1,124 @@
+import { describe, expect, it } from "vitest"
+
+import type { ProviderPresetEntry } from "../client/types.js"
+import {
+  buildCreateRequest,
+  endpointChoices,
+  methodChoices,
+  successMessage,
+  suggestProfileId,
+  validateCredential,
+  validateEndpoint,
+  validateProfileId,
+  SUBSCRIPTION_ENDPOINT,
+} from "./authProfileFlow.logic.js"
+
+describe("methodChoices", () => {
+  it("offers subscription and api-key mapped to wire methods", () => {
+    const methods = methodChoices().map(c => c.method)
+    expect(methods).toEqual(["oauth-bearer", "api-key"])
+  })
+})
+
+describe("endpointChoices", () => {
+  const presets: ProviderPresetEntry[] = [
+    { slug: "openrouter", name: "OpenRouter", status: "ready" },
+    { slug: "moonshot", status: "available" },
+  ]
+
+  it("for a subscription, offers only anthropic", () => {
+    expect(endpointChoices("oauth-bearer", presets)).toEqual([
+      { label: "anthropic", endpoint: "anthropic" },
+    ])
+    expect(SUBSCRIPTION_ENDPOINT).toBe("anthropic")
+  })
+
+  it("for an api-key, lists presets sorted + a custom escape hatch", () => {
+    const choices = endpointChoices("api-key", presets)
+    expect(choices.map(c => c.label)).toEqual([
+      "moonshot",
+      "openrouter",
+      "Custom endpoint…",
+    ])
+    expect(choices.find(c => c.label === "openrouter")?.description).toBe("OpenRouter")
+    // A slug === name should not duplicate into the description.
+    expect(choices.find(c => c.label === "moonshot")?.description).toBeUndefined()
+    expect(choices.at(-1)).toEqual({ label: "Custom endpoint…", custom: true })
+  })
+})
+
+describe("suggestProfileId", () => {
+  it("suffixes -sub for subscriptions and -api for keys", () => {
+    expect(suggestProfileId("oauth-bearer", "anthropic")).toBe("anthropic-sub")
+    expect(suggestProfileId("api-key", "openrouter")).toBe("openrouter-api")
+  })
+})
+
+describe("validateProfileId", () => {
+  it("accepts a clean, unique id", () => {
+    expect(validateProfileId("anthropic-sub", [])).toBeUndefined()
+  })
+
+  it("rejects empty, bad charset, and collisions", () => {
+    expect(validateProfileId("   ", [])).toMatch(/required/)
+    expect(validateProfileId("bad id", [])).toMatch(/letters/)
+    expect(validateProfileId("dup", ["dup"])).toMatch(/already exists/)
+  })
+})
+
+describe("validateEndpoint / validateCredential", () => {
+  it("validateEndpoint mirrors the slug rule", () => {
+    expect(validateEndpoint("requesty")).toBeUndefined()
+    expect(validateEndpoint("")).toMatch(/required/)
+    expect(validateEndpoint("bad endpoint")).toMatch(/letters/)
+  })
+
+  it("validateCredential requires a non-blank secret", () => {
+    expect(validateCredential("tok")).toBeUndefined()
+    expect(validateCredential("   ")).toMatch(/required/)
+  })
+})
+
+describe("buildCreateRequest", () => {
+  it("trims fields, keeps the credential verbatim, drops an empty label", () => {
+    expect(
+      buildCreateRequest({
+        id: " anthropic-sub ",
+        endpoint: " anthropic ",
+        method: "oauth-bearer",
+        credential: "sub-token",
+        label: "   ",
+      }),
+    ).toEqual({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      credential: "sub-token",
+    })
+  })
+
+  it("keeps a real label", () => {
+    const req = buildCreateRequest({
+      id: "or-api",
+      endpoint: "openrouter",
+      method: "api-key",
+      credential: "k",
+      label: "Work OpenRouter",
+    })
+    expect(req.label).toBe("Work OpenRouter")
+  })
+})
+
+describe("successMessage", () => {
+  it("names the profile and shows only the fingerprint, never the secret", () => {
+    const msg = successMessage({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      fingerprint: "deadbeef1234",
+    })
+    expect(msg).toContain("anthropic-sub")
+    expect(msg).toContain("deadbeef1234")
+    expect(msg).toContain("anthropic · oauth-bearer")
+  })
+})

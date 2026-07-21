@@ -12,7 +12,11 @@
  */
 
 import { z } from "zod"
-import { readKeychainToken, writeKeychainToken } from "../token-store.js"
+import {
+  deleteKeychainToken,
+  readKeychainToken,
+  writeKeychainToken,
+} from "../token-store.js"
 import type { CredentialStore, StoreRef, StoredCredential } from "./types.js"
 
 const envelopeSchema = z.object({
@@ -50,5 +54,10 @@ export class KeychainStore implements CredentialStore {
       ...(cred.metadata !== undefined ? { m: cred.metadata } : {}),
     }
     await writeKeychainToken(ref.path, account, JSON.stringify(envelope))
+  }
+
+  async delete(ref: StoreRef): Promise<void> {
+    const account = ref.account ?? ref.path
+    await deleteKeychainToken(ref.path, account)
   }
 }

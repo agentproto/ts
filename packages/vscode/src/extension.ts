@@ -94,7 +94,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
-  registerAuthProfileCommands(ctx, authProfilesProvider)
+  registerAuthProfileCommands(ctx, client, authProfilesProvider)
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
