@@ -3191,6 +3191,19 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      // Lineage-attribution signal (WP-R3): announce the new session's parent
+      // + depth the moment it's registered, so a live tree can nest it under
+      // `parentSessionId` without waiting for its next snapshot poll. Rides the
+      // same fan-out (EventRing → session_events_poll, webhook notifier) as
+      // every other lifecycle event; best-effort, so a bus-less registry no-ops.
+      sessionEvents?.emit({
+        type: "session:spawned",
+        sessionId: id,
+        ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
+        ...(desc.label ? { label: desc.label } : {}),
+        depth: desc.depth ?? 0,
+        ts: new Date().toISOString(),
+      })
       appendLine(
         rt,
         `── ${input.adapterSlug} agent session ${input.agentSession.sessionId} (cwd ${input.cwd}) ──`,
@@ -3299,6 +3312,15 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      // Lineage-attribution signal (WP-R3) — same rule as spawnAgent above.
+      sessionEvents?.emit({
+        type: "session:spawned",
+        sessionId: id,
+        ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
+        ...(desc.label ? { label: desc.label } : {}),
+        depth: desc.depth ?? 0,
+        ts: new Date().toISOString(),
+      })
       pty.onData((chunk: string) => {
         // node-pty emits utf-8 strings. Convert once at the boundary
         // so the ring buffer + emitter consumers all see Buffer.

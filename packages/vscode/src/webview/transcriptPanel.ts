@@ -32,6 +32,7 @@ import {
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
+import { accessIdentity, contextGauge, harnessGlyph } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -309,7 +310,15 @@ export function buildHtml(nonce: string): string {
   // functions the logic-module unit tests pin. Safe because both are
   // self-contained (no module-scope references) and the build isn't minified,
   // so `.toString()` yields a clean, named, hoistable declaration.
-  const injectedHelpers = [mentionQueryAt, parseUriList, recallHistory, pushHistoryEntry]
+  const injectedHelpers = [
+    mentionQueryAt,
+    parseUriList,
+    recallHistory,
+    pushHistoryEntry,
+    harnessGlyph,
+    accessIdentity,
+    contextGauge,
+  ]
     .map(fn => fn.toString())
     .join("\n      ")
 
@@ -386,31 +395,63 @@ export function buildHtml(nonce: string): string {
     .header-action { position: relative; }
     .header-btn { font-size: 0.85em; }
     .header-btn:empty { display: none; }
-    /* Segmented Conversation⇄Terminal toggle — a pure display switch for the
-       same session (FIX 2), NOT the restart-based harness switch. Hidden via
-       [hidden] when the session has only one representation to show. */
-    #view-toggle {
-      display: inline-flex;
-      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
-      border-radius: 5px;
-      overflow: hidden;
+    /* The harness/adapter mark, sitting left of the session name so a glance at
+       any transcript tab says which agent answers there. A quiet glyph, not a
+       chip — colour comes from the surrounding title row. Empty (no adapter
+       reported yet) collapses to nothing. */
+    #header-icon {
+      flex: 0 0 auto;
+      font-size: 1.05em;
+      line-height: 1;
+      color: var(--vscode-descriptionForeground);
     }
-    #view-toggle[hidden] { display: none; }
-    .view-seg {
+    #header-icon:empty { display: none; }
+    /* A single Terminal button that opens the terminal view (FIX 2) — replaces
+       the old Conversation⇄Terminal segmented control, which was too heavy for
+       what is a one-way jump to the raw view. Reuses the openTerminal command.
+       Hidden via [hidden] when the session has no terminal representation. */
+    .term-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       font-size: 0.8em;
       padding: 2px 8px;
-      border: none;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      border-radius: 5px;
       background: transparent;
       color: var(--vscode-descriptionForeground);
-      cursor: pointer;
     }
-    .view-seg + .view-seg {
-      border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+    .term-btn[hidden] { display: none; }
+    .term-btn:hover:not(:disabled) {
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2));
     }
-    .view-seg:hover { color: var(--vscode-foreground); }
-    .view-seg.active {
-      background: var(--vscode-button-background, var(--vscode-editorWidget-background));
-      color: var(--vscode-button-foreground, var(--vscode-foreground));
+    .term-glyph {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+      opacity: 0.8;
+    }
+    /* Context-window fill as a compact ring gauge (FIX 5) — replaces the plain
+       "ctx N%" text with a 14px ring plus a small percent, so it reads at a
+       glance and costs less horizontal space. The ring's colour tracks the
+       fill level (calm → warning). Still the button that opens the raw-counts
+       popover. */
+    .ctx-gauge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px;
+    }
+    .ctx-gauge[hidden] { display: none; }
+    .ctx-ring { flex: 0 0 auto; }
+    .ctx-track { stroke: var(--vscode-panel-border, rgba(128,128,128,0.35)); }
+    .ctx-arc { stroke: var(--vscode-charts-green, #4caf50); transition: stroke-dasharray 0.2s ease; }
+    .ctx-arc.mid { stroke: var(--vscode-charts-yellow, #d7a600); }
+    .ctx-arc.high { stroke: var(--vscode-charts-red, #e51400); }
+    .ctx-pct {
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground);
+      font-variant-numeric: tabular-nums;
     }
     /* A webview has no VS Code popover API — this is our own
        absolutely-positioned element, anchored to its button so it never
@@ -1020,12 +1061,12 @@ export function buildHtml(nonce: string): string {
 </head>
 <body>
   <div id="header">
+    <span id="header-icon" title="" aria-hidden="true"></span>
     <div id="header-title" title="Click to rename this session"></div>
     <div id="header-actions">
-      <div id="view-toggle" class="header-action" role="group" aria-label="Change view" hidden>
-        <button id="view-conversation" class="view-seg" type="button" data-view="conversation">Conversation</button>
-        <button id="view-terminal" class="view-seg" type="button" data-view="terminal">Terminal</button>
-      </div>
+      <button id="open-terminal-btn" class="header-action term-btn" type="button" title="Open the terminal view for this session" hidden>
+        <span class="term-glyph" aria-hidden="true">&gt;_</span>Terminal
+      </button>
       <div class="header-action">
         <button id="cost-btn" class="header-btn" type="button" aria-haspopup="true"></button>
         <div id="cost-popover" class="popover" hidden>
@@ -1033,11 +1074,17 @@ export function buildHtml(nonce: string): string {
           <div class="popover-row"><span class="popover-label">Tokens out</span><span id="popover-tokens-out"></span></div>
           <div class="popover-row"><span class="popover-label">Model</span><span id="popover-model"></span></div>
           <div class="popover-row"><span class="popover-label">Harness</span><span id="popover-harness"></span></div>
-          <div class="popover-row"><span class="popover-label">Auth</span><span id="popover-auth"></span></div>
+          <div class="popover-row"><span class="popover-label">Access</span><span id="popover-auth"></span></div>
         </div>
       </div>
       <div class="header-action">
-        <button id="context-btn" class="header-btn" type="button" aria-haspopup="true"></button>
+        <button id="context-btn" class="header-btn ctx-gauge" type="button" aria-haspopup="true" title="Context window usage" hidden>
+          <svg class="ctx-ring" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle class="ctx-track" cx="8" cy="8" r="6" fill="none" stroke-width="2"></circle>
+            <circle id="ctx-arc" class="ctx-arc" cx="8" cy="8" r="6" fill="none" stroke-width="2" stroke-linecap="round" transform="rotate(-90 8 8)" stroke-dasharray="0 100"></circle>
+          </svg>
+          <span id="ctx-pct" class="ctx-pct"></span>
+        </button>
         <div id="context-popover" class="popover" hidden>
           <div class="popover-row"><span class="popover-label">Used</span><span id="popover-context-used"></span></div>
           <div class="popover-row"><span class="popover-label">Size</span><span id="popover-context-size"></span></div>
@@ -1073,7 +1120,6 @@ export function buildHtml(nonce: string): string {
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip"></span>
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
-          <span id="composer-auth" class="composer-chip"></span>
         </span>
         <span id="send-status"></span>
         <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
@@ -1099,9 +1145,8 @@ export function buildHtml(nonce: string): string {
       // Injected by value from the tested logic modules — see buildHtml.
       ${injectedHelpers}
       const headerTitle = document.getElementById('header-title');
-      const viewToggle = document.getElementById('view-toggle');
-      const viewConversationBtn = document.getElementById('view-conversation');
-      const viewTerminalBtn = document.getElementById('view-terminal');
+      const headerIcon = document.getElementById('header-icon');
+      const openTerminalBtn = document.getElementById('open-terminal-btn');
       const costBtn = document.getElementById('cost-btn');
       const costPopover = document.getElementById('cost-popover');
       const popoverTokensIn = document.getElementById('popover-tokens-in');
@@ -1111,6 +1156,8 @@ export function buildHtml(nonce: string): string {
       const popoverAuth = document.getElementById('popover-auth');
       const contextBtn = document.getElementById('context-btn');
       const contextPopover = document.getElementById('context-popover');
+      const ctxArc = document.getElementById('ctx-arc');
+      const ctxPct = document.getElementById('ctx-pct');
       const popoverContextUsed = document.getElementById('popover-context-used');
       const popoverContextSize = document.getElementById('popover-context-size');
       const blockedNote = document.getElementById('blocked-note');
@@ -1120,7 +1167,6 @@ export function buildHtml(nonce: string): string {
       const composer = document.getElementById('composer');
       const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
-      const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const stopBtn = document.getElementById('stop');
@@ -1395,7 +1441,9 @@ export function buildHtml(nonce: string): string {
         popoverTokensOut.textContent = typeof session.tokensOut === 'number' ? String(session.tokensOut) : '—';
         popoverModel.textContent = session.model || '—';
         popoverHarness.textContent = session.adapterSlug || '—';
-        popoverAuth.textContent = session.auth ? session.auth.mode : '—';
+        // The named wallet the session's access axis is bound to (profile
+        // label/ref), falling back to the raw auth method — never a secret.
+        popoverAuth.textContent = accessIdentity(session);
       }
 
       // Mirrors sessionDisplayName in client/sessionName.ts — this inline
@@ -1414,12 +1462,18 @@ export function buildHtml(nonce: string): string {
         // Don't stomp the inline rename box mid-edit — a sessionUpdate landing
         // while the user is typing must not wipe what they've entered.
         if (!isEditingTitle) headerTitle.textContent = displayName(session);
+        // The harness mark, left of the name — which agent answers in this
+        // tab, at a glance. Its title= names the harness so the glyph is never
+        // a mystery. Empty (no adapter yet) collapses via CSS :empty.
+        const mark = harnessGlyph(session.adapterSlug);
+        headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
+        headerIcon.title = session.adapterSlug ? mark.label : '';
         // What will answer, shown where you type to it — the header no longer
         // repeats any of it. Each chip is omitted when the daemon doesn't
-        // report the field (CSS :empty), rather than rendering "undefined".
+        // report the field (CSS :empty), rather than rendering "undefined". The
+        // auth/access identity moved to the detail popover (FIX 3/4).
         composerHarness.textContent = session.adapterSlug || '';
         composerModel.textContent = session.model || '';
-        composerAuth.textContent = session.auth ? session.auth.mode : '';
 
         // Cost only, on the button — the full in/out breakdown plus what
         // decides the rate (model/harness/auth) lives one click away, in the
@@ -1803,13 +1857,21 @@ export function buildHtml(nonce: string): string {
         // to the popover — a title= tooltip is not a surface anyone finds.
         const used = usage && typeof usage.contextUsed === 'number' ? usage.contextUsed : usage && usage.used;
         const size = usage && typeof usage.contextSize === 'number' ? usage.contextSize : usage && usage.size;
-        const hasFill = typeof used === 'number' && typeof size === 'number' && size > 0;
-        contextBtn.textContent = hasFill ? 'ctx ' + Math.round((used / size) * 100) + '%' : '';
+        // Compact ring gauge (FIX 5) — the arc length is the fill fraction of
+        // the ring's circumference, its colour the fill level.
+        const gauge = contextGauge(used, size);
+        contextBtn.hidden = !gauge;
+        if (gauge) {
+          const circumference = 2 * Math.PI * 6; // r=6 in the 16×16 viewBox
+          ctxArc.setAttribute('stroke-dasharray', (gauge.ratio * circumference) + ' ' + circumference);
+          ctxArc.classList.remove('mid', 'high');
+          if (gauge.level !== 'low') ctxArc.classList.add(gauge.level);
+          ctxPct.textContent = gauge.pct + '%';
+        }
         popoverContextUsed.textContent = typeof used === 'number' ? String(used) : '—';
         popoverContextSize.textContent = typeof size === 'number' ? String(size) : '—';
-        // A button reading "undefined" is worse than a button that isn't
-        // there — and there's nothing to open a popover onto either.
-        if (!hasFill) contextPopover.hidden = true;
+        // A hidden button has nothing to open a popover onto either.
+        if (!gauge) contextPopover.hidden = true;
       }
 
       // Wipes #transcript back to empty and immediately repaints the static
@@ -2282,20 +2344,11 @@ export function buildHtml(nonce: string): string {
         closeAllPopovers();
         popover.hidden = wasOpen;
       }
-      // Segmented view toggle (FIX 2). The active segment is derived from the
-      // current render mode (structured -> Conversation, raw -> Terminal), so a
-      // view switch — which re-posts 'init' with the new mode — reflects the
-      // active segment for free. A click asks the host to flip; the host does
-      // the reload + re-render (no restart).
-      function updateViewToggle() {
-        const active = mode === 'structured' ? 'conversation' : 'terminal';
-        viewConversationBtn.classList.toggle('active', active === 'conversation');
-        viewTerminalBtn.classList.toggle('active', active === 'terminal');
-      }
-      viewConversationBtn.addEventListener('click', function() {
-        vscode.postMessage({ type: 'setView', view: 'conversation' });
-      });
-      viewTerminalBtn.addEventListener('click', function() {
+      // Terminal button (FIX 2). A single lightweight jump to the raw terminal
+      // view via the existing openTerminal command — no segmented control, no
+      // restart. Shown only when the session HAS a terminal representation
+      // (msg.canToggle), gated in the 'init' handler.
+      openTerminalBtn.addEventListener('click', function() {
         vscode.postMessage({ type: 'openTerminal' });
       });
       // Click-to-edit rename (FIX B). Clicking the header title swaps its text
@@ -2385,8 +2438,7 @@ export function buildHtml(nonce: string): string {
             // the accumulated ↑/↓ history survives the switch; the first init
             // always carries one (possibly []), which seeds it.
             historyState = { entries: msg.history || historyState.entries, index: null, draft: '' };
-            viewToggle.hidden = !msg.canToggle;
-            updateViewToggle();
+            openTerminalBtn.hidden = !msg.canToggle;
             applySession(msg.session);
             break;
           case 'conversation':

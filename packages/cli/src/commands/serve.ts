@@ -102,6 +102,7 @@ import {
   listAdaptersWithCatalog,
   listAdaptersWithAcp,
 } from "../registry/resolve.js"
+import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
 import { CATALOG } from "../registry/catalog.js"
 import WebSocket from "ws"
@@ -628,6 +629,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // appends the generic ACP agents (curated ACP_CATALOG + a user's
       // config.acpAgents) so a zero-code ACP CLI is discoverable too.
       listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+      // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
+      // install` + the `adapter_install` MCP tool. Drives npm-global for
+      // acp-catalog CLIs and the manifest install[] pipeline for first-party
+      // adapters (see install-driver.ts). Lets the VS Code Harnesses panel
+      // install a not-yet-ready harness inline.
+      installAgentAdapter: (slug: string) => installAdapter(slug),
       // Read-only catalog/vendor endpoint (SPEC §5) — `GET /catalog/models`
       // + `catalog_models` MCP tool. Joins the same installed-adapter
       // listing `listAgentAdapters` uses with the real named-profile store.

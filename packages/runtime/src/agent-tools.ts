@@ -30,6 +30,7 @@ import {
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  AgentAdapterInstaller,
   CatalogModelsLister,
 } from "./http-server.js"
 import { jsonTolerant } from "./json-tolerant.js"
@@ -140,6 +141,11 @@ export interface RegisterAgentToolsOptions {
    *  MCP tool. Without it the tool returns a clear "not configured"
    *  error pointing at the host wiring. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional adapter installer — when wired, exposes `adapter_install`
+   *  MCP tool (install a not-yet-installed harness by slug). Without it
+   *  the tool returns a clear "not configured" error pointing at the host
+   *  wiring. */
+  installAgentAdapter?: AgentAdapterInstaller
   /** Optional catalog lister — when wired, exposes the read-only
    *  `catalog_models` MCP tool (SPEC §5). Without it the tool returns a
    *  clear "not configured" error pointing at the host wiring. */
@@ -225,6 +231,7 @@ export function registerAgentTools(
     registry,
     resolveAgentAdapter,
     listAgentAdapters,
+    installAgentAdapter,
     listCatalogModels,
     buildOrchestratorMcp,
     callerScope,
@@ -309,6 +316,19 @@ export function registerAgentTools(
             "opencode's 'plan' / 'build'. Adapters that don't declare `modes` (e.g. " +
             "hermes) reject ANY value here — only pass this for adapters known to " +
             "support it. Omit for the adapter's normal interactive mode."
+        ),
+      parentSessionId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Parent-lineage hint: attribute this spawn to a logical parent session " +
+            "so it nests under that node in the sessions tree instead of appearing " +
+            "as a depth-0 root. Pass the `id` of the session doing the spawning " +
+            "(e.g. an agent-to-agent `agent_start`). The child's `depth` is derived " +
+            "from the parent (parent depth + 1); you don't set it. Ignored when this " +
+            "call arrives through the scoped orchestrator gateway — that path derives " +
+            "the parent from its own token, which always wins over this hint."
         ),
       idempotencyKey: z
         .string()
@@ -1194,6 +1214,60 @@ export function registerAgentTools(
             {
               type: "text",
               text: `adapter_list failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── adapter_install ───────────────────────────────────────────
+  server.tool(
+    "adapter_install",
+    "Install an agent CLI adapter (harness) by slug that `adapter_list` " +
+      "reports as not-yet-`ready` — both acp-catalog CLIs (`npm i -g " +
+      "<package>`, e.g. gemini-cli) and first-party workspace adapters " +
+      "(the manifest install pipeline). Returns the outcome + the adapter's " +
+      "re-read status so a UI can refresh a row. Ordinary install failures " +
+      "come back as `ok:false` (not an error), so call it and read the result.",
+    {
+      slug: z
+        .string()
+        .describe("Adapter slug to install (e.g. `gemini-cli`, `claude-code`)."),
+    },
+    async ({ slug }) => {
+      if (!installAgentAdapter) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "adapter_install is not enabled — the daemon was started without " +
+                "an adapter installer. Wire `@agentproto/cli`'s " +
+                "`installAdapter` via `createGateway({ installAgentAdapter })`.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const result = await installAgentAdapter(slug)
+        // A failed install is a real DOMAIN result the caller must read
+        // (`ok:false` + `message`), NOT an MCP error — deliberately no
+        // `isError` here so the structured result survives the client's
+        // result-unwrapping (an isError result is turned into a thrown
+        // string, discarding the payload). isError is reserved for the
+        // "not enabled" / thrown-exception faults, below.
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `adapter_install failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

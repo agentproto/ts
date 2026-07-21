@@ -32,6 +32,7 @@ import { join } from "node:path"
 import type { DaemonConfig } from "../config.js"
 import type {
   AdapterInfo,
+  AdapterInstallResult,
   AuthProfileSummary,
   CatalogModelsResponse,
   CreateAuthProfileRequest,
@@ -441,6 +442,17 @@ export class DaemonClient {
   }
 
   /**
+   * Install an adapter (harness) by slug via the `adapter_install` MCP tool.
+   * Returns the daemon's structured outcome — `ok` reflects the install
+   * command's success, `status` the adapter's re-read readiness. An ordinary
+   * install failure comes back as `{ ok:false }` (not a thrown error); only a
+   * transport/protocol fault throws.
+   */
+  async installAdapter(slug: string): Promise<AdapterInstallResult> {
+    return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
+  }
+
+  /**
    * `catalog_models` is an MCP-only tool — fetch the daemon's read-only
    * vendor/product/route model catalog.
    */
@@ -484,11 +496,11 @@ export class DaemonClient {
   async createAuthProfile(
     req: CreateAuthProfileRequest,
   ): Promise<CreatedAuthProfileResult> {
-    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult } | CreatedAuthProfileResult>(
+    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult }>(
       "auth_profile_create",
       { ...req },
     )
-    const profile = "profile" in result ? result.profile : result
+    const profile = result.profile
     if (!profile) throw new Error("auth_profile_create returned no profile")
     return profile
   }

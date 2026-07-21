@@ -48,6 +48,7 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
+import { stampPrProvenance } from "./pr-provenance-stamp.js"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
@@ -227,6 +228,24 @@ export function registerCommandTools(
         stderr: result.stderr,
         ...(result.truncated ? { truncated: true } : {}),
       })
+      // Daemon-lane PR provenance: when this run was a successful `gh pr
+      // create` issued by an executor session, stamp the `@agentproto-bot`
+      // footer onto the new PR and record it. Strictly best-effort — the
+      // stamper swallows every failure into its outcome and never throws, so
+      // a missing/un-authed `gh` can't turn this command_execute red.
+      const stamp = await stampPrProvenance({
+        command,
+        args: args ?? [],
+        cwd: resolvedCwd,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        registry: opts.registry,
+      })
+      if (stamp.stamped) {
+        console.error(
+          `[command_execute] stamped PR provenance on ${stamp.url} (session ${stamp.sessionId}${stamp.alreadyStamped ? ", already present" : ""})`,
+        )
+      }
       return {
         content: [
           {

@@ -46,6 +46,11 @@
       "default": "./dist/workspace-fs.mjs"
     },
     "./package.json": "./package.json",
+    "./pr-provenance": {
+      "types": "./dist/pr-provenance.d.ts",
+      "import": "./dist/pr-provenance.mjs",
+      "default": "./dist/pr-provenance.mjs"
+    },
     "./workspaces-config": {
       "types": "./dist/workspaces-config.d.ts",
       "import": "./dist/workspaces-config.mjs",

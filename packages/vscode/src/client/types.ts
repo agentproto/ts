@@ -239,10 +239,15 @@ export interface AdapterInfo {
    *  provider/mode a structured `models.allowed` entry states. Absent on
    *  an older daemon that predates this projection. */
   modelDetails?: AdapterModelInfo[]
-  /** Install/readiness state: ready = installed, available = installable. */
-  status?: "supported" | "available" | "ready"
+  /** Install/readiness state: ready = installed, available = installable.
+   *  `unresolvable` = package present but the last import failed (mid-rebuild)
+   *  — not reinstallable. */
+  status?: "supported" | "available" | "ready" | "unresolvable"
   /** Short human hint shown in pickers (e.g. "anthropic · ACP · resumable"). */
   hint?: string
+  /** Provenance for generic ACP entries (`acp-catalog` / `acp-config`);
+   *  absent on native `@agentproto/adapter-*` adapters. */
+  source?: "acp-config" | "acp-catalog"
   /**
    * How this adapter selects a model (AIP-45 `models.apply`; the daemon
    * defaults an omitted manifest field to `"config"` before projecting it
@@ -253,6 +258,23 @@ export interface AdapterInfo {
    * `"config"`.
    */
   modelApply?: "config" | "command" | "arg"
+}
+
+/** Mirrors @agentproto/runtime AdapterInstallResult — the outcome of an
+ *  `adapter_install` call. `ok` reflects only whether the install command
+ *  succeeded; `status` is the adapter's readiness re-read afterwards. */
+export interface AdapterInstallResult {
+  slug: string
+  ok: boolean
+  method:
+    | "npm-global"
+    | "agentproto-install"
+    | "already-installed"
+    | "unsupported"
+  message: string
+  command?: string
+  exitCode?: number
+  status?: "supported" | "available" | "ready" | "unresolvable"
 }
 
 /** /health probe result. */

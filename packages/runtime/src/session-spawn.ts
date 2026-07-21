@@ -256,6 +256,22 @@ export interface SpawnAgentSessionInput {
   harness?: string
   cwd?: string
   workspaceSlug?: string
+  /** Trusted-loopback parent-lineage hint (WP-R1). Attributes this spawn to a
+   *  logical parent session so it nests under that node in the sessions tree,
+   *  filling the gap that otherwise leaves an anonymous `agent_start` (an
+   *  agent-to-agent spawn on the root `/mcp`, or a caller that IS a session but
+   *  didn't come through the scoped orchestrator gateway) a depth-0 orphan.
+   *
+   *  Trust boundary: the scoped `/mcp/orchestrator` gateway derives parent from
+   *  its unspoofable scope token, so a hint arriving WITH a `callerScope` is
+   *  IGNORED — the scope always wins. The hint is honoured ONLY on the
+   *  anonymous root path (no `callerScope`), where there is no scope to
+   *  attribute from. `depth` is derived from the resolved parent descriptor
+   *  (parent's `depth + 1`, defaulting to 1 when the parent isn't registered)
+   *  rather than trusted from the caller. Descriptor-only: a hint never relaxes
+   *  the depth-gated worktree/role guards — declaring a logical parent is not
+   *  the same as being a nested (scoped) spawn. */
+  parentSessionId?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
@@ -594,10 +610,34 @@ export async function spawnAgentSession(
   // `callerScope` is the spawning orchestrator's identity. Enforce
   // the depth cap and per-parent child quota BEFORE spawning, and
   // compute the new session's parent attribution. A direct `/mcp`
-  // spawn (no callerScope) is a root: depth 0, no parent, no caps.
-  // (`childDepth` itself is computed earlier, above the cwd-resolution
-  // block — see the explicit-repo guard's comment there.)
-  const parentSessionId = callerScope?.ownerSessionId
+  // spawn (no callerScope) is subject to NO caps — but it can still be
+  // ATTRIBUTED to a logical parent via the trusted `parentSessionId` hint
+  // below (WP-R1), which only records lineage and never enters these caps.
+  // (`childDepth`, the cap/gate depth, is computed earlier, above the
+  // cwd-resolution block — see the explicit-repo guard's comment there.)
+  // Parent attribution. The scoped orchestrator gateway's token is the
+  // unspoofable source: when `callerScope` is present, parent is derived from
+  // it and any caller-supplied `parentSessionId` hint is IGNORED (the scope
+  // always wins). Only on the anonymous root path — no `callerScope`, hence no
+  // scope to attribute from — is the trusted-loopback `parentSessionId` hint
+  // (WP-R1) honoured, filling the gap that leaves an agent-to-agent spawn a
+  // depth-0 orphan.
+  const parentHint = callerScope ? undefined : input.parentSessionId
+  const parentSessionId = callerScope?.ownerSessionId ?? parentHint
+  // Recorded lineage depth. For a scope-attributed spawn this is the gating
+  // depth (`callerScope.depth + 1`, computed above). For a hint-attributed
+  // root spawn — which carries no scope and therefore no gating depth — derive
+  // it from the resolved parent descriptor's own depth (+1), defaulting to 1
+  // when the parent isn't in the registry (e.g. a not-yet-self-registered
+  // synthetic root). A parentless root stays depth 0. Descriptor-only on
+  // purpose: the hint never moves `childDepth`, so it can't relax the
+  // depth-gated worktree/role guards above — an agent declaring a logical
+  // parent is not a nested (scoped) spawn.
+  const recordedDepth = callerScope
+    ? childDepth
+    : parentHint
+      ? (registry.get(parentHint)?.depth ?? 0) + 1
+      : 0
   if (callerScope) {
     if (childDepth > callerScope.maxDepth) {
       return {
@@ -1250,11 +1290,14 @@ export async function spawnAgentSession(
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
-      // Parent attribution + depth (WP4) — only set for spawns that
-      // arrived via the scoped sub-gateway; root spawns stay
-      // parentless at depth 0.
+      // Parent attribution + depth. Set for spawns that arrived via the
+      // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
+      // `parentSessionId` lineage hint on the anonymous root path (WP-R1). A
+      // plain root spawn with no hint stays parentless at depth 0. `depth` is
+      // the scope-derived depth for a scoped spawn, else the hint parent's
+      // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
-      depth: childDepth,
+      depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(readUsage ? { readUsage } : {}),
