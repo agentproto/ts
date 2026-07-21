@@ -322,7 +322,10 @@ export {
   normalizeSkillsOption,
   credentialFingerprint,
   resolveAuthSpec,
+  resolveSubscriptionCredential,
   AuthResolutionError,
+  SubscriptionSourceError,
+  CLAUDE_CODE_OAUTH_SOURCE,
   type SpawnDefaultsConfig,
   type DefaultsAdapterConfig,
   type DefaultsAdapterAuthConfig,
@@ -332,6 +335,8 @@ export {
   type ResolvedAuthSpec,
   type AuthEcho,
   type CredentialSource,
+  type ResolveSubscriptionCredentialInput,
+  type SubscriptionCredentialResolution,
   type DeclaredAdapterOption,
 } from "./spawn-defaults.js"
 export {

@@ -24,12 +24,16 @@ import {
   normalizeSkillsOption,
   resolveAuthSpec,
   AuthResolutionError,
+  resolveSubscriptionCredential,
+  SubscriptionSourceError,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
   type AuthEcho,
   type AdapterAuthDescriptor,
+  type CredentialSource,
 } from "./spawn-defaults.js"
+import { resolveClaudeCodeOauthToken } from "./claude-code-oauth-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -410,6 +414,8 @@ export type SpawnAgentSessionResult =
         | "invalid_role"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
+        | "unsupported_auth_source"
+        | "auth_source_unresolved"
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "model_wallet_ineligible"
@@ -1043,6 +1049,41 @@ export async function spawnAgentSession(
       spawnDefaults.auth.apiKeyCredential === undefined
         ? await getProviderKey(apiKeyStoreProvider)
         : undefined
+    // Subscription-credential precedence (SPEC §2): explicit per-spawn token >
+    // self-refreshing `source` (resolved FRESH here, the impure caller) >
+    // config static token. The recipe read is I/O — do it before the pure
+    // resolveAuthSpec and hand it the fresh credential + its origin label. A
+    // configured-but-unresolvable source fails LOUD (never a silent
+    // fallthrough). api-key mode never touches this. The auth-PROFILE path
+    // above deliberately does NOT support `source` (out of scope, PR follow-up).
+    let subscriptionCredential: string | undefined
+    let subscriptionCredentialSource: CredentialSource | undefined
+    try {
+      const subResolution = await resolveSubscriptionCredential(
+        {
+          ...(input.auth?.token !== undefined ? { explicitToken: input.auth.token } : {}),
+          ...(spawnDefaults.auth.subscriptionSource !== undefined
+            ? { source: spawnDefaults.auth.subscriptionSource }
+            : {}),
+          ...(spawnDefaults.auth.subscriptionCredential !== undefined
+            ? { fallbackStaticToken: spawnDefaults.auth.subscriptionCredential }
+            : {}),
+        },
+        resolveClaudeCodeOauthToken,
+      )
+      subscriptionCredential = subResolution.credential
+      subscriptionCredentialSource = subResolution.source
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) {
+        return {
+          ok: false,
+          code: err.code,
+          message: `agent_start: ${err.message}`,
+          details: { adapter: input.adapter },
+        }
+      }
+      throw err
+    }
     try {
       const result = resolveAuthSpec({
         descriptor: resolved.authDescriptor,
@@ -1053,8 +1094,9 @@ export async function spawnAgentSession(
           ? { requestedMode: spawnDefaults.auth.requestedMode }
           : {}),
         explicit: spawnDefaults.auth.explicit,
-        ...(spawnDefaults.auth.subscriptionCredential !== undefined
-          ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
+        ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+        ...(subscriptionCredentialSource !== undefined
+          ? { subscriptionCredentialSource }
           : {}),
         ...(spawnDefaults.auth.apiKeyCredential !== undefined
           ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }

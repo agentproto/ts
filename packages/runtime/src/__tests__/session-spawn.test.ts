@@ -35,6 +35,15 @@ vi.mock("../workspaces-config.js", async (importOriginal) => {
   return { ...actual, loadWorkspacesConfig: vi.fn(async () => wsConfigState.value) }
 })
 
+// Control the `claude-code-oauth` recipe resolver deterministically — the Mode-3
+// self-refreshing source path — so these tests never touch the real Keychain.
+const oauthState = vi.hoisted(() => ({
+  impl: (async (_id: string) => "sk-ant-oat01-fresh-from-keychain") as (id: string) => Promise<string>,
+}))
+vi.mock("../claude-code-oauth-source.js", () => ({
+  resolveClaudeCodeOauthToken: (id: string) => oauthState.impl(id),
+}))
+
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -1799,5 +1808,113 @@ describe("spawnAgentSession — worktree cwd resolves to its base repo's workspa
 
     expect(result.ok).toBe(true)
     expect(registry.list()[0]?.workspaceSlug).toBe("the-base-repo")
+  })
+})
+
+// ── Mode 3: self-refreshing OAuth `auth.source` end-to-end through spawn ──────
+// The claude-code-oauth recipe resolver is mocked (see top of file); these prove
+// the impure caller wires it in — reads it fresh, echoes claude-code-oauth on
+// the descriptor, honors precedence, and fails LOUD when it can't resolve.
+describe("spawnAgentSession — auth.source self-refreshing subscription (Mode 3)", () => {
+  const CLAUDE_LIKE_DESCRIPTOR: AdapterAuthDescriptor = {
+    provider: "anthropic",
+    authEnforce: "always",
+    authSubscription: {
+      setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+    },
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: CLAUDE_LIKE_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    oauthState.impl = async () => "sk-ant-oat01-fresh-from-keychain"
+  })
+
+  it("resolves the token FRESH and stamps credentialSource:claude-code-oauth on the descriptor", async () => {
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      auth: { source: "claude-code-oauth" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("claude-code-oauth")
+    expect(result.descriptor.auth?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+    // The fresh token's fingerprint is echoed — never the raw secret.
+    expect(result.descriptor.auth?.fingerprint).toContain("sk-ant-oat")
+    expect(JSON.stringify(result.descriptor)).not.toContain("fresh-from-keychain")
+  })
+
+  it("an explicit per-spawn token WINS over source — origin stays explicit-config, recipe never called", async () => {
+    const spy = vi.fn(async () => "sk-ant-oat01-should-not-be-used")
+    oauthState.impl = spy
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      auth: { token: "sk-ant-oat01-explicit", source: "claude-code-oauth" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("source set but the recipe can't resolve (not logged in) ⇒ loud spawn failure, no session", async () => {
+    oauthState.impl = async () => {
+      throw new Error("keychain item 'Claude Code-credentials' not found")
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      auth: { source: "claude-code-oauth" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_source_unresolved")
+    expect(result.message).toContain("claude-code-oauth")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an unknown source value ⇒ unsupported_auth_source, recipe never consulted", async () => {
+    const spy = vi.fn(async () => "unused")
+    oauthState.impl = spy
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      auth: { source: "some-bogus-source" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("unsupported_auth_source")
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("no source ⇒ unchanged static-token behavior (Mode 2), recipe never consulted", async () => {
+    const spy = vi.fn(async () => "unused")
+    oauthState.impl = spy
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      auth: { token: "sk-ant-oat01-static" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
+    expect(spy).not.toHaveBeenCalled()
   })
 })
