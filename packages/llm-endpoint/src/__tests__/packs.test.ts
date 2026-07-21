@@ -10,9 +10,24 @@ import {
   xaiPack,
   openrouterPack,
   anthropicPack,
+  codingPack,
   parseTransparentModel,
+  toAnthropicStyle,
+  shaNumericId,
+  TIER_TO_FAMILY,
   type ModelPack,
 } from '../packs.js';
+
+// Bare Claude ids the Anthropic-style transform must never emit — guarding
+// against impersonating a real Anthropic model.
+const REAL_CLAUDE_IDS = new Set([
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-opus-4.8',
+  'claude-sonnet-5',
+  'claude-haiku-4-5',
+  'claude-haiku-4-5-20251001',
+]);
 
 // ── matchesPattern ────────────────────────────────────────────────────────
 
@@ -281,5 +296,113 @@ describe('PACK_REGISTRY', () => {
         }
       }
     }
+  });
+
+  it('codingPack carries no hardcoded aliases (Anthropic-style is a runtime transform)', () => {
+    for (const [code, target] of Object.entries(codingPack.models)) {
+      expect(target.equivalentClaudeName, `coding/${code}`).toBeUndefined();
+    }
+  });
+});
+
+// ── codingPack ────────────────────────────────────────────────────────────
+
+describe('codingPack', () => {
+  it('is registered under "coding"', () => {
+    expect(resolvePack('coding')).toBe(codingPack);
+    expect(listPackIds()).toContain('coding');
+  });
+
+  it('routes every model through OpenRouter with a tier and no alias', () => {
+    for (const [code, route] of Object.entries(codingPack.models)) {
+      expect(route.provider, `${code}.provider`).toBe('openrouter');
+      expect(route.model, `${code}.model`).toBe(code); // transparent: code === upstream id
+      expect(route.tier, `${code}.tier`).toBeTruthy();
+      expect(route.equivalentClaudeName, `${code}.alias`).toBeUndefined();
+    }
+  });
+
+  it('curates the expected production routes (no free/preview)', () => {
+    expect(Object.keys(codingPack.models).sort()).toEqual([
+      'anthropic/claude-opus-4.8',
+      'anthropic/claude-sonnet-5',
+      'deepseek/deepseek-v4-pro',
+      'minimax/minimax-m3',
+      'openai/gpt-5.5',
+      'z-ai/glm-5.2',
+    ]);
+    for (const code of Object.keys(codingPack.models)) {
+      expect(code).not.toMatch(/:free$/);
+      expect(code).not.toMatch(/preview/);
+    }
+  });
+});
+
+// ── shaNumericId ──────────────────────────────────────────────────────────
+
+describe('shaNumericId', () => {
+  it('is deterministic for the same input', () => {
+    expect(shaNumericId('anthropic/claude-sonnet-5')).toBe(shaNumericId('anthropic/claude-sonnet-5'));
+  });
+
+  it('produces a fixed-length zero-padded numeric string', () => {
+    expect(shaNumericId('z-ai/glm-5.2', 7)).toMatch(/^\d{7}$/);
+    expect(shaNumericId('minimax/minimax-m3', 10)).toMatch(/^\d{10}$/);
+  });
+
+  it('differs across distinct inputs', () => {
+    expect(shaNumericId('a/b')).not.toBe(shaNumericId('a/c'));
+  });
+});
+
+// ── toAnthropicStyle ──────────────────────────────────────────────────────
+
+describe('toAnthropicStyle', () => {
+  it('is deterministic (same input pack → identical output)', () => {
+    expect(toAnthropicStyle(codingPack)).toEqual(toAnthropicStyle(codingPack));
+  });
+
+  it('preserves code (display name), provider, model, and tier', () => {
+    const styled = toAnthropicStyle(codingPack);
+    for (const [code, route] of Object.entries(styled.models)) {
+      const orig = codingPack.models[code]!;
+      expect(route.provider).toBe(orig.provider);
+      expect(route.model).toBe(orig.model);
+      expect(route.tier).toBe(orig.tier);
+    }
+  });
+
+  it('emits claude-<family>-<digits> aliases from the route tier', () => {
+    const styled = toAnthropicStyle(codingPack);
+    for (const [code, route] of Object.entries(styled.models)) {
+      const family = TIER_TO_FAMILY[codingPack.models[code]!.tier!];
+      expect(route.equivalentClaudeName).toMatch(
+        new RegExp(`^claude-(fable|opus|sonnet|haiku)-\\d+$`),
+      );
+      expect(route.equivalentClaudeName!.startsWith(`claude-${family}-`)).toBe(true);
+    }
+  });
+
+  it('never emits a bare real Claude id, and aliases are unique within the pack', () => {
+    const styled = toAnthropicStyle(codingPack);
+    const aliases = Object.values(styled.models).map(m => m.equivalentClaudeName!);
+    for (const a of aliases) expect(REAL_CLAUDE_IDS.has(a), a).toBe(false);
+    expect(new Set(aliases).size).toBe(aliases.length);
+  });
+
+  it('falls back to the sonnet family when a route carries no tier', () => {
+    const untiered: ModelPack = {
+      id: 'x', label: 'X', description: '',
+      models: { 'openrouter/foo/bar': { provider: 'openrouter', model: 'foo/bar' } },
+    };
+    const styled = toAnthropicStyle(untiered);
+    expect(styled.models['openrouter/foo/bar']!.equivalentClaudeName).toMatch(/^claude-sonnet-\d+$/);
+  });
+
+  it('honors id/label overrides and keeps the description', () => {
+    const styled = toAnthropicStyle(codingPack, { id: 'coding-anthropic', label: 'Coding (Anthropic)' });
+    expect(styled.id).toBe('coding-anthropic');
+    expect(styled.label).toBe('Coding (Anthropic)');
+    expect(styled.description).toBe(codingPack.description);
   });
 });

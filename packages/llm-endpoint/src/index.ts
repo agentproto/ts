@@ -14,6 +14,7 @@ import {
   DEFAULT_PACK_ID,
   parseTransparentModel,
   KNOWN_TRANSPARENT_PROVIDERS,
+  toAnthropicStyle,
 } from './packs.js';
 import {
   validateResponsesRequest,
@@ -231,6 +232,12 @@ export interface ModelRouteContext {
    * surfaces are always transparent and never resolve default alias packs.
    */
   allowAliases: boolean;
+  /**
+   * When true, the active pack has been run through {@link toAnthropicStyle}
+   * for this request, so its `equivalentClaudeName` aliases are resolvable even
+   * though it is an official (non-local) pack.
+   */
+  anthropicFormat?: boolean;
 }
 
 function applyProviderOverride(
@@ -269,6 +276,9 @@ export function resolveModelRoute(
 ): { provider: string; model: string } {
   const mapping = buildMappingFromPack(ctx.activePack);
   const isLocalPack = Boolean(localPacks[ctx.activePack.id]);
+  // Alias-bearing when the pack is local OR has been transformed to Anthropic
+  // style for this request. Either way its equivalentClaudeName ids resolve.
+  const isAliasPack = isLocalPack || Boolean(ctx.anthropicFormat);
 
   if (ctx.forcedAliasCode) {
     const forcedCode = ctx.forcedAliasCode.toLowerCase();
@@ -296,7 +306,7 @@ export function resolveModelRoute(
   }
   const incomingLower = incomingModel.toLowerCase();
 
-  if (ctx.allowAliases && isLocalPack) {
+  if (ctx.allowAliases && isAliasPack) {
     const aliasEntry = Object.entries(mapping).find(
       ([code, target]) =>
         target.equivalentClaudeName?.toLowerCase() === incomingLower ||
@@ -304,7 +314,7 @@ export function resolveModelRoute(
     );
     if (aliasEntry) {
       const target = aliasEntry[1];
-      console.log(`[Proxy] Matched local-pack alias "${incomingModel}" -> ${target.provider}:${target.model}`);
+      console.log(`[Proxy] Matched alias "${incomingModel}" -> ${target.provider}:${target.model}`);
       return applyProviderOverride(target, ctx.queryProvider);
     }
   }
@@ -351,6 +361,14 @@ function readQueryAndToolOptions(parsedUrl: URL, req: IncomingMessage) {
   const envAlias = process.env.PROXY_MODEL_ALIAS?.toLowerCase().trim();
   const forcedAliasCode = headerAlias || envAlias || null;
 
+  // Anthropic-style format toggle — relabels the active pack's routes with
+  // opaque `claude-<family>-<sha>` ids (see toAnthropicStyle). Header
+  // `X-Proxy-Format: anthropic` or `?format=anthropic`.
+  const rawHeaderFormat = req.headers['x-proxy-format'];
+  const headerFormat = (Array.isArray(rawHeaderFormat) ? rawHeaderFormat[0] : rawHeaderFormat)?.toLowerCase().trim();
+  const queryFormat = parsedUrl.searchParams.get('format')?.toLowerCase().trim();
+  const anthropicFormat = headerFormat === 'anthropic' || queryFormat === 'anthropic';
+
   return {
     queryProvider,
     queryModelCode,
@@ -360,6 +378,7 @@ function readQueryAndToolOptions(parsedUrl: URL, req: IncomingMessage) {
     headerNoTools,
     headerExcludeTools,
     forcedAliasCode,
+    anthropicFormat,
   };
 }
 
@@ -1284,7 +1303,7 @@ const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Edge-Auth');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Proxy-Format, X-Edge-Auth');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1378,10 +1397,14 @@ const server = createServer((req, res) => {
     }
   }
 
-  const activePack = resolvePackMerged(packId);
-
-  const { queryProvider, queryModelCode, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools, forcedAliasCode } =
+  const { queryProvider, queryModelCode, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools, forcedAliasCode, anthropicFormat } =
     readQueryAndToolOptions(parsedUrl, req);
+
+  // Anthropic-style format: relabel the resolved pack's routes with opaque
+  // `claude-<family>-<sha>` ids for THIS request only. Every downstream
+  // consumer (model listing + message routing) then sees the transformed pack.
+  const resolvedPack = resolvePackMerged(packId);
+  const activePack = anthropicFormat ? toAnthropicStyle(resolvedPack) : resolvedPack;
 
   console.log(
     `[Proxy] Incoming request: ${req.method} ${rawUrl}` +
@@ -1449,12 +1472,15 @@ const server = createServer((req, res) => {
     const isAnthropicStyle = req.headers['anthropic-version'] !== undefined || req.headers['x-api-key'] !== undefined;
     const mapping = buildMappingFromPack(activePack);
     const isLocalPack = Boolean(getLocalPacks()[activePack.id]);
+    // Alias-bearing: a local pack, or an official pack transformed to Anthropic
+    // style for this request — either exposes equivalentClaudeName as the id.
+    const isAliasPack = isLocalPack || anthropicFormat;
 
     if (isAnthropicStyle) {
       // Format 100% Natif d'Anthropic Claude
       const anthropicModelsResponse = {
         data: Object.entries(mapping).map(([code, target]) => {
-          const id = (isLocalPack && target.equivalentClaudeName) ? target.equivalentClaudeName : code;
+          const id = (isAliasPack && target.equivalentClaudeName) ? target.equivalentClaudeName : code;
           return {
             id,
             display_name: code,
@@ -1514,6 +1540,7 @@ const server = createServer((req, res) => {
           queryProvider,
           forcedAliasCode,
           allowAliases: true,
+          anthropicFormat,
         });
       } catch (e: any) {
         console.warn(`[Proxy] ${e.message}`);

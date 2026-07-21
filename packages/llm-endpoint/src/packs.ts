@@ -1,12 +1,28 @@
+import { createHash } from 'crypto';
+
+/**
+ * Capability tier of a route, coarse enough to map onto the four Claude
+ * families. Used by {@link toAnthropicStyle} to pick a family prefix for the
+ * generated Anthropic-shaped id (see {@link TIER_TO_FAMILY}).
+ */
+export type ModelTier = 'extra-high' | 'high' | 'medium' | 'small';
+
 export interface ModelRoute {
   provider: string;
   model: string;
   /**
-   * Optional Claude-shaped compatibility alias. Only local packs (loaded from
-   * `packs.local.json`) should populate this field. Public committed packs use
+   * Optional Claude-shaped compatibility alias. Committed packs never hardcode
+   * this — it is populated either by a local pack (loaded from
+   * `packs.local.json`) or on demand by {@link toAnthropicStyle} when a request
+   * opts into the Anthropic-style format. Committed packs use
    * provider-transparent model IDs and never pretend to be real Claude models.
    */
   equivalentClaudeName?: string;
+  /**
+   * Coarse capability tier. Only consumed by {@link toAnthropicStyle} to select
+   * a Claude family for the generated alias; ignored on every routing path.
+   */
+  tier?: ModelTier;
 }
 
 /**
@@ -209,6 +225,25 @@ export const requestyPack: ModelPack = {
   },
 };
 
+// Curated production coding models, all routed through OpenRouter's native
+// Anthropic-compatible endpoint. Provider-transparent (code === upstream id);
+// no preview/free routes. Tiers feed toAnthropicStyle only. Cross-check the ids
+// against `GET https://openrouter.ai/api/v1/models?supported_parameters=tools`
+// when refreshing this list — availability and pricing drift.
+export const codingPack: ModelPack = {
+  id: 'coding',
+  label: 'Coding (OpenRouter)',
+  description: 'Curated production coding models routed through OpenRouter',
+  models: {
+    'openai/gpt-5.5': { provider: 'openrouter', model: 'openai/gpt-5.5', tier: 'extra-high' },
+    'anthropic/claude-opus-4.8': { provider: 'openrouter', model: 'anthropic/claude-opus-4.8', tier: 'high' },
+    'deepseek/deepseek-v4-pro': { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', tier: 'high' },
+    'anthropic/claude-sonnet-5': { provider: 'openrouter', model: 'anthropic/claude-sonnet-5', tier: 'medium' },
+    'z-ai/glm-5.2': { provider: 'openrouter', model: 'z-ai/glm-5.2', tier: 'medium' },
+    'minimax/minimax-m3': { provider: 'openrouter', model: 'minimax/minimax-m3', tier: 'small' },
+  },
+};
+
 // ── Registry ──────────────────────────────────────────────────────────────
 // Start with official packs. Local packs are merged at runtime if present.
 export const PACK_REGISTRY: Record<string, ModelPack> = {
@@ -218,6 +253,7 @@ export const PACK_REGISTRY: Record<string, ModelPack> = {
   [openrouterPack.id]: openrouterPack,
   [requestyPack.id]: requestyPack,
   [anthropicPack.id]: anthropicPack,
+  [codingPack.id]: codingPack,
 };
 
 // Default pack used when no pack is specified.
@@ -289,4 +325,71 @@ export function parseTransparentModel(model: string): { provider: string; model:
  */
 export function matchesPattern(name: string, pattern: string): boolean {
   return pattern.endsWith('*') ? name.startsWith(pattern.slice(0, -1)) : name === pattern;
+}
+
+// ── Anthropic-style format transform ────────────────────────────────────────
+// Relabels each route with an opaque, Claude-shaped id so Anthropic-only
+// clients get ids they'll accept, WITHOUT impersonating a real Claude model.
+// Applied on demand (never committed) when a request opts into the
+// Anthropic-style format — see the X-Proxy-Format handling in index.ts.
+
+/** Maps a coarse capability tier onto a Claude family used as the id prefix. */
+export const TIER_TO_FAMILY: Record<ModelTier, string> = {
+  'extra-high': 'fable',
+  high: 'opus',
+  medium: 'sonnet',
+  small: 'haiku',
+};
+
+// Family used when a route carries no tier — a neutral middle default.
+const DEFAULT_FAMILY = 'sonnet';
+
+export interface ToAnthropicStyleOptions {
+  /** New pack id (defaults to the source pack's id). */
+  id?: string;
+  /** New label (defaults to the source pack's label). */
+  label?: string;
+  /** Number of decimal digits in the sha-derived suffix (default 7). */
+  digits?: number;
+  /** Alias prefix (default "claude-"). */
+  idPrefix?: string;
+}
+
+/**
+ * Derive a deterministic, fixed-length numeric string from a model id via
+ * sha256. Distinct upstream ids yield distinct numbers (collision-resistant
+ * within a pack); the same id always yields the same number, so ids are stable
+ * across process restarts and unit-testable. No Math.random.
+ */
+export function shaNumericId(model: string, digits = 7): string {
+  const hex = createHash('sha256').update(model).digest('hex');
+  // 15 hex chars ≈ 60 bits — safely below Number/BigInt-from-hex limits and
+  // more than enough entropy for the small pack sizes here.
+  const n = BigInt('0x' + hex.slice(0, 15)) % (10n ** BigInt(digits));
+  return n.toString().padStart(digits, '0');
+}
+
+/**
+ * Convert a pack to "Anthropic style": every route keeps its transparent code
+ * (the display name) and its real provider/model, and gains an
+ * `equivalentClaudeName` of the form `claude-<family>-<sha>`. The family comes
+ * from the route's {@link ModelTier} (fallback `sonnet`); the suffix is a
+ * sha-derived number of the upstream model id. Pure and deterministic.
+ */
+export function toAnthropicStyle(pack: ModelPack, opts: ToAnthropicStyleOptions = {}): ModelPack {
+  const { digits = 7, idPrefix = 'claude-' } = opts;
+  const models: Record<string, ModelRoute> = {};
+  for (const [code, route] of Object.entries(pack.models)) {
+    const family = route.tier ? TIER_TO_FAMILY[route.tier] : DEFAULT_FAMILY;
+    models[code] = {
+      ...route,
+      equivalentClaudeName: `${idPrefix}${family}-${shaNumericId(route.model, digits)}`,
+    };
+  }
+  return {
+    id: opts.id ?? pack.id,
+    label: opts.label ?? pack.label,
+    description: pack.description,
+    models,
+  };
 }
