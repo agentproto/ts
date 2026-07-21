@@ -53,8 +53,11 @@ Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
-  agentproto install   <slug> [--force] [--dry-run] [--skip-setup]
+  agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
                        <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
+                       --allow-unverified: run a curl/download installer that
+                       declares no verify_sha256 (refused by default in
+                       non-interactive contexts)
   agentproto plugins   <list|show|install|uninstall|enable|disable> [args]
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
