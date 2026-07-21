@@ -113,6 +113,20 @@ export interface SessionDescriptor {
   name?: string
   argv?: readonly string[]
   cwd?: string
+  /** Root of the git worktree the session was spawned in — the session→
+   *  worktree edge the daemon resolved from `cwd` at spawn time. Distinct from
+   *  `cwd`, which may be a subdirectory of it. Absent when `cwd` isn't inside a
+   *  linked worktree (a plain checkout, a non-repo dir) and for every session
+   *  persisted before the runtime recorded this field. Mirrors
+   *  `@agentproto/runtime` SessionDescriptor.worktreePath — the sessions tree
+   *  renders its leaf name as the row's isolation indicator (see
+   *  `isolationLabelFor` in sessionsTree.logic.ts). */
+  worktreePath?: string
+  /** Generation id of that worktree, read at spawn from the provision marker.
+   *  Absent whenever `worktreePath` is, and also for a worktree created by a
+   *  bare `git worktree add` (nothing writes a marker there). Mirrors
+   *  `@agentproto/runtime` SessionDescriptor.worktreeId. */
+  worktreeId?: string
   adapterSlug?: string
   /** AIP-45 mode the session was spawned with (e.g. claude-code's `plan`, a
    *  gateway preset mode like `moonshot`). Undefined for the adapter's own
