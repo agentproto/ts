@@ -63,6 +63,12 @@ export async function runInstall(args: readonly string[]): Promise<number> {
       force: { type: "boolean", short: "f" },
       "dry-run": { type: "boolean" },
       "skip-setup": { type: "boolean" },
+      // Opt-in to running a `curl | bash` / `download` installer that
+      // declares no `verify_sha256`. Off by default: in a non-interactive
+      // context (agent, daemon, CI) an unverified installer is refused (see
+      // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
+      // compromises the machine. A human at a TTY still gets warn-and-proceed.
+      "allow-unverified": { type: "boolean" },
     },
   })
 
@@ -172,7 +178,7 @@ export async function runInstall(args: readonly string[]): Promise<number> {
         succeeded = true
         continue
       }
-      const code = await runStep(step)
+      const code = await runStep(step, values["allow-unverified"] === true)
       if (code === 0) {
         succeeded = true
         break
@@ -237,7 +243,10 @@ function describeStep(step: AgentCliInstallMethod): string {
   }
 }
 
-async function runStep(step: AgentCliInstallMethod): Promise<number> {
+async function runStep(
+  step: AgentCliInstallMethod,
+  allowUnverified: boolean,
+): Promise<number> {
   switch (step.method) {
     case "npm": {
       if (!step.package) {
@@ -292,7 +301,7 @@ async function runStep(step: AgentCliInstallMethod): Promise<number> {
         process.stderr.write("agentproto install: curl step missing url.\n")
         return 2
       }
-      return runCurlInstaller(step.url, step.verify_sha256)
+      return runCurlInstaller(step.url, step.verify_sha256, allowUnverified)
     }
     case "download": {
       if (!step.url || !step.extract_bin) {
@@ -305,6 +314,7 @@ async function runStep(step: AgentCliInstallMethod): Promise<number> {
         url: step.url,
         extractBin: step.extract_bin,
         verifySha256: step.verify_sha256,
+        allowUnverified,
       })
     }
     default:
@@ -317,17 +327,56 @@ async function runStep(step: AgentCliInstallMethod): Promise<number> {
 }
 
 /**
+ * Decide whether to REFUSE an installer step that declares no
+ * `verify_sha256`. AIP-29 (§ Install methods → §curl) says hosts SHOULD
+ * refuse curl-style installers without one in production; the risk is a
+ * silent MITM/supply-chain compromise of a `curl | bash` (or an unverified
+ * downloaded binary dropped on PATH). We split the difference by context:
+ *
+ *   - verified (`verifySha256` present) → never refuse.
+ *   - `--allow-unverified` opt-in → never refuse.
+ *   - otherwise → refuse iff NON-interactive. Agents, the daemon, and CI
+ *     run without a TTY, so an unverified installer there is refused by
+ *     default; a human at a TTY keeps the warn-and-proceed dev behavior.
+ *
+ * Pure + exported so the policy is unit-testable without spawning an install.
+ */
+export function shouldRefuseUnverifiedInstaller(opts: {
+  verifySha256?: string
+  allowUnverified: boolean
+  interactive: boolean
+}): boolean {
+  if (opts.verifySha256) return false
+  if (opts.allowUnverified) return false
+  return !opts.interactive
+}
+
+/**
  * `curl <url> | bash` with optional SHA-256 verification of the
- * installer script *before* executing it. Spec posture (AIP-29 §
- * Install methods → §curl): hosts SHOULD refuse curl-style installers
- * without a verify_sha256 in production. We surface a warning when
- * one is missing but still execute — the agentproto CLI runs in
- * developer / first-run contexts where the trade-off is acceptable.
+ * installer script *before* executing it. When no `verify_sha256` is
+ * declared, `shouldRefuseUnverifiedInstaller` gates execution: refused in
+ * non-interactive contexts unless `--allow-unverified` was passed; a human
+ * at a TTY gets a warning and proceeds.
  */
 async function runCurlInstaller(
   url: string,
-  verifySha256?: string
+  verifySha256: string | undefined,
+  allowUnverified: boolean
 ): Promise<number> {
+  if (
+    shouldRefuseUnverifiedInstaller({
+      verifySha256,
+      allowUnverified,
+      interactive: process.stdout.isTTY === true,
+    })
+  ) {
+    process.stderr.write(
+      `agentproto install: refusing to run an unverified curl installer (${url}) ` +
+        `in a non-interactive context. Declare verify_sha256 in the adapter ` +
+        `manifest, or pass --allow-unverified to override.\n`
+    )
+    return 6
+  }
   if (!verifySha256) {
     process.stdout.write(
       `agentproto install: curl ${url} (⚠ no verify_sha256 declared — installer integrity not verified)\n`
@@ -381,7 +430,22 @@ async function runDownloadInstaller(opts: {
   url: string
   extractBin: string
   verifySha256?: string
+  allowUnverified: boolean
 }): Promise<number> {
+  if (
+    shouldRefuseUnverifiedInstaller({
+      verifySha256: opts.verifySha256,
+      allowUnverified: opts.allowUnverified,
+      interactive: process.stdout.isTTY === true,
+    })
+  ) {
+    process.stderr.write(
+      `agentproto install: refusing to install an unverified download (${opts.url}) ` +
+        `in a non-interactive context. Declare verify_sha256 in the adapter ` +
+        `manifest, or pass --allow-unverified to override.\n`
+    )
+    return 6
+  }
   const dir = await mkdtemp(join(tmpdir(), "agentproto-dl-"))
   try {
     const filename = opts.url.split("/").pop() || "archive.bin"
