@@ -1,13 +1,21 @@
-# First/beta rail for the desktop app: builds UN-signed, un-notarized
+# First/beta rail for the desktop app: builds ad-hoc-signed, un-notarized
 # installers for macOS, Linux, and Windows and attaches them to a DRAFT
 # GitHub Release for a human to review and publish.
 #
+# macOS is ad-hoc signed via bundle.macOS.signingIdentity "-" in
+# tauri.conf.json. This is NOT a paid Developer ID signature — it does not
+# clear Gatekeeper on its own — but it produces a *sealed* signature (binds
+# Info.plist + seals resources) instead of Tauri's default linker-only
+# ad-hoc signature. Without it, Gatekeeper's assessment errors out
+# ("internal error in Code Signing subsystem") and even the right-click →
+# Open / "Open Anyway" workaround fails. With it, that workaround works.
+#
 # No auto-updater plugin is configured for packages/desktop, so there is no
-# signing key involved and none is set up here (no TAURI_SIGNING_* /
-# APPLE_* env). That also means macOS Gatekeeper and Windows SmartScreen
-# will warn on first launch — see the release notes below for the
-# workaround users need. Signing + notarization is a later hardening step,
-# not a blocker for shipping the first installers.
+# TAURI_SIGNING_* key involved and no APPLE_* notarization env is set up
+# here. macOS Gatekeeper and Windows SmartScreen still warn on first launch
+# — see the release notes below for the workaround users need. Developer ID
+# signing + notarization is a later hardening step, not a blocker for
+# shipping the first installers.
 #
 # Distribution is a GitHub Release, not npm — packages/desktop is private.
 
@@ -80,9 +88,12 @@ jobs:
           tagName: desktop-v__VERSION__
           releaseName: 'agentproto desktop v__VERSION__'
           releaseBody: |
-            These installers are UNSIGNED and un-notarized (first/beta rail — no signing key is configured yet):
+            These installers are ad-hoc signed but NOT notarized (first/beta rail — no Apple Developer ID key is configured yet):
 
-            - **macOS**: right-click the app → Open (or System Settings → Privacy & Security → Open Anyway) to get past Gatekeeper.
+            - **macOS**: drag `agentproto.app` into your Applications folder, then open System Settings → Privacy & Security → "Open Anyway" (on older macOS, right-click the app → Open). If it still refuses to launch, strip the download quarantine flag first:
+              ```
+              xattr -dr com.apple.quarantine /Applications/agentproto.app
+              ```
             - **Windows**: click "More info" → "Run anyway" to get past SmartScreen.
             - **Linux**: runs directly, no extra step needed.
           releaseDraft: true
