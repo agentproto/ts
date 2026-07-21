@@ -33,7 +33,10 @@ import type { DaemonConfig } from "../config.js"
 import type {
   AdapterInfo,
   AdapterInstallResult,
+  AuthProfileSummary,
   CatalogModelsResponse,
+  CreateAuthProfileRequest,
+  CreatedAuthProfileResult,
   DaemonHealth,
   PendingPermission,
   ProviderPresetEntry,
@@ -468,6 +471,46 @@ export class DaemonClient {
     )
     if (Array.isArray(result)) return result
     return result.presets ?? []
+  }
+
+  /**
+   * `auth_profile_list` — the named auth profiles configured on this host
+   * (non-secret metadata only; never the credential). Optionally filtered to
+   * one billing endpoint.
+   */
+  async listAuthProfiles(endpoint?: string): Promise<AuthProfileSummary[]> {
+    const result = await this.mcpCall<{ profiles?: AuthProfileSummary[] } | AuthProfileSummary[]>(
+      "auth_profile_list",
+      endpoint ? { endpoint } : {},
+    )
+    if (Array.isArray(result)) return result
+    return result.profiles ?? []
+  }
+
+  /**
+   * `auth_profile_create` — provision a named auth profile. The daemon writes
+   * `req.credential` to the OS keychain and records the metadata; the
+   * credential is INPUT-only and never returned. Response is non-secret
+   * metadata plus a one-way fingerprint of the stored credential.
+   */
+  async createAuthProfile(
+    req: CreateAuthProfileRequest,
+  ): Promise<CreatedAuthProfileResult> {
+    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult }>(
+      "auth_profile_create",
+      { ...req },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_create returned no profile")
+    return profile
+  }
+
+  /**
+   * `auth_profile_delete` — remove a named profile and its keychain
+   * credential. Idempotent: a missing id resolves `{ deleted: false }`.
+   */
+  async deleteAuthProfile(id: string): Promise<{ deleted: boolean; id: string }> {
+    return this.mcpCall<{ deleted: boolean; id: string }>("auth_profile_delete", { id })
   }
 
   /**

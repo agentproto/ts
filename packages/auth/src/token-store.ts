@@ -79,3 +79,26 @@ export async function writeKeychainToken(
     "agentproto auth token",
   ])
 }
+
+/** Remove a token from the Keychain. Returns true if an entry was deleted,
+ *  false when none existed (a delete of an absent entry is not an error —
+ *  the desired end state, "no credential at this slot", already holds). */
+export async function deleteKeychainToken(
+  service: string,
+  account: string,
+): Promise<boolean> {
+  assertKeychainSupported()
+  try {
+    await exec("security", [
+      "delete-generic-password",
+      "-s",
+      service,
+      "-a",
+      account,
+    ])
+    return true
+  } catch {
+    // `security` exits non-zero when the item isn't found — treat as a no-op.
+    return false
+  }
+}
