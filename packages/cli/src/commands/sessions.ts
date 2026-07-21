@@ -385,6 +385,8 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
   if (values["hold-permissions"]) body.permissionHold = true
+  // Source label: this spawn came from the agentproto CLI (#575).
+  body.origin = "cli"
 
   let desc: SessionDescriptor
   try {

@@ -373,6 +373,7 @@ export function createCronScheduler(opts: {
       cwd,
       agentSession,
       adapterSlug: action.adapter,
+      origin: "cron",
       label: `cron:${job.id}`,
       ...(action.mode ? { mode: action.mode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
