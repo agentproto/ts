@@ -399,7 +399,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z

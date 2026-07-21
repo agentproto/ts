@@ -2312,6 +2312,13 @@ async function handleSessions(
         ...(typeof b.idempotencyKey === "string" && b.idempotencyKey.length > 0
           ? { idempotencyKey: b.idempotencyKey }
           : {}),
+        // Parent-lineage hint (WP-R1) — the HTTP twin of the MCP `agent_start`
+        // tool's `parentSessionId` field. This route carries no `callerScope`
+        // (it's the anonymous root trust boundary), so the hint is honoured and
+        // the child's depth is derived from the parent — see spawnAgentSession.
+        ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
+          ? { parentSessionId: b.parentSessionId }
+          : {}),
         ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
         ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
         ...(b.orchestrator !== undefined

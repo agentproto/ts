@@ -18,6 +18,7 @@ export type SessionEventType =
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
+  | "session:spawned"
   | "session:command-done"
   | "session:model-changed"
   | "session:config-changed"
@@ -212,6 +213,25 @@ export interface SessionRenamedEvent {
   ts: string
 }
 
+/**
+ * Emitted when a session is first registered in the registry (WP-R3) — both
+ * the agent-cli spawn path (`spawnAgent`) and the terminal path (`spawnPty`).
+ * The lineage-attribution signal a live UI (the VS Code sessions tree) uses to
+ * nest a fresh child under its `parentSessionId` node the moment it appears,
+ * without waiting for its next full snapshot poll. `depth` is always present
+ * (0 for a root/parentless session); `parentSessionId` is absent for a root.
+ * Rides the same bus fan-out as every other lifecycle event
+ * (`session_events_poll`, the webhook notifier, the routine engine).
+ */
+export interface SessionSpawnedEvent {
+  type: "session:spawned"
+  sessionId: string
+  parentSessionId?: string
+  label?: string
+  depth: number
+  ts: string
+}
+
 /** Emitted by the supervisor when a completion policy's gate passes. */
 export interface PolicyPassedEvent {
   type: "policy:passed"
@@ -289,6 +309,7 @@ export type SessionEvent =
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
+  | SessionSpawnedEvent
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
   | SessionConfigChangedEvent

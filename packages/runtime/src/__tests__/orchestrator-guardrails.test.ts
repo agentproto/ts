@@ -208,6 +208,47 @@ describe("orchestrator guardrails — parent attribution (WP4)", () => {
       await h.close()
     }
   })
+
+  it("a scoped spawn IGNORES a caller-supplied parentSessionId hint (WP-R1) — the scope token wins", async () => {
+    const h = await harness({
+      caller: st => {
+        const scope = st.mint({ depth: 1 })
+        st.bindOwner(scope.token, "real-parent")
+        return scope
+      },
+    })
+    try {
+      // A spoofed hint through the SCOPED gateway must be ignored: parent is
+      // derived from the unspoofable token, not the caller's argument.
+      const res = await h.client.callTool({
+        name: "agent_start",
+        arguments: { ...startArgs, parentSessionId: "attacker-chosen-parent" },
+      })
+      const { id } = payload<{ id: string }>(res)
+      const child = h.registry.get(id)!
+      expect(child.parentSessionId).toBe("real-parent")
+      expect(child.depth).toBe(2) // caller.depth (1) + 1, NOT hint-derived
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("a root MCP spawn HONOURS the parentSessionId hint (WP-R1) and derives depth from the parent", async () => {
+    const h = await harness() // no callerScope → anonymous root path
+    try {
+      const parent = spawnNode(h.registry, undefined, 2) // seed a depth-2 parent
+      const res = await h.client.callTool({
+        name: "agent_start",
+        arguments: { ...startArgs, parentSessionId: parent.id },
+      })
+      const { id } = payload<{ id: string }>(res)
+      const child = h.registry.get(id)!
+      expect(child.parentSessionId).toBe(parent.id)
+      expect(child.depth).toBe(3) // parent depth (2) + 1
+    } finally {
+      await h.close()
+    }
+  })
 })
 
 describe("orchestrator guardrails — recursion caps (WP4)", () => {
