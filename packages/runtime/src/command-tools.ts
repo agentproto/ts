@@ -32,6 +32,19 @@
  *   `/etc` unless they also bind-mounted it inside the workspace.
  * - Every spawn has a `timeoutMs` cap (default 60s, max 600s). Hung
  *   subprocesses can't pin the runtime forever.
+ *
+ * ## Interpreter caveat (allowlist footgun)
+ *
+ * The allowlist is by BASENAME and the cwd anchor only bounds the
+ * subprocess's *working directory* — not what it may open. So allowlisting
+ * an interpreter (`bash`, `node`, `python3`, …) effectively grants arbitrary
+ * host code execution and unrestricted filesystem read: `python3 -c 'open(
+ * "~/.ssh/id_rsa")'` runs despite the workspace anchor. Prefer allowlisting
+ * specific tools (`gh`, `pnpm test`-style flows via a wrapper) over raw
+ * interpreters. When one IS allowlisted, `command_execute` surfaces a
+ * one-time warning (log + a `warning` field on the result). OS-level
+ * confinement (Seatbelt/Landlock) is the real fix — planned as
+ * `command-sandbox` (see `.plans/agentproto-daemon-network-hardening`).
  */
 
 import { spawn } from "node:child_process"
@@ -53,6 +66,42 @@ import { stampPrProvenance } from "./pr-provenance-stamp.js"
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
 const ALLOWLIST_REL = ".agentproto/allowed-commands.json"
+
+/**
+ * Command basenames that execute arbitrary code and read the filesystem
+ * unrestricted. Allowlisting one grants a caller full host code execution +
+ * FS read — the workspace cwd-anchor bounds only the working directory, not
+ * what the interpreter itself opens. Used to surface a one-time warning
+ * (see `isInterpreterBasename` / `interpreterExecWarning`) until an OS-level
+ * command sandbox lands.
+ */
+export const INTERPRETER_BASENAMES: ReadonlySet<string> = new Set([
+  "bash", "sh", "zsh", "dash", "ksh", "fish",
+  "node", "deno", "bun", "tsx", "ts-node",
+  "python", "python2", "python3", "ruby", "perl", "php", "rscript", "osascript",
+  "env", "xargs", "make", "npx", "uv", "uvx", "pipx",
+])
+
+/** True when `name` (a command basename) is a code interpreter. Case-insensitive
+ *  so `Rscript`/`RSCRIPT` match. */
+export function isInterpreterBasename(name: string): boolean {
+  return INTERPRETER_BASENAMES.has(name.toLowerCase())
+}
+
+/** Human-readable warning for allowlisting/running an interpreter. */
+export function interpreterExecWarning(baseName: string): string {
+  return (
+    `command_execute ran the interpreter '${baseName}', which executes ` +
+    `arbitrary code and can read files outside the workspace — the cwd anchor ` +
+    `does not confine it. Allowlisting interpreters grants full host code ` +
+    `execution; prefer allowlisting specific tools. An OS-level command ` +
+    `sandbox is planned as the real confinement.`
+  )
+}
+
+/** Dedup set so the interpreter warning is logged at most once per basename
+ *  per daemon process — high signal, no per-call spam. */
+const warnedInterpreters = new Set<string>()
 
 export interface RegisterCommandToolsOptions {
   workspace: string
@@ -203,6 +252,18 @@ export function registerCommandTools(
             `under "commands": [...]. Currently allowed: ${allowed}.`,
         )
       }
+      // Interpreter footgun: allowlisting bash/node/python/… grants arbitrary
+      // host code execution + unrestricted FS read (the cwd anchor bounds the
+      // working dir, not what the interpreter opens). Surface a one-time log
+      // warning + an additive `warning` on the result so it's visible, without
+      // blocking (blocking would break legit interpreter-driven flows).
+      const interpreterWarning = isInterpreterBasename(baseName)
+        ? interpreterExecWarning(baseName)
+        : undefined
+      if (interpreterWarning && !warnedInterpreters.has(baseName)) {
+        warnedInterpreters.add(baseName)
+        console.error(`[command_execute] ⚠ ${interpreterWarning}`)
+      }
       const resolvedCwd = anchorCwd(cwd)
       const limit = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
       const result = await runCommand({
@@ -250,7 +311,11 @@ export function registerCommandTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ...result, sessionId: desc.id }),
+            text: JSON.stringify({
+              ...result,
+              sessionId: desc.id,
+              ...(interpreterWarning ? { warning: interpreterWarning } : {}),
+            }),
           },
         ],
       }
