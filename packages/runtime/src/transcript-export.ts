@@ -3,8 +3,12 @@
  * source:
  *
  *   native — the adapter's OWN persistence, re-read after the fact:
- *     claude-code — ~/.claude/projects/<cwd-encoded>/<sessionId>.jsonl
- *     hermes      — ~/.hermes/state.db via node:sqlite (read-only)
+ *     claude-code            — ~/.claude/projects/<cwd-encoded>/<sessionId>.jsonl
+ *     hermes                 — ~/.hermes/state.db via node:sqlite (read-only)
+ *     codex                  — $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+ *     opencode               — ~/.local/share/opencode/opencode.db via node:sqlite
+ *     mastracode-inprocess   — ~/.agentproto/mastracode-inprocess/storage.db (Mastra libsql)
+ *     pi                     — ~/.pi/agent/sessions/<cwd-slug>/<ts>_<uuid>.jsonl
  *   daemon — agentproto's own capture, `~/.agentproto/sessions/<id>/events.jsonl`
  *     (written by transcript-writer.ts at the same point `projectEvent`
  *     flattens events into the ANSI ring buffer, ahead of that flattening).
@@ -19,7 +23,7 @@
  * model so every source produces identical rendering logic.
  */
 
-import { createReadStream } from "node:fs"
+import { createReadStream, promises as fs, type Dirent } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
@@ -429,6 +433,36 @@ function withRetryOnBusy<T>(fn: () => T): T {
           `hermes: database is locked. Hermes may be actively writing. Try again.`,
         )
       }
+    }
+    throw err
+  }
+}
+
+/** Generic read-only sqlite open, sharing hermes's node:sqlite plumbing so
+ *  the opencode + mastracode-inprocess stores don't each reinvent the
+ *  experimental-module guard and the ENOENT/BUSY error mapping. `label` is
+ *  the provider name used in the error strings. Returns the same handle
+ *  type `withRetryOnBusy` operates on. */
+async function openReadonlySqlite(dbPath: string, label: string): Promise<HermesDb> {
+  let DatabaseSync: (typeof import("node:sqlite"))["DatabaseSync"]
+  try {
+    const sqlite = await import("node:sqlite")
+    DatabaseSync = sqlite.DatabaseSync
+  } catch {
+    throw new Error(`${label}: node:sqlite unavailable. Requires Node.js ≥22.5.0.`)
+  }
+  try {
+    return new DatabaseSync(dbPath, { readOnly: true })
+  } catch (err) {
+    const msg = String(err)
+    if (
+      (err as NodeJS.ErrnoException).code === "ENOENT" ||
+      msg.includes("unable to open database file")
+    ) {
+      throw new Error(`${label}: database not found at ${dbPath}. Has ${label} been run at least once?`)
+    }
+    if (msg.includes("SQLITE_BUSY") || msg.includes("database is locked")) {
+      throw new Error(`${label}: database is locked (SQLITE_BUSY). It may be writing. Try again in a moment.`)
     }
     throw err
   }
@@ -917,6 +951,882 @@ async function exportDaemonEventsSession(
   return { meta, messages }
 }
 
+// ── shared jsonl helper ───────────────────────────────────────────────
+
+/** Read only the first non-empty line of a jsonl file — used by the codex
+ *  and pi discovery scans, which only need each file's leading metadata
+ *  record (session_meta / session) to answer cwd/id questions without
+ *  parsing a possibly-multi-MB transcript. */
+async function readFirstJsonLine(path: string): Promise<string | undefined> {
+  const stream = createReadStream(path, { encoding: "utf8" })
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  try {
+    for await (const line of rl) {
+      const t = line.trim()
+      if (t) return t
+    }
+    return undefined
+  } finally {
+    rl.close()
+    stream.destroy()
+  }
+}
+
+// ── codex exporter (rollout JSONL) ────────────────────────────────────
+//
+// Native store: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+// (CODEX_HOME defaults to ~/.codex). One append-only JSONL file per
+// conversation, written by the Codex core that @zed-industries/codex-acp
+// bundles. The first line is a `session_meta` record carrying the
+// conversation's `id` (== the trailing uuid in the filename == the ACP
+// session id agentproto records as `adapterSessionId` — verified
+// empirically against live rollouts) and its `cwd`. Subsequent
+// `response_item` lines carry the turns; `event_msg` / `turn_context`
+// lines are transport bookkeeping we skip.
+
+function codexHome(): string {
+  return process.env.CODEX_HOME ?? join(homedir(), ".codex")
+}
+function codexSessionsDir(): string {
+  return join(codexHome(), "sessions")
+}
+
+interface CodexRolloutLine {
+  type?: string
+  timestamp?: string
+  payload?: {
+    type?: string
+    id?: string
+    session_id?: string
+    timestamp?: string
+    cwd?: string
+    model?: string
+    model_provider?: string
+    role?: string
+    content?: Array<{ type?: string; text?: string }>
+    summary?: Array<{ type?: string; text?: string }>
+    name?: string
+    input?: unknown
+    arguments?: unknown
+    call_id?: string
+    output?: unknown
+  }
+}
+
+/** Recursively collect `rollout-*.jsonl` paths under the YYYY/MM/DD tree. */
+async function walkCodexRollouts(dir: string): Promise<string[]> {
+  let entries: Dirent[]
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  for (const e of entries) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) {
+      out.push(...(await walkCodexRollouts(p)))
+    } else if (e.isFile() && e.name.startsWith("rollout-") && e.name.endsWith(".jsonl")) {
+      out.push(p)
+    }
+  }
+  return out
+}
+
+/** Join codex output blocks (input_text / output_text) into one string. */
+function codexBlocksText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  let acc = ""
+  for (const c of content) {
+    if (c && typeof c === "object") {
+      const b = c as { type?: string; text?: string }
+      if (typeof b.text === "string" && (b.type === "input_text" || b.type === "output_text" || b.type === "text")) {
+        acc += b.text
+      }
+    }
+  }
+  return acc
+}
+
+async function findCodexRolloutFile(conversationId: string): Promise<string | undefined> {
+  const files = await walkCodexRollouts(codexSessionsDir())
+  // Fast path: the uuid is the filename suffix.
+  const byName = files.find(f => f.endsWith(`-${conversationId}.jsonl`))
+  if (byName) return byName
+  // Fallback: match on the session_meta id/session_id (covers a future
+  // codex build whose filename uuid diverges from the meta id).
+  for (const f of files) {
+    const first = await readFirstJsonLine(f)
+    if (!first) continue
+    let meta: CodexRolloutLine
+    try {
+      meta = JSON.parse(first) as CodexRolloutLine
+    } catch {
+      continue
+    }
+    const p = meta.payload
+    if (p && (p.id === conversationId || p.session_id === conversationId)) return f
+  }
+  return undefined
+}
+
+export async function exportCodexSession(conversationId: string): Promise<ExportedSession> {
+  const file = await findCodexRolloutFile(conversationId)
+  if (!file) {
+    throw new Error(
+      `codex: no rollout file for conversation "${conversationId}" under ${codexSessionsDir()}.\n` +
+        `The session may predate persistence, or CODEX_HOME points elsewhere.`,
+    )
+  }
+
+  const stream = createReadStream(file, { encoding: "utf8" })
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  const messages: ExportedMessage[] = []
+  const toolNameByCall = new Map<string, string>()
+  let toolCallCount = 0
+  let startedAt: string | undefined
+  let model: string | undefined
+
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let entry: CodexRolloutLine
+    try {
+      entry = JSON.parse(trimmed) as CodexRolloutLine
+    } catch {
+      continue
+    }
+    const p = entry.payload ?? {}
+
+    if (entry.type === "session_meta") {
+      startedAt = p.timestamp ?? entry.timestamp
+      if (typeof p.model === "string") model = p.model
+      continue
+    }
+    if (entry.type === "turn_context") {
+      if (!model && typeof p.model === "string") model = p.model
+      continue
+    }
+    if (entry.type !== "response_item") continue
+
+    switch (p.type) {
+      case "message": {
+        const text = codexBlocksText(p.content).trim()
+        if (!text) break
+        const role: ExportedMessage["role"] =
+          p.role === "assistant" ? "assistant" : p.role === "user" ? "user" : "system"
+        messages.push({ role, text })
+        break
+      }
+      case "reasoning": {
+        // Codex reasoning is usually an opaque `encrypted_content` blob; only
+        // an unencrypted `summary` (rare) is human-readable. Emit only when
+        // there's real text — never the ciphertext.
+        const r = (p.summary ?? []).map(s => s.text ?? "").join("\n").trim()
+        if (r) messages.push({ role: "assistant", reasoning: r })
+        break
+      }
+      case "function_call":
+      case "custom_tool_call": {
+        const name = p.name ?? "tool"
+        if (typeof p.call_id === "string") toolNameByCall.set(p.call_id, name)
+        const raw = p.type === "custom_tool_call" ? p.input : p.arguments
+        const args = typeof raw === "string" ? raw : JSON.stringify(raw ?? {})
+        messages.push({ role: "assistant", toolCalls: [{ name, args }] })
+        toolCallCount += 1
+        break
+      }
+      case "function_call_output":
+      case "custom_tool_call_output": {
+        const name = typeof p.call_id === "string" ? toolNameByCall.get(p.call_id) : undefined
+        const out = codexBlocksText(p.output) || (typeof p.output === "string" ? p.output : "")
+        messages.push({ role: "tool", text: out, ...(name ? { toolName: name } : {}) })
+        break
+      }
+    }
+  }
+
+  const meta: ExportedSessionMeta = { source: "codex" }
+  if (startedAt) meta.startedAt = startedAt
+  if (model) meta.model = model
+  meta.messageCount = messages.length
+  meta.toolCallCount = toolCallCount
+  return { meta, messages }
+}
+
+export async function discoverCodexSessions(
+  cwd: string,
+  since?: string,
+  until?: string,
+  expectedId?: string,
+): Promise<ConversationCandidate[]> {
+  const files = await walkCodexRollouts(codexSessionsDir())
+  const sinceMs = since ? Date.parse(since) : NaN
+  const untilMs = until ? Date.parse(until) : NaN
+  const scored: { candidate: ConversationCandidate; mtimeMs: number }[] = []
+
+  for (const f of files) {
+    let mtimeMs: number
+    try {
+      mtimeMs = (await fs.stat(f)).mtimeMs
+    } catch {
+      continue
+    }
+    if (Number.isFinite(sinceMs) && mtimeMs < sinceMs - 1000) continue
+    const first = await readFirstJsonLine(f)
+    if (!first) continue
+    let meta: CodexRolloutLine
+    try {
+      meta = JSON.parse(first) as CodexRolloutLine
+    } catch {
+      continue
+    }
+    if (meta.type !== "session_meta") continue
+    const p = meta.payload ?? {}
+    const id = p.id ?? p.session_id
+    if (!id) continue
+    // Ground truth beats heuristic: bind to exactly the requested id and
+    // ignore cwd (the id is globally unique). See the exact-bind invariant.
+    if (expectedId) {
+      if (id !== expectedId) continue
+    } else if (p.cwd !== cwd) {
+      continue
+    }
+    const startedAt = p.timestamp
+    if (Number.isFinite(untilMs) && startedAt) {
+      const startedMs = Date.parse(startedAt)
+      if (Number.isFinite(startedMs) && startedMs > untilMs) continue
+    }
+    scored.push({
+      candidate: {
+        conversationId: id,
+        ...(startedAt ? { startedAt } : {}),
+        lastActivityAt: new Date(mtimeMs).toISOString(),
+      },
+      mtimeMs,
+    })
+  }
+
+  scored.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return scored.map(s => s.candidate)
+}
+
+// ── opencode exporter (opencode.db SQLite) ────────────────────────────
+//
+// Native store: ${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db — a
+// drizzle-managed sqlite with `session` (keyed by the `ses_…` id opencode
+// returns over ACP, which agentproto records verbatim as adapterSessionId
+// — verified empirically), `message` (JSON `data` per row), and `part`
+// (JSON `data`, one row per text/reasoning/tool block). The `session`
+// table's `directory` column is the conversation's cwd, enabling
+// cwd-scoped discovery.
+
+interface OpenCodeSessionRow {
+  id: string
+  directory?: string
+  title?: string
+  model?: string
+  cost?: number
+  tokens_input?: number
+  tokens_output?: number
+  tokens_reasoning?: number
+  tokens_cache_read?: number
+  tokens_cache_write?: number
+  time_created?: number
+  time_updated?: number
+}
+interface OpenCodeMessageRow {
+  id: string
+  data: string
+  time_created: number
+}
+interface OpenCodePartRow {
+  message_id: string
+  data: string
+  time_created: number
+}
+
+function openCodeDbPath(): string {
+  const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")
+  return join(dataHome, "opencode", "opencode.db")
+}
+
+/** `{"id":"gpt-5-mini","providerID":"openai",…}` → `openai/gpt-5-mini`. */
+function openCodeModelLabel(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  try {
+    const m = JSON.parse(raw) as { id?: string; modelID?: string; providerID?: string }
+    const id = m.modelID ?? m.id
+    if (!id) return undefined
+    return m.providerID ? `${m.providerID}/${id}` : id
+  } catch {
+    return undefined
+  }
+}
+
+export async function exportOpenCodeSession(conversationId: string): Promise<ExportedSession> {
+  const dbPath = openCodeDbPath()
+  const db = await openReadonlySqlite(dbPath, "opencode")
+  try {
+    const session = withRetryOnBusy(
+      () => db.prepare("SELECT * FROM session WHERE id = ?").get(conversationId) as unknown as
+        | OpenCodeSessionRow
+        | undefined,
+    )
+    if (!session) {
+      throw new Error(
+        `opencode: session "${conversationId}" not found in ${dbPath}. ` +
+          `Sessions are keyed by the ACP session id (ses_…) recorded as adapterSessionId.`,
+      )
+    }
+    const msgRows = withRetryOnBusy(
+      () =>
+        db
+          .prepare("SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC, id ASC")
+          .all(conversationId) as unknown as OpenCodeMessageRow[],
+    )
+    const partRows = withRetryOnBusy(
+      () =>
+        db
+          .prepare("SELECT message_id, data, time_created FROM part WHERE session_id = ? ORDER BY time_created ASC, id ASC")
+          .all(conversationId) as unknown as OpenCodePartRow[],
+    )
+
+    const partsByMsg = new Map<string, OpenCodePartRow[]>()
+    for (const r of partRows) {
+      const list = partsByMsg.get(r.message_id) ?? []
+      list.push(r)
+      partsByMsg.set(r.message_id, list)
+    }
+
+    const messages: ExportedMessage[] = []
+    let toolCallCount = 0
+    for (const m of msgRows) {
+      let mdata: { role?: string }
+      try {
+        mdata = JSON.parse(m.data) as { role?: string }
+      } catch {
+        continue
+      }
+      const role: ExportedMessage["role"] = mdata.role === "assistant" ? "assistant" : "user"
+      let text = ""
+      let reasoning = ""
+      const toolCalls: { name: string; args: string }[] = []
+      const toolResults: { name?: string; text: string }[] = []
+      for (const pr of partsByMsg.get(m.id) ?? []) {
+        let part: {
+          type?: string
+          text?: string
+          tool?: string
+          state?: { input?: unknown; output?: unknown }
+        }
+        try {
+          part = JSON.parse(pr.data) as typeof part
+        } catch {
+          continue
+        }
+        switch (part.type) {
+          case "text":
+            if (part.text) text += part.text
+            break
+          case "reasoning":
+            if (part.text) reasoning += part.text
+            break
+          case "tool": {
+            const name = part.tool ?? "tool"
+            toolCalls.push({ name, args: JSON.stringify(part.state?.input ?? {}) })
+            toolCallCount += 1
+            const output = part.state?.output
+            if (output !== undefined && output !== null && output !== "") {
+              toolResults.push({ name, text: typeof output === "string" ? output : JSON.stringify(output) })
+            }
+            break
+          }
+          // step-start / step-finish / patch / snapshot / file — skip.
+        }
+      }
+      if (text.trim() || reasoning.trim() || toolCalls.length) {
+        const em: ExportedMessage = { role }
+        if (text.trim()) em.text = text.trim()
+        if (reasoning.trim()) em.reasoning = reasoning.trim()
+        if (toolCalls.length) em.toolCalls = toolCalls
+        em.ts = m.time_created
+        messages.push(em)
+      }
+      for (const tr of toolResults) {
+        messages.push({ role: "tool", text: tr.text, ...(tr.name ? { toolName: tr.name } : {}) })
+      }
+    }
+
+    const meta: ExportedSessionMeta = { source: "opencode" }
+    if (session.title) meta.title = session.title
+    const model = openCodeModelLabel(session.model)
+    if (model) meta.model = model
+    if (session.time_created) meta.startedAt = new Date(session.time_created).toISOString()
+    if (session.time_updated) meta.endedAt = new Date(session.time_updated).toISOString()
+    meta.messageCount = messages.length
+    meta.toolCallCount = toolCallCount
+    if (session.cost != null) meta.costUsd = Number(session.cost)
+    const tk = {
+      ...(session.tokens_input != null ? { input: session.tokens_input } : {}),
+      ...(session.tokens_output != null ? { output: session.tokens_output } : {}),
+      ...(session.tokens_cache_read != null ? { cacheRead: session.tokens_cache_read } : {}),
+      ...(session.tokens_cache_write != null ? { cacheWrite: session.tokens_cache_write } : {}),
+      ...(session.tokens_reasoning != null ? { reasoning: session.tokens_reasoning } : {}),
+    }
+    if (Object.keys(tk).length) meta.tokens = tk
+    return { meta, messages }
+  } finally {
+    db.close()
+  }
+}
+
+export async function discoverOpenCodeSessions(
+  cwd: string,
+  since?: string,
+  expectedId?: string,
+): Promise<ConversationCandidate[]> {
+  const dbPath = openCodeDbPath()
+  let db: HermesDb
+  try {
+    db = await openReadonlySqlite(dbPath, "opencode")
+  } catch (err) {
+    // A missing db == opencode never ran here — a normal empty store, not a
+    // discovery error (mirrors discoverHermesSessions).
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("database not found")) return []
+    throw err
+  }
+  try {
+    if (expectedId) {
+      const row = withRetryOnBusy(
+        () => db.prepare("SELECT * FROM session WHERE id = ?").get(expectedId) as unknown as
+          | OpenCodeSessionRow
+          | undefined,
+      )
+      return row ? [openCodeRowToCandidate(row)] : []
+    }
+    const rows = withRetryOnBusy(
+      () => db.prepare("SELECT * FROM session WHERE directory = ?").all(cwd) as unknown as OpenCodeSessionRow[],
+    )
+    const sinceMs = since ? Date.parse(since) : NaN
+    return rows
+      .filter(r => {
+        if (!Number.isFinite(sinceMs)) return true
+        const last = r.time_updated ?? r.time_created
+        return last === undefined || last >= sinceMs - 1000
+      })
+      .map(openCodeRowToCandidate)
+  } finally {
+    db.close()
+  }
+}
+
+function openCodeRowToCandidate(row: OpenCodeSessionRow): ConversationCandidate {
+  return {
+    conversationId: row.id,
+    ...(row.time_created ? { startedAt: new Date(row.time_created).toISOString() } : {}),
+    ...(row.time_updated ? { lastActivityAt: new Date(row.time_updated).toISOString() } : {}),
+    ...(row.title ? { preview: row.title } : {}),
+  }
+}
+
+// ── mastracode-inprocess exporter (Mastra libsql) ─────────────────────
+//
+// Native store: ${AGENTPROTO_HOME:-~/.agentproto}/mastracode-inprocess/
+// storage.db — the dedicated Mastra libsql db the in-process arm writes
+// (adapters/mastracode-inprocess/src/client.ts). The arm's public
+// sessionId is the composite "<resourceId>:<threadId>"; agentproto records
+// it verbatim as adapterSessionId. Threads live in `mastra_threads` (keyed
+// by threadId) and messages in `mastra_messages` (keyed by `thread_id`,
+// each `content` a Mastra v2 `{format,parts}` JSON). The store has no cwd
+// column, so cwd-scoped discovery is not possible — but this in-process arm
+// always yields an adapterSessionId, so the exact-bind path is the only one
+// that ever runs in practice.
+
+interface MastraThreadRow {
+  id: string
+  resourceId?: string
+  title?: string
+  createdAt?: string
+  updatedAt?: string
+}
+interface MastraMessageRow {
+  role: string
+  content: string
+  createdAt: string
+}
+
+function mastracodeInprocessDbPath(): string {
+  const home = process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+  return join(home, "mastracode-inprocess", "storage.db")
+}
+
+/** Split "<resourceId>:<threadId>"; tolerate a bare threadId (no colon). */
+function mastraThreadId(conversationId: string): string {
+  const idx = conversationId.indexOf(":")
+  return idx > 0 ? conversationId.slice(idx + 1) : conversationId
+}
+
+/** Pull user/assistant text, reasoning, and tool calls/results out of one
+ *  Mastra v2 `{format,parts}` content blob. */
+function mastraContentToMessage(
+  role: ExportedMessage["role"],
+  content: string,
+): { message?: ExportedMessage; toolResults: { name?: string; text: string }[]; toolCalls: number } {
+  const toolResults: { name?: string; text: string }[] = []
+  let parsed: { parts?: unknown[] }
+  try {
+    parsed = JSON.parse(content) as { parts?: unknown[] }
+  } catch {
+    return { message: undefined, toolResults, toolCalls: 0 }
+  }
+  let text = ""
+  let reasoning = ""
+  const toolCalls: { name: string; args: string }[] = []
+  for (const raw of parsed.parts ?? []) {
+    if (!raw || typeof raw !== "object") continue
+    const part = raw as {
+      type?: string
+      text?: string
+      reasoning?: string
+      toolInvocation?: { toolName?: string; args?: unknown; result?: unknown }
+    }
+    if (part.type === "text" && part.text) text += part.text
+    else if (part.type === "reasoning" && part.reasoning) reasoning += part.reasoning
+    else if (part.type === "tool-invocation" && part.toolInvocation) {
+      const inv = part.toolInvocation
+      const name = inv.toolName ?? "tool"
+      toolCalls.push({ name, args: JSON.stringify(inv.args ?? {}) })
+      if (inv.result !== undefined) {
+        const r = inv.result as { content?: Array<{ type?: string; text?: string }> }
+        const rtext = Array.isArray(r?.content)
+          ? r.content.filter(c => c?.type === "text").map(c => c.text ?? "").join("")
+          : typeof inv.result === "string"
+            ? inv.result
+            : JSON.stringify(inv.result)
+        toolResults.push({ name, text: rtext })
+      }
+    }
+    // data-* and step-start parts are internal bookkeeping — skip.
+  }
+  let message: ExportedMessage | undefined
+  if (text.trim() || reasoning.trim() || toolCalls.length) {
+    message = { role }
+    if (text.trim()) message.text = text.trim()
+    if (reasoning.trim()) message.reasoning = reasoning.trim()
+    if (toolCalls.length) message.toolCalls = toolCalls
+  }
+  return { message, toolResults, toolCalls: toolCalls.length }
+}
+
+export async function exportMastracodeInprocessSession(conversationId: string): Promise<ExportedSession> {
+  const threadId = mastraThreadId(conversationId)
+  const dbPath = mastracodeInprocessDbPath()
+  const db = await openReadonlySqlite(dbPath, "mastracode-inprocess")
+  try {
+    const thread = withRetryOnBusy(
+      () => db.prepare("SELECT * FROM mastra_threads WHERE id = ?").get(threadId) as unknown as
+        | MastraThreadRow
+        | undefined,
+    )
+    if (!thread) {
+      throw new Error(
+        `mastracode-inprocess: thread "${threadId}" not found in ${dbPath}. ` +
+          `The sessionId is "<resourceId>:<threadId>"; only the threadId is looked up.`,
+      )
+    }
+    const rows = withRetryOnBusy(
+      () =>
+        db
+          .prepare('SELECT role, content, createdAt FROM mastra_messages WHERE thread_id = ? ORDER BY "createdAt" ASC')
+          .all(threadId) as unknown as MastraMessageRow[],
+    )
+    const messages: ExportedMessage[] = []
+    let toolCallCount = 0
+    for (const r of rows) {
+      // Mastra tags user turns with role "signal"; assistant with "assistant".
+      const role: ExportedMessage["role"] = r.role === "assistant" ? "assistant" : "user"
+      const { message, toolResults, toolCalls } = mastraContentToMessage(role, r.content)
+      if (message) messages.push(message)
+      toolCallCount += toolCalls
+      for (const tr of toolResults) {
+        messages.push({ role: "tool", text: tr.text, ...(tr.name ? { toolName: tr.name } : {}) })
+      }
+    }
+    const meta: ExportedSessionMeta = { source: "mastracode-inprocess" }
+    if (thread.title) meta.title = thread.title
+    if (thread.createdAt) meta.startedAt = thread.createdAt
+    if (thread.updatedAt) meta.endedAt = thread.updatedAt
+    meta.messageCount = messages.length
+    meta.toolCallCount = toolCallCount
+    return { meta, messages }
+  } finally {
+    db.close()
+  }
+}
+
+export async function discoverMastracodeInprocessSessions(
+  _cwd: string,
+  since?: string,
+  expectedId?: string,
+): Promise<ConversationCandidate[]> {
+  const dbPath = mastracodeInprocessDbPath()
+  let db: HermesDb
+  try {
+    db = await openReadonlySqlite(dbPath, "mastracode-inprocess")
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("database not found")) return []
+    throw err
+  }
+  try {
+    // Exact-bind only: `mastra_threads` has no cwd column, so a cwd-scoped
+    // scan is impossible. Absent an expectedId there is nothing to safely
+    // scope to, so return none (this in-process arm always supplies an
+    // adapterSessionId, so the exact-bind path is the real one).
+    if (!expectedId) return []
+    const threadId = mastraThreadId(expectedId)
+    const thread = withRetryOnBusy(
+      () => db.prepare("SELECT * FROM mastra_threads WHERE id = ?").get(threadId) as unknown as
+        | MastraThreadRow
+        | undefined,
+    )
+    if (!thread) return []
+    const sinceMs = since ? Date.parse(since) : NaN
+    if (Number.isFinite(sinceMs) && thread.updatedAt) {
+      const upd = Date.parse(thread.updatedAt)
+      if (Number.isFinite(upd) && upd < sinceMs - 1000) return []
+    }
+    return [
+      {
+        // Echo back the full composite id so callers/read() round-trip it.
+        conversationId: expectedId,
+        ...(thread.createdAt ? { startedAt: thread.createdAt } : {}),
+        ...(thread.updatedAt ? { lastActivityAt: thread.updatedAt } : {}),
+        ...(thread.title ? { preview: thread.title } : {}),
+      },
+    ]
+  } finally {
+    db.close()
+  }
+}
+
+// ── pi exporter (JSON-over-stdio session log) ─────────────────────────
+//
+// Native store: ~/.pi/agent/sessions/<cwd-slug>/<ts>_<uuid>.jsonl — pi
+// writes one append-only JSONL per conversation. The first line is a
+// `session` record carrying the uuid `id` (== pi's RPC `sessionId`, which
+// agentproto records as adapterSessionId — pi's client captures it from
+// get_state) and the `cwd`. `message` lines carry the turns; the
+// cwd-slug directory encoding is version-dependent, so discovery scans and
+// keys off each file's authoritative `session.cwd` rather than the slug.
+
+function piSessionsDir(): string {
+  return join(homedir(), ".pi", "agent", "sessions")
+}
+
+interface PiLine {
+  type?: string
+  id?: string
+  cwd?: string
+  timestamp?: string
+  provider?: string
+  modelId?: string
+  message?: {
+    role?: string
+    toolName?: string
+    isError?: boolean
+    content?: unknown
+  }
+}
+
+/** Text of pi content blocks (`{type:"text",text}`), string-tolerant. */
+function piBlocksText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  let acc = ""
+  for (const c of content) {
+    if (c && typeof c === "object") {
+      const b = c as { type?: string; text?: string }
+      if (b.type === "text" && typeof b.text === "string") acc += b.text
+    }
+  }
+  return acc
+}
+
+async function walkPiSessionFiles(dir: string): Promise<string[]> {
+  let entries: Dirent[]
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  for (const e of entries) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) out.push(...(await walkPiSessionFiles(p)))
+    else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(p)
+  }
+  return out
+}
+
+async function findPiSessionFile(conversationId: string): Promise<string | undefined> {
+  const files = await walkPiSessionFiles(piSessionsDir())
+  const byName = files.find(f => f.endsWith(`_${conversationId}.jsonl`))
+  if (byName) return byName
+  for (const f of files) {
+    const first = await readFirstJsonLine(f)
+    if (!first) continue
+    try {
+      const meta = JSON.parse(first) as PiLine
+      if (meta.type === "session" && meta.id === conversationId) return f
+    } catch {
+      // skip
+    }
+  }
+  return undefined
+}
+
+export async function exportPiSession(conversationId: string): Promise<ExportedSession> {
+  const file = await findPiSessionFile(conversationId)
+  if (!file) {
+    throw new Error(
+      `pi: no session file for conversation "${conversationId}" under ${piSessionsDir()}.`,
+    )
+  }
+  const stream = createReadStream(file, { encoding: "utf8" })
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  const messages: ExportedMessage[] = []
+  let toolCallCount = 0
+  let startedAt: string | undefined
+  let model: string | undefined
+
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let entry: PiLine
+    try {
+      entry = JSON.parse(trimmed) as PiLine
+    } catch {
+      continue
+    }
+    if (entry.type === "session") {
+      startedAt = entry.timestamp
+      continue
+    }
+    if (entry.type === "model_change") {
+      model = entry.provider ? `${entry.provider}/${entry.modelId ?? ""}` : entry.modelId
+      continue
+    }
+    if (entry.type !== "message" || !entry.message) continue
+    const m = entry.message
+    const content = m.content
+
+    if (m.role === "toolResult") {
+      const text = piBlocksText(content)
+      messages.push({
+        role: "tool",
+        text: m.isError ? `[error] ${text}` : text,
+        ...(m.toolName ? { toolName: m.toolName } : {}),
+      })
+      continue
+    }
+
+    const role: ExportedMessage["role"] = m.role === "assistant" ? "assistant" : "user"
+    let text = ""
+    let reasoning = ""
+    const toolCalls: { name: string; args: string }[] = []
+    if (typeof content === "string") {
+      text = content
+    } else if (Array.isArray(content)) {
+      for (const raw of content) {
+        if (!raw || typeof raw !== "object") continue
+        const part = raw as {
+          type?: string
+          text?: string
+          thinking?: string
+          name?: string
+          arguments?: unknown
+        }
+        if (part.type === "text" && part.text) text += part.text
+        else if (part.type === "thinking" && part.thinking) reasoning += part.thinking
+        else if (part.type === "toolCall") {
+          toolCalls.push({ name: part.name ?? "tool", args: JSON.stringify(part.arguments ?? {}) })
+          toolCallCount += 1
+        }
+      }
+    }
+    if (text.trim() || reasoning.trim() || toolCalls.length) {
+      const em: ExportedMessage = { role }
+      if (text.trim()) em.text = text.trim()
+      if (reasoning.trim()) em.reasoning = reasoning.trim()
+      if (toolCalls.length) em.toolCalls = toolCalls
+      messages.push(em)
+    }
+  }
+
+  const meta: ExportedSessionMeta = { source: "pi" }
+  if (startedAt) meta.startedAt = startedAt
+  if (model) meta.model = model
+  meta.messageCount = messages.length
+  meta.toolCallCount = toolCallCount
+  return { meta, messages }
+}
+
+export async function discoverPiSessions(
+  cwd: string,
+  since?: string,
+  until?: string,
+  expectedId?: string,
+): Promise<ConversationCandidate[]> {
+  const files = await walkPiSessionFiles(piSessionsDir())
+  const sinceMs = since ? Date.parse(since) : NaN
+  const untilMs = until ? Date.parse(until) : NaN
+  const scored: { candidate: ConversationCandidate; mtimeMs: number }[] = []
+
+  for (const f of files) {
+    let mtimeMs: number
+    try {
+      mtimeMs = (await fs.stat(f)).mtimeMs
+    } catch {
+      continue
+    }
+    if (Number.isFinite(sinceMs) && mtimeMs < sinceMs - 1000) continue
+    const first = await readFirstJsonLine(f)
+    if (!first) continue
+    let meta: PiLine
+    try {
+      meta = JSON.parse(first) as PiLine
+    } catch {
+      continue
+    }
+    if (meta.type !== "session" || !meta.id) continue
+    if (expectedId) {
+      if (meta.id !== expectedId) continue
+    } else if (meta.cwd !== cwd) {
+      continue
+    }
+    const startedAt = meta.timestamp
+    if (Number.isFinite(untilMs) && startedAt) {
+      const s = Date.parse(startedAt)
+      if (Number.isFinite(s) && s > untilMs) continue
+    }
+    scored.push({
+      candidate: {
+        conversationId: meta.id,
+        ...(startedAt ? { startedAt } : {}),
+        lastActivityAt: new Date(mtimeMs).toISOString(),
+      },
+      mtimeMs,
+    })
+  }
+
+  scored.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return scored.map(s => s.candidate)
+}
+
 // ── Strategy registry ─────────────────────────────────────────────────
 
 const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
@@ -925,6 +1835,18 @@ const EXPORT_STRATEGIES: Record<string, ExportStrategy> = {
   },
   hermes: {
     exportSession: (id: string) => exportHermesSession(id),
+  },
+  codex: {
+    exportSession: (id: string) => exportCodexSession(id),
+  },
+  opencode: {
+    exportSession: (id: string) => exportOpenCodeSession(id),
+  },
+  "mastracode-inprocess": {
+    exportSession: (id: string) => exportMastracodeInprocessSession(id),
+  },
+  pi: {
+    exportSession: (id: string) => exportPiSession(id),
   },
 }
 

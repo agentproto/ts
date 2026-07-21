@@ -43,6 +43,11 @@ export type ResumeMetadataKey =
   | "codexResumeId"
   | "openClawResumeId"
   | "openCodeResumeId"
+  // Export/read-only stores (no native resume wired): the key labels the
+  // conversation store entry in CONVERSATION_STORES but is never written to
+  // a descriptor's resumeMetadata, since these have no attachArgv/outputHint.
+  | "mastracodeInprocessResumeId"
+  | "piResumeId"
 
 export interface ResumeStrategy {
   /** When set, run on every output line for this adapter. Group 1
