@@ -53,7 +53,14 @@ const changesetDeliveryInstruction = (sandboxed, prNumber, repo) =>
     : ""
 
 const reviewPrompt = (bindings) => {
-  const { prNumber, baseRef = "main", repo = "", reviewConfig = {} } = bindings.input
+  const {
+    prNumber,
+    baseRef = "main",
+    repo = "",
+    reviewConfig = {},
+    lastReviewedSha = "",
+    priorReviewBody = "",
+  } = bindings.input
   const cfg = {
     blocking: true,
     botMention: "@agentproto-bot",
@@ -70,6 +77,27 @@ const reviewPrompt = (bindings) => {
 
   const sandboxed = inSandbox(bindings) && Boolean(repo)
 
+  // Incremental review: the reviewer has already reviewed this PR through
+  // `lastReviewedSha` (resolved host-side in ci.yml — the e2b box has no gh).
+  // On the first review it's empty; a defensive "HEAD" guard avoids a no-op
+  // range if the host ever passes the head sha itself.
+  const incremental = Boolean(lastReviewedSha) && lastReviewedSha !== "HEAD"
+  const incrementalBlock = incremental
+    ? [
+        `## Incremental review (IMPORTANT)`,
+        ``,
+        `You have ALREADY reviewed this PR through commit \`${lastReviewedSha}\`. New commits have been pushed since.`,
+        `- Review the INCREMENT: \`git diff ${lastReviewedSha}...HEAD\` — this is what you have not seen yet.`,
+        `- Use the full \`git diff origin/${baseRef}...HEAD\` ONLY for context (understanding call-sites), not to re-raise findings on unchanged lines.`,
+        `- Do NOT repeat findings you already made that are unaffected by the new commits. If a prior finding is now RESOLVED by the increment, briefly acknowledge it. If still OPEN and still relevant, restate it concisely (one line) so the verdict stays honest.`,
+        `- If the increment is trivial or purely addresses your prior feedback, APPROVE with a short note.`,
+        priorReviewBody && priorReviewBody.trim()
+          ? [``, `Your previous review (for reference — do not repeat verbatim):`, ``, `<<<PRIOR_REVIEW`, priorReviewBody.trim(), `PRIOR_REVIEW`].join("\n")
+          : ``,
+        ``,
+      ].join("\n")
+    : ""
+
   return [
     `You are an expert code reviewer for the @agentproto/ts monorepo — a TypeScript implementation of open agent standards (AIPs).`,
     ``,
@@ -82,6 +110,7 @@ const reviewPrompt = (bindings) => {
     `- botMention: ${cfg.botMention} — the runner stamps this as a provenance footer; do not add it yourself.`,
     escalateNote,
     ``,
+    incrementalBlock,
     `## Phase 1: Analyze`,
     ``,
     `1. Run \`git diff origin/${baseRef}...HEAD\` to see what changed.`,
@@ -157,6 +186,8 @@ export default {
     prNumber: { type: "number", description: "The pull request number to review." },
     baseRef: { type: "string", description: "Base branch ref.", default: "main" },
     repo: { type: "string", description: "owner/repo slug — required for the sandbox bootstrap clone.", default: "" },
+    lastReviewedSha: { type: "string", description: "SHA the reviewer last posted a review against; empty on first review.", default: "" },
+    priorReviewBody: { type: "string", description: "The markdown body of the reviewer's prior review, for continuity.", default: "" },
     githubToken: { type: "string", description: "GitHub token for posting reviews." },
     anthropicApiKey: { type: "string", description: "Fallback API key (not used by this workflow, but passed for compatibility)." },
     reviewConfig: { type: "object", description: "Parsed .github/agentic-review.json config.", default: {} },

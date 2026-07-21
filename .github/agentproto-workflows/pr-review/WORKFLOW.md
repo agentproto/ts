@@ -21,6 +21,14 @@ inputs:
     type: string
     description: owner/repo slug — required for the sandbox bootstrap clone (reviewerSandbox mode).
     default: ""
+  lastReviewedSha:
+    type: string
+    description: SHA the reviewer last posted a review against; empty on first review.
+    default: ""
+  priorReviewBody:
+    type: string
+    description: The markdown body of the reviewer's prior review, for continuity.
+    default: ""
   githubToken:
     type: string
     description: GitHub token for posting reviews and changesets.
@@ -62,6 +70,13 @@ The step runs `git diff origin/<baseRef>...HEAD` itself, so no pre-computed
 diff is passed as input — the agent sees the live checkout.
 
 ## Review instructions (embedded in prompt)
+
+When `lastReviewedSha` is set (and not `HEAD`), the review is **INCREMENTAL**:
+the reviewer has already reviewed this PR through that commit, so it reviews
+only the increment (`git diff <lastReviewedSha>...HEAD`) and uses the full
+`git diff origin/<baseRef>...HEAD` only for context — not to re-raise findings
+on unchanged lines. `priorReviewBody` carries the previous review for
+continuity. When `lastReviewedSha` is empty, it's a first (full-diff) review.
 
 1. Read the diff with `git diff origin/<baseRef>...HEAD`.
 2. Inspect changed files with `read_file` / shell grep as needed.

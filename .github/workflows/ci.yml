@@ -442,6 +442,37 @@ jobs:
         if: steps.prstate.outputs.skip != 'true'
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # Feed the reviewer its last-reviewed commit + prior review body so it can
+      # review only the increment (last reviewed SHA → HEAD) instead of the full
+      # PR diff every push. gh is available host-side (the e2b box has none), so
+      # resolve it here and pass it into the workflow input.
+      - name: Find last reviewed commit
+        id: lastreview
+        if: steps.prstate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.headsha.outputs.sha }}
+          BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+        run: |
+          # --paginate + `jq -s add` (per-page eval otherwise miscounts, matches
+          # the postcheck step's recipe).
+          REVIEWS=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" | jq -s 'add')
+          # Prefer the bot's own prior reviews (author login starts with the app
+          # slug), against a DIFFERENT sha than HEAD; fall back to any review with
+          # a commit_id if the bot has none yet. Latest by submitted_at wins.
+          LAST=$(echo "$REVIEWS" | jq -r --arg head "$HEAD_SHA" --arg slug "$BOT_SLUG" '
+            def pick(f): [ .[] | select(.commit_id != null and .commit_id != "" and .commit_id != $head) | select(f) ] | sort_by(.submitted_at) | last;
+            (pick(.user.login | startswith($slug)) // pick(true)) // {} | .commit_id // ""')
+          BODY=$(echo "$REVIEWS" | jq -r --arg last "$LAST" '[ .[] | select(.commit_id == $last) ] | sort_by(.submitted_at) | last // {} | .body // ""')
+          echo "sha=$LAST" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<__AGENTFLOW_EOF__"
+            echo "$BODY"
+            echo "__AGENTFLOW_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          if [ -n "$LAST" ]; then echo "Prior review found at $LAST"; else echo "No prior review — full-diff review."; fi
+
       # agentflow bypass: if the dev ran `review:ai --stamp` locally, an
       # empty `[agentflow-reviewed]` marker commit rides the branch. Honor it
       # and skip the cloud reviewer (the dev vouched + ran local changeset).
@@ -600,6 +631,8 @@ jobs:
               "prNumber": ${{ github.event.pull_request.number }},
               "baseRef": "${{ github.base_ref }}",
               "repo": "${{ github.repository }}",
+              "lastReviewedSha": "${{ steps.lastreview.outputs.sha }}",
+              "priorReviewBody": ${{ toJSON(steps.lastreview.outputs.body) }},
               "githubToken": "${{ steps.setup.outputs.token }}",
               "reviewConfig": ${{ toJSON(fromJSON(steps.config.outputs.json || '{}')) }}
             }
