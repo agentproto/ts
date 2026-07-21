@@ -1,6 +1,6 @@
 ---
 "@agentproto/runtime": minor
-"@agentproto/vscode": minor
+"agentproto-vscode": minor
 ---
 
 Fix session display name precedence: derived titles now outrank spawn labels
