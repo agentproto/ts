@@ -28,6 +28,24 @@ function silentAgentSession(): AgentSessionLike {
   }
 }
 
+/**
+ * Yields an error chunk (as claude-sdk does for a 401 — a `[claude-sdk error]`
+ * agent_message_chunk) then a turn-end with reason "error". NOT empty — the
+ * error text is output — so the empty-turn guard misses it; the reason===error
+ * guard must catch it.
+ */
+function erroredAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "errored",
+    async *send() {
+      yield { kind: "text-delta", text: "\n[claude-sdk error] 401 Invalid bearer token\n" }
+      yield { kind: "turn-end", reason: "error" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
 /** Yields real assistant text before the turn-end — the productive case. */
 function talkingAgentSession(): AgentSessionLike {
   return {
@@ -66,6 +84,20 @@ describe("agent-host: empty turn fails the step", () => {
       adapterSlug: "fake",
     })
     await expect(host.sendPromptAndWait(desc.id, "go")).rejects.toThrow(/empty turn/)
+    registry.shutdown()
+  })
+
+  it("rejects sendPromptAndWait on a non-empty turn that ended with reason 'error' (401 chunk)", async () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const host = makeHost(registry, sessionEvents)
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: erroredAgentSession(),
+      adapterSlug: "fake",
+    })
+    await expect(host.sendPromptAndWait(desc.id, "go")).rejects.toThrow(/reason 'error'/)
     registry.shutdown()
   })
 

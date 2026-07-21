@@ -625,15 +625,28 @@ function buildSession(
             )
             return
           }
+          // Map the ACP StopReason enum
+          // (end_turn | max_tokens | max_turn_requests | refusal | cancelled)
+          // to a turn-end reason. The two budget caps (max_tokens,
+          // max_turn_requests) are legitimate completions that DID produce
+          // output — route them to the non-failing "max_turns" bucket, never
+          // "error". "refusal" is an adapter's honest "I could not complete
+          // this turn" (e.g. claude-sdk returns it after a 401 auth failure,
+          // emitting a `[claude-sdk error]` chunk — so the turn is NOT empty
+          // and the empty-turn guard can't catch it); it — and any
+          // unknown/missing stopReason — must map to "error", not the
+          // false-green "completed" that let an un-authenticated reviewer
+          // report success without posting a review.
+          const stopReason = (response as { stopReason?: string }).stopReason
           enqueue(state, {
             kind: "turn-end",
             sessionId,
             reason:
-              ((response as { stopReason?: string }).stopReason ===
-                "cancelled" && "cancelled") ||
-              ((response as { stopReason?: string }).stopReason ===
-                "max_turns" && "max_turns") ||
-              "completed",
+              (stopReason === "cancelled" && "cancelled") ||
+              (stopReason === "max_tokens" && "max_turns") ||
+              (stopReason === "max_turn_requests" && "max_turns") ||
+              (stopReason === "end_turn" && "completed") ||
+              "error",
           })
         })
         .catch((err: unknown) => {
