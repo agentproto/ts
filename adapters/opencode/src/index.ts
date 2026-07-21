@@ -61,6 +61,11 @@ export const opencode: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
+  // opencode routes by the model id's own `<provider>/<id>` prefix itself (see
+  // models.allowed below), no adapter mode — unlike claude-sdk/claude-code,
+  // which need ANTHROPIC_BASE_URL pre-wired by a mode. So the route falls out
+  // of the chosen model → derived-from-model.
+  routeSelection: "derived-from-model",
   models: {
     default: "anthropic/claude-sonnet-4-6",
     // Anthropic is no longer advertised as a pickable escalation — only the

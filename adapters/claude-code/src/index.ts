@@ -85,6 +85,10 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
   // is NOT listed in unsetEnvAdd because it derives from providerEnvVar and is
   // scrubbed as the non-set credential automatically.
   provider: "anthropic",
+  // A model's route is an independent choice here: the gateway modes
+  // (moonshot/openrouter/…) re-point ANTHROPIC_BASE_URL, so the same model
+  // can go direct-Anthropic or via any gateway → free route selection.
+  routeSelection: "free",
   authEnforce: "always",
   authSubscription: {
     setEnv: "CLAUDE_CODE_OAUTH_TOKEN",

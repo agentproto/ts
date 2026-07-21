@@ -66,6 +66,10 @@ export const mastracode: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: false,
   },
+  // Mastra's model router reads the provider straight off each id's own
+  // `<provider>/<id>` prefix (no adapter mode), so the route falls out of the
+  // chosen model — there is nothing independent to select → derived-from-model.
+  routeSelection: "derived-from-model",
   models: {
     default: "anthropic/claude-sonnet-4-5",
     // Anthropic is no longer advertised as a pickable escalation — only the

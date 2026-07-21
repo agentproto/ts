@@ -64,6 +64,10 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
     idle_timeout_ms: 1_800_000,
     context_carryover: true,
   },
+  // Mastra's model router reads the provider off each id's OWN first segment
+  // (`providerOf` in model-resolver.ts), no adapter mode — so the route falls
+  // out of the chosen model → derived-from-model.
+  routeSelection: "derived-from-model",
   models: {
     // Cheap OpenRouter coder by default — this is the budget first-party arm.
     // Anthropic models are not advertised here (this arm shouldn't be steered

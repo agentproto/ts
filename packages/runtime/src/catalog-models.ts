@@ -96,6 +96,34 @@ export interface CatalogRoute {
   adapterModes: string[]
   adapters: string[]
   curated: boolean
+  /**
+   * True when MORE THAN ONE distinct model is servable on this route across
+   * the whole catalog join (AIP-45 launch-menu drill-down, SPEC §3/§5.3).
+   * Derived from the model×route join, never a hand-maintained table:
+   * `anthropic`/`openrouter`/`llm-endpoint` serve many models (`true`),
+   * a single-model gateway like `moonshot` serves one (`false`). A
+   * single-model route pins every model tier to its one model downstream,
+   * and gates the custom-gateway A-vs-B promotion (SPEC D5). Independent of
+   * the caller's query filters — this is the route's intrinsic capacity, so
+   * the same route reports the same `multiModel` in a filtered response.
+   */
+  multiModel: boolean
+}
+
+/**
+ * One route's servable-model index (SPEC §3.9) — the flat, per-route view
+ * that lets a capability-derived UI derive tier pinning without re-walking
+ * the vendor/product tree. `servableModels` is the set of `vendor/product`
+ * model identities reachable on this route across the whole join;
+ * `multiModel` is `servableModels.length > 1` (the same value carried on
+ * every {@link CatalogRoute} with this id). Always the full, unfiltered
+ * catalog capacity, independent of the query — a route's model-count is
+ * intrinsic, not a view of the filtered result.
+ */
+export interface CatalogRouteSummary {
+  route: string
+  servableModels: string[]
+  multiModel: boolean
 }
 
 export interface CatalogProduct {
@@ -110,6 +138,14 @@ export interface CatalogVendor {
 
 export interface CatalogModelsResponse {
   vendors: CatalogVendor[]
+  /**
+   * Flat servable-models-per-route index (SPEC §3.9), one entry per distinct
+   * route id in the catalog, sorted by route. Exposes the same join the
+   * nested `multiModel` flags derive from, so a capability layer can compute
+   * tier pinning per route without re-walking the vendor tree. Always the
+   * full, unfiltered catalog capacity (see {@link CatalogRouteSummary}).
+   */
+  routes: CatalogRouteSummary[]
 }
 
 export interface BuildCatalogModelsInput {
@@ -415,6 +451,20 @@ export function buildCatalogModels(
   const merged = mergeContributions(contributions)
   const query = input.query ?? {}
 
+  // Servable-models-per-route (SPEC §3.9), over the FULL join — a route's
+  // model-count is an intrinsic capability, not a view of the caller's
+  // query, so `multiModel` stays stable under filtering. A model identity is
+  // its `vendor/product` (the same key `widenedContributions` dedupes on), so
+  // the same product served by several adapters counts once.
+  const servableByRoute = new Map<string, Set<string>>()
+  for (const row of merged) {
+    const set = servableByRoute.get(row.route) ?? new Set<string>()
+    set.add(`${row.vendor}/${row.product}`)
+    servableByRoute.set(row.route, set)
+  }
+  const isMultiModel = (route: string): boolean =>
+    (servableByRoute.get(route)?.size ?? 0) > 1
+
   const vendors = new Map<string, Map<string, CatalogRoute[]>>()
   for (const row of merged) {
     if (query.vendor && row.vendor !== query.vendor) continue
@@ -440,6 +490,7 @@ export function buildCatalogModels(
       adapterModes: row.adapterModes,
       adapters: row.adapters,
       curated: row.curated,
+      multiModel: isMultiModel(row.route),
     }
 
     const products = vendors.get(row.vendor) ?? new Map<string, CatalogRoute[]>()
@@ -461,5 +512,13 @@ export function buildCatalogModels(
         })),
     }))
 
-  return { vendors: result }
+  const routes: CatalogRouteSummary[] = [...servableByRoute.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([route, models]) => ({
+      route,
+      servableModels: [...models].sort((a, b) => a.localeCompare(b)),
+      multiModel: models.size > 1,
+    }))
+
+  return { vendors: result, routes }
 }

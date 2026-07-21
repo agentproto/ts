@@ -250,4 +250,28 @@ body
       )
     })
   })
+
+  describe("routeSelection (AIP-45 launch-menu drill-down, WP1)", () => {
+    it("defaults to undefined (back-compat: absent ⇒ free)", () => {
+      expect(defineAgentCli(minimal()).routeSelection).toBeUndefined()
+    })
+
+    it("accepts \"free\"", () => {
+      expect(defineAgentCli(minimal({ routeSelection: "free" })).routeSelection).toBe("free")
+    })
+
+    it("accepts \"derived-from-model\"", () => {
+      expect(
+        defineAgentCli(minimal({ routeSelection: "derived-from-model" })).routeSelection,
+      ).toBe("derived-from-model")
+    })
+
+    it("rejects an unrecognized route-selection value", () => {
+      expect(() =>
+        defineAgentCli(
+          minimal({ routeSelection: "sometimes" } as unknown as Partial<AgentCliDefinition>),
+        ),
+      ).toThrow(/AIP-45/)
+    })
+  })
 })

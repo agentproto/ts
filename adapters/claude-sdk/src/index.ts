@@ -83,6 +83,10 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
   // options.ts / cli.ts) — so that's this adapter's authSubscription.setEnv,
   // with the CLI's CLAUDE_CODE_OAUTH_TOKEN scrubbed as the sibling credential.
   provider: "anthropic",
+  // A model's route is an independent choice here: gateway routing is
+  // injected at runtime via `base_url`, so the same model can go
+  // direct-Anthropic or via any gateway → free route selection.
+  routeSelection: "free",
   authSubscription: {
     setEnv: "ANTHROPIC_AUTH_TOKEN",
     conflictEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],

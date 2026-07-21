@@ -125,6 +125,7 @@ export {
   type CatalogVendor,
   type CatalogProduct,
   type CatalogRoute,
+  type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
 export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"

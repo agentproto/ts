@@ -82,6 +82,10 @@ export const pi: AgentCliHandle = defineAgentCli({
     turn_idle_timeout_ms: 300_000,
     context_carryover: true,
   },
+  // Pi routes on the model id's own `<provider>/<id>` prefix directly (see
+  // models.allowed below), no adapter mode — so the route falls out of the
+  // chosen model → derived-from-model.
+  routeSelection: "derived-from-model",
   models: {
     // Pi's `--model <pattern>` accepts `provider/id` (verified against pi
     // 0.80.x cli/args.ts + core/model-resolver.ts). `provider` below is

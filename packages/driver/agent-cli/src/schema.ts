@@ -399,6 +399,12 @@ export const agentCliFrontmatterSchema = z
     // keep this generic doctype decoupled from @agentproto/model-catalog).
     provider: z.string().min(1).optional(),
     authSubscription: authSubscriptionSchema.optional(),
+    // UI-facing route-choice axis (AIP-45 launch-menu drill-down, WP1).
+    // Absent ⇒ "free" (route is an independent choice); "derived-from-model"
+    // means the endpoint falls out of the model id's vendor prefix. DISTINCT
+    // from `modelDerivedApiKey` (the auth-derivation axis) — see the field
+    // doc on AgentCliDefinition.routeSelection.
+    routeSelection: z.enum(["free", "derived-from-model"]).optional(),
     authEnforce: z.enum(["always", "when-configured"]).optional(),
     sandbox: z.union([z.string(), z.record(z.string(), z.unknown())]),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
