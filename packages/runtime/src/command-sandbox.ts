@@ -1,6 +1,6 @@
 /**
- * OS-level confinement for `command_execute` subprocesses — phase 2 of the
- * command-sandbox work (macOS Seatbelt backend).
+ * OS-level confinement for `command_execute` subprocesses — macOS Seatbelt
+ * (phase 2) and Linux bubblewrap (phase 3) backends.
  *
  * The allowlist (`command-tools.ts`) gates WHICH binary may run; this bounds
  * what that binary may READ/WRITE and — in strict mode — reach on the network.
@@ -10,7 +10,8 @@
  *
  * Opt-in per workspace via `.agentproto/command-sandbox.json`; default OFF, so
  * existing behavior is unchanged until a user explicitly enables it. Backends
- * are platform-specific — macOS Seatbelt here; Linux Landlock/bwrap is phase 3.
+ * are platform-specific — macOS Seatbelt and Linux bubblewrap (`bwrap`), each
+ * selected + probed by `resolveCommandSandbox`.
  *
  * The Seatbelt profile was validated empirically (2026-07): under it `node` /
  * `cat` read workspace files fine, `~/.ssh` reads fail with EPERM, and strict
@@ -134,14 +135,84 @@ export const seatbeltSandbox: CommandSandbox = {
   },
 }
 
+/** Read-only system directories bubblewrap binds so interpreters find their
+ *  binaries + shared libraries. `--ro-bind-try` skips any that don't exist on
+ *  the distro (e.g. no `/lib64` on some), so the same list is portable. */
+const BWRAP_SYSTEM_DIRS: readonly string[] = [
+  "/usr",
+  "/usr/local",
+  "/bin",
+  "/sbin",
+  "/lib",
+  "/lib64",
+  "/etc",
+  "/opt",
+]
+
+/**
+ * Build the bubblewrap argv (everything after `bwrap`). Unlike Seatbelt's
+ * "deny home except workspace", bwrap is allowlist-by-construction: ONLY the
+ * paths bound here are visible, so `$HOME` secrets (~/.ssh, credentials) are
+ * simply absent from the mount namespace. System dirs are read-only, the
+ * workspace + extra reads are bound, and strict mode adds `--unshare-net` for
+ * an isolated (no-connectivity) network namespace. Exported for testing.
+ *
+ * Empirically validated (2026-07, ubuntu container): workspace reads succeed,
+ * `~/.ssh` reads fail (invisible), and `--unshare-net` makes connects fail with
+ * ENETUNREACH.
+ */
+export function buildBwrapArgs(argv: string[], policy: SandboxPolicy): string[] {
+  const ws = resolve(policy.workspace)
+  const out: string[] = [
+    "--die-with-parent",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
+  ]
+  for (const d of BWRAP_SYSTEM_DIRS) out.push("--ro-bind-try", d, d)
+  out.push("--bind", ws, ws)
+  for (const extra of policy.extraReadPaths) {
+    const p = resolve(extra)
+    out.push("--ro-bind-try", p, p)
+  }
+  if (policy.network === "deny") out.push("--unshare-net")
+  out.push("--", ...argv)
+  return out
+}
+
+/** Linux bubblewrap backend — wraps argv as `bwrap <binds> -- …`. */
+export const bwrapSandbox: CommandSandbox = {
+  id: "bwrap",
+  wrap(argv, policy) {
+    if (argv.length === 0) return argv
+    return ["bwrap", ...buildBwrapArgs(argv, policy)]
+  },
+}
+
+/** Absolute path to a `bwrap` binary, or null when bubblewrap isn't installed. */
+function bwrapAvailable(): boolean {
+  return (
+    existsSync("/usr/bin/bwrap") ||
+    existsSync("/bin/bwrap") ||
+    existsSync("/usr/local/bin/bwrap")
+  )
+}
+
 /**
  * The confinement backend available on this host, or `null` when none applies
- * (Linux Landlock/bwrap is phase 3; Windows is unsupported). `command-tools.ts`
- * warns when a sandbox mode is configured but this returns null.
+ * (macOS → Seatbelt, Linux → bubblewrap when installed, Windows unsupported).
+ * `command-tools.ts` warns when a sandbox mode is configured but this returns
+ * null — so a missing backend never silently pretends to confine.
  */
 export function resolveCommandSandbox(): CommandSandbox | null {
   if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
     return seatbeltSandbox
+  }
+  if (process.platform === "linux" && bwrapAvailable()) {
+    return bwrapSandbox
   }
   return null
 }
