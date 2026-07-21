@@ -84,6 +84,7 @@ import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
+import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 export type {
@@ -111,6 +112,8 @@ export type {
   WorktreeStatusView,
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
+export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
+export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export {
   userPresetsPath,
   loadUserPresets,
@@ -517,6 +520,17 @@ export interface CreateGatewayOptions {
    */
   listWorktreeStatuses?: WorktreeStatusLister
   /**
+   * Optional resolver: given a session's cwd, return the OPEN PR for that
+   * cwd's git branch (or null). Powers the daemon PR-provenance reconciler,
+   * which stamps the `@agentproto-bot` footer onto PRs an executor session
+   * opened through its OWN shell — the path `command_execute` (the only other
+   * stamp trigger) never observes. Injected here because branch→PR resolution
+   * runs over `@agentproto/worktree`, a dependency the runtime deliberately
+   * does NOT take. The CLI wires it. Omitted → the reconciler is not started
+   * (footer stamping stays limited to the `command_execute` path).
+   */
+  resolveOpenPr?: OpenPrResolver
+  /**
    * Optional E2E pairing registry (see `createPairingRegistry`). When wired,
    * the gateway mounts the `/pairings/*` REST routes and the `pair_*` MCP
    * tools, and exposes the registry on the handle. The CLI builds it (injecting
@@ -809,6 +823,19 @@ export async function createGateway(
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
   })
+
+  // PR-provenance reconciler — stamps the `@agentproto-bot` footer onto a PR an
+  // executor session opened through its OWN shell, which `command_execute` (the
+  // only other stamp trigger) never observes. Subscribes to turn-end/exited and
+  // resolves the session's open PR via the injected `resolveOpenPr` port. Only
+  // started when the CLI wired that port; best-effort, never fails a session.
+  const prReconciler = opts.resolveOpenPr
+    ? createPrProvenanceReconciler({
+        registry: sessions,
+        sessionEvents,
+        resolveOpenPr: opts.resolveOpenPr,
+      })
+    : undefined
 
   // Routine runner — singleton per daemon, shared across all MCP connections.
   // Persists run state to ~/.agentproto/routine-runs.json so runs survive
@@ -1289,6 +1316,8 @@ export async function createGateway(
       // policies referencing live sessions are persisted with their
       // current status (not "killed" sessions).
       supervisor.shutdown()
+      // Detach the PR-provenance reconciler's bus subscriptions.
+      prReconciler?.dispose()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.

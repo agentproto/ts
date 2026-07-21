@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
-import { stampPrProvenance, type GhRunner, type StampRegistry } from "../pr-provenance-stamp.js"
+import { stampPrProvenance, stampFooterOnPr, type GhRunner, type StampRegistry } from "../pr-provenance-stamp.js"
 import { MARKER, type FooterSession } from "../pr-provenance.js"
 
 const EXECUTOR: FooterSession = {
@@ -162,5 +162,90 @@ describe("stampPrProvenance", () => {
       },
     })
     expect(outcome).toEqual({ stamped: false, reason: "gh not found" })
+  })
+})
+
+describe("stampFooterOnPr", () => {
+  it("views, appends the footer, edits, and records — from a pre-resolved PR", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = vi.fn(async args => {
+      calls.push(args)
+      if (args[1] === "view") return { exitCode: 0, stdout: "Original body.\n" }
+      return { exitCode: 0, stdout: "" }
+    })
+
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run,
+      host: "build-box",
+    })
+
+    expect(outcome).toMatchObject({ stamped: true, url: PR_URL, number: 601, sessionId: "sess_exec", alreadyStamped: false })
+    expect(calls[0]).toEqual(["pr", "view", PR_URL, "--json", "body", "--jq", ".body"])
+    const editCall = calls.find(c => c[1] === "edit")!
+    expect(editCall[4] as string).toContain(MARKER)
+    expect(editCall[4] as string).toContain("supervisor `sess_super`")
+    expect(reg.recorded).toEqual([{ sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL }])
+  })
+
+  it("skips the edit when the body already carries the marker", async () => {
+    const reg = fakeRegistry([EXECUTOR])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view"
+        ? { exitCode: 0, stdout: `Body.\n\n---\n<sub>${MARKER} — PR</sub>` }
+        : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, alreadyStamped: true })
+    expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
+    expect(reg.recorded).toHaveLength(1)
+  })
+
+  it("does not edit when the body read fails", async () => {
+    const reg = fakeRegistry([EXECUTOR])
+    const run: GhRunner = vi.fn(async args =>
+      args[1] === "view" ? { exitCode: 1, stdout: "" } : { exitCode: 0, stdout: "" },
+    )
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run,
+    })
+    expect(outcome).toEqual({ stamped: false, reason: "gh pr view exit 1" })
+    expect((run as ReturnType<typeof vi.fn>).mock.calls.some(([a]) => a[1] === "edit")).toBe(false)
+    expect(reg.recorded).toHaveLength(0)
+  })
+
+  it("never throws — a failing runner is swallowed", async () => {
+    const outcome = await stampFooterOnPr({
+      registry: fakeRegistry([EXECUTOR]),
+      session: EXECUTOR,
+      supervisor: null,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/w",
+      run: async () => {
+        throw new Error("boom")
+      },
+    })
+    expect(outcome).toEqual({ stamped: false, reason: "boom" })
   })
 })
