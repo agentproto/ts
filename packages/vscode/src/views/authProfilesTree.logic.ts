@@ -4,13 +4,26 @@
  */
 
 import type {
+  AuthProfileSummary,
   CatalogModelsResponse,
   ProviderPresetEntry,
 } from "../client/types.js"
 
+/** One model a profile can bill, flattened from the catalog for the expanded
+ *  profile node. `runnable` = spawnable right now (rendered "active"); a
+ *  non-runnable route the profile is still eligible for is shown inactive. */
+export interface ServicedModel {
+  vendor: string
+  product: string
+  ref: string
+  route: string
+  runnable: boolean
+}
+
 export type AuthProfileNode =
-  | { kind: "preset"; preset: ProviderPresetEntry }
+  | { kind: "preset"; preset: ProviderPresetEntry; connected: boolean }
   | { kind: "profile"; profileId: string; routesCount: number }
+  | { kind: "profile-model"; profileId: string; model: ServicedModel }
 
 export type AuthProfileGroup =
   | { kind: "presets"; label: string }
@@ -23,7 +36,7 @@ export function isAuthProfileGroup(node: AuthProfileTreeNode): node is AuthProfi
 }
 
 export function isAuthProfileNode(node: AuthProfileTreeNode): node is AuthProfileNode {
-  return node.kind === "preset" || node.kind === "profile"
+  return node.kind === "preset" || node.kind === "profile" || node.kind === "profile-model"
 }
 
 function presetSortKey(preset: ProviderPresetEntry): string {
@@ -32,10 +45,25 @@ function presetSortKey(preset: ProviderPresetEntry): string {
   return `${readyFirst}|${name}|${preset.slug}`
 }
 
-export function buildPresetNodes(presets: ProviderPresetEntry[]): AuthProfileNode[] {
+/** A preset is "connected" when some api-key profile targets its endpoint —
+ *  an auth profile's `endpoint` equals the preset `slug` (see
+ *  authProfileFlow.logic.ts endpointChoices). This is the signal behind the
+ *  "no profiles connected" confusion: an available preset with no matching
+ *  profile can't bill anything until one is created. */
+export function presetConnected(
+  preset: ProviderPresetEntry,
+  profiles: readonly AuthProfileSummary[],
+): boolean {
+  return profiles.some(p => p.endpoint === preset.slug)
+}
+
+export function buildPresetNodes(
+  presets: ProviderPresetEntry[],
+  profiles: readonly AuthProfileSummary[] = [],
+): AuthProfileNode[] {
   return [...presets]
     .sort((a, b) => (presetSortKey(a) < presetSortKey(b) ? -1 : 1))
-    .map(preset => ({ kind: "preset", preset }))
+    .map(preset => ({ kind: "preset", preset, connected: presetConnected(preset, profiles) }))
 }
 
 export function buildProfileNodes(
@@ -59,6 +87,77 @@ export function buildProfileNodes(
     })
 }
 
+/**
+ * Every model each profile can bill, keyed by profile id — the inverse of the
+ * catalog's per-route `eligibleProfiles`. Powers the expandable profile node
+ * so the tree answers "what does THIS wallet get me?" directly, instead of a
+ * bare route count. Order within a profile follows catalog walk order (vendor
+ * → product → route).
+ */
+export function servicedModelsByProfile(
+  catalog: CatalogModelsResponse,
+): Map<string, ServicedModel[]> {
+  const byProfile = new Map<string, ServicedModel[]>()
+  for (const vendor of catalog.vendors ?? []) {
+    for (const product of vendor.products ?? []) {
+      for (const route of product.routes ?? []) {
+        for (const profileId of route.eligibleProfiles ?? []) {
+          const list = byProfile.get(profileId) ?? []
+          list.push({
+            vendor: vendor.vendor,
+            product: product.product,
+            ref: route.ref,
+            route: route.route,
+            runnable: route.runnable,
+          })
+          byProfile.set(profileId, list)
+        }
+      }
+    }
+  }
+  return byProfile
+}
+
+/**
+ * Profile nodes for the Model Profiles group: every profile that bills at
+ * least one catalog route, UNIONED with every created auth profile (so a
+ * profile that currently services nothing still shows, as "0 routes", rather
+ * than silently vanishing — the opposite of the "which profiles do I even
+ * have?" confusion). Catalog-active profiles first (by route count), then the
+ * unused created ones alphabetically.
+ */
+export function buildProfileNodesWithProfiles(
+  catalog: CatalogModelsResponse,
+  profiles: readonly AuthProfileSummary[],
+): { profileId: string; routesCount: number }[] {
+  const fromCatalog = buildProfileNodes(catalog)
+  const seen = new Set(fromCatalog.map(n => n.profileId))
+  const unused = profiles
+    .map(p => p.id)
+    .filter(id => !seen.has(id))
+    .sort((a, b) => a.localeCompare(b))
+    .map(profileId => ({ profileId, routesCount: 0 }))
+  return [...fromCatalog, ...unused]
+}
+
+/** Codicon id for a serviced-model leaf: a runnable route is spawnable now
+ *  (check), a non-runnable one is eligible-but-not-ready (slashed circle). */
+export function servicedModelIcon(model: ServicedModel): string {
+  return model.runnable ? "pass" : "circle-slash"
+}
+
+export function servicedModelDescription(model: ServicedModel): string {
+  const state = model.runnable ? "active" : "inactive"
+  return `${model.route} · ${state}`
+}
+
+/** Codicon for a preset row: a connected preset can bill (plug), an
+ *  unconnected one needs a profile first (a plain key, the "add a credential"
+ *  affordance). */
+export function presetConnectionIcon(connected: boolean): string {
+  return connected ? "plug" : "key"
+}
+
 export function presetIcon(preset: ProviderPresetEntry): string {
   // Status-aware codicon id: both states use the key icon per the current
   // design spec; the function is kept stable so the view can switch later.
@@ -69,6 +168,14 @@ export function presetDescription(preset: ProviderPresetEntry): string {
   const keyEnv = preset.info?.keyEnv
   if (keyEnv) return `${preset.slug} · ${keyEnv}`
   return preset.slug
+}
+
+/** The preset row's description, leading with connection state so the "no
+ *  profile connected" gap is visible at a glance rather than buried in a
+ *  tooltip. Connected → the plain preset description; unconnected → prefixed
+ *  with "not connected". */
+export function presetRowDescription(preset: ProviderPresetEntry, connected: boolean): string {
+  return connected ? presetDescription(preset) : `not connected · ${presetDescription(preset)}`
 }
 
 export function presetTooltip(preset: ProviderPresetEntry): string {

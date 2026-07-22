@@ -8,16 +8,20 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import {
   buildPresetNodes,
-  buildProfileNodes,
+  buildProfileNodesWithProfiles,
   isAuthProfileGroup,
-  presetDescription,
-  presetIcon,
+  presetConnectionIcon,
+  presetRowDescription,
   presetTooltip,
   profileDescription,
   profileTooltip,
+  servicedModelDescription,
+  servicedModelIcon,
+  servicedModelsByProfile,
   type AuthProfileGroup,
   type AuthProfileNode,
   type AuthProfileTreeNode,
+  type ServicedModel,
 } from "./authProfilesTree.logic.js"
 
 const PRESETS_GROUP: AuthProfileGroup = { kind: "presets", label: "Provider Presets" }
@@ -32,6 +36,7 @@ export class AuthProfilesTreeProvider
 
   private presets: AuthProfileNode[] = []
   private profiles: AuthProfileNode[] = []
+  private servicedByProfile = new Map<string, ServicedModel[]>()
   private loadError = false
 
   constructor(client: DaemonClient) {
@@ -46,12 +51,14 @@ export class AuthProfilesTreeProvider
   async refresh(): Promise<void> {
     this.loadError = false
     try {
-      const [presetEntries, catalog] = await Promise.all([
+      const [presetEntries, catalog, authProfiles] = await Promise.all([
         this.client.listProviderPresets(),
         this.client.catalogModels(),
+        this.client.listAuthProfiles(),
       ])
-      this.presets = buildPresetNodes(presetEntries)
-      this.profiles = buildProfileNodes(catalog).map(profile => ({
+      this.servicedByProfile = servicedModelsByProfile(catalog)
+      this.presets = buildPresetNodes(presetEntries, authProfiles)
+      this.profiles = buildProfileNodesWithProfiles(catalog, authProfiles).map(profile => ({
         kind: "profile",
         ...profile,
       }))
@@ -59,6 +66,7 @@ export class AuthProfilesTreeProvider
       this.loadError = true
       this.presets = []
       this.profiles = []
+      this.servicedByProfile = new Map()
     }
     this._onDidChange.fire()
   }
@@ -79,14 +87,43 @@ export class AuthProfilesTreeProvider
       const preset = element.preset
       const item = new vscode.TreeItem(preset.name ?? preset.slug)
       item.id = `preset:${preset.slug}`
-      item.description = presetDescription(preset)
+      item.description = presetRowDescription(preset, element.connected)
       item.tooltip = new vscode.MarkdownString(presetTooltip(preset))
-      item.iconPath = new vscode.ThemeIcon(presetIcon(preset))
-      item.contextValue = "auth-preset"
+      item.iconPath = new vscode.ThemeIcon(presetConnectionIcon(element.connected))
+      // Split by connection so the menu offers "Connect" only where it applies,
+      // and clicking an unconnected preset jumps straight into the connect flow
+      // (bound to this endpoint) rather than the generic create wizard.
+      item.contextValue = element.connected ? "auth-preset-connected" : "auth-preset-unconnected"
+      if (!element.connected) {
+        item.command = {
+          command: "agentproto.connectAuthProfile",
+          title: "Connect a profile",
+          arguments: [element],
+        }
+      }
       return item
     }
 
-    const item = new vscode.TreeItem(element.profileId)
+    if (element.kind === "profile-model") {
+      const model = element.model
+      const item = new vscode.TreeItem(model.product)
+      item.id = `profile-model:${element.profileId}:${model.ref}`
+      item.description = servicedModelDescription(model)
+      item.tooltip = new vscode.MarkdownString(
+        [`**${model.product}**`, ``, `- Ref: \`${model.ref}\``, `- Route: ${model.route}`, `- Vendor: ${model.vendor}`].join("\n"),
+      )
+      item.iconPath = new vscode.ThemeIcon(servicedModelIcon(model))
+      item.contextValue = "auth-profile-model"
+      return item
+    }
+
+    // A profile node — expandable when it services at least one model.
+    const serviced = this.servicedByProfile.get(element.profileId) ?? []
+    const collapsibleState =
+      serviced.length > 0
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None
+    const item = new vscode.TreeItem(element.profileId, collapsibleState)
     item.id = `profile:${element.profileId}`
     item.description = profileDescription(element.routesCount)
     item.tooltip = new vscode.MarkdownString(profileTooltip(element.profileId, element.routesCount))
@@ -104,11 +141,17 @@ export class AuthProfilesTreeProvider
       return [PRESETS_GROUP, PROFILES_GROUP]
     }
 
-    if (!isAuthProfileGroup(element)) {
-      return []
+    if (isAuthProfileGroup(element)) {
+      return element.kind === "presets" ? this.presets : this.profiles
     }
 
-    return element.kind === "presets" ? this.presets : this.profiles
+    // Expanding a profile node reveals the models it can bill.
+    if (element.kind === "profile") {
+      const serviced = this.servicedByProfile.get(element.profileId) ?? []
+      return serviced.map(model => ({ kind: "profile-model", profileId: element.profileId, model }))
+    }
+
+    return []
   }
 }
 

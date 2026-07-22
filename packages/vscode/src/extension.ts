@@ -38,6 +38,7 @@ import { registerPermissionsView } from "./views/permissionsTree.js"
 import { registerSessionsView } from "./views/sessionsTree.js"
 import { registerHarnessesView } from "./views/harnessesTree.js"
 import { registerAuthProfilesView } from "./views/authProfilesTree.js"
+import { registerAuthSettingsPanel } from "./webview/authSettingsPanel.js"
 import { registerStatusBar } from "./views/statusBar.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
@@ -98,6 +99,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
+  registerAuthSettingsPanel(ctx, client, authProfilesProvider) // agentproto.openAuthSettings
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())

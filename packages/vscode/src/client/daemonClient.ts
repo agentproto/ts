@@ -40,6 +40,7 @@ import type {
   DaemonHealth,
   PendingPermission,
   ProviderPresetEntry,
+  RouteSpec,
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
@@ -81,6 +82,19 @@ export interface SpawnAgentOptions {
   mode?: string
   model?: string
   effort?: string
+  /** Explicit routing rail (gateway + optional custom baseUrl). Mirrors the
+   *  daemon's `route` body field on POST /sessions/agent (parseRouteField);
+   *  set it when a model bills a non-default gateway (openrouter/requesty/…)
+   *  so the wallet resolves correctly instead of falling back to the
+   *  adapter's native provider. */
+  route?: RouteSpec
+  /** Named auth-profile binding — the wallet this session bills. Mirrors the
+   *  daemon's `access` body field (parseAccessField). Without it a spawn
+   *  resolves to the daemon's default wallet, which 500s the serviceability
+   *  guard for any model that needs an api-key profile. */
+  access?: {
+    profileRef?: string
+  }
   auth?: {
     mode: "subscription" | "api-key"
     token?: string

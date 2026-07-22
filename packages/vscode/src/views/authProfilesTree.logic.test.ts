@@ -3,17 +3,32 @@ import { describe, expect, it } from "vitest"
 import {
   buildPresetNodes,
   buildProfileNodes,
+  buildProfileNodesWithProfiles,
   isAuthProfileGroup,
   isAuthProfileNode,
+  presetConnected,
+  presetConnectionIcon,
   presetDescription,
   presetIcon,
+  presetRowDescription,
   presetTooltip,
   profileDescription,
   profileTooltip,
+  servicedModelDescription,
+  servicedModelIcon,
+  servicedModelsByProfile,
   type AuthProfileNode,
   type AuthProfileTreeNode,
 } from "./authProfilesTree.logic.js"
-import type { CatalogModelsResponse, ProviderPresetEntry } from "../client/types.js"
+import type {
+  AuthProfileSummary,
+  CatalogModelsResponse,
+  ProviderPresetEntry,
+} from "../client/types.js"
+
+function authProfile(over: Partial<AuthProfileSummary> = {}): AuthProfileSummary {
+  return { id: "openrouter-api", endpoint: "openrouter", method: "api-key", ...over }
+}
 
 function preset(over: Partial<ProviderPresetEntry> = {}): ProviderPresetEntry {
   return {
@@ -45,7 +60,17 @@ describe("isAuthProfileGroup / isAuthProfileNode", () => {
   })
 
   it("classifies preset nodes", () => {
-    const node: AuthProfileTreeNode = { kind: "preset", preset: preset() }
+    const node: AuthProfileTreeNode = { kind: "preset", preset: preset(), connected: false }
+    expect(isAuthProfileGroup(node)).toBe(false)
+    expect(isAuthProfileNode(node)).toBe(true)
+  })
+
+  it("classifies profile-model leaves as nodes", () => {
+    const node: AuthProfileTreeNode = {
+      kind: "profile-model",
+      profileId: "openrouter-api",
+      model: { vendor: "anthropic", product: "claude-fable-5", ref: "anthropic/claude-fable-5", route: "openrouter", runnable: true },
+    }
     expect(isAuthProfileGroup(node)).toBe(false)
     expect(isAuthProfileNode(node)).toBe(true)
   })
@@ -220,5 +245,123 @@ describe("profileTooltip", () => {
     const md = profileTooltip("pro-a", 3)
     expect(md).toContain("**pro-a**")
     expect(md).toContain("- Eligible routes: 3")
+  })
+})
+
+describe("presetConnected", () => {
+  it("is connected when a profile targets the preset endpoint", () => {
+    expect(presetConnected(preset({ slug: "openrouter" }), [authProfile()])).toBe(true)
+  })
+
+  it("is not connected when no profile matches the slug", () => {
+    expect(presetConnected(preset({ slug: "moonshot" }), [authProfile({ endpoint: "openrouter" })])).toBe(false)
+    expect(presetConnected(preset({ slug: "openrouter" }), [])).toBe(false)
+  })
+})
+
+describe("buildPresetNodes connection flag", () => {
+  it("marks each preset connected per the profile list", () => {
+    const nodes = buildPresetNodes(
+      [preset({ slug: "openrouter", status: "ready" }), preset({ slug: "moonshot", status: "ready" })],
+      [authProfile({ endpoint: "openrouter" })],
+    )
+    const byslug = Object.fromEntries(
+      nodes.filter(n => n.kind === "preset").map(n => [(n as Extract<AuthProfileNode, { kind: "preset" }>).preset.slug, (n as Extract<AuthProfileNode, { kind: "preset" }>).connected]),
+    )
+    expect(byslug).toEqual({ openrouter: true, moonshot: false })
+  })
+
+  it("defaults every preset to unconnected when no profiles are given", () => {
+    const nodes = buildPresetNodes([preset({ slug: "openrouter" })])
+    expect((nodes[0] as Extract<AuthProfileNode, { kind: "preset" }>).connected).toBe(false)
+  })
+})
+
+describe("presetRowDescription", () => {
+  it("prefixes 'not connected' for an unconnected preset", () => {
+    expect(presetRowDescription(preset({ slug: "openrouter", info: undefined }), false)).toBe(
+      "not connected · openrouter",
+    )
+  })
+
+  it("shows the plain description when connected", () => {
+    expect(presetRowDescription(preset({ slug: "openrouter", info: undefined }), true)).toBe("openrouter")
+  })
+})
+
+describe("presetConnectionIcon", () => {
+  it("uses plug when connected, key when not", () => {
+    expect(presetConnectionIcon(true)).toBe("plug")
+    expect(presetConnectionIcon(false)).toBe("key")
+  })
+})
+
+describe("servicedModelsByProfile", () => {
+  const catalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "anthropic",
+        products: [
+          {
+            product: "claude-fable-5",
+            routes: [
+              { route: "openrouter", ref: "anthropic/claude-fable-5", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["openrouter-api"], adapterModes: [], adapters: [], curated: true },
+              { route: "anthropic", ref: "claude-fable-5", baseUrl: null, pricing: null, runnable: false, eligibleProfiles: ["anthropic-sub"], adapterModes: [], adapters: [], curated: true },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("inverts eligibleProfiles into per-profile serviced models", () => {
+    const byProfile = servicedModelsByProfile(catalog)
+    expect(byProfile.get("openrouter-api")).toEqual([
+      { vendor: "anthropic", product: "claude-fable-5", ref: "anthropic/claude-fable-5", route: "openrouter", runnable: true },
+    ])
+    expect(byProfile.get("anthropic-sub")?.[0]?.runnable).toBe(false)
+  })
+})
+
+describe("buildProfileNodesWithProfiles", () => {
+  const catalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "v1",
+        products: [
+          {
+            product: "p1",
+            routes: [
+              { route: "r1", ref: "x", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["openrouter-api"], adapterModes: [], adapters: [], curated: true },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("unions catalog-active profiles with unused created ones (0 routes)", () => {
+    const nodes = buildProfileNodesWithProfiles(catalog, [
+      authProfile({ id: "openrouter-api", endpoint: "openrouter" }),
+      authProfile({ id: "unused-api", endpoint: "moonshot" }),
+    ])
+    expect(nodes).toEqual([
+      { profileId: "openrouter-api", routesCount: 1 },
+      { profileId: "unused-api", routesCount: 0 },
+    ])
+  })
+})
+
+describe("servicedModel rendering", () => {
+  it("labels a runnable model active with a pass icon", () => {
+    const model = { vendor: "anthropic", product: "claude-fable-5", ref: "r", route: "openrouter", runnable: true }
+    expect(servicedModelDescription(model)).toBe("openrouter · active")
+    expect(servicedModelIcon(model)).toBe("pass")
+  })
+
+  it("labels a non-runnable model inactive with a slashed icon", () => {
+    const model = { vendor: "anthropic", product: "claude-fable-5", ref: "r", route: "anthropic", runnable: false }
+    expect(servicedModelDescription(model)).toBe("anthropic · inactive")
+    expect(servicedModelIcon(model)).toBe("circle-slash")
   })
 })

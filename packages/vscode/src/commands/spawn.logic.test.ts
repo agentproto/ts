@@ -4,10 +4,12 @@ import type { WorkspacesConfig } from "../client/types.js"
 import {
   assembleSpawnOptions,
   buildSpawnPlaceHolder,
+  classifyProfileChoice,
   CONFIGURE_LABEL,
   CUSTOM_MODEL_LABEL,
   CUSTOM_MODEL_SECTION_LABEL,
   mapAdapterQuickPickItems,
+  mapCatalogSpawnQuickPickItems,
   mapFolderQuickPickItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
@@ -23,7 +25,7 @@ import {
   type SpawnAdapterInfo,
   type WorkspaceFolderLike,
 } from "./spawn.logic.js"
-import type { UserPreset } from "../client/types.js"
+import type { CatalogModelsResponse, UserPreset } from "../client/types.js"
 
 function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
   return { slug: "claude-code", ...overrides }
@@ -548,5 +550,111 @@ describe("assembleSpawnOptions", () => {
       model: "opus",
       cwd: "/tmp/work",
     })
+  })
+
+  it("emits route + access when a gateway model resolved a wallet", () => {
+    // The whole point of the catalog picker fix: a gateway model must carry
+    // both its gateway and the profile that bills it, or the daemon 500s the
+    // serviceability guard for spawning walletless.
+    expect(
+      assembleSpawnOptions({
+        adapter: "claude-code",
+        model: "anthropic/claude-fable-5",
+        route: { gateway: "openrouter" },
+        accessProfileRef: "openrouter-api",
+      }),
+    ).toEqual({
+      adapter: "claude-code",
+      model: "anthropic/claude-fable-5",
+      route: { gateway: "openrouter" },
+      access: { profileRef: "openrouter-api" },
+    })
+  })
+
+  it("emits route without access when the daemon's default wallet handles it", () => {
+    expect(
+      assembleSpawnOptions({ adapter: "claude-code", model: "opus", route: { gateway: "anthropic" } }),
+    ).toEqual({ adapter: "claude-code", model: "opus", route: { gateway: "anthropic" } })
+  })
+})
+
+describe("classifyProfileChoice", () => {
+  it("attaches the sole eligible profile silently", () => {
+    expect(classifyProfileChoice(["openrouter-api"], true)).toEqual({
+      kind: "attach",
+      profileRef: "openrouter-api",
+    })
+  })
+
+  it("asks when several profiles are eligible", () => {
+    expect(classifyProfileChoice(["anthropic-sub", "max-agentik"], true)).toEqual({
+      kind: "pick",
+      options: ["anthropic-sub", "max-agentik"],
+    })
+  })
+
+  it("defaults (no access) when none eligible but the route runs as-is", () => {
+    // The Anthropic subscription path: runnable with no named profile — the
+    // daemon resolves its own wallet, so attaching nothing is correct.
+    expect(classifyProfileChoice([], true)).toEqual({ kind: "default" })
+    expect(classifyProfileChoice(undefined, true)).toEqual({ kind: "default" })
+  })
+
+  it("routes to connect when none eligible and the route can't run", () => {
+    expect(classifyProfileChoice([], false)).toEqual({ kind: "connect" })
+    expect(classifyProfileChoice(undefined, undefined)).toEqual({ kind: "connect" })
+  })
+})
+
+describe("mapCatalogSpawnQuickPickItems", () => {
+  const catalog: CatalogModelsResponse = {
+    vendors: [
+      {
+        vendor: "anthropic",
+        products: [
+          {
+            product: "claude-fable-5",
+            routes: [
+              {
+                route: "openrouter",
+                ref: "anthropic/claude-fable-5",
+                baseUrl: null,
+                pricing: null,
+                runnable: true,
+                eligibleProfiles: ["openrouter-api"],
+                adapterModes: ["openrouter"],
+                adapters: ["claude-code"],
+                curated: true,
+              },
+              {
+                route: "anthropic",
+                ref: "claude-fable-5",
+                baseUrl: null,
+                pricing: null,
+                runnable: false,
+                eligibleProfiles: [],
+                adapterModes: [],
+                adapters: ["claude-code"],
+                curated: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  it("carries route, eligibleProfiles, and runnable onto each row", () => {
+    const items = mapCatalogSpawnQuickPickItems(catalog)
+    const runnableRow = items.find(i => i.model === "anthropic/claude-fable-5")
+    expect(runnableRow).toMatchObject({
+      route: "openrouter",
+      eligibleProfiles: ["openrouter-api"],
+      runnable: true,
+    })
+    const nonRunnableRow = items.find(i => i.model === "claude-fable-5")
+    expect(nonRunnableRow).toMatchObject({ route: "anthropic", eligibleProfiles: [], runnable: false })
+    // The non-runnable row still shows the gap rather than vanishing.
+    expect(nonRunnableRow?.description).toContain("no profile")
   })
 })

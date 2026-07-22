@@ -266,6 +266,24 @@
         "title": "agentproto: Configure Auth Profile",
         "category": "agentproto",
         "icon": "$(gear)"
+      },
+      {
+        "command": "agentproto.connectAuthProfile",
+        "title": "agentproto: Connect Provider",
+        "category": "agentproto",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "agentproto.deleteAuthProfile",
+        "title": "agentproto: Delete Auth Profile",
+        "category": "agentproto",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "agentproto.openAuthSettings",
+        "title": "agentproto: Open Auth Settings",
+        "category": "agentproto",
+        "icon": "$(settings-gear)"
       }
     ],
     "menus": {
@@ -282,6 +300,16 @@
         },
         {
           "command": "agentproto.refreshAuthProfiles",
+          "when": "view == 'agentproto.authProfiles'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.openAuthSettings",
+          "when": "view == 'agentproto.authProfiles'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.configureAuthProfile",
           "when": "view == 'agentproto.authProfiles'",
           "group": "navigation"
         },
@@ -398,9 +426,24 @@
           "group": "inline@2"
         },
         {
-          "command": "agentproto.configureAuthProfile",
-          "when": "view == 'agentproto.authProfiles' && (viewItem == auth-preset || viewItem == auth-profile)",
+          "command": "agentproto.connectAuthProfile",
+          "when": "view == 'agentproto.authProfiles' && viewItem == auth-preset-unconnected",
           "group": "inline@1"
+        },
+        {
+          "command": "agentproto.deleteAuthProfile",
+          "when": "view == 'agentproto.authProfiles' && viewItem == auth-profile",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentproto.connectAuthProfile",
+          "when": "view == 'agentproto.authProfiles' && viewItem == auth-preset-unconnected",
+          "group": "9_actions@1"
+        },
+        {
+          "command": "agentproto.deleteAuthProfile",
+          "when": "view == 'agentproto.authProfiles' && viewItem == auth-profile",
+          "group": "9_actions@1"
         },
         {
           "command": "agentproto.configureSession",
