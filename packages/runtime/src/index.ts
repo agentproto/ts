@@ -85,6 +85,7 @@ import { withDeferredTools } from "./deferred-tools.js"
 import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
+import { createActivityProjector } from "./activities.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 export type {
@@ -114,6 +115,33 @@ export type {
 export { toWorktreeStatusView } from "./worktree-status.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
+export { createActivityProjector } from "./activities.js"
+export type {
+  ActivityProjector,
+  ActivityProjectorRegistry,
+  ActivityProjectorSession,
+  ActivityPolicyLister,
+  ActivityRoutineLister,
+  ActivityWorkflowLister,
+} from "./activities.js"
+export {
+  policyToActivities,
+  turnToActivities,
+  routineToActivities,
+  workflowToActivities,
+  prToActivities,
+  filterActivities,
+  activityCounts,
+  isTerminalActivityState,
+} from "./activity-projection.js"
+export type {
+  ActivityRecord,
+  ActivityState,
+  ActivityKind,
+  ActivitySource,
+  ActivityWaitingOn,
+  ActivityListFilter,
+} from "./activity-projection.js"
 export {
   userPresetsPath,
   loadUserPresets,
@@ -898,6 +926,20 @@ export async function createGateway(
       })
     : undefined
 
+  // Activity projector — the unified active/pending read-model over
+  // completion policies, session turns, routine/workflow steps, and opened
+  // PRs (activities.ts). A projection, not a registry: `list()` recomputes
+  // from the owners above on every call; the projector's only state is a
+  // diff cache that powers the `activity:changed` bus event. Declared after
+  // the owners it projects over; disposed in stop().
+  const activityProjector = createActivityProjector({
+    registry: sessions,
+    sessionEvents,
+    supervisor,
+    ...(routineRunner ? { routineRunner } : {}),
+    ...(workflowRunner ? { workflowRunner } : {}),
+  })
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -1073,6 +1115,7 @@ export async function createGateway(
       sessionEvents,
       eventRing,
       supervisor,
+      activityProjector,
       ...(routineRunner ? { routineRunner } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
@@ -1242,6 +1285,7 @@ export async function createGateway(
     sessionEvents,
     eventRing,
     supervisor,
+    activityProjector,
     ...(routineRunner ? { routineRunner } : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
@@ -1323,6 +1367,8 @@ export async function createGateway(
       supervisor.shutdown()
       // Detach the PR-provenance reconciler's bus subscriptions.
       prReconciler?.dispose()
+      // Detach the activity projector's bus subscription + diff cache.
+      activityProjector.dispose()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.

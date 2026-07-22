@@ -10,6 +10,7 @@
 
 import { EventEmitter } from "node:events"
 
+import type { ActivityRecord } from "./activity-projection.js"
 import type { SessionConfig } from "./session-config.js"
 
 export type SessionEventType =
@@ -30,6 +31,7 @@ export type SessionEventType =
   | "cron:fired"
   | "cron:succeeded"
   | "cron:failed"
+  | "activity:changed"
 
 /**
  * Structured detail on why a session is awaiting input, when derivable.
@@ -309,6 +311,20 @@ export interface CronFailedEvent {
   ts: string
 }
 
+/**
+ * Emitted by the activity projector (`activities.ts`) whenever an
+ * {@link ActivityRecord}'s state or waitingOn actually changed — the ONE
+ * new event the Activity ledger adds. Because EventRing wires via `onAny`,
+ * `session_events_poll`, SSE `/events`, and the webhook notifier all carry
+ * this for free. The `activity` payload is the freshly-projected record
+ * (deterministic id), never a diff.
+ */
+export interface ActivityChangedEvent {
+  type: "activity:changed"
+  activity: ActivityRecord
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -327,6 +343,7 @@ export type SessionEvent =
   | CronFiredEvent
   | CronSucceededEvent
   | CronFailedEvent
+  | ActivityChangedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

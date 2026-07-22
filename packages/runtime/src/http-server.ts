@@ -78,6 +78,14 @@ import type {
   SessionEventType,
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
+import type { ActivityProjector } from "./activities.js"
+import {
+  activityCounts,
+  parseActivityKind,
+  parseActivitySource,
+  parseActivityState,
+  type ActivityListFilter,
+} from "./activity-projection.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import type {
@@ -549,6 +557,12 @@ export interface RuntimeHttpServerOptions {
    *  policy leaves watching/gating → done/blocked/awaiting-ack/cancelled).
    *  Same state the MCP `policy_status` tool reports. */
   supervisor?: CompletionPolicySupervisor
+  /** Optional — the Activity ledger projector (`activities.ts`). When
+   *  wired, enables `GET /activities` — the unified active/pending
+   *  read-model over policies, turns, routine/workflow steps, and opened
+   *  PRs. Same projector the MCP `activities_list` tool reads. Without it
+   *  the route 501s. */
+  activityProjector?: ActivityProjector
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -1408,6 +1422,58 @@ export async function startHttpServer(
             res.end(
               JSON.stringify({
                 error: "worktree_status_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        if (path === "/activities" && req.method === "GET") {
+          if (guardBrowserOrigin(req, res)) return
+          // Read-only Activity ledger surface — the unified active/pending
+          // read-model over completion policies, session turns, routine/
+          // workflow steps, and opened PRs. Recomputed from the owners on
+          // every call (a projection, never a registry). Mirrors the MCP
+          // `activities_list` tool — same projector, same filter, same shape.
+          if (!opts.activityProjector) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "activities_not_configured",
+                message:
+                  "GET /activities is not enabled — the daemon was started " +
+                  "without an activity projector.",
+              })
+            )
+            return
+          }
+          const reqUrl = req.url ?? ""
+          const qs = new URLSearchParams(
+            reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+          )
+          const sessionId = qs.get("sessionId")
+          const state = parseActivityState(qs.get("state"))
+          const kind = parseActivityKind(qs.get("kind"))
+          const source = parseActivitySource(qs.get("source"))
+          const includeTerminal =
+            qs.get("includeTerminal") === "1" || qs.get("includeTerminal") === "true"
+          const filter: ActivityListFilter = {
+            ...(sessionId !== null ? { sessionId } : {}),
+            ...(state !== undefined ? { state } : {}),
+            ...(kind !== undefined ? { kind } : {}),
+            ...(source !== undefined ? { source } : {}),
+            ...(includeTerminal ? { includeTerminal } : {}),
+          }
+          try {
+            const activities = opts.activityProjector.list(filter)
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ activities, counts: activityCounts(activities) }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "activities_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
             )
