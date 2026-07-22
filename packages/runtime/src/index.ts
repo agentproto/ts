@@ -85,7 +85,7 @@ import { withDeferredTools } from "./deferred-tools.js"
 import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
-import { createActivityProjector } from "./activities.js"
+import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
@@ -124,6 +124,7 @@ export type {
   ActivityPolicyLister,
   ActivityRoutineLister,
   ActivityWorkflowLister,
+  PrStateResolver,
 } from "./activities.js"
 export {
   policyToActivities,
@@ -142,6 +143,7 @@ export type {
   ActivitySource,
   ActivityWaitingOn,
   ActivityListFilter,
+  PrResolvedState,
 } from "./activity-projection.js"
 export {
   createTaskLedger,
@@ -590,6 +592,17 @@ export interface CreateGatewayOptions {
    */
   resolveOpenPr?: OpenPrResolver
   /**
+   * Optional resolver: given a PR url, return its current forge state
+   * (`"open" | "merged" | "closed"`, or `null` when unresolvable). Powers the
+   * Activity projector's PR settlement pass — a `pr` activity pending on the
+   * forge becomes terminal (`done` when merged, `cancelled` when closed) once
+   * this port reports the verdict. Injected here because forge access runs
+   * over `@agentproto/worktree`, a dependency the runtime deliberately does
+   * NOT take. The CLI wires it. Omitted → pr activities never settle (they
+   * stay pending on the forge, the pre-settlement behaviour).
+   */
+  resolvePrState?: PrStateResolver
+  /**
    * Optional E2E pairing registry (see `createPairingRegistry`). When wired,
    * the gateway mounts the `/pairings/*` REST routes and the `pair_*` MCP
    * tools, and exposes the registry on the handle. The CLI builds it (injecting
@@ -987,6 +1000,10 @@ export async function createGateway(
     taskLedger,
     ...(routineRunner ? { routineRunner } : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
+    // PR settlement port (CLI-wired, like `resolveOpenPr`) — lets a
+    // pending-on-forge pr activity settle to done/cancelled once the forge
+    // reports merged/closed.
+    ...(opts.resolvePrState ? { resolvePrState: opts.resolvePrState } : {}),
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes

@@ -568,8 +568,10 @@ export interface RuntimeHttpServerOptions {
   /** Optional — the Activity ledger projector (`activities.ts`). When
    *  wired, enables `GET /activities` — the unified active/pending
    *  read-model over policies, turns, routine/workflow steps, and opened
-   *  PRs. Same projector the MCP `activities_list` tool reads. Without it
-   *  the route 501s. */
+   *  PRs — plus `GET /activities/:id/wait` (a blocking long-poll that
+   *  resolves when that record next announces a change, or immediately
+   *  when it is already terminal). Same projector the MCP
+   *  `activities_list` tool reads. Without it the routes 501. */
   activityProjector?: ActivityProjector
   /** Optional — the Task ledger (`task-ledger.ts`). When wired, enables
    *  the `/tasks` routes (GET/POST /tasks, GET/PATCH /tasks/:id) — the
@@ -1438,6 +1440,64 @@ export async function startHttpServer(
             res.end(
               JSON.stringify({
                 error: "worktree_status_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        // /activities/:id/wait — blocking long-poll on ONE activity record:
+        // resolves with the freshly-projected ActivityRecord when it next
+        // announces a change (`activity:changed` — state/waitingOn really
+        // moved), immediately when it is already terminal (terminal records
+        // are immutable, so there is nothing left to wait for), or with
+        // `{timedOut:true}` when `timeoutMs` elapses (default 25000, cap
+        // 55000 to stay under typical HTTP client/proxy timeouts — same
+        // budget and response split as GET /policies/:id/wait; callers chain
+        // requests for longer waits). Same origin guard + 501-when-unwired
+        // as GET /activities below.
+        const activityWaitMatch = path.match(/^\/activities\/([^/]+)\/wait$/)
+        if (activityWaitMatch && req.method === "GET") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.activityProjector) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "activities_not_configured",
+                message:
+                  "GET /activities/:id/wait is not enabled — the daemon was " +
+                  "started without an activity projector.",
+              })
+            )
+            return
+          }
+          const activityId = decodeURIComponent(activityWaitMatch[1] ?? "")
+          const reqUrl = req.url ?? ""
+          const qs = new URLSearchParams(
+            reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+          )
+          const timeoutMs = clampInt(qs.get("timeoutMs"), 25_000, 1_000, 55_000)
+          try {
+            // Fast 404 when no owner projects this id at all — no point
+            // blocking on an id nothing will ever announce (mirrors the
+            // policy wait's fast policy_not_found).
+            const known = opts.activityProjector
+              .list({ includeTerminal: true })
+              .some(rec => rec.id === activityId)
+            if (!known) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "activity_not_found", activityId }))
+              return
+            }
+            const activity = await opts.activityProjector.wait(activityId, { timeoutMs })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(activity ?? { timedOut: true, activityId }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "activities_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
             )

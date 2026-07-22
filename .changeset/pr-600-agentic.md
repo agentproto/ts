@@ -1,7 +1,7 @@
 ---
 "@agentproto/auth": minor
 "@agentproto/runtime": minor
-"@agentproto/vscode": minor
+"agentproto-vscode": minor
 ---
 
 Add support for source-backed auth profiles — named profiles that resolve credentials fresh from self-refreshing sources (e.g. `claude-code-oauth`) instead of storing a static secret. Session spawn resolves source-backed profiles via Mode 3 credential resolution on every spawn; session restart explicitly rejects them (out of scope for restart, follow-up planned).

@@ -15,6 +15,7 @@ import {
 import {
   createActivityProjector,
   type ActivityProjectorSession,
+  type PrStateResolver,
 } from "../activities.js"
 import type { ActivityPolicySlice, ActivityTaskSlice } from "../activity-projection.js"
 
@@ -53,11 +54,23 @@ const taskChanged = (taskId: string): SessionEvent => ({
   ts: T0,
 })
 
+const exited = (sessionId: string): SessionEvent => ({
+  type: "session:exited",
+  sessionId,
+  status: "exited",
+  ts: T0,
+})
+
+/** Let the fire-and-forget PR settlement pass (async resolver + re-project)
+ *  run to completion — one macrotask is enough for a resolved fake. */
+const settleTick = (): Promise<void> => new Promise(r => setTimeout(r, 0))
+
 /** Real bus + mutable fake owners + an `activity:changed` recorder. */
 function harness(initial: {
   sessions?: ActivityProjectorSession[]
   policies?: ActivityPolicySlice[]
   tasks?: ActivityTaskSlice[]
+  resolvePrState?: PrStateResolver
 } = {}) {
   const bus = createSessionEventBus()
   const state = {
@@ -72,6 +85,7 @@ function harness(initial: {
     sessionEvents: bus,
     supervisor: { list: () => state.policies },
     taskLedger: { snapshot: () => state.tasks },
+    ...(initial.resolvePrState ? { resolvePrState: initial.resolvePrState } : {}),
   })
   return { bus, state, seen, projector }
 }
@@ -233,5 +247,112 @@ describe("createActivityProjector", () => {
     bus.emit(taskChanged("task_1"))
     expect(seen.map(ev => ev.activity.id)).toEqual(["turn:sess_a:1"])
     expect(seen[0]?.activity.taskId).toBe("task_1")
+  })
+})
+
+describe("ActivityProjector.wait", () => {
+  it("resolves immediately for an already-terminal activity", async () => {
+    const { projector } = harness({ policies: [policy({ status: "done", endedAt: T0 })] })
+    const rec = await projector.wait("policy:plc_1", { timeoutMs: 5_000 })
+    expect(rec?.id).toBe("policy:plc_1")
+    expect(rec?.state).toBe("done")
+    projector.dispose()
+  })
+
+  it("resolves on the activity's next announced change", async () => {
+    const { bus, state, projector } = harness({ policies: [policy()] })
+    const pending = projector.wait("policy:plc_1", { timeoutMs: 5_000 })
+    state.policies = [policy({ status: "done", endedAt: T0 })]
+    bus.emit({ type: "policy:passed", policyId: "plc_1", sessionId: "sess_a", ts: T0 })
+    const rec = await pending
+    expect(rec?.id).toBe("policy:plc_1")
+    expect(rec?.state).toBe("done")
+    projector.dispose()
+  })
+
+  it("ignores other activities' changes and resolves null on timeout", async () => {
+    const { bus, state, projector } = harness({ policies: [policy()] })
+    const pending = projector.wait("policy:plc_1", { timeoutMs: 40 })
+    // Another record appears and announces — not the awaited id.
+    state.sessions = [agentSession({ busy: true })]
+    bus.emit(turnEnd("sess_a"))
+    expect(await pending).toBeNull()
+    projector.dispose()
+  })
+})
+
+describe("PR settlement via resolvePrState", () => {
+  const PR_URL = "https://github.com/o/r/pull/412"
+  const prSession = (): ActivityProjectorSession =>
+    agentSession({ openedPrs: [{ number: 412, url: PR_URL, openedAt: T0 }] })
+
+  it("settles a pending pr activity to done (and announces) when the forge reports merged", async () => {
+    const { bus, seen, projector } = harness({
+      sessions: [prSession()],
+      resolvePrState: async () => "merged",
+    })
+    // Primed pending-on-forge, silently.
+    expect(projector.list({ kind: "pr" })[0]?.waitingOn?.kind).toBe("forge")
+    expect(seen).toEqual([])
+    // The session's exit is the settlement checkpoint.
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    expect(seen.map(ev => [ev.activity.id, ev.activity.state])).toEqual([
+      ["pr:sess_a:412", "done"],
+    ])
+    const rec = projector.list({ includeTerminal: true }).find(r => r.id === "pr:sess_a:412")
+    expect(rec?.state).toBe("done")
+    expect(rec?.waitingOn).toBeUndefined()
+    projector.dispose()
+  })
+
+  it("settles to cancelled when the forge reports closed", async () => {
+    const { bus, seen, projector } = harness({
+      sessions: [prSession()],
+      resolvePrState: async () => "closed",
+    })
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    expect(seen.map(ev => [ev.activity.id, ev.activity.state])).toEqual([
+      ["pr:sess_a:412", "cancelled"],
+    ])
+    projector.dispose()
+  })
+
+  it("an unresolvable (null) or still-open verdict leaves the record pending, silently", async () => {
+    let answer: "open" | null = null
+    const { bus, seen, projector } = harness({
+      sessions: [prSession()],
+      resolvePrState: async () => answer,
+    })
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    answer = "open"
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    expect(seen).toEqual([])
+    expect(projector.list({ kind: "pr" })[0]?.state).toBe("pending")
+    projector.dispose()
+  })
+
+  it("wait() on a pr activity resolves when the settlement pass lands", async () => {
+    const { bus, projector } = harness({
+      sessions: [prSession()],
+      resolvePrState: async () => "merged",
+    })
+    const pending = projector.wait("pr:sess_a:412", { timeoutMs: 5_000 })
+    bus.emit(exited("sess_a"))
+    const rec = await pending
+    expect(rec?.state).toBe("done")
+    projector.dispose()
+  })
+
+  it("without the port, session:exited settles nothing (v1 behaviour)", async () => {
+    const { bus, seen, projector } = harness({ sessions: [prSession()] })
+    bus.emit(exited("sess_a"))
+    await settleTick()
+    expect(seen).toEqual([])
+    expect(projector.list({ kind: "pr" })[0]?.state).toBe("pending")
+    projector.dispose()
   })
 })

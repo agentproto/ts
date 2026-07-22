@@ -43,7 +43,7 @@ import { randomUUID } from "node:crypto"
 import { resolve, dirname, basename, join } from "node:path"
 import { existsSync, readdirSync } from "node:fs"
 import { homedir } from "node:os"
-import { spawnSync } from "node:child_process"
+import { execFile, spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
 import { loadConfig } from "@agentproto/runtime/config"
 import type {
@@ -74,6 +74,8 @@ import {
   type WorktreeStatusLister,
   type WorktreeStatusView,
   type OpenPrResolver,
+  type PrStateResolver,
+  type PrResolvedState,
 } from "@agentproto/runtime"
 
 const USAGE = `agentproto worktree — create, inspect, and tear down git worktrees
@@ -442,6 +444,54 @@ export function makeOpenPrResolver(): OpenPrResolver {
       }
     } catch {
       return null
+    }
+  }
+}
+
+/**
+ * Concrete {@link PrStateResolver} for the Activity projector's PR settlement
+ * pass: given a PR url, resolve its current forge state. Asks `gh pr view
+ * <url> --json state` — the url form needs no repo cwd and inherits the
+ * caller's own `gh auth` session, the same zero-config posture as
+ * `GhCliForgeClient` (`ForgeClient`'s branch/commit verbs can't answer a
+ * lone PR NUMBER, and `createForgeClient` needs a repoRoot this port doesn't
+ * have — a url is all the projector knows). Async `execFile`, not
+ * `spawnSync`: this runs inside the daemon on a periodic sweep, so it must
+ * not block the event loop per PR. A MERGED/CLOSED verdict is immutable, so
+ * it is memoised for the daemon's lifetime (the worktree verdict-memo
+ * rationale, in-memory — the projector caches too, but a restart-fresh
+ * projector re-asks through here). Any failure — non-GitHub url, missing/
+ * unauthenticated `gh`, unreachable forge — is `null` ("unknown right now"),
+ * never a throw (the settlement pass is best-effort).
+ */
+export function makePrStateResolver(): PrStateResolver {
+  const verdicts = new Map<string, Extract<PrResolvedState, "merged" | "closed">>()
+  return async (prUrl: string): Promise<PrResolvedState | null> => {
+    const memo = verdicts.get(prUrl)
+    if (memo) return memo
+    // Cheap shape guard so garbage never spawns a process. GitHub-only for
+    // now — mirrors makeOpenPrResolver's parseGithubOwnerRepo scope.
+    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(prUrl)) return null
+    const raw = await new Promise<string | null>(resolvePromise => {
+      execFile(
+        "gh",
+        ["pr", "view", prUrl, "--json", "state", "--jq", ".state"],
+        { encoding: "utf8" },
+        (err, stdout) => resolvePromise(err ? null : stdout),
+      )
+    })
+    if (raw === null) return null
+    switch (raw.trim().toUpperCase()) {
+      case "MERGED":
+        verdicts.set(prUrl, "merged")
+        return "merged"
+      case "CLOSED":
+        verdicts.set(prUrl, "closed")
+        return "closed"
+      case "OPEN":
+        return "open"
+      default:
+        return null
     }
   }
 }
