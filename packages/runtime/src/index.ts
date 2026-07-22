@@ -952,20 +952,6 @@ export async function createGateway(
       })
     : undefined
 
-  // Activity projector — the unified active/pending read-model over
-  // completion policies, session turns, routine/workflow steps, and opened
-  // PRs (activities.ts). A projection, not a registry: `list()` recomputes
-  // from the owners above on every call; the projector's only state is a
-  // diff cache that powers the `activity:changed` bus event. Declared after
-  // the owners it projects over; disposed in stop().
-  const activityProjector = createActivityProjector({
-    registry: sessions,
-    sessionEvents,
-    supervisor,
-    ...(routineRunner ? { routineRunner } : {}),
-    ...(workflowRunner ? { workflowRunner } : {}),
-  })
-
   // Task ledger — the multi-party write-model over declared intent
   // (task-ledger.ts). Declared after `sessions` (board resolution walks
   // lineage) and `supervisor` (Tier-1 done runs its gate through the real
@@ -973,6 +959,8 @@ export async function createGateway(
   // default board is `ws:<active workspace slug>`; falls back to "default"
   // when no workspace registry exists. Same persistence switch as every
   // other store this gateway owns; disposed (+ sync-flushed) in stop().
+  // Declared BEFORE the Activity projector so the projector can join task
+  // links (`Activity.taskId`) against the ledger's edges.
   const operatorWorkspaceSlug = await loadWorkspacesConfig()
     .then(cfg => getActiveWorkspace(cfg)?.slug)
     .catch(() => undefined)
@@ -983,6 +971,22 @@ export async function createGateway(
     workspace,
     persist,
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
+  })
+
+  // Activity projector — the unified active/pending read-model over
+  // completion policies, session turns, routine/workflow steps, and opened
+  // PRs (activities.ts). A projection, not a registry: `list()` recomputes
+  // from the owners above on every call; the projector's only state is a
+  // diff cache that powers the `activity:changed` bus event. Declared after
+  // the owners it projects over; disposed in stop(). The `taskLedger` lets it
+  // derive `Activity.taskId` from the ledger's edges at read time.
+  const activityProjector = createActivityProjector({
+    registry: sessions,
+    sessionEvents,
+    supervisor,
+    taskLedger,
+    ...(routineRunner ? { routineRunner } : {}),
+    ...(workflowRunner ? { workflowRunner } : {}),
   })
 
   // Per-boot bearer token. Required on mutating /sessions/* routes

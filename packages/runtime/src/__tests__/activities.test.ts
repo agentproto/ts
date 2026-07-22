@@ -16,7 +16,7 @@ import {
   createActivityProjector,
   type ActivityProjectorSession,
 } from "../activities.js"
-import type { ActivityPolicySlice } from "../activity-projection.js"
+import type { ActivityPolicySlice, ActivityTaskSlice } from "../activity-projection.js"
 
 const T0 = "2026-07-22T10:00:00.000Z"
 
@@ -43,15 +43,27 @@ const turnEnd = (sessionId: string): SessionEvent => ({
   ts: T0,
 })
 
+const taskChanged = (taskId: string): SessionEvent => ({
+  type: "task:changed",
+  taskId,
+  boardId: "tree:sess_a",
+  change: "claimed",
+  status: "in_progress",
+  rev: 1,
+  ts: T0,
+})
+
 /** Real bus + mutable fake owners + an `activity:changed` recorder. */
 function harness(initial: {
   sessions?: ActivityProjectorSession[]
   policies?: ActivityPolicySlice[]
+  tasks?: ActivityTaskSlice[]
 } = {}) {
   const bus = createSessionEventBus()
   const state = {
     sessions: initial.sessions ?? [],
     policies: initial.policies ?? [],
+    tasks: initial.tasks ?? [],
   }
   const seen: ActivityChangedEvent[] = []
   bus.on("activity:changed", ev => seen.push(ev))
@@ -59,6 +71,7 @@ function harness(initial: {
     registry: { list: () => state.sessions },
     sessionEvents: bus,
     supervisor: { list: () => state.policies },
+    taskLedger: { snapshot: () => state.tasks },
   })
   return { bus, state, seen, projector }
 }
@@ -202,5 +215,23 @@ describe("createActivityProjector", () => {
     state.sessions = [agentSession({ busy: true })]
     bus.emit(turnEnd("sess_a"))
     expect(seen.map(ev => ev.activity.id)).toEqual(["turn:sess_a:1"])
+  })
+
+  it("joins Activity.taskId from the ledger at read time", () => {
+    const { projector } = harness({
+      sessions: [agentSession({ busy: true })],
+      tasks: [{ taskId: "task_1", status: "in_progress", owner: "sess_a" }],
+    })
+    expect(projector.list().find(r => r.id === "turn:sess_a:1")?.taskId).toBe("task_1")
+  })
+
+  it("a task:changed re-projects and announces the new taskId link", () => {
+    const { bus, state, seen } = harness({ sessions: [agentSession({ busy: true })] })
+    // Primed: turn active, no task. A task now claims the session — the join
+    // changes even though no owner *state* moved.
+    state.tasks = [{ taskId: "task_1", status: "in_progress", owner: "sess_a" }]
+    bus.emit(taskChanged("task_1"))
+    expect(seen.map(ev => ev.activity.id)).toEqual(["turn:sess_a:1"])
+    expect(seen[0]?.activity.taskId).toBe("task_1")
   })
 })

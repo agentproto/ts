@@ -77,6 +77,7 @@ function fakeLedger(results: {
     },
     resolveBoardId: (caller, explicit) =>
       explicit ?? (caller.kind === "session" ? `tree:${caller.sessionId}` : "ws:default"),
+    snapshot: () => [task],
     dispose() {},
   }
   return { ledger, calls }

@@ -449,6 +449,14 @@ export interface TaskLedger {
    *  `ws:<workspaceSlug>` for the operator. Exposed so the tool/HTTP
    *  layers can echo it without re-deriving lineage. */
   resolveBoardId(caller: TaskCaller, explicit?: string): string
+  /**
+   * Unscoped snapshot of EVERY task across all boards — the daemon's own
+   * internal read, NOT a caller-facing surface (`list` is the scoped one).
+   * Used by the Activity projector to join `Activity.taskId` against the
+   * ledger's edges, which must see tasks on every board (a supervisor's
+   * `tree:` board, executors' private boards) regardless of who is asking.
+   */
+  snapshot(): readonly TaskRecord[]
   /** Detach bus subscriptions, cancel the debounce timer, sync-flush. */
   dispose(): void
 }
@@ -1096,6 +1104,7 @@ export function createTaskLedger(opts: {
     claim,
     update,
     resolveBoardId,
+    snapshot: () => Array.from(tasks.values()),
     dispose() {
       if (disposed) return
       disposed = true
