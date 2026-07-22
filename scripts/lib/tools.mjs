@@ -25,7 +25,12 @@ import { resolve, dirname, join } from 'node:path'
 import { tmpdir, hostname } from 'node:os'
 import { ROOT, run } from './agent-core.mjs'
 import { buildFooter, MARKER } from './provenance-footer.mjs'
-import { computeProvenance } from '../../packages/worktree/dist/index.mjs'
+// `computeProvenance` lives in @agentproto/worktree's *built* dist. It is only
+// needed on the PR-open footer path (gh_open_pr), so it is imported lazily at
+// that call site — a static top-level import would crash module load in any job
+// that runs a tools.mjs consumer without a built worktree package (e.g. the
+// Auto-fix job, which runs apply-review.mjs --delivery commit and never opens a
+// PR). See the dynamic import in gh_open_pr below.
 
 /**
  * Map a raw SessionRef (as returned by computeProvenance) to the provenance
@@ -656,6 +661,7 @@ function allTools(ctx) {
         let stampedBody = body
         if (!body.includes(MARKER)) {
           try {
+            const { computeProvenance } = await import('../../packages/worktree/dist/index.mjs')
             const provInfo = await computeProvenance(ROOT)
             const sessions = provInfo?.sessions ?? []
             const primary =
