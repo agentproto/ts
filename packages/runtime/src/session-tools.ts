@@ -1407,6 +1407,47 @@ export function registerSessionTools(
     }
   )
 
+  // ── session_gc — bulk housekeeping over terminal sessions ─────
+  server.tool(
+    "session_gc",
+    "Bulk garbage-collect TERMINAL-status sessions (exited/killed/error) so " +
+      "the list stops accumulating dead rows. Default ARCHIVES them (reversible " +
+      "— hidden from the default view, still readable + importable). `forget:true` " +
+      "instead DROPS each descriptor to reclaim `~/.agentproto/sessions.json` " +
+      "space; the harness native conversation on disk survives and stays " +
+      "importable. NEVER touches a live (running/starting) session. " +
+      "`olderThanDays` keeps anything more recent. A scoped orchestrator only " +
+      "GCs its own subtree.",
+    {
+      olderThanDays: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          "Only GC sessions whose end (or start) is older than this many days. " +
+            "Omit to GC every terminal session."
+        ),
+      forget: z
+        .boolean()
+        .optional()
+        .describe(
+          "Drop the descriptor entirely (reclaim disk) instead of archiving. The " +
+            "native conversation on disk is untouched. Default false = archive."
+        ),
+    },
+    async input => {
+      const onlyIds = callerScope
+        ? collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        : undefined
+      const res = registry.gcSessions({
+        ...(input.olderThanDays !== undefined ? { olderThanDays: input.olderThanDays } : {}),
+        ...(input.forget ? { forget: true } : {}),
+        ...(onlyIds ? { onlyIds } : {}),
+      })
+      return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] }
+    }
+  )
+
   server.tool(
     "session_unarchive",
     "Restore an archived session to `session_list`'s default view — the " +
