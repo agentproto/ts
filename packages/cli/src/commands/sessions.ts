@@ -367,7 +367,11 @@ async function runStart(args: readonly string[]): Promise<number> {
   const body: Record<string, unknown> = {}
   if (slug) body.adapter = slug
   if (values.preset) body.presetId = values.preset
+  // Default cwd to the shell directory (like git/npm) when neither --cwd nor
+  // --workspace is given, instead of silently using the daemon active
+  // workspace. An explicit --workspace still resolves its cwd daemon-side.
   if (values.cwd) body.cwd = resolve(values.cwd)
+  else if (!values.workspace) body.cwd = process.cwd()
   if (values.workspace) body.workspaceSlug = values.workspace
   if (values.model) body.model = values.model
   // Mode selection only — no --auth-token/--auth-api-key flag. Passing a
