@@ -69,8 +69,10 @@ export function makeSessionsPanelApp(
     title: "Agent Sessions",
     description:
       "Open the agentproto sessions panel — an interactive UI that shows all " +
-      "running and recent sessions (agent-CLI, terminal/PTY, commands). " +
-      "The panel polls live data and lets you inspect output or kill sessions.",
+      "running and recent agent-CLI and terminal/PTY sessions. Raw shell-" +
+      "command runs are a log, not a resumable session, and don't appear " +
+      "here — see `command_list`. The panel polls live data and lets you " +
+      "inspect output or kill sessions.",
     inputSchema: sessionsPanelInputSchema,
     execute: async (input) => ({
       sessions: ops.listSessions(input.filter),

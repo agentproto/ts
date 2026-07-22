@@ -1124,7 +1124,12 @@ export async function createGateway(
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     const listSessionsFiltered = (filter?: "running" | "all") => {
-      let rows = sessions.list()
+      // `kind:"command"` rows are a shell-execution log, not a resumable
+      // session — every consumer of this (sessions/agents-overview/bureau/
+      // session-story panels) either wants the live-able agent/PTY set or
+      // filters to a specific non-command kind of its own, so they're
+      // excluded here too, matching `session_list`'s default-view semantics.
+      let rows = sessions.list().filter(s => s.kind !== "command")
       if (filter === "running") {
         rows = rows.filter(s => s.status === "running" || s.status === "starting")
       }
