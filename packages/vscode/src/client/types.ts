@@ -341,35 +341,42 @@ export interface ProviderPresetInfo {
 }
 
 /** A named auth profile's non-secret metadata, as returned by
- *  `auth_profile_list` (never carries the credential). */
+ *  `auth_profile_list` (never carries the credential). `credentialRef` is
+ *  set for a credential-backed profile; `source` for a self-refreshing
+ *  source-backed one — mutually exclusive. */
 export interface AuthProfileSummary {
   id: string
   endpoint: string
   method: AuthMethod
-  credentialRef: string
+  credentialRef?: string
+  source?: string
   label?: string
 }
 
 /** Request body for `auth_profile_create`. `credential` is INPUT-only — the
- *  daemon stores it in the keychain and never echoes it back. */
+ *  daemon stores it in the keychain and never echoes it back. Give exactly
+ *  one of `credential` / `source` (oauth-bearer only). */
 export interface CreateAuthProfileRequest {
   id: string
   endpoint: string
   method: AuthMethod
-  credential: string
+  credential?: string
+  source?: string
   label?: string
   credentialRef?: string
 }
 
 /** Non-secret result of `auth_profile_create` — metadata + a one-way
- *  fingerprint of the stored credential, never the credential itself. */
+ *  fingerprint of the stored credential, never the credential itself.
+ *  `fingerprint` is absent for a source-backed profile (nothing stored). */
 export interface CreatedAuthProfileResult {
   id: string
   endpoint: string
   method: AuthMethod
-  credentialRef: string
+  credentialRef?: string
+  source?: string
   label?: string
-  fingerprint: string
+  fingerprint?: string
 }
 
 /** One entry from `list_provider_presets`. */

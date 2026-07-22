@@ -44,6 +44,28 @@ vi.mock("../claude-code-oauth-source.js", () => ({
   resolveClaudeCodeOauthToken: (id: string) => oauthState.impl(id),
 }))
 
+// Control named auth-profile resolution (`access.profileRef`) deterministically
+// — the profile-path branch's `getAuthProfile` + `KeychainStore` reads — so
+// these tests never touch the real `~/.agentproto/auth-profiles.json` or
+// keychain. `eligibleProfiles` stays real (pure, endpoint/method only).
+const authProfileState = vi.hoisted(() => ({
+  profiles: {} as Record<string, import("@agentproto/auth").AuthProfile>,
+  keychain: {} as Record<string, string | undefined>,
+}))
+vi.mock("@agentproto/auth", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/auth")>()
+  return {
+    ...actual,
+    getAuthProfile: vi.fn(async (id: string) => authProfileState.profiles[id]),
+    KeychainStore: vi.fn().mockImplementation(() => ({
+      read: vi.fn(async ({ path }: { path: string }) => {
+        const value = authProfileState.keychain[path]
+        return value !== undefined ? { value, kind: "oat" as const } : undefined
+      }),
+    })),
+  }
+})
+
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
@@ -1916,5 +1938,124 @@ describe("spawnAgentSession — auth.source self-refreshing subscription (Mode 3
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
+  const CLAUDE_LIKE_DESCRIPTOR: AdapterAuthDescriptor = {
+    provider: "anthropic",
+    authEnforce: "always",
+    authSubscription: {
+      setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      conflictEnv: ["ANTHROPIC_AUTH_TOKEN"],
+    },
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: CLAUDE_LIKE_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    oauthState.impl = async () => "sk-ant-oat01-fresh-from-keychain"
+  })
+
+  it("a source-backed profile resolves the credential FRESH via Mode 3 (reuses the same recipe resolver)", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      label: "Anthropic (self-refreshing)",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRef: "anthropic-sub" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("claude-code-oauth")
+    expect(result.descriptor.auth?.fingerprint).toContain("sk-ant-oat")
+    expect(JSON.stringify(result.descriptor)).not.toContain("fresh-from-keychain")
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "anthropic-sub",
+      label: "Anthropic (self-refreshing)",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+    })
+  })
+
+  it("a credential-backed profile still does the static keychain read (regression, unchanged)", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      credentialRef: "agentproto.auth.anthropic.sub",
+    }
+    authProfileState.keychain["agentproto.auth.anthropic.sub"] = "sk-ant-oat01-static-profile"
+    const spy = vi.fn(async () => "should-not-be-called")
+    oauthState.impl = spy
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRef: "anthropic-sub" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // A static keychain read origin, unlike the source-backed
+    // "claude-code-oauth" echo above — distinguishes the two paths.
+    expect(result.descriptor.auth?.credentialSource).toBe("explicit-config")
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("source configured but the recipe can't resolve (not logged in) ⇒ loud spawn failure, no session", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    oauthState.impl = async () => {
+      throw new Error("keychain item 'Claude Code-credentials' not found")
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRef: "anthropic-sub" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_source_unresolved")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("a profile with neither credentialRef nor source is rejected, no session spawned", async () => {
+    authProfileState.profiles["broken"] = {
+      id: "broken",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      access: { profileRef: "broken" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(registry.list()).toHaveLength(0)
   })
 })

@@ -99,8 +99,11 @@ export function registerAuthProfileTools(server: McpServer): void {
       "a derived slot, then record its metadata. Supports both " +
       "`oauth-bearer` (subscription) and `api-key` methods. The `credential` " +
       "is INPUT-ONLY — it is stored, never returned; the response carries a " +
-      "one-way `fingerprint` so you can confirm which secret landed. Rejects " +
-      "a duplicate id.",
+      "one-way `fingerprint` so you can confirm which secret landed. An " +
+      "`oauth-bearer` profile may instead give `source: \"claude-code-oauth\"` " +
+      "to self-refresh from the local Claude Code login on every spawn, " +
+      "storing no secret at all — give exactly one of `credential` / " +
+      "`source`. Rejects a duplicate id.",
     {
       id: z.string().describe("Stable, unique profile id (e.g. anthropic-sub)."),
       endpoint: z
@@ -111,21 +114,36 @@ export function registerAuthProfileTools(server: McpServer): void {
         .describe("oauth-bearer for a subscription; api-key for a gateway/vendor key."),
       credential: z
         .string()
-        .describe("The raw secret (subscription bearer or API key). Stored, never echoed."),
+        .optional()
+        .describe(
+          "The raw secret (subscription bearer or API key). Stored, never echoed. " +
+            "Mutually exclusive with source; required unless source is given.",
+        ),
+      source: z
+        .string()
+        .optional()
+        .describe(
+          "Self-refreshing credential source (oauth-bearer only, e.g. " +
+            "\"claude-code-oauth\") — no secret is stored. Mutually exclusive with credential.",
+        ),
       label: z.string().optional().describe("Optional human-readable name."),
       credentialRef: z
         .string()
         .optional()
-        .describe("Optional explicit keychain slot; omit to derive from endpoint+method."),
+        .describe(
+          "Optional explicit keychain slot; omit to derive from endpoint+method. " +
+            "Ignored for a source-backed profile.",
+        ),
     },
-    async ({ id, endpoint, method, credential, label, credentialRef }) => {
+    async ({ id, endpoint, method, credential, source, label, credentialRef }) => {
       try {
         const created = await createAuthProfile(
           {
             id,
             endpoint,
             method,
-            credential,
+            ...(credential !== undefined ? { credential } : {}),
+            ...(source !== undefined ? { source } : {}),
             ...(label ? { label } : {}),
             ...(credentialRef ? { credentialRef } : {}),
           },

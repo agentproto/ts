@@ -36,8 +36,16 @@ export interface AuthProfile {
   method: AuthMethod
   /** Opaque handle into this package's credential storage — NEVER the secret
    *  itself. Resolved through `CredentialStore` / `token-store.ts` at use
-   *  time, not stored inline. */
-  credentialRef: string
+   *  time, not stored inline. Set for a credential-backed profile; absent for
+   *  a source-backed profile. Mutually exclusive with {@link source}. */
+  credentialRef?: string
+  /** Self-refreshing credential source (`oauth-bearer` only) — same value
+   *  spawn's subscription resolution accepts (today, only
+   *  `"claude-code-oauth"`, `spawn-defaults.ts`'s `CLAUDE_CODE_OAUTH_SOURCE`).
+   *  A source-backed profile has no stored secret: the credential is resolved
+   *  fresh at spawn time instead. Mutually exclusive with
+   *  {@link credentialRef}. */
+  source?: string
   /** Optional human-readable name ("Jeremy Max", "work OpenRouter"). */
   label?: string
 }

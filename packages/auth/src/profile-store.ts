@@ -28,7 +28,8 @@ const authProfileSchema = z.object({
   id: z.string(),
   vendor: z.string(),
   method: authMethodSchema,
-  credentialRef: z.string(),
+  credentialRef: z.string().optional(),
+  source: z.string().optional(),
   label: z.string().optional(),
 }).transform(({ vendor, ...profile }): AuthProfile => ({ ...profile, endpoint: vendor }))
 
