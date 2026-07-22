@@ -2603,8 +2603,22 @@ async function handleSessions(
     // default (the VSCode extension's "show archived" tree toggle).
     const reqUrl = req.url ?? ""
     const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
-    const includeArchived = new URLSearchParams(queryString).get("includeArchived") === "true"
-    json(200, { sessions: registry.list({ includeArchived }) })
+    const params = new URLSearchParams(queryString)
+    const includeArchived = params.get("includeArchived") === "true"
+    const kindParam = params.get("kind")
+    const includeCommands = params.get("includeCommands") === "true"
+    let rows = registry.list({ includeArchived })
+    // Same default-view semantics as the `session_list` MCP tool: a
+    // `kind:"command"` row is a shell-execution LOG (already reachable via
+    // `command_list` / `?kind=command`), not a resumable session, so it's
+    // excluded from the default (unfiltered / `?kind=all`) view unless
+    // `?includeCommands=true` opts into the union.
+    if (kindParam && kindParam !== "all") {
+      rows = rows.filter(s => s.kind === kindParam)
+    } else if (!includeCommands) {
+      rows = rows.filter(s => s.kind !== "command")
+    }
+    json(200, { sessions: rows })
     return true
   }
 

@@ -229,6 +229,9 @@ function renderSidebar() {
 }
 
 function loadSessions() {
+  // {kind:'all'} is session_list's live-able default — agent-CLI + terminal/
+  // PTY only. kind:"command" rows (a shell-execution log, not a resumable
+  // session) are excluded unless includeCommands is explicitly passed.
   return callTool('session_list', {kind: 'all'}).then(function(data) {
     sessions = data.sessions || [];
     renderSidebar();
@@ -420,9 +423,11 @@ export function registerSessionsPanelResource(server: McpServer): void {
     {
       description:
         "Open the agentproto sessions panel — an interactive UI that shows all " +
-        "running and recent sessions (agent-CLI, terminal/PTY, commands). " +
-        "The panel polls live data and lets you inspect output or kill sessions. " +
-        "Rendered as an MCP App in the host interface.",
+        "running and recent agent-CLI and terminal/PTY sessions. Raw shell-" +
+        "command runs are a log, not a resumable session, and don't appear " +
+        "here — see `command_list`. The panel polls live data and lets you " +
+        "inspect output or kill sessions. Rendered as an MCP App in the host " +
+        "interface.",
       inputSchema: undefined,
       annotations: {
         readOnlyHint: true,

@@ -246,19 +246,32 @@ export function registerSessionTools(
   server.tool(
     "session_list",
     "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
-      "hermes, …), terminal/PTY sessions (claude TUI, bash, …), and raw " +
-      "commands. Each entry includes `kind`, `pty` (true for real PTYs), " +
-      "`name` (when set at spawn), `status`, `command`, age + exit code. Use " +
-      "this when you need to know what's already running before spawning " +
-      "anything new, or to discover a session id by name.",
+      "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
+      "entry includes `kind`, `pty` (true for real PTYs), `name` (when set " +
+      "at spawn), `status`, `command`, age + exit code. Use this when you " +
+      "need to know what's already running before spawning anything new, " +
+      "or to discover a session id by name. Raw shell-command runs " +
+      "(`kind:'command'`) are a log, not a resumable session, so they're " +
+      "excluded from the default view — pass `kind:'command'` or " +
+      "`includeCommands:true` to see them, or use `command_list`.",
     {
       kind: z
         .enum(["terminal", "agent-cli", "command", "all"])
         .optional()
         .describe(
-          "Filter by session kind. `all` (default) returns every kind. " +
-            "Use `terminal` to list only PTY sessions, `agent-cli` for " +
-            "structured ACP agents.",
+          "Filter by session kind. `all` (default) returns every " +
+            "live-able kind (terminal + agent-cli) but excludes `command` " +
+            "unless `includeCommands` is set. Use `terminal` to list only " +
+            "PTY sessions, `agent-cli` for structured ACP agents, or " +
+            "`command` to list only raw shell-command runs.",
+        ),
+      includeCommands: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true and `kind` is unset/`all`, also include `kind:'command'` " +
+            "rows in the result (they're excluded by default — see `kind`). " +
+            "No effect when `kind` is set explicitly. Default false.",
         ),
       onlyAlive: z
         .boolean()
@@ -295,6 +308,13 @@ export function registerSessionTools(
       }
       if (input.kind && input.kind !== "all") {
         rows = rows.filter(s => s.kind === input.kind)
+      } else if (!input.includeCommands) {
+        // Default view = live-able sessions only. `kind:"command"` rows are
+        // a shell-execution LOG (already reachable via `command_list` / an
+        // explicit `kind:"command"` filter), not resumable sessions — left
+        // in, hundreds of finished-command rows bury the real agent/PTY
+        // sessions this tool exists to surface.
+        rows = rows.filter(s => s.kind !== "command")
       }
       if (input.status) {
         rows = rows.filter(s => s.status === input.status)
