@@ -43,6 +43,7 @@ import type {
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
+  UserPreset,
   WorkspacesConfig,
 } from "./types.js"
 
@@ -95,6 +96,8 @@ export interface SpawnAgentOptions {
   permissionHold?: boolean
   /** Source label recorded on the descriptor (this client stamps "vscode"). */
   origin?: string
+  /** ID of a saved user preset from ~/.agentproto/presets.json whose axes are expanded server-side. */
+  presetId?: string
 }
 
 export interface SpawnTerminalOptions {
@@ -528,6 +531,20 @@ export class DaemonClient {
   async listWorkspaces(): Promise<WorkspacesConfig> {
     const body = await this.getJson<WorkspacesConfig>("/workspaces")
     return { ...body, version: 1, workspaces: body.workspaces ?? [] }
+  }
+
+  /**
+   * GET /user-presets — the user's saved spawn presets
+   * (~/.agentproto/presets.json on the daemon host). Plain REST, not MCP
+   * (unlike listProviderPresets) — see http-server.ts:1930. Throws on a
+   * daemon without the route, same as listWorkspaces; callers that want to
+   * degrade gracefully wrap the call in try/catch (see spawn.ts's existing
+   * catalogModels()/listWorkspaces() try/catch blocks) — do NOT swallow the
+   * error inside this method itself.
+   */
+  async listUserPresets(): Promise<UserPreset[]> {
+    const body = await this.getJson<{ presets?: UserPreset[] }>("/user-presets")
+    return body.presets ?? []
   }
 
   /**

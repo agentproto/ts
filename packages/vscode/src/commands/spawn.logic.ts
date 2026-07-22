@@ -15,6 +15,7 @@ import type {
   CatalogProduct,
   CatalogRoute,
   CatalogVendor,
+  UserPreset,
   WorkspacesConfig,
 } from "../client/types.js"
 import { findWorkspaceByPath, workspaceLabel } from "../services/workspaces.logic.js"
@@ -97,6 +98,35 @@ export function mapModeQuickPickItems(modes: SpawnAdapterInfo["modes"]): ModeQui
   }))
 }
 
+/**
+ * Presets picker group — one row per saved user preset, meant to be
+ * prepended ahead of the adapter/model rows (see prependPresetGroup) so a
+ * saved combo is one Enter away. The row's description surfaces the
+ * resolved adapter/model up front: the preset expands server-side, and
+ * without this the row would show only a label and nothing about what
+ * actually gets spawned — exactly the silent-autodetection this wizard
+ * exists to avoid (see spawn.ts's header comment).
+ */
+export function mapPresetQuickPickItems(presets: UserPreset[]): SpawnQuickPickItem[] {
+  return presets.map(preset => ({
+    label: preset.label,
+    description: [preset.adapter ?? preset.harness, preset.model].filter(Boolean).join(" · ") || undefined,
+    preset,
+  }))
+}
+
+const PRESETS_HEADING = "Presets"
+
+/**
+ * Prepends a "Presets" separator group ahead of the given picker items —
+ * a no-op when there are no saved presets, so callers can call this
+ * unconditionally on every spawn.
+ */
+export function prependPresetGroup(items: SpawnQuickPickItem[], presets: UserPreset[]): SpawnQuickPickItem[] {
+  if (presets.length === 0) return items
+  return [{ label: PRESETS_HEADING, kind: SEPARATOR_KIND }, ...mapPresetQuickPickItems(presets), ...items]
+}
+
 export const CONFIGURE_LABEL = "$(gear) Configure…"
 export const CUSTOM_MODEL_SECTION_LABEL = "Custom model…"
 
@@ -127,6 +157,8 @@ export interface SpawnQuickPickItem {
   custom?: boolean
   /** The row opens the full mode/cwd/label/prompt chain unchanged. */
   configure?: boolean
+  /** Set when this row spawns a saved user preset — see mapPresetQuickPickItems. */
+  preset?: UserPreset
 }
 
 /**
@@ -483,5 +515,6 @@ export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOpt
   // saying it adds nothing and asserting it would be a claim we don't need to
   // make.
   if (answers.orchestrator) opts.orchestrator = true
+  if (answers.presetId) opts.presetId = answers.presetId
   return opts
 }

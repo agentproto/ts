@@ -382,6 +382,20 @@ export interface ProviderPresetEntry {
   info?: ProviderPresetInfo
 }
 
+/** A reusable, user-scoped preset saved to ~/.agentproto/presets.json (GET /user-presets). */
+export interface UserPreset {
+  id: string
+  label: string
+  adapter?: string
+  harness?: string
+  model?: string
+  route?: RouteSpec
+  access?: { profileRef?: string }
+  posture?: Posture
+  effort?: EffortLevel
+  contextProfile?: ContextProfile
+}
+
 /** A session lifecycle event from session_events_poll (MCP). */
 export interface SessionLifecycleEvent {
   type: string

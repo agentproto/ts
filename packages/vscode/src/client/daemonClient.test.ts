@@ -96,6 +96,17 @@ describe("DaemonClient — URL + auth header mapping", () => {
           },
         }
       }
+      if (req.url === "/user-presets" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            presets: [
+              { id: "fast", label: "Fast", model: "claude-opus-4-8", effort: "low" },
+              { id: "deep", label: "Deep", model: "claude-opus-4-8", effort: "max" },
+            ],
+          },
+        }
+      }
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
@@ -309,6 +320,28 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const presets = await client().listProviderPresets()
     expect(presets[0]?.slug).toBe("moonshot")
     expect(presets[0]?.info?.keyEnv).toBe("MOONSHOT_API_KEY")
+  })
+
+  it("listUserPresets() returns the user's saved presets from GET /user-presets", async () => {
+    const presets = await client().listUserPresets()
+    expect(presets).toHaveLength(2)
+    expect(presets[0]?.id).toBe("fast")
+    expect(presets[0]?.label).toBe("Fast")
+    expect(presets[0]?.model).toBe("claude-opus-4-8")
+    expect(presets[0]?.effort).toBe("low")
+    expect(presets[1]?.id).toBe("deep")
+    expect(presets[1]?.label).toBe("Deep")
+    expect(presets[1]?.effort).toBe("max")
+  })
+
+  it("listUserPresets() degrades to empty array when presets field is missing", async () => {
+    daemon.server.removeAllListeners("request")
+    daemon.server.on("request", (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({}))
+    })
+    const presets = await client().listUserPresets()
+    expect(presets).toEqual([])
   })
 
   it("loopback (no token file): requests are sent without an Authorization header", async () => {
