@@ -54,7 +54,8 @@ Usage:
   agentproto permissions --help
 
   ls        List permission requests HELD across all permission-hold sessions
-            (spawned with --hold-permissions). Columns: id, session, tool, age.
+            (spawned with --hold-permissions). Columns: id, session, tool, age,
+            input (raw tool input, when the driver supplied one), question.
   approve   Grant the request. --always picks the allow-always option when the
             request offers one (otherwise allow-once).
   deny      Reject the request (or cancel it when no reject option is offered).
@@ -101,6 +102,18 @@ interface PermissionEntry {
   sessionLabel?: string
   sessionTitle?: string
   ageMs?: number
+  /** The tool call's raw input (e.g. a Bash command string), when the
+   *  driver supplied one. Harness-shaped and untyped — don't assume a
+   *  stable schema. */
+  rawInput?: unknown
+}
+
+/** Compact one-line preview of a permission entry's raw input, for the `ls`
+ *  human-readable table — not a parse of any particular harness's shape. */
+function previewRawInput(rawInput: unknown, maxLen = 40): string {
+  if (rawInput === undefined) return "—"
+  const text = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput)
+  return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text
 }
 
 export async function runPermissions(args: readonly string[]): Promise<number> {
@@ -160,14 +173,15 @@ async function runLs(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stdout.write(
-    `${"ID".padEnd(10)}  ${"SESSION".padEnd(14)}  ${"TOOL".padEnd(18)}  ${"AGE".padEnd(5)}  QUESTION\n`,
+    `${"ID".padEnd(10)}  ${"SESSION".padEnd(14)}  ${"TOOL".padEnd(18)}  ${"AGE".padEnd(5)}  ${"INPUT".padEnd(40)}  QUESTION\n`,
   )
   for (const p of permissions) {
     const age = typeof p.ageMs === "number" ? humaniseDelta(p.ageMs) : "?"
     const tool = (p.toolName ?? "—").slice(0, 18)
+    const input = previewRawInput(p.rawInput)
     const question = (p.text ?? "").replace(/\s+/g, " ").slice(0, 60)
     process.stdout.write(
-      `${p.id.padEnd(10)}  ${p.sessionId.padEnd(14)}  ${tool.padEnd(18)}  ${age.padEnd(5)}  ${question}\n`,
+      `${p.id.padEnd(10)}  ${p.sessionId.padEnd(14)}  ${tool.padEnd(18)}  ${age.padEnd(5)}  ${input.padEnd(40)}  ${question}\n`,
     )
   }
   return 0

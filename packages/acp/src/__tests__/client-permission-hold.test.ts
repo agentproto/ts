@@ -79,6 +79,7 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(evt.text).toBe('Allow "Write"?')
     expect(evt.toolName).toBe("Write")
     expect(evt.toolCallId).toMatch(/^perm_/) // stable minted id
+    expect(evt.rawInput).toBeUndefined() // PERM_PARAMS carries no rawInput
     // The RPC is still parked — nothing resolved it yet.
     await Promise.resolve()
     expect(resolved).toBeUndefined()
@@ -92,6 +93,29 @@ describe("createAcpClient — permission-hold mode", () => {
 
     // Idempotent — a duplicate response finds nothing.
     expect(client.respondPermission(evt.toolCallId, { optionId: "a" })).toBe(false)
+  })
+
+  it("carries the tool call's rawInput through to the agent-prompt event", async () => {
+    const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    const rpc = handlers.requestPermission({
+      sessionId: "sess-hold",
+      toolCall: { toolCallId: "tc-2", title: "Bash", rawInput: { command: "rm -rf /tmp/x" } },
+      options: PERM_PARAMS.options,
+    })
+    // Keep the RPC parked (nothing responds it) — this test only cares about
+    // what the agent-prompt event carries.
+    void rpc.catch(() => {})
+
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+    expect(evt.toolName).toBe("Bash")
+    expect(evt.rawInput).toEqual({ command: "rm -rf /tmp/x" })
   })
 
   it("holds even when a handlers.requestPermission is ALSO supplied (guard not clobbered)", async () => {

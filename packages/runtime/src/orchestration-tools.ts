@@ -488,7 +488,9 @@ export function registerOrchestrationTools(
     "permissions_list",
     "List permission requests currently HELD across all permission-hold " +
       "sessions (spawned with `permissionHold`). Each entry: id, sessionId, " +
-      "session adapter/title, the tool being requested, the offered options, " +
+      "session adapter/title, the tool being requested, its raw input when " +
+      "the driver supplied one (e.g. a Bash tool's command string, " +
+      "harness-shaped — don't assume a stable schema), the offered options, " +
       "and age. Resolve one with `permissions_respond`. Optionally filter by " +
       "`sessionId`. Empty list = nothing is waiting on a decision.",
     {

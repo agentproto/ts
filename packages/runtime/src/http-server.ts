@@ -4801,7 +4801,8 @@ async function handleTasks(
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
  * same SessionsRegistry inbox. Each list entry is enriched with the owning
- * session's adapter/title for a self-contained render.
+ * session's adapter/title for a self-contained render, and carries the
+ * request's raw tool input (`rawInput`) when the driver supplied one.
  */
 async function handlePermissions(
   req: IncomingMessage,

@@ -46,7 +46,11 @@ const OPTIONS = [
 
 /** Fake driver session that surfaces one held permission, then blocks until
  *  the registry resolves it (records the resolution), then ends the turn. */
-function holdSession(acpId = "acp-hold", requestId = "perm-1"): {
+function holdSession(
+  acpId = "acp-hold",
+  requestId = "perm-1",
+  rawInput?: unknown,
+): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
 } {
@@ -62,6 +66,7 @@ function holdSession(acpId = "acp-hold", requestId = "perm-1"): {
         toolName: "Write",
         text: 'Allow "Write"?',
         options: OPTIONS,
+        ...(rawInput !== undefined ? { rawInput } : {}),
       }
       await new Promise<void>(r => {
         release = r
@@ -143,6 +148,22 @@ describe("pending-permissions inbox — registry", () => {
     // Bus announced the request.
     const req = events.find(e => e.type === "session:permission-request")
     expect(req).toMatchObject({ sessionId: id, permissionId: "perm-1", toolName: "Write" })
+
+    registry.shutdown()
+  })
+
+  it("carries a Bash tool call's rawInput (command string) through to the pending permission", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-raw", "perm-raw", { command: "rm -rf /tmp/x" })
+    const id = await spawnAndPark(registry, fake)
+
+    const pending = registry.listPendingPermissions()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({
+      id: "perm-raw",
+      sessionId: id,
+      rawInput: { command: "rm -rf /tmp/x" },
+    })
 
     registry.shutdown()
   })
@@ -258,7 +279,7 @@ describe("pending-permissions inbox — MCP tools", () => {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
     const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
-    const fake = holdSession("acp-mcp", "perm-mcp")
+    const fake = holdSession("acp-mcp", "perm-mcp", { command: "git push --force" })
     const id = await spawnAndPark(registry, fake)
 
     const server = new McpServer({ name: "perms-mcp", version: "0.0.0" })
@@ -275,6 +296,7 @@ describe("pending-permissions inbox — MCP tools", () => {
       sessionId: id,
       adapter: "claude-code",
       toolName: "Write",
+      rawInput: { command: "git push --force" },
     })
 
     const responded = parse(
