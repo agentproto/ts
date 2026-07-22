@@ -251,7 +251,9 @@ export function registerAgentTools(
       "to continue the conversation. Returns the session id + initial descriptor. " +
       "When `workspaceSlug` is set, resolves the cwd via " +
       "`~/.agentproto/workspaces.json`; otherwise pass `cwd` explicitly or " +
-      "fall back to the active workspace.",
+      "fall back to the active workspace. " +
+      "If you have shell access, `agentproto sessions start ...` is the CLI " +
+      "equivalent. (No shell? Keep using this tool.)",
     {
       adapter: z
         .string()
