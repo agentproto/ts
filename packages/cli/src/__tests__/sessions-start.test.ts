@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { resolve } from "node:path"
 import { runSessions } from "../commands/sessions.js"
 
 const { readFileMock } = vi.hoisted(() => ({ readFileMock: vi.fn() }))
@@ -99,6 +100,26 @@ describe("agentproto sessions start — orchestrator / mcpServers flags", () => 
     expect(url).toBe("http://127.0.0.1:18790/sessions/agent")
     expect(body.orchestrator).toBe(true)
     expect(body.mcpServers).toBeUndefined()
+  })
+
+  it("defaults cwd to the shell directory when neither --cwd nor --workspace is given", async () => {
+    const code = await runSessions(["start", "claude-code"])
+    expect(code).toBe(0)
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.cwd).toBe(process.cwd())
+  })
+
+  it("resolves an explicit --cwd over the shell default", async () => {
+    await runSessions(["start", "claude-code", "--cwd", "/tmp/foo"])
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.cwd).toBe(resolve("/tmp/foo"))
+  })
+
+  it("does not stamp a shell cwd when --workspace is given (daemon resolves it)", async () => {
+    await runSessions(["start", "claude-code", "--workspace", "agentproto"])
+    const [, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.cwd).toBeUndefined()
+    expect(body.workspaceSlug).toBe("agentproto")
   })
 
   it("parses --orchestrator-json into the object form", async () => {
