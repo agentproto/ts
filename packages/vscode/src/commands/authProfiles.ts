@@ -42,7 +42,98 @@ export function registerAuthProfileCommands(
     vscode.commands.registerCommand("agentproto.configureAuthProfile", (_node?: AuthProfileNode) => {
       void runCreateAuthProfileFlow(client, provider)
     }),
+    vscode.commands.registerCommand("agentproto.connectAuthProfile", (node?: AuthProfileNode) => {
+      // Reached from an unconnected preset row (click or context menu). With a
+      // preset in hand the method + endpoint are known, so skip straight to
+      // id → label → credential. Without one (defensive), fall back to the
+      // full wizard.
+      if (node?.kind === "preset") {
+        void runConnectPresetFlow(client, provider, node.preset)
+      } else {
+        void runCreateAuthProfileFlow(client, provider)
+      }
+    }),
+    vscode.commands.registerCommand("agentproto.deleteAuthProfile", (node?: AuthProfileNode) => {
+      if (node?.kind === "profile") void runDeleteAuthProfileFlow(client, provider, node.profileId)
+    }),
   )
+}
+
+/**
+ * Connect a provider preset: create an api-key profile already bound to the
+ * preset's endpoint, so the user only supplies id/label/credential instead of
+ * re-choosing the method and endpoint they just clicked. This is the direct
+ * answer to "a preset with no profile connected is unclear" — the preset row
+ * now leads straight to the credential.
+ */
+export async function runConnectPresetFlow(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  preset: { slug: string; name?: string },
+): Promise<void> {
+  const method: AuthMethod = "api-key"
+  const endpoint = preset.slug
+
+  const existing = await client.listAuthProfiles().catch(() => [])
+  const existingIds = existing.map(p => p.id)
+  const id = await vscode.window.showInputBox({
+    title: `Connect ${preset.name ?? preset.slug} (1/3): id`,
+    prompt: "A stable, unique id for this profile",
+    value: suggestProfileId(method, endpoint),
+    validateInput: v => validateProfileId(v, existingIds),
+  })
+  if (!id) return
+
+  const label = await vscode.window.showInputBox({
+    title: `Connect ${preset.name ?? preset.slug} (2/3): label (optional)`,
+    prompt: "A human-readable name (optional — press Enter to skip)",
+    placeHolder: `e.g. ${preset.name ?? preset.slug} API Key`,
+  })
+  if (label === undefined) return
+
+  const credential = await vscode.window.showInputBox({
+    title: `Connect ${preset.name ?? preset.slug} (3/3): credential`,
+    prompt: `Paste the ${preset.name ?? preset.slug} API key`,
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: validateCredential,
+  })
+  if (!credential) return
+
+  const request = buildCreateRequest({ id, endpoint, method, credential, label })
+  try {
+    const created = await client.createAuthProfile(request)
+    void vscode.window.showInformationMessage(successMessage(created))
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Could not connect ${preset.slug}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+/** Delete a named auth profile after a modal confirm — reachable from a
+ *  profile row's context menu. */
+export async function runDeleteAuthProfileFlow(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  profileId: string,
+): Promise<void> {
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete auth profile "${profileId}"? Sessions billing it will need another wallet.`,
+    { modal: true },
+    "Delete",
+  )
+  if (confirm !== "Delete") return
+  try {
+    await client.deleteAuthProfile(profileId)
+    void vscode.window.showInformationMessage(`Deleted auth profile "${profileId}".`)
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Could not delete "${profileId}": ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 }
 
 /**

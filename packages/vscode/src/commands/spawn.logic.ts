@@ -15,6 +15,7 @@ import type {
   CatalogProduct,
   CatalogRoute,
   CatalogVendor,
+  RouteSpec,
   UserPreset,
   WorkspacesConfig,
 } from "../client/types.js"
@@ -159,6 +160,20 @@ export interface SpawnQuickPickItem {
   configure?: boolean
   /** Set when this row spawns a saved user preset — see mapPresetQuickPickItems. */
   preset?: UserPreset
+  /** Catalog route gateway (`route.route`, e.g. "openrouter") this row bills.
+   *  Carried so the spawn sends an explicit `route.gateway` instead of letting
+   *  the model fall back to the adapter's native provider — the daemon's
+   *  serviceability guard 500s a gateway model spawned walletless. Absent for
+   *  the manifest picker (mapSpawnQuickPickItems), which has no catalog route. */
+  route?: string
+  /** The auth profiles eligible to bill this route (`route.eligibleProfiles`).
+   *  Empty means no connected wallet services it. The wizard attaches the sole
+   *  profile silently, asks when several, and offers to connect one when none —
+   *  so picking a model never dead-ends on the guard. */
+  eligibleProfiles?: string[]
+  /** `route.runnable` — whether this route can spawn as-is. A false row is
+   *  still shown (so the missing model isn't a mystery) but routes to connect. */
+  runnable?: boolean
 }
 
 /**
@@ -256,6 +271,9 @@ export function mapCatalogSpawnQuickPickItems(catalog: CatalogModelsResponse): S
           adapter: { slug: defaultAdapter, name: defaultAdapter } as SpawnAdapterInfo,
           model: ref,
           mode: route.adapterModes[0],
+          route: route.route,
+          eligibleProfiles: route.eligibleProfiles,
+          runnable: isRunnable,
         })
       }
     }
@@ -393,6 +411,12 @@ export interface SpawnWizardAnswers {
   presetId?: string
   model?: string
   mode?: string
+  /** Explicit routing rail carried from the catalog row so a gateway model
+   *  bills its real gateway (see SpawnQuickPickItem.route). */
+  route?: RouteSpec
+  /** The named auth profile to bill — resolved from the route's eligible
+   *  profiles (attached silently when unambiguous, picked when several). */
+  accessProfileRef?: string
   cwd?: string
   workspaceSlug?: string
   label?: string
@@ -516,5 +540,38 @@ export function assembleSpawnOptions(answers: SpawnWizardAnswers): SpawnAgentOpt
   // make.
   if (answers.orchestrator) opts.orchestrator = true
   if (answers.presetId) opts.presetId = answers.presetId
+  if (answers.route) opts.route = answers.route
+  if (answers.accessProfileRef) opts.access = { profileRef: answers.accessProfileRef }
   return opts
+}
+
+/**
+ * How a catalog row's route resolves to a billable wallet, given the profiles
+ * eligible to service it and whether the route is runnable as-is. Pure so the
+ * wizard's branching is unit-tested without driving quick-picks:
+ *
+ *   - `attach`  — exactly one eligible profile: bind it silently, no prompt.
+ *   - `pick`    — several eligible profiles: the caller shows a wallet picker.
+ *   - `default` — none eligible but the route is runnable: the daemon resolves
+ *                 its own default wallet (the Anthropic subscription path), so
+ *                 send no `access` and let it — attaching nothing is correct,
+ *                 not a gap.
+ *   - `connect` — none eligible and NOT runnable: no wallet can bill this model
+ *                 yet, so spawning would 500 the serviceability guard. The
+ *                 caller offers to connect a profile instead of dead-ending.
+ */
+export type ProfileChoice =
+  | { kind: "attach"; profileRef: string }
+  | { kind: "pick"; options: string[] }
+  | { kind: "default" }
+  | { kind: "connect" }
+
+export function classifyProfileChoice(
+  eligibleProfiles: string[] | undefined,
+  runnable: boolean | undefined,
+): ProfileChoice {
+  const eligible = eligibleProfiles ?? []
+  if (eligible.length === 1) return { kind: "attach", profileRef: eligible[0]! }
+  if (eligible.length > 1) return { kind: "pick", options: eligible }
+  return runnable ? { kind: "default" } : { kind: "connect" }
 }

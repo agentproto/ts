@@ -27,6 +27,7 @@ import { EMPTY_WORKSPACES } from "../services/workspaces.logic.js"
 import {
   assembleSpawnOptions,
   buildSpawnPlaceHolder,
+  classifyProfileChoice,
   CUSTOM_MODEL_LABEL,
   mapAdapterQuickPickItems,
   mapCatalogSpawnQuickPickItems,
@@ -175,6 +176,15 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
     } else if (picked.model) {
       answers.model = picked.model
       if (picked.mode) answers.mode = picked.mode
+    }
+    // A catalog row carries the gateway + the profiles eligible to bill it.
+    // Resolve the wallet here so a gateway model (openrouter/requesty/…) never
+    // spawns walletless and 500s the daemon's serviceability guard.
+    if (picked.route) {
+      const resolved = await resolveRouteAccess(picked.route, picked.eligibleProfiles, picked.runnable)
+      if (resolved === "abort") return
+      answers.route = { gateway: picked.route }
+      if (resolved.profileRef) answers.accessProfileRef = resolved.profileRef
     }
     if (!defaultCwd) {
       vscode.window.showWarningMessage(
@@ -331,6 +341,46 @@ async function runConfigureWizard(
   if (prompt) answers.prompt = prompt
 
   return answers
+}
+
+/**
+ * Resolve which named auth profile a catalog route should bill, driving a
+ * quick-pick only when the choice is genuinely ambiguous. Returns the resolved
+ * `profileRef` (or none, when the daemon's default wallet handles the route),
+ * or the sentinel `"abort"` when the user dismisses the wallet pick or diverts
+ * to connect a profile — the caller then cancels the spawn rather than firing
+ * one the serviceability guard will reject. Branching mirrors
+ * classifyProfileChoice; only the UI lives here.
+ */
+async function resolveRouteAccess(
+  gateway: string,
+  eligibleProfiles: string[] | undefined,
+  runnable: boolean | undefined,
+): Promise<{ profileRef?: string } | "abort"> {
+  const choice = classifyProfileChoice(eligibleProfiles, runnable)
+  switch (choice.kind) {
+    case "attach":
+      return { profileRef: choice.profileRef }
+    case "default":
+      return {}
+    case "pick": {
+      const pick = await vscode.window.showQuickPick(choice.options, {
+        placeHolder: `Which ${gateway} wallet should bill this session?`,
+      })
+      if (pick === undefined) return "abort"
+      return { profileRef: pick }
+    }
+    case "connect": {
+      const action = await vscode.window.showWarningMessage(
+        `No connected profile can bill this model on "${gateway}". Connect an ${gateway} API-key profile, then spawn again.`,
+        "Connect a profile",
+      )
+      if (action === "Connect a profile") {
+        await vscode.commands.executeCommand("agentproto.configureAuthProfile")
+      }
+      return "abort"
+    }
+  }
 }
 
 function describeError(err: unknown): string {
