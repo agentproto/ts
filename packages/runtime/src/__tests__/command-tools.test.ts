@@ -102,6 +102,33 @@ describe("command_execute → session-based persistence", () => {
     await close()
   })
 
+  it("defaults origin to \"command_execute\" when the caller doesn't pass one", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.origin).toBe("command_execute")
+    expect(desc?.callerSessionId).toBeUndefined()
+
+    await close()
+  })
+
+  it("passes an explicit origin through onto the minted session", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"], origin: "cowork" },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.origin).toBe("cowork")
+
+    await close()
+  })
+
   it("still records a nonzero-exit invocation as status \"error\"", async () => {
     const { client, close } = await buildHarness(workspace, registry)
     const result = await client.callTool({

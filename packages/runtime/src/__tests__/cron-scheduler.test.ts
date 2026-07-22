@@ -146,6 +146,7 @@ describe("CronScheduler", () => {
       const desc = commandSessions[0]!
       expect(desc.status).toBe("exited")
       expect(desc.label).toBe(`cron:${job.id}`)
+      expect(desc.origin).toBe("cron")
 
       const entry = await pollUntil(() => registry.readCommandLog(desc.id))
       expect(entry).toMatchObject({ command: "echo", args: ["from-cron"], exitCode: 0 })

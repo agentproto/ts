@@ -62,6 +62,12 @@ export interface ExportedSessionMeta {
   }
   costUsd?: number
   source?: string
+  /** Provenance carried over from the session descriptor's own
+   *  `origin`/`callerSessionId` (see sessions.ts) — distinct from `source`,
+   *  which names the EXPORTER that produced this payload (e.g.
+   *  "daemon-events", "codex"), not who invoked the underlying session. */
+  origin?: string
+  callerSessionId?: string
 }
 
 export interface ExportedSession {
@@ -95,7 +101,9 @@ export function renderMarkdown(
   out.push("")
 
   const sourceNote = meta.source ? ` · source \`${meta.source}\`` : ""
-  out.push(`> Session${sourceNote}`)
+  const originNote = meta.origin ? ` · origin \`${meta.origin}\`` : ""
+  const callerNote = meta.callerSessionId ? ` · caller \`${meta.callerSessionId}\`` : ""
+  out.push(`> Session${sourceNote}${originNote}${callerNote}`)
   out.push("")
   out.push("| | |")
   out.push("|---|---|")
@@ -937,6 +945,8 @@ async function exportDaemonEventsSession(
   if (desc?.model) meta.model = desc.model
   if (desc?.startedAt) meta.startedAt = desc.startedAt
   if (desc?.endedAt) meta.endedAt = desc.endedAt
+  if (desc?.origin) meta.origin = desc.origin
+  if (desc?.callerSessionId) meta.callerSessionId = desc.callerSessionId
   meta.messageCount = messages.length
   meta.toolCallCount = toolCallCount
   if (desc?.costUsd !== undefined) meta.costUsd = desc.costUsd

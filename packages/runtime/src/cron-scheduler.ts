@@ -289,6 +289,11 @@ export function createCronScheduler(opts: {
         stderr: result.stderr,
         ...(result.truncated ? { truncated: true } : {}),
         label: `cron:${job.id}`,
+        // Same origin the agent-action branch below already stamps. No
+        // `callerSessionId`: a cron tick is a daemon timer callback, not
+        // itself a SessionDescriptor — there's no real session id to
+        // attribute this to, and `job.id` (already in `label`) isn't one.
+        origin: "cron",
       })
       if (result.exitCode !== 0) {
         throw new Error(

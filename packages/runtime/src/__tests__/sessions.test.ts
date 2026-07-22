@@ -1421,6 +1421,45 @@ describe("createSessionsRegistry", () => {
       expect(entry).toMatchObject({ command: "gh", args: ["pr", "view"], stdout: "full body\n" })
       reg.shutdown()
     })
+
+    it("leaves origin/callerSessionId absent when the caller doesn't pass them", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+      })
+      expect(desc.origin).toBeUndefined()
+      expect(desc.callerSessionId).toBeUndefined()
+      reg.shutdown()
+    })
+
+    it("stamps origin and callerSessionId onto the descriptor when passed", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+        origin: "cron",
+        callerSessionId: "sess_abcd1234",
+      })
+      expect(desc.origin).toBe("cron")
+      expect(desc.callerSessionId).toBe("sess_abcd1234")
+      expect(reg.get(desc.id)).toMatchObject({ origin: "cron", callerSessionId: "sess_abcd1234" })
+      reg.shutdown()
+    })
   })
 
   describe("recordOpenedPr", () => {

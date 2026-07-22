@@ -58,6 +58,15 @@ describe("renderMarkdown", () => {
     expect(md).toContain("Paris.")
   })
 
+  it("appends origin/caller provenance to the source line when present", () => {
+    const session: ExportedSession = {
+      meta: { source: "daemon-events", origin: "cron", callerSessionId: "sess_deadbeef" },
+      messages: [],
+    }
+    const md = renderMarkdown(session)
+    expect(md).toContain("> Session · source `daemon-events` · origin `cron` · caller `sess_deadbeef`")
+  })
+
   it("renders tool calls as blockquotes", () => {
     const session: ExportedSession = {
       meta: {},
@@ -734,6 +743,8 @@ describe("daemon-events exporter", () => {
         tokensOut: 200,
         startedAt: "2026-06-01T00:00:00Z",
         endedAt: "2026-06-01T00:05:00Z",
+        origin: "cron",
+        callerSessionId: "sess_deadbeef",
       }),
       source: "daemon",
       format: "json",
@@ -749,6 +760,8 @@ describe("daemon-events exporter", () => {
       endedAt: "2026-06-01T00:05:00Z",
       messageCount: 1,
       toolCallCount: 0,
+      origin: "cron",
+      callerSessionId: "sess_deadbeef",
     })
   })
 
