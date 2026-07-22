@@ -139,6 +139,17 @@ export async function resolveAccessProfileFromStore(
 ): Promise<{ profile: AuthProfile; credential?: string } | undefined> {
   const profile = await getAuthProfile(profileRef)
   if (!profile) return undefined
+  if (profile.credentialRef === undefined) {
+    // A source-backed profile (`profile.source`) has no stored secret to read
+    // here. Self-refreshing restart is out of scope today — only spawn
+    // (`session-spawn.ts`) resolves `source` — so this fails LOUD rather than
+    // restarting with no credential.
+    throw new RestartOverrideError(
+      `restart access override: profile "${profile.id}" is source-backed ` +
+        `("${profile.source}") — restart does not yet support self-refreshing ` +
+        `profiles, only spawn does. Use a credential-backed profile instead.`,
+    )
+  }
   const stored = await new KeychainStore().read({ path: profile.credentialRef })
   return { profile, ...(stored?.value !== undefined ? { credential: stored.value } : {}) }
 }

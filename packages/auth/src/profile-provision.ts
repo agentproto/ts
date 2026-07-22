@@ -25,7 +25,10 @@ import type { AuthMethod, AuthProfile } from "./profile-types.js"
 import type { CredentialStore } from "./store/types.js"
 
 /** Input to {@link createAuthProfile}. `credential` is the raw secret — it is
- *  written to the store and NEVER returned. */
+ *  written to the store and NEVER returned. Exactly one of `credential` /
+ *  `source` must be given for an `oauth-bearer` profile; `api-key` always
+ *  requires `credential` (a source-backed profile only makes sense for a
+ *  self-refreshing subscription bearer). */
 export interface CreateAuthProfileInput {
   /** Stable id, unique across all profiles. */
   id: string
@@ -34,12 +37,19 @@ export interface CreateAuthProfileInput {
   endpoint: string
   /** How this profile authenticates. */
   method: AuthMethod
-  /** The raw secret (a subscription OAuth bearer, an API key). INPUT-ONLY. */
-  credential: string
+  /** The raw secret (a subscription OAuth bearer, an API key). INPUT-ONLY.
+   *  Mutually exclusive with `source`. */
+  credential?: string
+  /** Self-refreshing credential source (`oauth-bearer` only, e.g.
+   *  `"claude-code-oauth"`) — the profile stores no secret; the credential is
+   *  resolved fresh at spawn time instead. Mutually exclusive with
+   *  `credential`. */
+  source?: string
   /** Optional human-readable name. */
   label?: string
   /** Optional explicit credential-store slot. Omitted ⇒ derived from
-   *  `endpoint` + `method` (see {@link deriveCredentialRef}). */
+   *  `endpoint` + `method` (see {@link deriveCredentialRef}). Ignored for a
+   *  source-backed profile (nothing is written to the credential store). */
   credentialRef?: string
 }
 
@@ -49,11 +59,15 @@ export interface CreatedAuthProfile {
   id: string
   endpoint: string
   method: AuthMethod
-  credentialRef: string
+  /** Set for a credential-backed profile; absent for a source-backed one. */
+  credentialRef?: string
+  /** Set for a source-backed profile; absent for a credential-backed one. */
+  source?: string
   label?: string
   /** One-way fingerprint of the stored credential (sha256, truncated) — lets
-   *  a caller confirm *which* secret was stored without exposing it. */
-  fingerprint: string
+   *  a caller confirm *which* secret was stored without exposing it. Absent
+   *  for a source-backed profile — there is no stored secret to fingerprint. */
+  fingerprint?: string
 }
 
 /** The result of a delete. `deleted` is false when no profile had that id
@@ -91,12 +105,14 @@ const AUTH_METHODS: readonly AuthMethod[] = ["oauth-bearer", "api-key"]
  *  to a conservative, injection-safe charset. */
 const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-/** Normalized, validated create input — every field trimmed and checked. */
+/** Normalized, validated create input — every field trimmed and checked.
+ *  Exactly one of `credential` / `source` is present. */
 export interface ValidatedCreateInput {
   id: string
   endpoint: string
   method: AuthMethod
-  credential: string
+  credential?: string
+  source?: string
   label?: string
   credentialRef?: string
 }
@@ -133,8 +149,26 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
 
   // Trim surrounding whitespace only — a pasted token can carry a stray
   // trailing newline, but must not be blank once trimmed.
-  const credential = (input.credential ?? "").trim()
-  if (!credential) throw new AuthProfileValidationError("credential is required")
+  const credential = input.credential !== undefined ? input.credential.trim() : undefined
+  const source = input.source?.trim()
+
+  if (method === "api-key") {
+    if (source) {
+      throw new AuthProfileValidationError(
+        "source is only supported for oauth-bearer profiles — api-key profiles require a credential",
+      )
+    }
+    if (!credential) throw new AuthProfileValidationError("credential is required")
+  } else {
+    if (credential && source) {
+      throw new AuthProfileValidationError(
+        "give either credential or source, not both — a source-backed profile stores no secret",
+      )
+    }
+    if (!credential && !source) {
+      throw new AuthProfileValidationError("credential or source is required")
+    }
+  }
 
   const label = input.label?.trim()
   const credentialRef = input.credentialRef?.trim()
@@ -148,7 +182,8 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     id,
     endpoint,
     method,
-    credential,
+    ...(credential ? { credential } : {}),
+    ...(source ? { source } : {}),
     ...(label ? { label } : {}),
     ...(credentialRef ? { credentialRef } : {}),
   }
@@ -203,6 +238,27 @@ export async function createAuthProfile(
     )
   }
 
+  // Source-backed: no secret, nothing written to the credential store.
+  if (v.source !== undefined) {
+    const profile: AuthProfile = {
+      id: v.id,
+      endpoint: v.endpoint,
+      method: v.method,
+      source: v.source,
+      ...(v.label ? { label: v.label } : {}),
+    }
+    await deps.addProfile(profile)
+    return {
+      id: profile.id,
+      endpoint: profile.endpoint,
+      method: profile.method,
+      source: v.source,
+      ...(profile.label ? { label: profile.label } : {}),
+    }
+  }
+
+  const credential = v.credential!
+
   const existing = await deps.listProfiles()
   const takenRefs = new Set(existing.map(p => p.credentialRef))
 
@@ -216,7 +272,7 @@ export async function createAuthProfile(
 
   await deps.store.write(
     { path: credentialRef },
-    { value: v.credential, kind: credentialKind(v.method) },
+    { value: credential, kind: credentialKind(v.method) },
   )
 
   const profile: AuthProfile = {
@@ -234,7 +290,7 @@ export async function createAuthProfile(
     method: profile.method,
     credentialRef,
     ...(profile.label ? { label: profile.label } : {}),
-    fingerprint: fingerprintCredential(v.credential),
+    fingerprint: fingerprintCredential(credential),
   }
 }
 
@@ -256,6 +312,11 @@ export async function deleteAuthProfile(
   if (!profile) return { deleted: false, id: trimmed }
 
   await deps.removeProfile(trimmed)
+
+  // Source-backed profiles store no secret — nothing to tear down.
+  if (profile.credentialRef === undefined) {
+    return { deleted: true, id: trimmed }
+  }
 
   const stillReferenced = (await deps.listProfiles()).some(
     p => p.credentialRef === profile.credentialRef,

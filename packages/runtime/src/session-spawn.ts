@@ -976,8 +976,46 @@ export async function spawnAgentSession(
           `for adapter "${input.adapter}" on route "${projected?.routeId ?? "unknown"}" (billed endpoint: ${endpoint}).`,
       }
     }
-    const stored = await new KeychainStore().read({ path: profile.credentialRef })
     const authMode = profileMethodToAuthMode(profile.method)
+    // Subscription-credential resolution (SPEC §2, same as the non-profile
+    // branch below): a source-backed profile (`profile.source`) resolves the
+    // credential FRESH via Mode 3 on every spawn instead of a one-shot static
+    // keychain read — reusing `resolveSubscriptionCredential` rather than
+    // duplicating it. A credential-backed profile keeps today's static read.
+    let subscriptionCredential: string | undefined
+    let subscriptionCredentialSource: CredentialSource | undefined
+    let apiKeyCredential: string | undefined
+    if (authMode === "subscription" && profile.source !== undefined) {
+      try {
+        const subResolution = await resolveSubscriptionCredential(
+          { source: profile.source },
+          resolveClaudeCodeOauthToken,
+        )
+        subscriptionCredential = subResolution.credential
+        subscriptionCredentialSource = subResolution.source
+      } catch (err) {
+        if (err instanceof SubscriptionSourceError) {
+          return {
+            ok: false,
+            code: err.code,
+            message: `agent_start: ${err.message}`,
+            details: { adapter: input.adapter, profile: profile.id },
+          }
+        }
+        throw err
+      }
+    } else if (profile.credentialRef === undefined) {
+      return {
+        ok: false,
+        code: "access_profile_ineligible",
+        message: `agent_start: profile "${profile.id}" has neither a credential nor a source configured.`,
+        details: { adapter: input.adapter },
+      }
+    } else {
+      const stored = await new KeychainStore().read({ path: profile.credentialRef })
+      if (authMode === "subscription") subscriptionCredential = stored?.value
+      else apiKeyCredential = stored?.value
+    }
     try {
       const result = resolveAuthSpec({
         descriptor: resolved.authDescriptor,
@@ -988,12 +1026,11 @@ export async function spawnAgentSession(
         // A profile reference is an explicit billing choice. Never consult the
         // ambient environment or a different provider-store key as fallback.
         explicit: true,
-        ...(authMode === "subscription" && stored?.value !== undefined
-          ? { subscriptionCredential: stored.value }
+        ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
+        ...(subscriptionCredentialSource !== undefined
+          ? { subscriptionCredentialSource }
           : {}),
-        ...(authMode === "api-key" && stored?.value !== undefined
-          ? { apiKeyConfigCredential: stored.value }
-          : {}),
+        ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
       })
       if (result) {
         authSpec = result.spec
@@ -1055,7 +1092,7 @@ export async function spawnAgentSession(
     // resolveAuthSpec and hand it the fresh credential + its origin label. A
     // configured-but-unresolvable source fails LOUD (never a silent
     // fallthrough). api-key mode never touches this. The auth-PROFILE path
-    // above deliberately does NOT support `source` (out of scope, PR follow-up).
+    // above resolves its own `source` the same way, scoped to that branch.
     let subscriptionCredential: string | undefined
     let subscriptionCredentialSource: CredentialSource | undefined
     try {

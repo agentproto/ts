@@ -1947,6 +1947,7 @@ export async function startHttpServer(
             endpoint?: unknown
             method?: unknown
             credential?: unknown
+            source?: unknown
             label?: unknown
             credentialRef?: unknown
           } | null
@@ -1956,7 +1957,8 @@ export async function startHttpServer(
                 id: String(body?.id ?? ""),
                 endpoint: String(body?.endpoint ?? ""),
                 method: body?.method as "oauth-bearer" | "api-key",
-                credential: String(body?.credential ?? ""),
+                ...(typeof body?.credential === "string" ? { credential: body.credential } : {}),
+                ...(typeof body?.source === "string" ? { source: body.source } : {}),
                 ...(typeof body?.label === "string" ? { label: body.label } : {}),
                 ...(typeof body?.credentialRef === "string"
                   ? { credentialRef: body.credentialRef }

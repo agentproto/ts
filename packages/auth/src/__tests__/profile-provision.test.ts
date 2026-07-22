@@ -83,6 +83,44 @@ describe("validateCreateInput", () => {
       /credential/,
     )
   })
+
+  it("accepts a source in place of a credential for oauth-bearer", () => {
+    const v = validateCreateInput({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: " claude-code-oauth ",
+    })
+    expect(v).toEqual({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    })
+  })
+
+  it("rejects giving both credential and source", () => {
+    expect(() =>
+      validateCreateInput({ ...base, source: "claude-code-oauth" }),
+    ).toThrow(/either credential or source/)
+  })
+
+  it("rejects giving neither credential nor source for oauth-bearer", () => {
+    expect(() =>
+      validateCreateInput({ ...base, credential: undefined }),
+    ).toThrow(/credential or source is required/)
+  })
+
+  it("rejects a source on an api-key profile", () => {
+    expect(() =>
+      validateCreateInput({
+        id: "or-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        source: "claude-code-oauth",
+      }),
+    ).toThrow(/source is only supported for oauth-bearer/)
+  })
 })
 
 describe("deriveCredentialRef", () => {
@@ -207,7 +245,7 @@ describe("createAuthProfile", () => {
     )
     // Distinct slot → the first profile's secret is not clobbered.
     expect(created.credentialRef).toBe("agentproto.auth.anthropic.sub.anthropic-sub-work")
-    expect(await store.read({ path: created.credentialRef })).toEqual({
+    expect(await store.read({ path: created.credentialRef! })).toEqual({
       value: "work-token",
       kind: "oat",
     })
@@ -227,6 +265,36 @@ describe("createAuthProfile", () => {
     )
     expect(created.credentialRef).toBe("agentproto.auth.custom.slot")
     expect(await store.read({ path: "agentproto.auth.custom.slot" })).toBeDefined()
+  })
+
+  it("a source-backed profile stores no secret and carries no credentialRef/fingerprint", async () => {
+    const { deps, profiles, store } = makeDeps()
+    const created = await createAuthProfile(
+      {
+        id: "anthropic-sub",
+        endpoint: "anthropic",
+        method: "oauth-bearer",
+        source: "claude-code-oauth",
+        label: "Anthropic (self-refreshing)",
+      },
+      deps,
+    )
+    expect(created).toEqual({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      label: "Anthropic (self-refreshing)",
+    })
+    expect(profiles.get("anthropic-sub")).toEqual({
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      label: "Anthropic (self-refreshing)",
+    })
+    // Nothing was ever written to the credential store.
+    expect(await store.read({ path: "agentproto.auth.anthropic.sub" })).toBeUndefined()
   })
 })
 
@@ -270,5 +338,16 @@ describe("deleteAuthProfile", () => {
     await deleteAuthProfile("b", deps)
     // Last referrer gone → the secret is removed.
     expect(await store.read({ path: shared })).toBeUndefined()
+  })
+
+  it("deletes a source-backed profile without touching the credential store", async () => {
+    const { deps, profiles } = makeDeps()
+    await createAuthProfile(
+      { id: "anthropic-sub", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" },
+      deps,
+    )
+    const result = await deleteAuthProfile("anthropic-sub", deps)
+    expect(result).toEqual({ deleted: true, id: "anthropic-sub" })
+    expect(profiles.has("anthropic-sub")).toBe(false)
   })
 })

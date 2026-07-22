@@ -160,15 +160,18 @@ export function buildCreateRequest(
 }
 
 /** A user-facing success line — names the profile and shows the credential
- *  fingerprint, NEVER the credential itself. */
+ *  fingerprint (NEVER the credential itself), or the self-refreshing source
+ *  for a source-backed profile, which stores no fingerprint at all. */
 export function successMessage(profile: {
   id: string
   endpoint: string
   method: AuthMethod
-  fingerprint: string
+  fingerprint?: string
+  source?: string
 }): string {
-  return (
-    `Created auth profile "${profile.id}" (${profile.endpoint} · ${profile.method}) ` +
-    `— credential #${profile.fingerprint}`
-  )
+  const via =
+    profile.fingerprint !== undefined
+      ? `credential #${profile.fingerprint}`
+      : `source "${profile.source}"`
+  return `Created auth profile "${profile.id}" (${profile.endpoint} · ${profile.method}) — ${via}`
 }
