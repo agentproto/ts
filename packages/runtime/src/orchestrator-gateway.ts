@@ -31,6 +31,7 @@ import type { SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
+import type { TaskLedger } from "./task-ledger.js"
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
@@ -72,6 +73,13 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "policy_cancel",
   "permissions_list",
   "permissions_respond",
+  // Task ledger — the shared "who's doing what / what's left" surface.
+  // Children SHOULD touch tasks (claim before working, update when done);
+  // ACL + board scoping happen per-caller inside the ledger itself.
+  "task_create",
+  "task_list",
+  "task_claim",
+  "task_update",
 ]
 
 /**
@@ -225,6 +233,10 @@ export interface OrchestratorGatewayDeps {
   sessionEvents: SessionEventBus
   eventRing: EventRing
   supervisor?: CompletionPolicySupervisor
+  /** Task ledger — when wired, spawned children get live `task_*` tools
+   *  (they're in the default allowlist either way; without a ledger they
+   *  answer a structured error). Same instance as the root gateway's. */
+  taskLedger?: TaskLedger
   resolveAgentAdapter?: AgentAdapterResolver
   listAgentAdapters?: AgentAdapterLister
   /** Orchestrator injector (WP3/WP4). When wired, a child orchestrator
@@ -300,6 +312,7 @@ export function createOrchestratorMcpServerFactory(
       // only policies on own sub-agents; commit refused).
       callerScope: scope,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
+      ...(deps.taskLedger ? { taskLedger: deps.taskLedger } : {}),
     })
     return server
   }

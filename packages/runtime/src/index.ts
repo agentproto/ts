@@ -86,6 +86,7 @@ import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector } from "./activities.js"
+import { createTaskLedger } from "./task-ledger.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 export type {
@@ -142,6 +143,31 @@ export type {
   ActivityWaitingOn,
   ActivityListFilter,
 } from "./activity-projection.js"
+export {
+  createTaskLedger,
+  createSupervisorTaskGateRunner,
+  parseTaskStatus,
+  isClosedTaskStatus,
+  TASK_STATUSES,
+} from "./task-ledger.js"
+export type {
+  TaskRecord,
+  TaskStatus,
+  TaskVerification,
+  TaskCaller,
+  TaskLedger,
+  TaskLedgerRegistry,
+  TaskLedgerSessionSlice,
+  TaskVerifySupervisor,
+  TaskGateRunner,
+  TaskGateOutcome,
+  TaskCreateInput,
+  TaskListFilter,
+  TaskClaimInput,
+  TaskUpdateInput,
+  TaskWriteResult,
+} from "./task-ledger.js"
+export type { TaskChangedEvent } from "./session-event-bus.js"
 export {
   userPresetsPath,
   loadUserPresets,
@@ -940,6 +966,25 @@ export async function createGateway(
     ...(workflowRunner ? { workflowRunner } : {}),
   })
 
+  // Task ledger — the multi-party write-model over declared intent
+  // (task-ledger.ts). Declared after `sessions` (board resolution walks
+  // lineage) and `supervisor` (Tier-1 done runs its gate through the real
+  // completion-policy machinery — the default gate-runner). The operator's
+  // default board is `ws:<active workspace slug>`; falls back to "default"
+  // when no workspace registry exists. Same persistence switch as every
+  // other store this gateway owns; disposed (+ sync-flushed) in stop().
+  const operatorWorkspaceSlug = await loadWorkspacesConfig()
+    .then(cfg => getActiveWorkspace(cfg)?.slug)
+    .catch(() => undefined)
+  const taskLedger = createTaskLedger({
+    registry: sessions,
+    sessionEvents,
+    supervisor,
+    workspace,
+    persist,
+    ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
+  })
+
   // Per-boot bearer token. Required on mutating /sessions/* routes
   // and on the WS upgrade for /sessions/:id/pty. Persisted to
   // runtime.json (mode 0600) so the same-user CLI can read it; a
@@ -1008,6 +1053,7 @@ export async function createGateway(
     sessionEvents,
     eventRing,
     supervisor,
+    taskLedger,
     orchestratorInjector,
     webhookNotifier,
     daemonMcpUrl,
@@ -1116,6 +1162,7 @@ export async function createGateway(
       eventRing,
       supervisor,
       activityProjector,
+      taskLedger,
       ...(routineRunner ? { routineRunner } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
@@ -1286,6 +1333,7 @@ export async function createGateway(
     eventRing,
     supervisor,
     activityProjector,
+    taskLedger,
     ...(routineRunner ? { routineRunner } : {}),
     ...(workflowRunner ? { workflowRunner } : {}),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
@@ -1369,6 +1417,9 @@ export async function createGateway(
       prReconciler?.dispose()
       // Detach the activity projector's bus subscription + diff cache.
       activityProjector.dispose()
+      // Detach the task ledger's bus subscription + sync-flush tasks.json
+      // (same debounce-then-flush contract as supervisor.shutdown()).
+      taskLedger.dispose()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.

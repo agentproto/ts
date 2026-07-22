@@ -87,7 +87,15 @@ import {
   type ActivityListFilter,
 } from "./activity-projection.js"
 import { policyWatchesSession } from "./supervisor.js"
-import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
+import type { CompletionPolicySupervisor, AttachPolicyInput, GateSpec } from "./supervisor.js"
+import { parseTaskStatus } from "./task-ledger.js"
+import type {
+  TaskCaller,
+  TaskCreateInput,
+  TaskLedger,
+  TaskUpdateInput,
+  TaskWriteResult,
+} from "./task-ledger.js"
 import type {
   DeclaredAdapterOption,
   AdapterAuthDescriptor,
@@ -563,6 +571,14 @@ export interface RuntimeHttpServerOptions {
    *  PRs. Same projector the MCP `activities_list` tool reads. Without it
    *  the route 501s. */
   activityProjector?: ActivityProjector
+  /** Optional — the Task ledger (`task-ledger.ts`). When wired, enables
+   *  the `/tasks` routes (GET/POST /tasks, GET/PATCH /tasks/:id) — the
+   *  human-UI write path onto the same ledger the MCP `task_*` tools
+   *  mutate. HTTP callers are OPERATOR context (like the /policies
+   *  routes, which carry no per-caller scope either — the subtree-scoped
+   *  surface is the `/mcp/orchestrator` gateway). Without it the routes
+   *  404. */
+  taskLedger?: TaskLedger
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -2055,6 +2071,22 @@ export async function startHttpServer(
             opts.supervisor,
             opts.sessions,
           )
+          if (handled) return
+        }
+
+        // Task ledger routes — GET/POST /tasks, GET/PATCH /tasks/:id.
+        // Mirrors the /policies block: thin adapters over the same
+        // TaskLedger the MCP `task_*` tools mutate. HTTP callers are
+        // OPERATOR context (the subtree-scoped surface is the
+        // /mcp/orchestrator gateway — same split as the policy tools).
+        // Browser-origin guarded like /activities; PATCH is the human-UI
+        // write path, rev-CAS answers 409 {conflict, current}.
+        if (
+          opts.taskLedger &&
+          (path === "/tasks" || path.startsWith("/tasks/"))
+        ) {
+          if (guardBrowserOrigin(req, res)) return
+          const handled = await handleTasks(req, res, path, opts.taskLedger)
           if (handled) return
         }
 
@@ -4488,6 +4520,194 @@ async function handlePolicies(
     }
   }
   json(200, state)
+  return true
+}
+
+/**
+ * /tasks routes — the Task ledger's REST surface (human-UI write path).
+ * Returns `true` when it handled the request so the dispatcher skips the
+ * 404 path.
+ *
+ *   GET   /tasks                → { boardId, tasks: TaskRecord[] }
+ *         ?boardId=&status=&includeClosed=1
+ *   POST  /tasks                → 201 TaskRecord (create)
+ *   GET   /tasks/:id            → TaskRecord | 404
+ *   PATCH /tasks/:id            → 200 { task, verifying? }
+ *                                 | 409 { conflict: true, current }
+ *                                 | 400 { error }
+ *
+ * Thin adapters over the same TaskLedger the MCP `task_create/list/claim/
+ * update` tools call — no duplicated state-machine logic between the two
+ * transports (the /policies pattern). Every write takes/returns `rev`; a
+ * CAS miss is 409 with the current record so the caller rebases. There is
+ * no separate claim route: a REST claim is `PATCH {rev, owner, status:
+ * "in_progress"}` in operator context, which may assign anyone.
+ */
+
+/** Plain-object narrow for parsed JSON bodies — a guard, not a cast. */
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Minimal structural check for a `verify` gate spec arriving over REST —
+ *  shell (`command`) or judge (`judge.adapter` + `judge.prompt`). The
+ *  ledger reuses the supervisor's GateSpec verbatim, so this only needs to
+ *  reject non-gate shapes, not re-validate every field. */
+function isGateSpecShape(value: unknown): value is GateSpec {
+  if (!isJsonRecord(value)) return false
+  if ("judge" in value) {
+    return (
+      isJsonRecord(value.judge) &&
+      typeof value.judge.adapter === "string" &&
+      typeof value.judge.prompt === "string"
+    )
+  }
+  return typeof value.command === "string"
+}
+
+/** string→string map narrow for `meta`. */
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    isJsonRecord(value) && Object.values(value).every(v => typeof v === "string")
+  )
+}
+
+async function handleTasks(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  ledger: TaskLedger,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  // HTTP callers are operator context — see the dispatcher comment.
+  const caller: TaskCaller = { kind: "operator" }
+
+  const writeResult = (result: TaskWriteResult, createdStatus = 200): void => {
+    if (result.ok) {
+      json(createdStatus, {
+        task: result.task,
+        ...(result.verifying ? { verifying: true } : {}),
+      })
+      return
+    }
+    if (result.conflict) {
+      json(409, { conflict: true, current: result.current })
+      return
+    }
+    json(400, { error: result.error })
+  }
+
+  if (path === "/tasks" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(
+      reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
+    )
+    const boardId = qs.get("boardId")
+    const status = parseTaskStatus(qs.get("status"))
+    const includeClosed =
+      qs.get("includeClosed") === "1" || qs.get("includeClosed") === "true"
+    const filter = {
+      ...(boardId !== null ? { boardId } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(includeClosed ? { includeClosed } : {}),
+    }
+    json(200, {
+      boardId: ledger.resolveBoardId(caller, boardId ?? undefined),
+      tasks: ledger.list(filter, caller),
+    })
+    return true
+  }
+
+  if (path === "/tasks" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!isJsonRecord(body)) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    if (typeof body.title !== "string" || body.title.trim().length === 0) {
+      json(400, { error: "missing_title", message: "body must include a non-empty `title`" })
+      return true
+    }
+    const input: TaskCreateInput = {
+      title: body.title,
+      ...(typeof body.description === "string" ? { description: body.description } : {}),
+      ...(typeof body.boardId === "string" ? { boardId: body.boardId } : {}),
+      ...(typeof body.owner === "string" ? { owner: body.owner } : {}),
+      ...(Array.isArray(body.blockedBy)
+        ? { blockedBy: body.blockedBy.filter((t): t is string => typeof t === "string") }
+        : {}),
+      ...(isGateSpecShape(body.verify) ? { verify: body.verify } : {}),
+      ...(isStringRecord(body.meta) ? { meta: body.meta } : {}),
+    }
+    const result = ledger.create(input, caller)
+    writeResult(result, 201)
+    return true
+  }
+
+  // /tasks/:id
+  const idMatch = path.match(/^\/tasks\/([^/]+)$/)
+  if (!idMatch) return false
+  const taskId = decodeURIComponent(idMatch[1] ?? "")
+  if (!taskId) return false
+
+  if (req.method === "GET") {
+    const task = ledger.get(taskId, caller)
+    if (!task) {
+      json(404, { error: "task_not_found", taskId })
+      return true
+    }
+    json(200, task)
+    return true
+  }
+
+  if (req.method === "PATCH") {
+    const body = await readJsonBody(req)
+    if (!isJsonRecord(body)) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body
+    if (typeof b.rev !== "number" || !Number.isInteger(b.rev) || b.rev < 0) {
+      json(400, { error: "missing_rev", message: "body must include the integer `rev` last read" })
+      return true
+    }
+    if (!ledger.get(taskId, caller)) {
+      json(404, { error: "task_not_found", taskId })
+      return true
+    }
+    const status = typeof b.status === "string" ? parseTaskStatus(b.status) : undefined
+    if (typeof b.status === "string" && status === undefined) {
+      json(400, { error: "invalid_status", message: `unknown status "${b.status}"` })
+      return true
+    }
+    const evidence =
+      b.evidence &&
+      typeof b.evidence === "object" &&
+      "policyId" in b.evidence &&
+      typeof b.evidence.policyId === "string"
+        ? { policyId: b.evidence.policyId }
+        : undefined
+    const input: TaskUpdateInput = {
+      taskId,
+      rev: b.rev,
+      ...(status !== undefined ? { status } : {}),
+      ...(typeof b.title === "string" ? { title: b.title } : {}),
+      ...(typeof b.description === "string" ? { description: b.description } : {}),
+      ...(Array.isArray(b.blockedBy)
+        ? { blockedBy: b.blockedBy.filter((t): t is string => typeof t === "string") }
+        : {}),
+      ...(typeof b.owner === "string" || b.owner === null ? { owner: b.owner } : {}),
+      ...(evidence !== undefined ? { evidence } : {}),
+      ...(typeof b.note === "string" ? { note: b.note } : {}),
+    }
+    writeResult(ledger.update(input, caller))
+    return true
+  }
+
+  json(405, { error: "method_not_allowed", message: "GET or PATCH only" })
   return true
 }
 
