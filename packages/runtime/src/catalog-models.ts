@@ -472,12 +472,32 @@ export function buildCatalogModels(
     if (query.route && row.route !== query.route) continue
     if (query.adapter && !row.adapters.includes(query.adapter)) continue
 
+    // Per-model wallet-serviceability gate (SPEC §1c parity with the spawn
+    // guard, `checkModelWalletEligibility` / session-spawn.ts:1143): a DIRECT
+    // vendor route — `row.route === row.vendor` with no adapter-mode override
+    // in play (`row.adapterModes.length === 0`; an override can coincidentally
+    // route === vendor, e.g. a `moonshot` mode reached serving a moonshot-
+    // vendor model — see `isDirectRoute`'s own doc comment) — is the catalog's
+    // equivalent of spawning with no `route.gateway` named: the adapter's
+    // fixed wallet is billed, and that wallet might not actually service this
+    // specific model (`claude-fable-5` bills `openrouter`/`requesty`, never
+    // `anthropic`, even though the `claude-code` adapter curates it). Reuses
+    // the SAME predicate the spawn guard uses — no parallel per-model table.
+    // A gateway/mode/router route is the catalog's equivalent of an EXPLICIT
+    // `route.gateway` — the spawn guard deliberately never second-guesses
+    // that (routing any model through any named gateway's api-key is
+    // legitimate), so it is left ungated here too.
+    const isDirectVendorRoute = row.route === row.vendor && row.adapterModes.length === 0
+    const walletEligible =
+      !isDirectVendorRoute ||
+      checkModelWalletEligibility(`${row.vendor}/${row.product}`, row.route).ok
+
     const manifest: AdapterAuthManifest = {
       id: `${row.vendor}/${row.product}@${row.route}`,
       endpointByRoute: { [row.route]: billedVendor(row.vendor, row.route) },
       methodsByRoute: { [row.route]: row.methods },
     }
-    const eligible = eligibleProfiles(input.profiles, manifest, row.route)
+    const eligible = walletEligible ? eligibleProfiles(input.profiles, manifest, row.route) : []
     const runnable = eligible.length > 0
     if (query.runnableOnly && !runnable) continue
 

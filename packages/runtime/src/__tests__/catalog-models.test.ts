@@ -422,3 +422,69 @@ describe("buildCatalogModels — multiModel + servable-models-per-route (WP1 / S
     expect(filtered.routes.find(r => r.route === "openrouter")?.multiModel).toBe(true)
   })
 })
+
+describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC §1c)", () => {
+  // claude-fable-5 is curated by claude-code (a real Anthropic-vendor id
+  // reachable through the adapter's model list) but bills ONLY openrouter/
+  // requesty in the pricing catalog — the exact gateway-only-model-on-a-
+  // fixed-subscription-wallet shape the spawn guard (`checkModelWalletEligibility`,
+  // session-spawn.ts:1143) rejects with `model_wallet_ineligible`. Before this
+  // fix the catalog never checked this and reported the direct anthropic
+  // route as runnable, which then 500'd on a real spawn.
+  const CLAUDE_CODE_FABLE: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [{ id: "claude-fable-5" }],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+  }
+
+  it("a gateway-only model is NOT runnable on its adapter's direct (fixed-wallet) route — matches the spawn 500", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_FABLE],
+      profiles: [anthropicOauth, anthropicApiKey],
+    })
+    const direct = findRoute(response, "anthropic", "claude-fable-5", "anthropic")
+    expect(direct).toBeDefined()
+    expect(direct?.runnable).toBe(false)
+    expect(direct?.eligibleProfiles).toEqual([])
+  })
+
+  it("the same gateway-only model stays runnable on the router route it actually bills", () => {
+    const openrouterKey: AuthProfile = {
+      id: "openrouter-key",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-openrouter",
+    }
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_FABLE],
+      profiles: [openrouterKey],
+    })
+    const openrouter = findRoute(response, "anthropic", "claude-fable-5", "openrouter")
+    expect(openrouter).toBeDefined()
+    expect(openrouter?.runnable).toBe(true)
+    expect(openrouter?.eligibleProfiles).toEqual(["openrouter-key"])
+  })
+
+  it("a genuinely sub-serviceable model (claude-sonnet-5) is unaffected — keeps its direct-route profiles", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [anthropicOauth, anthropicApiKey],
+    })
+    const direct = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(direct?.runnable).toBe(true)
+    expect(direct?.eligibleProfiles.sort()).toEqual(["jeremy-max", "work-anthropic-key"])
+  })
+
+  it("a moonshot-mode route whose mode id coincidentally equals its vendor is NOT gated (explicit gateway naming, never second-guessed)", () => {
+    const response = buildCatalogModels({
+      adapters: [MOONSHOT_ROUTED],
+      profiles: [moonshotApiKey],
+    })
+    const moonshot = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(moonshot?.runnable).toBe(true)
+    expect(moonshot?.eligibleProfiles).toEqual(["personal-moonshot"])
+  })
+})
