@@ -172,6 +172,14 @@ export type StreamEvent =
       text?: string
       /** Tool title/kind the agent is asking permission for, when present. */
       toolName?: string
+      /**
+       * The tool call's raw input (ACP `ToolCallUpdate.rawInput`) — e.g. a
+       * Bash tool's command string — carried through unmodified so a host can
+       * see WHAT the agent is asking permission to run. Harness-shaped and
+       * untyped: normalize defensively per-adapter rather than assuming a
+       * stable schema.
+       */
+      rawInput?: unknown
     }
   | {
       kind: "turn-end"

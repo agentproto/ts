@@ -804,6 +804,10 @@ interface RequestPermissionParams {
     toolCallId?: string
     title?: string
     kind?: string
+    /** ACP `ToolCallUpdate.rawInput` — the tool's actual arguments (e.g. a
+     *  Bash command string). Carried through as-is; see the `agent-prompt`
+     *  event's `rawInput` field. */
+    rawInput?: unknown
   }
   options?: Array<{ optionId?: string; name?: string; kind?: string }>
 }
@@ -839,6 +843,7 @@ function holdPermissionRequest(
   const text = toolName
     ? `Allow "${toolName}"?`
     : "The agent is requesting permission to run a tool."
+  const rawInput = params.toolCall?.rawInput
 
   const state = sessions.get(sessionId)
   if (state) {
@@ -849,6 +854,7 @@ function holdPermissionRequest(
       options,
       text,
       ...(toolName ? { toolName } : {}),
+      ...(rawInput !== undefined ? { rawInput } : {}),
     })
   } else {
     // No session slot for this id — the agent-prompt event can't be surfaced,

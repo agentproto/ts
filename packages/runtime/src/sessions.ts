@@ -267,6 +267,11 @@ export interface AgentStreamEvent {
    *  future driver reports); `normalizeAgentPromptOptions` narrows it
    *  defensively at the one place it's consumed. */
   options?: unknown
+  /** "agent-prompt" tool-call input, e.g. an ACP `requestPermission`'s
+   *  `toolCall.rawInput` (a Bash tool's command string) — see
+   *  @agentproto/acp's `StreamEvent`'s `agent-prompt` kind. Harness-shaped
+   *  and untyped; don't assume a stable schema across adapters. */
+  rawInput?: unknown
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   entries?: Array<{ content: string; priority: string; status: string }>
   /** "usage_update" context-window size (tokens). */
@@ -1132,6 +1137,13 @@ export interface PendingPermission {
   options: Array<{ optionId: string; name?: string; kind?: string }>
   /** ISO timestamp the request was parked. */
   requestedAt: string
+  /**
+   * The tool call's raw input (e.g. a Bash tool's command string), carried
+   * through from the ACP `agent-prompt` event's `rawInput` field when the
+   * driver supplied one. Harness-shaped and untyped — don't assume a stable
+   * schema across adapters.
+   */
+  rawInput?: unknown
 }
 
 /** How a caller resolves a pending permission — an explicit `optionId` wins
@@ -1978,6 +1990,7 @@ export function createSessionsRegistry(opts?: {
       text,
       options,
       requestedAt: new Date().toISOString(),
+      ...(evt.rawInput !== undefined ? { rawInput: evt.rawInput } : {}),
     }
     pendingPermissions.set(id, pending)
     rt.desc.awaitingPermission = true
