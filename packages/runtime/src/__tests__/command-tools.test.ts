@@ -6,15 +6,39 @@
  *   - command_log_tail reads results back, by sessionId or by listing
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
+// Control knob for the "no sandbox backend available" fail-closed path —
+// `resolveCommandSandbox` is a pure platform probe (real sandbox-exec/bwrap),
+// so the only way to exercise "configured but missing" portably is to mock
+// it. `undefined` (the default) defers to the real probe; tests that need
+// the missing-backend branch set it to `null`.
+const sandboxOverride = vi.hoisted(() => ({
+  backend: undefined as
+    | undefined
+    | null
+    | { id: string; wrap: (argv: string[], policy: unknown) => string[] },
+}))
+
+vi.mock("../command-sandbox.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../command-sandbox.js")>()
+  return {
+    ...actual,
+    resolveCommandSandbox: () =>
+      sandboxOverride.backend === undefined
+        ? actual.resolveCommandSandbox()
+        : sandboxOverride.backend,
+  }
+})
+
 import { registerCommandTools } from "../command-tools.js"
+import { COMMAND_SANDBOX_MODE_ENV } from "../command-sandbox.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
 async function buildHarness(
@@ -205,6 +229,96 @@ describe("command_execute → session-based persistence", () => {
     const { client, close } = await buildHarness(workspace, registry)
     const result = await client.callTool({ name: "command_log_tail", arguments: {} })
     expect(JSON.parse(textOf(result))).toEqual({ entries: [] })
+    await close()
+  })
+})
+
+function sandboxConfig(workspace: string, json: string): void {
+  mkdirSync(join(workspace, ".agentproto"), { recursive: true })
+  writeFileSync(join(workspace, ".agentproto", "command-sandbox.json"), json)
+}
+
+describe("command_execute → sandbox confinement default posture", () => {
+  let workspace: string
+  let registry: SessionsRegistry
+  const originalEnv = process.env[COMMAND_SANDBOX_MODE_ENV]
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "command-tools-sandbox-test-"))
+    allowlist(workspace, ["node"])
+    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+    sandboxOverride.backend = undefined
+  })
+
+  afterEach(() => {
+    registry.shutdown()
+    rmSync(workspace, { recursive: true, force: true })
+    sandboxOverride.backend = undefined
+    if (originalEnv === undefined) delete process.env[COMMAND_SANDBOX_MODE_ENV]
+    else process.env[COMMAND_SANDBOX_MODE_ENV] = originalEnv
+  })
+
+  it("defaults to unconfined (mode 'off') and warns loudly on every call, not once", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const { client, close } = await buildHarness(workspace, registry)
+    for (const n of [1, 2]) {
+      const result = await client.callTool({
+        name: "command_execute",
+        arguments: { command: "node", args: ["-e", `console.log(${n})`] },
+      })
+      expect(result.isError).toBeFalsy()
+    }
+    const unconfinedWarnings = errSpy.mock.calls.filter(call =>
+      String(call[0]).includes("UNCONFINED"),
+    )
+    // Two calls, no dedup ⇒ two warnings — this is the "every run" nag, not
+    // the one-time-per-basename interpreter warning.
+    expect(unconfinedWarnings).toHaveLength(2)
+    errSpy.mockRestore()
+    await close()
+  })
+
+  it("fails CLOSED (refuses to run) when a mode is configured but no backend is available", async () => {
+    sandboxConfig(workspace, JSON.stringify({ mode: "workspace" }))
+    sandboxOverride.backend = null // simulate a platform with no sandbox-exec/bwrap
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('should not run')"] },
+    })
+    expect(result.isError).toBeTruthy()
+    expect(textOf(result)).toContain("no sandbox backend is available")
+    expect(textOf(result)).toContain("Refusing to run")
+    await close()
+  })
+
+  it("the env override forces mode 'off' even when the workspace config asks for confinement", async () => {
+    sandboxConfig(workspace, JSON.stringify({ mode: "workspace" }))
+    sandboxOverride.backend = null // would fail closed under the file's mode…
+    process.env[COMMAND_SANDBOX_MODE_ENV] = "off" // …but the env escape hatch wins
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('unblocked')"] },
+    })
+    expect(result.isError).toBeFalsy()
+    const { stdout } = JSON.parse(textOf(result))
+    expect(stdout).toContain("unblocked")
+    await close()
+  })
+
+  it("wraps and still runs successfully when 'workspace' mode is configured and a real backend exists", async () => {
+    if (!existsSync("/usr/bin/sandbox-exec") && !existsSync("/usr/bin/bwrap")) return
+    sandboxConfig(workspace, JSON.stringify({ mode: "workspace" }))
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('confined-ok')"] },
+    })
+    expect(result.isError).toBeFalsy()
+    const { stdout, exitCode } = JSON.parse(textOf(result))
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain("confined-ok")
     await close()
   })
 })
