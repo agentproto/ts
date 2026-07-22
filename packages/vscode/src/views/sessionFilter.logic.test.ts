@@ -52,7 +52,7 @@ describe("filterSessions", () => {
     expect(filterSessions(sessions, EMPTY_FILTER, config)).toEqual(sessions)
   })
 
-  it("filters by status via the existing contextValueFor predicates", () => {
+  it("filters by status via the activityFor predicates", () => {
     const sessions = [
       session({ id: "live", status: "running" }),
       session({ id: "awaiting", status: "running", awaitingInput: true }),
@@ -60,6 +60,39 @@ describe("filterSessions", () => {
     ]
     const state: SessionFilterState = { ...EMPTY_FILTER, status: ["done"] }
     expect(filterSessions(sessions, state, config).map(s => s.id)).toEqual(["done"])
+  })
+
+  it("isolates a killed-mid-turn session as stopped, not done", () => {
+    const sessions = [session({ id: "s", status: "killed", killedMidTurn: true })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, status: ["stopped"] }, config).map(s => s.id),
+    ).toEqual(["s"])
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, status: ["done"] }, config)).toEqual([])
+  })
+
+  it("classifies a session killed while idle after a completed turn as done, not stopped", () => {
+    const sessions = [
+      session({ id: "s", status: "killed", killedMidTurn: false, turnsCompleted: 1 }),
+    ]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, status: ["done"] }, config).map(s => s.id),
+    ).toEqual(["s"])
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, status: ["stopped"] }, config)).toEqual([])
+  })
+
+  it("isolates an errored session as failed", () => {
+    const sessions = [session({ id: "s", status: "error" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, status: ["failed"] }, config).map(s => s.id),
+    ).toEqual(["s"])
+  })
+
+  it("keeps a running session under live and never under stopped", () => {
+    const sessions = [session({ id: "s", status: "running" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, status: ["live"] }, config).map(s => s.id),
+    ).toEqual(["s"])
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, status: ["stopped"] }, config)).toEqual([])
   })
 
   it("filters by workspace label, resolved via cwd against the config", () => {
