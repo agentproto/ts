@@ -47,7 +47,12 @@ import {
 } from "../util/credentials.js"
 import { refreshTunnelToken } from "../util/tunnel-token-refresh.js"
 import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
-import { makeWorktreeProvisioner, makeWorktreeStatusLister, makeOpenPrResolver } from "./worktree.js"
+import {
+  makeWorktreeProvisioner,
+  makeWorktreeStatusLister,
+  makeOpenPrResolver,
+  makePrStateResolver,
+} from "./worktree.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import {
@@ -628,6 +633,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // so an executor's PR gets the provenance footer even though it opened it
       // through its own shell, not command_execute.
       resolveOpenPr: makeOpenPrResolver(),
+      // Injected port behind the Activity projector's PR settlement pass:
+      // resolves a PR url's forge state (gh-backed, same dep reasoning as
+      // above), so a pending-on-forge `pr` activity settles to done/cancelled
+      // once the PR is merged/closed.
+      resolvePrState: makePrStateResolver(),
       // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
       // MCP tool. Starts from the bundled catalog so known adapters always
       // appear (with status "supported") even when not yet installed, and

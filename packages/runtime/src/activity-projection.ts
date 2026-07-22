@@ -652,30 +652,51 @@ export interface ActivityPrSession {
 }
 
 /**
- * Project a session's opened PRs. In v1 a `pr` activity is ALWAYS
- * `pending` on the forge — settlement (merged/closed) is a deferred
- * enricher that reuses `@agentproto/worktree`'s ForgeClient, a dependency
- * the runtime deliberately does not take. No polling here.
+ * A PR's state as the forge last reported it. `merged`/`closed` are
+ * immutable verdicts (a merged PR never un-merges), `open` just means "not
+ * settled yet". The projector (`activities.ts`) resolves these through its
+ * injected `resolvePrState` port and threads them into {@link prToActivities}
+ * as a lookup — the mapper itself never fetches.
  */
-export function prToActivities(session: ActivityPrSession): ActivityRecord[] {
-  return (session.openedPrs ?? []).map(pr =>
-    pendingRecord(
-      {
-        id: `pr:${session.id}:${pr.number}`,
-        kind: "pr",
-        sessionId: session.id,
-        sourceRef: pr.url,
-        source: "code-host",
-        title: `PR #${pr.number} open (${pr.url})`,
-        startedAt: pr.openedAt,
-      },
-      {
-        kind: "forge",
-        refs: [pr.url],
-        detail: "open on the forge; settlement is a later enricher (v1 never settles)",
-      },
-    ),
-  )
+export type PrResolvedState = "open" | "merged" | "closed"
+
+/**
+ * Project a session's opened PRs. A `pr` activity is `pending` on the forge
+ * until a resolved state says otherwise: `merged` → `done`, `closed` →
+ * `cancelled` (terminal). The resolved state arrives via the pure
+ * `resolvedPrState` lookup (threaded like `now` is for staleSince) — the
+ * actual forge round-trip lives behind the projector's injected
+ * `resolvePrState` port, because it reuses `@agentproto/worktree`'s forge
+ * access, a dependency the runtime deliberately does not take. No polling
+ * here.
+ */
+export function prToActivities(
+  session: ActivityPrSession,
+  opts: { resolvedPrState?: (url: string) => PrResolvedState | undefined } = {},
+): ActivityRecord[] {
+  return (session.openedPrs ?? []).map(pr => {
+    const base = (title: string): ActivityRecordBase => ({
+      id: `pr:${session.id}:${pr.number}`,
+      kind: "pr",
+      sessionId: session.id,
+      sourceRef: pr.url,
+      source: "code-host",
+      title,
+      startedAt: pr.openedAt,
+    })
+    const settled = opts.resolvedPrState?.(pr.url)
+    if (settled === "merged") {
+      return record(base(`PR #${pr.number} merged (${pr.url})`), "done")
+    }
+    if (settled === "closed") {
+      return record(base(`PR #${pr.number} closed (${pr.url})`), "cancelled")
+    }
+    return pendingRecord(base(`PR #${pr.number} open (${pr.url})`), {
+      kind: "forge",
+      refs: [pr.url],
+      detail: "open on the forge; settles when the forge reports merged/closed",
+    })
+  })
 }
 
 // ── Query helpers (shared by the MCP tool + HTTP route) ──────────────

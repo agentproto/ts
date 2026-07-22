@@ -374,6 +374,30 @@ describe("prToActivities", () => {
   it("projects nothing for a session with no opened PRs", () => {
     expect(prToActivities({ id: "sess_b" })).toEqual([])
   })
+
+  it("a resolved 'merged' state settles the record terminal done", () => {
+    const records = prToActivities(session, {
+      resolvedPrState: url => (url.endsWith("/412") ? "merged" : undefined),
+    })
+    const merged = byId(records, "pr:sess_a:412")
+    expect(merged?.state).toBe("done")
+    expect(merged?.waitingOn).toBeUndefined()
+    expect(merged?.title).toContain("merged")
+    // Deterministic id + sourceRef survive settlement — same record, new state.
+    expect(merged?.sourceRef).toBe("https://github.com/o/r/pull/412")
+    // The unresolved PR stays pending on the forge.
+    expect(byId(records, "pr:sess_a:413")?.state).toBe("pending")
+  })
+
+  it("a resolved 'closed' state settles cancelled; 'open' stays pending", () => {
+    const records = prToActivities(session, {
+      resolvedPrState: url => (url.endsWith("/412") ? "closed" : "open"),
+    })
+    expect(byId(records, "pr:sess_a:412")?.state).toBe("cancelled")
+    const open = byId(records, "pr:sess_a:413")
+    expect(open?.state).toBe("pending")
+    expect(open?.waitingOn?.kind).toBe("forge")
+  })
 })
 
 describe("query helpers", () => {

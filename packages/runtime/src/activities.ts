@@ -25,11 +25,18 @@
  * Owner inputs are narrow STRUCTURAL slices (the reconciler's
  * `ReconcilerRegistry` pattern): the real `SessionsRegistry`, supervisor,
  * and runners satisfy them, and tests fake them without casts.
+ *
+ * The one ASYNC enrichment — PR settlement — stays outside the projection:
+ * the injected {@link PrStateResolver} port (CLI-wired, the `OpenPrResolver`
+ * pattern) fills a memoized url→state map at `session:exited` and on a
+ * bounded periodic sweep, and the pure pr mapper merely READS that map, so
+ * `list()` never awaits and the runtime never touches a forge.
  */
 
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
 import {
   filterActivities,
+  isTerminalActivityState,
   linkTasks,
   policyToActivities,
   prToActivities,
@@ -46,6 +53,7 @@ import {
   type ActivityTurnSession,
   type ActivityWaitingOn,
   type ActivityWorkflowRunSlice,
+  type PrResolvedState,
 } from "./activity-projection.js"
 
 /** A session as the projector reads it: the turn slice + the PR slice.
@@ -84,11 +92,33 @@ export interface ActivityTaskLister {
   snapshot(): readonly ActivityTaskSlice[]
 }
 
+/**
+ * Resolve a PR url's current forge state — `null` when it could not be
+ * resolved (no `gh`, unreachable forge, non-GitHub url; never a throw the
+ * projector has to guard beyond a catch). Injected by the CLI host because
+ * forge access runs over `@agentproto/worktree`, a dependency the runtime
+ * deliberately does not take (the {@link OpenPrResolver} pattern). Omitted →
+ * `pr` activities stay pending on the forge forever (the v1 behaviour).
+ */
+export type PrStateResolver = (prUrl: string) => Promise<PrResolvedState | null>
+
 export interface ActivityProjector {
   /** Recompute the full projection from the owners and filter it. Never
    *  answered from the cache — this is a projection, not a registry. */
   list(filter?: ActivityListFilter): ActivityRecord[]
-  /** Detach the bus subscription and clear the diff cache. */
+  /**
+   * Block until the activity with `id` next announces a change
+   * (`activity:changed` — its state/waitingOn actually moved), resolving
+   * with the freshly-projected record. Resolves IMMEDIATELY when the id is
+   * already terminal (terminal records are immutable — nothing further will
+   * ever announce), and with `null` when `timeoutMs` (default 25s) elapses
+   * with no change. An id that doesn't exist yet is a legitimate wait — the
+   * record may appear (and announce) during the window; callers wanting a
+   * fast 404 check `list({includeTerminal:true})` themselves (the
+   * `GET /activities/:id/wait` route does).
+   */
+  wait(id: string, opts?: { timeoutMs?: number }): Promise<ActivityRecord | null>
+  /** Detach the bus subscription + refresh timer and clear the caches. */
   dispose(): void
 }
 
@@ -113,6 +143,17 @@ function waitingOnKey(w: ActivityWaitingOn | undefined): string {
   return `${w.kind}|${w.refs.join(",")}|${w.detail ?? ""}`
 }
 
+/** How often the bounded periodic PR-settlement sweep re-asks the forge
+ *  about still-open PR urls. Deliberately lazy — a PR usually merges well
+ *  after its session exited, so the sweep (not the exit checkpoint) is what
+ *  eventually settles it, and 5 minutes of latency on a read-model flag is
+ *  fine. */
+export const PR_SETTLE_SWEEP_INTERVAL_MS = 5 * 60_000
+/** Cap on forge round-trips per sweep, so a registry full of open PRs can
+ *  never turn the timer into a forge hammer. Unresolved urls just wait for
+ *  the next sweep. */
+const PR_SETTLE_SWEEP_MAX_URLS = 10
+
 export function createActivityProjector(opts: {
   registry: ActivityProjectorRegistry
   sessionEvents: SessionEventBus
@@ -120,21 +161,35 @@ export function createActivityProjector(opts: {
   routineRunner?: ActivityRoutineLister
   workflowRunner?: ActivityWorkflowLister
   taskLedger?: ActivityTaskLister
+  /** Optional forge port for PR settlement — see {@link PrStateResolver}. */
+  resolvePrState?: PrStateResolver
 }): ActivityProjector {
   // Last-announced projection, keyed by deterministic activity id. ONLY for
   // diffing — never the answer to `list()`. Deletable at any time; the cost
   // is a one-off burst of re-announcements, never wrong data.
   const cache = new Map<string, ActivityRecord>()
 
+  // Memoized forge verdicts per PR url, read by the (pure) pr mapper via a
+  // lookup. `merged`/`closed` are immutable so they are never re-resolved;
+  // `open` is re-checked by later passes. Unlike the diff cache this one is
+  // NOT freely deletable state derived from the owners — it is the projector's
+  // own enrichment — but losing it only regresses records to pending-on-forge
+  // until the next settlement pass, never to wrong data.
+  const prStates = new Map<string, PrResolvedState>()
+
   const projectOwnerRaw = (owner: ActivityOwner): ActivityRecord[] => {
     switch (owner) {
       case "session": {
         // One clock read per projection pass — the mappers themselves stay
-        // pure (staleSince is derived from the `now` we hand them).
+        // pure (staleSince is derived from the `now` we hand them, settled
+        // PR states from the `resolvedPrState` lookup).
         const now = new Date().toISOString()
         const out: ActivityRecord[] = []
         for (const session of opts.registry.list()) {
-          out.push(...turnToActivities(session, { now }), ...prToActivities(session))
+          out.push(
+            ...turnToActivities(session, { now }),
+            ...prToActivities(session, { resolvedPrState: url => prStates.get(url) }),
+          )
         }
         return out
       }
@@ -213,6 +268,57 @@ export function createActivityProjector(opts: {
     return ["session", "supervisor", "routine", "workflow"]
   }
 
+  // ── PR settlement (the injected forge port) ────────────────────────
+  // A pr activity is pending-on-forge until the forge says merged/closed.
+  // Resolution is ASYNC (a real forge round-trip), so it can't live inside
+  // the synchronous projection — instead these passes update `prStates` and
+  // re-project the session owner, whose diff announces any pr record that
+  // just settled (pending → done/cancelled). Two triggers, both best-effort:
+  // `session:exited` (the natural checkpoint for that session's PRs) and a
+  // bounded periodic sweep (a PR usually merges AFTER its session exited,
+  // so exit-time alone would almost never observe the settlement).
+
+  /** Un-settled PR urls currently projected — at most `max`, deduped. */
+  const unsettledPrUrls = (sessions: readonly ActivityProjectorSession[], max: number): string[] => {
+    const urls: string[] = []
+    const seen = new Set<string>()
+    for (const session of sessions) {
+      for (const pr of session.openedPrs ?? []) {
+        const known = prStates.get(pr.url)
+        if (known === "merged" || known === "closed") continue
+        if (seen.has(pr.url)) continue
+        seen.add(pr.url)
+        urls.push(pr.url)
+        if (urls.length >= max) return urls
+      }
+    }
+    return urls
+  }
+
+  /** Resolve each url through the port, update the memo, and re-project the
+   *  session owner (announcing) when any verdict actually moved. */
+  const settleUrls = async (urls: readonly string[]): Promise<void> => {
+    const resolvePrState = opts.resolvePrState
+    if (!resolvePrState || urls.length === 0) return
+    let moved = false
+    for (const url of urls) {
+      const state = await resolvePrState(url).catch((): null => null)
+      if (state === null || prStates.get(url) === state) continue
+      prStates.set(url, state)
+      moved = true
+    }
+    if (moved) reprojectOwner("session", true)
+  }
+
+  const settleSessionPrs = (sessionId: string): void => {
+    if (!opts.resolvePrState) return
+    const session = opts.registry.list().find(s => s.id === sessionId)
+    if (!session) return
+    // Fire-and-forget: a settlement error must never escape the bus callback
+    // (the reconciler's `safeReconcile` idiom).
+    void settleUrls(unsettledPrUrls([session], PR_SETTLE_SWEEP_MAX_URLS)).catch(() => {})
+  }
+
   const handler = (ev: SessionEvent): void => {
     for (const owner of ownersTouchedBy(ev.type)) {
       // Best-effort per owner: one throwing owner list() must neither escape
@@ -221,6 +327,15 @@ export function createActivityProjector(opts: {
         reprojectOwner(owner, true)
       } catch {
         // Swallowed — the next event re-projects from scratch anyway.
+      }
+    }
+    // The async settlement checkpoint rides AFTER the synchronous diff so it
+    // observes (and can later flip) the freshly-cached pending pr records.
+    if (ev.type === "session:exited") {
+      try {
+        settleSessionPrs(ev.sessionId)
+      } catch {
+        // Swallowed — the periodic sweep retries.
       }
     }
   }
@@ -238,19 +353,66 @@ export function createActivityProjector(opts: {
 
   const unsubscribe = opts.sessionEvents.onAny(handler)
 
+  // The bounded periodic sweep — only armed when the port is wired, and
+  // `unref`ed so an idle daemon can still exit. Each tick is one bounded
+  // batch of forge round-trips; anything left over waits for the next tick.
+  const sweepTimer = opts.resolvePrState
+    ? setInterval(() => {
+        try {
+          void settleUrls(
+            unsettledPrUrls(opts.registry.list(), PR_SETTLE_SWEEP_MAX_URLS),
+          ).catch(() => {})
+        } catch {
+          // Swallowed — a throwing registry list() must not kill the timer.
+        }
+      }, PR_SETTLE_SWEEP_INTERVAL_MS)
+    : undefined
+  sweepTimer?.unref()
+
+  const list = (filter: ActivityListFilter = {}): ActivityRecord[] => {
+    const all = [
+      ...projectOwner("session"),
+      ...projectOwner("supervisor"),
+      ...projectOwner("routine"),
+      ...projectOwner("workflow"),
+    ]
+    return filterActivities(all, filter)
+  }
+
   return {
-    list(filter = {}) {
-      const all = [
-        ...projectOwner("session"),
-        ...projectOwner("supervisor"),
-        ...projectOwner("routine"),
-        ...projectOwner("workflow"),
-      ]
-      return filterActivities(all, filter)
+    list,
+    wait(id, waitOpts = {}) {
+      const { timeoutMs = 25_000 } = waitOpts
+      // Fast path: already terminal — immutable, nothing will ever announce
+      // again, so blocking would only ride out the timeout for no answer.
+      const current = list({ includeTerminal: true }).find(rec => rec.id === id)
+      if (current && isTerminalActivityState(current.state)) {
+        return Promise.resolve(current)
+      }
+      // Otherwise resolve on the first `activity:changed` for this id (the
+      // projector's own diff is the single announcer, so "changed" here means
+      // state/waitingOn really moved) — or null on timeout. Same
+      // subscribe-then-race shape as `monitorPolicyWait`.
+      return new Promise(resolve => {
+        let settled = false
+        const finish = (value: ActivityRecord | null): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          unsubscribeWait()
+          resolve(value)
+        }
+        const timer = setTimeout(() => finish(null), timeoutMs)
+        const unsubscribeWait = opts.sessionEvents.on("activity:changed", ev => {
+          if (ev.activity.id === id) finish(ev.activity)
+        })
+      })
     },
     dispose() {
       unsubscribe()
+      if (sweepTimer) clearInterval(sweepTimer)
       cache.clear()
+      prStates.clear()
     },
   }
 }
