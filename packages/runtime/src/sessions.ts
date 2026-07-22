@@ -1342,6 +1342,17 @@ export interface SessionsRegistry {
    *  there is nothing to re-validate). Throws only when the id is
    *  unknown. */
   unarchiveSession(id: string): SessionDescriptor
+  /** Bulk garbage-collect terminal-status sessions: archive (default,
+   *  reversible) or `forget` (drop the descriptor to reclaim sessions.json
+   *  space — the native conversation on disk survives + stays importable).
+   *  Never touches a live session. `olderThanDays` keeps more-recent ones;
+   *  `onlyIds` scopes to an allowlist (an orchestrator subtree). Returns the
+   *  affected ids. */
+  gcSessions(opts: {
+    olderThanDays?: number
+    forget?: boolean
+    onlyIds?: ReadonlySet<string>
+  }): { mode: "archived" | "forgotten"; ids: string[]; count: number }
   /** Set or clear a session's user-facing name (`PATCH /sessions/:id`, the
    *  `session_rename` MCP verb). Each of `title`/`label`: a non-empty string
    *  sets that field (trimmed, capped to the derivation's `MAX_LENGTH` by
@@ -3909,6 +3920,28 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       stampProcessAlive(rt.desc)
       return rt.desc
+    },
+    gcSessions(opts) {
+      const cutoff =
+        opts.olderThanDays !== undefined && opts.olderThanDays > 0
+          ? Date.now() - opts.olderThanDays * 86_400_000
+          : undefined
+      const ids = []
+      for (const [id, rt] of sessions) {
+        if (opts.onlyIds && !opts.onlyIds.has(id)) continue
+        const st = rt.desc.status
+        if (st === "running" || st === "starting") continue // never GC a live session
+        if (cutoff !== undefined) {
+          const tsStr = rt.desc.endedAt ?? rt.desc.startedAt
+          const ts = tsStr ? Date.parse(tsStr) : Number.NaN
+          if (Number.isFinite(ts) && ts > cutoff) continue // too recent — keep
+        }
+        if (opts.forget) sessions.delete(id)
+        else rt.desc.archived = true
+        ids.push(id)
+      }
+      if (ids.length > 0) schedulePersist()
+      return { mode: opts.forget ? "forgotten" : "archived", ids, count: ids.length }
     },
     renameSession(id, patch) {
       const rt = sessions.get(id)
