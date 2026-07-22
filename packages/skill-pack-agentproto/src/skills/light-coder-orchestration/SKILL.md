@@ -54,6 +54,8 @@ Un bon brief de WP :
   les forks probables et la valeur par défaut souhaitée.
 - Demande un **compte-rendu final** : fichiers touchés, choix de design, exit
   codes.
+- Avant de déléguer, colle le Brief Contract de `supervisor-session` dans
+  chaque brief.
 
 ## 3. Autonome vs babysit
 

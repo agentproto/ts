@@ -25,6 +25,9 @@ exporte, reprend** des sessions d'agents (claude-code, hermes). Les agents font
 le travail ; l'orchestrateur découpe en petites étapes, relit chaque diff, et
 donne l'étape suivante.
 
+Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
+brief.
+
 ## Tools agentproto essentiels
 
 - `adapter_list({filter})` — adapters connus + statut (`supported` pas installé,
