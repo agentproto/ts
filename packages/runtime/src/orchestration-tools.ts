@@ -27,6 +27,14 @@ import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { CronScheduler } from "./cron-scheduler.js"
+import type { ActivityProjector } from "./activities.js"
+import {
+  activityCounts,
+  ACTIVITY_KINDS,
+  ACTIVITY_SOURCES,
+  ACTIVITY_STATES,
+  type ActivityListFilter,
+} from "./activity-projection.js"
 
 /**
  * Zod schema for the `gate` field of `policy_attach`.
@@ -334,6 +342,12 @@ export interface RegisterOrchestrationToolsOptions {
    * policy tools). Opt-in via explicit orchestrator.tools allowlist only.
    */
   cronScheduler?: CronScheduler
+  /**
+   * When wired, exposes the `activities_list` tool — the unified Activity
+   * read-model over policies / turns / routine & workflow steps / opened
+   * PRs (`activities.ts`). Same projector instance `GET /activities` reads.
+   */
+  activityProjector?: ActivityProjector
   /** Optional allowlist — when set, only tools whose name is in the
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
@@ -399,7 +413,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed", "activity:changed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -1233,6 +1247,75 @@ export function registerOrchestrationTools(
           policies = policies.filter(p => policyWatchesSession(p, wanted))
         }
         return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
+      },
+    )
+  }
+
+  // ── activities_list (optional — only when an activity projector is wired) ─
+  //
+  // The unified Activity read-model (activity-projection.ts / activities.ts):
+  // one flat list of `active` vs `pending` (vs terminal) records across
+  // completion policies, in-flight turns, routine/workflow steps, and opened
+  // PRs. Recomputed from the owners on every call — a projection, never a
+  // registry. Mirrors `GET /activities` (same projector, same filter, same
+  // shape).
+  const { activityProjector } = opts
+  if (activityProjector) {
+    server.tool(
+      "activities_list",
+      "List activities — the unified read-model of what is ACTIVE (the daemon " +
+        "is consuming compute now) vs PENDING (blocked on an external signal: " +
+        "another session's turn, a human ack, a forge, a cap slot) across " +
+        "completion policies, session turns, routine/workflow steps, and " +
+        "opened PRs. Each pending record carries `waitingOn` naming the " +
+        "blocker. Default non-terminal; pass `includeTerminal` (or a terminal " +
+        "`state` filter) for done/failed/cancelled records. Subscribe to " +
+        "`activity:changed` via `session_events_poll` for live transitions.",
+      {
+        sessionId: z
+          .string()
+          .optional()
+          .describe(
+            "Only activities on this session — matches a record's `sessionId` " +
+              "or any member of its fan-in `sessionIds`. Omit for all sessions.",
+          ),
+        state: z
+          .enum(ACTIVITY_STATES)
+          .optional()
+          .describe("Filter to one state. A terminal state implies `includeTerminal`."),
+        kind: z.enum(ACTIVITY_KINDS).optional().describe("Filter to one activity kind."),
+        source: z
+          .enum(ACTIVITY_SOURCES)
+          .optional()
+          .describe("Filter to one owning subsystem."),
+        includeTerminal: z
+          .boolean()
+          .optional()
+          .describe("Include done/failed/cancelled records. Default false."),
+      },
+      async input => {
+        const filter: ActivityListFilter = {
+          ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+          ...(input.state !== undefined ? { state: input.state } : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          ...(input.includeTerminal !== undefined
+            ? { includeTerminal: input.includeTerminal }
+            : {}),
+        }
+        const activities = activityProjector.list(filter)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { activities, counts: activityCounts(activities) },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
       },
     )
   }
