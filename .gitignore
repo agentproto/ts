@@ -71,4 +71,5 @@ pnpm-debug.log*
 
 # Design docs / planning — kept locally, never versioned
 .docs/
+.plans/
 packages/vscode/*.vsix
