@@ -245,8 +245,20 @@ export function registerCommandTools(
         .describe(
           `Hard kill after this many ms. Defaults to ${DEFAULT_TIMEOUT_MS}; capped at ${MAX_TIMEOUT_MS}.`,
         ),
+      origin: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Source label for this run — the calling channel/harness " +
+            "(codex, cowork, vscode, cron, …). Descriptor-only: groups the " +
+            "minted command session under a source node in the tree, same " +
+            "semantics as agent_start's `origin`. Defaults to " +
+            "\"command_execute\" when omitted, so every command session is " +
+            "still labeled.",
+        ),
     },
-    async ({ command, args, cwd, stdin, timeoutMs }) => {
+    async ({ command, args, cwd, stdin, timeoutMs, origin }) => {
       const allowlist = await loadAllowlist(opts.workspace)
       const baseName = basename(command)
       if (!allowlist.has(baseName)) {
@@ -321,6 +333,13 @@ export function registerCommandTools(
         stdout: result.stdout,
         stderr: result.stderr,
         ...(result.truncated ? { truncated: true } : {}),
+        // Never leave a bare call unlabeled — default to the tool's own
+        // name when the caller didn't pass one. No `callerSessionId` here:
+        // `registerCommandTools` mounts once, daemon-wide (not per-caller
+        // scoped like session-tools.ts's `callerScope`), so this tool has
+        // no way to resolve which session actually invoked it. Fabricating
+        // one would be worse than leaving it absent.
+        origin: origin ?? "command_execute",
       })
       // Daemon-lane PR provenance: when this run was a successful `gh pr
       // create` issued by an executor session, stamp the `@agentproto-bot`

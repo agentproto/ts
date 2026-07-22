@@ -790,6 +790,13 @@ export interface SessionDescriptor {
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
   origin?: string
+  /** Id of the session that invoked this one, when the daemon genuinely
+   *  knows it (cron's own recordCommand/spawnAgent calls, other
+   *  daemon-internal callers holding a real session id). Best-effort: a
+   *  `command_execute` call arriving through the shared daemon-wide MCP
+   *  server has no per-caller binding, so this is left absent rather than
+   *  guessed — see `origin` for the (always-set) coarser provenance label. */
+  callerSessionId?: string
   /** Recursion depth in the orchestrator tree: a direct (root) spawn is
    *  depth 0; a session spawned by a depth-d orchestrator is d+1. Used
    *  by the depth-cap guard. Persisted alongside `parentSessionId`.
@@ -1642,6 +1649,15 @@ export interface RecordCommandInput {
   stderr: string
   truncated?: boolean
   label?: string
+  /** Source label for this command session — same semantics as
+   *  `SpawnAgentInput.origin`/`SpawnPtyInput.origin`. Callers should always
+   *  pass a concrete value (`command_execute` defaults to
+   *  "command_execute" when its caller didn't supply one) so a command
+   *  session is never left unlabeled. */
+  origin?: string
+  /** Id of the session that invoked this one, when the caller genuinely
+   *  knows it — see `SessionDescriptor.callerSessionId`. */
+  callerSessionId?: string
 }
 
 /** A pull request that a session successfully opened through a code-host
@@ -3419,6 +3435,8 @@ export function createSessionsRegistry(opts?: {
         argv,
         cwd: input.cwd,
         ...(input.label ? { label: input.label } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.callerSessionId ? { callerSessionId: input.callerSessionId } : {}),
       }
       const rt: SessionRuntime = {
         desc,
