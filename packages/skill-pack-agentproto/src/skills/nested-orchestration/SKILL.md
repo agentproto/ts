@@ -72,6 +72,9 @@ Le brief du parent doit **nommer explicitement** les outils dont il dispose
 `session_tree`, `agent_kill`) — le parent ne devine pas qu'il est orchestrateur,
 dis-le-lui.
 
+Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
+brief.
+
 ## Pattern A — Fan-out + fan-in (parent lance N enfants en parallèle)
 
 Le parent spawne plusieurs enfants d'un coup puis attend qu'ils finissent tous.

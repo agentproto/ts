@@ -31,6 +31,9 @@ Tout ce qui suit a été **prouvé live** sauf les sections explicitement marqu�
 
 `session → (turn-end) → gate (shell|judge) → policy:passed|failed → [then: emit | commit (ack humain) → policy:committed]`
 
+Avant de déléguer, colle le Brief Contract de `supervisor-session` dans chaque
+brief.
+
 ## 1. Attacher une policy à une session
 
 ```

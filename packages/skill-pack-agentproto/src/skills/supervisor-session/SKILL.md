@@ -45,6 +45,40 @@ toi                               → e2e LIVE (script tsx contre le vrai daemon
   aware). Rapport final imposé : fichiers touchés, choix de design, wiring
   lines, exit codes RÉELS.
 
+## Preflight (avant tout spawn)
+
+1. Charge le fichier d'instructions agents du repo CIBLE (pas celui-ci) — le
+   « done » est déclaré là, jamais ici (même discipline qu'en Fin de session :
+   ce skill pointe, il ne recopie pas).
+2. `auth_profile_list` + `adapter_list` AVANT tout spawn : choisis l'auth de
+   l'exécuteur depuis la MÉTHODE du profil — un provider gateway (openrouter,
+   moonshot) veut un profil api-key (`access.profileRef`), jamais
+   `auth:{mode:"subscription"}` (réservé Anthropic/claude-code). Fallback
+   billing quand un provider est mort/flaky : OpenRouter cheap → claude-sdk
+   moonshot (kimi) → claude-code `subscription` + Anthropic cheap (haiku),
+   coût marginal nul. Ne bloque jamais le pipeline sur un provider mort.
+
+## Brief Contract (à coller verbatim dans chaque brief)
+
+Colle ce bloc tel quel en tête de chaque brief exécuteur/superviseur — c'est
+ce qui fait passer la discipline jusqu'aux modèles qui ne chargent aucun
+skill (hermes, OpenRouter, modèles nus). Ne le paraphrase pas, ne le traduis
+pas : un copier-coller mécanique de skill/doc a déjà corrompu des faits par le
+passé — ce bloc doit voyager identique à sa source.
+
+```
+- Definition of done: POINTER, never restated. Load the target repo's agent-instructions file (agentproto/ts → root AGENTS.md) and obey it verbatim: green local gate + open PR = terminal state; never `gh pr merge`; changeset written by the reviewer, not by hand; no AI attribution in commits/PR.
+- Gate = exit code, never piped output: `pnpm test > /tmp/gate.log 2>&1; echo "EXIT=$?"` then grep the log. `| tail` reports tail's exit, not the gate's.
+- Truth = disk, never the report. Read the actual diff; re-run the gate yourself.
+- Waits are FOREGROUND/blocking, never yield-the-turn: `agentproto sessions wait <id> --until turn-end --timeout <ms>` backgrounded, or `session_monitor` (≤49s) for a quick check. A stopped agent-cli session has no timer — yielding to "wait" is a dead end.
+- A wedged session (bus says awaiting-input but enqueue says mid-turn, or empty turns) → `agent_prompt interrupt:true` redirects without losing context; `agent_kill` only if truly dead (code is on disk).
+- Executor auth is read from the profile's METHOD, before spawning: `auth_profile_list` + `adapter_list`. Gateway providers (openrouter/moonshot) need an api-key profile via `access.profileRef` — NOT `auth:{mode:"subscription"}`. Billing fallback when a provider is flaky/dead: OpenRouter-cheap → claude-sdk moonshot (kimi) → claude-code `subscription` + cheap Anthropic (haiku), marginal-cost-zero. Never block the pipeline on a dead provider.
+```
+
+Le premier tiret (« Definition of done ») pointe vers l'AGENTS.md du repo cible
+— il ne le remplace pas ; adapte `agentproto/ts → root AGENTS.md` si le repo
+cible diffère.
+
 ## Worktree natif — provisionne + spawne en UN geste
 
 **Le DÉFAUT : ne fais JAMAIS `git worktree add` + `pnpm install` à la main.**
