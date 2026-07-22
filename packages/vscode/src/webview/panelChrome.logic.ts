@@ -8,7 +8,7 @@
  * reference the webview can't resolve.
  */
 
-import type { SessionDescriptor } from "../client/types.js"
+import type { Posture, SessionDescriptor } from "../client/types.js"
 
 /**
  * The glyph a session's harness/adapter wears in the header title. There is no
@@ -44,6 +44,18 @@ export function accessIdentity(
   const auth = session ? session.auth : undefined
   if (auth && auth.mode) return auth.mode
   return "—" // —
+}
+
+/**
+ * The session's posture, rendered as a single string — a `CanonicalPosture` is
+ * already one, and a raw harness-mode posture (`{ harnessModeId }`, SPEC
+ * §3.4a) renders as its mode id. `""` when absent, so the caller (the
+ * composer chip) decides the empty-state label rather than this baking one in.
+ */
+export function postureLabel(posture: Posture | undefined): string {
+  if (!posture) return ""
+  if (typeof posture === "string") return posture
+  return posture.harnessModeId
 }
 
 /**

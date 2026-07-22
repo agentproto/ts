@@ -419,6 +419,46 @@ describe("transcriptPanel webview — composer", () => {
     expect(posted).toContainEqual({ type: "changeModel" })
   })
 
+  it("clicking the posture chip posts changePosture to the host", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5", posture: "plan" })
+
+    btn(panel, "composer-posture").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "changePosture" })
+  })
+
+  it("clicking the auth chip posts changeAccess to the host", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    init(panel, { adapterSlug: "claude-code", model: "sonnet-5" })
+
+    btn(panel, "composer-auth").dispatchEvent(new panel.window.Event("click"))
+
+    expect(posted).toContainEqual({ type: "changeAccess" })
+  })
+
+  it("renders visible fallback labels instead of collapsing when model/posture/auth are absent", () => {
+    const panel = renderPanel()
+    init(panel, { adapterSlug: "claude-code" })
+    expect(btn(panel, "composer-model").textContent).toBe("model?")
+    expect(btn(panel, "composer-posture").textContent).toBe("posture?")
+    expect(btn(panel, "composer-auth").textContent).toBe("no wallet")
+  })
+
+  it("renders the posture and access identity when present", () => {
+    const panel = renderPanel()
+    init(panel, {
+      adapterSlug: "claude-code",
+      model: "sonnet-5",
+      posture: { harnessModeId: "custom-mode" },
+      accessProfile: { profileRef: "work", label: "Work wallet", vendor: "anthropic", method: "oauth-bearer" },
+    })
+    expect(btn(panel, "composer-posture").textContent).toBe("custom-mode")
+    expect(btn(panel, "composer-auth").textContent).toBe("Work wallet")
+  })
+
   it("keeps send inert until there is something to send", () => {
     const panel = renderPanel()
     init(panel)
@@ -1300,18 +1340,19 @@ describe("transcriptPanel webview — typing mid-turn queues instead of erroring
     expect(el(panel, "error-banner").hidden).toBe(true)
   })
 
-  it("names the harness and model in the composer bar, with auth moved to the detail popover", () => {
+  it("names the harness, model, posture, and auth identity in the composer bar", () => {
     const panel = renderPanel()
     init(panel, {
       adapterSlug: "claude-code",
       model: "sonnet-5",
+      posture: "plan",
       auth: { mode: "subscription", fingerprint: "abc" },
     })
     expect(el(panel, "composer-harness").textContent).toBe("claude-code")
     expect(el(panel, "composer-model").textContent).toBe("sonnet-5")
-    // The redundant auth/subscription chip is gone from the footer (FIX 4) —
-    // that identity now lives one click away in the cost detail popover.
-    expect(panel.document.getElementById("composer-auth")).toBeNull()
+    expect(el(panel, "composer-posture").textContent).toBe("plan")
+    // No named access profile echoed, so this falls back to the raw auth mode.
+    expect(el(panel, "composer-auth").textContent).toBe("subscription")
   })
 
   it("wears the harness glyph in the header title, tooltipped with the adapter name", () => {
