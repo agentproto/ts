@@ -24,9 +24,12 @@
  *     reassign `owner`, cancel, and reopen.
  *
  * Scoping — implicit boards (no board rows, no board CRUD): a session
- * caller's default board is `tree:<rootSessionId>` (walk `parentSessionId`
- * to the depth-0 root — a supervisor and every executor it spawned share a
- * board automatically); an operator caller's is `ws:<workspaceSlug>`. An
+ * caller's default board is its spawn-stamped `meta.boardId` when one is
+ * present (`agent_start.boardId` — how a client that spawns several
+ * depth-0 roots with no shared lineage joins them onto ONE board), else
+ * `tree:<rootSessionId>` (walk `parentSessionId` to the depth-0 root — a
+ * supervisor and every executor it spawned share a board automatically);
+ * an operator caller's is `ws:<workspaceSlug>`. An
  * explicit `boardId` overrides on every verb. A session caller may reach its
  * own lineage's `tree:*` board but never a *sibling* tree's; non-`tree:`
  * boards are cooperative namespaces in v1 (an explicit board is exactly how
@@ -182,6 +185,10 @@ export interface TaskLedgerSessionSlice {
   workspaceSlug?: string
   status?: string
   cwd?: string
+  /** Spawn-time hint map (`SessionDescriptor.meta`). The ledger reads one
+   *  key: `boardId`, an explicitly-stamped board (`agent_start.boardId`)
+   *  that wins over the lineage walk — see `resolveBoardId`. */
+  meta?: Record<string, string>
 }
 
 /** The registry slice — `SessionsRegistry.get` satisfies it. */
@@ -445,9 +452,10 @@ export interface TaskLedger {
   get(taskId: string, caller: TaskCaller): TaskRecord | undefined
   claim(input: TaskClaimInput, caller: TaskCaller): TaskWriteResult
   update(input: TaskUpdateInput, caller: TaskCaller): TaskWriteResult
-  /** The caller's default board — `tree:<root>` for a session caller,
-   *  `ws:<workspaceSlug>` for the operator. Exposed so the tool/HTTP
-   *  layers can echo it without re-deriving lineage. */
+  /** The caller's default board — the spawn-stamped `meta.boardId` (when
+   *  present) else `tree:<root>` for a session caller, `ws:<workspaceSlug>`
+   *  for the operator. Exposed so the tool/HTTP layers can echo it without
+   *  re-deriving lineage. */
   resolveBoardId(caller: TaskCaller, explicit?: string): string
   /** Detach bus subscriptions, cancel the debounce timer, sync-flush. */
   dispose(): void
@@ -590,7 +598,17 @@ export function createTaskLedger(opts: {
 
   const resolveBoardId = (caller: TaskCaller, explicit?: string): string => {
     if (explicit) return explicit
-    if (caller.kind === "session") return `tree:${rootOf(caller.sessionId)}`
+    if (caller.kind === "session") {
+      // An explicitly-stamped board (`agent_start.boardId` →
+      // `SessionDescriptor.meta.boardId`) wins over the lineage walk: the
+      // common cowork/operator fan-out spawns several depth-0 roots with NO
+      // shared lineage that must still land on ONE board. The per-verb
+      // `explicit` arg above still out-ranks the stamp; no stamp ⇒ the
+      // lineage default, byte-identical to before.
+      const stamped = registry.get(caller.sessionId)?.meta?.boardId
+      if (stamped) return stamped
+      return `tree:${rootOf(caller.sessionId)}`
+    }
     return operatorBoardId
   }
 

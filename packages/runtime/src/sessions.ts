@@ -834,6 +834,14 @@ export interface SessionDescriptor {
    *  `resumedFrom`). Only meaningful alongside `resumedFrom`; absent
    *  (never `""`) for a session that wasn't spawned via restart. */
   resumeVia?: string
+  /** Free-form spawn-time hints stamped by the spawner — a small string map,
+   *  same shape as `TaskRecord.meta`. Today's only key is `boardId`
+   *  (`agent_start.boardId` → the Task ledger's board resolution prefers it
+   *  over the `parentSessionId` lineage walk — see task-ledger.ts), but the
+   *  field is deliberately generic so future spawn-time hints ride it
+   *  without a schema change. Persisted via the same `...desc` spread as
+   *  every other field, so it survives a daemon restart. */
+  meta?: Record<string, string>
   // ── Browser-session fields (kind="browser") ──────────────────────────────
   /** Adapter id that drives this session (e.g. "camofox", "bureau"). */
   browserAdapterId?: string
@@ -1515,6 +1523,10 @@ export interface SpawnAgentInput {
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
    *  0 when omitted (direct/root spawn). */
   depth?: number
+  /** Free-form spawn-time hints, recorded verbatim onto
+   *  {@link SessionDescriptor.meta} (e.g. `agent_start.boardId` →
+   *  `meta.boardId`). See that field's doc for the contract. */
+  meta?: Record<string, string>
   /** Requested model id — recorded on the descriptor for display + echo. */
   model?: string
   /** AIP-45 mode the session was spawned with — recorded onto
@@ -3222,6 +3234,9 @@ export function createSessionsRegistry(opts?: {
           : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
+        // Spawn-time hints (e.g. `boardId`) — copied, not aliased, so a
+        // caller mutating its own input map can't reach the descriptor.
+        ...(input.meta ? { meta: { ...input.meta } } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),

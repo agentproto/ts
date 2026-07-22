@@ -374,6 +374,43 @@ describe("createSessionsRegistry", () => {
     )
   })
 
+  it("spawnAgent stamps `meta` on the descriptor and it survives a persist/reload round-trip", () => {
+    const reg = createSessionsRegistry({ persistPath })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-meta-roundtrip",
+      async *send() {
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "fake",
+      meta: { boardId: "cowork:main" },
+    })
+    expect(desc.meta).toEqual({ boardId: "cowork:main" })
+    // Graceful shutdown persists the snapshot synchronously.
+    reg.shutdown()
+    // A fresh registry (daemon restart) reloads the descriptor WITH the
+    // stamp — the task ledger's board resolution reads it after reboot too.
+    const reloaded = createSessionsRegistry({ persistPath })
+    expect(reloaded.get(desc.id)?.meta).toEqual({ boardId: "cowork:main" })
+    // And a spawn without meta stays meta-less end to end.
+    const plainReg = createSessionsRegistry({ persist: false })
+    const plain = plainReg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: { ...fakeAgent, sessionId: "acp-meta-none" },
+      adapterSlug: "fake",
+    })
+    expect(plain.meta).toBeUndefined()
+    plainReg.shutdown()
+    reloaded.shutdown()
+  })
+
   it("captures claude-code resume hint from agent output via the sniffer", async () => {
     const reg = createSessionsRegistry({ persistPath })
     // Synthetic AgentSessionLike — emits one "text-delta" event with

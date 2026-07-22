@@ -340,6 +340,19 @@ export function registerAgentTools(
             "call arrives through the scoped orchestrator gateway — that path derives " +
             "the parent from its own token, which always wins over this hint."
         ),
+      boardId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Task-board pin for the spawned child, stamped onto its descriptor " +
+            "as `meta.boardId`. The Task ledger resolves the child's default " +
+            "board from this BEFORE walking `parentSessionId` lineage — so a " +
+            "client spawning several depth-0 root sessions (no shared lineage) " +
+            "can join them all onto ONE shared board. An explicit `boardId` " +
+            "passed on a task verb still wins over this pin. Omit for the " +
+            "lineage-derived `tree:<root>` default."
+        ),
       idempotencyKey: z
         .string()
         .min(1)

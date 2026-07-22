@@ -2823,6 +2823,12 @@ async function handleSessions(
         ...(typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
           ? { parentSessionId: b.parentSessionId }
           : {}),
+        // Task-board pin — the HTTP twin of the MCP `agent_start` tool's
+        // `boardId` field. Stamped onto the child's `meta.boardId`; the task
+        // ledger prefers it over the lineage walk — see session-spawn.ts.
+        ...(typeof b.boardId === "string" && b.boardId.length > 0
+          ? { boardId: b.boardId }
+          : {}),
         ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
         ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
         ...(b.orchestrator !== undefined
