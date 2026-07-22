@@ -12,6 +12,7 @@ import { EventEmitter } from "node:events"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import type { SessionConfig } from "./session-config.js"
+import type { TaskStatus } from "./task-ledger.js"
 
 export type SessionEventType =
   | "session:turn-end"
@@ -32,6 +33,7 @@ export type SessionEventType =
   | "cron:succeeded"
   | "cron:failed"
   | "activity:changed"
+  | "task:changed"
 
 /**
  * Structured detail on why a session is awaiting input, when derivable.
@@ -325,6 +327,27 @@ export interface ActivityChangedEvent {
   ts: string
 }
 
+/**
+ * Emitted by the Task ledger (`task-ledger.ts`) whenever a task record
+ * actually changed — created, claimed (the CAS win), a status transition
+ * (including a Tier-1 verify gate settling, green or red), an owner release
+ * (voluntary or owner-death), or a field edit. One event per accepted
+ * write. Because EventRing wires via `onAny`, `session_events_poll`, SSE
+ * `/events`, the webhook notifier, and `session_monitor` all carry it for
+ * free. `sessionId` is the acting/affected session when one is involved
+ * (the claimer, the released owner) — absent for pure operator gestures.
+ */
+export interface TaskChangedEvent {
+  type: "task:changed"
+  taskId: string
+  boardId: string
+  change: "created" | "claimed" | "status" | "released" | "edited"
+  status: TaskStatus
+  rev: number
+  sessionId?: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -344,6 +367,7 @@ export type SessionEvent =
   | CronSucceededEvent
   | CronFailedEvent
   | ActivityChangedEvent
+  | TaskChangedEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

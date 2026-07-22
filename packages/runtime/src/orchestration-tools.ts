@@ -28,6 +28,8 @@ import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { CronScheduler } from "./cron-scheduler.js"
 import type { ActivityProjector } from "./activities.js"
+import { registerTaskTools } from "./task-tools.js"
+import type { TaskLedger } from "./task-ledger.js"
 import {
   activityCounts,
   ACTIVITY_KINDS,
@@ -348,6 +350,16 @@ export interface RegisterOrchestrationToolsOptions {
    * PRs (`activities.ts`). Same projector instance `GET /activities` reads.
    */
   activityProjector?: ActivityProjector
+  /**
+   * When wired, backs the `task_create` / `task_list` / `task_claim` /
+   * `task_update` tools (`task-tools.ts`) — the multi-party Task ledger.
+   * The four names live in DEFAULT_ORCHESTRATOR_TOOLS, so like the policy
+   * tools they are registered unconditionally and answer a structured
+   * error when the ledger is absent (a subset-declared-but-unregistered
+   * tool hangs the MCP handshake). Same ledger instance the `/tasks`
+   * routes mutate.
+   */
+  taskLedger?: TaskLedger
   /** Optional allowlist — when set, only tools whose name is in the
    *  set are registered (the scoped orchestrator sub-gateway, WP2).
    *  Omitted → register everything, today's behaviour. */
@@ -413,7 +425,7 @@ export function registerOrchestrationTools(
         .optional()
         .describe("Filter to these session ids. Omit → all sessions."),
       types: z
-        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed", "activity:changed"]))
+        .array(z.enum(["turn-end", "awaiting-input", "permission-request", "permission-resolved", "exited", "session:spawned", "command-done", "policy:passed", "policy:failed", "policy:commit-ready", "policy:committed", "cron:fired", "cron:succeeded", "cron:failed", "activity:changed", "task:changed"]))
         .optional()
         .describe("Filter to these event types. Omit → all types."),
       limit: z
@@ -1250,6 +1262,18 @@ export function registerOrchestrationTools(
       },
     )
   }
+
+  // ── Task ledger tools (task_create / task_list / task_claim / task_update) ─
+  // Registered UNCONDITIONALLY — the four names are in
+  // DEFAULT_ORCHESTRATOR_TOOLS, so like the policy tools above they must
+  // exist on every scoped subset or the MCP handshake hangs; without a
+  // ledger they answer a structured error. `server` is already
+  // subset-wrapped here, so the scope's allowlist applies; the caller's
+  // scope identity drives ACL + the default board inside task-tools.ts.
+  registerTaskTools(server, {
+    ...(opts.taskLedger ? { ledger: opts.taskLedger } : {}),
+    ...(callerScope ? { callerScope } : {}),
+  })
 
   // ── activities_list (optional — only when an activity projector is wired) ─
   //
