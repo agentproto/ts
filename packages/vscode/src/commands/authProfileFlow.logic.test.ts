@@ -33,17 +33,29 @@ describe("endpointChoices", () => {
     expect(SUBSCRIPTION_ENDPOINT).toBe("anthropic")
   })
 
-  it("for an api-key, lists presets sorted + a custom escape hatch", () => {
+  it("for an api-key, leads with anthropic, then presets sorted, then a custom escape hatch", () => {
     const choices = endpointChoices("api-key", presets)
     expect(choices.map(c => c.label)).toEqual([
+      "anthropic",
       "moonshot",
       "openrouter",
       "Custom endpoint…",
     ])
+    expect(choices[0]).toEqual({ label: "anthropic", endpoint: "anthropic" })
     expect(choices.find(c => c.label === "openrouter")?.description).toBe("OpenRouter")
     // A slug === name should not duplicate into the description.
     expect(choices.find(c => c.label === "moonshot")?.description).toBeUndefined()
     expect(choices.at(-1)).toEqual({ label: "Custom endpoint…", custom: true })
+  })
+
+  it("dedupes if a preset ever also carries the anthropic slug", () => {
+    const withAnthropicPreset: ProviderPresetEntry[] = [
+      ...presets,
+      { slug: "anthropic", name: "Anthropic (native)", status: "ready" },
+    ]
+    const choices = endpointChoices("api-key", withAnthropicPreset)
+    expect(choices.filter(c => c.label === "anthropic")).toHaveLength(1)
+    expect(choices[0]).toEqual({ label: "anthropic", endpoint: "anthropic" })
   })
 })
 

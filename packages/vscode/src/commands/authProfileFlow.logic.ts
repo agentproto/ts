@@ -55,8 +55,12 @@ export interface EndpointChoice {
 /**
  * The endpoint options for a chosen method. A subscription is always against
  * `anthropic` today, so it needs no picker — the caller can skip straight
- * past. For an api-key we offer the provider presets (so the common gateways
- * are one click) followed by a "custom…" escape hatch for anything unlisted.
+ * past. For an api-key we lead with `anthropic` (native, not a gateway
+ * preset, so `list_provider_presets` never surfaces it on its own — every
+ * adapter that honors `provider: "anthropic"` in api-key mode, e.g.
+ * claude-code, already accepts one), then the provider presets (so the
+ * common gateways are one click), then a "custom…" escape hatch for
+ * anything unlisted.
  */
 export function endpointChoices(
   method: AuthMethod,
@@ -66,13 +70,18 @@ export function endpointChoices(
     return [{ label: "anthropic", endpoint: "anthropic" }]
   }
   const fromPresets = [...presets]
+    .filter(p => p.slug !== "anthropic")
     .map(p => ({
       label: p.slug,
       ...(p.name && p.name !== p.slug ? { description: p.name } : {}),
       endpoint: p.slug,
     }))
     .sort((a, b) => a.label.localeCompare(b.label))
-  return [...fromPresets, { label: "Custom endpoint…", custom: true }]
+  return [
+    { label: "anthropic", endpoint: "anthropic" },
+    ...fromPresets,
+    { label: "Custom endpoint…", custom: true },
+  ]
 }
 
 /** The single fixed endpoint for a subscription — no picker needed. */
