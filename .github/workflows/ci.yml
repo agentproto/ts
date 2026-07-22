@@ -144,7 +144,7 @@ jobs:
       # writes changesets by guessing the package name; --fix corrects an
       # unambiguous scope↔dash near-miss before it lands).
       - name: Run changeset-check tests
-        run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs
+        run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs
 
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
