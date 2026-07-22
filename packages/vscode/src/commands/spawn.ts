@@ -19,7 +19,7 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import type { WorkspacesConfig } from "../client/types.js"
+import type { UserPreset, WorkspacesConfig } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolvePinnedTarget } from "../services/workspacePin.logic.js"
 import type { WorkspacePinStore } from "../services/workspacePin.js"
@@ -38,6 +38,7 @@ import {
   mapProviderQuickPickItems,
   mapSpawnQuickPickItems,
   modelEntriesOf,
+  prependPresetGroup,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
@@ -96,6 +97,15 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
     workspaceConfig = EMPTY_WORKSPACES
   }
 
+  let userPresets: UserPreset[]
+  try {
+    userPresets = await client.listUserPresets()
+  } catch {
+    // Old daemon without /user-presets, or unreachable — degrade to no
+    // presets rather than block the spawn.
+    userPresets = []
+  }
+
   // A pin takes precedence over the folder-derivation ladder entirely — it's
   // the whole point of pinning a window to a workspace regardless of what
   // folder happens to be open in it. Only an unset pin, or a pin whose
@@ -115,9 +125,12 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
 
   const holdDefault = holdPermissionsSetting()
   let answers: SpawnWizardAnswers
-  const pickerItems = catalog && catalog.vendors.length > 0
-    ? mapCatalogSpawnQuickPickItems(catalog)
-    : mapSpawnQuickPickItems(adapters)
+  const pickerItems = prependPresetGroup(
+    catalog && catalog.vendors.length > 0
+      ? mapCatalogSpawnQuickPickItems(catalog)
+      : mapSpawnQuickPickItems(adapters),
+    userPresets,
+  )
   const picked = await vscode.window.showQuickPick(pickerItems, {
     placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
   })
@@ -126,6 +139,31 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
     const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
     if (!configured) return
     answers = configured
+  } else if (picked.preset) {
+    const preset = picked.preset
+    let presetAdapter = preset.adapter ?? preset.harness
+    if (!presetAdapter) {
+      // This preset doesn't bind an adapter (UserPreset's own doc comment:
+      // "Omitted means the caller selects one") — ask for one now rather
+      // than send an empty adapter string, which the daemon would reject
+      // (see http-server.ts's POST /sessions/agent: an explicit empty
+      // string is NOT treated the same as an absent field, so it does NOT
+      // fall through to the preset's own adapter).
+      const adapterPick = await vscode.window.showQuickPick(mapAdapterQuickPickItems(adapters), {
+        placeHolder: `"${preset.label}" preset has no adapter set — select one`,
+      })
+      if (!adapterPick) return
+      presetAdapter = adapterPick.adapter.slug
+    }
+    answers = { adapter: presetAdapter, presetId: preset.id, permissionHold: holdDefault }
+    if (preset.model) answers.model = preset.model
+    if (!defaultCwd) {
+      vscode.window.showWarningMessage(
+        "agentproto: no folder open and no workspace pinned — pin a target workspace (status bar) or use Configure… to set a working directory.",
+      )
+      return
+    }
+    answers.cwd = defaultCwd
   } else if (picked.adapter) {
     answers = { adapter: picked.adapter.slug, permissionHold: holdDefault }
     if (picked.custom) {
