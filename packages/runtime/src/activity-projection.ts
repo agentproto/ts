@@ -109,6 +109,14 @@ export interface ActivityRecordBase {
    * state — an activity the owner says is active stays active.
    */
   staleSince?: string
+  /**
+   * The declared-intent Task this activity is advancing, when one links —
+   * derived at read time by {@link linkTasks} from the Task ledger's edges
+   * (a `turn`'s session owns a task; a `policy`'s id is a task's verify
+   * gate). Absent when nothing links, and never a write path: Task stays the
+   * source of truth for INTENT, Activity the projection for EXECUTION.
+   */
+  taskId?: string
 }
 
 /**
@@ -127,6 +135,59 @@ export type ActivityRecord =
 /** Terminal (immutable) activity states. */
 export function isTerminalActivityState(state: ActivityState): boolean {
   return state === "done" || state === "failed" || state === "cancelled"
+}
+
+/**
+ * Structural slice of a Task ledger row the join reads — the `TaskRecord`
+ * satisfies it. Kept structural so this module stays free of a
+ * `./task-ledger.js` import (and thus pure/standalone).
+ */
+export interface ActivityTaskSlice {
+  taskId: string
+  status: string
+  /** The session currently on the task (absent = unclaimed). */
+  owner?: string
+  /** How done was reached; only a Tier-1 `gate` carries the `policyId` the
+   *  join reads. `kind` is required so the full `TaskVerification` union (whose
+   *  `self-report`/`human` variants have no `policyId`) still satisfies this. */
+  verification?: { kind: string; policyId?: string }
+}
+
+/** A task is still open — an ACTIVE turn should only link to work in flight. */
+function isOpenTaskStatus(status: string): boolean {
+  return status !== "done" && status !== "failed" && status !== "cancelled"
+}
+
+/**
+ * Enrich activities with the Task they advance — a read-time join, NOT a
+ * write. Two edges the ledger owns: a `turn` activity links to the OPEN task
+ * its session owns; a `policy` activity links to the task whose verify gate
+ * is that policy. Everything else is left untouched (a gate/commit reads its
+ * task through its parent policy in the UI). Deterministic and pure — the
+ * same inputs always produce the same links.
+ */
+export function linkTasks(
+  records: readonly ActivityRecord[],
+  tasks: readonly ActivityTaskSlice[],
+): ActivityRecord[] {
+  const bySession = new Map<string, string>()
+  const byPolicy = new Map<string, string>()
+  for (const task of tasks) {
+    if (task.owner && isOpenTaskStatus(task.status) && !bySession.has(task.owner)) {
+      bySession.set(task.owner, task.taskId)
+    }
+    const policyId = task.verification?.policyId
+    if (policyId && !byPolicy.has(policyId)) byPolicy.set(policyId, task.taskId)
+  }
+  return records.map(rec => {
+    const taskId =
+      rec.kind === "turn" && rec.sessionId
+        ? bySession.get(rec.sessionId)
+        : rec.kind === "policy"
+          ? byPolicy.get(rec.sourceRef)
+          : undefined
+    return taskId ? { ...rec, taskId } : rec
+  })
 }
 
 // Small constructors so every mapper builds records through the same two

@@ -10,6 +10,7 @@ import {
   activityCounts,
   filterActivities,
   isTerminalActivityState,
+  linkTasks,
   policyToActivities,
   prToActivities,
   routineToActivities,
@@ -17,6 +18,7 @@ import {
   turnToActivities,
   workflowToActivities,
   type ActivityPolicySlice,
+  type ActivityTaskSlice,
   type ActivityPrSession,
   type ActivityRecord,
   type ActivityRoutineRunSlice,
@@ -425,5 +427,47 @@ describe("query helpers", () => {
   it("activityCounts tallies active vs pending only", () => {
     expect(activityCounts(records)).toEqual({ active: 3, pending: 2 })
     expect(activityCounts([])).toEqual({ active: 0, pending: 0 })
+  })
+})
+
+describe("linkTasks", () => {
+  const task = (over: Partial<ActivityTaskSlice> = {}): ActivityTaskSlice => ({
+    taskId: "task_1",
+    status: "in_progress",
+    ...over,
+  })
+
+  it("links a turn to the OPEN task its session owns", () => {
+    const turns = turnToActivities(turnSession({ busy: true }), { now: T1 })
+    const linked = linkTasks(turns, [task({ owner: "sess_a" })])
+    expect(byId(linked, "turn:sess_a:1")?.taskId).toBe("task_1")
+  })
+
+  it("links a policy to the task whose verify gate is that policy", () => {
+    const linked = linkTasks(policyToActivities(policy()), [
+      task({ taskId: "task_9", status: "done", verification: { kind: "gate", policyId: "plc_1" } }),
+    ])
+    expect(byId(linked, "policy:plc_1")?.taskId).toBe("task_9")
+  })
+
+  it("does NOT link a turn to a CLOSED task (active work only)", () => {
+    const turns = turnToActivities(turnSession({ busy: true }), { now: T1 })
+    const linked = linkTasks(turns, [task({ status: "done", owner: "sess_a" })])
+    expect(byId(linked, "turn:sess_a:1")?.taskId).toBeUndefined()
+  })
+
+  it("leaves records untouched when nothing links", () => {
+    const turns = turnToActivities(turnSession({ busy: true }), { now: T1 })
+    expect(linkTasks(turns, [])).toEqual(turns)
+    expect(byId(linkTasks(turns, [task({ owner: "sess_other" })]), "turn:sess_a:1")?.taskId).toBeUndefined()
+  })
+
+  it("is deterministic — the first open task per session wins", () => {
+    const turns = turnToActivities(turnSession({ busy: true }), { now: T1 })
+    const linked = linkTasks(turns, [
+      task({ taskId: "task_a", owner: "sess_a" }),
+      task({ taskId: "task_b", owner: "sess_a" }),
+    ])
+    expect(byId(linked, "turn:sess_a:1")?.taskId).toBe("task_a")
   })
 })

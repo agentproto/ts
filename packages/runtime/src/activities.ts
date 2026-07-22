@@ -30,6 +30,7 @@
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
 import {
   filterActivities,
+  linkTasks,
   policyToActivities,
   prToActivities,
   routineToActivities,
@@ -41,6 +42,7 @@ import {
   type ActivityRecord,
   type ActivityRoutineRunSlice,
   type ActivitySource,
+  type ActivityTaskSlice,
   type ActivityTurnSession,
   type ActivityWaitingOn,
   type ActivityWorkflowRunSlice,
@@ -72,6 +74,14 @@ export interface ActivityRoutineLister {
 /** The workflow-runner slice — structurally satisfied by `WorkflowRunner`. */
 export interface ActivityWorkflowLister {
   list(): readonly ActivityWorkflowRunSlice[]
+}
+
+/** The task-ledger slice — structurally satisfied by `TaskLedger` (whose
+ *  `snapshot()` returns every task, all boards; the scoped `list()` would
+ *  hide boards the join must see). Enriches `turn`/`policy` activities with
+ *  `taskId` at read time. */
+export interface ActivityTaskLister {
+  snapshot(): readonly ActivityTaskSlice[]
 }
 
 export interface ActivityProjector {
@@ -109,13 +119,14 @@ export function createActivityProjector(opts: {
   supervisor: ActivityPolicyLister
   routineRunner?: ActivityRoutineLister
   workflowRunner?: ActivityWorkflowLister
+  taskLedger?: ActivityTaskLister
 }): ActivityProjector {
   // Last-announced projection, keyed by deterministic activity id. ONLY for
   // diffing — never the answer to `list()`. Deletable at any time; the cost
   // is a one-off burst of re-announcements, never wrong data.
   const cache = new Map<string, ActivityRecord>()
 
-  const projectOwner = (owner: ActivityOwner): ActivityRecord[] => {
+  const projectOwnerRaw = (owner: ActivityOwner): ActivityRecord[] => {
     switch (owner) {
       case "session": {
         // One clock read per projection pass — the mappers themselves stay
@@ -140,6 +151,16 @@ export function createActivityProjector(opts: {
     }
   }
 
+  // Enrich `turn`/`policy` records with the Task they advance — a read-time
+  // join over the ledger's edges, applied only to the two owners whose kinds
+  // can link (a session's turn, a policy's verify gate). No ledger → no join.
+  const projectOwner = (owner: ActivityOwner): ActivityRecord[] => {
+    const recs = projectOwnerRaw(owner)
+    return opts.taskLedger && (owner === "session" || owner === "supervisor")
+      ? linkTasks(recs, opts.taskLedger.snapshot())
+      : recs
+  }
+
   /**
    * Re-project one owner and reconcile the cache. `announce: false` is the
    * construction-time prime: pre-existing state (persisted policies, runs
@@ -154,6 +175,7 @@ export function createActivityProjector(opts: {
       const changed =
         !prev ||
         prev.state !== rec.state ||
+        prev.taskId !== rec.taskId ||
         waitingOnKey(prev.waitingOn) !== waitingOnKey(rec.waitingOn)
       // Always keep the freshest snapshot so later diffs compare against
       // what was last projected, even when nothing announcement-worthy moved.
@@ -183,6 +205,9 @@ export function createActivityProjector(opts: {
    */
   const ownersTouchedBy = (type: SessionEvent["type"]): readonly ActivityOwner[] => {
     if (type === "activity:changed") return []
+    // A task claim/close moves no owner's *state*, but it can change the
+    // `taskId` join on turn + policy activities — re-project those two.
+    if (type === "task:changed") return ["session", "supervisor"]
     if (type.startsWith("policy:")) return ["supervisor"]
     if (type.startsWith("cron:")) return []
     return ["session", "supervisor", "routine", "workflow"]
