@@ -175,6 +175,57 @@ describe("board resolution", () => {
     ).toEqual([task.taskId])
   })
 
+  it("a spawn-stamped meta.boardId wins over the lineage walk", () => {
+    const sessions: Record<string, TaskLedgerSessionSlice> = {
+      ...LINEAGE,
+      // A child WITH lineage and a stamp: the stamp still wins — an
+      // explicit spawn-time pin out-ranks the tree it happens to sit in.
+      pinned: {
+        parentSessionId: "sup",
+        status: "running",
+        workspaceSlug: "w",
+        meta: { boardId: "cowork:main" },
+      },
+    }
+    const { ledger } = harness({ sessions })
+    expect(mustOk(ledger.create({ title: "t" }, session("pinned"))).boardId).toBe(
+      "cowork:main",
+    )
+    // Sessions WITHOUT a stamp keep the lineage default, byte-identical.
+    expect(mustOk(ledger.create({ title: "u" }, session("exec"))).boardId).toBe(
+      "tree:sup",
+    )
+  })
+
+  it("two depth-0 roots stamped with the SAME meta.boardId share one board", () => {
+    // The case the stamp exists for: a cowork client fans out executors
+    // that are ALL depth-0 roots (no shared lineage) but must land on
+    // one board.
+    const sessions: Record<string, TaskLedgerSessionSlice> = {
+      a: { status: "running", workspaceSlug: "w", meta: { boardId: "cowork:main" } },
+      b: { status: "running", workspaceSlug: "w", meta: { boardId: "cowork:main" } },
+    }
+    const { ledger } = harness({ sessions })
+    const t = mustOk(ledger.create({ title: "t" }, session("a")))
+    expect(t.boardId).toBe("cowork:main")
+    expect(ledger.list(undefined, session("b")).map(x => x.taskId)).toEqual([
+      t.taskId,
+    ])
+  })
+
+  it("the explicit boardId arg still wins over a stamped meta.boardId", () => {
+    const sessions: Record<string, TaskLedgerSessionSlice> = {
+      pinned: { status: "running", workspaceSlug: "w", meta: { boardId: "cowork:main" } },
+    }
+    const { ledger } = harness({ sessions })
+    expect(
+      mustOk(ledger.create({ title: "t", boardId: "sprint-42" }, session("pinned")))
+        .boardId,
+    ).toBe("sprint-42")
+    expect(ledger.resolveBoardId(session("pinned"), "sprint-42")).toBe("sprint-42")
+    expect(ledger.resolveBoardId(session("pinned"))).toBe("cowork:main")
+  })
+
   it("a session cannot reach a SIBLING tree's board", () => {
     const { ledger } = harness({ sessions: LINEAGE })
     const supTask = mustOk(ledger.create({ title: "t" }, session("sup")))

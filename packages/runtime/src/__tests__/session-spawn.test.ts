@@ -167,6 +167,23 @@ describe("spawnAgentSession", () => {
     expect(switched).toEqual(["plan"])
   })
 
+  it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
+    const { deps } = baseDeps()
+    const pinned = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      boardId: "cowork:main",
+    })
+    expect(pinned.ok).toBe(true)
+    if (!pinned.ok) throw new Error("expected spawn")
+    expect(pinned.descriptor.meta).toEqual({ boardId: "cowork:main" })
+
+    const plain = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(plain.ok).toBe(true)
+    if (!plain.ok) throw new Error("expected spawn")
+    expect(plain.descriptor.meta).toBeUndefined()
+  })
+
   it("(a) rejects a spawn that would exceed the caller scope's maxDepth", async () => {
     const { registry, deps } = baseDeps()
     const callerScope: OrchestratorScope = {

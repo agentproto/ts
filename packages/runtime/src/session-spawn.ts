@@ -280,6 +280,15 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Task-board pin for the spawned child, stamped onto its descriptor as
+   *  `meta.boardId`. The Task ledger's board resolution prefers this over
+   *  the `parentSessionId` lineage walk (see task-ledger.ts's
+   *  `resolveBoardId`), so a client spawning several depth-0 roots — a
+   *  cowork/operator harness fanning out executors with no shared lineage —
+   *  can join them all onto ONE board. Descriptor-only: it never enters the
+   *  depth/quota/role gates, and an explicit `boardId` on a task verb still
+   *  wins over it. */
+  boardId?: string
   /** Source label for this spawn (channel/harness). Descriptor-only. */
   origin?: string
   /** Reattach to a pre-existing adapter-native session (claude-code's
@@ -1435,6 +1444,11 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
+      // descriptor — the task ledger's board resolution reads it BEFORE the
+      // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
+      // generic `meta` hint map so future spawn-time hints need no new field.
+      ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
       ...(input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),

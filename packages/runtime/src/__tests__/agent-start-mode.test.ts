@@ -90,3 +90,25 @@ describe("agent_start — mode field", () => {
     expect(res.content?.[0]?.text).toContain("unknown_mode")
   })
 })
+
+describe("agent_start — boardId field", () => {
+  it("passes `boardId` through the MCP schema onto the descriptor's meta", async () => {
+    const startSession = vi.fn(async () => ({
+      sessionId: "adapter_boardid_test",
+      send: async function* () {},
+      cancel: async () => {},
+      close: async () => {},
+    }))
+    const { client } = await setup(startSession)
+
+    const result = parseToolJson(
+      await client.callTool({
+        name: "agent_start",
+        arguments: { adapter: "claude-code", cwd: "/tmp", boardId: "cowork:main" },
+      }),
+    )
+    expect(result.id).toMatch(/^sess_/)
+    // The stamp the task ledger's board resolution reads (task-ledger.ts).
+    expect(result.meta).toEqual({ boardId: "cowork:main" })
+  })
+})
