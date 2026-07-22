@@ -22,6 +22,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"
+import { extractCommandArgs } from "./tool-call-record.js"
 import type { SessionUsage } from "./usage.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
@@ -135,6 +136,15 @@ interface WriterState {
    * around it (see flushBuffers).
    */
   toolUpdates: Map<string, Record<string, unknown>>
+  /**
+   * Latest known {toolName, arguments} + announce time per in-flight
+   * toolCallId, kept across BOTH the announcement and any enrichment
+   * updates (not just the held/coalesced ones above) — the "tool-result"
+   * handler consumes this to emit ONE normalized `tool-call-record` line
+   * (see tool-call-record.ts) per finished call, since a bare "tool-result"
+   * event carries neither the tool's name nor its input.
+   */
+  toolCallMeta: Map<string, { toolName: string; arguments: unknown; startedAt: number }>
 }
 
 export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptWriter {
@@ -162,6 +172,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
       textDebounce: null,
       thoughtDebounce: null,
       toolUpdates: new Map(),
+      toolCallMeta: new Map(),
     }
     states.set(sessionId, state)
     return state
@@ -278,6 +289,20 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           break
         }
         case "tool-call": {
+          // Remember the latest name/input for this call regardless of
+          // whether this frame is an announcement or an enrichment — the
+          // eventual "tool-result" needs both and carries neither itself.
+          // An enrichment's `toolName` is `""` when the update carried no
+          // title (see toolCallEnrichment in @agentproto/acp); keep the
+          // prior name in that case rather than overwriting it with blank.
+          if (evt.toolCallId) {
+            const existing = state.toolCallMeta.get(evt.toolCallId)
+            state.toolCallMeta.set(evt.toolCallId, {
+              toolName: evt.toolName || existing?.toolName || "",
+              arguments: evt.arguments !== undefined ? evt.arguments : existing?.arguments,
+              startedAt: existing?.startedAt ?? Date.now(),
+            })
+          }
           const record = {
             kind: "tool-call",
             sessionId,
@@ -307,7 +332,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           writeRecord(sessionId, state, record)
           break
         }
-        case "tool-result":
+        case "tool-result": {
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, {
             kind: "tool-result",
@@ -316,7 +341,24 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             result: evt.result,
             isError: evt.isError ?? false,
           })
+          // Normalized ToolCallRecord (see tool-call-record.ts) — the same
+          // shape the command_execute proxy path writes via
+          // `writeToolCallRecord`, so `tool_calls_list` reads one unified
+          // log regardless of which path produced the call.
+          const meta = evt.toolCallId ? state.toolCallMeta.get(evt.toolCallId) : undefined
+          if (evt.toolCallId) state.toolCallMeta.delete(evt.toolCallId)
+          const { command, args } = extractCommandArgs(meta?.arguments)
+          writeRecord(sessionId, state, {
+            kind: "tool-call-record",
+            sessionId,
+            tool: meta?.toolName || "unknown",
+            ...(command !== undefined ? { command } : {}),
+            ...(args !== undefined ? { args } : {}),
+            isError: evt.isError ?? false,
+            ...(meta ? { durationMs: Date.now() - meta.startedAt } : {}),
+          })
           break
+        }
         case "agent-prompt":
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, {

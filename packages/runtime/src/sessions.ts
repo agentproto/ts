@@ -27,6 +27,8 @@ import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
+import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
+import type { ToolCallRecord } from "./tool-call-record.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
 import type {
   AuthMethod,
@@ -1214,6 +1216,14 @@ export interface SessionsRegistry {
    *  (`transcriptDir`) and callers outside sessions.ts have no other way
    *  to know it. */
   readCommandLog(sessionId: string): Promise<import("./command-log.js").CommandLogEntry | null>
+  /** Read back every normalized `ToolCallRecord` a session has logged —
+   *  the unified entries `tool_calls_list` reads. Works for a
+   *  `kind:"command"` session (recordCommand writes exactly one) and for a
+   *  `kind:"agent-cli"` session (transcript-writer writes one per finished
+   *  tool call). Routed through the registry for the same base-directory
+   *  reason as `readCommandLog`. Returns `[]` rather than throwing when the
+   *  session has none. */
+  readToolCallRecords(sessionId: string): Promise<ToolCallRecord[]>
   /** Register an already-running browser service adapter as a tracked
    *  session (kind="browser"). Idempotent by identity — each call
    *  mints a fresh session id. The `stop` callback is invoked by
@@ -3479,6 +3489,11 @@ export function createSessionsRegistry(opts?: {
       sessions.set(id, rt)
       // Fire-and-forget: the write is best-effort and must never delay the
       // session's own lifecycle (its internal `.catch` swallows failures).
+      // Chained (not parallel): the ToolCallRecord line must land AFTER the
+      // CommandLogEntry line, because `readCommandLogEntry` trusts the
+      // file's FIRST non-empty line to be the CommandLogEntry — two
+      // independent fire-and-forget appendFile calls give no ordering
+      // guarantee on their own.
       void writeCommandLogEntry(
         id,
         {
@@ -3494,6 +3509,20 @@ export function createSessionsRegistry(opts?: {
           ...(input.truncated ? { truncated: true } : {}),
         },
         transcriptBaseDir,
+      ).then(() =>
+        writeToolCallRecord(
+          {
+            sessionId: id,
+            tool: "command_execute",
+            command: input.command,
+            args: input.args,
+            exitCode: input.exitCode,
+            isError: input.exitCode !== 0,
+            durationMs: input.durationMs,
+            ts: now.toISOString(),
+          },
+          transcriptBaseDir,
+        ),
       )
       schedulePersist()
       // No live process — the session is already over, so emit its
@@ -3528,6 +3557,9 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(sessionId)
       if (!rt || rt.desc.kind !== "command") return null
       return readCommandLogEntry(sessionId, transcriptBaseDir)
+    },
+    async readToolCallRecords(sessionId) {
+      return readToolCallRecordLines(sessionId, transcriptBaseDir)
     },
     registerBrowser(input) {
       const inputLocation = input.location ?? "local"
