@@ -85,6 +85,13 @@ interface E2bSandboxConfig {
   installPackages?: string[]
   /** Timeout for the `npm i -g` update command. Default 120s. */
   updateCliTimeoutMs?: number
+  /** Extra shell commands host-executed inside the box AFTER the boot `npm i -g`
+   *  and BEFORE `agentproto serve` hands control to the agent. Generic
+   *  provision-time hook — no policy baked in here; callers decide what to run
+   *  (e.g. installing a git hook). Each entry is passed verbatim to
+   *  `sandbox.commands.run`. Runs only when this provider starts the daemon
+   *  (skipped when the health probe finds it already autostarted). */
+  setupCommands?: string[]
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
@@ -106,6 +113,9 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
       : undefined,
     updateCliTimeoutMs:
       typeof config.updateCliTimeoutMs === "number" ? config.updateCliTimeoutMs : undefined,
+    setupCommands: Array.isArray(config.setupCommands)
+      ? config.setupCommands.filter((c): c is string => typeof c === "string" && c.length > 0)
+      : undefined,
   }
 }
 
@@ -148,6 +158,12 @@ async function ensureDaemonHealthy(
       envs: env,
       timeoutMs: config.updateCliTimeoutMs ?? UPDATE_CLI_TIMEOUT_MS,
     })
+  }
+  // Caller-declared provision hooks — host-executed after the npm install and
+  // before the agent gets control. Kept generic (no policy here); the ts layer
+  // uses this to install a commit-msg hook that strips AI-attribution trailers.
+  for (const command of config.setupCommands ?? []) {
+    await sandbox.commands.run(command, { envs: env })
   }
   await sandbox.commands.run(
     `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,

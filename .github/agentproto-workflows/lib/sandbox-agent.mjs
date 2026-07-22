@@ -34,6 +34,37 @@ export const adapterFor = (config, verb) =>
   String(resolveCommandConfig(config, verb).reviewerAdapter || "claude-code")
 
 /**
+ * Provision-time setup command (e2b `setupCommands`) that installs a git
+ * `commit-msg` hook STRIPPING AI-attribution trailer lines, so a sandboxed
+ * model's native-shell commits can't deadlock the PR against the repo's own
+ * Hygiene check (issue #589). Deterministic and hook-based — NOT a prompt rule
+ * the agent can ignore.
+ *
+ * Installed via `core.hooksPath` (global), not `.git/hooks/`, because at
+ * provision time the box has NO checkout yet — the clone happens later in
+ * Phase 0. A global hooks path applies to that future clone too.
+ *
+ * Idempotent: the command only (re)writes the same hook file and (re)sets the
+ * same config key, so re-running it never double-installs or corrupts.
+ *
+ * The stripped pattern mirrors `ATTRIBUTION_PATTERN` in `.github/workflows/
+ * ci.yml` (case-insensitively: `Co-authored-by:.*@anthropic.com`,
+ * `Co-authored-by:.*claude.ai`, `Generated with`). `grep -iv || true` keeps
+ * the hook succeeding even if it filters every line.
+ */
+export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
+  `mkdir -p "$HOME/.agentproto-git-hooks"`,
+  `cat > "$HOME/.agentproto-git-hooks/commit-msg" <<'HOOK'`,
+  `#!/bin/sh`,
+  `# Strip AI-attribution trailers so commits pass the repo Hygiene check (#589).`,
+  `grep -ivE 'Co-authored-by:.*@anthropic\\.com|Co-authored-by:.*claude\\.ai|Generated with' "$1" > "$1.agentproto.tmp" || true`,
+  `mv "$1.agentproto.tmp" "$1"`,
+  `HOOK`,
+  `chmod +x "$HOME/.agentproto-git-hooks/commit-msg"`,
+  `git config --global core.hooksPath "$HOME/.agentproto-git-hooks"`,
+].join("\n")
+
+/**
  * Sandbox placement: `reviewerSandbox` selects a provider slug (e.g. "e2b");
  * absent/empty ⇒ host spawn. The inline spec's `env.passthrough` names the
  * daemon-process env vars injected into the box — the box's own daemon +
@@ -62,7 +93,13 @@ export const sandboxRefFor = (config, verb) => {
   // `@agentproto/cli@latest` publish can't silently kill the box. Only pass
   // the key when configured — the provider defaults to `@latest` otherwise.
   const cliVersion = typeof cfg.cliVersion === "string" ? cfg.cliVersion.trim() : ""
-  const sandboxConfig = { installPackages, ...(cliVersion ? { cliVersion } : {}) }
+  // Provision-time commit-msg hook that strips AI-attribution trailers, so a
+  // sandboxed model's native commits can't deadlock the PR against Hygiene (#589).
+  const sandboxConfig = {
+    installPackages,
+    setupCommands: [ATTRIBUTION_STRIP_SETUP_COMMAND],
+    ...(cliVersion ? { cliVersion } : {}),
+  }
   return { provider: slug, config: sandboxConfig, env: { passthrough } }
 }
 

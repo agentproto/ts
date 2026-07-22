@@ -151,6 +151,64 @@ describe("e2bSandboxProvider.boot", () => {
     )
   })
 
+  it("runs config.setupCommands AFTER the npm install and BEFORE agentproto serve", async () => {
+    const calls: string[] = []
+    const sandbox = fakeSandbox({
+      commands: {
+        run: vi.fn(async (cmd: string) => {
+          calls.push(cmd)
+          return {}
+        }),
+      },
+    })
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: {
+        healthProbeTimeoutMs: 0,
+        setupCommands: ["install-hook-a", "install-hook-b"],
+      },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
+
+    // each setup command is host-executed with the resolved env
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "install-hook-a",
+      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    )
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "install-hook-b",
+      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    )
+    // ordering: npm install → setup commands (in order) → serve
+    const npmIdx = calls.findIndex(c => c.startsWith("sudo npm i -g"))
+    const aIdx = calls.indexOf("install-hook-a")
+    const bIdx = calls.indexOf("install-hook-b")
+    const serveIdx = calls.findIndex(c => c.includes("agentproto serve"))
+    expect(npmIdx).toBeGreaterThanOrEqual(0)
+    expect(npmIdx).toBeLessThan(aIdx)
+    expect(aIdx).toBeLessThan(bIdx)
+    expect(bIdx).toBeLessThan(serveIdx)
+  })
+
+  it("runs no setup commands when config.setupCommands is absent", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockRejectedValueOnce(new Error("connect refused"))
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = { provider: "e2b", config: { healthProbeTimeoutMs: 0 } }
+    await e2bSandboxProvider.boot(bootSpec, { env: {} })
+
+    // only the npm update + serve — no stray provision commands
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2)
+  })
+
   it("defaults the sandbox LIFETIME to 45min — never e2b's 5-minute default (mid-turn reaper)", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
