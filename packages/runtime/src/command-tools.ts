@@ -43,8 +43,15 @@
  * specific tools (`gh`, `pnpm test`-style flows via a wrapper) over raw
  * interpreters. When one IS allowlisted, `command_execute` surfaces a
  * one-time warning (log + a `warning` field on the result). OS-level
- * confinement (Seatbelt/Landlock) is the real fix — planned as
- * `command-sandbox` (see `.plans/agentproto-daemon-network-hardening`).
+ * confinement (Seatbelt/Linux bubblewrap) is the real fix and is built —
+ * see `command-sandbox.ts` — opt in per workspace via
+ * `.agentproto/command-sandbox.json` (`{"mode":"workspace"}`) or
+ * `AGENTPROTO_COMMAND_SANDBOX_MODE=workspace`. It defaults to `off` (real,
+ * currently-relied-on `gh`/`pnpm` flows through this tool break under
+ * `workspace` mode's home-dir denial — see command-sandbox.ts for the
+ * empirical evidence), so every call runs unconfined by default and now
+ * warns loudly about it every time; opting in makes a missing backend on
+ * the host FAIL the call closed rather than run it unconfined.
  */
 
 import { spawn } from "node:child_process"
@@ -62,11 +69,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
-import { loadSandboxConfig, resolveCommandSandbox } from "./command-sandbox.js"
-
-/** Warn at most once per process when a sandbox mode is configured but no
- *  backend exists for this platform — so we never silently pretend to confine. */
-let warnedNoSandboxBackend = false
+import {
+  COMMAND_SANDBOX_MODE_ENV,
+  loadSandboxConfig,
+  resolveCommandSandbox,
+} from "./command-sandbox.js"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000
@@ -283,12 +290,15 @@ export function registerCommandTools(
       }
       const resolvedCwd = anchorCwd(cwd)
       const limit = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
-      // OS-level confinement — opt-in via `.agentproto/command-sandbox.json`.
-      // Default mode "off" ⇒ argv unchanged (today's behavior). When enabled
-      // and a backend exists for this platform, wrap so even an allowlisted
-      // interpreter can't read outside the workspace / (strict) reach the
-      // network. The original `command`/`args` are still what's recorded and
-      // provenance-stamped below; only the SPAWNED argv is wrapped.
+      // OS-level confinement — opt-in via `.agentproto/command-sandbox.json`
+      // (or forced by `AGENTPROTO_COMMAND_SANDBOX_MODE`). Default mode "off"
+      // ⇒ argv unchanged (today's behavior; see command-sandbox.ts for why
+      // the default isn't `workspace` — `gh`/`pnpm` empirically break under
+      // it). When a non-"off" mode IS configured and a backend exists for
+      // this platform, wrap so even an allowlisted interpreter can't read
+      // outside the workspace / (strict) reach the network. The original
+      // `command`/`args` are still what's recorded and provenance-stamped
+      // below; only the SPAWNED argv is wrapped.
       let execCommand = command
       let execArgs = args ?? []
       const sandboxCfg = await loadSandboxConfig(opts.workspace)
@@ -302,14 +312,36 @@ export function registerCommandTools(
           })
           execCommand = wrapped[0] ?? command
           execArgs = wrapped.slice(1)
-        } else if (!warnedNoSandboxBackend) {
-          warnedNoSandboxBackend = true
-          console.error(
-            `[command_execute] ⚠ command-sandbox mode="${sandboxCfg.mode}" is ` +
-              `configured but no sandbox backend is available on ` +
-              `${process.platform}; commands run UNconfined.`,
+        } else {
+          // FAIL CLOSED: the operator explicitly opted into confinement
+          // (mode !== "off" is a security-relevant intent), but this
+          // platform has no backend to honor it. Silently degrading to
+          // unconfined execution would be worse than no sandbox at all —
+          // the operator would believe they're confined and aren't. Refuse
+          // the run instead; `mode:"off"` (or the env override) is the
+          // explicit way to accept unconfined execution.
+          throw new Error(
+            `command-sandbox mode="${sandboxCfg.mode}" is configured ` +
+              `(${join(opts.workspace, ".agentproto/command-sandbox.json")} or ` +
+              `${COMMAND_SANDBOX_MODE_ENV}) but no sandbox backend is available ` +
+              `on ${process.platform} (macOS needs sandbox-exec, Linux needs ` +
+              `bwrap installed). Refusing to run '${command}' unconfined — set ` +
+              `mode:"off" (or ${COMMAND_SANDBOX_MODE_ENV}=off) to explicitly ` +
+              `accept unconfined execution, or install the missing backend.`,
           )
         }
+      } else {
+        // Confinement is OFF — this call runs UNCONFINED: an allowlisted
+        // interpreter (see INTERPRETER_BASENAMES) can read/write anything the
+        // daemon's host user can. Warned on EVERY call (not deduped) so the
+        // gap can't fade into background noise — see command-sandbox.ts for
+        // why `off` is still the default and how to opt into `workspace`.
+        console.error(
+          `[command_execute] ⚠ running '${baseName}' UNCONFINED — no OS-level ` +
+            `sandbox is active (command-sandbox mode is "off"). Enable ` +
+            `confinement via ${join(opts.workspace, ".agentproto/command-sandbox.json")} ` +
+            `({"mode":"workspace"}) or ${COMMAND_SANDBOX_MODE_ENV}=workspace.`,
+        )
       }
       const result = await runCommand({
         command: execCommand,

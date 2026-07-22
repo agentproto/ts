@@ -5,7 +5,7 @@
  * read is allowed while a home-dir read is denied.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -13,6 +13,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  COMMAND_SANDBOX_MODE_ENV,
   buildBwrapArgs,
   buildSeatbeltProfile,
   bwrapSandbox,
@@ -106,6 +107,45 @@ describe("loadSandboxConfig", () => {
       const c = await loadSandboxConfig(dir)
       expect(c.mode).toBe("strict")
       expect(c.network).toBe("deny")
+    })
+  })
+
+  describe(`${COMMAND_SANDBOX_MODE_ENV} override`, () => {
+    const original = process.env[COMMAND_SANDBOX_MODE_ENV]
+    afterEach(() => {
+      if (original === undefined) delete process.env[COMMAND_SANDBOX_MODE_ENV]
+      else process.env[COMMAND_SANDBOX_MODE_ENV] = original
+    })
+
+    it("overrides the file's mode when set to a valid mode", async () => {
+      await withConfig(JSON.stringify({ mode: "off" }), async dir => {
+        process.env[COMMAND_SANDBOX_MODE_ENV] = "workspace"
+        expect((await loadSandboxConfig(dir)).mode).toBe("workspace")
+      })
+    })
+
+    it("forces off even when the file asks for workspace/strict confinement", async () => {
+      await withConfig(JSON.stringify({ mode: "strict" }), async dir => {
+        process.env[COMMAND_SANDBOX_MODE_ENV] = "off"
+        const c = await loadSandboxConfig(dir)
+        expect(c.mode).toBe("off")
+      })
+    })
+
+    it("is ignored when set to an invalid value", async () => {
+      await withConfig(JSON.stringify({ mode: "workspace" }), async dir => {
+        process.env[COMMAND_SANDBOX_MODE_ENV] = "bananas"
+        expect((await loadSandboxConfig(dir)).mode).toBe("workspace")
+      })
+    })
+
+    it("forcing 'strict' via env implies network deny even though the file didn't ask for it", async () => {
+      await withConfig(JSON.stringify({ mode: "workspace" }), async dir => {
+        process.env[COMMAND_SANDBOX_MODE_ENV] = "strict"
+        const c = await loadSandboxConfig(dir)
+        expect(c.mode).toBe("strict")
+        expect(c.network).toBe("deny")
+      })
     })
   })
 })

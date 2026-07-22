@@ -16,6 +16,22 @@
  * The Seatbelt profile was validated empirically (2026-07): under it `node` /
  * `cat` read workspace files fine, `~/.ssh` reads fail with EPERM, and strict
  * mode makes network connects fail with EPERM.
+ *
+ * ## Why the default stays OFF (re-verified 2026-07-22)
+ *
+ * `workspace` mode denies the WHOLE home directory except the workspace
+ * subpath — which is exactly what real, currently-relied-upon commands
+ * through `command_execute` don't survive: empirically, under a Seatbelt
+ * profile built this way, `gh` fails outright (`open ~/.config/gh/config.yml:
+ * operation not permitted`) and `pnpm` fails harder — it needs to both READ
+ * `~/.npmrc` / `~/Library/Preferences/pnpm/rc` AND WRITE its self-managed
+ * toolchain under `~/Library/pnpm/.tools/...`, and `extraReadPaths` can't fix
+ * a write. So flipping the hard default risks silently breaking every
+ * gh/pnpm-driven flow that shells through `command_execute` today. See
+ * `command-tools.ts`'s `registerCommandTools` for the loud per-call warning
+ * this ships instead, and `COMMAND_SANDBOX_MODE_ENV` below for the operator
+ * escape hatch into (or out of) confinement without editing the tracked
+ * config file.
  */
 
 import { existsSync } from "node:fs"
@@ -67,34 +83,58 @@ export const DEFAULT_SANDBOX_CONFIG: CommandSandboxConfig = {
 }
 
 /**
+ * Escape hatch: overrides the workspace config file's `mode` when set to a
+ * valid `SandboxMode`, without editing the tracked `.agentproto/
+ * command-sandbox.json`. Two directions this matters: forcing `off` when a
+ * workspace has opted into `workspace`/`strict` but one call legitimately
+ * needs broad access (e.g. a one-off `pnpm install`), or forcing `workspace`/
+ * `strict` on for a session/CI run without committing a config file. Any
+ * other value (unset, typo, empty) is ignored and the file/default applies.
+ */
+export const COMMAND_SANDBOX_MODE_ENV = "AGENTPROTO_COMMAND_SANDBOX_MODE"
+
+/**
  * Load + normalize the per-workspace sandbox config. Missing file, bad JSON, or
  * an unknown mode all fall back to `off` (fail-open on config, not on
  * confinement — a broken config must not silently pretend to sandbox; that's
  * surfaced by `command-tools.ts` when a mode is set but no backend exists).
+ * `COMMAND_SANDBOX_MODE_ENV`, when set to a valid mode, overrides whatever the
+ * file (or the default) resolved to.
  */
 export async function loadSandboxConfig(
   workspace: string,
 ): Promise<CommandSandboxConfig> {
   const path = resolve(workspace, CONFIG_REL)
-  if (!existsSync(path)) return DEFAULT_SANDBOX_CONFIG
-  try {
-    const parsed = JSON.parse(
-      await readFile(path, "utf8"),
-    ) as Partial<CommandSandboxConfig>
-    const mode: SandboxMode =
-      parsed.mode === "workspace" || parsed.mode === "strict"
-        ? parsed.mode
-        : "off"
-    const extraReadPaths = Array.isArray(parsed.extraReadPaths)
-      ? parsed.extraReadPaths.filter((x): x is string => typeof x === "string")
-      : []
-    // strict implies network deny; workspace honors the field (default allow).
-    const network: "deny" | "allow" =
-      mode === "strict" || parsed.network === "deny" ? "deny" : "allow"
-    return { mode, extraReadPaths, network }
-  } catch {
-    return DEFAULT_SANDBOX_CONFIG
+  let resolved = DEFAULT_SANDBOX_CONFIG
+  if (existsSync(path)) {
+    try {
+      const parsed = JSON.parse(
+        await readFile(path, "utf8"),
+      ) as Partial<CommandSandboxConfig>
+      const mode: SandboxMode =
+        parsed.mode === "workspace" || parsed.mode === "strict"
+          ? parsed.mode
+          : "off"
+      const extraReadPaths = Array.isArray(parsed.extraReadPaths)
+        ? parsed.extraReadPaths.filter((x): x is string => typeof x === "string")
+        : []
+      // strict implies network deny; workspace honors the field (default allow).
+      const network: "deny" | "allow" =
+        mode === "strict" || parsed.network === "deny" ? "deny" : "allow"
+      resolved = { mode, extraReadPaths, network }
+    } catch {
+      resolved = DEFAULT_SANDBOX_CONFIG
+    }
   }
+  const envMode = process.env[COMMAND_SANDBOX_MODE_ENV]
+  if (envMode === "off" || envMode === "workspace" || envMode === "strict") {
+    return {
+      ...resolved,
+      mode: envMode,
+      network: envMode === "strict" ? "deny" : resolved.network,
+    }
+  }
+  return resolved
 }
 
 /** Escape a path for embedding in an SBPL string literal. */
