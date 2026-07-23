@@ -63,6 +63,7 @@ import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
+import type { WorktreeGcRunner } from "./worktree-gc.js"
 
 /** Re-exported from agent-tools.ts for backwards compatibility. */
 export { stripAnsi } from "./agent-tools.js"
@@ -210,6 +211,15 @@ export interface RegisterSessionToolsOptions {
    * clear "not enabled" error.
    */
   listWorktreeStatuses?: WorktreeStatusLister
+  /**
+   * Optional git-worktree `gc` runner powering `worktree_gc`. Injected here
+   * (rather than defaulted inside the runtime) for the same reason as
+   * `listWorktreeStatuses`: the plan/apply engine runs over
+   * `@agentproto/worktree`, a dependency the runtime deliberately does NOT
+   * take. The CLI wires it. Omitted → `worktree_gc` returns a clear "not
+   * enabled" error.
+   */
+  runWorktreeGc?: WorktreeGcRunner
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -236,6 +246,7 @@ export function registerSessionTools(
     callerScope,
     resolveAgentAdapter,
     listWorktreeStatuses,
+    runWorktreeGc,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
 
@@ -961,6 +972,126 @@ export function registerSessionTools(
             {
               type: "text",
               text: `worktree_status failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── worktree_gc ──────────────────────────────────────────────────
+  // The transport surface over the `gc` engine (`planGc` / `applyGc` in
+  // `@agentproto/worktree`). All classification + safety logic lives in the
+  // engine and is untouched here: `reclaim` fires only when integration ∈
+  // {merged, fresh} AND the tree is clean (teardown is merge-gated), an OPEN
+  // PR is always `hold` and never touched, and a dirty-but-integrated
+  // worktree is only ever archived with `salvageDirty`. This tool defaults to
+  // a DRY RUN — `apply` is false unless explicitly set — and delegates every
+  // fact and mutation to the injected `runWorktreeGc` port.
+
+  server.tool(
+    "worktree_gc",
+    "Garbage-collect the linked git worktrees for a repo. DEFAULTS TO A DRY " +
+      "RUN: with `apply` false (the default) it returns the plan — each " +
+      "worktree classified as `reclaim` (merged/fresh + clean → safe to " +
+      "remove), `salvage` (integrated but dirty), or `hold` (open PR, live " +
+      "sessions, or anything unresolved) — and mutates nothing. Pass " +
+      "`apply: true` to execute: `reclaim` entries are removed and their " +
+      "branch deleted, and `salvage` entries are archived first (only when " +
+      "`salvageDirty` is also true), never silently discarded. `hold` " +
+      "entries are never touched. Each entry is re-classified from scratch " +
+      "immediately before it is touched, so a plan that has gone stale is " +
+      "refused rather than acted on.",
+    {
+      repoRoot: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to the git repo root whose worktrees to gc. " +
+            "Wins over `workspaceSlug` when both are set."
+        ),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe(
+          "Workspace slug from `agentproto workspace list`. Resolves the " +
+            "repo root via the active workspace when omitted."
+        ),
+      apply: mcpBool
+        .optional()
+        .describe(
+          "When true, EXECUTE the plan (reclaim/salvage). Default false — a " +
+            "dry run that returns the plan and mutates nothing."
+        ),
+      salvageDirty: mcpBool
+        .optional()
+        .describe(
+          "When true, archive (snapshot-then-remove) every `salvage`-class " +
+            "worktree during `apply`. Default false — salvage entries are " +
+            "left untouched. Ignored on a dry run."
+        ),
+      includeDetached: mcpBool
+        .optional()
+        .describe(
+          "When true, a clean, idle detached worktree is reclaimed instead " +
+            "of held. Default false. This is the only flag that can promote " +
+            "an entry toward reclaim; no flag ever weakens a hold otherwise."
+        ),
+    },
+    async input => {
+      if (!runWorktreeGc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "worktree_gc is not enabled — the daemon was started without " +
+                "a worktree gc runner. The host must wire `runWorktreeGc` " +
+                "in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: resolved.error }, null, 2),
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      try {
+        const result = await runWorktreeGc({
+          repoRoot: resolved.repoRoot,
+          apply: input.apply === true,
+          salvageDirty: input.salvageDirty === true,
+          includeDetached: input.includeDetached === true,
+        })
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `worktree_gc failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,
