@@ -108,7 +108,7 @@ Two rule forms:
 | Form | Flags | Notes |
 |------|-------|-------|
 | Flag rules | `--allow-tool <pat>`, `--deny-tool <pat>`, optional `--session <id>`, optional `--always` | `--deny-tool` rules are evaluated **before** `--allow-tool` rules. Patterns are exact tool names or `*`-globs (e.g. `mcp__*`). |
-| JSON rules | `--rules-json <json|@file>` | Full rule array; mutually exclusive with the flag rules. |
+| JSON rules | `--rules-json <json\|@file>` | Full rule array; mutually exclusive with the flag rules. |
 
 A `--rules-json` rule looks like:
 
