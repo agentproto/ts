@@ -40,6 +40,8 @@ import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
+  serviceableModelRoutes,
+  suggestModelSlugs,
 } from "./catalog-models.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
@@ -813,6 +815,41 @@ export async function spawnAgentSession(
         }
       }
       worktreeRequest = decision.request
+    }
+  }
+  // ── Model-slug advisory (opaque late failure → early "did you mean") ──────
+  // The money-safety guard below (`checkModelWalletEligibility`) DELIBERATELY
+  // passes a slug unknown to the local catalog (`serviceableModelRoutes` empty
+  // ⇒ a mismatch can't be proven, so it never rejects): a genuinely-new model,
+  // and an adapter like hermes whose `model` option is free-form OpenRouter/
+  // OpenAI ids, must still spawn. The cost of that latitude is a TYPO'd slug —
+  // `deepseek-chat` for `deepseek/deepseek-chat`, `moonshot/kimi-k2` for
+  // `moonshotai/kimi-k2`, `glm-5.2` for `z-ai/glm-5.2` — sailing through and
+  // 404'ing opaquely deep inside the provider call, with nothing at the spawn
+  // boundary to point at it. When the caller named an EXPLICIT `model` the
+  // catalog doesn't know BUT a known id shares its bare product (the wrong- or
+  // missing-vendor/route-prefix signal), surface a non-fatal "did you mean" so
+  // the breadcrumb lands in the spawn response (`warnings`) + the log instead
+  // of only in an upstream stack trace. Advisory, NEVER a reject — a
+  // suggestion-less unknown slug (a real new model) still spawns silently, in
+  // step with the guard's own never-reject-an-unknown-model rule. Skipped for a
+  // sandbox spawn (the box's own daemon validates its model) and for the
+  // adapter's own default (always a catalogued id).
+  if (
+    input.sandbox === undefined &&
+    input.model !== undefined &&
+    serviceableModelRoutes(input.model).length === 0
+  ) {
+    const suggestions = suggestModelSlugs(input.model)
+    if (suggestions.length > 0) {
+      const warn =
+        `agent_start: model "${input.model}" is not in the local model catalog, but ` +
+        `${suggestions.length > 1 ? "these known ids share" : `"${suggestions[0]}" shares`} its ` +
+        `name — did you mean ${suggestions.map(s => `"${s}"`).join(", ")}? Spawning anyway ` +
+        `(the adapter/provider validates the slug upstream); if this is a typo it will fail ` +
+        `opaquely there, so re-spawn with the fully-qualified id above.`
+      spawnWarnings.push(warn)
+      console.warn(`[agent_start] ${warn}`)
     }
   }
   // Config-level defaults (WP: session-skills-defaults) — auto-apply

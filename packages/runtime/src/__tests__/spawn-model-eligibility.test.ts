@@ -25,6 +25,7 @@ import {
   serviceableModelRoutes,
   checkModelWalletEligibility,
   modelWalletIneligibleMessage,
+  suggestModelSlugs,
 } from "../catalog-models.js"
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { restartAgentSession, RestartOverrideError } from "../session-restart-core.js"
@@ -104,6 +105,30 @@ describe("serviceableModelRoutes — reuses the catalog route-resolution", () =>
 
   it("an unknown model resolves to NO routes (a mismatch cannot be proven ⇒ never reject)", () => {
     expect(serviceableModelRoutes("totally-made-up-xyz-model")).toEqual([])
+  })
+})
+
+describe("suggestModelSlugs — the 'did you mean' matcher for unknown slugs", () => {
+  it("suggests the fully-qualified id when the vendor prefix is missing", () => {
+    // The exact typo class the advisory exists for — a valid product with the
+    // vendor/route prefix dropped.
+    expect(suggestModelSlugs("deepseek-chat")).toContain("deepseek/deepseek-chat")
+    expect(suggestModelSlugs("glm-5.2")).toContain("z-ai/glm-5.2")
+  })
+
+  it("suggests the right vendor when the WRONG prefix was used", () => {
+    // `moonshot/…` is not a catalog vendor; the openrouter vendor is `moonshotai`.
+    expect(suggestModelSlugs("moonshot/kimi-k2")).toContain("moonshotai/kimi-k2")
+  })
+
+  it("returns nothing for a slug that shares no product with any known id", () => {
+    // A genuinely-new / free-form slug must NOT earn a spurious suggestion —
+    // parity with the guard's never-reject-an-unknown-model rule.
+    expect(suggestModelSlugs("totally-made-up-xyz-model")).toEqual([])
+  })
+
+  it("does not suggest itself for an already-known id", () => {
+    expect(suggestModelSlugs("z-ai/glm-5.2")).not.toContain("z-ai/glm-5.2")
   })
 })
 
@@ -205,6 +230,49 @@ describe("spawnAgentSession — money-safety guard at the spawn boundary", () =>
     })
     expect(result.ok).toBe(true)
     expect(startSession).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("spawnAgentSession — model-slug 'did you mean' advisory", () => {
+  it("warns (but still spawns) on a typo'd slug that drops the vendor prefix", async () => {
+    const { resolver, startSession } = makeResolver(undefined)
+    const result = await spawnAgentSession(deps(resolver), {
+      adapter: "hermes",
+      cwd: "/tmp",
+      model: "deepseek-chat", // meant "deepseek/deepseek-chat"
+    })
+    // Advisory, never a reject — the free-form / new-model latitude is preserved.
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings?.some(w => w.includes("deepseek/deepseek-chat"))).toBe(true)
+    expect(result.warnings?.some(w => w.includes("did you mean"))).toBe(true)
+  })
+
+  it("does NOT warn on a valid catalog slug", async () => {
+    const { resolver, startSession } = makeResolver(undefined)
+    const result = await spawnAgentSession(deps(resolver), {
+      adapter: "hermes",
+      cwd: "/tmp",
+      model: "z-ai/glm-5.2",
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings?.some(w => w.includes("did you mean"))).toBeFalsy()
+  })
+
+  it("does NOT warn on a genuinely-unknown slug with no near match (a real new model)", async () => {
+    const { resolver, startSession } = makeResolver(undefined)
+    const result = await spawnAgentSession(deps(resolver), {
+      adapter: "hermes",
+      cwd: "/tmp",
+      model: "acme/brand-new-model-v1",
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledTimes(1)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings?.some(w => w.includes("did you mean"))).toBeFalsy()
   })
 })
 
