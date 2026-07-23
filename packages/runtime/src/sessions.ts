@@ -32,6 +32,10 @@ import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import { runShellGate } from "./supervisor.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
+import {
+  regenerateActivitySummary,
+  type SessionActivitySummary,
+} from "./session-activity.js"
 import type {
   AuthMethod,
   ContextProfile,
@@ -618,6 +622,21 @@ export interface SessionDescriptor {
    *  NEW spawns, which now stamp `renamedByUser: false` explicitly, let the
    *  derived title win over the spawn label. */
   renamedByUser?: boolean
+  /** SECONDARY, auto-regenerating "activity" line — what this session is
+   *  CURRENTLY doing, distinct from and NEVER a substitute for the frozen
+   *  `title`. Recomputed on turn-end (throttled) via the SAME heuristic
+   *  `summarize_session` serves the overview panel (`regenerateActivitySummary`
+   *  → `summarizeLines` + `deriveSessionState`) — no LLM. Persisted (spread with
+   *  every other field into the snapshot) so a client — the VSCode Sessions
+   *  tree — can render it as the row's secondary line from `session_list`
+   *  alone, WITHOUT opening the session or calling `summarize_session` per row.
+   *
+   *  Two invariants (see `regenerateActivitySummary`): it NEVER writes `title`,
+   *  and it is NEVER regenerated for a session a human renamed (`renamedByUser`)
+   *  — that session's activity semantics are frozen. The documented swap point
+   *  for an optional LLM summariser is `regenerateActivitySummary`; the default
+   *  stays heuristic. Absent until the first turn-end regenerates it. */
+  activitySummary?: SessionActivitySummary
   /** Housekeeping-only visibility flag: hides the session from `list()`'s
    *  default view (`session_list`, `GET /sessions`, panels) once set. Never
    *  touches the daemon otherwise — the process is already gone by the time
@@ -3486,6 +3505,19 @@ export function createSessionsRegistry(opts?: {
               `verify the model slug (agentproto models <adapter>).\x1b[0m`,
             "stderr",
           )
+        }
+
+        // ── Activity summary (secondary dynamic label) ───────────────
+        // Regenerate the persisted "what is this session doing now" line
+        // from the SAME heuristic `summarize_session` serves the overview
+        // panel — no LLM. `regenerateActivitySummary` owns both invariants:
+        // it never touches `title`, and it returns null (a no-op) for a
+        // human-renamed session or one regenerated too recently (throttle).
+        // Swap its body for a model call to upgrade the line later.
+        const nextActivity = regenerateActivitySummary(rt.desc, rt.recentLines, Date.now())
+        if (nextActivity) {
+          rt.desc.activitySummary = nextActivity
+          schedulePersist()
         }
 
         if (sessionEvents) {

@@ -141,6 +141,27 @@ export function labelFor(session: SessionDescriptor): string {
 }
 
 /**
+ * Max width for the live activity line when it leads a tree-row description.
+ * The daemon caps the stored text at 160, still too wide for a narrow sidebar
+ * row where the isolation/time metadata has to fit after it — the untruncated
+ * text stays in the tooltip (`tooltipFieldsFor`).
+ */
+export const ACTIVITY_ROW_MAX = 72
+
+/**
+ * The session's live activity line as one row segment, or undefined when there
+ * is none to show. Reads the persisted heuristic `activitySummary.text` the
+ * daemon regenerates on turn-end ("what this session is doing now"), truncated
+ * to keep the row readable. Blank/whitespace text is treated as absent so an
+ * empty summary never leads a row with a bare ellipsis.
+ */
+export function activityLineFor(session: SessionDescriptor): string | undefined {
+  const text = session.activitySummary?.text?.trim()
+  if (!text) return undefined
+  return text.length > ACTIVITY_ROW_MAX ? `${text.slice(0, ACTIVITY_ROW_MAX - 1)}…` : text
+}
+
+/**
  * Item description.
  *  - Without ctx (default): `adapterSlug ?? kind` + model (if any) + status —
  *    byte-identical to the pre-filter behavior existing call sites depend on.
@@ -167,7 +188,15 @@ export function descriptionFor(session: SessionDescriptor, ctx?: DescriptionCont
     parts.push(session.status)
     return parts.join(" · ")
   }
-  const parts: string[] = [isolationLabelFor(session)]
+  const parts: string[] = []
+  // The live activity line LEADS the row when present — it's the "what is this
+  // doing now" answer a list glance is for, so it outranks the isolation/time
+  // metadata behind it (which the tooltip also carries). Absent (no turn-end
+  // yet, or a human-renamed session the daemon never regenerates) → the row
+  // reads exactly as before.
+  const activity = activityLineFor(session)
+  if (activity) parts.push(activity)
+  parts.push(isolationLabelFor(session))
   if (session.origin) parts.push(`via ${session.origin}`)
   if (typeof ctx.now === "number") parts.push(relativeTime(session.startedAt, ctx.now))
   // A spawner says so on its own row. Indentation already nests the children,
@@ -441,7 +470,7 @@ export function contextPercent(used?: number, size?: number): string | undefined
   return `${Math.round((used / size) * 100)}%`
 }
 
-/** Ordered tooltip fields: id, cwd, isolation, pid, startedAt, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
+/** Ordered tooltip fields: id, cwd, isolation, pid, startedAt, activity, turnsCompleted, costUsd, tokensIn/Out, context %, blockedOn. */
 export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   const fields: TooltipField[] = [{ label: "id", value: session.id }]
   if (session.cwd) fields.push({ label: "cwd", value: session.cwd })
@@ -460,6 +489,17 @@ export function tooltipFieldsFor(session: SessionDescriptor): TooltipField[] {
   }
   fields.push({ label: "pid", value: session.pid == null ? "—" : String(session.pid) })
   fields.push({ label: "startedAt", value: session.startedAt })
+  // The full activity line (the row shows only a truncated lead segment) plus
+  // its coarse state — the tooltip is where the untruncated "what it's doing"
+  // sentence lives.
+  if (session.activitySummary?.text?.trim()) {
+    fields.push({
+      label: "activity",
+      value: session.activitySummary.state
+        ? `${session.activitySummary.text} (${session.activitySummary.state})`
+        : session.activitySummary.text,
+    })
+  }
   if (typeof session.turnsCompleted === "number") {
     fields.push({ label: "turns", value: String(session.turnsCompleted) })
   }
