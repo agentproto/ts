@@ -421,6 +421,8 @@ export {
   type OrchestratorInjector,
   type OrchestratorInjection,
   type OrchestratorInjectorDeps,
+  reapOrphanedDescendants,
+  type OrphanReaperRegistry,
 } from "./orchestrator-gateway.js"
 
 // Blocking-wait service functions + supervisor types — shared between the
