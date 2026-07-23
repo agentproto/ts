@@ -43,7 +43,7 @@ export interface RoutineDefinition {
   /**
    * What the routine invokes when it fires.
    */
-  target: TargetAction | TargetWorkflow | TargetTool
+  target: TargetAction | TargetAgent | TargetWorkflow | TargetTool
   /**
    * Identity that owns the routine fire (AIP-23). Defaults to host policy.
    */
@@ -139,6 +139,22 @@ export interface TargetAction {
    */
   inputs?: {
     [k: string]: unknown
+  }
+}
+/**
+ * Ergonomic sugar target — spawns an agent session directly (lowers to an
+ * `agent_start` tool call in the runtime bridge). NOT part of the upstream
+ * AIP-41 draft JSON Schema yet — see packages/routine/README.md "Runtime
+ * bridge" section for the specs-repo follow-up this implies.
+ */
+export interface TargetAgent {
+  agent: {
+    /** Agent adapter slug (e.g. 'claude-code', 'hermes'). */
+    adapter: string
+    /** Initial prompt / consigne sent to the spawned agent. */
+    prompt: string
+    model?: string
+    cwd?: string
   }
 }
 export interface TargetWorkflow {

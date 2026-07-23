@@ -21,4 +21,5 @@ export {
   routineFromManifest,
   routineFrontmatterSchema,
   type RoutineManifest,
+  type RoutineFrontmatter,
 } from "./manifest/index.js"

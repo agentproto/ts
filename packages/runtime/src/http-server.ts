@@ -618,6 +618,13 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
+  /** Optional — when wired, exposes `POST /routine-defs/:id/trigger` — fires
+   *  an AIP-41 `.routines/<id>/ROUTINE.md` routine's target immediately,
+   *  bypassing its schedule (mirrors `POST /cron/:id/run`). Deliberately NOT
+   *  mounted under `/routines/*` — that prefix is already `routineRunner`'s
+   *  (an unrelated ad-hoc primitive, see `routine-registrar.ts`). Without it
+   *  the route 404s. */
+  routineRegistrar?: import("./routine-registrar.js").RoutineRegistrar
   /** Optional — when wired, exposes /routines/* routes for starting and
    *  managing background routine runs (sequential steps with per-step
    *  fan-in). Same service the MCP `routine_start/status/cancel/
@@ -2362,6 +2369,14 @@ export async function startHttpServer(
         // a CronScheduler. /cron, /cron/:id, /cron/:id/run.
         if (opts.cronScheduler && path.startsWith("/cron")) {
           const handled = await handleCron(req, res, path, opts.cronScheduler)
+          if (handled) return
+        }
+
+        // AIP-41 routine-def manual trigger — deliberately NOT under
+        // /routines/* (that prefix is routineRunner's, an unrelated
+        // primitive — see routine-registrar.ts). Only /routine-defs/:id/trigger.
+        if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
+          const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
           if (handled) return
         }
 
@@ -5285,6 +5300,42 @@ async function handleCron(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(404, { error: "job_not_found", message: msg })
+    }
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /routine-defs routes:
+ *   POST /routine-defs/:id/trigger → fire an AIP-41 routine's target
+ *   immediately, bypassing its schedule (mirrors POST /cron/:id/run).
+ *
+ * Mounted at a different prefix than /routines/* on purpose — that prefix
+ * already belongs to `routineRunner` (see routine-registrar.ts SPEC note).
+ */
+async function handleRoutineDefs(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registrar: import("./routine-registrar.js").RoutineRegistrar,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  const triggerMatch = path.match(/^\/routine-defs\/([^/]+)\/trigger$/)
+  if (triggerMatch && req.method === "POST") {
+    const routineId = decodeURIComponent(triggerMatch[1] ?? "")
+    try {
+      const result = await registrar.trigger(routineId)
+      json(200, { routineId, ...result })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes("not found") ? 404 : 500
+      json(status, { error: "trigger_failed", message: msg })
     }
     return true
   }
