@@ -20,6 +20,18 @@ export {
   defineAgentCli,
   createAgentCliRuntime,
 } from "./define-agent-cli.js"
+// The live-session control surface (setModel/setSessionMode/setEffort +
+// the availableConfigOptions/availableModes/currentModeId read-surface),
+// factored out of `createAgentCliRuntime` so a host that builds its OWN
+// `AgentCliRuntimeSession` over another transport (sandbox-resident,
+// tunnel-resident) delegates to the same implementation instead of
+// hand-copying it and drifting on the next interface change.
+export {
+  createArmSessionControls,
+  applyModelCommand,
+  promptTurn,
+  type ArmSessionControls,
+} from "./session-controls.js"
 // Agent CLI → generic model port: one executor backing every prompt→completion
 // seam (report writer, corpus distiller, Mastra judgment step) over any AIP-45 CLI.
 export {
@@ -136,4 +148,12 @@ export type {
   RuntimeConfig,
   TurnContext,
   StreamEvent,
+  // Result vocabularies for the three mid-session switches, and the two
+  // read-surface element types. Exported so a host can name what
+  // `AgentCliRuntimeSession`'s members hand back.
+  SetModelResult,
+  SetSessionModeResult,
+  SetEffortResult,
+  SessionConfigOption,
+  SessionMode,
 } from "./types.js"

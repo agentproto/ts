@@ -10,6 +10,11 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import {
+  applyModelCommand,
+  createArmSessionControls,
+  promptTurn,
+} from "./session-controls.js"
 import type {
   AgentCliClient,
   AgentCliDefinition,
@@ -18,9 +23,7 @@ import type {
   AgentCliRuntimeSession,
   AgentCliStartOptions,
   ResolvedAuthSpec,
-  SetEffortResult,
   SetModelResult,
-  SetSessionModeResult,
   StreamEvent,
 } from "./types.js"
 
@@ -453,15 +456,11 @@ export function createAgentCliRuntime(
       return {
         sessionId,
         pid: child?.pid,
-        // Capability read-surface (SPEC §3.9/§3.4a) — snapshotted once
-        // `arm.connect()` above has resolved, so an ACP arm's captured
-        // `newSession`/`loadSession` response is already populated. Arms
-        // that don't model this (print, proprietary) leave the getters
-        // undefined, defaulted here to the same empty/absent shape their
-        // `setModel`-style counterparts use for "not supported".
-        availableConfigOptions: arm.availableConfigOptions ?? [],
-        availableModes: arm.availableModes ?? [],
-        currentModeId: arm.currentModeId,
+        // Live model/mode/effort switches + the capability read-surface,
+        // all pure arm delegation — shared with every host that builds
+        // its own session over another transport. See session-controls.ts.
+        // Snapshotted after `arm.connect()` above resolved.
+        ...createArmSessionControls(arm, definition),
         send(message): AsyncIterable<StreamEvent> {
           const turnId = randomUUID()
           currentTurnId = turnId
@@ -510,144 +509,12 @@ export function createAgentCliRuntime(
               },
             }
           : {}),
-        /**
-         * Mid-session model switch — the runtime counterpart to the
-         * spawn-time `modelApply` handling above. Dispatches on the same
-         * `definition.models.apply` strategy so a live switch behaves
-         * exactly like the spawn-time apply would have, just against an
-         * already-running session. See {@link SetModelResult} for the
-         * reason vocabulary; this never throws and never tears down the
-         * session on a rejected switch.
-         */
-        async setModel(modelId: string): Promise<SetModelResult> {
-          if (modelApply === "arg") {
-            // This CLI takes its model as a spawn-time argv token
-            // (bin_args_template, composed once before spawn) — there is
-            // no live surface to change it against a running session.
-            return { applied: false, reason: "requires-restart" }
-          }
-          if (modelApply === "command") {
-            return applyModelCommand(arm, modelId)
-          }
-          // "config" (default): apply via the arm's setConfigOption, which
-          // only the ACP arm implements — other arms (print, proprietary)
-          // simply don't have a mid-session config surface.
-          if (!arm.setConfigOption) {
-            return { applied: false, reason: "not-supported" }
-          }
-          const result = await arm.setConfigOption("model", modelId)
-          return result.applied
-            ? { applied: true, model: modelId }
-            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
-        },
-        /**
-         * Mid-session posture switch — the native-mode counterpart to
-         * `setModel`, wired directly to the arm's `setSessionMode` (only
-         * the ACP arm implements it). See {@link SetSessionModeResult} for
-         * the reason vocabulary; this never throws and never tears down
-         * the session on a rejected switch.
-         */
-        async setSessionMode(modeId: string): Promise<SetSessionModeResult> {
-          if (!arm.setSessionMode) {
-            return { applied: false, reason: "not-supported" }
-          }
-          const result = await arm.setSessionMode(modeId)
-          return result.applied
-            ? { applied: true, modeId }
-            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
-        },
-        /**
-         * Mid-session effort switch — the effort-axis counterpart to
-         * `setModel`'s `"config"` strategy, wired to the same
-         * `arm.setConfigOption` surface with `configId:"effort"` (only the
-         * ACP arm implements it). Best-effort and non-fatal: an effort label
-         * the current model rejects resolves `{applied:false, reason}` (SPEC
-         * risk R7), never thrown and never tearing down the session. See
-         * {@link SetEffortResult} for the reason vocabulary.
-         */
-        async setEffort(effort: string): Promise<SetEffortResult> {
-          if (!arm.setConfigOption) {
-            return { applied: false, reason: "not-supported" }
-          }
-          const result = await arm.setConfigOption("effort", effort)
-          return result.applied
-            ? { applied: true, effort }
-            : { applied: false, ...(result.reason ? { reason: result.reason } : {}) }
-        },
         async close() {
           await arm.close()
           if (child && !child.killed) child.kill("SIGTERM")
         },
       }
     },
-  }
-}
-
-/**
- * Switch the active model via a `/model <id>` control turn, for adapters
- * whose ACP session config doesn't select the model (`models.apply:
- * "command"`, e.g. hermes). The turn is fully drained so the switch
- * completes before the caller's next real turn. Best-effort: a transport
- * failure or a missing acknowledgement is warned and reported as
- * `{applied:false, reason}`, never thrown — the session simply continues
- * on whatever model it already had. Shared by the spawn-time apply (return
- * value ignored there, same as before this returned a result) and the
- * mid-session `setModel("command")` path (return value surfaced to the
- * caller).
- */
-async function applyModelCommand(
-  arm: AgentCliClient,
-  modelId: string,
-): Promise<SetModelResult> {
-  const turnId = randomUUID()
-  let acked = false
-  try {
-    for await (const evt of promptTurn(arm, turnId, {
-      type: "text",
-      text: `/model ${modelId}`,
-    })) {
-      // Loose check across the serialised event — hermes replies
-      // "Model switched to: <id> · Provider: …". We don't couple to a
-      // specific StreamEvent shape; any "switch" mention = acknowledged.
-      if (/switch|model\s+set|now using/i.test(JSON.stringify(evt))) acked = true
-    }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    console.warn(
-      `[agent-cli] /model ${modelId} control turn failed (continuing on default):`,
-      err instanceof Error ? err.message : err,
-    )
-    return { applied: false, reason }
-  }
-  if (!acked) {
-    const reason = "no switch acknowledgement — agent may be on its default model"
-    console.warn(`[agent-cli] /model ${modelId}: ${reason}`)
-    return { applied: false, reason }
-  }
-  return { applied: true, model: modelId }
-}
-
-async function* promptTurn(
-  arm: AgentCliClient,
-  turnId: string,
-  message: unknown,
-): AsyncIterable<StreamEvent> {
-  await arm.send(turnId, message)
-  // Re-attach the recent stderr tail to error events. The ACP layer
-  // surfaces a terse `{message: "Invalid params"}`; the child's
-  // stderr almost always has a more useful line ("npx claude-agent-acp:
-  // not authenticated, run `claude login`"). Hosts read `error.data`
-  // when present, falling back to `message` for older payloads.
-  const stderrTail = arm._stderrTail
-  for await (const evt of arm.events()) {
-    if (evt.kind === "error" && typeof stderrTail === "function") {
-      const tail = stderrTail()
-      if (tail) {
-        const existing = (evt.error.data ?? {}) as Record<string, unknown>
-        evt.error.data = { ...existing, stderr: tail }
-      }
-    }
-    yield evt
   }
 }
 
