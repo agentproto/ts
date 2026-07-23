@@ -99,6 +99,7 @@ import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
   createOrchestratorInjector,
+  reapOrphanedDescendants,
   type OrchestratorScope,
 } from "./orchestrator-gateway.js"
 
@@ -1074,6 +1075,20 @@ export async function createGateway(
     scopeTokens,
     sessionEvents,
     port,
+    // WP-B: when an orchestrator session exits/is killed, reap its live
+    // descendants (SIGTERM via the same `registry.kill` path `agent_kill`
+    // uses) alongside the scope-token revocation that already fires here —
+    // no orphaned children left running under a dead parent.
+    reapChildren: parentSessionId => {
+      const reaped = reapOrphanedDescendants(sessions, parentSessionId)
+      if (reaped.length > 0) {
+        console.warn(
+          `[orchestrator] reaped ${reaped.length} orphaned ` +
+            `${reaped.length === 1 ? "child" : "children"} of exited ` +
+            `session ${parentSessionId}: ${reaped.join(", ")}`,
+        )
+      }
+    },
   })
 
   // Scoped orchestrator sub-gateway (WP2). The scope-token registry
