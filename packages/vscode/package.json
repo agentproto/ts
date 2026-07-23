@@ -32,6 +32,7 @@
     "package": "pnpm run build && mkdir -p output && pnpm dlx @vscode/vsce package --no-dependencies --out output/"
   },
   "dependencies": {
+    "@agentproto/runtime": "workspace:*",
     "ws": "^8.20.0"
   },
   "devDependencies": {
@@ -197,6 +198,12 @@
         "title": "agentproto: Open Transcript",
         "category": "agentproto",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "agentproto.openStory",
+        "title": "agentproto: Open Story",
+        "category": "agentproto",
+        "icon": "$(book)"
       },
       {
         "command": "agentproto.copySessionId",
@@ -393,6 +400,11 @@
           "command": "agentproto.openTranscript",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "inline@4"
+        },
+        {
+          "command": "agentproto.openStory",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "group": "modify@0"
         },
         {
           "command": "agentproto.restartSession",
