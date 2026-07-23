@@ -377,6 +377,26 @@ export interface CatalogModelsResponse {
   vendors: CatalogVendor[]
 }
 
+/** One servable model in a provider's exhaustive enumeration, from the
+ *  read-only `catalog_provider_models` MCP tool (AIP-45 "+" picker). */
+export interface CatalogProviderModel {
+  id: string
+  /** llm / image / video / audio / voice. */
+  kind: string
+  /** User-facing name where the catalog carries one; else the id. */
+  label: string
+  /** The provider/route this model is served on, or null when none. */
+  route: string | null
+  /** Per-1M-token pricing for LLM models; null for the media kinds. */
+  pricing: CatalogPricing | null
+}
+
+/** Response shape of the `catalog_provider_models` MCP tool. */
+export interface CatalogProviderModelsResponse {
+  provider: string
+  models: CatalogProviderModel[]
+}
+
 /** User-facing info of a provider preset, from `list_provider_presets`. */
 export interface ProviderPresetInfo {
   schemaFlavor: string
