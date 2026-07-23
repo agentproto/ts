@@ -934,6 +934,12 @@ async function exportDaemonEventsSession(
       case "turn-end":
         flushAssistant()
         break
+      case "notice":
+        // Daemon-side system notice (e.g. the interrupted-turn resume banner)
+        // — surfaced as a system message, same as plan/error notices above.
+        flushAssistant()
+        messages.push({ role: "system", text: rec.text ?? "" })
+        break
       default:
         break
     }

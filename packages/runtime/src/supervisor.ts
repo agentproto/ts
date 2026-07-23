@@ -100,7 +100,7 @@ import {
   readFileSync,
   promises as fsp,
 } from "node:fs"
-import type { SessionsRegistry } from "./sessions.js"
+import { isResumable, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
@@ -1097,6 +1097,15 @@ export function createCompletionPolicySupervisor(opts: {
       sessionEvents.on("session:exited", ev => {
         if (!group.includes(ev.sessionId)) return
         if (group.length === 1) {
+          // A daemon-restart exit is RECOVERABLE — the lone watched session
+          // comes back in place with the same id (§4/§5), so it is NOT a
+          // terminal event for this watcher. Ignoring it keeps the policy
+          // alive whether it heard this emission live (a future construction
+          // re-order) or only re-armed after it (today's registry-then-
+          // supervisor order), so the ordering can't silently cancel every
+          // lone-session policy at boot. (fan-in groups below keep their
+          // existing member-done semantics — unchanged by this guard.)
+          if (ev.reason === "daemon-restart") return
           if (
             state.status === "watching" ||
             state.status === "gating" ||
@@ -1186,11 +1195,25 @@ export function createCompletionPolicySupervisor(opts: {
             continue
           }
 
-          // Active state at crash time. A member still counts as alive only if
-          // the registry still reports it running/starting.
+          // Active state at crash time. A member still counts as awaited if
+          // the registry reports it running/starting, OR if it died WITH the
+          // daemon and is resumable in place (killed + daemon-restart +
+          // isResumable). A daemon restart costs a session its liveness, not
+          // its policy: that session comes back (lazily on the next prompt, or
+          // eagerly in PR-4) with the SAME id, so its watcher must survive to
+          // gate on the resumed turn-end rather than be cancelled as "absent"
+          // (§5 ordering regression — pinned by policy-survives-daemon-restart
+          // test). Only a genuinely gone member (forgotten, or killed for a
+          // non-daemon reason) drops out.
           const isAlive = (id: string): boolean => {
             const s = registry.get(id)
-            return !!s && (s.status === "running" || s.status === "starting")
+            if (!s) return false
+            if (s.status === "running" || s.status === "starting") return true
+            return (
+              s.status === "killed" &&
+              s.endedReason === "daemon-restart" &&
+              isResumable(s)
+            )
           }
           const aliveGroup = group.filter(isAlive)
 

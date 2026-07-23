@@ -20,6 +20,7 @@ export type SessionEventType =
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
+  | "session:resumed"
   | "session:spawned"
   | "session:command-done"
   | "session:model-changed"
@@ -131,6 +132,35 @@ export interface SessionExitedEvent {
    *  (completion-policy supervisor, `session_monitor`) tell "my agent died
    *  because the daemon did" apart from a deliberate kill. Absent otherwise. */
   reason?: "daemon-restart"
+}
+
+/**
+ * Emitted when a dead agent-cli row is brought back IN PLACE — same session
+ * id, same descriptor — by the lazy resume-on-prompt path (`maybeResumeAgent`)
+ * today, and by the future eager resume-on-boot pass (PR-4). Distinct from
+ * `session:spawned` (a brand-new id) and from `session:exited` (the death this
+ * recovers from): a watcher (completion-policy supervisor, `session_monitor`)
+ * uses it to learn the session is promptable again without polling.
+ *
+ * `interrupted` mirrors the derived interrupted-turn marker (§4): `true` when
+ * the session died with a turn in flight (`killedMidTurn`) under a daemon
+ * restart, so the consumer can tell "back and idle" from "back with dropped
+ * work that was NOT re-run — a re-prompt is required to continue." This path
+ * NEVER auto-retries the interrupted prompt (a prompt is not idempotent). See
+ * the interrupted-turn contract in the session-survivability plan.
+ *
+ * `resumedFrom` records what the row was recovering from — today always
+ * `"daemon-restart"`, the only reason an in-place resume fires. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`).
+ */
+export interface SessionResumedEvent {
+  type: "session:resumed"
+  sessionId: string
+  interrupted: boolean
+  resumedFrom: "daemon-restart"
+  label?: string
+  ts: string
 }
 
 /** Emitted when command_execute finishes. commandId matches the id
@@ -354,6 +384,7 @@ export type SessionEvent =
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
+  | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
