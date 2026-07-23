@@ -13,6 +13,7 @@ export type SessionContextValue =
   | "session-live"
   | "session-awaiting"
   | "session-done"
+  | "session-interrupted"
 
 export interface SessionIcon {
   /** Codicon id (e.g. "play", "sync~spin") — no leading "$()". */
@@ -365,13 +366,46 @@ export function iconFor(session: SessionDescriptor, now?: number, unread?: boole
   return ACTIVITY_ICONS[activity]
 }
 
-/** contextValue for menu gating: session-pending / session-live / session-awaiting / session-done. */
+/**
+ * A `killed` agent-cli row that died because the DAEMON went away out from
+ * under it (`endedReason === "daemon-restart"`) — not an operator kill, a
+ * natural exit, or an error. Such a row is a "resumable ghost": its descriptor
+ * and the provider-side conversation both survive on disk, and a single plain
+ * prompt to the SAME session id transparently revives it in place — the
+ * daemon's lazy resume-on-prompt path (#634 billing-auth re-resolution, #635
+ * interrupted-turn contract). Same id, same history.
+ *
+ * This is categorically different from `session_restart` (canRestart), which
+ * mints a brand-NEW id — the two must never be conflated. PTY rows are excluded
+ * unconditionally: a raw screen/shell can't be reconstructed in place, so those
+ * revive only through `session_restart`'s pty-native `claude --resume` (new id).
+ *
+ * `interrupted` (SessionDescriptor.interrupted, #635) is ORTHOGONAL to this: a
+ * daemon-restart ghost that was idle at death is still resumable in place here,
+ * it just lost no work. `interrupted` only says whether the resume will surface
+ * a "previous turn was dropped" banner.
+ */
+export function isResumableInPlace(session: SessionDescriptor): boolean {
+  return (
+    session.kind === "agent-cli" &&
+    session.pty !== true &&
+    session.status === "killed" &&
+    session.endedReason === "daemon-restart"
+  )
+}
+
+/** contextValue for menu gating: session-pending / session-live / session-awaiting / session-done / session-interrupted. */
 export function contextValueFor(session: SessionDescriptor): SessionContextValue {
   // An optimistic row is not a session yet — it has no daemon-side id, so every
   // action on it (prompt, stop, restart) would 404. Its own contextValue means
   // the menus simply never offer them.
   if (isPendingSession(session)) return "session-pending"
-  if (TERMINAL_STATUSES.has(session.status)) return "session-done"
+  if (TERMINAL_STATUSES.has(session.status)) {
+    // A daemon-restart ghost is terminal too, but it earns its OWN value so the
+    // menus can offer resume-in-place (a plain prompt, same id) instead of only
+    // new-id `session_restart`. Every other terminal row stays `session-done`.
+    return isResumableInPlace(session) ? "session-interrupted" : "session-done"
+  }
   if (isAwaiting(session)) return "session-awaiting"
   return "session-live"
 }

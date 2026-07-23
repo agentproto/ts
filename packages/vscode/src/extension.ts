@@ -23,6 +23,7 @@ import { registerSessionArchive } from "./commands/sessionArchive.js"
 import { registerSessionRename } from "./commands/sessionRename.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
 import { registerSessionRestart } from "./commands/sessionRestart.js"
+import { registerSessionResume } from "./commands/sessionResume.js"
 import { registerSessionAccessProfile } from "./commands/sessionAccessProfile.js"
 import { registerImportConversationCommand } from "./commands/importConversation.js"
 import { registerSelectWorkspaceCommand } from "./commands/selectWorkspace.js"
@@ -91,7 +92,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionActions(ctx, client, store)
   registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
   registerPermissionCommands(ctx, client, store)
-  registerSessionRestart(ctx, client, store) // agentproto.restartSession
+  registerSessionRestart(ctx, client, store) // agentproto.restartSession (new id)
+  registerSessionResume(ctx, client, store) // agentproto.resumeSession (in place, same id)
   registerSessionAccessProfile(ctx, client, store, authProfilesProvider) // agentproto.setSessionAccessProfile
   registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
   registerSessionRename(ctx, client, store) // agentproto.renameSession

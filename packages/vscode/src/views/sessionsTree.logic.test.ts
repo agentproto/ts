@@ -15,6 +15,7 @@ import {
   formatDuration,
   activityFor,
   iconFor,
+  isResumableInPlace,
   isStalled,
   isolationLabelFor,
   labelFor,
@@ -378,6 +379,63 @@ describe("contextValueFor", () => {
     expect(contextValueFor(session({ status: "exited" }))).toBe("session-done")
     expect(contextValueFor(session({ status: "killed" }))).toBe("session-done")
     expect(contextValueFor(session({ status: "error" }))).toBe("session-done")
+  })
+  it("session-interrupted for a daemon-restart ghost (killed + endedReason)", () => {
+    expect(
+      contextValueFor(session({ status: "killed", endedReason: "daemon-restart" })),
+    ).toBe("session-interrupted")
+  })
+  it("session-done for a plain user-killed row (no daemon-restart reason)", () => {
+    expect(contextValueFor(session({ status: "killed" }))).toBe("session-done")
+  })
+})
+
+describe("isResumableInPlace", () => {
+  it("is true for an agent-cli row killed by a daemon restart", () => {
+    expect(
+      isResumableInPlace(session({ status: "killed", endedReason: "daemon-restart" })),
+    ).toBe(true)
+  })
+  it("is true whether or not the turn was interrupted (idle-at-death still resumable)", () => {
+    // killedMidTurn only drives the banner; both are resumable in place.
+    expect(
+      isResumableInPlace(
+        session({ status: "killed", endedReason: "daemon-restart", killedMidTurn: false }),
+      ),
+    ).toBe(true)
+    expect(
+      isResumableInPlace(
+        session({ status: "killed", endedReason: "daemon-restart", killedMidTurn: true }),
+      ),
+    ).toBe(true)
+  })
+  it("is false for exited / error / plain user-killed terminal rows", () => {
+    expect(isResumableInPlace(session({ status: "exited" }))).toBe(false)
+    expect(isResumableInPlace(session({ status: "error" }))).toBe(false)
+    expect(isResumableInPlace(session({ status: "killed" }))).toBe(false)
+  })
+  it("is false for a live/starting/awaiting session", () => {
+    expect(isResumableInPlace(session({ status: "running" }))).toBe(false)
+    expect(isResumableInPlace(session({ status: "starting" }))).toBe(false)
+  })
+  it("is false for a PTY row — a raw screen/shell can't be resumed in place", () => {
+    expect(
+      isResumableInPlace(
+        session({ status: "killed", endedReason: "daemon-restart", pty: true }),
+      ),
+    ).toBe(false)
+  })
+  it("is false for a non-agent-cli kind (terminal/command) even after a daemon restart", () => {
+    expect(
+      isResumableInPlace(
+        session({ kind: "terminal", status: "killed", endedReason: "daemon-restart" }),
+      ),
+    ).toBe(false)
+    expect(
+      isResumableInPlace(
+        session({ kind: "command", status: "killed", endedReason: "daemon-restart" }),
+      ),
+    ).toBe(false)
   })
 })
 

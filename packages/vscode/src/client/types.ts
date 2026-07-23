@@ -97,6 +97,29 @@ export interface SessionDescriptor {
    *  already finished its work before something tore it down — see
    *  activityFor in sessionsTree.logic.ts for the read. */
   killedMidTurn?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.endedReason: set alongside
+   *  `status: "killed"` ONLY when the session ended because the daemon it lived
+   *  in went away out from under it — a crash discovered at next boot, or a
+   *  graceful shutdown/restart force-killing whatever was still busy — NOT
+   *  because an operator targeted it (`kill()`), the agent exited, or a turn
+   *  errored. This is the marker that distinguishes a "resumable ghost" from an
+   *  ordinary terminal row: an agent-cli row with `endedReason:"daemon-restart"`
+   *  can be revived IN PLACE (same id, same history) by a single plain prompt —
+   *  the daemon's lazy resume-on-prompt path. See `isResumableInPlace` in
+   *  sessionsTree.logic.ts. */
+  endedReason?: "daemon-restart"
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.interrupted (#635) — a
+   *  DERIVED, read-time field (never persisted): `true` when this session died
+   *  with a turn in flight under a daemon restart
+   *  (`killedMidTurn && endedReason === "daemon-restart"`). That interrupted
+   *  turn was DROPPED and is NEVER auto-retried; on the next in-place resume the
+   *  daemon appends a "previous turn was NOT re-run — re-prompt to continue"
+   *  banner. Cleared on the next successful turn-end. Orthogonal to
+   *  `isResumableInPlace`: a daemon-restart ghost that was idle at death is
+   *  still resumable in place, it just lost nothing — this flag only says
+   *  whether work was dropped. The resume affordance (sessionResume.ts)
+   *  surfaces it so the user knows. */
+  interrupted?: boolean
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean

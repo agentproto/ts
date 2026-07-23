@@ -35,12 +35,17 @@ const RESUME_FALLBACK_MESSAGE =
   "the prior session had no resumable history — this is a fresh spawn, not a continued conversation"
 
 /**
- * True only for terminal-status sessions — the daemon has no restart guard,
- * so this client-side gate is what prevents restarting a still-alive
- * session (which would silently spawn a duplicate).
+ * True for any terminal-status session — the daemon has no restart guard, so
+ * this client-side gate is what prevents restarting a still-alive session
+ * (which would silently spawn a duplicate). Includes `session-interrupted`
+ * (a daemon-restart ghost): restart-fresh (a NEW id) is always a valid choice
+ * for a dead row, even one that ALSO offers resume-in-place — the two are
+ * distinct, deliberately-separate actions (see canResumeInPlace in
+ * sessionResume.logic.ts), never conflated.
  */
 export function canRestart(session: SessionDescriptor): boolean {
-  return contextValueFor(session) === "session-done"
+  const contextValue = contextValueFor(session)
+  return contextValue === "session-done" || contextValue === "session-interrupted"
 }
 
 /**
