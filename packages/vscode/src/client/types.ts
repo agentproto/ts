@@ -450,6 +450,24 @@ export interface CreatedAuthProfileResult {
   fingerprint?: string
 }
 
+/** Where a discovered credential came from (`auth_discover_credentials`). */
+export type CredentialOrigin =
+  | "claude-code"
+  | "hermes-config"
+  | "env"
+  | "codex"
+  | "gemini"
+
+/** One found-but-not-imported credential from `auth_discover_credentials` — a
+ *  read-only scan of the known local credential locations. Carries provenance
+ *  and a non-secret `hint` locator only; NEVER the credential value. */
+export interface DiscoveredCredential {
+  endpoint: string
+  method: AuthMethod
+  origin: CredentialOrigin
+  hint: string
+}
+
 /** One entry from `list_provider_presets`. */
 export interface ProviderPresetEntry {
   slug: string

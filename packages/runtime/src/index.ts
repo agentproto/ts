@@ -38,6 +38,7 @@ import {
   type BrowserAdapterLister,
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
+import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeSessionsPanelApp } from "./sessions-panel-app.js"
 import {
@@ -1342,6 +1343,10 @@ export async function createGateway(
     // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
     // the profile readers already mounted in session-spawn.ts.
     registerAuthProfileTools(server)
+    // Read-only scanner: report locally-present credentials (Claude Code /
+    // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
+    // provenance, so onboarding can offer an import. Never returns a value.
+    registerCredentialDiscoveryTools(server)
     registerBrowserTools(server, {
       registry: sessions,
       ...(opts.resolveBrowserAdapter

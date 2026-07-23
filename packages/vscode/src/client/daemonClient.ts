@@ -38,6 +38,7 @@ import type {
   CreateAuthProfileRequest,
   CreatedAuthProfileResult,
   DaemonHealth,
+  DiscoveredCredential,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -567,6 +568,21 @@ export class DaemonClient {
     const profile = result.profile
     if (!profile) throw new Error("auth_profile_set_models returned no profile")
     return profile
+  }
+
+  /**
+   * `auth_discover_credentials` — read-only scan of the known local credential
+   * locations (Claude Code Keychain/OAuth file, Codex/Gemini logins,
+   * `~/.hermes/config.yaml`, provider env keys). Returns found-but-not-imported
+   * credentials with provenance and a non-secret `hint` locator only — NEVER a
+   * credential value.
+   */
+  async discoverCredentials(): Promise<DiscoveredCredential[]> {
+    const result = await this.mcpCall<
+      { credentials?: DiscoveredCredential[] } | DiscoveredCredential[]
+    >("auth_discover_credentials")
+    if (Array.isArray(result)) return result
+    return result.credentials ?? []
   }
 
   /**
