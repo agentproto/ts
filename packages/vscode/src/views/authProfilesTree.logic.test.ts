@@ -12,7 +12,13 @@ import {
   presetIcon,
   presetRowDescription,
   presetTooltip,
+  profileContextValue,
+  profileCuratedIds,
   profileDescription,
+  profileEnabled,
+  profileKeyLabel,
+  profileRowDescription,
+  profileRowTooltip,
   profileTooltip,
   servicedModelDescription,
   servicedModelIcon,
@@ -245,6 +251,84 @@ describe("profileTooltip", () => {
     const md = profileTooltip("pro-a", 3)
     expect(md).toContain("**pro-a**")
     expect(md).toContain("- Eligible routes: 3")
+  })
+})
+
+describe("profileEnabled / profileContextValue (WS2)", () => {
+  it("is enabled by default and when disabled is false", () => {
+    expect(profileEnabled(undefined)).toBe(true)
+    expect(profileEnabled(authProfile())).toBe(true)
+    expect(profileEnabled(authProfile({ disabled: false }))).toBe(true)
+    expect(profileContextValue(authProfile())).toBe("auth-profile-enabled")
+  })
+
+  it("is disabled when disabled:true, driving the disabled context value", () => {
+    expect(profileEnabled(authProfile({ disabled: true }))).toBe(false)
+    expect(profileContextValue(authProfile({ disabled: true }))).toBe("auth-profile-disabled")
+  })
+})
+
+describe("profileKeyLabel (WS5)", () => {
+  it("shows the last4 tail + fingerprint for a stored secret, never the secret", () => {
+    const label = profileKeyLabel(
+      authProfile({ keyStatus: "stored", fingerprint: "abc123def456", last4: "wxyz" }),
+    )
+    expect(label).toBe("••••wxyz · abc123def456")
+  })
+
+  it("reports self-refreshing for a source-backed profile", () => {
+    expect(profileKeyLabel(authProfile({ keyStatus: "self-refreshing" }))).toBe(
+      "self-refreshing — no stored secret",
+    )
+    // Also inferred from a bare `source` when an older daemon omits keyStatus.
+    expect(profileKeyLabel(authProfile({ source: "claude-code-oauth" }))).toBe(
+      "self-refreshing — no stored secret",
+    )
+  })
+
+  it("surfaces an unreadable key explicitly rather than hiding it", () => {
+    expect(profileKeyLabel(authProfile({ keyStatus: "unavailable" }))).toBe("key unavailable")
+  })
+
+  it("omits the line entirely when the daemon reported no status", () => {
+    expect(profileKeyLabel(authProfile())).toBeUndefined()
+  })
+})
+
+describe("profileCuratedIds (WS3)", () => {
+  it("lists ids only in allow mode", () => {
+    expect(profileCuratedIds(authProfile({ models: { mode: "allow", ids: ["a/b", "c/d"] } }))).toEqual([
+      "a/b",
+      "c/d",
+    ])
+    expect(profileCuratedIds(authProfile({ models: { mode: "all", ids: [] } }))).toEqual([])
+    expect(profileCuratedIds(authProfile())).toEqual([])
+  })
+})
+
+describe("profileRowDescription / profileRowTooltip", () => {
+  it("appends disabled + key tail to the route count", () => {
+    const desc = profileRowDescription(
+      2,
+      authProfile({ disabled: true, keyStatus: "stored", fingerprint: "fp0000000000", last4: "9999" }),
+    )
+    expect(desc).toBe("2 routes · disabled · ••••9999 · fp0000000000")
+  })
+
+  it("is just the route count for a plain enabled profile with no key status", () => {
+    expect(profileRowDescription(1, authProfile())).toBe("1 route")
+  })
+
+  it("tooltip renders state, key, and curated allowlist", () => {
+    const md = profileRowTooltip(
+      "pro",
+      3,
+      authProfile({ keyStatus: "stored", fingerprint: "fp", last4: "1234", models: { mode: "allow", ids: ["a/b"] } }),
+    )
+    expect(md).toContain("- State: enabled")
+    expect(md).toContain("- Key: ••••1234 · fp")
+    expect(md).toContain("- Curated to 1 model:")
+    expect(md).toContain("`a/b`")
   })
 })
 

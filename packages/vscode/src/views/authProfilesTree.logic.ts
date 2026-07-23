@@ -204,3 +204,79 @@ export function profileDescription(routesCount: number): string {
 export function profileTooltip(profileId: string, routesCount: number): string {
   return [`**${profileId}**`, ``, `- Eligible routes: ${routesCount}`].join("\n")
 }
+
+/** A profile is enabled unless explicitly `disabled` (WS2) — the REAL
+ *  persisted state, distinct from the derived `runnable` flag. */
+export function profileEnabled(summary: AuthProfileSummary | undefined): boolean {
+  return !summary?.disabled
+}
+
+/** The tree context value driving the enable/disable menu split. A disabled
+ *  profile offers "Enable", an enabled one "Disable"; both still offer
+ *  Delete (the package.json when-clause matches either). */
+export function profileContextValue(summary: AuthProfileSummary | undefined): string {
+  return profileEnabled(summary) ? "auth-profile-enabled" : "auth-profile-disabled"
+}
+
+/**
+ * The read-only KEY IDENTITY line (WS5), computed by the daemon — never a
+ * plaintext secret. A source-backed profile self-refreshes (no stored secret);
+ * a stored secret shows its `last4` tail + one-way fingerprint; an unreadable
+ * secret is surfaced explicitly rather than hidden. Returns undefined when the
+ * daemon reported no key status (an older daemon), so the row simply omits it.
+ */
+export function profileKeyLabel(summary: AuthProfileSummary | undefined): string | undefined {
+  if (!summary) return undefined
+  if (summary.keyStatus === "self-refreshing" || (!summary.keyStatus && summary.source)) {
+    return "self-refreshing — no stored secret"
+  }
+  if (summary.keyStatus === "stored") {
+    const tail = summary.last4 ? `••••${summary.last4}` : "key stored"
+    return summary.fingerprint ? `${tail} · ${summary.fingerprint}` : tail
+  }
+  if (summary.keyStatus === "unavailable") return "key unavailable"
+  return undefined
+}
+
+/** The curated model ids to render as read-only chips (WS3) — only when the
+ *  profile is in `allow` mode; an absent/`all` curation services everything
+ *  and shows no chips. The "+" write picker is owned by another track; this is
+ *  display-only. */
+export function profileCuratedIds(summary: AuthProfileSummary | undefined): string[] {
+  return summary?.models?.mode === "allow" ? summary.models.ids : []
+}
+
+/** The profile row's description: route count, plus a "disabled" marker and
+ *  the key-identity tail when known. */
+export function profileRowDescription(
+  routesCount: number,
+  summary: AuthProfileSummary | undefined,
+): string {
+  const parts = [profileDescription(routesCount)]
+  if (!profileEnabled(summary)) parts.push("disabled")
+  const key = profileKeyLabel(summary)
+  if (key) parts.push(key)
+  return parts.join(" · ")
+}
+
+/** The profile row's rich tooltip: enabled state, key identity, and any
+ *  curated allowlist, on top of the eligible-route count. */
+export function profileRowTooltip(
+  profileId: string,
+  routesCount: number,
+  summary: AuthProfileSummary | undefined,
+): string {
+  const lines = [`**${profileId}**`, ``, `- Eligible routes: ${routesCount}`]
+  lines.push(`- State: ${profileEnabled(summary) ? "enabled" : "disabled"}`)
+  const key = profileKeyLabel(summary)
+  if (key) lines.push(`- Key: ${key}`)
+  const curated = profileCuratedIds(summary)
+  if (curated.length > 0) {
+    lines.push(`- Curated to ${curated.length} model${curated.length === 1 ? "" : "s"}:`)
+    for (const id of curated) lines.push(`  - \`${id}\``)
+  } else if (summary?.models?.mode === "allow") {
+    // An explicit empty allowlist services nothing — call that out.
+    lines.push(`- Curated: services no models (empty allowlist)`)
+  }
+  return lines.join("\n")
+}

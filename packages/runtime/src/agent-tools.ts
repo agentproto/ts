@@ -42,6 +42,7 @@ import { getUserPreset } from "./user-presets.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
+import { buildCatalogProviderModels } from "./catalog-provider-models.js"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -1428,6 +1429,50 @@ export function registerAgentTools(
         }
       }
     }
+  )
+
+  // ── catalog_provider_models ───────────────────────────────────
+  server.tool(
+    "catalog_provider_models",
+    "Read-only EXHAUSTIVE model list for ONE provider (AIP-45 launch-menu " +
+      '"+" picker) — every model `endpoint`/`route` can serve, straight from ' +
+      "the static catalog. Deliberately separate from `catalog_models`: that " +
+      "tool is the lean spawn catalog (curated pairs widened through routers, " +
+      "profile-aware `runnable`); THIS is the full provider surface the picker " +
+      "browses before any adapter/profile is chosen, so it takes no host " +
+      "state. An unknown/empty provider returns `models: []`, never an error. " +
+      "Large providers (openrouter is thousands) come back whole — paginate " +
+      "client-side.",
+    {
+      endpoint: z
+        .string()
+        .optional()
+        .describe("Provider / billing endpoint to enumerate (anthropic, openai, openrouter, replicate, …)."),
+      route: z
+        .string()
+        .optional()
+        .describe("Synonym for endpoint (takes precedence when both are given)."),
+    },
+    async ({ endpoint, route }) => {
+      // Never throws: an unknown provider is a valid empty answer, and the
+      // catch is defence-in-depth so a malformed overlay can't 500 the picker.
+      try {
+        const result = buildCatalogProviderModels({
+          ...(endpoint ? { endpoint } : {}),
+          ...(route ? { route } : {}),
+        })
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        }
+      } catch {
+        const provider = (route ?? endpoint ?? "").trim()
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ provider, models: [] }, null, 2) },
+          ],
+        }
+      }
+    },
   )
 
   // ── role_list ─────────────────────────────────────────────────

@@ -377,6 +377,26 @@ export interface CatalogModelsResponse {
   vendors: CatalogVendor[]
 }
 
+/** One servable model in a provider's exhaustive enumeration, from the
+ *  read-only `catalog_provider_models` MCP tool (AIP-45 "+" picker). */
+export interface CatalogProviderModel {
+  id: string
+  /** llm / image / video / audio / voice. */
+  kind: string
+  /** User-facing name where the catalog carries one; else the id. */
+  label: string
+  /** The provider/route this model is served on, or null when none. */
+  route: string | null
+  /** Per-1M-token pricing for LLM models; null for the media kinds. */
+  pricing: CatalogPricing | null
+}
+
+/** Response shape of the `catalog_provider_models` MCP tool. */
+export interface CatalogProviderModelsResponse {
+  provider: string
+  models: CatalogProviderModel[]
+}
+
 /** User-facing info of a provider preset, from `list_provider_presets`. */
 export interface ProviderPresetInfo {
   schemaFlavor: string
@@ -385,6 +405,19 @@ export interface ProviderPresetInfo {
   defaultModel?: string
   homepage?: string
 }
+
+/** Per-model curation of a wallet (WS3). Absent ⇒ `mode: "all"` (services
+ *  every eligible model). `allow` narrows the wallet to exactly `ids`. */
+export interface ModelCuration {
+  mode: "all" | "allow"
+  ids: string[]
+}
+
+/** How a profile's stored secret can be identified (WS5). `stored` ⇒ a
+ *  `fingerprint`/`last4` were computed server-side; `self-refreshing` ⇒ a
+ *  source-backed profile with no stored secret; `unavailable` ⇒ the secret
+ *  could not be read. */
+export type ProfileKeyStatus = "stored" | "self-refreshing" | "unavailable"
 
 /** A named auth profile's non-secret metadata, as returned by
  *  `auth_profile_list` (never carries the credential). `credentialRef` is
@@ -397,6 +430,22 @@ export interface AuthProfileSummary {
   credentialRef?: string
   source?: string
   label?: string
+  /** Whole-profile enable/disable (WS2). Absent/false ⇒ enabled. */
+  disabled?: boolean
+  /** Per-model curation allowlist (WS3). Absent ⇒ services every eligible model. */
+  models?: ModelCuration
+  /** Key-identity status computed server-side from the keychain (WS5). */
+  keyStatus?: ProfileKeyStatus
+  /** One-way fingerprint of the stored secret — present only when
+   *  `keyStatus === "stored"`. Never the secret. */
+  fingerprint?: string
+  /** Trailing 4 chars of the stored secret — present only when
+   *  `keyStatus === "stored"` and the secret is long enough. */
+  last4?: string
+  /** Provenance (WS6) — the discovery origin this profile was imported from
+   *  (`auth_profile_import`). Absent for a hand-created profile. Drives the
+   *  panel's "imported from <origin>" badge. */
+  origin?: string
 }
 
 /** Request body for `auth_profile_create`. `credential` is INPUT-only — the
@@ -422,7 +471,38 @@ export interface CreatedAuthProfileResult {
   credentialRef?: string
   source?: string
   label?: string
+  /** Provenance stamped at import time (WS6) — the discovery origin. Absent
+   *  for a hand-created profile. */
+  origin?: string
   fingerprint?: string
+}
+
+/** Request body for `auth_profile_import` (WS6). Names a credential DISCOVERED
+ *  by `auth_discover_credentials`; the daemon materializes it into a profile.
+ *  No secret crosses the wire — the daemon reads it locally. */
+export interface ImportCredentialRequest {
+  origin: CredentialOrigin
+  endpoint: string
+  id?: string
+  label?: string
+}
+
+/** Where a discovered credential came from (`auth_discover_credentials`). */
+export type CredentialOrigin =
+  | "claude-code"
+  | "hermes-config"
+  | "env"
+  | "codex"
+  | "gemini"
+
+/** One found-but-not-imported credential from `auth_discover_credentials` — a
+ *  read-only scan of the known local credential locations. Carries provenance
+ *  and a non-secret `hint` locator only; NEVER the credential value. */
+export interface DiscoveredCredential {
+  endpoint: string
+  method: AuthMethod
+  origin: CredentialOrigin
+  hint: string
 }
 
 /** One entry from `list_provider_presets`. */

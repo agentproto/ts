@@ -130,6 +130,63 @@ describe("auth profile store", () => {
     expect(mode & 0o777).toBe(0o600)
   })
 
+  it("round-trips the additive `disabled` + `models` fields (WS2/WS3)", async () => {
+    await addAuthProfile({
+      id: "curated",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+      disabled: true,
+      models: { mode: "allow", ids: ["anthropic/claude-opus-4-8"] },
+    })
+    await expect(getAuthProfile("curated")).resolves.toEqual({
+      id: "curated",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+      disabled: true,
+      models: { mode: "allow", ids: ["anthropic/claude-opus-4-8"] },
+    })
+    // On disk the fields sit alongside the `vendor` alias, unencrypted metadata.
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["curated"]).toMatchObject({
+      vendor: "anthropic",
+      disabled: true,
+      models: { mode: "allow", ids: ["anthropic/claude-opus-4-8"] },
+    })
+  })
+
+  it("round-trips the additive `origin` provenance field (WS6)", async () => {
+    await addAuthProfile({
+      id: "imported",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref",
+      origin: "env",
+    })
+    await expect(getAuthProfile("imported")).resolves.toMatchObject({ origin: "env" })
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["imported"]).toMatchObject({ vendor: "openrouter", origin: "env" })
+  })
+
+  it("a profile written without the additive fields stays byte-identical (back-compat)", async () => {
+    await addAuthProfile({
+      id: "plain",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+    })
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["plain"]).not.toHaveProperty("disabled")
+    expect(disk.profiles["plain"]).not.toHaveProperty("models")
+    await expect(getAuthProfile("plain")).resolves.toEqual({
+      id: "plain",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+    })
+  })
+
   it("never inlines a secret — only credentialRef is stored", async () => {
     await addAuthProfile({
       id: "p1",

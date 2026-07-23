@@ -56,6 +56,35 @@ describe("buildAuthSettingsModel", () => {
     expect(sub.activeCount).toBe(0) // eligible but the route isn't runnable
     expect(sub.label).toBe("My sub")
   })
+
+  it("carries the real enable/disable state, key identity, and curation (WS2/WS3/WS5)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        disabled: true,
+        keyStatus: "stored",
+        fingerprint: "fp0000000000",
+        last4: "abcd",
+        models: { mode: "allow", ids: ["anthropic/claude-fable-5"] },
+      },
+    ])
+    const w = model.wallets.find(x => x.id === "openrouter-api")!
+    expect(w.enabled).toBe(false)
+    expect(w.keyLabel).toBe("••••abcd · fp0000000000")
+    expect(w.curatedIds).toEqual(["anthropic/claude-fable-5"])
+  })
+
+  it("carries the imported-from provenance (WS6)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "env-openrouter", endpoint: "openrouter", method: "api-key", origin: "env" },
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },
+    ])
+    expect(model.wallets.find(w => w.id === "env-openrouter")!.origin).toBe("env")
+    // A hand-created profile has no origin.
+    expect(model.wallets.find(w => w.id === "openrouter-api")!.origin).toBeUndefined()
+  })
 })
 
 describe("buildAuthSettingsHtml", () => {
@@ -69,6 +98,14 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).toContain("claude-fable-5")
   })
 
+  it("renders an 'imported from <origin>' badge for an imported wallet (WS6)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "env-openrouter", endpoint: "openrouter", method: "api-key", origin: "env" },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("imported from env")
+  })
+
   it("surfaces a source-backed local-login button in the Providers section", () => {
     const model = buildAuthSettingsModel(presets, catalog, profiles)
     const html = buildAuthSettingsHtml(model, "NONCE123")
@@ -76,6 +113,62 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).toContain("Use an existing local login")
     // The dispatcher must forward the source attribute for these buttons.
     expect(html).toContain("data-source")
+  })
+
+  it("renders a real disable/enable toggle and the read-only key line (WS2/WS5)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        keyStatus: "stored",
+        fingerprint: "fp0000000000",
+        last4: "abcd",
+      },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    // Enabled → offers Disable, badge reads "enabled", key line is present.
+    expect(html).toContain('data-action="disable" data-id="openrouter-api"')
+    expect(html).toContain(">enabled<")
+    expect(html).toContain("••••abcd · fp0000000000")
+  })
+
+  it("offers Enable for a disabled wallet (WS2)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key", disabled: true },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain('data-action="enable" data-id="openrouter-api"')
+    expect(html).toContain(">disabled<")
+  })
+
+  it("renders the WS4 '+ Models' picker button and removable curated chips", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        models: { mode: "allow", ids: ["anthropic/claude-fable-5"] },
+      },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    // The "+" picker opens on the wallet id.
+    expect(html).toContain('data-action="pickModels" data-id="openrouter-api"')
+    // Each curated chip carries a remove toggle keyed by wallet id + model id.
+    expect(html).toContain(
+      'data-action="removeModel" data-id="openrouter-api" data-model="anthropic/claude-fable-5"',
+    )
+  })
+
+  it("labels an uncurated wallet 'Allows all eligible models' with no remove chips", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("Allows all eligible models")
+    expect(html).not.toContain('data-action="removeModel"')
+    // The picker is still offered so an uncurated wallet can start curating.
+    expect(html).toContain('data-action="pickModels" data-id="openrouter-api"')
   })
 
   it("escapes interpolated text", () => {

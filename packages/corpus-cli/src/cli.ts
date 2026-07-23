@@ -22,6 +22,7 @@ import { runVerify } from "./commands/verify.js"
 import { runEventsEmit, runEventsTail } from "./commands/events.js"
 import { runImportWeb } from "./commands/import-web.js"
 import { runImportCode } from "./commands/import-code.js"
+import { runImportPrs } from "./commands/import-prs.js"
 import { runDiscover } from "./commands/discover.js"
 import { runDistill } from "./commands/distill.js"
 import { runKnowledge } from "./commands/knowledge.js"
@@ -76,6 +77,14 @@ Commands:
                                          code indexing, no symbol/caller/callee graph —
                                          that is the code-brain subsystem's job. --dry-run
                                          lists the units without writing.
+  import-prs [path] --repo <owner/name> [--pr n ... | --since <iso>] [--include-diff --max n --tags t --lang l --dry-run]
+                                         Import a repo's pull requests as sources via the
+                                         user's gh CLI (description + review discussion +
+                                         optional diff summary). Each PR → one AIP-10 source
+                                         (authority: secondary), deduped by content_hash so
+                                         re-runs skip unchanged PRs. --pr selects explicit PRs
+                                         (repeatable); --since imports PRs updated since a
+                                         date; --include-diff appends a diffstat summary.
   distill [path] [--source id --max n --throttle ms --model m --lang l --engine e]
                  [--lens <id> | --lens-file <path>]
                                          Distill raw sources → refined entries
@@ -139,6 +148,8 @@ async function main(argv: readonly string[]): Promise<ExitCode> {
       return await runImportWeb(rest)
     case "import-code":
       return await runImportCode(rest)
+    case "import-prs":
+      return await runImportPrs(rest)
     case "discover":
       return await runDiscover(rest)
     case "distill":
