@@ -130,6 +130,74 @@ describe("buildCatalogModels — runnable is profile-aware (SPEC §5.3)", () => 
   })
 })
 
+describe("buildCatalogModels — whole-profile disable (WS2) + per-model curation (WS3)", () => {
+  it("HARD INVARIANT: output is byte-identical when profiles carry no `models`/`disabled`", () => {
+    // The same profiles, once as shipped today and once explicitly asserting
+    // the additive fields are absent — the full join must be deep-equal, so a
+    // profile that predates WS2/WS3 keeps exactly its old eligibility.
+    const adapters = [CLAUDE_CODE, HERMES, MOONSHOT_ROUTED]
+    const profiles = [anthropicOauth, anthropicApiKey, moonshotApiKey]
+    const baseline = buildCatalogModels({ adapters, profiles })
+    const again = buildCatalogModels({
+      adapters,
+      // Same profiles, spread through a fresh array — no `disabled`, no `models`.
+      profiles: profiles.map(p => ({ ...p })),
+    })
+    expect(again).toEqual(baseline)
+  })
+
+  it("a disabled profile drops every model it would service to non-runnable (WS2)", () => {
+    const enabled = buildCatalogModels({ adapters: [CLAUDE_CODE], profiles: [anthropicOauth] })
+    const disabled = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [{ ...anthropicOauth, disabled: true }],
+    })
+    expect(findRoute(enabled, "anthropic", "claude-opus-4-8", "anthropic")?.runnable).toBe(true)
+    const route = findRoute(disabled, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("an `allow` allowlist that includes the model keeps it runnable (WS3)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [
+        {
+          ...anthropicApiKey,
+          models: { mode: "allow", ids: ["anthropic/claude-opus-4-8"] },
+        },
+      ],
+    })
+    const route = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("an `allow` allowlist that excludes the model drops it to non-runnable, without disabling the profile elsewhere (WS3)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [
+        {
+          ...anthropicApiKey,
+          models: { mode: "allow", ids: ["anthropic/some-other-model"] },
+        },
+      ],
+    })
+    const route = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("an explicit `mode:\"all\"` curation is identical to no curation", () => {
+    const bare = buildCatalogModels({ adapters: [CLAUDE_CODE], profiles: [anthropicApiKey] })
+    const allMode = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [{ ...anthropicApiKey, models: { mode: "all", ids: [] } }],
+    })
+    expect(allMode).toEqual(bare)
+  })
+})
+
 describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5.3)", () => {
   it("marks an adapter-declared route curated:true", () => {
     const response = buildCatalogModels({ adapters: [CLAUDE_CODE], profiles: [] })

@@ -56,6 +56,25 @@ describe("buildAuthSettingsModel", () => {
     expect(sub.activeCount).toBe(0) // eligible but the route isn't runnable
     expect(sub.label).toBe("My sub")
   })
+
+  it("carries the real enable/disable state, key identity, and curation (WS2/WS3/WS5)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        disabled: true,
+        keyStatus: "stored",
+        fingerprint: "fp0000000000",
+        last4: "abcd",
+        models: { mode: "allow", ids: ["anthropic/claude-fable-5"] },
+      },
+    ])
+    const w = model.wallets.find(x => x.id === "openrouter-api")!
+    expect(w.enabled).toBe(false)
+    expect(w.keyLabel).toBe("••••abcd · fp0000000000")
+    expect(w.curatedIds).toEqual(["anthropic/claude-fable-5"])
+  })
 })
 
 describe("buildAuthSettingsHtml", () => {
@@ -76,6 +95,33 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).toContain("Use an existing local login")
     // The dispatcher must forward the source attribute for these buttons.
     expect(html).toContain("data-source")
+  })
+
+  it("renders a real disable/enable toggle and the read-only key line (WS2/WS5)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        keyStatus: "stored",
+        fingerprint: "fp0000000000",
+        last4: "abcd",
+      },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    // Enabled → offers Disable, badge reads "enabled", key line is present.
+    expect(html).toContain('data-action="disable" data-id="openrouter-api"')
+    expect(html).toContain(">enabled<")
+    expect(html).toContain("••••abcd · fp0000000000")
+  })
+
+  it("offers Enable for a disabled wallet (WS2)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key", disabled: true },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain('data-action="enable" data-id="openrouter-api"')
+    expect(html).toContain(">disabled<")
   })
 
   it("escapes interpolated text", () => {

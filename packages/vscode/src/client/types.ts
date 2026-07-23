@@ -386,6 +386,19 @@ export interface ProviderPresetInfo {
   homepage?: string
 }
 
+/** Per-model curation of a wallet (WS3). Absent ⇒ `mode: "all"` (services
+ *  every eligible model). `allow` narrows the wallet to exactly `ids`. */
+export interface ModelCuration {
+  mode: "all" | "allow"
+  ids: string[]
+}
+
+/** How a profile's stored secret can be identified (WS5). `stored` ⇒ a
+ *  `fingerprint`/`last4` were computed server-side; `self-refreshing` ⇒ a
+ *  source-backed profile with no stored secret; `unavailable` ⇒ the secret
+ *  could not be read. */
+export type ProfileKeyStatus = "stored" | "self-refreshing" | "unavailable"
+
 /** A named auth profile's non-secret metadata, as returned by
  *  `auth_profile_list` (never carries the credential). `credentialRef` is
  *  set for a credential-backed profile; `source` for a self-refreshing
@@ -397,6 +410,18 @@ export interface AuthProfileSummary {
   credentialRef?: string
   source?: string
   label?: string
+  /** Whole-profile enable/disable (WS2). Absent/false ⇒ enabled. */
+  disabled?: boolean
+  /** Per-model curation allowlist (WS3). Absent ⇒ services every eligible model. */
+  models?: ModelCuration
+  /** Key-identity status computed server-side from the keychain (WS5). */
+  keyStatus?: ProfileKeyStatus
+  /** One-way fingerprint of the stored secret — present only when
+   *  `keyStatus === "stored"`. Never the secret. */
+  fingerprint?: string
+  /** Trailing 4 chars of the stored secret — present only when
+   *  `keyStatus === "stored"` and the secret is long enough. */
+  last4?: string
 }
 
 /** Request body for `auth_profile_create`. `credential` is INPUT-only — the

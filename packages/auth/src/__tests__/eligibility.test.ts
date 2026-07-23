@@ -130,4 +130,21 @@ describe("eligibleProfiles — the (vendor × method) predicate", () => {
     const eligible = eligibleProfiles([anthropicOauth, anthropicApiKey], CLAUDE_CODE_MANIFEST, "moonshot")
     expect(eligible).toEqual([])
   })
+
+  it("skips a whole-profile-disabled profile (WS2)", () => {
+    const disabledOauth: AuthProfile = { ...anthropicOauth, disabled: true }
+    const eligible = eligibleProfiles(
+      [disabledOauth, anthropicApiKey],
+      CLAUDE_CODE_MANIFEST,
+      "direct",
+    )
+    // Only the still-enabled api-key survives; the disabled oauth drops out.
+    expect(eligible.map(p => p.id)).toEqual(["work-anthropic-key"])
+  })
+
+  it("an explicit `disabled: false` stays eligible (absent-means-enabled)", () => {
+    const explicitlyEnabled: AuthProfile = { ...anthropicApiKey, disabled: false }
+    const eligible = eligibleProfiles([explicitlyEnabled], CLAUDE_CODE_MANIFEST, "direct")
+    expect(eligible.map(p => p.id)).toEqual(["work-anthropic-key"])
+  })
 })

@@ -533,6 +533,43 @@ export class DaemonClient {
   }
 
   /**
+   * `auth_profile_set_enabled` (WS2) — enable/disable a whole profile. A
+   * disabled profile is skipped by the eligibility predicate, so its models
+   * drop to non-runnable. Metadata-only (the keychain credential is
+   * untouched). Returns the updated non-secret profile.
+   */
+  async setAuthProfileEnabled(id: string, enabled: boolean): Promise<AuthProfileSummary> {
+    const result = await this.mcpCall<{ profile?: AuthProfileSummary }>(
+      "auth_profile_set_enabled",
+      { id, enabled },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_set_enabled returned no profile")
+    return profile
+  }
+
+  /**
+   * `auth_profile_set_models` (WS3) — set a profile's per-model curation
+   * allowlist. `mode: "all"` services every eligible model (and clears any
+   * stored allowlist); `mode: "allow"` narrows the profile to `ids` (each a
+   * catalog `vendor/product` or route-qualified `ref`). Metadata-only.
+   * Returns the updated non-secret profile.
+   */
+  async setAuthProfileModels(
+    id: string,
+    mode: "all" | "allow",
+    ids: string[] = [],
+  ): Promise<AuthProfileSummary> {
+    const result = await this.mcpCall<{ profile?: AuthProfileSummary }>(
+      "auth_profile_set_models",
+      { id, mode, ids },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_set_models returned no profile")
+    return profile
+  }
+
+  /**
    * GET /workspaces — the daemon's registered workspace list
    * (~/.agentproto/workspaces.json). Read-only; see addWorkspace /
    * removeWorkspace / setActiveWorkspace below for mutation (also

@@ -25,11 +25,16 @@ import {
   KeychainStore,
   addAuthProfile,
   createAuthProfile,
+  credentialIdentity,
   deleteAuthProfile,
   getAuthProfile,
   listAuthProfiles,
   removeAuthProfile,
+  setAuthProfileEnabled,
+  setAuthProfileModels,
   AuthProfileValidationError,
+  type AuthProfile,
+  type CredentialStore,
   type ProfileProvisionDeps,
 } from "@agentproto/auth"
 
@@ -43,6 +48,60 @@ export function defaultProfileProvisionDeps(): ProfileProvisionDeps {
     listProfiles: () => listAuthProfiles(),
     addProfile: addAuthProfile,
     removeProfile: removeAuthProfile,
+  }
+}
+
+/** How a profile's stored secret can be identified (WS5). `stored` ⇒ the
+ *  keychain held a secret and `fingerprint`/`last4` were computed from it;
+ *  `self-refreshing` ⇒ a source-backed profile with no stored secret to
+ *  fingerprint; `unavailable` ⇒ a credential-backed profile whose secret
+ *  could not be read (fail loud — never guessed, never the secret). */
+type ProfileKeyStatus = "stored" | "self-refreshing" | "unavailable"
+
+/** `auth_profile_list`'s per-profile row — the profile's non-secret metadata
+ *  plus its key identity. NEVER carries the credential itself. */
+interface AuthProfileListRow extends AuthProfile {
+  keyStatus: ProfileKeyStatus
+  /** One-way fingerprint of the stored secret — present only when
+   *  `keyStatus === "stored"`. */
+  fingerprint?: string
+  /** Trailing 4 chars of the stored secret ("which key is this") — present
+   *  only when `keyStatus === "stored"` and the secret is long enough to
+   *  reveal a tail safely. */
+  last4?: string
+}
+
+/**
+ * Enrich one profile with its key identity (WS5), computed SERVER-SIDE from the
+ * keychain. Money-safety: this reads the secret only to fingerprint it — the
+ * secret is never returned, and any read failure fails loud as `unavailable`
+ * rather than silently dropping to a state that could be mistaken for
+ * "no key". A source-backed profile (no `credentialRef`) has no stored secret,
+ * so it reports `self-refreshing` without touching the store.
+ */
+async function describeProfileKey(
+  profile: AuthProfile,
+  store: CredentialStore,
+): Promise<AuthProfileListRow> {
+  if (profile.credentialRef === undefined) {
+    return { ...profile, keyStatus: "self-refreshing" }
+  }
+  try {
+    const stored = await store.read({ path: profile.credentialRef })
+    if (!stored || stored.value === "") {
+      return { ...profile, keyStatus: "unavailable" }
+    }
+    const identity = credentialIdentity(stored.value)
+    return {
+      ...profile,
+      keyStatus: "stored",
+      fingerprint: identity.fingerprint,
+      ...(identity.last4 !== undefined ? { last4: identity.last4 } : {}),
+    }
+  } catch {
+    // A keychain read can fail (locked, ACL, missing entry) — surface that
+    // explicitly instead of pretending the profile has no key.
+    return { ...profile, keyStatus: "unavailable" }
   }
 }
 
@@ -72,8 +131,13 @@ export function registerAuthProfileTools(server: McpServer): void {
     "auth_profile_list",
     "List the named auth profiles configured on this host (from " +
       "`~/.agentproto/auth-profiles.json`). Returns only non-secret metadata " +
-      "— id, endpoint, method, credentialRef, label — never the credential " +
-      "itself. Optionally filter to one billing endpoint.",
+      "— id, endpoint, method, credentialRef, label, plus the enable/disable " +
+      "state (`disabled`) and any per-model curation (`models`) — never the " +
+      "credential itself. Each row also carries a read-only KEY IDENTITY " +
+      "computed server-side from the keychain: `keyStatus` (`stored` / " +
+      "`self-refreshing` / `unavailable`) and, for a stored secret, a one-way " +
+      "`fingerprint` + `last4` (never the secret). Optionally filter to one " +
+      "billing endpoint.",
     {
       endpoint: z
         .string()
@@ -83,7 +147,9 @@ export function registerAuthProfileTools(server: McpServer): void {
     async ({ endpoint }) => {
       try {
         const profiles = await listAuthProfiles(endpoint)
-        return text({ profiles })
+        const store = new KeychainStore()
+        const enriched = await Promise.all(profiles.map(p => describeProfileKey(p, store)))
+        return text({ profiles: enriched })
       } catch (err) {
         return errorText(
           `auth_profile_list failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -180,6 +246,76 @@ export function registerAuthProfileTools(server: McpServer): void {
         }
         return errorText(
           `auth_profile_delete failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_set_enabled ──────────────────────────────────
+  server.tool(
+    "auth_profile_set_enabled",
+    "Enable or disable a whole named auth profile (WS2). A disabled profile " +
+      "is skipped by the eligibility predicate entirely, so every model it " +
+      "would otherwise bill drops to non-runnable — a REAL persisted state, " +
+      "distinct from the derived `runnable` flag. Metadata-only: the keychain " +
+      "credential is untouched. Enabling clears the flag (absent = enabled). " +
+      "Returns the updated non-secret profile.",
+    {
+      id: z.string().describe("The profile id to enable/disable."),
+      enabled: z.boolean().describe("true to enable, false to disable."),
+    },
+    async ({ id, enabled }) => {
+      try {
+        const profile = await setAuthProfileEnabled(id, enabled, defaultProfileProvisionDeps())
+        return text({ profile })
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_set_enabled rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_set_enabled failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_set_models ───────────────────────────────────
+  server.tool(
+    "auth_profile_set_models",
+    "Set a profile's per-model curation allowlist (WS3). `mode: \"all\"` " +
+      "(the default when a profile has no curation) services every eligible " +
+      "model and CLEARS any stored allowlist. `mode: \"allow\"` narrows the " +
+      "profile to exactly `ids` — each a catalog `vendor/product` or " +
+      "route-qualified `ref`; a curated profile stays endpoint-eligible but " +
+      "only its chosen model refs become runnable. Metadata-only. Returns the " +
+      "updated non-secret profile.",
+    {
+      id: z.string().describe("The profile id to curate."),
+      mode: z
+        .enum(["all", "allow"])
+        .describe("all = service every eligible model; allow = only the listed ids."),
+      ids: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Model identities to allow when mode=allow (catalog vendor/product or " +
+            "route-qualified ref). Ignored for mode=all.",
+        ),
+    },
+    async ({ id, mode, ids }) => {
+      try {
+        const profile = await setAuthProfileModels(
+          id,
+          { mode, ids: ids ?? [] },
+          defaultProfileProvisionDeps(),
+        )
+        return text({ profile })
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_set_models rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_set_models failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     },

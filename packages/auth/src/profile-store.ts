@@ -24,6 +24,11 @@ const authMethodSchema = z.enum(["oauth-bearer", "api-key"]) satisfies z.ZodType
 
 /** Version-1 on-disk shape. Keep `vendor` here permanently for compatibility:
  * callers only ever see the unambiguous in-memory `endpoint` field. */
+const modelCurationSchema = z.object({
+  mode: z.enum(["all", "allow"]),
+  ids: z.array(z.string()),
+})
+
 const authProfileSchema = z.object({
   id: z.string(),
   vendor: z.string(),
@@ -31,6 +36,11 @@ const authProfileSchema = z.object({
   credentialRef: z.string().optional(),
   source: z.string().optional(),
   label: z.string().optional(),
+  // Additive, back-compat fields — an entry that predates them parses
+  // unchanged (both optional), and `endpoint` still shadows the on-disk
+  // `vendor` alias below.
+  disabled: z.boolean().optional(),
+  models: modelCurationSchema.optional(),
 }).transform(({ vendor, ...profile }): AuthProfile => ({ ...profile, endpoint: vendor }))
 
 const authProfilesFileSchema = z.object({

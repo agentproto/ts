@@ -4,9 +4,12 @@ import { MemoryStore } from "../store/memory-store.js"
 import {
   AuthProfileValidationError,
   createAuthProfile,
+  credentialIdentity,
   deleteAuthProfile,
   deriveCredentialRef,
   fingerprintCredential,
+  setAuthProfileEnabled,
+  setAuthProfileModels,
   validateCreateInput,
   type ProfileProvisionDeps,
 } from "../profile-provision.js"
@@ -157,6 +160,96 @@ describe("fingerprintCredential", () => {
 
   it("differs for different secrets", () => {
     expect(fingerprintCredential("a")).not.toBe(fingerprintCredential("b"))
+  })
+})
+
+describe("credentialIdentity (WS5)", () => {
+  it("returns a fingerprint + last4 for a normal-length secret, never the secret", () => {
+    const id = credentialIdentity("sk-ant-abcdefgh1234")
+    expect(id).toEqual({
+      fingerprint: fingerprintCredential("sk-ant-abcdefgh1234"),
+      last4: "1234",
+    })
+    expect(JSON.stringify(id)).not.toContain("sk-ant-abcdefgh")
+  })
+
+  it("withholds last4 for a too-short secret (fail closed, never expose a tail)", () => {
+    const id = credentialIdentity("abc")
+    expect(id.fingerprint).toMatch(/^[0-9a-f]{12}$/)
+    expect(id.last4).toBeUndefined()
+  })
+})
+
+describe("setAuthProfileEnabled (WS2)", () => {
+  it("disabling sets disabled:true; enabling clears the field (absent = enabled)", async () => {
+    const { deps, profiles } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    const disabled = await setAuthProfileEnabled("p", false, deps)
+    expect(disabled.disabled).toBe(true)
+    expect(profiles.get("p")?.disabled).toBe(true)
+
+    const enabled = await setAuthProfileEnabled("p", true, deps)
+    // The field is gone entirely — byte-identical to a never-disabled profile.
+    expect(enabled).not.toHaveProperty("disabled")
+    expect(profiles.get("p")).toEqual({
+      id: "p",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+    })
+  })
+
+  it("rejects an unknown id", async () => {
+    const { deps } = makeDeps()
+    await expect(setAuthProfileEnabled("nope", false, deps)).rejects.toThrow(
+      AuthProfileValidationError,
+    )
+  })
+})
+
+describe("setAuthProfileModels (WS3)", () => {
+  it("mode:allow stores a de-duped, trimmed allowlist", async () => {
+    const { deps, profiles } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    const updated = await setAuthProfileModels(
+      "p",
+      { mode: "allow", ids: [" anthropic/claude-opus-4-8 ", "anthropic/claude-opus-4-8", "", "x/y"] },
+      deps,
+    )
+    expect(updated.models).toEqual({ mode: "allow", ids: ["anthropic/claude-opus-4-8", "x/y"] })
+    expect(profiles.get("p")?.models).toEqual({
+      mode: "allow",
+      ids: ["anthropic/claude-opus-4-8", "x/y"],
+    })
+  })
+
+  it("mode:all clears any stored allowlist (absent = services everything)", async () => {
+    const { deps, profiles } = makeDeps([
+      {
+        id: "p",
+        endpoint: "anthropic",
+        method: "api-key",
+        credentialRef: "ref",
+        models: { mode: "allow", ids: ["a/b"] },
+      },
+    ])
+    const updated = await setAuthProfileModels("p", { mode: "all", ids: [] }, deps)
+    expect(updated).not.toHaveProperty("models")
+    expect(profiles.get("p")).toEqual({
+      id: "p",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+    })
+  })
+
+  it("rejects an unknown id", async () => {
+    const { deps } = makeDeps()
+    await expect(
+      setAuthProfileModels("nope", { mode: "allow", ids: [] }, deps),
+    ).rejects.toThrow(AuthProfileValidationError)
   })
 })
 

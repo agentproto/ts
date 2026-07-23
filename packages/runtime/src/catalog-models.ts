@@ -439,6 +439,24 @@ function billedVendor(vendor: string, route: string): string {
   return route === vendor ? vendor : route
 }
 
+/**
+ * Per-model curation gate (WS3): does `profile`'s allowlist admit this model?
+ * An ABSENT `models` field, or `mode: "all"`, admits everything — the exact
+ * pre-curation behavior, so a profile that predates the field is unchanged
+ * (the byte-identical invariant). A `mode: "allow"` profile admits the model
+ * only when its catalog identity is in the list — matched against BOTH the
+ * route-qualified `ref` (`z-ai/glm-5.2@openrouter`) and the route-independent
+ * `vendor/product` (`z-ai/glm-5.2`), so a curated id in either form is honored.
+ * This is deliberately downstream of `eligibleProfiles` (the endpoint/method
+ * gate): a curated profile stays endpoint-eligible but services only its
+ * chosen model refs.
+ */
+function profileAllowsModel(profile: AuthProfile, ref: string, vendorProduct: string): boolean {
+  const curation = profile.models
+  if (!curation || curation.mode === "all") return true
+  return curation.ids.includes(ref) || curation.ids.includes(vendorProduct)
+}
+
 /** The pure join (SPEC §5): adapter-declared models + router widening +
  *  the #470 eligibility predicate → the vendor/product/route tree. No I/O —
  *  callers (the HTTP route / MCP tool) own loading adapters + profiles. */
@@ -497,7 +515,16 @@ export function buildCatalogModels(
       endpointByRoute: { [row.route]: billedVendor(row.vendor, row.route) },
       methodsByRoute: { [row.route]: row.methods },
     }
-    const eligible = walletEligible ? eligibleProfiles(input.profiles, manifest, row.route) : []
+    // The endpoint/method-eligible profiles for this route (whole-profile
+    // enable/disable already applied inside `eligibleProfiles`), then narrowed
+    // by each profile's per-model curation allowlist (WS3). A profile with no
+    // `models` field passes through untouched, so the non-curated join is
+    // byte-identical to before.
+    const eligible = walletEligible
+      ? eligibleProfiles(input.profiles, manifest, row.route).filter(p =>
+          profileAllowsModel(p, row.ref, `${row.vendor}/${row.product}`),
+        )
+      : []
     const runnable = eligible.length > 0
     if (query.runnableOnly && !runnable) continue
 

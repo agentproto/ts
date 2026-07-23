@@ -14,13 +14,18 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { ProviderPresetEntry } from "../client/types.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
-import { runConnectPresetFlow, runCreateAuthProfileFlow, runDeleteAuthProfileFlow } from "../commands/authProfiles.js"
+import {
+  runConnectPresetFlow,
+  runCreateAuthProfileFlow,
+  runDeleteAuthProfileFlow,
+  runSetAuthProfileEnabledFlow,
+} from "../commands/authProfiles.js"
 import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
 import { runConnectLocalLoginFlow } from "../commands/localLogin.js"
 import { buildAuthSettingsHtml, buildAuthSettingsModel } from "./authSettingsPanel.logic.js"
 
 interface InboundMessage {
-  type: "connect" | "connectLocal" | "delete" | "addProfile" | "refresh"
+  type: "connect" | "connectLocal" | "delete" | "enable" | "disable" | "addProfile" | "refresh"
   slug?: string
   id?: string
   source?: string
@@ -68,6 +73,12 @@ export function registerAuthSettingsPanel(
       }
       case "delete":
         if (msg.id) await runDeleteAuthProfileFlow(client, provider, msg.id)
+        break
+      case "enable":
+        if (msg.id) await runSetAuthProfileEnabledFlow(client, provider, msg.id, true)
+        break
+      case "disable":
+        if (msg.id) await runSetAuthProfileEnabledFlow(client, provider, msg.id, false)
         break
       case "addProfile":
         await runCreateAuthProfileFlow(client, provider)

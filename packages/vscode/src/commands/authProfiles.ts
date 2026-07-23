@@ -60,7 +60,44 @@ export function registerAuthProfileCommands(
     vscode.commands.registerCommand("agentproto.deleteAuthProfile", (node?: AuthProfileNode) => {
       if (node?.kind === "profile") void runDeleteAuthProfileFlow(client, provider, node.profileId)
     }),
+    vscode.commands.registerCommand("agentproto.enableAuthProfile", (node?: AuthProfileNode) => {
+      if (node?.kind === "profile") {
+        void runSetAuthProfileEnabledFlow(client, provider, node.profileId, true)
+      }
+    }),
+    vscode.commands.registerCommand("agentproto.disableAuthProfile", (node?: AuthProfileNode) => {
+      if (node?.kind === "profile") {
+        void runSetAuthProfileEnabledFlow(client, provider, node.profileId, false)
+      }
+    }),
   )
+}
+
+/**
+ * Enable or disable a whole auth profile (WS2) — reachable from a profile
+ * row's context menu. A disabled profile's models drop to non-runnable
+ * (distinct from the derived `runnable` flag). Metadata-only; the credential
+ * is untouched.
+ */
+export async function runSetAuthProfileEnabledFlow(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  profileId: string,
+  enabled: boolean,
+): Promise<void> {
+  try {
+    await client.setAuthProfileEnabled(profileId, enabled)
+    void vscode.window.showInformationMessage(
+      `${enabled ? "Enabled" : "Disabled"} auth profile "${profileId}".`,
+    )
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Could not ${enabled ? "enable" : "disable"} "${profileId}": ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
 }
 
 /**

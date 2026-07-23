@@ -21,7 +21,7 @@
  */
 
 import { createHash } from "node:crypto"
-import type { AuthMethod, AuthProfile } from "./profile-types.js"
+import type { AuthMethod, AuthProfile, ModelCuration } from "./profile-types.js"
 import type { CredentialStore } from "./store/types.js"
 
 /** Input to {@link createAuthProfile}. `credential` is the raw secret — it is
@@ -213,6 +213,34 @@ export function fingerprintCredential(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 12)
 }
 
+/** Below this length, `slice(-4)` would expose too large a fraction of the
+ *  secret to be a safe "last 4" — so `last4` is withheld (never the secret).
+ *  Real API keys / bearer tokens are far longer; this only guards a degenerate
+ *  short value. */
+const MIN_LEN_FOR_LAST4 = 8
+
+/** Non-secret identity of a STORED credential — a one-way {@link
+ *  fingerprintCredential} plus the trailing 4 characters (the standard
+ *  "which key is this" affordance, like a card's last four). Neither is
+ *  reversible to the secret. `last4` is omitted for a secret too short to
+ *  reveal a tail safely (see {@link MIN_LEN_FOR_LAST4}) — fail closed rather
+ *  than expose. */
+export interface CredentialIdentity {
+  fingerprint: string
+  last4?: string
+}
+
+/** Compute the non-secret {@link CredentialIdentity} of a stored secret.
+ *  Money-safety: returns ONLY the one-way fingerprint + a trailing tail —
+ *  never the secret, and never the tail when the secret is too short to
+ *  reveal one safely. */
+export function credentialIdentity(secret: string): CredentialIdentity {
+  return {
+    fingerprint: fingerprintCredential(secret),
+    ...(secret.length >= MIN_LEN_FOR_LAST4 ? { last4: secret.slice(-4) } : {}),
+  }
+}
+
 /** The `StoredCredential.kind` a method maps to (mirrors `profile-types.ts`:
  *  `pat` → `api-key`, `oat` → `oauth-bearer`). */
 function credentialKind(method: AuthMethod): "pat" | "oat" {
@@ -326,4 +354,74 @@ export async function deleteAuthProfile(
   }
 
   return { deleted: true, id: trimmed, credentialRef: profile.credentialRef }
+}
+
+/**
+ * Enable or disable a whole profile (WS2). Metadata-only — never touches the
+ * credential store. Enabling CLEARS the `disabled` field entirely rather than
+ * writing `disabled: false`, so a re-enabled profile is byte-identical on
+ * disk to one that was never disabled (the ABSENT-means-enabled invariant).
+ * Throws {@link AuthProfileValidationError} for an unknown id so a host can map
+ * it to a 404/400. Returns the updated (non-secret) profile.
+ */
+export async function setAuthProfileEnabled(
+  id: string,
+  enabled: boolean,
+  deps: ProfileProvisionDeps,
+): Promise<AuthProfile> {
+  const trimmed = (id ?? "").trim()
+  if (!trimmed) throw new AuthProfileValidationError("id is required")
+
+  const profile = await deps.getProfile(trimmed)
+  if (!profile) {
+    throw new AuthProfileValidationError(`no profile with id "${trimmed}"`)
+  }
+
+  // Rebuild WITHOUT `disabled`, then re-add it only when disabling — keeps the
+  // enabled state absent-by-default.
+  const { disabled: _drop, ...rest } = profile
+  const updated: AuthProfile = enabled ? { ...rest } : { ...rest, disabled: true }
+  await deps.addProfile(updated)
+  return updated
+}
+
+/**
+ * Set a profile's per-model curation allowlist (WS3). Metadata-only. `mode:
+ * "all"` CLEARS the `models` field entirely (curation off ⇒ absent, the
+ * byte-identical "services everything" default), so only a genuine `mode:
+ * "allow"` persists a `models` object. `ids` are trimmed, de-duped, and
+ * blanks dropped. Throws {@link AuthProfileValidationError} for an unknown id.
+ * Returns the updated (non-secret) profile.
+ */
+export async function setAuthProfileModels(
+  id: string,
+  curation: ModelCuration,
+  deps: ProfileProvisionDeps,
+): Promise<AuthProfile> {
+  const trimmed = (id ?? "").trim()
+  if (!trimmed) throw new AuthProfileValidationError("id is required")
+  if (curation.mode !== "all" && curation.mode !== "allow") {
+    throw new AuthProfileValidationError(
+      `models.mode must be "all" or "allow" (got "${String(curation.mode)}")`,
+    )
+  }
+
+  const profile = await deps.getProfile(trimmed)
+  if (!profile) {
+    throw new AuthProfileValidationError(`no profile with id "${trimmed}"`)
+  }
+
+  const { models: _drop, ...rest } = profile
+  if (curation.mode === "all") {
+    // "all" == absent — drop the field so the on-disk shape stays byte-
+    // identical to a never-curated profile.
+    const updated: AuthProfile = { ...rest }
+    await deps.addProfile(updated)
+    return updated
+  }
+
+  const ids = [...new Set((curation.ids ?? []).map(s => s.trim()).filter(Boolean))]
+  const updated: AuthProfile = { ...rest, models: { mode: "allow", ids } }
+  await deps.addProfile(updated)
+  return updated
 }

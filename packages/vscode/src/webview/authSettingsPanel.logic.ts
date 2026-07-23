@@ -13,6 +13,9 @@
 import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
 import {
   presetConnected,
+  profileCuratedIds,
+  profileEnabled,
+  profileKeyLabel,
   servicedModelsByProfile,
   type ServicedModel,
 } from "../views/authProfilesTree.logic.js"
@@ -35,6 +38,15 @@ export interface WalletRow {
   label?: string
   activeCount: number
   models: ServicedModel[]
+  /** Whole-profile enable/disable (WS2) — a REAL state, distinct from
+   *  `activeCount` (derived runnability). */
+  enabled: boolean
+  /** Read-only key identity (WS5): a `last4`+fingerprint tail, "self-refreshing",
+   *  or "key unavailable". Undefined when the daemon reported no status. */
+  keyLabel?: string
+  /** Curated model ids (WS3) rendered as read-only chips — only when the
+   *  profile is in `allow` mode. */
+  curatedIds: string[]
 }
 
 export interface AuthSettingsModel {
@@ -69,12 +81,16 @@ export function buildAuthSettingsModel(
   const wallets: WalletRow[] = [...profiles]
     .map(p => {
       const models = serviced.get(p.id) ?? []
+      const keyLabel = profileKeyLabel(p)
       return {
         id: p.id,
         endpoint: p.endpoint,
         ...(p.label ? { label: p.label } : {}),
         activeCount: models.filter(m => m.runnable).length,
         models,
+        enabled: profileEnabled(p),
+        ...(keyLabel ? { keyLabel } : {}),
+        curatedIds: profileCuratedIds(p),
       }
     })
     .sort((a, b) => {
@@ -124,14 +140,35 @@ function walletCard(w: WalletRow): string {
       ? `<div class="empty">Bills no catalog model yet.</div>`
       : `<div class="pills">${w.models.map(modelPill).join("")}</div>`
   const label = w.label ? ` · ${esc(w.label)}` : ""
+  // A REAL enable/disable badge (WS2), distinct from the derived active count.
+  const stateBadge = w.enabled
+    ? `<span class="badge ok">enabled</span>`
+    : `<span class="badge warn">disabled</span>`
+  const toggle = w.enabled
+    ? `<button class="act" data-action="disable" data-id="${esc(w.id)}">Disable</button>`
+    : `<button class="act" data-action="enable" data-id="${esc(w.id)}">Enable</button>`
+  // Read-only key identity (WS5) — never a plaintext secret.
+  const keyRow = w.keyLabel ? `<div class="sub">🔑 ${esc(w.keyLabel)}</div>` : ""
+  // Read-only curated chips (WS3). The "+" write picker is owned by another
+  // track; this only displays the current allowlist.
+  const curated =
+    w.curatedIds.length > 0
+      ? `<div class="sub">Curated to:</div><div class="pills">${w.curatedIds
+          .map(id => `<span class="pill">${esc(id)}</span>`)
+          .join("")}</div>`
+      : ""
   return `<div class="card">
     <div class="row">
       <span class="title">${esc(w.id)}</span>
+      ${stateBadge}
       <span class="badge">${w.activeCount} active / ${w.models.length} models</span>
+      ${toggle}
       <button class="act danger" data-action="delete" data-id="${esc(w.id)}">Delete</button>
     </div>
     <div class="sub">${esc(w.endpoint)}${label}</div>
+    ${keyRow}
     ${models}
+    ${curated}
   </div>`
 }
 
