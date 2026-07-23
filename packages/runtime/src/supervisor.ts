@@ -159,6 +159,58 @@ function isJudgeGate(gate: GateSpec): gate is JudgeGateSpec {
   return typeof (gate as JudgeGateSpec).judge === "object"
 }
 
+/** Discriminated outcome of `runShellGate` — mirrors the branches the
+ *  turn-end policy gate has always handled (an allowlist miss or an exec
+ *  exception are both hard, non-retryable failures; a completed run's exit
+ *  code is the actual pass/fail signal), now shared with the pre-exec hook
+ *  engine's `"gate"` action so both gates run through one execution path. */
+export type ShellGateOutcome =
+  | { kind: "ran"; exitCode: number; passed: boolean; result: ExecuteResult }
+  | { kind: "not-allowlisted"; message: string }
+  | { kind: "error"; message: string }
+
+/**
+ * Run a shell gate command: allowlist-check by basename (same allowlist as
+ * `command_execute`), anchor `cwd` against `sessionCwd`, execute via
+ * `runCommand` (default the host runner; injectable for tests), exit 0 =
+ * pass. Shared by the completion-policy supervisor's turn-end gate (`runGate`
+ * below) and the semantic hook engine's `"gate"` action (the `agent-prompt`
+ * pre-exec seam in `sessions.ts`) — one execution path, one timeout/allowlist
+ * implementation, rather than two bespoke ones.
+ */
+export async function runShellGate(
+  gate: ShellGateSpec,
+  opts: {
+    /** Workspace root the allowlist (`.agentproto/allowed-commands.json`) is
+     *  read from. */
+    workspace: string
+    /** Base directory `gate.cwd` (if given) is anchored against; also the
+     *  cwd the command runs in when `gate.cwd` is absent. */
+    sessionCwd: string
+    /** Command runner override — used by tests to mock the subprocess. */
+    runCommand?: (input: RunCommandInput) => Promise<ExecuteResult>
+  },
+): Promise<ShellGateOutcome> {
+  const exec = opts.runCommand ?? defaultRunCommand
+  try {
+    const allowlist = await loadAllowlist(opts.workspace)
+    const baseName = basename(gate.command)
+    if (!allowlist.has(baseName)) {
+      return { kind: "not-allowlisted", message: `gate command '${baseName}' not in allowlist` }
+    }
+    const resolvedCwd = gate.cwd ? makeCwdAnchor(opts.sessionCwd)(gate.cwd) : opts.sessionCwd
+    const result = await exec({
+      command: gate.command,
+      args: gate.args ?? [],
+      cwd: resolvedCwd,
+      timeoutMs: gate.timeoutMs ?? 60_000,
+    })
+    return { kind: "ran", exitCode: result.exitCode, passed: result.exitCode === 0, result }
+  } catch (err) {
+    return { kind: "error", message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export interface OnFailSpec {
   /**
    * Message sent to the watched session via sendPrompt when the gate fails.
@@ -973,43 +1025,30 @@ export function createCompletionPolicySupervisor(opts: {
         return
       }
 
-      try {
-        const allowlist = await loadAllowlist(workspace)
-        const baseName = basename(input.gate.command)
-        if (!allowlist.has(baseName)) {
-          emitFailed(-1, `gate command '${baseName}' not in allowlist`)
-          return
-        }
-
-        // The watched session's own cwd is already a vetted, explicit
-        // choice made at agent_start time (arbitrary absolute path or a
-        // registered workspaceSlug) — trust it as-is rather than
-        // re-anchoring it to the daemon's own boot workspace, which
-        // would reject every session spawned in a sibling worktree. An
-        // explicit `gate.cwd` override IS untrusted input, though — it
-        // still gets anchored, but against the session's own cwd rather
-        // than the daemon's, so it can't escape that session's tree.
-        const sessionCwd = registry.get(repr)?.cwd ?? workspace
-        const resolvedCwd = input.gate.cwd
-          ? makeCwdAnchor(sessionCwd)(input.gate.cwd)
-          : sessionCwd
-
-        const result = await exec({
-          command: input.gate.command,
-          args: input.gate.args ?? [],
-          cwd: resolvedCwd,
-          timeoutMs: input.gate.timeoutMs ?? 60_000,
-        })
-
-        state.lastGate = {
-          exitCode: result.exitCode,
-          at: new Date().toISOString(),
-        }
-        schedulePersist()
-        await act(result.exitCode === 0, result.exitCode)
-      } catch (err) {
-        emitFailed(-1, err instanceof Error ? err.message : String(err))
+      // The watched session's own cwd is already a vetted, explicit choice
+      // made at agent_start time (arbitrary absolute path or a registered
+      // workspaceSlug) — trust it as-is rather than re-anchoring it to the
+      // daemon's own boot workspace, which would reject every session
+      // spawned in a sibling worktree. An explicit `gate.cwd` override IS
+      // untrusted input, though — `runShellGate` still anchors it, but
+      // against the session's own cwd rather than the daemon's, so it can't
+      // escape that session's tree.
+      const sessionCwd = registry.get(repr)?.cwd ?? workspace
+      const outcome = await runShellGate(input.gate, {
+        workspace,
+        sessionCwd,
+        runCommand: exec,
+      })
+      if (outcome.kind !== "ran") {
+        emitFailed(-1, outcome.message)
+        return
       }
+      state.lastGate = {
+        exitCode: outcome.exitCode,
+        at: new Date().toISOString(),
+      }
+      schedulePersist()
+      await act(outcome.passed, outcome.exitCode)
     }
     entry.runGate = runGate
 

@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
@@ -50,6 +50,7 @@ function holdSession(
   acpId = "acp-hold",
   requestId = "perm-1",
   rawInput?: unknown,
+  toolName = "Write",
 ): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
@@ -63,8 +64,8 @@ function holdSession(
       yield {
         kind: "agent-prompt",
         toolCallId: requestId,
-        toolName: "Write",
-        text: 'Allow "Write"?',
+        toolName,
+        text: `Allow "${toolName}"?`,
         options: OPTIONS,
         ...(rawInput !== undefined ? { rawInput } : {}),
       }
@@ -253,6 +254,143 @@ describe("pending-permissions inbox — registry", () => {
       e => e.type === "session:permission-resolved" && e.permissionId === "perm-k",
     )
     expect(resolved).toMatchObject({ decision: "cancelled" })
+    registry.shutdown()
+  })
+})
+
+// ── action:"gate" auto-resolve (PR 5 — the git-push hook) ────────────────
+//
+// A `.agentproto/hooks.json` rule with `action:"gate"` (e.g. the canonical
+// `git push` → review-gate example from hooks-config.ts's module docblock)
+// doesn't wait on a human: it parks the request like a "hold" (so a dying
+// session still gets cancelled cleanly), runs the configured shell command,
+// and resolves the SAME held driver RPC itself from that command's exit
+// code — approve on 0, deny otherwise. This exercises that path against a
+// real (fast, allowlisted) subprocess rather than mocking runShellGate.
+
+function writeGateWorkspace(dir: string, gateExitCode: number): void {
+  mkdirSync(join(dir, ".agentproto"), { recursive: true })
+  writeFileSync(
+    join(dir, ".agentproto", "hooks.json"),
+    JSON.stringify({
+      version: 1,
+      rules: [
+        {
+          id: "git-push-review-gate",
+          plane: "semantic",
+          match: { tool: "Bash", command: "^git push" },
+          action: "gate",
+          gate: { command: "node", args: ["-e", `process.exit(${gateExitCode})`] },
+        },
+      ],
+    }),
+  )
+  writeFileSync(
+    join(dir, ".agentproto", "allowed-commands.json"),
+    JSON.stringify({ version: 1, commands: ["node"] }),
+  )
+}
+
+/** Spawn a (non-hold) session in `cwd`, kick the turn, and wait for the
+ *  gate rule to park + auto-resolve the request. Returns the session id. */
+async function spawnAndAwaitGateResolution(
+  registry: SessionsRegistry,
+  fake: { session: AgentSessionLike; responded: Array<{ requestId: string; resolution: unknown }> },
+  cwd: string,
+): Promise<string> {
+  const desc = registry.spawnAgent({
+    workspaceSlug: "default",
+    cwd,
+    agentSession: fake.session,
+    adapterSlug: "claude-code",
+    label: "gated-session",
+  })
+  void registry.sendPrompt(desc.id, "go").catch(() => {})
+  for (let i = 0; i < 300; i++) {
+    if (fake.responded.length > 0) break
+    await new Promise(r => setTimeout(r, 10))
+  }
+  return desc.id
+}
+
+describe('pending-permissions inbox — action:"gate" auto-resolve', () => {
+  let tmp: string
+  let transcriptDir: string
+  let workspace: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "gate-hook-"))
+    transcriptDir = join(tmp, "sessions")
+    workspace = join(tmp, "workspace")
+    mkdirSync(workspace, { recursive: true })
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it("a passing gate (exit 0) auto-approves the git push", async () => {
+    writeGateWorkspace(workspace, 0)
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession("acp-gate-ok", "perm-gate-ok", { command: "git push origin main" }, "Bash")
+
+    const id = await spawnAndAwaitGateResolution(registry, fake, workspace)
+
+    expect(fake.responded).toEqual([
+      { requestId: "perm-gate-ok", resolution: { optionId: "opt-once" } },
+    ])
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    expect(registry.get(id)?.awaitingPermission).toBeUndefined()
+    const resolved = events.find(e => e.type === "session:permission-resolved")
+    expect(resolved).toMatchObject({ permissionId: "perm-gate-ok", decision: "approve" })
+
+    registry.shutdown()
+  })
+
+  it("a failing gate (nonzero exit) auto-denies the git push", async () => {
+    writeGateWorkspace(workspace, 1)
+    const bus = createSessionEventBus()
+    const events: SessionEvent[] = []
+    bus.onAny(e => events.push(e))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const fake = holdSession("acp-gate-fail", "perm-gate-fail", { command: "git push origin main" }, "Bash")
+
+    await spawnAndAwaitGateResolution(registry, fake, workspace)
+
+    expect(fake.responded).toEqual([
+      { requestId: "perm-gate-fail", resolution: { optionId: "opt-reject" } },
+    ])
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    const resolved = events.find(e => e.type === "session:permission-resolved")
+    expect(resolved).toMatchObject({ permissionId: "perm-gate-fail", decision: "deny" })
+
+    registry.shutdown()
+  })
+
+  it("a non-matching Bash command (git status) is unaffected — no gate runs, no hold", async () => {
+    writeGateWorkspace(workspace, 0)
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-gate-skip", "perm-gate-skip", { command: "git status" }, "Bash")
+
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fake.session,
+      adapterSlug: "claude-code",
+      label: "ungated-session",
+    })
+    void registry.sendPrompt(desc.id, "go").catch(() => {})
+    // A non-matching command falls through to fallback ("allow" — no
+    // permissionHold here), so nothing is ever parked and the driver's
+    // respondPermission is never called; give the async turn a moment to
+    // settle rather than polling for an event that shouldn't happen.
+    await new Promise(r => setTimeout(r, 50))
+
+    expect(registry.listPendingPermissions()).toHaveLength(0)
+    expect(fake.responded).toEqual([])
+
     registry.shutdown()
   })
 })

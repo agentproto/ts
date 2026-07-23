@@ -29,7 +29,8 @@ import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
 import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
-import { decide, loadHooksConfig } from "./hooks-config.js"
+import { decideRule, loadHooksConfig } from "./hooks-config.js"
+import { runShellGate } from "./supervisor.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
 import type {
   AuthMethod,
@@ -2047,6 +2048,97 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Resolve a parked permission by id — maps the decision (or explicit
+   * optionId) to one of the offered options, resolves the held driver RPC,
+   * clears the session's awaiting-permission state, and emits
+   * `session:permission-resolved`. Body of the public `respondPermission`
+   * API method, factored out so the `action:"gate"` path in the
+   * `agent-prompt` handler below (which resolves a permission itself, from
+   * a shell exit code rather than a human/orchestrator call) can reuse the
+   * exact same resolution logic instead of duplicating it.
+   */
+  const resolvePendingPermission = async (
+    id: string,
+    input: PermissionRespondInput,
+  ): Promise<PermissionRespondResult> => {
+    const pending = pendingPermissions.get(id)
+    if (!pending) {
+      return {
+        ok: false,
+        error: "not_found",
+        message: `no pending permission "${id}" (unknown or already resolved)`,
+      }
+    }
+    const rt = sessions.get(pending.sessionId)
+    if (!rt || !rt.agentSession) {
+      // Session vanished between registration and response — drop the stale
+      // entry so it stops showing up in the inbox.
+      pendingPermissions.delete(id)
+      if (rt) refreshAwaitingPermission(rt)
+      return {
+        ok: false,
+        error: "session_gone",
+        message: `session "${pending.sessionId}" for permission "${id}" is no longer alive`,
+      }
+    }
+    const respond = rt.agentSession.respondPermission
+    if (!respond) {
+      return {
+        ok: false,
+        error: "unsupported",
+        message: `session "${pending.sessionId}" driver does not support held permissions`,
+      }
+    }
+    const selected = selectPermissionOptionId(pending.options, input)
+    if (selected === null) {
+      return {
+        ok: false,
+        error: "no_matching_option",
+        message:
+          `permission "${id}" offers no ${input.decision === "approve" ? "allow" : "reject"}` +
+          `-flavored option; pass an explicit optionId (one of: ${pending.options
+            .map(o => o.optionId)
+            .join(", ")})`,
+      }
+    }
+    // Resolve the held driver RPC — the agent's turn unblocks with the chosen
+    // outcome. Clear inbox state BEFORE awaiting so a slow driver can't leave
+    // a resolved request visible.
+    pendingPermissions.delete(id)
+    const chosenOptionId = "optionId" in selected ? selected.optionId : undefined
+    // The request is resolved either way — the agent's turn resumes, so it is
+    // no longer awaiting a human. Mirrors how a new turn clears these.
+    delete rt.desc.awaitingInput
+    rt.desc.awaitingQuestion = undefined
+    refreshAwaitingPermission(rt)
+    const okResolved = await respond(id, selected)
+    if (sessionEvents) {
+      sessionEvents.emit({
+        type: "session:permission-resolved",
+        sessionId: pending.sessionId,
+        permissionId: id,
+        decision: input.decision,
+        ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
+    schedulePersist()
+    if (!okResolved) {
+      // The driver had already resolved this request (race with a
+      // session-death cancel). Report success anyway — the inbox entry is
+      // gone and the caller's intent is moot.
+      return { ok: true, permission: pending, decision: input.decision, ...(chosenOptionId ? { optionId: chosenOptionId } : {}) }
+    }
+    return {
+      ok: true,
+      permission: pending,
+      decision: input.decision,
+      ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
+    }
+  }
+
+  /**
    * Append one record to this session's workspace-bucket conversation
    * index (`conversation-index.ts`) — the persisted, append-only memo of
    * the session ↔ native-transcript link (DESIGN.md §6). Called at every
@@ -2420,8 +2512,9 @@ export function createSessionsRegistry(opts?: {
         // exactly: no `.agentproto/hooks.json` or a log-only one changes
         // nothing about whether a request is held.
         const { command, args } = extractCommandArgs(evt.rawInput)
-        const hookRules = loadHooksConfig(rt.desc.cwd ?? process.cwd())
-        const decision = decide(
+        const workspace = rt.desc.cwd ?? process.cwd()
+        const hookRules = loadHooksConfig(workspace)
+        const { decision, rule } = decideRule(
           hookRules,
           { tool: evt.toolName ?? "", command, args },
           rt.permissionHold ? "hold" : "allow",
@@ -2433,7 +2526,46 @@ export function createSessionsRegistry(opts?: {
         // ships the rule-engine + config substrate, not an auto-deny action
         // that blocks real work (see hooks-config.ts); no shipped default
         // config produces "deny" today.
-        if (decision === "hold" || decision === "deny") {
+        if (decision === "gate" && rule?.gate && evt.toolCallId) {
+          // action:"gate" auto-resolves the held request itself, from a
+          // shell command's exit code, instead of waiting on a human — but
+          // it still parks it in the pending-permissions inbox first (same
+          // as "hold") so a session that dies mid-gate gets cancelled
+          // cleanly by `cancelPendingPermissionsForSession` rather than
+          // leaking a driver RPC.
+          registerPendingPermission(rt, evt)
+          const toolCallId = evt.toolCallId
+          const gate = rule.gate
+          appendLine(
+            rt,
+            `\x1b[33m[gate] running ${gate.command}${gate.args?.length ? " " + gate.args.join(" ") : ""}\x1b[0m`,
+            "stdout",
+          )
+          void runShellGate(gate, { workspace, sessionCwd: workspace })
+            .then(outcome => {
+              const passed = outcome.kind === "ran" && outcome.passed
+              const detail = outcome.kind === "ran" ? `exit ${outcome.exitCode}` : outcome.message
+              appendLine(
+                rt,
+                passed
+                  ? `\x1b[32m[gate] passed (${detail}) — approving\x1b[0m`
+                  : `\x1b[31m[gate] failed (${detail}) — denying\x1b[0m`,
+                passed ? "stdout" : "stderr",
+              )
+              return resolvePendingPermission(toolCallId, { decision: passed ? "approve" : "deny" })
+            })
+            .catch(err => {
+              appendLine(
+                rt,
+                `\x1b[31m[gate] error resolving permission: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,
+                "stderr",
+              )
+            })
+        } else if (decision === "hold" || decision === "deny" || decision === "gate") {
+          // A "gate" decision with no toolCallId to resolve can't auto-approve
+          // or auto-deny (there is nothing to call `respondPermission` with),
+          // so it degrades to the same hold-for-human path as "hold"/"deny"
+          // rather than silently hanging the request forever.
           registerPendingPermission(rt, evt)
           appendLine(rt, `\x1b[33m[permission] ${evt.text ?? evt.toolName ?? "requesting permission"}\x1b[0m`, "stdout")
         } else {
@@ -4090,82 +4222,8 @@ export function createSessionsRegistry(opts?: {
       // Defensive copies — callers must not mutate the live inbox records.
       return scoped.map(p => ({ ...p, options: p.options.map(o => ({ ...o })) }))
     },
-    async respondPermission(id, input) {
-      const pending = pendingPermissions.get(id)
-      if (!pending) {
-        return {
-          ok: false,
-          error: "not_found",
-          message: `no pending permission "${id}" (unknown or already resolved)`,
-        }
-      }
-      const rt = sessions.get(pending.sessionId)
-      if (!rt || !rt.agentSession) {
-        // Session vanished between registration and response — drop the stale
-        // entry so it stops showing up in the inbox.
-        pendingPermissions.delete(id)
-        if (rt) refreshAwaitingPermission(rt)
-        return {
-          ok: false,
-          error: "session_gone",
-          message: `session "${pending.sessionId}" for permission "${id}" is no longer alive`,
-        }
-      }
-      const respond = rt.agentSession.respondPermission
-      if (!respond) {
-        return {
-          ok: false,
-          error: "unsupported",
-          message: `session "${pending.sessionId}" driver does not support held permissions`,
-        }
-      }
-      const selected = selectPermissionOptionId(pending.options, input)
-      if (selected === null) {
-        return {
-          ok: false,
-          error: "no_matching_option",
-          message:
-            `permission "${id}" offers no ${input.decision === "approve" ? "allow" : "reject"}` +
-            `-flavored option; pass an explicit optionId (one of: ${pending.options
-              .map(o => o.optionId)
-              .join(", ")})`,
-        }
-      }
-      // Resolve the held driver RPC — the agent's turn unblocks with the chosen
-      // outcome. Clear inbox state BEFORE awaiting so a slow driver can't leave
-      // a resolved request visible.
-      pendingPermissions.delete(id)
-      const chosenOptionId = "optionId" in selected ? selected.optionId : undefined
-      // The request is resolved either way — the agent's turn resumes, so it is
-      // no longer awaiting a human. Mirrors how a new turn clears these.
-      delete rt.desc.awaitingInput
-      rt.desc.awaitingQuestion = undefined
-      refreshAwaitingPermission(rt)
-      const okResolved = await respond(id, selected)
-      if (sessionEvents) {
-        sessionEvents.emit({
-          type: "session:permission-resolved",
-          sessionId: pending.sessionId,
-          permissionId: id,
-          decision: input.decision,
-          ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
-          ...(rt.desc.label ? { label: rt.desc.label } : {}),
-          ts: new Date().toISOString(),
-        })
-      }
-      schedulePersist()
-      if (!okResolved) {
-        // The driver had already resolved this request (race with a
-        // session-death cancel). Report success anyway — the inbox entry is
-        // gone and the caller's intent is moot.
-        return { ok: true, permission: pending, decision: input.decision, ...(chosenOptionId ? { optionId: chosenOptionId } : {}) }
-      }
-      return {
-        ok: true,
-        permission: pending,
-        decision: input.decision,
-        ...(chosenOptionId ? { optionId: chosenOptionId } : {}),
-      }
+    respondPermission(id, input) {
+      return resolvePendingPermission(id, input)
     },
     forget(id) {
       const rt = sessions.get(id)
