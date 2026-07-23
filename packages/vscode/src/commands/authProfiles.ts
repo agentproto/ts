@@ -30,6 +30,12 @@ import {
   loginCommandFor,
 } from "./authProfileConnect.logic.js"
 import { pickAndConnectLocalLogin } from "./localLogin.js"
+import {
+  buildModelPickItems,
+  resolveModelSelection,
+  toggleModelInAllowlist,
+} from "./authProfileModelPicker.logic.js"
+import { profileCuratedIds } from "../views/authProfilesTree.logic.js"
 
 export function registerAuthProfileCommands(
   ctx: vscode.ExtensionContext,
@@ -70,7 +76,110 @@ export function registerAuthProfileCommands(
         void runSetAuthProfileEnabledFlow(client, provider, node.profileId, false)
       }
     }),
+    vscode.commands.registerCommand("agentproto.setAuthProfileModels", (node?: AuthProfileNode) => {
+      if (node?.kind === "profile") void runSetAuthProfileModelsFlow(client, provider, node.profileId)
+    }),
   )
+}
+
+/**
+ * The "+" model picker (WS4 phase 2) — reachable from a profile row's inline
+ * "+" / context menu and the webview's "+ Models" button. Fetches the profile's
+ * FULL provider model list from the WS4 read tool, opens a multi-select
+ * QuickPick pre-checked with the current allowlist, and writes the result via
+ * WS3's `setAuthProfileModels`. 100% catalog-sourced — nothing hardcoded.
+ */
+export async function runSetAuthProfileModelsFlow(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  profileId: string,
+): Promise<void> {
+  try {
+    const profiles = await client.listAuthProfiles()
+    const summary = profiles.find(p => p.id === profileId)
+    if (!summary) {
+      void vscode.window.showErrorMessage(`Auth profile "${profileId}" not found.`)
+      return
+    }
+
+    const { models } = await client.getCatalogProviderModels(summary.endpoint)
+    if (models.length === 0) {
+      void vscode.window.showInformationMessage(
+        `No catalog models found for provider "${summary.endpoint}" — nothing to curate.`,
+      )
+      return
+    }
+
+    const current = profileCuratedIds(summary)
+    // The QuickPick's own type-to-filter over matchOnDescription/Detail is the
+    // pagination here: even OpenRouter's thousands of rows stay usable because
+    // the list is virtualized + filterable, and the current allowlist is sorted
+    // to the top. We never render the rows anywhere else (no logging).
+    const items = buildModelPickItems(models, current).map(i => ({
+      label: i.label,
+      ...(i.description ? { description: i.description } : {}),
+      ...(i.detail ? { detail: i.detail } : {}),
+      picked: i.picked,
+      id: i.id,
+    }))
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Allowed models for "${profileId}" (${summary.endpoint})`,
+      placeHolder: `Type to filter ${models.length} model${
+        models.length === 1 ? "" : "s"
+      } · pick the ones this wallet may use (select none to allow all)`,
+      canPickMany: true,
+      matchOnDescription: true,
+      matchOnDetail: true,
+    })
+    if (picked === undefined) return // dismissed — leave the allowlist untouched
+
+    const write = resolveModelSelection(picked.map(p => p.id))
+    await client.setAuthProfileModels(profileId, write.mode, write.ids)
+    void vscode.window.showInformationMessage(
+      write.mode === "all"
+        ? `"${profileId}" now allows all eligible models.`
+        : `"${profileId}" now allows ${write.ids.length} model${write.ids.length === 1 ? "" : "s"}.`,
+    )
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Could not set allowed models for "${profileId}": ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
+}
+
+/**
+ * Toggle a single model id in a profile's allowlist (WS4) — the webview's
+ * per-chip add/remove affordance. Reads the profile's current curation, flips
+ * membership of `modelId`, and writes it back; emptying the allowlist reverts
+ * to servicing everything (see `toggleModelInAllowlist`).
+ */
+export async function runToggleAuthProfileModelFlow(
+  client: DaemonClient,
+  provider: AuthProfilesTreeProvider,
+  profileId: string,
+  modelId: string,
+): Promise<void> {
+  try {
+    const profiles = await client.listAuthProfiles()
+    const summary = profiles.find(p => p.id === profileId)
+    if (!summary) {
+      void vscode.window.showErrorMessage(`Auth profile "${profileId}" not found.`)
+      return
+    }
+    const write = toggleModelInAllowlist(profileCuratedIds(summary), modelId)
+    await client.setAuthProfileModels(profileId, write.mode, write.ids)
+    await provider.refresh()
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Could not update allowed models for "${profileId}": ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
 }
 
 /**

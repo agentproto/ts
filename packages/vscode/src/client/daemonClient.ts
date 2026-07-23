@@ -35,6 +35,7 @@ import type {
   AdapterInstallResult,
   AuthProfileSummary,
   CatalogModelsResponse,
+  CatalogProviderModelsResponse,
   CreateAuthProfileRequest,
   CreatedAuthProfileResult,
   DaemonHealth,
@@ -478,6 +479,23 @@ export class DaemonClient {
   async catalogModels(): Promise<CatalogModelsResponse> {
     const result = await this.mcpCall<CatalogModelsResponse>("catalog_models")
     return result ?? { vendors: [] }
+  }
+
+  /**
+   * `catalog_provider_models` is an MCP-only tool — fetch the EXHAUSTIVE
+   * model list a single provider can serve (the full surface the launch-menu
+   * "+" picker browses, separate from the lean spawn `catalog_models`). An
+   * unknown/empty provider comes back as `{ provider, models: [] }`, never an
+   * error; large providers (openrouter) return whole, so paginate client-side.
+   */
+  async getCatalogProviderModels(
+    provider: string,
+  ): Promise<CatalogProviderModelsResponse> {
+    const result = await this.mcpCall<CatalogProviderModelsResponse>(
+      "catalog_provider_models",
+      provider ? { endpoint: provider } : {},
+    )
+    return result ?? { provider, models: [] }
   }
 
   /**

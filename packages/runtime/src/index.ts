@@ -206,6 +206,13 @@ export {
   type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
+export {
+  buildCatalogProviderModels,
+  type CatalogProviderModelsQuery,
+  type CatalogProviderModelsResponse,
+  type CatalogProviderModel,
+  type CatalogProviderPricing,
+} from "./catalog-provider-models.js"
 export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"
 export { makeBrowserAdapterLister } from "./browser-adapters.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"

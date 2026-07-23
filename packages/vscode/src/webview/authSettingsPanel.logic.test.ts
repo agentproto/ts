@@ -124,6 +124,35 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).toContain(">disabled<")
   })
 
+  it("renders the WS4 '+ Models' picker button and removable curated chips", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      {
+        id: "openrouter-api",
+        endpoint: "openrouter",
+        method: "api-key",
+        models: { mode: "allow", ids: ["anthropic/claude-fable-5"] },
+      },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    // The "+" picker opens on the wallet id.
+    expect(html).toContain('data-action="pickModels" data-id="openrouter-api"')
+    // Each curated chip carries a remove toggle keyed by wallet id + model id.
+    expect(html).toContain(
+      'data-action="removeModel" data-id="openrouter-api" data-model="anthropic/claude-fable-5"',
+    )
+  })
+
+  it("labels an uncurated wallet 'Allows all eligible models' with no remove chips", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("Allows all eligible models")
+    expect(html).not.toContain('data-action="removeModel"')
+    // The picker is still offered so an uncurated wallet can start curating.
+    expect(html).toContain('data-action="pickModels" data-id="openrouter-api"')
+  })
+
   it("escapes interpolated text", () => {
     expect(esc(`<b>"x"&'y'`)).toBe("&lt;b&gt;&quot;x&quot;&amp;&#39;y&#39;")
   })

@@ -149,20 +149,29 @@ function walletCard(w: WalletRow): string {
     : `<button class="act" data-action="enable" data-id="${esc(w.id)}">Enable</button>`
   // Read-only key identity (WS5) — never a plaintext secret.
   const keyRow = w.keyLabel ? `<div class="sub">🔑 ${esc(w.keyLabel)}</div>` : ""
-  // Read-only curated chips (WS3). The "+" write picker is owned by another
-  // track; this only displays the current allowlist.
-  const curated =
+  // Curated allowlist chips (WS3 display) with a WS4 "×" remove toggle each.
+  // The "+ Models" button opens the WS4 multi-select picker (full provider
+  // list). An empty allowlist services everything, so the label reflects that.
+  const curatedHeader = w.curatedIds.length > 0 ? "Curated to:" : "Allows all eligible models"
+  const chips =
     w.curatedIds.length > 0
-      ? `<div class="sub">Curated to:</div><div class="pills">${w.curatedIds
-          .map(id => `<span class="pill">${esc(id)}</span>`)
+      ? `<div class="pills">${w.curatedIds
+          .map(
+            id =>
+              `<span class="pill">${esc(id)} <button class="chip-x" data-action="removeModel" data-id="${esc(
+                w.id,
+              )}" data-model="${esc(id)}" title="Remove ${esc(id)}">×</button></span>`,
+          )
           .join("")}</div>`
       : ""
+  const curated = `<div class="sub">${curatedHeader}</div>${chips}`
   return `<div class="card">
     <div class="row">
       <span class="title">${esc(w.id)}</span>
       ${stateBadge}
       <span class="badge">${w.activeCount} active / ${w.models.length} models</span>
       ${toggle}
+      <button class="act" data-action="pickModels" data-id="${esc(w.id)}">+ Models</button>
       <button class="act danger" data-action="delete" data-id="${esc(w.id)}">Delete</button>
     </div>
     <div class="sub">${esc(w.endpoint)}${label}</div>
@@ -228,6 +237,7 @@ export function buildAuthSettingsHtml(model: AuthSettingsModel, nonce: string): 
     .pill em { opacity: .6; font-style: normal; }
     .pill.active { color: var(--vscode-testing-iconPassed, #3fb950); }
     .pill.inactive { opacity: .55; }
+    .chip-x { background: none; border: none; color: var(--vscode-errorForeground); cursor: pointer; padding: 0 0 0 2px; font-size: 12px; line-height: 1; }
     .empty { opacity: .55; font-size: 12px; padding: 4px 0; }
     button.link { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 0; }
   </style>
@@ -254,6 +264,7 @@ export function buildAuthSettingsHtml(model: AuthSettingsModel, nonce: string): 
         slug: el.getAttribute('data-slug') || undefined,
         id: el.getAttribute('data-id') || undefined,
         source: el.getAttribute('data-source') || undefined,
+        model: el.getAttribute('data-model') || undefined,
       });
     });
   </script>

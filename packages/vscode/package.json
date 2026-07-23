@@ -316,6 +316,12 @@
         "icon": "$(circle-slash)"
       },
       {
+        "command": "agentproto.setAuthProfileModels",
+        "title": "agentproto: Set Allowed Models…",
+        "category": "agentproto",
+        "icon": "$(add)"
+      },
+      {
         "command": "agentproto.openAuthSettings",
         "title": "agentproto: Open Auth Settings",
         "category": "agentproto",
@@ -487,6 +493,11 @@
           "group": "inline@1"
         },
         {
+          "command": "agentproto.setAuthProfileModels",
+          "when": "view == 'agentproto.authProfiles' && viewItem =~ /^auth-profile(-enabled|-disabled)?$/",
+          "group": "inline@0"
+        },
+        {
           "command": "agentproto.deleteAuthProfile",
           "when": "view == 'agentproto.authProfiles' && viewItem =~ /^auth-profile(-enabled|-disabled)?$/",
           "group": "inline@2"
@@ -505,6 +516,11 @@
           "command": "agentproto.connectAuthProfile",
           "when": "view == 'agentproto.authProfiles' && viewItem == auth-preset-unconnected",
           "group": "9_actions@1"
+        },
+        {
+          "command": "agentproto.setAuthProfileModels",
+          "when": "view == 'agentproto.authProfiles' && viewItem =~ /^auth-profile(-enabled|-disabled)?$/",
+          "group": "9_actions@0"
         },
         {
           "command": "agentproto.deleteAuthProfile",
