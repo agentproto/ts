@@ -138,8 +138,8 @@ unconfined.
 ## Open decision: promoting tier-2 to tier-1
 
 `claude-sdk` and `mastra-agent` both run behind a local ACP host
-(`adapters/claude-sdk/src/options.ts`, `adapters/mastra-agent/src/
-acp-host.ts`) but currently configure it with `bypassPermissions`, so they
+(`adapters/claude-sdk/src/options.ts`, `adapters/mastra-agent/src/acp-host.ts`)
+but currently configure it with `bypassPermissions`, so they
 never raise `request_permission` and land in tier 2 (observable, not
 gateable). Both **could**, in principle, bridge their SDK-level
 `canUseTool` callback into a real `request_permission` call instead of
