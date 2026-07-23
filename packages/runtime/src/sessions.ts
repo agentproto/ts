@@ -28,7 +28,8 @@ import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
-import type { ToolCallRecord } from "./tool-call-record.js"
+import { extractCommandArgs, type ToolCallRecord } from "./tool-call-record.js"
+import { decide, loadHooksConfig } from "./hooks-config.js"
 import { deriveSessionTitle, MAX_LENGTH as TITLE_MAX_LENGTH } from "./session-title.js"
 import type {
   AuthMethod,
@@ -2412,10 +2413,27 @@ export function createSessionsRegistry(opts?: {
             source: "structured",
           }
         }
+        // The rule table (`.agentproto/hooks.json`) generalizes the old
+        // `permissionHold` boolean into a per-tool/command decision. An
+        // empty or log-only rule set (today's default — see hooks-config.ts)
+        // falls through to `fallback`, reproducing the pre-engine behavior
+        // exactly: no `.agentproto/hooks.json` or a log-only one changes
+        // nothing about whether a request is held.
+        const { command, args } = extractCommandArgs(evt.rawInput)
+        const hookRules = loadHooksConfig(rt.desc.cwd ?? process.cwd())
+        const decision = decide(
+          hookRules,
+          { tool: evt.toolName ?? "", command, args },
+          rt.permissionHold ? "hold" : "allow",
+        )
         // Permission-hold sessions park the request in the cross-session inbox
         // so a human/orchestrator can approve/deny it out-of-band. The RPC is
-        // held open by the driver until `respondPermission` resolves it.
-        if (rt.permissionHold) {
+        // held open by the driver until `respondPermission` resolves it. A
+        // "deny" decision degrades to the same hold-for-human path — this PR
+        // ships the rule-engine + config substrate, not an auto-deny action
+        // that blocks real work (see hooks-config.ts); no shipped default
+        // config produces "deny" today.
+        if (decision === "hold" || decision === "deny") {
           registerPendingPermission(rt, evt)
           appendLine(rt, `\x1b[33m[permission] ${evt.text ?? evt.toolName ?? "requesting permission"}\x1b[0m`, "stdout")
         } else {

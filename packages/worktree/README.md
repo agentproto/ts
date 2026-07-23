@@ -125,3 +125,28 @@ It connects to the daemon's MCP endpoint (`http://127.0.0.1:18790/mcp`, or
 step reads a y/n answer from `/dev/tty`; `--yes` auto-approves, and a
 non-interactive run (no TTY) defaults to NOT approving — the worktree is left
 in place rather than silently cleaned up.
+
+## `worktree-gc` routine (AIP-41, opt-in)
+
+`routines/worktree-gc/ROUTINE.md` is a reference AIP-41 routine that reaps
+merged worktrees on a schedule, so a long-running workspace doesn't accumulate
+stale `_worktrees/*` trees and dead `wt/*` branches. It fires the `worktree_gc`
+tool (the daemon's MCP/HTTP surface over `planGc` / `applyGc` in `src/gc.ts`)
+with `apply: true`, `salvageDirty: false` on a daily cron (`0 4 * * *`, UTC).
+
+**It ships disabled (`enabled: false`)** — it registers but never fires until
+you turn it on. To activate it in a workspace:
+
+1. Copy `routines/worktree-gc/` to the workspace's routine library at
+   `<workspace>/.routines/worktree-gc/ROUTINE.md` (the path
+   `@agentproto/routine`'s `routineSpec.pathOf` expects).
+2. Set `enabled: true` in the frontmatter. To pin a specific repo, add
+   `repoRoot: <abs path>` or `workspaceSlug: <slug>` to `target.inputs`;
+   otherwise the daemon resolves the repo from the **active workspace**.
+3. Reload routines so the daemon registers the schedule.
+
+The safety invariants are enforced by the engine and cannot be weakened by the
+routine: reclaim is **merge-gated** (integration ∈ {merged, fresh} **and** the
+tree is clean), an **open** PR or live-session worktree is always **held**, and
+a **dirty** integrated worktree is only ever archived — never discarded — and
+only when `salvageDirty` is `true`.

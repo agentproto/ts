@@ -27,7 +27,8 @@ import type { AcpMcpServer } from "@agentproto/acp"
 import { registerSessionTools } from "./session-tools.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { withToolSubset } from "./tool-subset.js"
-import type { SessionsRegistry } from "./sessions.js"
+import { collectSubtree } from "./agent-tools.js"
+import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
@@ -362,6 +363,75 @@ export interface OrchestratorInjection {
   bindLifecycle(sessionId: string): () => void
 }
 
+/**
+ * The slice of the sessions registry the orphan-reaper needs: enumerate
+ * every session (so the subtree walk sees archived intermediate ancestors
+ * too) and terminate one by id via the SAME graceful SIGTERM path
+ * `agent_kill` uses (`registry.kill`). Kept structural so the reaper is a
+ * pure, unit-testable function decoupled from the full registry surface.
+ */
+export interface OrphanReaperRegistry {
+  list(opts?: { includeArchived?: boolean }): readonly SessionDescriptor[]
+  kill(id: string, signal?: NodeJS.Signals): boolean
+}
+
+/**
+ * Reap a dying parent's live descendants (WP-B — orphan reaping). A
+ * supervisor/orchestrator that exits or is killed must not leave the
+ * sessions it spawned running unattended (zombies still holding a shared
+ * checkout, still burning resources, with no parent watching them).
+ *
+ * Walks the subtree rooted at `parentSessionId` and terminates every
+ * still-alive descendant via `registry.kill` — SIGTERM + status→"killed",
+ * the exact primitive `agent_kill` uses, so there's no second kill path
+ * and reaping reuses the graceful-stop transition the rest of the daemon
+ * already understands. The parent itself is skipped (it's the one already
+ * exiting). We DELIBERATELY reap rather than mint a new `orphaned` status:
+ * the lifecycle has no such state today, and `killed` already carries "was
+ * terminated, not a natural exit" — inventing a status would be a new
+ * lifecycle concept where an existing one fits.
+ *
+ * Idempotent and safe:
+ *   - a descendant that already raced to a terminal status is skipped
+ *     (never re-killed), so `kill()`'s own no-op-on-terminal guard is
+ *     belt-and-suspenders here;
+ *   - only sessions transitively under `parentSessionId` are touched —
+ *     siblings and unrelated roots are never reaped, because the subtree
+ *     walk starts strictly at the exiting parent;
+ *   - `kill()` synchronously emits the child's own `session:exited`, so a
+ *     reaped child that is ITSELF an orchestrator cascades — its bound
+ *     lifecycle handler revokes its token and reaps its own children —
+ *     but the up-front subtree snapshot + terminal-status skip make the
+ *     cascade and this walk converge without double-killing anything.
+ *
+ * Returns the ids actually reaped (for logging / assertions).
+ */
+export function reapOrphanedDescendants(
+  registry: OrphanReaperRegistry,
+  parentSessionId: string,
+): string[] {
+  // includeArchived so an archived intermediate ancestor doesn't sever the
+  // parent→child graph the BFS walks — same reason `agent_kill`'s subtree
+  // scoping passes it (a live grandchild under an archived child must still
+  // be reachable).
+  const all = registry.list({ includeArchived: true })
+  const subtree = collectSubtree(parentSessionId, all)
+  const byId = new Map(all.map(s => [s.id, s]))
+  const reaped: string[] = []
+  for (const id of subtree) {
+    if (id === parentSessionId) continue
+    const desc = byId.get(id)
+    // Only a live session is reapable. Reading `desc.status` at loop time
+    // (not from a snapshot) means a descendant already flipped to "killed"
+    // by a nested cascade this same walk triggered is correctly skipped.
+    if (!desc || (desc.status !== "running" && desc.status !== "starting")) {
+      continue
+    }
+    if (registry.kill(id)) reaped.push(id)
+  }
+  return reaped
+}
+
 export interface OrchestratorInjectorDeps {
   scopeTokens: ScopeTokenRegistry
   sessionEvents: SessionEventBus
@@ -375,6 +445,15 @@ export interface OrchestratorInjectorDeps {
    *  sees its orchestration tools namespaced under this. Default
    *  `agentproto`. */
   entryName?: string
+  /**
+   * Reap the parent's live descendants when it exits (WP-B). Called from
+   * the same `session:exited` handler that revokes the scope-token, right
+   * after the revoke — so a killed/exited orchestrator never leaves its
+   * children orphaned-and-running alongside a now-dead parent. Given the
+   * exiting parent's session id; typically wired to
+   * `reapOrphanedDescendants(registry, id)`. Optional: when unset, only the
+   * scope-token is revoked (pre-WP-B behaviour, children left as-is). */
+  reapChildren?: (parentSessionId: string) => void
 }
 
 export type OrchestratorInjector = (opts?: {
@@ -446,6 +525,14 @@ export function createOrchestratorInjector(
       const off = deps.sessionEvents.on("session:exited", ev => {
         if (ev.sessionId !== sessionId) return
         deps.scopeTokens.revoke(scope.token)
+        // WP-B (orphan reaping): revoking the token stops this parent's
+        // children from minting NEW scopes, but does nothing to the
+        // children ALREADY running — they'd be left as orphaned zombies
+        // (holding a shared checkout, no parent watching). Reap them here,
+        // riding the same "this parent is going away" enumeration the
+        // revoke already anchors. Reaping a child that is itself an
+        // orchestrator cascades through its own bound handler.
+        deps.reapChildren?.(sessionId)
         off()
       })
       return off
