@@ -94,6 +94,7 @@ import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
+import { createRoutineRegistrar } from "./routine-registrar.js"
 export type {
   WatcherStartInput,
   WatcherDescriptor,
@@ -1028,6 +1029,22 @@ export async function createGateway(
       })
     : undefined
 
+  // In-process caller for ANY registered daemon MCP tool by name — the
+  // universal escape hatch behind AIP-41 routine `target.tool` (+ the
+  // `agent`/`workflow` sugar, which lower to it — see routine-registrar.ts)
+  // and cron's `kind:"tool"` action. `McpServer` is NOT a gateway singleton
+  // (`mcpServerFactory` below builds a fresh one per `/mcp` connection), so
+  // this closes over a box filled in once `mcpServerFactory` exists further
+  // down — a tick firing before boot completes is not a real scenario, but
+  // the box makes "not ready yet" a clear error instead of a crash either way.
+  const dispatchToolBox: { fn?: (name: string, inputs: Record<string, unknown>) => Promise<unknown> } = {}
+  const dispatchTool = async (name: string, inputs: Record<string, unknown>): Promise<unknown> => {
+    if (!dispatchToolBox.fn) {
+      throw new Error(`routine/cron tool dispatch: not ready yet (daemon still booting) — tool "${name}"`)
+    }
+    return dispatchToolBox.fn(name, inputs)
+  }
+
   // Cron scheduler — singleton per daemon, persisted to
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
@@ -1039,8 +1056,20 @@ export async function createGateway(
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
+    dispatchTool,
     workspace,
     persist,
+  })
+
+  // AIP-41 routine registrar — reads `.routines/*/ROUTINE.md`, validates,
+  // and reconciles live CronScheduler jobs for every enabled cron-scheduled
+  // routine. `reconcile()` runs once at boot, below (after `dispatchTool`
+  // is wired to a real server). See packages/routine/README.md "Runtime
+  // bridge" section for the design.
+  const routineRegistrar = createRoutineRegistrar({
+    workspace,
+    cronScheduler,
+    dispatchTool,
   })
 
   // Workflow runner — sibling primitive to routineRunner (stage-barrier
@@ -1328,6 +1357,7 @@ export async function createGateway(
       ...(workflowRunner ? { workflowRunner } : {}),
       ...(inboundWatcher ? { inboundWatcher } : {}),
       cronScheduler,
+      routineRegistrar,
     })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
@@ -1450,6 +1480,44 @@ export async function createGateway(
     return server
   }
 
+  // Wire `dispatchTool` to a real in-process McpServer now that
+  // `mcpServerFactory` exists. Lazily built + cached on first use (not
+  // here) so a daemon that never fires a `kind:"tool"` cron/routine job
+  // pays nothing extra at boot — see `dispatchToolBox`'s declaration above.
+  let internalToolServerPromise: ReturnType<typeof mcpServerFactory> | undefined
+  dispatchToolBox.fn = async (name, inputs) => {
+    if (!internalToolServerPromise) internalToolServerPromise = mcpServerFactory()
+    const internalServer = await internalToolServerPromise
+    // `_registeredTools` is undeclared on `McpServer`'s public type — same
+    // reach-in `__tests__/tool-subset.test.ts` already uses to read tool
+    // names back out; here it's used to CALL a handler in-process,
+    // bypassing the wire entirely (no transport, no client).
+    const internal = internalServer as unknown as {
+      _registeredTools?: Record<string, { handler: (args: unknown, extra: unknown) => unknown }>
+    }
+    const tool = internal._registeredTools?.[name]
+    if (!tool) {
+      throw new Error(`routine/cron tool dispatch: unknown daemon tool "${name}"`)
+    }
+    return tool.handler(inputs, {})
+  }
+
+  // AIP-41 routine registrar's first pass — scans `.routines/*/ROUTINE.md`
+  // and registers a live cron job for every enabled cron-scheduled routine.
+  // Best-effort: a malformed manifest must not block daemon boot (errors are
+  // collected in the result, not thrown) — same "never fails a session/boot"
+  // posture as the PR-provenance reconciler above.
+  try {
+    routineRegistrar.reconcile()
+  } catch (err) {
+    events.emit({
+      type: "heartbeat-error",
+      at: new Date().toISOString(),
+      agent: opts.defaultBootAgent,
+      error: `routine registrar reconcile failed: ${err instanceof Error ? err.message : String(err)}`,
+    })
+  }
+
   // ── boot ─────────────────────────────────────────────────────────
   if (opts.boot !== false) {
     await runBoot(workspace, opts, conversations, events).catch((err) => {
@@ -1541,6 +1609,7 @@ export async function createGateway(
       idleReapAfterMs,
     },
     cronScheduler,
+    routineRegistrar,
   })
 
   heartbeat.start()

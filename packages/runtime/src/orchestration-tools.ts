@@ -27,6 +27,7 @@ import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { CronScheduler } from "./cron-scheduler.js"
+import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
 import { registerTaskTools } from "./task-tools.js"
 import type { TaskLedger } from "./task-ledger.js"
@@ -371,6 +372,14 @@ export interface RegisterOrchestrationToolsOptions {
    * policy tools). Opt-in via explicit orchestrator.tools allowlist only.
    */
   cronScheduler?: CronScheduler
+  /**
+   * When wired, exposes `routine_trigger` — fires an AIP-41
+   * `.routines/<id>/ROUTINE.md` routine's target immediately, bypassing its
+   * schedule (mirrors `cron_run`). Not a `RoutineRunner` verb — see
+   * `routine-registrar.ts` for the "routine" naming collision this repo
+   * already has between the two primitives.
+   */
+  routineRegistrar?: RoutineRegistrar
   /**
    * When wired, exposes the `activities_list` tool — the unified Activity
    * read-model over policies / turns / routine & workflow steps / opened
@@ -1758,6 +1767,41 @@ export function registerOrchestrationTools(
         try {
           const result = await cronScheduler.run(input.jobId)
           return { content: [{ type: "text", text: JSON.stringify({ jobId: input.jobId, result }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+  }
+
+  // ── AIP-41 routine trigger (optional — only registered when routineRegistrar is provided) ──
+  // Mirrors `cron_run`: fires a `.routines/<id>/ROUTINE.md` routine's target
+  // immediately, bypassing both its schedule and its `enabled` flag, without
+  // requiring `reconcile()` to have registered a cron job for it first.
+  const { routineRegistrar } = opts
+  if (routineRegistrar) {
+    server.tool(
+      "routine_trigger",
+      "Fire an AIP-41 routine's target immediately, bypassing its schedule — " +
+        "for testing/debugging a `.routines/<id>/ROUTINE.md` manifest without " +
+        "waiting for its cron schedule. Works even when the routine is " +
+        "`enabled: false` or hasn't been registered as a live cron job yet. " +
+        "NOT `routine_start` — that's the unrelated ad-hoc step-sequence runner.",
+      {
+        routineId: z.string().min(1).describe("The routine's `id` field (matches `.routines/<id>/ROUTINE.md`)."),
+      },
+      async input => {
+        try {
+          const result = await routineRegistrar.trigger(input.routineId)
+          return { content: [{ type: "text", text: JSON.stringify({ routineId: input.routineId, ...result }) }] }
         } catch (err) {
           return {
             content: [

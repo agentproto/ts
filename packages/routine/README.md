@@ -18,6 +18,134 @@ const x = defineRoutine({
 })
 ```
 
+## Runtime bridge (SPEC)
+
+`defineRoutine`/`parseRoutineManifest` above only *validate* a `ROUTINE.md`.
+Until this section, nothing in `@agentproto/runtime` read `.routines/*/
+ROUTINE.md` and turned it into a live scheduled job — `packages/worktree/
+routines/worktree-gc/ROUTINE.md` (shipped `enabled:false` in PR #626) was
+inert. This section is the design for the bridge that makes it real, scouted
+from source before writing any code:
+
+- `routineFrontmatterSchema.target` and `.schedule` were `z.any()`
+  (`packages/routine/src/schema.ts:16`) — no validation at all.
+- The daemon's only live scheduling primitive is `CronScheduler`
+  (`packages/runtime/src/cron-scheduler.ts`): a single 20s tick loop over
+  jobs persisted at `~/.agentproto/cron-jobs.json`, with action kinds
+  `command | agent | prompt-session` (`cron-scheduler.ts:50-72`) and a proven
+  `agent`-kind path (mirrors `worktree-investigator-weekly` in `cron_list`).
+  `cron_run` (`orchestration-tools.ts:1750`) fires a job immediately,
+  bypassing its schedule — the pattern `routine_trigger` mirrors.
+- **There is no persistent, addressable "call any daemon tool by name"
+  registry.** `McpServer` (`@modelcontextprotocol/sdk`) is *not* a gateway
+  singleton here — `mcpServerFactory` in `packages/runtime/src/index.ts`
+  constructs a **fresh** `McpServer` and re-runs every `registerXTools(...)`
+  pass **per `/mcp` connection** (`index.ts:1211`), so no long-lived server
+  reference survives across cron ticks. Its registered tools live on the
+  underscore-prefixed, undeclared `_registeredTools` map — reaching into it
+  is already precedented in-tree, not invented here:
+  `packages/runtime/src/__tests__/tool-subset.test.ts:20-26` casts
+  `server as unknown as { _registeredTools?: ... }` to read tool names back
+  out for a unit test. The bridge reuses the exact same cast to *call* a
+  handler, not just list one.
+
+### Decisions
+
+1. **Declarative surface stays AIP-41** — no new manifest primitive.
+2. **Target kinds** — `target.tool` is the universal path (registrar → daemon
+   tool by name, ANY tool). `target.agent` and `target.workflow` are sugar
+   that lower to a tool call:
+   - `target.tool = { tool, inputs? }` → dispatched as-is.
+   - `target.agent = { adapter, prompt, model?, cwd? }` → dispatched as
+     `tool:"agent_start"` with those fields as `inputs`. **New target kind —
+     `TargetAgent` does not exist in the current AIP-41 draft's
+     `target: TargetAction | TargetWorkflow | TargetTool` union**
+     (`packages/routine/src/types.ts:46`). Flagged as a specs-repo follow-up
+     below; this repo's schema is intentionally ahead of the draft.
+   - `target.workflow = { workflow: string | { file, ref, inline }, inputs? }`
+     (the *existing* AIP-41 shape) → `workflow.file` (or a bare string,
+     treated as a file path) dispatches as `tool:"workflow_run_file"` with
+     `{ path, input }`. `ref`/`inline` sub-forms are **not implemented** —
+     there is no "run a saved workflow by id" registry in this runtime
+     (`workflow_start` takes an inline `stages` array, it doesn't resolve a
+     saved definition) — `reconcile()`/`trigger()` report a clear
+     unsupported-shape error for those rather than silently no-op'ing.
+   - `target.action` (AIP-39 ACTION ref) is validated but **not dispatched**
+     — no action resolver exists in this runtime. Same "clear error, not
+     silent" treatment.
+   - All three dispatched kinds fold to the *same* `{ tool, inputs }` pair,
+     so the registrar has exactly one execution path
+     (`routineTargetToToolCall`), not three.
+3. **Schema tightening** — `target` moves from `z.any()` to a `z.union` of
+   four `.strict()` object schemas (tool/agent/workflow/action — see
+   `schema.ts`). `z.union` rather than `z.discriminatedUnion` because the
+   variants are told apart by *which key is present* (`tool` vs `agent` vs
+   `workflow` vs `action`), not a shared literal discriminator field — adding
+   one would itself be a spec change. `schedule` is deliberately **left**
+   `z.any()`: only `target` was in-scope for tightening per the brief, and a
+   `ScheduleCron`-only zod schema would reject the four other schedule kinds
+   the type already documents. Instead, `routine-registrar.ts` runtime-guards
+   `schedule.kind === "cron"` at the point of use and reports the other four
+   kinds as a clear "not yet supported" skip, not a validation failure at
+   parse time.
+4. **Dispatch mechanism — one shared `dispatchTool`, not four bespoke
+   wrappers.** `createGateway` (`index.ts`) builds ONE lazily-constructed,
+   cached internal `McpServer` via the *existing* `mcpServerFactory()` (same
+   registration pass a real `/mcp` connection gets — `worktree_gc`,
+   `agent_start`, `workflow_start`, `workflow_run_file`, and every other
+   daemon tool land on it), and a `dispatchTool(name, inputs)` closure that
+   reaches into its `_registeredTools[name].handler(inputs, {})` — same cast
+   as `tool-subset.test.ts`, now load-bearing rather than test-only. Built
+   lazily (first `"tool"`-kind cron/trigger fire, not at boot) so it adds no
+   boot latency when no routine ever fires. This single function is handed
+   to *both* `CronScheduler` (new `kind:"tool"` action, for real scheduled
+   fires) and `RoutineRegistrar.trigger()` (for on-demand fires) — one
+   dispatch implementation, two callers.
+5. **Registrar** (`packages/runtime/src/routine-registrar.ts`) —
+   `reconcile()` scans `<workspace>/.routines/*/ROUTINE.md`, validates each
+   via `parseRoutineManifest`, and for every `enabled:true` +
+   `schedule.kind:"cron"` routine creates a `CronScheduler` job tagged
+   `label:"routine:<id>"`; a routine that disappears or turns
+   `enabled:false` has its tagged job deleted; a routine whose resolved
+   `{schedule, action}` changed gets its old job deleted and a new one
+   created (delete+recreate — `CronScheduler` has no `update()`). Called
+   once at gateway boot; re-callable on demand (no file-watcher in this
+   pass — noted as a follow-up, not silently dropped). Per-file parse/target
+   errors are collected and skip only that file, not the whole scan.
+6. **`routine_trigger`** (MCP tool, mirrors `cron_run`) + `POST
+   /routine-defs/:id/trigger` (HTTP, mirrors `POST /cron/:id/run`) —
+   re-parses the routine fresh, resolves its target to a tool call, and
+   calls `dispatchTool` **directly** (not via a registered cron job): works
+   even for a disabled routine or one `reconcile()` hasn't seen yet, and
+   bypasses both the schedule AND the `enabled` flag, same as `cron_run`
+   bypasses schedule for an existing job (`cron-scheduler.ts:514-519` has no
+   `active` check either).
+
+### `/routines/*` naming collision (found while scouting, not created by
+this change)
+
+`routine_start` / `routine_status` / `routine_cancel` / `routine_list` /
+`routine_escalation_resolve` (`orchestration-tools.ts:611-725`) and `POST
+/routines` etc. (`http-server.ts:4292` region) **already exist** — but they
+are `RoutineRunner`, an unrelated ad-hoc primitive ("a named sequence of
+steps that spawn agent sessions and fan-in on their turn-end events"), not
+AIP-41. `routine_trigger` as a tool name doesn't collide (that verb wasn't
+taken). The HTTP surface would have: `/routines/:id/trigger` legitimately
+risks a caller confusing an AIP-41 routine id with a `RoutineRunner` `runId`,
+so this bridge mounts its manual-fire route at **`/routine-defs/:id/trigger`**
+instead of reusing `/routines/*`. Flagged here for whoever eventually
+reconciles the two "routine" vocabularies — out of scope for this change.
+
+### Specs-repo follow-up (not applied here — separate repo, per brief)
+
+- Document `target.agent` (`{ adapter, prompt, model?, cwd? }`) as a
+  first-class AIP-41 target kind in `resources/aip-41/draft/ROUTINE.schema.json`
+  upstream — this repo's `types.ts`/`schema.ts` are ahead of the generated
+  draft for this one shape.
+- Consider documenting `schedule.kind` values beyond `cron` as MAY-be-partial
+  in v1 runtimes, since this bridge only implements `cron` (interval /
+  calendar / manual / event are parsed-but-unscheduled here).
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

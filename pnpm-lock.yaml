@@ -2532,6 +2532,9 @@ importers:
       '@agentproto/redaction':
         specifier: workspace:*
         version: link:../redaction
+      '@agentproto/routine':
+        specifier: workspace:*
+        version: link:../routine
       '@agentproto/sandbox':
         specifier: workspace:*
         version: link:../sandbox

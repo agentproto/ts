@@ -70,12 +70,25 @@ export type CronAction =
       sessionId: string
       prompt: string
     }
+  | {
+      // Universal escape hatch: calls ANY daemon MCP tool by name, in-process
+      // (see `dispatchTool` below). This is what powers AIP-41 routine
+      // `target.tool` (+ the `agent`/`workflow` sugar, which lower to this
+      // same kind before reaching the scheduler) — see
+      // packages/routine/README.md "Runtime bridge" section.
+      kind: "tool"
+      /** Registered MCP tool name, e.g. "worktree_gc", "agent_start". */
+      tool: string
+      inputs?: Record<string, unknown>
+    }
 
 export interface CronJob {
   id: string
   label?: string
   /** 5-field cron expression in local time (minute hour day-of-month month day-of-week). */
   schedule: string
+  /** IANA tz database name the schedule is interpreted in. Defaults to host local time. */
+  timezone?: string
   /** When false, the job fires once then deactivates (one-shot). Default true. */
   recurring: boolean
   action: CronAction
@@ -95,6 +108,8 @@ export interface CronScheduler {
   create(input: {
     label?: string
     schedule: string
+    /** IANA tz database name. Defaults to host local time when omitted. */
+    timezone?: string
     recurring?: boolean
     action: CronAction
   }): CronJob
@@ -192,10 +207,23 @@ function saveJobs(jobs: Map<string, JobState>, persistPath: string): void {
  * (not scheduled — we drive ticks manually for the one-loop pattern).
  * Throws `SyntaxError` if the expression is invalid.
  */
-function parseCron(schedule: string): Cron {
+function parseCron(schedule: string, timezone?: string): Cron {
   // Validate by constructing a paused instance.
   // croner throws `SyntaxError` for bad patterns.
-  return new Cron(schedule, { paused: true })
+  return new Cron(schedule, { paused: true, ...(timezone ? { timezone } : {}) })
+}
+
+/** Renders a CallToolResult-shaped value (or anything else) to {ok, summary}. */
+function summarizeToolResult(result: unknown): { ok: boolean; summary: string } {
+  if (result && typeof result === "object" && "content" in result) {
+    const r = result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean }
+    const text = (r.content ?? [])
+      .map(c => c.text ?? "")
+      .join("\n")
+      .trim()
+    return { ok: !r.isError, summary: text || (r.isError ? "tool call failed" : "ok") }
+  }
+  return { ok: true, summary: JSON.stringify(result ?? null) }
 }
 
 function nextFireDate(cronInstance: Cron): Date | null {
@@ -208,6 +236,14 @@ export function createCronScheduler(opts: {
   sessionEvents: SessionEventBus
   registry: SessionsRegistry
   resolveAgentAdapter?: AgentAdapterResolver
+  /**
+   * In-process caller for ANY registered daemon MCP tool by name — powers
+   * `kind:"tool"` actions. See `dispatchTool` in `index.ts` (reaches into
+   * an internal `McpServer`'s `_registeredTools` map; same cast as
+   * `__tests__/tool-subset.test.ts`). Omitted → `kind:"tool"` jobs fail
+   * clearly at fire time rather than silently no-op'ing.
+   */
+  dispatchTool?: (name: string, inputs: Record<string, unknown>) => Promise<unknown>
   /** Workspace dir — used for the command allowlist. */
   workspace: string
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/cron-jobs.json */
@@ -218,7 +254,7 @@ export function createCronScheduler(opts: {
    */
   persist?: boolean
 }): CronScheduler {
-  const { sessionEvents, registry, resolveAgentAdapter, workspace } = opts
+  const { sessionEvents, registry, resolveAgentAdapter, dispatchTool, workspace } = opts
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
   const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
@@ -228,7 +264,7 @@ export function createCronScheduler(opts: {
   for (const state of jobs.values()) {
     if (!state.job.active) continue
     try {
-      const inst = parseCron(state.job.schedule)
+      const inst = parseCron(state.job.schedule, state.job.timezone)
       state.cronInstance = inst
       // If the stored nextRunAt is in the past (daemon was down), recompute
       // from the cron schedule — this gives the next scheduled occurrence
@@ -353,6 +389,20 @@ export function createCronScheduler(opts: {
       }
     }
 
+    if (action.kind === "tool") {
+      if (!dispatchTool) {
+        throw new Error(
+          `cron job '${job.id}': tool action requires dispatchTool to be wired`,
+        )
+      }
+      const result = await dispatchTool(action.tool, action.inputs ?? {})
+      const { ok, summary } = summarizeToolResult(result)
+      if (!ok) {
+        throw new Error(`cron job '${job.id}': tool '${action.tool}' failed: ${summary}`)
+      }
+      return { ok: true, summary: `tool '${action.tool}': ${summary}` }
+    }
+
     // action.kind === "agent"
     if (!resolveAgentAdapter) {
       throw new Error(
@@ -475,15 +525,16 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    create({ label, schedule, recurring = true, action }) {
+    create({ label, schedule, timezone, recurring = true, action }) {
       // Validate schedule — throws SyntaxError if invalid.
-      const cronInstance = parseCron(schedule)
+      const cronInstance = parseCron(schedule, timezone)
       const id = `cron_${randomUUID()}`
       const next = nextFireDate(cronInstance)
       const job: CronJob = {
         id,
         ...(label ? { label } : {}),
         schedule,
+        ...(timezone ? { timezone } : {}),
         recurring,
         action,
         createdAt: new Date().toISOString(),

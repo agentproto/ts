@@ -5,9 +5,11 @@
  * `worktree_gc` engine in `src/gc.ts`; this test guards it from drifting out
  * of spec — a bad edit fails here rather than at install time in a workspace.
  *
- * `schedule` and `target` are `z.any()` in the top-level schema (the spec
- * keeps the when/what shapes open), so we re-parse just those two with narrow
- * local schemas to assert their contents in a typed way — no casts needed.
+ * `schedule` stays `z.any()` in the top-level schema (the spec keeps the
+ * "when" shape open); `target` is now a validated union (tool/agent/
+ * workflow/action — see `@agentproto/routine`'s "Runtime bridge" README
+ * section), but its exact per-kind shape is still asserted here with a
+ * narrow local schema for a typed, load-bearing check — no casts needed.
  */
 
 import { describe, it, expect } from "vitest"
