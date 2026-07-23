@@ -96,16 +96,41 @@ describe("decideWorktreeIsolation — resolution matrix", () => {
   })
 
   // ── nested (a spawn made through the orchestrator sub-gateway) ─────────
-  describe("nested (depth > 0) — always spawn-in-place, inheriting the parent's ground", () => {
+  // A nested spawn inherits the parent's ground — never a second worktree.
+  // But that is enforced LOUDLY, not silently: an EXPLICIT `worktree` request
+  // at depth > 0 asked for isolation it can't get, so it rejects rather than
+  // quietly spawning in the shared checkout. Only the absent/`false` case
+  // (no request) stays a silent in-place spawn.
+  describe("nested (depth > 0) — inherits the parent's ground", () => {
     for (const mode of MODES) {
-      for (const field of [undefined, true, { slug: "child" }] as WorktreeField[]) {
-        it(`${mode} + field=${JSON.stringify(field)} → spawn-in-place`, () => {
-          expect(decideWorktreeIsolation({ mode, field, depth: 1 })).toEqual({
-            action: "spawn-in-place",
-          })
+      it(`${mode} + field=undefined → spawn-in-place (no request, unchanged)`, () => {
+        expect(decideWorktreeIsolation({ mode, field: undefined, depth: 1 })).toEqual({
+          action: "spawn-in-place",
+        })
+      })
+
+      it(`${mode} + field=false → spawn-in-place (no request)`, () => {
+        expect(decideWorktreeIsolation({ mode, field: false, depth: 1 })).toEqual({
+          action: "spawn-in-place",
+        })
+      })
+
+      for (const field of [true, { slug: "child" }] as WorktreeField[]) {
+        it(`${mode} + field=${JSON.stringify(field)} → reject (loud, not silent)`, () => {
+          const d = decideWorktreeIsolation({ mode, field, depth: 1 })
+          expect(d.action).toBe("reject")
+          if (d.action !== "reject") throw new Error("expected reject")
+          expect(d.message).toContain("nested")
+          expect(d.message).toContain("sandbox")
         })
       }
     }
+
+    it("rejects at any depth > 0, not just depth 1", () => {
+      expect(decideWorktreeIsolation({ mode: "on-request", field: true, depth: 3 }).action).toBe(
+        "reject",
+      )
+    })
   })
 })
 

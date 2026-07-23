@@ -666,7 +666,9 @@ export function registerAgentTools(
             "repo's agentproto.json setup hooks) and spawns `adapter` THERE; the " +
             "session's cwd, and every path it edits, live inside the worktree. " +
             "Honoured only for a ROOT spawn (a spawn made THROUGH an orchestrator " +
-            "inherits its parent's tree — no second worktree) and only when `cwd` " +
+            "inherits its parent's tree — no second worktree; an EXPLICIT `worktree` " +
+            "on such a nested spawn is REJECTED, not silently ignored — use " +
+            "`sandbox` to isolate a child) and only when `cwd` " +
             "is inside a git repo (nothing to isolate otherwise ⇒ spawns plain, no " +
             "error). The daemon's `worktrees.isolation` policy may force this ON " +
             "for every root spawn (`always`) or OFF (`never`, which REJECTS an " +
