@@ -19,16 +19,28 @@ import {
   runCreateAuthProfileFlow,
   runDeleteAuthProfileFlow,
   runSetAuthProfileEnabledFlow,
+  runSetAuthProfileModelsFlow,
+  runToggleAuthProfileModelFlow,
 } from "../commands/authProfiles.js"
 import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
 import { runConnectLocalLoginFlow } from "../commands/localLogin.js"
 import { buildAuthSettingsHtml, buildAuthSettingsModel } from "./authSettingsPanel.logic.js"
 
 interface InboundMessage {
-  type: "connect" | "connectLocal" | "delete" | "enable" | "disable" | "addProfile" | "refresh"
+  type:
+    | "connect"
+    | "connectLocal"
+    | "delete"
+    | "enable"
+    | "disable"
+    | "addProfile"
+    | "pickModels"
+    | "removeModel"
+    | "refresh"
   slug?: string
   id?: string
   source?: string
+  model?: string
 }
 
 export function registerAuthSettingsPanel(
@@ -79,6 +91,12 @@ export function registerAuthSettingsPanel(
         break
       case "disable":
         if (msg.id) await runSetAuthProfileEnabledFlow(client, provider, msg.id, false)
+        break
+      case "pickModels":
+        if (msg.id) await runSetAuthProfileModelsFlow(client, provider, msg.id)
+        break
+      case "removeModel":
+        if (msg.id && msg.model) await runToggleAuthProfileModelFlow(client, provider, msg.id, msg.model)
         break
       case "addProfile":
         await runCreateAuthProfileFlow(client, provider)
