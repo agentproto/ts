@@ -1,8 +1,9 @@
 /**
- * OS-level confinement for `command_execute` (phase 2, macOS Seatbelt).
- * Unit-covers the pure profile/config/wrap logic on every platform, plus a
- * darwin-only end-to-end that actually runs `sandbox-exec` to PROVE a workspace
- * read is allowed while a home-dir read is denied.
+ * OS-level confinement (macOS Seatbelt, Linux bubblewrap). Unit-covers the
+ * pure profile/config/wrap logic on every platform, plus a darwin-only /
+ * linux-only end-to-end that actually runs the backend to PROVE a workspace
+ * read/write is allowed while a home-dir read is denied, and that an
+ * `extraWritePaths` entry outside the workspace is writable too.
  */
 
 import { describe, it, expect, afterEach } from "vitest"
@@ -20,7 +21,7 @@ import {
   loadSandboxConfig,
   resolveCommandSandbox,
   seatbeltSandbox,
-} from "../command-sandbox.js"
+} from "../index.js"
 
 describe("buildSeatbeltProfile", () => {
   it("allows default, denies home, re-allows workspace + extras, denies net (strict)", () => {
@@ -31,6 +32,7 @@ describe("buildSeatbeltProfile", () => {
     })
     expect(p).toContain("(allow default)")
     expect(p).toContain(`(deny file-read* file-write* (subpath "${homedir()}"))`)
+    expect(p).toContain(`(allow file-read-metadata (subpath "${homedir()}"))`)
     expect(p).toContain(`(allow file-read* file-write* (subpath "/tmp/ws"))`)
     expect(p).toContain(`(allow file-read* (subpath "/opt/data"))`)
     expect(p).toContain("(deny network*)")
@@ -43,6 +45,26 @@ describe("buildSeatbeltProfile", () => {
       network: "allow",
     })
     expect(p).not.toContain("(deny network*)")
+  })
+
+  it("re-allows extraWritePaths for read+write, distinct from read-only extraReadPaths", () => {
+    const p = buildSeatbeltProfile({
+      workspace: "/tmp/ws",
+      extraReadPaths: ["/opt/data"],
+      extraWritePaths: ["/opt/toolchain"],
+      network: "allow",
+    })
+    expect(p).toContain(`(allow file-read* (subpath "/opt/data"))`)
+    expect(p).toContain(`(allow file-read* file-write* (subpath "/opt/toolchain"))`)
+  })
+
+  it("omits any extraWritePaths clause when the field is undefined", () => {
+    const p = buildSeatbeltProfile({
+      workspace: "/tmp/ws",
+      extraReadPaths: [],
+      network: "allow",
+    })
+    expect(p).not.toContain("/opt/toolchain")
   })
 })
 
@@ -204,6 +226,24 @@ describe("buildBwrapArgs", () => {
     })
     expect(args).toContain("--unshare-net")
   })
+
+  it("binds extraWritePaths read-write via --bind-try, distinct from --ro-bind-try reads", () => {
+    const args = buildBwrapArgs(["node"], {
+      workspace: "/home/u/proj",
+      extraReadPaths: ["/opt/cache"],
+      extraWritePaths: ["/opt/toolchain"],
+      network: "allow",
+    })
+    const bt = args.indexOf("--bind-try")
+    expect(args.slice(bt, bt + 3)).toEqual([
+      "--bind-try",
+      "/opt/toolchain",
+      "/opt/toolchain",
+    ])
+    // the read path is still ro-bind-try, not promoted to writable
+    const roIdx = args.indexOf("/opt/cache")
+    expect(args[roIdx - 1]).toBe("--ro-bind-try")
+  })
 })
 
 describe("bwrapSandbox.wrap", () => {
@@ -267,6 +307,72 @@ describe.runIf(canRunSeatbelt)("seatbelt end-to-end", () => {
       await rm(base, { recursive: true, force: true })
     }
   })
+
+  it("allows a write into an extraWritePaths dir outside the workspace", async () => {
+    const base = await mkdtemp(join(homedir(), ".agentproto-sbxtest-"))
+    try {
+      const ws = join(base, "ws")
+      const toolchain = join(base, "toolchain")
+      await mkdir(ws)
+      await mkdir(toolchain)
+
+      const profile = buildSeatbeltProfile({
+        workspace: ws,
+        extraReadPaths: [],
+        extraWritePaths: [toolchain],
+        network: "allow",
+      })
+
+      execFileSync("sandbox-exec", [
+        "-p",
+        profile,
+        "/usr/bin/touch",
+        join(toolchain, "written-by-sandbox"),
+      ])
+      expect(existsSync(join(toolchain, "written-by-sandbox"))).toBe(true)
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it("allows stat on $HOME itself (npm/npx's ancestor-directory lstat walk) while still denying directory listing and file content under an unrelated sibling", async () => {
+    // Empirically discovered running a real `npx <adapter>` under a
+    // `workspace`-mode profile (2026-07-22): npm's arborist `lstat`s $HOME
+    // itself while resolving config, and hard-fails with EPERM without
+    // this metadata-only re-allow — even though it never touches any
+    // OTHER path under $HOME. `stat` exercises the same lstat-class
+    // syscall from the shell.
+    const ws = await mkdtemp(join(tmpdir(), "sbx-home-stat-ws-"))
+    try {
+      const profile = buildSeatbeltProfile({
+        workspace: ws,
+        extraReadPaths: [],
+        network: "allow",
+      })
+
+      // Allowed: metadata-only stat on $HOME itself.
+      const out = execFileSync(
+        "sandbox-exec",
+        ["-p", profile, "/usr/bin/stat", "-f", "%N", homedir()],
+        { encoding: "utf8" },
+      )
+      expect(out.trim()).toBe(homedir())
+
+      // Still denied: listing $HOME's contents (needs file-read-data, not
+      // just metadata).
+      let listingDenied = false
+      try {
+        execFileSync("sandbox-exec", ["-p", profile, "/bin/ls", homedir()], {
+          stdio: "pipe",
+        })
+      } catch {
+        listingDenied = true
+      }
+      expect(listingDenied).toBe(true)
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
 })
 
 // End-to-end: only where bubblewrap actually exists. Skipped on macOS.
@@ -305,6 +411,31 @@ describe.runIf(canRunBwrap)("bwrap end-to-end", () => {
         denied = true
       }
       expect(denied).toBe(true)
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it("allows a write into an extraWritePaths dir outside the workspace", async () => {
+    const base = await mkdtemp(join(tmpdir(), "bwraptest-"))
+    try {
+      const ws = join(base, "ws")
+      const toolchain = join(base, "toolchain")
+      await mkdir(ws)
+      await mkdir(toolchain)
+
+      const policy = {
+        workspace: ws,
+        extraReadPaths: [],
+        extraWritePaths: [toolchain],
+        network: "allow" as const,
+      }
+
+      execFileSync(
+        "bwrap",
+        buildBwrapArgs(["touch", join(toolchain, "written-by-sandbox")], policy),
+      )
+      expect(existsSync(join(toolchain, "written-by-sandbox"))).toBe(true)
     } finally {
       await rm(base, { recursive: true, force: true })
     }

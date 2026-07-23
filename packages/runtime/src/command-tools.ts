@@ -74,7 +74,7 @@ import {
   COMMAND_SANDBOX_MODE_ENV,
   loadSandboxConfig,
   resolveCommandSandbox,
-} from "./command-sandbox.js"
+} from "@agentproto/command-sandbox"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MAX_TIMEOUT_MS = 600_000

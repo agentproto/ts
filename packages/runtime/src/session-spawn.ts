@@ -7,6 +7,7 @@
  */
 
 import type { AcpMcpServer } from "@agentproto/acp"
+import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { AgentSessionLike, SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
@@ -406,6 +407,21 @@ export interface SpawnAgentSessionInput {
    *  today's behaviour (every call spawns). See the docblock on
    *  `SpawnClaim` for why this is opt-in rather than automatic. */
   idempotencyKey?: string
+  /**
+   * OS-level confinement for the adapter's OWN spawned process
+   * (`@agentproto/command-sandbox` — macOS Seatbelt / Linux bubblewrap),
+   * threaded verbatim to `resolved.startSession({ commandSandbox })` →
+   * `AgentCliRuntime.start`. NOT the AIP-36 `sandbox` field above — that
+   * boots a whole nested daemon on a different machine/box (remote-box
+   * session provider); this wraps THIS host's spawn argv so the adapter's
+   * own process tree can't read/write outside `cwd` (and, `"strict"`,
+   * reach the network), confinement an ACP permission seam can never see
+   * since it only covers tool calls the adapter chooses to report. Plumbing
+   * only in this PR — no `.agentproto` config-file surface or `agent_start`
+   * MCP-tool exposure yet (that's a follow-up); ignored for a `sandbox`
+   * spawn (the box's own daemon would need to apply this itself).
+   */
+  commandSandbox?: SandboxMode
 }
 
 export type SpawnAgentSessionResult =
@@ -1428,6 +1444,7 @@ export async function spawnAgentSession(
         ...(authSpec ? { auth: authSpec } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },

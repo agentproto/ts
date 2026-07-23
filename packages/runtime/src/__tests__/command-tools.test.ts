@@ -26,8 +26,9 @@ const sandboxOverride = vi.hoisted(() => ({
     | { id: string; wrap: (argv: string[], policy: unknown) => string[] },
 }))
 
-vi.mock("../command-sandbox.js", async importOriginal => {
-  const actual = await importOriginal<typeof import("../command-sandbox.js")>()
+vi.mock("@agentproto/command-sandbox", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("@agentproto/command-sandbox")>()
   return {
     ...actual,
     resolveCommandSandbox: () =>
@@ -38,7 +39,7 @@ vi.mock("../command-sandbox.js", async importOriginal => {
 })
 
 import { registerCommandTools } from "../command-tools.js"
-import { COMMAND_SANDBOX_MODE_ENV } from "../command-sandbox.js"
+import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
 async function buildHarness(
