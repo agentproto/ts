@@ -39,8 +39,8 @@ vi.mock("@agentproto/command-sandbox", async importOriginal => {
 })
 
 import { registerCommandTools } from "../command-tools.js"
-import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import { COMMAND_SANDBOX_MODE_ENV } from "../command-sandbox.js"
+import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
 async function buildHarness(
   workspace: string,
@@ -230,6 +230,142 @@ describe("command_execute → session-based persistence", () => {
     const { client, close } = await buildHarness(workspace, registry)
     const result = await client.callTool({ name: "command_log_tail", arguments: {} })
     expect(JSON.parse(textOf(result))).toEqual({ entries: [] })
+    await close()
+  })
+})
+
+// A minimal in-process "agent" driver — enough to exercise
+// transcript-writer.ts's real tool-call → tool-result → tool-call-record
+// path (see transcript-writer.test.ts for its unit coverage) without
+// standing up a real ACP adapter.
+function fakeToolCallAgent(sessionId: string, tool: string, args: unknown): AgentSessionLike {
+  return {
+    sessionId,
+    async *send() {
+      yield { kind: "tool-call", toolCallId: "t1", toolName: tool, arguments: args }
+      yield { kind: "tool-result", toolCallId: "t1", result: "ok", isError: false }
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR 3)", () => {
+  let workspace: string
+  let registry: SessionsRegistry
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "tool-calls-list-test-"))
+    allowlist(workspace, ["node"])
+    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+  })
+
+  afterEach(() => {
+    registry.shutdown()
+    rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it("(sessionId) reads back the proxy path's ToolCallRecord", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({ name: "tool_calls_list", arguments: { sessionId } })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      sessionId,
+      tool: "command_execute",
+      command: "node",
+      exitCode: 0,
+      isError: false,
+    })
+    expect(records[0]?.origin).toBe("command_execute")
+
+    await close()
+  })
+
+  it("(sessionId) reads back an in-agent tool call's ToolCallRecord, joined with harness provenance", async () => {
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeToolCallAgent("acp-tcl-1", "Bash", { command: "ls -la" }),
+      adapterSlug: "fake-harness",
+      origin: "vscode",
+    })
+    await registry.enqueuePrompt(desc.id, "go")
+
+    const { client, close } = await buildHarness(workspace, registry)
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId: desc.id },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      sessionId: desc.id,
+      tool: "Bash",
+      command: "ls -la",
+      isError: false,
+      harness: "fake-harness",
+      origin: "vscode",
+    })
+    // No exitCode from the ACP boundary — proxy-only field.
+    expect(records[0]?.exitCode).toBeUndefined()
+
+    await close()
+  })
+
+  it("(no sessionId) unifies both a proxy call and an in-agent call, newest last, respecting lastN", async () => {
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeToolCallAgent("acp-tcl-2", "Read", { file_path: "/tmp/x.ts" }),
+      adapterSlug: "fake-harness",
+    })
+    await registry.enqueuePrompt(desc.id, "go")
+
+    const { client, close } = await buildHarness(workspace, registry)
+    await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({ name: "tool_calls_list", arguments: {} })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length >= 2,
+    )
+    expect(records.map(r => r.tool).sort()).toEqual(["Read", "command_execute"])
+    // Every record must carry which session it came from, unambiguously.
+    expect(new Set(records.map(r => r.sessionId)).size).toBe(2)
+
+    await close()
+  })
+
+  it("returns an empty list for a session with no recorded tool calls", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "tool_calls_list",
+      arguments: { sessionId: "sess_doesnotexist" },
+    })
+    expect(JSON.parse(textOf(result))).toEqual({ records: [] })
     await close()
   })
 })

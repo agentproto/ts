@@ -69,6 +69,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionsRegistry } from "./sessions.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
+import type { ToolCallRecord } from "./tool-call-record.js"
 import {
   COMMAND_SANDBOX_MODE_ENV,
   loadSandboxConfig,
@@ -453,6 +454,69 @@ export function registerCommandTools(
             type: "text" as const,
             text: JSON.stringify({ entries }, null, 2),
           },
+        ],
+      }
+    },
+  )
+
+  server.tool(
+    "tool_calls_list",
+    "Read back normalized ToolCallRecord entries — ONE unified log covering " +
+      "both a command_execute proxy call and an agent's own in-process tool " +
+      "call (Bash, Read, Edit, ...), joined with the owning session's " +
+      "harness/origin/callerSessionId provenance. Pass `sessionId` to fetch " +
+      "one session's calls; omit it to list the most recent calls across " +
+      "recent command + agent-cli sessions.",
+    {
+      sessionId: z
+        .string()
+        .optional()
+        .describe("Restrict to one session's tool calls (a command or agent-cli session id)."),
+      lastN: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe("Max records to return. Default 50, max 500."),
+    },
+    async ({ sessionId, lastN }) => {
+      const limit = lastN ?? 50
+      const enrich = (sid: string, records: ToolCallRecord[]) => {
+        const desc = opts.registry.get(sid)
+        return records.map(r => ({
+          ...r,
+          ...(desc?.harness ? { harness: desc.harness } : {}),
+          ...(desc?.origin ? { origin: desc.origin } : {}),
+          ...(desc?.callerSessionId ? { callerSessionId: desc.callerSessionId } : {}),
+        }))
+      }
+      if (sessionId) {
+        const records = enrich(sessionId, await opts.registry.readToolCallRecords(sessionId))
+        records.sort((a, b) => a.ts.localeCompare(b.ts))
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify({ records: records.slice(-limit) }, null, 2) },
+          ],
+        }
+      }
+      // No sessionId — walk recent command + agent-cli sessions, newest
+      // first, reading each's tool-call records until `limit` is met.
+      // Bounded: the loop stops issuing reads the instant enough records
+      // are collected, so this never scans the whole session history.
+      const rows = opts.registry
+        .list()
+        .filter(d => d.kind === "command" || d.kind === "agent-cli")
+        .sort((a, b) => (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt))
+      const collected: ReturnType<typeof enrich> = []
+      for (const d of rows) {
+        if (collected.length >= limit) break
+        collected.push(...enrich(d.id, await opts.registry.readToolCallRecords(d.id)))
+      }
+      collected.sort((a, b) => a.ts.localeCompare(b.ts))
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify({ records: collected.slice(-limit) }, null, 2) },
         ],
       }
     },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { accessIdentity, contextGauge, harnessGlyph } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
 
 describe("harnessGlyph", () => {
   it("maps known harness families to distinct marks", () => {
@@ -50,6 +50,21 @@ describe("accessIdentity", () => {
   it("returns an em dash when neither profile nor auth is present", () => {
     expect(accessIdentity({})).toBe("—")
     expect(accessIdentity(undefined)).toBe("—")
+  })
+})
+
+describe("postureLabel", () => {
+  it("renders a canonical posture as-is", () => {
+    expect(postureLabel("plan")).toBe("plan")
+    expect(postureLabel("bypass")).toBe("bypass")
+  })
+
+  it("renders a raw harness-mode posture's id", () => {
+    expect(postureLabel({ harnessModeId: "custom-mode" })).toBe("custom-mode")
+  })
+
+  it("returns an empty string when absent", () => {
+    expect(postureLabel(undefined)).toBe("")
   })
 })
 

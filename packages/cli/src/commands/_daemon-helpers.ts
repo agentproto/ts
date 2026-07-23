@@ -5,6 +5,7 @@
  * Extracted here so edits propagate to all three surfaces automatically.
  */
 import { promises as fs } from "node:fs"
+import { homedir } from "node:os"
 import { resolve } from "node:path"
 import http from "node:http"
 import https from "node:https"
@@ -12,7 +13,13 @@ import {
   loadWorkspacesConfig,
   getActiveWorkspace,
 } from "@agentproto/runtime/workspaces-config"
+import { loadConfig } from "@agentproto/runtime/config"
 import { readDaemonRegistry } from "@agentproto/runtime"
+
+/** config.json's documented default daemon port. Mirrors the
+ *  `cfg.daemon?.port ?? 18790` fallback used across the CLI
+ *  (daemon.ts, mcp-bridge.ts, install-mcp.ts). */
+const DEFAULT_DAEMON_PORT = 18790
 
 export interface DaemonEndpoint {
   url: string
@@ -66,13 +73,41 @@ export async function discoverDaemon(): Promise<DaemonDiscoveryReport> {
       stale: [],
     }
   }
-  // Central daemon registry first (~/.agentproto/daemons/<port>.json).
-  // This is workspace-independent, so it finds a daemon launched from
-  // ANY cwd — including tunnel mode and repo checkouts whose workspace
-  // isn't registered in workspaces.json. Entries are newest-first; take
-  // the first live one, collecting dead-PID entries as stale.
+  // Explicit ~/.agentproto/runtime.json next. Every `agentproto <verb>
+  // --help` documents this as THE discovery file, but the resolver never
+  // actually read it — only the central registry and per-workspace
+  // runtime.json files. So a user who dropped one there to pin an
+  // endpoint was silently ignored. Honor it when present and live (an
+  // explicit hand-placed file should win over auto-discovery); PID
+  // liveness keeps a leftover from hijacking a running daemon.
   const registryStale: DaemonDiscoveryReport["stale"] = []
-  for (const entry of await readDaemonRegistry().catch(() => [])) {
+  const homeRead = await readRuntimeJsonWithStatus(homedir())
+  if (homeRead.endpoint) {
+    return { found: homeRead.endpoint, stale: [] }
+  }
+  if (homeRead.stale) registryStale.push(homeRead.stale)
+  // Central daemon registry (~/.agentproto/daemons/<port>.json). This is
+  // workspace-independent, so it finds a daemon launched from ANY cwd —
+  // including tunnel mode and repo checkouts whose workspace isn't
+  // registered in workspaces.json.
+  //
+  // Entries arrive newest-first by mtime, but "newest" is the wrong
+  // tie-breaker: a short-lived transient daemon (an ephemeral
+  // `agentproto-runtime` bound to a random port in a temp workspace)
+  // writes a NEWER entry than the long-running `agentproto serve` daemon
+  // the user actually declared in config.json. Taking the newest live one
+  // hands every CLI call to the transient — and once it dies, to a dead
+  // port whose PID may still read as alive (PID reuse) — instead of the
+  // live serve daemon. So prefer the entry whose port matches
+  // config.json's declared serve port, then fall back to newest-first.
+  const cfg = await loadConfig().catch(() => null)
+  const declaredPort = cfg?.daemon?.port ?? DEFAULT_DAEMON_PORT
+  const registry = await readDaemonRegistry().catch(() => [])
+  const ordered = [
+    ...registry.filter(e => e.meta.port === declaredPort),
+    ...registry.filter(e => e.meta.port !== declaredPort),
+  ]
+  for (const entry of ordered) {
     const { meta, path } = entry
     if (typeof meta.port !== "number") continue
     if (typeof meta.pid === "number" && !isPidAlive(meta.pid)) {

@@ -7,7 +7,7 @@ describe("deriveSessionTitle", () => {
     const title = deriveSessionTitle(prompt)
     expect(title).toBeDefined()
     expect(title).not.toContain("\n")
-    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(61)
+    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(73)
   })
 
   it("keeps a leading slash-command — it IS what the turn is about", () => {
@@ -34,7 +34,8 @@ describe("deriveSessionTitle", () => {
     const prompt = "a".repeat(5000)
     const title = deriveSessionTitle(prompt)
     expect(title).toBeDefined()
-    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(61)
+    // MAX_LENGTH is 72; one long unbroken token caps at 72 chars + the ellipsis.
+    expect(Array.from(title ?? "").length).toBe(73)
     expect(title?.endsWith("…")).toBe(true)
   })
 
@@ -57,11 +58,11 @@ describe("deriveSessionTitle", () => {
     )
   })
 
-  it("truncates a 200-char first sentence at 60 chars", () => {
+  it("truncates a 200-char first sentence at the word boundary before 72 chars", () => {
     const sentence = "a".repeat(50) + " " + "b".repeat(150)
     const title = deriveSessionTitle(`${sentence}. And a second sentence.`)
     expect(title).toBeDefined()
-    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(61)
+    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(73)
     expect(title?.startsWith("a".repeat(50))).toBe(true)
   })
 
@@ -73,14 +74,15 @@ describe("deriveSessionTitle", () => {
   })
 
   it("slices by code point, not UTF-16 unit, so an astral char at the cut isn't split", () => {
-    // A naive `.slice(0, 60)` operates on UTF-16 code units: this emoji is a
+    // A naive `.slice(0, 72)` operates on UTF-16 code units: this emoji is a
     // surrogate pair straddling that exact boundary, so a unit-based cut
     // would sever it into an orphan surrogate. Code-point slicing (Array.from)
-    // must keep it whole — either fully in or fully out.
-    const prompt = "x".repeat(59) + "🎉" + "y".repeat(10) // no spaces/punctuation
+    // must keep it whole — either fully in or fully out. The emoji sits at
+    // code point 72 (MAX_LENGTH), the last kept before the ellipsis.
+    const prompt = "x".repeat(71) + "🎉" + "y".repeat(10) // no spaces/punctuation
     const title = deriveSessionTitle(prompt)
     expect(title).toBeDefined()
-    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(61)
+    expect(Array.from(title ?? "").length).toBeLessThanOrEqual(73)
     expect(title).not.toMatch(/[\uD800-\uDFFF]/u) // no lone surrogate anywhere
     expect(title).toContain("🎉")
   })
