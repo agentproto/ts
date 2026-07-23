@@ -79,9 +79,13 @@ export type WorktreeProvisioner = (
   req: WorktreeProvisionRequest,
 ) => Promise<WorktreeProvisionOutcome>
 
-/** The pure decision's three outcomes. */
+/** The pure decision's three outcomes. `spawn-in-place` may carry a `warn`:
+ *  a non-fatal notice the caller should surface (the child is about to run in
+ *  a shared, dirty checkout it doesn't own). A `warn` never blocks the spawn —
+ *  it's the loud-but-legitimate middle ground between silently spawning into a
+ *  shared tree and hard-rejecting an in-place spawn that's normal at depth. */
 export type WorktreeDecision =
-  | { action: "spawn-in-place" }
+  | { action: "spawn-in-place"; warn?: string }
   | { action: "provision"; request: WorktreeRequest }
   | { action: "reject"; message: string }
 
@@ -116,14 +120,32 @@ export function normalizeWorktreeField(
  * So an explicit request at depth > 0 is REJECTED loudly (same shape as the
  * `never`-policy reject below), pointing the caller at sandbox isolation —
  * child isolation is the sandbox, not a second worktree. Only the IMPLICIT/
- * absent case (`undefined` / `false`) stays a silent in-place spawn: the
- * child is meant to share the parent's tree and made no request to the
- * contrary.
+ * absent case (`undefined` / `false`) stays an in-place spawn: the child is
+ * meant to share the parent's tree and made no request to the contrary.
+ *
+ * That implicit case still has a footgun, though: the inherited cwd may be a
+ * LIVE, DIRTY, shared checkout (the real repo, not a daemon-provisioned
+ * worktree) — spawning in place there lets a nested child edit a tree someone
+ * else is actively working in. We don't hard-reject it (implicit in-place is
+ * legitimate and common), but we DON'T stay silent either: when the caller
+ * hands us `sharedDirtyCwd` (an impure signal it computed — see
+ * `session-spawn.ts`), the in-place spawn carries a `warn`. A caller that
+ * genuinely intends it passes `allowSharedCwd` to acknowledge and silence the
+ * warning. The signal is only consulted for the implicit nested case; every
+ * other branch ignores it, keeping the root matrix unchanged.
  */
 export function decideWorktreeIsolation(input: {
   mode: WorktreeIsolationMode
   field: WorktreeField | undefined
   depth: number
+  /** Impure signal, computed by the caller (never inside this pure fn): the
+   *  inherited cwd is a git work tree that is DIRTY and NOT a daemon-
+   *  provisioned worktree — i.e. a shared checkout the child would edit in
+   *  place. Only consulted for an implicit nested spawn. */
+  sharedDirtyCwd?: boolean
+  /** Caller's explicit acknowledgement that spawning into a shared dirty cwd
+   *  is intended — silences the `sharedDirtyCwd` warning. */
+  allowSharedCwd?: boolean
 }): WorktreeDecision {
   const request = normalizeWorktreeField(input.field)
 
@@ -140,6 +162,21 @@ export function decideWorktreeIsolation(input: {
           "inherits its parent's working tree and cannot provision a worktree " +
           "of its own. Remove the `worktree` field; for an isolated child use " +
           "`sandbox` (the box already isolates) instead.",
+      }
+    }
+    // Implicit in-place spawn. Legitimate, but loud when the inherited cwd is
+    // a shared, dirty tree the child doesn't own — unless the caller opted in
+    // via `allowSharedCwd`.
+    if (input.sharedDirtyCwd && !input.allowSharedCwd) {
+      return {
+        action: "spawn-in-place",
+        warn:
+          "agent_start: this nested spawn is running in place in its parent's " +
+          "working tree, which has UNCOMMITTED CHANGES and is not an isolated " +
+          "worktree — the child can edit files someone else is actively " +
+          "working in. This is allowed, but if it's unintended, spawn the " +
+          "child with an explicit `cwd` inside its own checkout. Pass " +
+          "`allowSharedCwd: true` to acknowledge and silence this warning.",
       }
     }
     return { action: "spawn-in-place" }

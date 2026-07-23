@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
@@ -1682,6 +1683,86 @@ describe("spawnAgentSession — worktree isolation", () => {
     expect(result.code).toBe("sandbox_provider_not_found")
     expect(calls).toHaveLength(0)
     expect(registry.list()).toHaveLength(0)
+  })
+})
+
+// ── nested implicit-in-place into a shared, DIRTY cwd (loud, not silent) ───
+// #622 closed the EXPLICIT-request-at-depth hole (reject). This closes the
+// remaining one: an implicit (no `worktree`) nested spawn silently ran in
+// place in its inherited cwd, even when that cwd is a live, dirty, shared
+// checkout. It still spawns (in-place is legitimate), but now surfaces a
+// `warnings` entry — unless the caller acknowledges via `allowSharedCwd`.
+// These drive the REAL git dirty-check (`isSharedDirtyCwd`), so each stands
+// up a throwaway git repo on disk.
+describe("spawnAgentSession — nested spawn into a shared dirty cwd warns", () => {
+  const dirs: string[] = []
+  function gitRepo(dirty: boolean): string {
+    const dir = mkdtempSync(join(tmpdir(), "agentproto-sharedcwd-"))
+    dirs.push(dir)
+    execFileSync("git", ["init", "-q"], { cwd: dir })
+    if (dirty) writeFileSync(join(dir, "dirty.txt"), "uncommitted work\n")
+    return dir
+  }
+  const nestedScope = (): OrchestratorScope => ({
+    token: "tok",
+    tools: new Set(["agent_start"]),
+    ownerSessionId: "parent",
+    depth: 0, // childDepth = 1 ⇒ nested
+    maxDepth: 3,
+    maxChildren: 8,
+    role: "supervisor",
+  })
+
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+  })
+
+  it("nested + dirty shared cwd + no worktree/sandbox → still spawns, WITH a warning", async () => {
+    const { registry, deps } = baseDeps()
+    const cwd = gitRepo(true)
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: nestedScope() },
+      { adapter: "mock", cwd },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(registry.list()[0]?.cwd).toBe(cwd) // spawned in place
+    expect(result.warnings).toBeDefined()
+    expect(result.warnings?.join("\n")).toContain("UNCOMMITTED")
+    expect(result.warnings?.join("\n")).toContain("allowSharedCwd")
+  })
+
+  it("nested + dirty shared cwd + allowSharedCwd → spawns with NO warning (ack silences it)", async () => {
+    const { deps } = baseDeps()
+    const cwd = gitRepo(true)
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: nestedScope() },
+      { adapter: "mock", cwd, allowSharedCwd: true },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings).toBeUndefined()
+  })
+
+  it("nested + CLEAN git cwd → no warning", async () => {
+    const { deps } = baseDeps()
+    const cwd = gitRepo(false)
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: nestedScope() },
+      { adapter: "mock", cwd },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings).toBeUndefined()
+  })
+
+  it("ROOT (depth 0) spawn into a dirty cwd → no warning (behaviour unchanged)", async () => {
+    const { deps } = baseDeps()
+    const cwd = gitRepo(true)
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.warnings).toBeUndefined()
   })
 })
 
