@@ -203,20 +203,18 @@ export interface LocalLoginRecipe {
  *   - Bearer-injection (Claude Code): the `claude-code-oauth` bearer is read
  *     fresh and injected into the adapter's `authSubscription.setEnv`
  *     (`CLAUDE_CODE_OAUTH_TOKEN`), which the CLI consumes natively.
- *   - File-based / external (Codex): the CLI reads its OWN login file
- *     (`~/.codex/auth.json`) — there is no env bearer to inject, so the codex
- *     adapter declares `authSubscription: { external: true }`. The daemon
- *     verifies the login is present (fail-loud) and scrubs the api-key vars so
- *     a stray `OPENAI_API_KEY` can't flip billing; it injects nothing. The
- *     profile's `source: "codex"` names the provision recipe the daemon
- *     verifies against.
+ *   - File-based / external (Codex, Gemini): the CLI reads its OWN login file
+ *     (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json`) — there is no env
+ *     bearer to inject, so the adapter declares `authSubscription: { external:
+ *     true }`. The daemon verifies the login is present (fail-loud) and scrubs
+ *     the api-key vars so a stray key can't flip billing; it injects nothing.
+ *     The profile's `source` (`"codex"` / `"gemini"`) names the provision
+ *     recipe the daemon verifies against.
  *
- * Gemini is still deliberately absent: it has no native `@agentproto/adapter-*`
- * — only a generic ACP entry (`gemini --experimental-acp`) with no billing-auth
- * surface. Once a native gemini adapter declares the same `external`
- * `authSubscription` (scrubbing `GEMINI_API_KEY`/`GOOGLE_API_KEY`, verifying
- * `~/.gemini/oauth_creds.json`), it drops in here as a third row with no new
- * mechanism.
+ * Gemini dropped in as the third row once the native `@agentproto/adapter-gemini`
+ * adapter declared the same `external` `authSubscription` (scrubbing
+ * `GEMINI_API_KEY`/`GOOGLE_API_KEY`, verifying `~/.gemini/oauth_creds.json`) —
+ * no new mechanism, exactly as the file-based-subscription-login plan scoped it.
  */
 export const LOCAL_LOGIN_RECIPES: readonly LocalLoginRecipe[] = [
   {
@@ -241,6 +239,17 @@ export const LOCAL_LOGIN_RECIPES: readonly LocalLoginRecipe[] = [
     detail:
       "Bill against your ChatGPT/Codex subscription — the Codex CLI reads its own login (~/.codex/auth.json); nothing is pasted or injected.",
     credentialFile: "~/.codex/auth.json",
+  },
+  {
+    id: "gemini-local",
+    source: "gemini",
+    endpoint: "google",
+    method: "oauth-bearer",
+    label: "My Gemini login",
+    pickLabel: "$(sign-in) Use my existing Gemini login",
+    detail:
+      "Bill against your Gemini subscription — the Gemini CLI reads its own login (~/.gemini/oauth_creds.json); nothing is pasted or injected.",
+    credentialFile: "~/.gemini/oauth_creds.json",
   },
 ]
 

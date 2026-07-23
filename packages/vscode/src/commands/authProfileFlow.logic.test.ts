@@ -165,12 +165,27 @@ describe("buildLocalLoginRequest / LOCAL_LOGIN_RECIPES", () => {
     })
   })
 
-  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code + Codex)", () => {
-    // Claude Code (bearer-injection) and Codex (file-based/external) both have a
-    // runtime path now. Gemini stays absent until a native adapter declares the
-    // same external authSubscription (see LOCAL_LOGIN_RECIPES' doc).
-    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual(["claude-code-oauth", "codex"])
-    expect(LOCAL_LOGIN_RECIPES.some(r => r.source === "gemini")).toBe(false)
+  it("builds the exact Gemini file-based source-backed request", () => {
+    const gemini = LOCAL_LOGIN_RECIPES.find(r => r.source === "gemini")!
+    expect(buildLocalLoginRequest(gemini)).toEqual({
+      id: "gemini-local",
+      endpoint: "google",
+      method: "oauth-bearer",
+      source: "gemini",
+      label: "My Gemini login",
+    })
+  })
+
+  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code + Codex + Gemini)", () => {
+    // All three have a runtime path now: Claude Code (bearer-injection) and
+    // Codex + Gemini (file-based/external). The native `@agentproto/adapter-gemini`
+    // adapter declaring the same external authSubscription is what promoted
+    // Gemini out of the "dead-ends at spawn" set (see LOCAL_LOGIN_RECIPES' doc).
+    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual([
+      "claude-code-oauth",
+      "codex",
+      "gemini",
+    ])
     for (const r of LOCAL_LOGIN_RECIPES) {
       expect(r.method).toBe("oauth-bearer")
       const req = buildLocalLoginRequest(r)
