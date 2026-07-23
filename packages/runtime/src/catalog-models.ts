@@ -39,7 +39,7 @@ import {
   tryParseModelRef,
   formatModelRef,
 } from "@agentproto/model-catalog/route-identity"
-import { getModelProvider } from "@agentproto/model-catalog/llm"
+import { getModelProvider, LLM_PRICING_CATALOG, MODEL_ALIASES } from "@agentproto/model-catalog/llm"
 import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
@@ -578,6 +578,43 @@ export function serviceableModelRoutes(model: string): string[] {
     }
   }
   return [...routes]
+}
+
+/** The bare product of a model id — the segment after the last `/`, stripped
+ *  of any `@route` / `:pin` suffix, lower-cased. `deepseek/deepseek-chat` →
+ *  `deepseek-chat`; `z-ai/glm-5.2@openrouter` → `glm-5.2`; `claude-opus-4-8`
+ *  (no slash) → `claude-opus-4-8`. This is the identity the "did you mean"
+ *  matcher keys on, so a wrong-or-missing vendor/route prefix collapses onto
+ *  the same product. */
+function bareProduct(id: string): string {
+  const noSuffix = id.split("@")[0]!.split(":")[0]!
+  const slash = noSuffix.lastIndexOf("/")
+  return (slash === -1 ? noSuffix : noSuffix.slice(slash + 1)).toLowerCase()
+}
+
+/**
+ * Closest known catalog model ids for a slug UNKNOWN to the local catalog —
+ * the "did you mean" set behind the spawn-time model advisory (session-spawn.ts).
+ *
+ * Deliberately narrow to keep false positives near zero: a known id qualifies
+ * ONLY when its {@link bareProduct} equals the input's while the full id
+ * differs — i.e. the caller used the wrong-or-missing vendor/route prefix
+ * (`deepseek-chat` → `deepseek/deepseek-chat`, `glm-5.2` → `z-ai/glm-5.2`,
+ * `moonshot/kimi-k2` → `moonshotai/kimi-k2`). A genuinely-new model on a known
+ * vendor (`qwen/qwen4-max` when only `qwen3-max` is catalogued) shares no bare
+ * product and yields nothing — so a new / free-form slug never earns a spurious
+ * suggestion, matching the money-safety guard's own never-reject-an-unknown-
+ * model rule. Sourced from the catalog itself (`LLM_PRICING_CATALOG` +
+ * `MODEL_ALIASES` keys), never a hand-maintained second list.
+ */
+export function suggestModelSlugs(model: string): string[] {
+  const target = bareProduct(model)
+  if (!target) return []
+  const out = new Set<string>()
+  for (const id of [...Object.keys(LLM_PRICING_CATALOG), ...Object.keys(MODEL_ALIASES)]) {
+    if (id !== model && bareProduct(id) === target) out.add(id)
+  }
+  return [...out].sort().slice(0, 5)
 }
 
 /** Verdict of the spawn-time money-safety guard ({@link checkModelWalletEligibility}). */
