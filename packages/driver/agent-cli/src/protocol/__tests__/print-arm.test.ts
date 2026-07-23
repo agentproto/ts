@@ -95,6 +95,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     expect(spawnCalls).toHaveLength(1)
@@ -129,6 +133,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     // Mastracode streams the FULL accumulated text on each message_update —
@@ -173,6 +181,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     // Current mastracode (--output jsonl) wraps content in an object with a
@@ -229,6 +241,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     feed(lastChild!, [
@@ -270,6 +286,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     // Mastra Code emits `{ type: "usage_update", usage: TokenUsage }` on each
@@ -316,6 +336,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     // No om_status event at all — mirrors a run with Observational Memory
@@ -349,6 +373,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     feed(lastChild!, [
@@ -379,6 +407,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("hello"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     // A bad --model resolves straight to `fail()` in mastracode's CLI —
@@ -415,6 +447,10 @@ describe("createPrintSession — mastracode print config", () => {
     })
 
     const pending = collect(session.send("continue please"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
 
     const idx = spawnCalls[0]?.args.indexOf("--thread") ?? -1
@@ -453,6 +489,10 @@ describe("createPrintSession — mastracode print config", () => {
 
     // First pull kicks the generator: spawns the child, wires readline.
     const firstPull = iterator.next()
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
     expect(lastChild).toBeDefined()
     const child = lastChild!
@@ -514,6 +554,10 @@ describe("createPrintSession — mastracode print config", () => {
 
     // Turn 1: fresh spawn, no resume flag yet.
     const firstTurn = collect(session.send("first"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
     expect(spawnCalls[0]?.args).not.toContain("--thread")
     feed(lastChild!, [
@@ -533,6 +577,10 @@ describe("createPrintSession — mastracode print config", () => {
 
     // Turn 2: same session object, next spawn must resume the captured thread.
     const secondTurn = collect(session.send("second"))
+    // Two ticks: `wrapAgentCliSpawn` is async (PR 6b's config-file lookup) so
+    // `send()` awaits it before calling `spawn()` — one extra microtask hop
+    // beyond the pre-6b synchronous wrap.
+    await Promise.resolve()
     await Promise.resolve()
     const idx = spawnCalls[1]?.args.indexOf("--thread") ?? -1
     expect(idx).toBeGreaterThanOrEqual(0)

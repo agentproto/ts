@@ -43,6 +43,7 @@ import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
+import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type {
   WorktreeIsolationMode,
@@ -639,7 +640,35 @@ export function registerAgentTools(
             "torn down. Omit to run locally (default). Pass an inline spec with `reuse: " +
             "\"<sandboxId>\"` (from a prior session's `sandboxId`) to reconnect to an " +
             "existing box instead — by default such a box is PAUSED (not killed) on " +
-            "session close so it stays reusable; set `lifecycle.destroy_on` to always kill it."
+            "session close so it stays reusable; set `lifecycle.destroy_on` to always kill it. " +
+            "DO NOT CONFUSE with `commandSandbox` below — this field boots a WHOLE SEPARATE " +
+            "machine/box; `commandSandbox` confines THIS host's own spawn argv in place. " +
+            "The two are independent and combine (or not) freely; `commandSandbox` is " +
+            "ignored for a `sandbox` spawn (the box's own daemon would need to apply it)."
+        ),
+      commandSandbox: z
+        .enum(["off", "workspace", "strict"])
+        .optional()
+        .describe(
+          "OS-level process confinement (macOS Seatbelt / Linux bubblewrap) for the " +
+            "adapter's OWN spawned process on THIS host — NOT the `sandbox` field above, " +
+            "which boots an entirely separate remote box. This wraps the exact argv " +
+            "`adapter` spawns as (e.g. `claude`, `npx @agentclientprotocol/claude-agent-acp`) " +
+            "so its process tree is denied filesystem access outside the session's `cwd` — " +
+            "confinement an ACP permission seam can never provide, since it only sees tool " +
+            "calls the adapter chooses to report, not what an in-process Bash actually " +
+            "touches. `\"off\"` (default when omitted AND no `.agentproto/command-sandbox.json` " +
+            "sets an `adapterSpawn.mode`) = unconfined, unchanged behaviour. `\"workspace\"` = " +
+            "deny reads/writes to $HOME outside the workspace (protects ~/.ssh, ~/.aws, " +
+            "credentials, …); network stays allowed. `\"strict\"` = `\"workspace\"` + deny all " +
+            "network. A workspace can set this same axis persistently via the `adapterSpawn` " +
+            "key of `.agentproto/command-sandbox.json` (a DISTINCT key from the top-level " +
+            "`mode` that key file also carries for `command_execute` — the two are never " +
+            "shared; misconfiguring the whole-session adapter jail is a bigger blast radius " +
+            "than misconfiguring one shell command) — this param, when set, overrides that " +
+            "file. Ignored for a `sandbox` spawn. `\"workspace\"`/`\"strict\"` with no backend " +
+            "installed for this platform (macOS needs `sandbox-exec`, Linux needs `bwrap`) " +
+            "FAILS the spawn rather than silently running unconfined."
         ),
       worktree: jsonTolerant(
         z.union([

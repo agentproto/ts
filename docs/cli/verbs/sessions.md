@@ -233,6 +233,55 @@ Only reachable today via the MCP `start_agent_session` tool or
 `list_sandbox_providers` (see what's configured) and
 `setup_sandbox_provider` (register credentials for one).
 
+#### `commandSandbox` (MCP/HTTP only — no CLI flag yet) — NOT the same thing as `sandbox`
+
+**Do not confuse this with `sandbox` above.** `sandbox` boots a whole SEPARATE
+machine/box and runs the session there. `commandSandbox` is a completely
+different, much smaller mechanism: it wraps the adapter's OWN spawned
+process on THIS host — the same argv `agent_start` would have run anyway —
+through an OS-level confinement backend (macOS Seatbelt / Linux bubblewrap,
+`@agentproto/command-sandbox`, the same backends `command_execute` already
+uses). It denies the adapter's process tree filesystem access outside the
+session's `cwd`, confinement an ACP permission seam can never give you since
+it only sees tool calls the adapter chooses to report, not what an
+in-process Bash actually touches. The two fields are independent — set
+either, both, or neither; `commandSandbox` is ignored for a `sandbox` spawn
+(the box's own daemon would need to apply it itself).
+
+Values: `"off"` (default — unconfined, unchanged behaviour), `"workspace"`
+(deny reads/writes to `$HOME` outside the workspace — protects `~/.ssh`,
+`~/.aws`, credentials, …; network stays allowed), `"strict"` (`"workspace"`
++ deny all network). `"workspace"`/`"strict"` FAIL the spawn outright if no
+backend is installed for the platform (macOS needs `sandbox-exec`, Linux
+needs `bwrap`) — it never silently falls back to running unconfined.
+
+A workspace can set this persistently instead of passing it on every
+`agent_start` call, via the `adapterSpawn` key of `.agentproto/
+command-sandbox.json`:
+
+```json
+{
+  "mode": "off",
+  "adapterSpawn": {
+    "mode": "workspace",
+    "extraReadPaths": [],
+    "extraWritePaths": [],
+    "network": "allow"
+  }
+}
+```
+
+Note the top-level `mode` (read by `command_execute`) and `adapterSpawn.mode`
+(read for the adapter-spawn axis above) are DELIBERATELY separate keys in the
+same file, not one shared setting — a misconfigured `command_execute` jail
+breaks one shell command; a misconfigured adapter-spawn jail breaks the
+WHOLE session for as long as the adapter runs, a strictly bigger blast
+radius that needs its own explicit opt-in. An explicit `agent_start.
+commandSandbox` call always overrides the file. `AGENTPROTO_ADAPTER_COMMAND_SANDBOX_MODE`
+is the env-var escape hatch for the adapter axis (mirroring
+`AGENTPROTO_COMMAND_SANDBOX_MODE` for `command_execute` — the two vars are
+also separate, on purpose).
+
 #### Config axes (MCP/HTTP)
 
 A session's behaviour is configured along a fixed set of **axes** — the unified

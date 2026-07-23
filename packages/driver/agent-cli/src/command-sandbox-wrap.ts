@@ -16,6 +16,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
+  loadAdapterSpawnSandboxConfig,
   resolveCommandSandbox,
   type SandboxMode,
   type SandboxPolicy,
@@ -63,26 +64,68 @@ export function defaultToolchainWritePaths(): string[] {
  * mirrors, auth tokens for private registries, …). Same footgun
  * `@agentproto/command-sandbox`'s own module doc already documents for the
  * `command_execute` use of these backends.
+ *
+ * Also covers the git/gh keychain-backed credential gap flagged by PR 6a's
+ * empirical verification: under `workspace` mode, a confined `git ls-remote`
+ * failed with `unable to access '~/.gitconfig': Operation not permitted` and
+ * a confined `gh auth status` failed with `open '~/.config/gh/config.yml':
+ * operation not permitted` — BEFORE either tool ever reached the OS
+ * keychain, because their own config files live under the denied `$HOME`
+ * subtree and only metadata (stat/lstat), not content, is re-allowed there.
+ * Re-verified 2026-07-23: re-allowing `~/.gitconfig` + `~/.config/git` +
+ * `~/.config/gh` (content read) fixes both commands; `gh auth status` then
+ * still failed one more level down — `git-credential-osxkeychain get`
+ * silently returned nothing under confinement (vs. a full credential record
+ * unconfined) even with `~/Library/Keychains` reachable via `allow default`'s
+ * mach-lookup to securityd. Adding `~/Library/Keychains` here (content read,
+ * not just the mach-IPC path `allow default` already permits) fixed it: the
+ * client-side keychain lookup needs to read its own keychain database file,
+ * not only talk to securityd over XPC. READ-ONLY is deliberate — an agent
+ * should be able to RETRIEVE a stored credential to authenticate a push, but
+ * granting WRITE would let a confined process tamper with the host's real
+ * keychain (`git credential-osxkeychain store/erase`); that's out of scope
+ * and not needed for the push/fetch flows this gap was blocking.
+ *
+ * Linux has no equivalent OS keychain this backend integrates with (`gh`/git
+ * there typically use libsecret/gnome-keyring over D-Bus, or a plaintext
+ * `.git-credentials` store) — see `command-sandbox-wrap.ts`'s module doc for
+ * the documented workaround under bwrap.
  */
 export function defaultToolchainReadPaths(): string[] {
   const home = homedir()
   return [
     join(home, ".npmrc"),
     join(home, "Library", "Preferences", "pnpm", "rc"),
+    join(home, ".gitconfig"), // git's own global config (credential.helper, user.*, …)
+    join(home, ".config", "git"), // XDG git config fallback
+    join(home, ".config", "gh"), // gh's config.yml + hosts.yml
+    join(home, "Library", "Keychains"), // macOS Keychain DB — git/gh credential retrieval (read-only; see doc above)
   ]
 }
 
 export interface WrapAgentCliSpawnOptions {
-  /** `undefined`/`"off"` ⇒ unconfined, argv returned unchanged. */
+  /**
+   * `undefined` ⇒ this call site didn't explicitly choose a mode — falls
+   * back to the workspace's `.agentproto/command-sandbox.json`
+   * `adapterSpawn.mode` (or `ADAPTER_COMMAND_SANDBOX_MODE_ENV`), and only
+   * stays unconfined if THAT also resolves to `undefined` (no file, no
+   * `adapterSpawn` key). An explicit mode here (from `agent_start`'s
+   * `commandSandbox` param) always wins over the config file — see the
+   * module's config-key doc in `@agentproto/command-sandbox` for why the
+   * two are independent.
+   */
   mode: SandboxMode | undefined
-  /** The confinement boundary — normally the session's cwd. */
+  /** The confinement boundary — normally the session's cwd. Also the
+   *  anchor `.agentproto/command-sandbox.json` is read from. */
   cwd: string
   /**
    * Extra write-capable paths beyond the default toolchain set (e.g. the
    * per-spawn `CLAUDE_CONFIG_DIR` temp dir mkdtemp'd BEFORE this spawn —
-   * bwrap's `--tmpfs /tmp` would otherwise hide it on Linux).
+   * bwrap's `--tmpfs /tmp` would otherwise hide it on Linux). Merged with
+   * (not a replacement for) the config file's own `adapterSpawn.extraWritePaths`.
    */
   extraWritePaths?: string[]
+  /** Merged with the config file's own `adapterSpawn.extraReadPaths`. */
   extraReadPaths?: string[]
   /** Adapter/arm identifier for the fail-closed error message. */
   label: string
@@ -97,33 +140,42 @@ export interface WrapAgentCliSpawnOptions {
  * unconfined agent-cli child that can read `~/.ssh`, is strictly worse than
  * a clear error.
  *
- * `mode === undefined` (this axis never touched — true today for every
- * existing caller, since PR 6a adds no config-file/agent_start surface for
- * it yet) stays SILENT, unlike `command_execute`'s per-call warning: that
- * warns on every call because `off` is what its config loader always
- * resolves an untouched workspace TO. Here `undefined` means the caller
- * never engaged the feature at all, so warning would print on every single
- * session spawn across the whole fleet by default — a real behavior change,
- * not the "default off, unchanged behaviour" this option promises. An
- * EXPLICIT `mode: "off"` (a caller/config that resolved this axis and
- * picked unconfined on purpose) still gets the loud warning, matching
- * `command_execute`'s reasoning that a live "off" state shouldn't fade into
- * background noise.
+ * Mode resolution order: `opts.mode` (explicit `agent_start.commandSandbox`)
+ * wins outright; otherwise `.agentproto/command-sandbox.json`'s
+ * `adapterSpawn.mode` (itself overridable by `ADAPTER_COMMAND_SANDBOX_MODE_ENV`)
+ * applies. If BOTH resolve to `undefined` (no explicit call, no config file /
+ * no `adapterSpawn` key), this stays SILENT and unconfined — unlike
+ * `command_execute`'s per-call warning, which fires because `off` is what
+ * ITS config loader always resolves an untouched workspace TO. Here
+ * `undefined` specifically means "this axis was never engaged by anyone",
+ * so warning would print on every single session spawn across the whole
+ * fleet by default — a real behavior change, not the "default off,
+ * unchanged behaviour" this option promises. A resolved `mode: "off"`
+ * (explicit call OR an `adapterSpawn` config block that opted in and picked
+ * unconfined) still gets the loud warning, matching `command_execute`'s
+ * reasoning that a live "off" state shouldn't fade into background noise.
+ *
+ * Extra read/write paths (both the caller's `opts.extraReadPaths`/
+ * `extraWritePaths` and the config file's `adapterSpawn.extraReadPaths`/
+ * `extraWritePaths`) always merge in on top of the built-in toolchain
+ * defaults whenever confinement is active, regardless of which side chose
+ * the mode — they're workspace-level exceptions, not mode-selection.
  */
-export function wrapAgentCliSpawn(
+export async function wrapAgentCliSpawn(
   bin: string,
   args: string[],
   opts: WrapAgentCliSpawnOptions,
-): [string, string[]] {
-  if (opts.mode === undefined) return [bin, args]
-  if (opts.mode === "off") {
+): Promise<[string, string[]]> {
+  const cfg = await loadAdapterSpawnSandboxConfig(opts.cwd)
+  const mode = opts.mode ?? cfg.mode
+  if (mode === undefined) return [bin, args]
+  if (mode === "off") {
     console.error(
       `[agent-cli] ⚠ spawning '${opts.label}' UNCONFINED — no OS-level ` +
         `sandbox is active (commandSandbox mode is "off").`,
     )
     return [bin, args]
   }
-  const mode = opts.mode
   const backend = resolveCommandSandbox()
   if (!backend) {
     throw new Error(
@@ -138,13 +190,15 @@ export function wrapAgentCliSpawn(
     workspace: opts.cwd,
     extraReadPaths: [
       ...defaultToolchainReadPaths(),
+      ...cfg.extraReadPaths,
       ...(opts.extraReadPaths ?? []),
     ],
     extraWritePaths: [
       ...defaultToolchainWritePaths(),
+      ...cfg.extraWritePaths,
       ...(opts.extraWritePaths ?? []),
     ],
-    network: mode === "strict" ? "deny" : "allow",
+    network: mode === "strict" || cfg.network === "deny" ? "deny" : "allow",
   }
   const wrapped = backend.wrap([bin, ...args], policy)
   return [wrapped[0] ?? bin, wrapped.slice(1)]

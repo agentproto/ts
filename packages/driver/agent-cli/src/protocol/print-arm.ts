@@ -128,7 +128,7 @@ export function createPrintSession(
 
       // OS-level confinement — same fail-closed contract as the ACP arm's
       // spawn in `define-agent-cli.ts`; see `wrapAgentCliSpawn`'s doc.
-      const [execBin, execArgs] = wrapAgentCliSpawn(opts.bin, args, {
+      const [execBin, execArgs] = await wrapAgentCliSpawn(opts.bin, args, {
         mode: opts.commandSandbox,
         cwd: opts.cwd,
         ...(opts.extraWritePaths ? { extraWritePaths: opts.extraWritePaths } : {}),

@@ -14,10 +14,12 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  ADAPTER_COMMAND_SANDBOX_MODE_ENV,
   COMMAND_SANDBOX_MODE_ENV,
   buildBwrapArgs,
   buildSeatbeltProfile,
   bwrapSandbox,
+  loadAdapterSpawnSandboxConfig,
   loadSandboxConfig,
   resolveCommandSandbox,
   seatbeltSandbox,
@@ -166,6 +168,112 @@ describe("loadSandboxConfig", () => {
         process.env[COMMAND_SANDBOX_MODE_ENV] = "strict"
         const c = await loadSandboxConfig(dir)
         expect(c.mode).toBe("strict")
+        expect(c.network).toBe("deny")
+      })
+    })
+  })
+})
+
+describe("loadAdapterSpawnSandboxConfig", () => {
+  async function withConfig(
+    json: string | null,
+    fn: (dir: string) => Promise<void>,
+  ): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "sbxcfg-adapter-"))
+    try {
+      if (json !== null) {
+        await mkdir(join(dir, ".agentproto"), { recursive: true })
+        await writeFile(join(dir, ".agentproto", "command-sandbox.json"), json)
+      }
+      await fn(dir)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  it("resolves mode: undefined (not \"off\") when there is no config file", async () => {
+    await withConfig(null, async dir => {
+      const c = await loadAdapterSpawnSandboxConfig(dir)
+      expect(c.mode).toBeUndefined()
+      expect(c.extraReadPaths).toEqual([])
+      expect(c.extraWritePaths).toEqual([])
+      expect(c.network).toBe("allow")
+    })
+  })
+
+  it("resolves mode: undefined when the file exists but has no adapterSpawn key — the top-level mode does NOT leak into this axis", async () => {
+    await withConfig(JSON.stringify({ mode: "strict" }), async dir => {
+      const c = await loadAdapterSpawnSandboxConfig(dir)
+      expect(c.mode).toBeUndefined()
+    })
+  })
+
+  it("resolves mode: \"off\" (engaged, not untouched) when adapterSpawn is present but malformed", async () => {
+    await withConfig(JSON.stringify({ adapterSpawn: { mode: "bananas" } }), async dir => {
+      const c = await loadAdapterSpawnSandboxConfig(dir)
+      expect(c.mode).toBe("off")
+    })
+    await withConfig("{ not json", async dir => {
+      const c = await loadAdapterSpawnSandboxConfig(dir)
+      expect(c.mode).toBeUndefined() // whole file unparseable ⇒ untouched, not "off"
+    })
+  })
+
+  it("reads adapterSpawn.mode + extraReadPaths + extraWritePaths independently of the top-level keys", async () => {
+    await withConfig(
+      JSON.stringify({
+        mode: "off",
+        extraReadPaths: ["/opt/command-execute-only"],
+        adapterSpawn: {
+          mode: "workspace",
+          extraReadPaths: ["/opt/adapter-read"],
+          extraWritePaths: ["/opt/adapter-write"],
+        },
+      }),
+      async dir => {
+        const c = await loadAdapterSpawnSandboxConfig(dir)
+        expect(c.mode).toBe("workspace")
+        expect(c.extraReadPaths).toEqual(["/opt/adapter-read"])
+        expect(c.extraWritePaths).toEqual(["/opt/adapter-write"])
+        expect(c.network).toBe("allow")
+      },
+    )
+  })
+
+  it("strict adapterSpawn.mode forces network deny", async () => {
+    await withConfig(JSON.stringify({ adapterSpawn: { mode: "strict" } }), async dir => {
+      const c = await loadAdapterSpawnSandboxConfig(dir)
+      expect(c.network).toBe("deny")
+    })
+  })
+
+  describe(`${ADAPTER_COMMAND_SANDBOX_MODE_ENV} override`, () => {
+    const original = process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV]
+    afterEach(() => {
+      if (original === undefined) delete process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV]
+      else process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV] = original
+    })
+
+    it("engages the axis via env even with no config file at all", async () => {
+      await withConfig(null, async dir => {
+        process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV] = "workspace"
+        expect((await loadAdapterSpawnSandboxConfig(dir)).mode).toBe("workspace")
+      })
+    })
+
+    it("does not react to COMMAND_SANDBOX_MODE_ENV (the command_execute axis's own var)", async () => {
+      await withConfig(null, async dir => {
+        process.env[COMMAND_SANDBOX_MODE_ENV] = "workspace"
+        expect((await loadAdapterSpawnSandboxConfig(dir)).mode).toBeUndefined()
+        delete process.env[COMMAND_SANDBOX_MODE_ENV]
+      })
+    })
+
+    it("overrides an adapterSpawn.mode the file set (network keeps the file's own choice, matching loadSandboxConfig's env-override semantics)", async () => {
+      await withConfig(JSON.stringify({ adapterSpawn: { mode: "strict" } }), async dir => {
+        process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV] = "off"
+        const c = await loadAdapterSpawnSandboxConfig(dir)
+        expect(c.mode).toBe("off")
         expect(c.network).toBe("deny")
       })
     })

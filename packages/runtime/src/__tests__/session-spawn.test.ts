@@ -168,6 +168,29 @@ describe("spawnAgentSession", () => {
     expect(switched).toEqual(["plan"])
   })
 
+  it("forwards commandSandbox verbatim to the resolved adapter's startSession — distinct from (and independent of) the AIP-36 `sandbox` field", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      commandSandbox: "workspace",
+    })
+    expect(result.ok).toBe(true)
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ commandSandbox: "workspace" }),
+    )
+  })
+
+  it("omits commandSandbox from startSession's opts when the caller never set it", async () => {
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    const call = startSession.mock.calls.at(-1)?.[0]
+    expect(call).not.toHaveProperty("commandSandbox")
+  })
+
   it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
     const { deps } = baseDeps()
     const pinned = await spawnAgentSession(deps, {

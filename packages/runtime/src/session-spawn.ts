@@ -416,10 +416,15 @@ export interface SpawnAgentSessionInput {
    * session provider); this wraps THIS host's spawn argv so the adapter's
    * own process tree can't read/write outside `cwd` (and, `"strict"`,
    * reach the network), confinement an ACP permission seam can never see
-   * since it only covers tool calls the adapter chooses to report. Plumbing
-   * only in this PR — no `.agentproto` config-file surface or `agent_start`
-   * MCP-tool exposure yet (that's a follow-up); ignored for a `sandbox`
-   * spawn (the box's own daemon would need to apply this itself).
+   * since it only covers tool calls the adapter chooses to report. Exposed
+   * on the `agent_start` MCP tool schema (`agent-tools.ts`) as of PR 6b —
+   * when omitted here, the driver falls back to the workspace's
+   * `.agentproto/command-sandbox.json` `adapterSpawn` key (a key distinct
+   * from the top-level `mode` that same file also carries for
+   * `command_execute` — see `@agentproto/command-sandbox`'s module doc for
+   * why the two axes are never shared), or stays unconfined if that's unset
+   * too. Ignored for a `sandbox` spawn (the box's own daemon would need to
+   * apply this itself).
    */
   commandSandbox?: SandboxMode
 }
