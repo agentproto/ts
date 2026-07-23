@@ -11,6 +11,8 @@
  */
 
 import { spawn } from "node:child_process"
+import { createServer } from "node:net"
+import type { AddressInfo } from "node:net"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -22,10 +24,21 @@ import {
   wrapWebSocket,
 } from "@agentproto/acp/tunnel"
 
-// Use two independent random ports in different ranges so neither
-// collides with a default daemon (18790) or each other.
-const PORT = 19700 + Math.floor(Math.random() * 100)
-const GW_PORT = 19800 + Math.floor(Math.random() * 100)
+// Kernel-assigned ephemeral ports, not a fixed range. The old
+// `19700 + random(0..99)` only had 100 slots, so two worktrees running this
+// suite in parallel collided by the birthday bound and one daemon died with
+// `EADDRINUSE`. `port: 0` on the WS server (read back below) and a throwaway
+// listener for the gateway port let the OS hand out ports nothing else holds.
+async function freePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, () => {
+      const { port } = srv.address() as AddressInfo
+      srv.close(() => resolve(port))
+    })
+  })
+}
 
 const CLI_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -50,7 +63,10 @@ afterAll(async () => {
 })
 
 test("agentproto serve relays a child process end-to-end", { timeout: 15_000 }, async () => {
-    wss = new WebSocketServer({ port: PORT })
+    wss = new WebSocketServer({ port: 0 })
+    await new Promise<void>((r) => wss!.once("listening", () => r()))
+    const port = (wss.address() as AddressInfo).port
+    const gwPort = await freePort()
     fakeHome = await mkdtemp(join(tmpdir(), "agentproto-tunnel-e2e-home-"))
 
     // Capture the host-side flow as a promise that resolves with
@@ -97,9 +113,9 @@ test("agentproto serve relays a child process end-to-end", { timeout: 15_000 }, 
         CLI_PATH,
         "serve",
         "--connect",
-        `ws://localhost:${PORT}`,
+        `ws://localhost:${port}`,
         "--port",
-        String(GW_PORT),
+        String(gwPort),
         "--label",
         "vitest-e2e",
       ],

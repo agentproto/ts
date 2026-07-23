@@ -14,7 +14,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, mkdtempSync, rmSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -68,6 +68,13 @@ function packSkillsDir(): string {
   return join(skillsRoot, pack, "skills")
 }
 
+// A throwaway HOME for every spawned CLI, unique to THIS process. A fixed
+// name like `join(tmpdir(), "agentproto-fake-home")` lives under the shared
+// per-user OS tmpdir, so two worktrees running this suite in parallel would
+// point every runCli at the SAME directory and race on it — mkdtemp gives a
+// kernel-guaranteed-unique path instead. Cleaned up in afterAll.
+const FAKE_HOME = mkdtempSync(join(tmpdir(), "agentproto-fake-home-"))
+
 /**
  * Run `agentproto install skill/<slug>` via a child process using the built
  * CLI output (requires a prior build). HOME is overridden so a real install
@@ -81,7 +88,7 @@ function runCli(args: string[]): {
   const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
   const result = spawnSync("node", [cliEntry, "install", ...args], {
     cwd: REPO_ROOT,
-    env: { ...process.env, HOME: join(tmpdir(), "agentproto-fake-home") },
+    env: { ...process.env, HOME: FAKE_HOME },
     timeout: 15_000,
   })
   return {
@@ -119,6 +126,7 @@ beforeAll(() => {
 
 afterAll(async () => {
   await rm(join(REPO_ROOT, ".skills"), { recursive: true, force: true }).catch(() => {})
+  rmSync(FAKE_HOME, { recursive: true, force: true })
 })
 
 // ── unit: pure helpers ─────────────────────────────────────────────────
@@ -184,19 +192,24 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
   })
 
   it("claude-code --dry-run with --out tmp dir", () => {
-    const tmpOut = join(tmpdir(), `agentproto-skill-test-${Date.now()}`)
-    const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
-      "--target",
-      "claude-code",
-      "--dry-run",
-      "--out",
-      tmpOut,
-    ])
-    expect(code).toBe(0)
-    expect(stdout).toContain("dry-run")
-    expect(stdout).toContain("claude-code")
-    expect(stdout).toContain("agentproto plugin")
+    const base = mkdtempSync(join(tmpdir(), "agentproto-skill-test-"))
+    const tmpOut = join(base, "out")
+    try {
+      const { stdout, code } = runCli([
+        "skill/agent-session-orchestration-agentproto",
+        "--target",
+        "claude-code",
+        "--dry-run",
+        "--out",
+        tmpOut,
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toContain("dry-run")
+      expect(stdout).toContain("claude-code")
+      expect(stdout).toContain("agentproto plugin")
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 
   it("--force skips overwrite prompt (hermes --dry-run)", () => {
@@ -291,34 +304,46 @@ describe("install-skill claude-code emit", () => {
 
 describe("overwrite / dry-run", () => {
   it("--dry-run never writes", () => {
-    const tmpOut = join(tmpdir(), `agentproto-skill-test-${Date.now()}`)
-    const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
-      "--target",
-      "claude-code",
-      "--out",
-      tmpOut,
-      "--dry-run",
-    ])
-    expect(code).toBe(0)
-    expect(stdout).toContain("dry-run")
-    expect(existsSync(tmpOut)).toBe(false)
+    // `out` is a not-yet-created child of a unique base dir: the base exists
+    // (mkdtemp), the target does not, so the "never writes" assertion stays
+    // meaningful while the path is still unique across parallel worktrees.
+    const base = mkdtempSync(join(tmpdir(), "agentproto-skill-test-"))
+    const tmpOut = join(base, "out")
+    try {
+      const { stdout, code } = runCli([
+        "skill/agent-session-orchestration-agentproto",
+        "--target",
+        "claude-code",
+        "--out",
+        tmpOut,
+        "--dry-run",
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toContain("dry-run")
+      expect(existsSync(tmpOut)).toBe(false)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 
   it("--force writes without prompting", () => {
-    const tmpOut = join(tmpdir(), `agentproto-skill-force-${Date.now()}`)
-    const { code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
-      "--target",
-      "claude-code",
-      "--out",
-      tmpOut,
-      "--force",
-    ])
-    expect(code).toBe(0)
-    expect(existsSync(tmpOut)).toBe(true)
-    rm(tmpOut, { recursive: true, force: true }).catch(() => {})
-    rm(`${tmpOut}.zip`, { force: true }).catch(() => {})
+    const base = mkdtempSync(join(tmpdir(), "agentproto-skill-force-"))
+    const tmpOut = join(base, "out")
+    try {
+      const { code } = runCli([
+        "skill/agent-session-orchestration-agentproto",
+        "--target",
+        "claude-code",
+        "--out",
+        tmpOut,
+        "--force",
+      ])
+      expect(code).toBe(0)
+      expect(existsSync(tmpOut)).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+      rmSync(`${tmpOut}.zip`, { force: true })
+    }
   })
 })
 
@@ -717,22 +742,26 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
   })
 
   it("still short-circuits on --dry-run (no writes) in fan-out mode", () => {
-    const fakeHome = join(tmpdir(), `agentproto-fanout-dryrun-${Date.now()}`)
-    const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
-    const result = spawnSync(
-      "node",
-      [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--dry-run"],
-      { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
-    )
-    const stdout = result.stdout?.toString("utf8") ?? ""
-    expect(result.status).toBe(0)
-    expect(stdout).toContain("[dry-run]")
-    // A dry-run must never touch the (throwaway) hermes skills dir.
-    expect(existsSync(join(fakeHome, ".hermes", "skills"))).toBe(false)
+    const fakeHome = mkdtempSync(join(tmpdir(), "agentproto-fanout-dryrun-"))
+    try {
+      const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
+      const result = spawnSync(
+        "node",
+        [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--dry-run"],
+        { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
+      )
+      const stdout = result.stdout?.toString("utf8") ?? ""
+      expect(result.status).toBe(0)
+      expect(stdout).toContain("[dry-run]")
+      // A dry-run must never touch the (throwaway) hermes skills dir.
+      expect(existsSync(join(fakeHome, ".hermes", "skills"))).toBe(false)
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true })
+    }
   })
 
   it("preserves symlink-skip in fan-out mode (hermes flat-dir target)", { timeout: 15_000 }, async () => {
-    const fakeHome = join(tmpdir(), `agentproto-fanout-symlink-${Date.now()}`)
+    const fakeHome = await mkdtemp(join(tmpdir(), "agentproto-fanout-symlink-"))
     const hermesSkillsDir = join(fakeHome, ".hermes", "skills")
     const linkTarget = join(fakeHome, "dev-skill-source")
     const linkDest = join(hermesSkillsDir, "agent-session-orchestration-agentproto")
