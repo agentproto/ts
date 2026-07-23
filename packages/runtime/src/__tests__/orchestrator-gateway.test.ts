@@ -29,6 +29,8 @@ import {
   narrowOrchestratorTools,
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
+  createOrchestratorInjector,
+  reapOrphanedDescendants,
   type OrchestratorScope,
 } from "../orchestrator-gateway.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
@@ -557,6 +559,138 @@ describe("orchestrator sub-gateway — WP6 supervisor composition (subtree scopi
       const parsed = JSON.parse(text) as { error?: string }
       expect(parsed.error).toMatch(/commit.*not permitted|child orchestrator/i)
     })
+  })
+})
+
+describe("orphan reaping (WP-B) — parent death terminates live children", () => {
+  let fakeSessionSeq = 0
+  function fakeSession(): AgentSessionLike {
+    return {
+      sessionId: `reap_${fakeSessionSeq++}`,
+      // eslint-disable-next-line require-yield
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        return
+      },
+      async cancel() {},
+      async close() {},
+    }
+  }
+
+  /**
+   * Build a registry with a parent orchestrator tree plus an unrelated
+   * root, all live:
+   *
+   *   parent ─┬─ childA
+   *           └─ childB ── grandchild
+   *   unrelated (separate root, NOT under parent)
+   */
+  function seedTree() {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({
+      sessionEvents,
+      persist: false,
+      transcriptDir: tmpTranscriptDir(),
+    })
+    const spawn = (parentSessionId?: string, depth = 0) =>
+      registry.spawnAgent({
+        workspaceSlug: "w",
+        cwd: process.cwd(),
+        agentSession: fakeSession(),
+        adapterSlug: "mock",
+        depth,
+        ...(parentSessionId ? { parentSessionId } : {}),
+      })
+    const parent = spawn(undefined, 0)
+    const childA = spawn(parent.id, 1)
+    const childB = spawn(parent.id, 1)
+    const grandchild = spawn(childB.id, 2)
+    const unrelated = spawn(undefined, 0)
+    return {
+      registry,
+      sessionEvents,
+      parent,
+      childA,
+      childB,
+      grandchild,
+      unrelated,
+    }
+  }
+
+  const isTerminal = (s: string | undefined) =>
+    s === "killed" || s === "exited" || s === "error"
+
+  it("reapOrphanedDescendants: kills every transitive descendant, skips the parent and unrelated sessions", () => {
+    const t = seedTree()
+    const reaped = reapOrphanedDescendants(t.registry, t.parent.id)
+
+    // Direct + transitive children reaped (SIGTERM → status "killed").
+    expect(new Set(reaped)).toEqual(
+      new Set([t.childA.id, t.childB.id, t.grandchild.id]),
+    )
+    const byId = new Map(
+      t.registry.list({ includeArchived: true }).map(s => [s.id, s]),
+    )
+    expect(byId.get(t.childA.id)!.status).toBe("killed")
+    expect(byId.get(t.childB.id)!.status).toBe("killed")
+    expect(byId.get(t.grandchild.id)!.status).toBe("killed")
+
+    // The parent itself is skipped (it's the one already exiting) and the
+    // unrelated root is NEVER touched.
+    expect(isTerminal(byId.get(t.parent.id)!.status)).toBe(false)
+    expect(byId.get(t.unrelated.id)!.status).toBe("running")
+  })
+
+  it("reapOrphanedDescendants is idempotent — already-dead children don't error and aren't re-reaped", () => {
+    const t = seedTree()
+    // Pre-kill one child, then reap: the already-dead child is skipped, the
+    // rest are reaped, and nothing throws.
+    expect(t.registry.kill(t.childA.id)).toBe(true)
+    const reaped = reapOrphanedDescendants(t.registry, t.parent.id)
+    expect(reaped).not.toContain(t.childA.id)
+    expect(new Set(reaped)).toEqual(new Set([t.childB.id, t.grandchild.id]))
+
+    // Second pass: everything is terminal now → nothing left to reap.
+    expect(reapOrphanedDescendants(t.registry, t.parent.id)).toEqual([])
+
+    // A parent with no descendants at all is a clean no-op.
+    expect(reapOrphanedDescendants(t.registry, t.unrelated.id)).toEqual([])
+  })
+
+  it("bindLifecycle: parent's session:exited revokes the scope-token AND reaps its live children", () => {
+    const t = seedTree()
+    const scopeTokens = createScopeTokenRegistry()
+    const injector = createOrchestratorInjector({
+      scopeTokens,
+      sessionEvents: t.sessionEvents,
+      port: 0,
+      reapChildren: id => {
+        reapOrphanedDescendants(t.registry, id)
+      },
+    })
+    const injection = injector({})
+    // Bind the minted scope to the parent session, exactly as session-spawn
+    // does once the child session id is known.
+    injection.bindLifecycle(t.parent.id)
+    // Token is live before the parent exits, children are still running.
+    expect(scopeTokens.verify(injection.scope.token)).not.toBeNull()
+    expect(t.registry.list().find(s => s.id === t.childA.id)!.status).toBe(
+      "running",
+    )
+
+    // Kill the parent — its session:exited fires the bound handler.
+    expect(t.registry.kill(t.parent.id)).toBe(true)
+
+    // (1) scope-token revocation still happens (pre-existing behaviour).
+    expect(scopeTokens.verify(injection.scope.token)).toBeNull()
+    // (2) live children are reaped alongside it (the new WP-B behaviour).
+    const byId = new Map(
+      t.registry.list({ includeArchived: true }).map(s => [s.id, s]),
+    )
+    expect(byId.get(t.childA.id)!.status).toBe("killed")
+    expect(byId.get(t.childB.id)!.status).toBe("killed")
+    expect(byId.get(t.grandchild.id)!.status).toBe("killed")
+    // (3) the unrelated root is not reaped.
+    expect(byId.get(t.unrelated.id)!.status).toBe("running")
   })
 })
 
