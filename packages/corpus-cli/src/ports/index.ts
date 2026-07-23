@@ -45,6 +45,9 @@ export type { ThrottleFetcherOptions } from "./throttle-fetcher.adapter.js"
 export { HttpReadabilityFetcher } from "./http-readability-fetcher.adapter.js"
 export type { HttpReadabilityFetcherOptions } from "./http-readability-fetcher.adapter.js"
 
+export { GhPrSourceAdapter } from "./gh-pr-source.adapter.js"
+export type { GhPrSourceAdapterOptions, GhRunner } from "./gh-pr-source.adapter.js"
+
 export { AnthropicDistiller } from "./anthropic-distiller.js"
 export type { AnthropicDistillerOptions } from "./anthropic-distiller.js"
 

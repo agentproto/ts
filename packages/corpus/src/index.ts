@@ -82,6 +82,7 @@ export { LocalFilesImporter } from "./importers/local-files.js"
 export { KbMigrationImporter } from "./importers/kb-migration.js"
 export { WebImporter } from "./importers/web.js"
 export { ConversationImporter } from "./importers/conversation.js"
+export { PrReviewImporter } from "./importers/pr-review.js"
 export type {
   CorpusImporter,
   ImporterTarget,
@@ -92,6 +93,7 @@ export type {
 export type { LocalFilesImporterOptions } from "./importers/local-files.js"
 export type { WebImporterOptions } from "./importers/web.js"
 export type { ConversationImporterOptions } from "./importers/conversation.js"
+export type { PrReviewImporterOptions } from "./importers/pr-review.js"
 
 // Distill — raw source → refined entries (KNOWLEDGE layer)
 export { DistillRunner } from "./distill/runner.js"
@@ -273,6 +275,12 @@ export type {
   ConversationDoc,
   ConversationTurn,
 } from "./ports/conversation-source.port.js"
+export type {
+  PrSourcePort,
+  PrDoc,
+  PrQuery,
+  PrReviewComment,
+} from "./ports/pr-source.port.js"
 export { systemClock } from "./ports/clock.port.js"
 
 // Workspace
