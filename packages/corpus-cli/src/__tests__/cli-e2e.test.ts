@@ -212,6 +212,34 @@ describe("corpus CLI — end-to-end", () => {
     )
   })
 
+  it("import-prs --dry-run prints the plan without shelling out to gh (exit 0)", { timeout: 20_000 }, async () => {
+    const ws = path.join(tmp, "ws")
+    const r = await runCli([
+      "import-prs",
+      ws,
+      "--repo",
+      "agentproto/ts",
+      "--pr",
+      "655",
+      "--pr",
+      "652",
+      "--include-diff",
+      "--dry-run",
+    ])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toMatch(/import-prs \(dry run\)/)
+    expect(r.stdout).toMatch(/repo:\s+agentproto\/ts/)
+    expect(r.stdout).toMatch(/select:\s+PRs 655, 652/)
+    expect(r.stdout).toMatch(/diff:\s+included/)
+    expect(r.stdout).toContain("agentproto/ts#655")
+  })
+
+  it("import-prs without --repo exits 2", { timeout: 20_000 }, async () => {
+    const r = await runCli(["import-prs", path.join(tmp, "ws")])
+    expect(r.code).toBe(2)
+    expect(r.stderr).toMatch(/requires --repo/)
+  })
+
   it("validate on a non-workspace exits 1 with a hint", { timeout: 20_000 }, async () => {
     const r = await runCli(["validate", path.join(tmp, "not-a-workspace")])
     expect(r.code).toBe(1)
