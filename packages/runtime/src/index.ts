@@ -72,6 +72,7 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth } from "./session-restart-core.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -240,6 +241,11 @@ export type {
   EagerResumeFailReason,
 } from "./sessions.js"
 export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+export {
+  runIdleReapPass,
+  type IdleReapSummary,
+  type IdleReaperRegistry,
+} from "./idle-reaper.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
@@ -487,6 +493,14 @@ export interface CreateGatewayOptions {
    *  to an `enabled: false` summary. Also surfaced in `daemon_health` /
    *  `GET /health` so an operator can see the effective value. */
   resumeSessionsOnBoot?: boolean
+  /** Idle agent-session reaper threshold in ms (PR-6). Mirrors the
+   *  `daemon.idleReapAfterMs` config knob; the CLI resolves it (env >
+   *  config > off) and passes it here. When positive, the gateway starts a
+   *  periodic sweep that retires agent-cli sessions idle longer than this
+   *  (SIGTERM the adapter child, flip to `killed`/`endedReason:"idle-reaped"`,
+   *  kept lazy-resumable). Unset / 0 / negative ⇒ the reaper never runs.
+   *  Surfaced in `daemon_health` / `GET /health`. */
+  idleReapAfterMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -738,6 +752,14 @@ export async function createGateway(
   opts: CreateGatewayOptions,
 ): Promise<GatewayHandle> {
   const startedAt = Date.now()
+  // Effective idle-reap threshold (PR-6): a positive ms value enables the
+  // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
+  // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface
+  // one unambiguous figure.
+  const idleReapAfterMs =
+    typeof opts.idleReapAfterMs === "number" && opts.idleReapAfterMs > 0
+      ? opts.idleReapAfterMs
+      : 0
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -1225,6 +1247,7 @@ export async function createGateway(
       registered,
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      idleReapAfterMs,
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -1515,11 +1538,48 @@ export async function createGateway(
       registered,
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      idleReapAfterMs,
     },
     cronScheduler,
   })
 
   heartbeat.start()
+
+  // Idle agent-session reaper (PR-6). Only armed when the knob is on
+  // (`idleReapAfterMs > 0`); off by default. Sweeps on a fixed cadence —
+  // min(threshold, 60s) so a short threshold still gets a timely sweep and a
+  // long one doesn't spin needlessly, overridable via
+  // AGENTPROTO_IDLE_REAP_INTERVAL_MS (mirroring AGENTPROTO_RESUME_CONCURRENCY).
+  // `.unref()` so the ticker never keeps the process alive on its own.
+  let idleReapTimer: ReturnType<typeof setInterval> | null = null
+  if (idleReapAfterMs > 0) {
+    const rawInterval = process.env.AGENTPROTO_IDLE_REAP_INTERVAL_MS
+    const parsedInterval = rawInterval ? Number.parseInt(rawInterval, 10) : NaN
+    const intervalMs =
+      Number.isFinite(parsedInterval) && parsedInterval > 0
+        ? parsedInterval
+        : Math.min(idleReapAfterMs, 60_000)
+    idleReapTimer = setInterval(() => {
+      try {
+        const summary = runIdleReapPass({ registry: sessions, idleReapAfterMs })
+        if (summary.reaped > 0) {
+          // One line per sweep that actually reaped something (silent otherwise
+          // so a quiet daemon doesn't log every tick).
+          console.log(
+            `[idle-reaper] reaped ${summary.reaped}/${summary.candidates} idle ` +
+              `agent session(s): ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        // A sweep must never crash the daemon — log and let the next tick retry.
+        console.warn(
+          `[idle-reaper] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }, intervalMs)
+    idleReapTimer.unref?.()
+  }
+
   events.emit({
     type: "boot",
     at: new Date().toISOString(),
@@ -1572,6 +1632,8 @@ export async function createGateway(
     },
     async stop() {
       heartbeat.stop()
+      // Stop the idle-reaper sweep before sessions shut down (PR-6).
+      if (idleReapTimer) clearInterval(idleReapTimer)
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       // Stop the cron scheduler tick loop before sessions shut down.

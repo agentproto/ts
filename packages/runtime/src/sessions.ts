@@ -514,15 +514,23 @@ export interface SessionDescriptor {
   endedAt?: string
   exitCode?: number
   /** Set alongside `status: "killed"` when the session ended NOT because an
-   *  operator targeted it (`kill()`) but because the daemon process it lived
-   *  in went away out from under it — a hard crash discovered at next boot
-   *  (`loadHistorySnapshot`'s wasAlive reclassification), or a graceful
-   *  shutdown/restart that force-kills whatever's still busy
-   *  (`shutdownImpl`). Absent for every other terminal path (operator kill,
-   *  natural exit, turn error) — the session's own fault, or at least not
-   *  the daemon's. Lets the UI show "crashed with the daemon" instead of a
-   *  bare "killed" that reads as deliberate. */
-  endedReason?: "daemon-restart"
+   *  operator targeted it (`kill()`) but because of an AUTOMATIC teardown:
+   *   - `"daemon-restart"` — the daemon process it lived in went away out from
+   *     under it: a hard crash discovered at next boot
+   *     (`loadHistorySnapshot`'s wasAlive reclassification), or a graceful
+   *     shutdown/restart that force-kills whatever's still busy
+   *     (`shutdownImpl`).
+   *   - `"idle-reaped"` — the idle-session reaper (`reapIdle`, PR-6) retired a
+   *     long-idle agent-cli row to free its adapter process. Deliberately kept
+   *     lazy-resumable (adapterSessionId/cwd intact) so a later prompt revives
+   *     it, but NEVER eager-resumed on boot — the eager pass (#638) gates on
+   *     `endedReason === "daemon-restart"`, so an `"idle-reaped"` row is
+   *     naturally excluded and a resume-storm of dead work is avoided.
+   *  Absent for every other terminal path (operator kill, natural exit, turn
+   *  error) — the session's own fault, or at least not an automatic sweep's.
+   *  Lets the UI show "crashed with the daemon" / "reaped while idle" instead
+   *  of a bare "killed" that reads as deliberate. */
+  endedReason?: "daemon-restart" | "idle-reaped"
   /** Whether a turn was actually in flight the INSTANT `status` flipped to
    *  "killed" — captured before anything else runs, because `busy` itself
    *  cannot be trusted after the fact: `runAgentTurn`'s `finally` is what
@@ -1646,6 +1654,26 @@ export interface SessionsRegistry {
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
   kill(id: string, signal?: NodeJS.Signals): boolean
+  /** Retire a long-idle agent-cli session to free its adapter process — the
+   *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
+   *  periodic sweep. Terminates the underlying adapter/child the SAME graceful
+   *  way `kill()` does (agentSession.close() + SIGTERM), flips the row to
+   *  `killed` with `endedReason: "idle-reaped"`, and — unlike `kill()`, which
+   *  leaves the closed binding referenced — CLEARS the in-memory agentSession
+   *  binding so the row is immediately lazy-resumable: a later prompt revives
+   *  it in place through `maybeResumeAgent` (adapterSessionId/cwd are left
+   *  intact). Emits `session:reaped` (naming the reaper) alongside the usual
+   *  `session:exited` (carrying `reason: "idle-reaped"`). The row and its
+   *  transcript are NOT deleted.
+   *
+   *  Purely mechanical: the caller (the sweep) owns the idle/threshold/
+   *  never-reap policy. This method only guards the two invariants a reap must
+   *  never violate — it refuses (returns false, no-op) a session that is not a
+   *  live (`running`) agent-cli row (so a PTY/command/terminal or an
+   *  already-terminal row is never touched). `idleMs` is stamped onto the
+   *  emitted `session:reaped` event for observability. Returns true iff a row
+   *  was actually reaped. */
+  reapIdle(id: string, idleMs?: number): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -4487,6 +4515,68 @@ export function createSessionsRegistry(opts?: {
       // Agent-cli sessions have no OS exit event — emit here.
       // Child/PTY sessions emit from their exit handlers; the
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
+      emitExited(rt)
+      return true
+    },
+    reapIdle(id, idleMs = 0) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Only a LIVE agent-cli row is reapable. A PTY/command/terminal/browser
+      // session, or one already terminal, must never be idle-reaped — reaping
+      // is an agent-cli-only, lazy-resume-preserving teardown. The sweep
+      // already filters for this; the guard keeps the primitive honest for any
+      // caller.
+      if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
+        return false
+      }
+      // Read `busy` before the flip (see killedMidTurn's docblock) — a reap
+      // only targets an idle session, so this is false in practice, but capture
+      // the honest value rather than assume it.
+      rt.desc.killedMidTurn = rt.desc.busy === true
+      rt.desc.status = "killed"
+      rt.desc.endedAt = new Date().toISOString()
+      // The one field that makes this a REAP, not a plain kill: an automatic
+      // teardown reason that (a) surfaces "reaped while idle" in the UI and (b)
+      // — critically — keeps this row OUT of the eager resume-on-boot pass,
+      // which gates on `endedReason === "daemon-restart"`. A reaped row must
+      // never join a boot-time resume-storm of dead work.
+      rt.desc.endedReason = "idle-reaped"
+      if (rt.agentSession) {
+        // Durable usage recap on exit — before close() flushes the stream.
+        recordExitUsageSnapshot(rt)
+        void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
+        tracedSessions.delete(rt.desc.id)
+        // THE difference from kill(): drop the (now-closed) binding so the row
+        // is lazy-resumable in the SAME daemon lifetime. `maybeResumeAgent`
+        // early-returns while `rt.agentSession` is set (kill() leaves it
+        // referencing the closed object), so a reap that didn't clear it would
+        // leave a dead session no prompt could revive. adapterSessionId/cwd stay
+        // on the descriptor, so `isResumable` still holds.
+        rt.agentSession = undefined
+      }
+      // No PTY/child for an agent-cli row spawned via spawnAgent (the driver
+      // owns the process, torn down by close() above), but a registered/adopted
+      // one may carry a child — SIGTERM it best-effort, same as kill().
+      rt.child?.kill("SIGTERM")
+      schedulePersist()
+      const banner =
+        "── reaped after being idle past the threshold; the adapter process was " +
+        "freed. Re-prompt to resume this session in place. ──"
+      appendLine(rt, banner, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+      // The reaper-specific signal (names the actor + carries how long it was
+      // idle) …
+      sessionEvents?.emit({
+        type: "session:reaped",
+        sessionId: rt.desc.id,
+        idleMs,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      // … alongside the usual lifecycle exit (carrying reason:"idle-reaped" via
+      // emitExited, which reads desc.endedReason) so existing session:exited
+      // consumers still see the row leave "running".
       emitExited(rt)
       return true
     },

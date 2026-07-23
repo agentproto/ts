@@ -20,6 +20,7 @@ export type SessionEventType =
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
+  | "session:reaped"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
@@ -126,12 +127,35 @@ export interface SessionExitedEvent {
   status: "exited" | "killed" | "error"
   label?: string
   ts: string
-  /** Mirrors `SessionDescriptor.endedReason` — set when this exit was the
-   *  daemon dying underneath the session (crash-discovered-at-boot or a
-   *  forced shutdown kill), not an operator targeting it. Lets a watcher
-   *  (completion-policy supervisor, `session_monitor`) tell "my agent died
-   *  because the daemon did" apart from a deliberate kill. Absent otherwise. */
-  reason?: "daemon-restart"
+  /** Mirrors `SessionDescriptor.endedReason` — set when this exit was NOT an
+   *  operator targeting the session: `"daemon-restart"` (the daemon dying
+   *  underneath it — crash-discovered-at-boot or a forced shutdown kill) or
+   *  `"idle-reaped"` (the idle-session reaper retiring a long-idle row to free
+   *  the adapter process, PR-6). Lets a watcher (completion-policy supervisor,
+   *  `session_monitor`) tell an automatic teardown apart from a deliberate
+   *  kill. Absent otherwise. */
+  reason?: "daemon-restart" | "idle-reaped"
+}
+
+/**
+ * Emitted when the idle-session reaper (PR-6) retires a long-idle agent-cli
+ * session: it SIGTERMs the adapter child to free the process and flips the row
+ * to `killed`/`endedReason:"idle-reaped"`, leaving it dead-but-lazy-resumable
+ * (a later prompt revives it in place via `maybeResumeAgent`). Distinct from
+ * `session:exited` (which also fires, carrying `reason:"idle-reaped"`) in that
+ * this event names the reaper as the actor and never fires for an operator
+ * kill, a natural exit, or a daemon-restart death — so a monitor can react to
+ * "the daemon reclaimed my idle session" specifically. `idleMs` is how long the
+ * session had been idle (last-activity → reap) when it was retired. Rides the
+ * same bus fan-out as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`).
+ */
+export interface SessionReapedEvent {
+  type: "session:reaped"
+  sessionId: string
+  idleMs: number
+  label?: string
+  ts: string
 }
 
 /**
@@ -384,6 +408,7 @@ export type SessionEvent =
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
+  | SessionReapedEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent
