@@ -73,6 +73,69 @@ const routineTargetSchema = z
   .union([targetToolSchema, targetAgentSchema, targetWorkflowSchema, targetActionSchema])
   .describe("What the routine invokes when it fires.")
 
-export const routineFrontmatterSchema = z.object({ "schema": z.literal("routine/v1"), "id": z.string().regex(new RegExp("^[a-z0-9@][a-z0-9.@/_-]*$")).min(2).max(80).describe("Machine identifier. Lowercase, digits, dashes, dots, optional @owner/ prefix. Unique within the registry that hosts the routine."), "description": z.string().min(1).max(2000).describe("One-paragraph purpose."), "version": z.string().regex(new RegExp("^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$")).describe("Spec version of THIS file.").default("1.0.0"), "schedule": z.any().describe("When the routine fires."), "target": routineTargetSchema, "identity": z.any().describe("Identity that owns the routine fire (AIP-23). Defaults to host policy.").optional(), "retry": z.any().describe("Retry behaviour on failure.").optional(), "on_failure": z.any().describe("Where to route failures after retries exhaust.").optional(), "history": z.any().describe("Run history retention.").optional(), "fires_events": z.array(z.string().min(1)).describe("AIP-37 LIFECYCLE event names this routine fires.").default(["routine-triggered","routine-completed","routine-failed"]), "enabled": z.boolean().describe("If false, routine registers but does not fire. Useful for staging.").default(true), "tags": z.array(z.string()).describe("Free-form discovery tags.").default([] as never), "metadata": z.record(z.string(), z.any()).describe("Free-form, namespaced.").optional() }).strict().describe("Validates the YAML frontmatter portion of an AIP-41 ROUTINE.md manifest. Decouples 'when' (schedule) from 'what' (target action/workflow/tool).")
+/**
+ * `schedule` union — hand-tightened from the generator's `z.any()`, same
+ * treatment as `target` above. Unlike `target`, every variant here DOES
+ * share a literal `kind` discriminator (draft: `$defs.scheduleCron` /
+ * `scheduleInterval` / `scheduleCalendar` / `scheduleManual` / `scheduleEvent`
+ * in `specs/resources/aip-41/draft/ROUTINE.schema.json`), so
+ * `z.discriminatedUnion("kind", ...)` applies cleanly here.
+ *
+ * The registrar's runtime `isScheduleCron` narrowing (routine-registrar.ts)
+ * only fires jobs for `kind: "cron"` today — the other kinds validate but
+ * are reported as "not yet supported" skips, same as before this change.
+ */
+const scheduleCronSchema = z
+  .object({
+    kind: z.literal("cron"),
+    cron: z.string().min(9).max(100).describe("Standard 5-field cron expression."),
+    timezone: z.string().describe("IANA tz database name. Legacy abbreviations rejected.").optional(),
+    jitter_seconds: z.number().int().min(0).max(3600).describe("Random delay added before each fire.").optional(),
+    catchup: z.enum(["skip", "one", "all"]).describe("Missed-fire policy after downtime.").optional(),
+  })
+  .strict()
+
+const scheduleIntervalSchema = z
+  .object({
+    kind: z.literal("interval"),
+    every: z.string().regex(new RegExp("^\\d+(s|m|h|d)$")).describe("Duration: Ns | Nm | Nh | Nd."),
+    from: z.string().describe("OPTIONAL anchor; default = registration time.").optional(),
+    jitter_seconds: z.number().int().min(0).max(3600).optional(),
+  })
+  .strict()
+
+const scheduleCalendarSchema = z
+  .object({
+    kind: z.literal("calendar"),
+    rrule: z.string().min(1).describe("RFC 5545 RRULE."),
+    timezone: z.string().optional(),
+  })
+  .strict()
+
+const scheduleManualSchema = z
+  .object({
+    kind: z.literal("manual"),
+  })
+  .strict()
+
+const scheduleEventSchema = z
+  .object({
+    kind: z.literal("event"),
+    on: z.string().min(1).describe("AIP-37 LIFECYCLE event name."),
+    filter: z.record(z.string(), z.unknown()).describe("OPTIONAL — only fire if event payload matches filter.").optional(),
+  })
+  .strict()
+
+const routineScheduleSchema = z
+  .discriminatedUnion("kind", [
+    scheduleCronSchema,
+    scheduleIntervalSchema,
+    scheduleCalendarSchema,
+    scheduleManualSchema,
+    scheduleEventSchema,
+  ])
+  .describe("When the routine fires.")
+
+export const routineFrontmatterSchema = z.object({ "schema": z.literal("routine/v1"), "id": z.string().regex(new RegExp("^[a-z0-9@][a-z0-9.@/_-]*$")).min(2).max(80).describe("Machine identifier. Lowercase, digits, dashes, dots, optional @owner/ prefix. Unique within the registry that hosts the routine."), "description": z.string().min(1).max(2000).describe("One-paragraph purpose."), "version": z.string().regex(new RegExp("^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$")).describe("Spec version of THIS file.").default("1.0.0"), "schedule": routineScheduleSchema, "target": routineTargetSchema, "identity": z.any().describe("Identity that owns the routine fire (AIP-23). Defaults to host policy.").optional(), "retry": z.any().describe("Retry behaviour on failure.").optional(), "on_failure": z.any().describe("Where to route failures after retries exhaust.").optional(), "history": z.any().describe("Run history retention.").optional(), "fires_events": z.array(z.string().min(1)).describe("AIP-37 LIFECYCLE event names this routine fires.").default(["routine-triggered","routine-completed","routine-failed"]), "enabled": z.boolean().describe("If false, routine registers but does not fire. Useful for staging.").default(true), "tags": z.array(z.string()).describe("Free-form discovery tags.").default([] as never), "metadata": z.record(z.string(), z.any()).describe("Free-form, namespaced.").optional() }).strict().describe("Validates the YAML frontmatter portion of an AIP-41 ROUTINE.md manifest. Decouples 'when' (schedule) from 'what' (target action/workflow/tool).")
 
 export type RoutineFrontmatter = z.infer<typeof routineFrontmatterSchema>

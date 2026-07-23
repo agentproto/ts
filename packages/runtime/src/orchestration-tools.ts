@@ -373,11 +373,15 @@ export interface RegisterOrchestrationToolsOptions {
    */
   cronScheduler?: CronScheduler
   /**
-   * When wired, exposes `routine_trigger` — fires an AIP-41
-   * `.routines/<id>/ROUTINE.md` routine's target immediately, bypassing its
-   * schedule (mirrors `cron_run`). Not a `RoutineRunner` verb — see
-   * `routine-registrar.ts` for the "routine" naming collision this repo
-   * already has between the two primitives.
+   * When wired, exposes `routine_trigger` and `routine_reconcile` — fires
+   * an AIP-41 `.routines/<id>/ROUTINE.md` routine's target immediately,
+   * bypassing its schedule (mirrors `cron_run`), and re-scans
+   * `.routines/*` to register/update/remove live cron jobs on demand
+   * (mirrors `reconcile()`'s boot-time pass — installs host cron jobs, so
+   * like `cronScheduler` above, NOT added to `DEFAULT_ORCHESTRATOR_TOOLS`).
+   * Neither is a `RoutineRunner` verb — see `routine-registrar.ts` for the
+   * "routine" naming collision this repo already has between the two
+   * primitives.
    */
   routineRegistrar?: RoutineRegistrar
   /**
@@ -1802,6 +1806,39 @@ export function registerOrchestrationTools(
         try {
           const result = await routineRegistrar.trigger(input.routineId)
           return { content: [{ type: "text", text: JSON.stringify({ routineId: input.routineId, ...result }) }] }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      },
+    )
+
+    // AIP-41 routine reconcile — re-runs the same scan `index.ts` does once
+    // at boot, so a `.routines/<id>/ROUTINE.md` dropped (or edited, or
+    // removed) after the daemon started gets its cron job registered,
+    // updated, or torn down WITHOUT a restart. Installs/removes host cron
+    // jobs — same privilege class as `cron_create`/`cron_delete` — so, like
+    // `routine_trigger`, this is deliberately NOT in DEFAULT_ORCHESTRATOR_TOOLS.
+    server.tool(
+      "routine_reconcile",
+      "Re-scan `.routines/*/ROUTINE.md` and register/update/remove live cron " +
+        "jobs to match — the same pass `index.ts` runs once at boot, callable " +
+        "on demand so a newly-dropped or edited routine schedules without a " +
+        "daemon restart. Safe to call repeatedly (idempotent when nothing " +
+        "changed). NOT `routine_start` — that's the unrelated ad-hoc " +
+        "step-sequence runner.",
+      {},
+      async () => {
+        try {
+          const result = routineRegistrar.reconcile()
+          return { content: [{ type: "text", text: JSON.stringify(result) }] }
         } catch (err) {
           return {
             content: [
