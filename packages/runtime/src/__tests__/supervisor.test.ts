@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, writeFile, mkdir, rm, readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { createCompletionPolicySupervisor } from "../supervisor.js"
+import { createCompletionPolicySupervisor, runShellGate } from "../supervisor.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { SessionEventBus } from "../session-event-bus.js"
@@ -1498,5 +1498,74 @@ describe("gate cwd — session cwd outside the daemon's boot workspace", () => {
     expect(finalState?.status).toBe("blocked")
     expect(finalState?.error).toMatch(/cwd escapes the workspace/)
     expect(calls.length).toBe(0)
+  })
+})
+
+// ── runShellGate() — the shared execution path used by both the turn-end
+// policy gate above AND the semantic hook engine's action:"gate" (the
+// agent-prompt pre-exec seam in sessions.ts). ─────────────────────────────
+
+describe("runShellGate()", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace(["true", "false"])
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("exit 0 → passed:true (the gate's \"allow\" case)", async () => {
+    const outcome = await runShellGate({ command: "true" }, { workspace, sessionCwd: workspace })
+    expect(outcome).toMatchObject({ kind: "ran", exitCode: 0, passed: true })
+  })
+
+  it("nonzero exit → passed:false (the gate's \"deny\" case)", async () => {
+    const outcome = await runShellGate({ command: "false" }, { workspace, sessionCwd: workspace })
+    expect(outcome).toMatchObject({ kind: "ran", exitCode: 1, passed: false })
+  })
+
+  it("a gate command not in allowed-commands.json → kind:\"not-allowlisted\"", async () => {
+    const outcome = await runShellGate({ command: "rm" }, { workspace, sessionCwd: workspace })
+    expect(outcome.kind).toBe("not-allowlisted")
+    expect((outcome as { message: string }).message).toMatch(/not in allowlist/)
+  })
+
+  it("anchors an explicit gate.cwd against sessionCwd, not workspace", async () => {
+    const sibling = await mkdtemp(join(tmpdir(), "agentproto-supervisor-sibling-"))
+    try {
+      await mkdir(join(sibling, "sub"))
+      const calls: Array<{ cwd?: string }> = []
+      const outcome = await runShellGate(
+        { command: "true", cwd: "sub" },
+        {
+          workspace,
+          sessionCwd: sibling,
+          runCommand: async input => {
+            calls.push({ cwd: input.cwd })
+            return { exitCode: 0, signal: null, stdout: "", stderr: "", durationMs: 0 }
+          },
+        },
+      )
+      expect(outcome).toMatchObject({ kind: "ran", exitCode: 0, passed: true })
+      expect(calls[0]?.cwd).toBe(join(sibling, "sub"))
+    } finally {
+      await rm(sibling, { recursive: true, force: true })
+    }
+  })
+
+  it("an exec exception (e.g. a timeout) surfaces as kind:\"error\", not a throw", async () => {
+    const outcome = await runShellGate(
+      { command: "true" },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async () => {
+          throw new Error("boom")
+        },
+      },
+    )
+    expect(outcome).toMatchObject({ kind: "error", message: "boom" })
   })
 })

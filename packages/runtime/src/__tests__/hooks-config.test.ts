@@ -14,6 +14,7 @@ import { join } from "node:path"
 
 import {
   decide,
+  decideRule,
   HooksConfigError,
   loadHooksConfig,
   parseHooksConfig,
@@ -88,6 +89,98 @@ describe("hooks-config", () => {
         }),
       )
       expect(rules).toEqual([{ id: "r1", plane: "semantic", match: { tool: "Bash" }, action: "hold" }])
+    })
+  })
+
+  describe('action:"gate"', () => {
+    it("accepts a well-formed gate rule and preserves its gate spec", () => {
+      const rules = parseHooksConfig(
+        JSON.stringify({
+          rules: [
+            {
+              id: "git-push-review-gate",
+              plane: "semantic",
+              match: { tool: "Bash", command: "^git push" },
+              action: "gate",
+              gate: { command: "pnpm", args: ["test"] },
+            },
+          ],
+        }),
+      )
+      expect(rules).toEqual([
+        {
+          id: "git-push-review-gate",
+          plane: "semantic",
+          match: { tool: "Bash", command: "^git push" },
+          action: "gate",
+          gate: { command: "pnpm", args: ["test"] },
+        },
+      ])
+    })
+
+    it("throws when action is \"gate\" but gate.command is missing", () => {
+      expect(() =>
+        parseHooksConfig(
+          JSON.stringify({
+            rules: [{ id: "bad-gate", plane: "semantic", match: {}, action: "gate" }],
+          }),
+        ),
+      ).toThrow(/gate\.command/)
+    })
+
+    it("throws when action is \"gate\" but gate.command is an empty string", () => {
+      expect(() =>
+        parseHooksConfig(
+          JSON.stringify({
+            rules: [
+              {
+                id: "bad-gate-2",
+                plane: "semantic",
+                match: {},
+                action: "gate",
+                gate: { command: "" },
+              },
+            ],
+          }),
+        ),
+      ).toThrow(HooksConfigError)
+    })
+
+    it('throws when "gate" is set on a non-"gate" action', () => {
+      expect(() =>
+        parseHooksConfig(
+          JSON.stringify({
+            rules: [
+              {
+                id: "stray-gate",
+                plane: "semantic",
+                match: {},
+                action: "hold",
+                gate: { command: "pnpm" },
+              },
+            ],
+          }),
+        ),
+      ).toThrow(/only valid with action:"gate"/)
+    })
+
+    it('refuses to compile a security-intent rule into a Plane-1 (semantic) gate (RISK-0 GUARD)', () => {
+      expect(() =>
+        parseHooksConfig(
+          JSON.stringify({
+            rules: [
+              {
+                id: "sec-gate",
+                plane: "semantic",
+                intent: "security",
+                match: { command: "^rm -rf" },
+                action: "gate",
+                gate: { command: "pnpm" },
+              },
+            ],
+          }),
+        ),
+      ).toThrow(/security/i)
     })
   })
 
@@ -210,6 +303,54 @@ describe("hooks-config", () => {
       expect(
         decide(rules, { tool: "Bash", command: "git status", args: ["status"] }, "allow"),
       ).toBe("allow")
+    })
+
+    it('the canonical git-push gate rule matches "git push" and not other Bash commands', () => {
+      const rules: HookRule[] = [
+        {
+          id: "git-push-review-gate",
+          plane: "semantic",
+          match: { tool: "Bash", command: "^git push" },
+          action: "gate",
+          gate: { command: "pnpm", args: ["test"] },
+        },
+      ]
+      expect(decide(rules, { tool: "Bash", command: "git push origin main" }, "allow")).toBe(
+        "gate",
+      )
+      expect(decide(rules, { tool: "Bash", command: "git status" }, "allow")).toBe("allow")
+      expect(decide(rules, { tool: "Bash", command: "rm -rf /" }, "allow")).toBe("allow")
+    })
+  })
+
+  describe("decideRule()", () => {
+    it("returns no rule when nothing matches (falls through to fallback)", () => {
+      expect(decideRule([], { tool: "Bash", command: "ls" }, "allow")).toEqual({
+        decision: "allow",
+      })
+    })
+
+    it("returns the matched rule alongside its decision", () => {
+      const rules: HookRule[] = [
+        { id: "gate-push", plane: "semantic", match: { tool: "Bash", command: "^git push" }, action: "hold" },
+      ]
+      expect(decideRule(rules, { tool: "Bash", command: "git push" }, "allow")).toEqual({
+        decision: "hold",
+        rule: rules[0],
+      })
+    })
+
+    it("surfaces a gate rule's gate spec so the caller can actually run it", () => {
+      const gateRule: HookRule = {
+        id: "git-push-review-gate",
+        plane: "semantic",
+        match: { tool: "Bash", command: "^git push" },
+        action: "gate",
+        gate: { command: "pnpm", args: ["test"] },
+      }
+      const result = decideRule([gateRule], { tool: "Bash", command: "git push origin main" }, "allow")
+      expect(result.decision).toBe("gate")
+      expect(result.rule?.gate).toEqual({ command: "pnpm", args: ["test"] })
     })
   })
 })
