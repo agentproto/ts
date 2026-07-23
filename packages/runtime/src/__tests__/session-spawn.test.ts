@@ -1492,6 +1492,40 @@ describe("spawnAgentSession — worktree isolation", () => {
     }
   })
 
+  it("nested spawn with an EXPLICIT worktree request → rejects loud, spawns nothing", async () => {
+    const { registry, deps } = baseDeps()
+    const { provisionWorktree, calls } = spyProvisioner(isolated)
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId: "parent",
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected success")
+    callerScope.ownerSessionId = parent.descriptor.id
+
+    // childDepth = 1 here; an explicit `worktree: true` asked for isolation the
+    // nested spawn can't provision, so it must fail loud rather than silently
+    // running in the shared (parent's) checkout.
+    const result = await spawnAgentSession(
+      { ...deps, callerScope, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+      { adapter: "mock", cwd: ORIGINAL, worktree: true },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("worktree_disabled")
+    expect(result.message).toContain("nested")
+    expect(result.message).toContain("sandbox")
+    expect(calls).toHaveLength(0)
+    // Only the parent booted; the rejected child spawned nothing.
+    expect(registry.list()).toHaveLength(1)
+  })
+
   it("provision required but no provisioner wired → worktree_provisioner_not_enabled", async () => {
     const { registry, deps } = baseDeps()
     const result = await spawnAgentSession(

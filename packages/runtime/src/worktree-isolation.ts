@@ -106,11 +106,19 @@ export function normalizeWorktreeField(
  * effects. Every branch is exercised in `worktree-isolation.test.ts`.
  *
  * Depth-0 gate: a nested spawn (`depth > 0`, i.e. made through the scoped
- * orchestrator sub-gateway) NEVER provisions — it inherits its parent's
- * ground, per AIP-46 §Delegation. This bites before the mode is even
- * consulted, so `always` too provisions only at the root and an explicit
- * request from a nested spawn is a silent no-op (spawn-in-place), not a
- * reject: the child is meant to share the parent's tree.
+ * orchestrator sub-gateway) NEVER provisions a worktree of its own — it
+ * inherits its parent's ground, per AIP-46 §Delegation. This bites before
+ * the mode is even consulted, so `always` too provisions only at the root.
+ * But "never provisions" is NOT "silently ignore an explicit request": a
+ * nested caller that passes an EXPLICIT `worktree` (`true` / `{slug}`) asked
+ * for isolation and would silently get none — the spawn quietly runs in the
+ * shared checkout, exactly the footgun that nearly clobbered a shared tree.
+ * So an explicit request at depth > 0 is REJECTED loudly (same shape as the
+ * `never`-policy reject below), pointing the caller at sandbox isolation —
+ * child isolation is the sandbox, not a second worktree. Only the IMPLICIT/
+ * absent case (`undefined` / `false`) stays a silent in-place spawn: the
+ * child is meant to share the parent's tree and made no request to the
+ * contrary.
  */
 export function decideWorktreeIsolation(input: {
   mode: WorktreeIsolationMode
@@ -119,8 +127,23 @@ export function decideWorktreeIsolation(input: {
 }): WorktreeDecision {
   const request = normalizeWorktreeField(input.field)
 
-  // Nested spawns inherit the parent's ground — never a second worktree.
-  if (input.depth > 0) return { action: "spawn-in-place" }
+  // Nested spawns inherit the parent's ground — never a second worktree. An
+  // explicit request can't be honoured here, so fail loud rather than silently
+  // spawning unisolated (an absent request just spawns in place, unchanged).
+  if (input.depth > 0) {
+    if (request !== undefined) {
+      return {
+        action: "reject",
+        message:
+          "agent_start: `worktree` isolation was requested on a nested spawn " +
+          `(depth ${input.depth}), but a spawn made through an orchestrator ` +
+          "inherits its parent's working tree and cannot provision a worktree " +
+          "of its own. Remove the `worktree` field; for an isolated child use " +
+          "`sandbox` (the box already isolates) instead.",
+      }
+    }
+    return { action: "spawn-in-place" }
+  }
 
   switch (input.mode) {
     case "never":
