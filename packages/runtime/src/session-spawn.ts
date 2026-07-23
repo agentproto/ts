@@ -76,6 +76,12 @@ import {
   type WorktreeIsolationMode,
   type WorktreeProvisioner,
 } from "./worktree-isolation.js"
+import {
+  decideSpawnAttach,
+  loadSpawnAttach,
+  type AttachField,
+  type SpawnAttachMode,
+} from "./spawn-attach.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -259,6 +265,10 @@ export interface SpawnAgentSessionDeps {
    *  via `loadWorktreeIsolation` when omitted; tests inject a stub to pin the
    *  mode without touching the real file or env. */
   resolveWorktreeIsolation?: () => Promise<WorktreeIsolationMode>
+  /** Resolves the effective `spawn.attach` policy (env > config > `always`).
+   *  Defaults to `loadSpawnAttach` (reads the real config) when omitted;
+   *  tests inject a stub to pin the mode without touching env or the file. */
+  resolveSpawnAttach?: () => Promise<SpawnAttachMode>
 }
 
 export interface SpawnAgentSessionInput {
@@ -283,6 +293,21 @@ export interface SpawnAgentSessionInput {
    *  the depth-gated worktree/role guards — declaring a logical parent is not
    *  the same as being a nested (scoped) spawn. */
   parentSessionId?: string
+  /** Attach policy override for THIS spawn (`agent_start.attach`). `false`
+   *  forces an independent root even when a parent is derivable; `true` opts
+   *  in to attaching under the derived parent even under an `on-request`
+   *  policy; `{ parent }` pins an explicit parent. Omitted ⇒ the daemon's
+   *  `spawn.attach` policy decides. Resolved together with `parentSessionId`
+   *  and `autoParentSessionId` in `decideSpawnAttach` — see `spawn-attach.ts`.
+   *  Ignored WITH a `callerScope` (the scoped orchestrator token always wins). */
+  attach?: AttachField
+  /** Daemon-DERIVED caller session id — the spawning session's own id, read
+   *  from the trusted `?callerSessionId=` query the self-ref `mcpServers` URL
+   *  carries (PR 7 / Gap 7), NOT from the caller's arguments. This is the
+   *  implicit auto-parent that makes attach-by-default work without the caller
+   *  passing its own id. Threaded from `registerAgentTools`' `callerSessionId`
+   *  option; lower precedence than an explicit `parentSessionId` hint. */
+  autoParentSessionId?: string
   /** Task-board pin for the spawned child, stamped onto its descriptor as
    *  `meta.boardId`. The Task ledger's board resolution prefers this over
    *  the `parentSessionId` lineage walk (see task-ledger.ts's
@@ -510,6 +535,7 @@ export async function spawnAgentSession(
     resolveSandboxProvider,
     provisionWorktree,
     resolveWorktreeIsolation,
+    resolveSpawnAttach,
   } = deps
 
   // cwd resolution: explicit cwd wins, then workspaceSlug lookup, then —
@@ -678,12 +704,22 @@ export async function spawnAgentSession(
   // cwd-resolution block — see the explicit-repo guard's comment there.)
   // Parent attribution. The scoped orchestrator gateway's token is the
   // unspoofable source: when `callerScope` is present, parent is derived from
-  // it and any caller-supplied `parentSessionId` hint is IGNORED (the scope
-  // always wins). Only on the anonymous root path — no `callerScope`, hence no
-  // scope to attribute from — is the trusted-loopback `parentSessionId` hint
-  // (WP-R1) honoured, filling the gap that leaves an agent-to-agent spawn a
-  // depth-0 orphan.
-  const parentHint = callerScope ? undefined : input.parentSessionId
+  // it and every non-scope signal (the caller's `parentSessionId` hint, the
+  // daemon-derived `autoParentSessionId`, and the `attach` field) is IGNORED —
+  // the scope always wins. Only on the anonymous root path — no `callerScope`,
+  // hence no scope to attribute from — does `decideSpawnAttach` resolve the
+  // parent from the attach policy × the explicit hint × the trusted auto-
+  // parent (`?callerSessionId=`), filling the gap that otherwise leaves an
+  // agent-to-agent spawn a depth-0 orphan. `attach: false` forces a root here.
+  const attachDecision = callerScope
+    ? { parent: undefined as string | undefined, detached: false }
+    : decideSpawnAttach({
+        mode: resolveSpawnAttach ? await resolveSpawnAttach() : await loadSpawnAttach(),
+        field: input.attach,
+        ...(input.autoParentSessionId ? { autoParent: input.autoParentSessionId } : {}),
+        ...(input.parentSessionId ? { hint: input.parentSessionId } : {}),
+      })
+  const parentHint = attachDecision.parent
   const parentSessionId = callerScope?.ownerSessionId ?? parentHint
   // Recorded lineage depth. For a scope-attributed spawn this is the gating
   // depth (`callerScope.depth + 1`, computed above). For a hint-attributed
