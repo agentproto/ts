@@ -244,6 +244,12 @@
         "category": "agentproto"
       },
       {
+        "command": "agentproto.showDaemonConfig",
+        "title": "agentproto: Daemon Configuration",
+        "category": "agentproto",
+        "icon": "$(server-process)"
+      },
+      {
         "command": "agentproto.refreshHarnesses",
         "title": "agentproto: Refresh Harnesses",
         "category": "agentproto",
@@ -352,6 +358,11 @@
         },
         {
           "command": "agentproto.importConversation",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.showDaemonConfig",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
         }
