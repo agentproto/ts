@@ -311,7 +311,7 @@ export function createAgentCliRuntime(
         // so the adapter's own process tree — not just its reported tool
         // calls — is denied out-of-workspace reads/writes. Off by default;
         // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
-        const [execBin, execArgs] = wrapAgentCliSpawn(
+        const [execBin, execArgs] = await wrapAgentCliSpawn(
           definition.bin,
           composed.binArgs,
           {

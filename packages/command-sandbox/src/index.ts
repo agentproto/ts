@@ -27,6 +27,23 @@
  * EPERM without a metadata-only re-allow across $HOME (see
  * `buildSeatbeltProfile`) — content read/write and directory listing under
  * $HOME stay denied; only stat/lstat-class metadata is re-opened.
+ *
+ * ## Two config keys, one file, deliberately not shared (PR 6b)
+ *
+ * `.agentproto/command-sandbox.json` governs TWO independent confinement
+ * axes that happen to live in the same file: the top-level `mode` (read by
+ * `loadSandboxConfig`) confines a single `command_execute` call; the nested
+ * `adapterSpawn` key (read by `loadAdapterSpawnSandboxConfig`) confines the
+ * ENTIRE adapter-spawn process tree for the life of a session. A workspace
+ * does NOT get `adapterSpawn` confinement for free by setting the top-level
+ * `mode` — it must set `adapterSpawn.mode` explicitly. This is deliberate,
+ * not an oversight: a misconfigured `command_execute` jail breaks one
+ * command's execution (the caller sees a failed tool call and can retry
+ * unconfined); a misconfigured adapter-spawn jail breaks the WHOLE session
+ * (every tool call, every turn, for as long as the adapter runs) — a
+ * strictly larger blast radius that deserves its own explicit opt-in rather
+ * than silently inheriting whatever `command_execute` happened to be
+ * configured with.
  */
 
 import { existsSync } from "node:fs"
@@ -131,6 +148,99 @@ export async function loadSandboxConfig(
     }
   }
   const envMode = process.env[COMMAND_SANDBOX_MODE_ENV]
+  if (envMode === "off" || envMode === "workspace" || envMode === "strict") {
+    return {
+      ...resolved,
+      mode: envMode,
+      network: envMode === "strict" ? "deny" : resolved.network,
+    }
+  }
+  return resolved
+}
+
+/**
+ * Confinement config for the ADAPTER-SPAWN axis — a distinct, explicit
+ * `adapterSpawn` key in the same `.agentproto/command-sandbox.json` file
+ * `loadSandboxConfig` reads (see the module doc for why this isn't just the
+ * top-level `mode`).
+ */
+export interface AdapterSpawnSandboxConfig {
+  /**
+   * `undefined` ⇒ the file has no `adapterSpawn` key at all (or no file
+   * exists) — this axis was never engaged by the workspace, so a caller
+   * that also passed no explicit mode stays silently unconfined (today's
+   * behavior). A resolved `SandboxMode`, INCLUDING explicit `"off"`, means
+   * the workspace (or `ADAPTER_COMMAND_SANDBOX_MODE_ENV`) engaged this axis
+   * on purpose.
+   */
+  mode: SandboxMode | undefined
+  /** Extra read-only paths merged with the adapter-spawn wrapper's own
+   *  built-in toolchain defaults (`defaultToolchainReadPaths()`). */
+  extraReadPaths: string[]
+  /** Extra read+write paths merged with the built-in toolchain defaults
+   *  (`defaultToolchainWritePaths()`). */
+  extraWritePaths: string[]
+  /** Network policy. Forced to `deny` when `mode === "strict"`. */
+  network: "deny" | "allow"
+}
+
+const DEFAULT_ADAPTER_SPAWN_SANDBOX_CONFIG: AdapterSpawnSandboxConfig = {
+  mode: undefined,
+  extraReadPaths: [],
+  extraWritePaths: [],
+  network: "allow",
+}
+
+/**
+ * Escape hatch for the adapter-spawn axis, mirroring `COMMAND_SANDBOX_MODE_ENV`
+ * but kept as a SEPARATE env var rather than reusing it — forcing
+ * `command_execute` into `workspace` mode for a CI run should not, as a side
+ * effect, also confine every adapter's own process tree (and vice versa).
+ */
+export const ADAPTER_COMMAND_SANDBOX_MODE_ENV =
+  "AGENTPROTO_ADAPTER_COMMAND_SANDBOX_MODE"
+
+/**
+ * Load + normalize the adapter-spawn confinement config from the `adapterSpawn`
+ * key of `.agentproto/command-sandbox.json`. Missing file / bad JSON / no
+ * `adapterSpawn` key ⇒ `mode: undefined` (axis untouched, NOT `"off"` — see
+ * `AdapterSpawnSandboxConfig.mode`'s doc for why that distinction matters).
+ * An `adapterSpawn` key that IS present but carries an unknown/missing `mode`
+ * resolves to `"off"`, matching `loadSandboxConfig`'s fail-open-on-config
+ * posture. `ADAPTER_COMMAND_SANDBOX_MODE_ENV`, when set to a valid mode,
+ * overrides whatever the file resolved to.
+ */
+export async function loadAdapterSpawnSandboxConfig(
+  workspace: string,
+): Promise<AdapterSpawnSandboxConfig> {
+  const path = resolve(workspace, CONFIG_REL)
+  let resolved = DEFAULT_ADAPTER_SPAWN_SANDBOX_CONFIG
+  if (existsSync(path)) {
+    try {
+      const parsed = JSON.parse(await readFile(path, "utf8")) as {
+        adapterSpawn?: Record<string, unknown>
+      }
+      const raw = parsed.adapterSpawn
+      if (raw && typeof raw === "object") {
+        const mode: SandboxMode =
+          raw.mode === "workspace" || raw.mode === "strict" || raw.mode === "off"
+            ? raw.mode
+            : "off"
+        const extraReadPaths = Array.isArray(raw.extraReadPaths)
+          ? raw.extraReadPaths.filter((x): x is string => typeof x === "string")
+          : []
+        const extraWritePaths = Array.isArray(raw.extraWritePaths)
+          ? raw.extraWritePaths.filter((x): x is string => typeof x === "string")
+          : []
+        const network: "deny" | "allow" =
+          mode === "strict" || raw.network === "deny" ? "deny" : "allow"
+        resolved = { mode, extraReadPaths, extraWritePaths, network }
+      }
+    } catch {
+      resolved = DEFAULT_ADAPTER_SPAWN_SANDBOX_CONFIG
+    }
+  }
+  const envMode = process.env[ADAPTER_COMMAND_SANDBOX_MODE_ENV]
   if (envMode === "off" || envMode === "workspace" || envMode === "strict") {
     return {
       ...resolved,

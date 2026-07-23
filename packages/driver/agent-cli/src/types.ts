@@ -1101,12 +1101,14 @@ export interface AgentCliStartOptions {
    * different machine/box; this wraps THIS host's spawn argv so even an
    * in-process Bash tool the ACP permission seam can't see is denied
    * out-of-workspace reads/writes (and, under `"strict"`, network).
-   * Undefined/`"off"` ⇒ unconfined, unchanged behaviour for every
-   * existing caller. `"workspace"`/`"strict"` with no backend available
-   * for this platform is a FAIL-CLOSED refusal to spawn, mirroring
-   * `command_execute`'s own fail-closed contract in
-   * `@agentproto/runtime`'s `command-tools.ts` — see
-   * `define-agent-cli.ts` / `print-arm.ts` for where this is applied.
+   * Undefined ⇒ falls back to the workspace's `.agentproto/
+   * command-sandbox.json` `adapterSpawn` key (see `wrapAgentCliSpawn`'s
+   * doc), or stays unconfined if that's unset too — unchanged behaviour
+   * for every caller that never engages this axis at all. `"workspace"`/
+   * `"strict"` with no backend available for this platform is a
+   * FAIL-CLOSED refusal to spawn, mirroring `command_execute`'s own
+   * fail-closed contract in `@agentproto/runtime`'s `command-tools.ts` —
+   * see `define-agent-cli.ts` / `print-arm.ts` for where this is applied.
    */
   commandSandbox?: SandboxMode
 }

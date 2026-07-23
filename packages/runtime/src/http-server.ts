@@ -25,6 +25,7 @@ import type { Duplex } from "node:stream"
 import { mkdir, stat, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join, resolve as resolvePath } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
+import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
@@ -255,6 +256,16 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  source all pre-decided). The driver applies it mechanically. Absent
      *  when the resolver produced no spec (ambient). */
     auth?: ResolvedAuthSpec
+    /** OS-level confinement for the adapter's OWN spawned process
+     *  (`@agentproto/command-sandbox` — macOS Seatbelt / Linux bubblewrap),
+     *  forwarded from `agent_start`'s `commandSandbox` field to the driver's
+     *  `runtime.start({ commandSandbox })`. NOT the AIP-36 `sandbox` field
+     *  (a remote-box session provider) — this wraps THIS host's spawn argv.
+     *  Undefined ⇒ falls back to the workspace's `.agentproto/
+     *  command-sandbox.json` `adapterSpawn` key (see `@agentproto/
+     *  command-sandbox`'s `loadAdapterSpawnSandboxConfig`), or stays
+     *  unconfined if that's unset too. */
+    commandSandbox?: SandboxMode
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
