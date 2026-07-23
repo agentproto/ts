@@ -41,6 +41,7 @@ const authProfileSchema = z.object({
   // `vendor` alias below.
   disabled: z.boolean().optional(),
   models: modelCurationSchema.optional(),
+  origin: z.string().optional(),
 }).transform(({ vendor, ...profile }): AuthProfile => ({ ...profile, endpoint: vendor }))
 
 const authProfilesFileSchema = z.object({

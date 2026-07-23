@@ -39,6 +39,7 @@ import type {
   CreatedAuthProfileResult,
   DaemonHealth,
   DiscoveredCredential,
+  ImportCredentialRequest,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -583,6 +584,24 @@ export class DaemonClient {
     >("auth_discover_credentials")
     if (Array.isArray(result)) return result
     return result.credentials ?? []
+  }
+
+  /**
+   * `auth_profile_import` — materialize a credential DISCOVERED by
+   * `discoverCredentials()` into a named auth profile (WS6). Source-backed
+   * where possible, else the daemon COPIES the located api-key into the
+   * keychain. No secret crosses the wire — the daemon reads it locally. The
+   * result is non-secret metadata + a one-way fingerprint + the stamped
+   * `origin`, never the credential.
+   */
+  async importCredential(req: ImportCredentialRequest): Promise<CreatedAuthProfileResult> {
+    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult }>(
+      "auth_profile_import",
+      { ...req },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_import returned no profile")
+    return profile
   }
 
   /**

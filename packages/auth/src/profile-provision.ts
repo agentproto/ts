@@ -51,6 +51,10 @@ export interface CreateAuthProfileInput {
    *  `endpoint` + `method` (see {@link deriveCredentialRef}). Ignored for a
    *  source-backed profile (nothing is written to the credential store). */
   credentialRef?: string
+  /** Optional provenance — where the credential was imported from (a WS6
+   *  discovery origin). Stamped verbatim on the created profile; purely
+   *  informational. */
+  origin?: string
 }
 
 /** The non-secret result of a create — safe to log, return over the wire, or
@@ -64,6 +68,8 @@ export interface CreatedAuthProfile {
   /** Set for a source-backed profile; absent for a credential-backed one. */
   source?: string
   label?: string
+  /** Provenance stamped at import time, when given. */
+  origin?: string
   /** One-way fingerprint of the stored credential (sha256, truncated) — lets
    *  a caller confirm *which* secret was stored without exposing it. Absent
    *  for a source-backed profile — there is no stored secret to fingerprint. */
@@ -115,6 +121,7 @@ export interface ValidatedCreateInput {
   source?: string
   label?: string
   credentialRef?: string
+  origin?: string
 }
 
 /**
@@ -178,6 +185,8 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     )
   }
 
+  const origin = input.origin?.trim()
+
   return {
     id,
     endpoint,
@@ -186,6 +195,7 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     ...(source ? { source } : {}),
     ...(label ? { label } : {}),
     ...(credentialRef ? { credentialRef } : {}),
+    ...(origin ? { origin } : {}),
   }
 }
 
@@ -274,6 +284,7 @@ export async function createAuthProfile(
       method: v.method,
       source: v.source,
       ...(v.label ? { label: v.label } : {}),
+      ...(v.origin ? { origin: v.origin } : {}),
     }
     await deps.addProfile(profile)
     return {
@@ -282,6 +293,7 @@ export async function createAuthProfile(
       method: profile.method,
       source: v.source,
       ...(profile.label ? { label: profile.label } : {}),
+      ...(profile.origin ? { origin: profile.origin } : {}),
     }
   }
 
@@ -309,6 +321,7 @@ export async function createAuthProfile(
     method: v.method,
     credentialRef,
     ...(v.label ? { label: v.label } : {}),
+    ...(v.origin ? { origin: v.origin } : {}),
   }
   await deps.addProfile(profile)
 
@@ -318,6 +331,7 @@ export async function createAuthProfile(
     method: profile.method,
     credentialRef,
     ...(profile.label ? { label: profile.label } : {}),
+    ...(profile.origin ? { origin: profile.origin } : {}),
     fingerprint: fingerprintCredential(credential),
   }
 }

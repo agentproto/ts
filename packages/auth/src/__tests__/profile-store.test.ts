@@ -156,6 +156,19 @@ describe("auth profile store", () => {
     })
   })
 
+  it("round-trips the additive `origin` provenance field (WS6)", async () => {
+    await addAuthProfile({
+      id: "imported",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref",
+      origin: "env",
+    })
+    await expect(getAuthProfile("imported")).resolves.toMatchObject({ origin: "env" })
+    const disk = JSON.parse(await readFile(authProfilesPath(), "utf8"))
+    expect(disk.profiles["imported"]).toMatchObject({ vendor: "openrouter", origin: "env" })
+  })
+
   it("a profile written without the additive fields stays byte-identical (back-compat)", async () => {
     await addAuthProfile({
       id: "plain",

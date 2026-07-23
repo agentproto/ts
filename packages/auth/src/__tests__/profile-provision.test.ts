@@ -444,3 +444,37 @@ describe("deleteAuthProfile", () => {
     expect(profiles.has("anthropic-sub")).toBe(false)
   })
 })
+
+describe("createAuthProfile — origin provenance (WS6)", () => {
+  it("stamps origin on a credential-backed profile (returned + persisted)", async () => {
+    const { deps, profiles } = makeDeps()
+    const created = await createAuthProfile(
+      { id: "env-openrouter", endpoint: "openrouter", method: "api-key", credential: "sk-x", origin: "env" },
+      deps,
+    )
+    expect(created.origin).toBe("env")
+    expect(profiles.get("env-openrouter")?.origin).toBe("env")
+    // The credential is still never echoed — only a fingerprint.
+    expect(created.fingerprint).toBeTruthy()
+    expect(JSON.stringify(created)).not.toContain("sk-x")
+  })
+
+  it("stamps origin on a source-backed profile", async () => {
+    const { deps, profiles } = makeDeps()
+    const created = await createAuthProfile(
+      { id: "codex-openai", endpoint: "openai", method: "oauth-bearer", source: "codex", origin: "codex" },
+      deps,
+    )
+    expect(created.origin).toBe("codex")
+    expect(profiles.get("codex-openai")?.origin).toBe("codex")
+  })
+
+  it("omits origin when none is given (byte-identical to a pre-WS6 profile)", async () => {
+    const { deps, profiles } = makeDeps()
+    await createAuthProfile(
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key", credential: "sk-y" },
+      deps,
+    )
+    expect(profiles.get("openrouter-api")).not.toHaveProperty("origin")
+  })
+})

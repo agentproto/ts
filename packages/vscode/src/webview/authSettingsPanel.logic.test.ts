@@ -75,6 +75,16 @@ describe("buildAuthSettingsModel", () => {
     expect(w.keyLabel).toBe("••••abcd · fp0000000000")
     expect(w.curatedIds).toEqual(["anthropic/claude-fable-5"])
   })
+
+  it("carries the imported-from provenance (WS6)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "env-openrouter", endpoint: "openrouter", method: "api-key", origin: "env" },
+      { id: "openrouter-api", endpoint: "openrouter", method: "api-key" },
+    ])
+    expect(model.wallets.find(w => w.id === "env-openrouter")!.origin).toBe("env")
+    // A hand-created profile has no origin.
+    expect(model.wallets.find(w => w.id === "openrouter-api")!.origin).toBeUndefined()
+  })
 })
 
 describe("buildAuthSettingsHtml", () => {
@@ -86,6 +96,14 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).not.toContain('data-slug="openrouter"') // connected → no connect button
     expect(html).toContain('data-action="delete" data-id="openrouter-api"')
     expect(html).toContain("claude-fable-5")
+  })
+
+  it("renders an 'imported from <origin>' badge for an imported wallet (WS6)", () => {
+    const model = buildAuthSettingsModel(presets, catalog, [
+      { id: "env-openrouter", endpoint: "openrouter", method: "api-key", origin: "env" },
+    ])
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain("imported from env")
   })
 
   it("surfaces a source-backed local-login button in the Providers section", () => {

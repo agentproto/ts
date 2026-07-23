@@ -16,8 +16,12 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { MemoryStore, type AuthProfile, type ProfileProvisionDeps } from "@agentproto/auth"
 import {
   discoverCredentials,
+  importDiscoveredCredential,
+  planCredentialImport,
+  CredentialImportError,
   jsonFieldPresent,
   yamlKeyPresent,
   type CredentialDiscoveryDeps,
@@ -246,5 +250,179 @@ describe("INVARIANT: never returns a discovered secret value", () => {
     for (const secret of Object.values(SENTINELS)) {
       expect(dump).not.toContain(secret)
     }
+  })
+})
+
+// ── IMPORT ────────────────────────────────────────────────────────────────
+
+/** In-memory ProfileProvisionDeps (Map + real MemoryStore) — no keychain, no
+ *  filesystem, mirroring @agentproto/auth's own profile-provision.test.ts. */
+function makeProvisionDeps(seed: AuthProfile[] = []): {
+  deps: ProfileProvisionDeps
+  profiles: Map<string, AuthProfile>
+  store: MemoryStore
+} {
+  const profiles = new Map(seed.map((p) => [p.id, p]))
+  const store = new MemoryStore()
+  const deps: ProfileProvisionDeps = {
+    store,
+    getProfile: async (id) => profiles.get(id),
+    listProfiles: async () => [...profiles.values()],
+    addProfile: async (p) => {
+      profiles.set(p.id, p)
+    },
+    removeProfile: async (id) => profiles.delete(id),
+  }
+  return { deps, profiles, store }
+}
+
+describe("planCredentialImport — origin fixes the method (no bearer↔api-key mix)", () => {
+  it("maps the source-backed origins to their spawn-valid source + endpoint", () => {
+    expect(planCredentialImport("claude-code", "anthropic")).toEqual({
+      method: "oauth-bearer",
+      endpoint: "anthropic",
+      source: "claude-code-oauth",
+    })
+    expect(planCredentialImport("codex", "openai")).toEqual({
+      method: "oauth-bearer",
+      endpoint: "openai",
+      source: "codex",
+    })
+    expect(planCredentialImport("gemini", "google")).toEqual({
+      method: "oauth-bearer",
+      endpoint: "google",
+      source: "gemini",
+    })
+  })
+  it("maps env / hermes origins to an api-key COPY", () => {
+    expect(planCredentialImport("env", "openrouter")).toEqual({
+      method: "api-key",
+      endpoint: "openrouter",
+      copy: { via: "env", key: "OPENROUTER_API_KEY" },
+    })
+    expect(planCredentialImport("hermes-config", "openai")).toEqual({
+      method: "api-key",
+      endpoint: "openai",
+      copy: { via: "hermes", key: "OPENAI_API_KEY" },
+    })
+  })
+  it("rejects an unknown origin, a mismatched source endpoint, or an unmapped endpoint", () => {
+    expect(() => planCredentialImport("bogus", "x")).toThrow(CredentialImportError)
+    expect(() => planCredentialImport("claude-code", "openrouter")).toThrow(CredentialImportError)
+    expect(() => planCredentialImport("env", "not-a-provider")).toThrow(CredentialImportError)
+  })
+})
+
+describe("importDiscoveredCredential — materializes + stamps origin", () => {
+  it("imports claude-code as a source-backed profile, origin stamped, no secret stored", async () => {
+    const { deps } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "claude-code", endpoint: "anthropic" },
+      deps,
+      {
+        homeDir: HOME,
+        env: {},
+        platform: "linux",
+        readFile: fakeReadFile({
+          [`${HOME}/.claude/.credentials.json`]: JSON.stringify({
+            claudeAiOauth: { accessToken: "tok" },
+          }),
+        }),
+      },
+    )
+    expect(created).toMatchObject({
+      id: "claude-code-anthropic",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      origin: "claude-code",
+    })
+    // Source-backed ⇒ nothing written to the credential store.
+    expect(created.credentialRef).toBeUndefined()
+    expect(created.fingerprint).toBeUndefined()
+  })
+
+  it("imports codex as source-backed with the recipe-id source, origin stamped", async () => {
+    const { deps } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "codex", endpoint: "openai" },
+      deps,
+      {
+        homeDir: HOME,
+        env: {},
+        platform: "linux",
+        readFile: fakeReadFile({
+          [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { access_token: "codex-tok" } }),
+        }),
+      },
+    )
+    expect(created).toMatchObject({ source: "codex", method: "oauth-bearer", origin: "codex" })
+  })
+
+  it("imports an env api-key by COPYING the value into the store, origin stamped", async () => {
+    const { deps, profiles, store } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "env", endpoint: "openrouter" },
+      deps,
+      { homeDir: HOME, env: { OPENROUTER_API_KEY: "sk-or-real" }, platform: "linux", readFile: fakeReadFile({}) },
+    )
+    expect(created).toMatchObject({
+      endpoint: "openrouter",
+      method: "api-key",
+      origin: "env",
+    })
+    // A fingerprint (a secret WAS stored), and the value really landed.
+    expect(created.fingerprint).toBeTruthy()
+    const ref = profiles.get(created.id)?.credentialRef
+    expect(ref).toBeTruthy()
+    const stored = await store.read({ path: ref! })
+    expect(stored?.value).toBe("sk-or-real")
+  })
+
+  it("imports a hermes-config api-key by COPYING the yaml value", async () => {
+    const { deps, profiles, store } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "hermes-config", endpoint: "openrouter" },
+      deps,
+      {
+        homeDir: HOME,
+        env: {},
+        platform: "linux",
+        readFile: fakeReadFile({ [`${HOME}/.hermes/config.yaml`]: "OPENROUTER_API_KEY: sk-hermes\n" }),
+      },
+    )
+    const ref = profiles.get(created.id)?.credentialRef
+    const stored = await store.read({ path: ref! })
+    expect(stored?.value).toBe("sk-hermes")
+    expect(created.origin).toBe("hermes-config")
+  })
+
+  it("refuses to fabricate a profile when discovery finds nothing", async () => {
+    const { deps, profiles } = makeProvisionDeps()
+    await expect(
+      importDiscoveredCredential(
+        { origin: "env", endpoint: "openrouter" },
+        deps,
+        { homeDir: HOME, env: {}, platform: "linux", readFile: fakeReadFile({}) },
+      ),
+    ).rejects.toBeInstanceOf(CredentialImportError)
+    expect(profiles.size).toBe(0)
+  })
+})
+
+describe("INVARIANT: import never returns the copied secret", () => {
+  it("stores the env value but returns only a fingerprint, never the value", async () => {
+    const SENTINEL = "SENTINEL-import-openrouter-VALUE"
+    const { deps, store, profiles } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "env", endpoint: "openrouter" },
+      deps,
+      { homeDir: HOME, env: { OPENROUTER_API_KEY: SENTINEL }, platform: "linux", readFile: fakeReadFile({}) },
+    )
+    // The copy DID happen (the store holds the real secret)...
+    const ref = profiles.get(created.id)!.credentialRef!
+    expect((await store.read({ path: ref }))?.value).toBe(SENTINEL)
+    // ...but the returned metadata never carries it.
+    expect(JSON.stringify(created)).not.toContain(SENTINEL)
   })
 })

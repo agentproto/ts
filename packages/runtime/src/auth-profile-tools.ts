@@ -37,6 +37,10 @@ import {
   type CredentialStore,
   type ProfileProvisionDeps,
 } from "@agentproto/auth"
+import {
+  importDiscoveredCredential,
+  CredentialImportError,
+} from "./credential-discovery.js"
 
 /** Wire `@agentproto/auth`'s provisioning helpers to the real keychain +
  *  on-disk profile store. Shared by the MCP tools here and the HTTP routes in
@@ -316,6 +320,47 @@ export function registerAuthProfileTools(server: McpServer): void {
         }
         return errorText(
           `auth_profile_set_models failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_import ───────────────────────────────────────
+  server.tool(
+    "auth_profile_import",
+    "Import a credential DISCOVERED by `auth_discover_credentials` into a " +
+      "named auth profile (WS6). Materializes source-backed where possible " +
+      "(claude-code → the self-refreshing `claude-code-oauth` source; " +
+      "codex/gemini → their external file-based login sources), else COPIES " +
+      "the located api-key (env / `~/.hermes/config.yaml`) into the keychain. " +
+      "The method is fixed by `origin` — a subscription bearer can never be " +
+      "stored as an api-key. Refuses unless the credential is STILL discovered " +
+      "right now. The secret is INPUT-only: the response carries non-secret " +
+      "metadata + a one-way `fingerprint` and the stamped `origin` (never the " +
+      "credential). Rejects a duplicate id.",
+    {
+      origin: z
+        .enum(["claude-code", "hermes-config", "env", "codex", "gemini"])
+        .describe("Discovery origin to import from (from auth_discover_credentials)."),
+      endpoint: z
+        .string()
+        .describe("Billing endpoint to import (must be one the origin serves, e.g. anthropic)."),
+      id: z.string().optional().describe("Explicit profile id; defaults to `<origin>-<endpoint>`."),
+      label: z.string().optional().describe("Optional human-readable name."),
+    },
+    async ({ origin, endpoint, id, label }) => {
+      try {
+        const created = await importDiscoveredCredential(
+          { origin, endpoint, ...(id ? { id } : {}), ...(label ? { label } : {}) },
+          defaultProfileProvisionDeps(),
+        )
+        return text({ profile: created })
+      } catch (err) {
+        if (err instanceof CredentialImportError || err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_import rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_import failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     },

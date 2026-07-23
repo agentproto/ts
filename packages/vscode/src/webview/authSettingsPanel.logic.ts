@@ -11,6 +11,7 @@
  */
 
 import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
+import { importedBadge } from "../commands/onboarding.logic.js"
 import {
   presetConnected,
   profileCuratedIds,
@@ -47,6 +48,10 @@ export interface WalletRow {
   /** Curated model ids (WS3) rendered as read-only chips — only when the
    *  profile is in `allow` mode. */
   curatedIds: string[]
+  /** Provenance (WS6) — the discovery origin this profile was imported from,
+   *  when it was created by `auth_profile_import`. Absent for a hand-created
+   *  profile. Drives the "imported from <origin>" badge. */
+  origin?: string
 }
 
 export interface AuthSettingsModel {
@@ -91,6 +96,7 @@ export function buildAuthSettingsModel(
         enabled: profileEnabled(p),
         ...(keyLabel ? { keyLabel } : {}),
         curatedIds: profileCuratedIds(p),
+        ...(p.origin ? { origin: p.origin } : {}),
       }
     })
     .sort((a, b) => {
@@ -147,6 +153,9 @@ function walletCard(w: WalletRow): string {
   const toggle = w.enabled
     ? `<button class="act" data-action="disable" data-id="${esc(w.id)}">Disable</button>`
     : `<button class="act" data-action="enable" data-id="${esc(w.id)}">Enable</button>`
+  // Provenance badge (WS6) — where an imported profile came from.
+  const badge = importedBadge(w.origin)
+  const originBadge = badge ? `<span class="badge">${esc(badge)}</span>` : ""
   // Read-only key identity (WS5) — never a plaintext secret.
   const keyRow = w.keyLabel ? `<div class="sub">🔑 ${esc(w.keyLabel)}</div>` : ""
   // Read-only curated chips (WS3). The "+" write picker is owned by another
@@ -161,6 +170,7 @@ function walletCard(w: WalletRow): string {
     <div class="row">
       <span class="title">${esc(w.id)}</span>
       ${stateBadge}
+      ${originBadge}
       <span class="badge">${w.activeCount} active / ${w.models.length} models</span>
       ${toggle}
       <button class="act danger" data-action="delete" data-id="${esc(w.id)}">Delete</button>
