@@ -144,8 +144,11 @@ describe("createTranscriptWriter", () => {
     })
     await writer.close("sess_1")
 
+    // tool-call, tool-result, and the normalized tool-call-record the
+    // tool-result handler derives from them (see "normalized ToolCallRecord"
+    // describe block below).
     const lines = readLines("sess_1")
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(3)
     expect(lines[1]).toMatchObject({
       kind: "tool-result",
       toolCallId: "t1",
@@ -346,7 +349,12 @@ describe("createTranscriptWriter", () => {
       writer.recordEvent("s1", { kind: "tool-result", toolCallId: "t1", result: "ok" })
       await writer.close("s1")
 
-      expect(readLines("s1").map(r => r.kind)).toEqual(["tool-call", "tool-call", "tool-result"])
+      expect(readLines("s1").map(r => r.kind)).toEqual([
+        "tool-call",
+        "tool-call",
+        "tool-result",
+        "tool-call-record",
+      ])
     })
 
     it("never loses a held input when the call ends without a result", async () => {
@@ -390,6 +398,103 @@ describe("createTranscriptWriter", () => {
       const calls = readLines("s1").filter(r => r.kind === "tool-call")
       expect(calls).toHaveLength(2)
       expect(calls[1]).toMatchObject({ arguments: { prompt: "go" } })
+    })
+  })
+
+  describe("normalized ToolCallRecord (tool-result -> tool-call-record)", () => {
+    it("emits a tool-call-record carrying the tool name, command/args, and isError", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("sess_1", {
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "Bash",
+        arguments: { command: "ls -la", args: ["-la"] },
+      })
+      writer.recordEvent("sess_1", {
+        kind: "tool-result",
+        toolCallId: "t1",
+        result: "file1.txt",
+        isError: false,
+      })
+      await writer.close("sess_1")
+
+      const records = readLines("sess_1").filter(r => r.kind === "tool-call-record")
+      expect(records).toHaveLength(1)
+      expect(records[0]).toMatchObject({
+        sessionId: "sess_1",
+        tool: "Bash",
+        command: "ls -la",
+        args: ["-la"],
+        isError: false,
+      })
+      expect(typeof records[0]?.durationMs).toBe("number")
+      expect(typeof records[0]?.ts).toBe("string")
+    })
+
+    it("uses the LATEST enrichment's arguments/toolName, not the bare announcement", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("sess_1", { kind: "tool-call", toolCallId: "t1", toolName: "Terminal", arguments: {} })
+      writer.recordEvent("sess_1", {
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "wc -l f.txt",
+        arguments: { command: "wc -l f.txt" },
+        isUpdate: true,
+      })
+      writer.recordEvent("sess_1", { kind: "tool-result", toolCallId: "t1", result: "3", isError: false })
+      await writer.close("sess_1")
+
+      const record = readLines("sess_1").find(r => r.kind === "tool-call-record")
+      expect(record).toMatchObject({ tool: "wc -l f.txt", command: "wc -l f.txt" })
+    })
+
+    it("omits command/args for a non-shell-shaped tool (e.g. Edit) instead of guessing", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("sess_1", {
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "Edit",
+        arguments: { file_path: "/tmp/x.ts", old_string: "a", new_string: "b" },
+      })
+      writer.recordEvent("sess_1", { kind: "tool-result", toolCallId: "t1", result: "ok", isError: false })
+      await writer.close("sess_1")
+
+      const record = readLines("sess_1").find(r => r.kind === "tool-call-record")
+      expect(record).toMatchObject({ tool: "Edit" })
+      expect(record?.command).toBeUndefined()
+      expect(record?.args).toBeUndefined()
+    })
+
+    it("marks isError true and still emits a record for a failed call", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("sess_1", {
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "Bash",
+        arguments: { command: "false" },
+      })
+      writer.recordEvent("sess_1", {
+        kind: "tool-result",
+        toolCallId: "t1",
+        result: "exit 1",
+        isError: true,
+      })
+      await writer.close("sess_1")
+
+      const record = readLines("sess_1").find(r => r.kind === "tool-call-record")
+      expect(record).toMatchObject({ tool: "Bash", command: "false", isError: true })
+    })
+
+    it("emits one record per call when two calls finish in the same session", async () => {
+      const writer = createTranscriptWriter({ baseDir: tmp })
+      writer.recordEvent("sess_1", { kind: "tool-call", toolCallId: "a", toolName: "Bash", arguments: { command: "one" } })
+      writer.recordEvent("sess_1", { kind: "tool-result", toolCallId: "a", result: "1", isError: false })
+      writer.recordEvent("sess_1", { kind: "tool-call", toolCallId: "b", toolName: "Bash", arguments: { command: "two" } })
+      writer.recordEvent("sess_1", { kind: "tool-result", toolCallId: "b", result: "2", isError: false })
+      await writer.close("sess_1")
+
+      const records = readLines("sess_1").filter(r => r.kind === "tool-call-record")
+      expect(records.map(r => r.command)).toEqual(["one", "two"])
     })
   })
 })
