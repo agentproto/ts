@@ -197,19 +197,26 @@ export interface LocalLoginRecipe {
 }
 
 /**
- * The local logins we can adopt. Claude Code is the only source-backed login
- * the runtime resolves at spawn today: the `claude-code-oauth` bearer is
- * injected into the claude-code adapter's `authSubscription.setEnv`
- * (`CLAUDE_CODE_OAUTH_TOKEN`), which the CLI consumes natively.
+ * The local logins we can adopt — each backed by a runtime path that resolves
+ * the login at spawn. Two shapes:
  *
- * Codex/Gemini are deliberately NOT listed. Their credential recipes exist in
- * `@agentproto/secrets`, but the subscription-source mechanism is structurally
- * Anthropic-specific: it needs an adapter that declares `authSubscription` with
- * a bearer env the CLI reads. The codex adapter is api-key-only (no
- * `authSubscription`; OpenAI OAuth lives in `~/.codex/auth.json`, not an env
- * bearer) and Gemini has no native adapter — only a generic ACP entry. Adding
- * them means a non-Anthropic subscription auth surface, not a client row; until
- * that lands, surfacing them would only create profiles that dead-end at spawn.
+ *   - Bearer-injection (Claude Code): the `claude-code-oauth` bearer is read
+ *     fresh and injected into the adapter's `authSubscription.setEnv`
+ *     (`CLAUDE_CODE_OAUTH_TOKEN`), which the CLI consumes natively.
+ *   - File-based / external (Codex): the CLI reads its OWN login file
+ *     (`~/.codex/auth.json`) — there is no env bearer to inject, so the codex
+ *     adapter declares `authSubscription: { external: true }`. The daemon
+ *     verifies the login is present (fail-loud) and scrubs the api-key vars so
+ *     a stray `OPENAI_API_KEY` can't flip billing; it injects nothing. The
+ *     profile's `source: "codex"` names the provision recipe the daemon
+ *     verifies against.
+ *
+ * Gemini is still deliberately absent: it has no native `@agentproto/adapter-*`
+ * — only a generic ACP entry (`gemini --experimental-acp`) with no billing-auth
+ * surface. Once a native gemini adapter declares the same `external`
+ * `authSubscription` (scrubbing `GEMINI_API_KEY`/`GOOGLE_API_KEY`, verifying
+ * `~/.gemini/oauth_creds.json`), it drops in here as a third row with no new
+ * mechanism.
  */
 export const LOCAL_LOGIN_RECIPES: readonly LocalLoginRecipe[] = [
   {
@@ -223,6 +230,17 @@ export const LOCAL_LOGIN_RECIPES: readonly LocalLoginRecipe[] = [
       "Bill against your local Claude Code subscription — refreshed automatically, no token to paste.",
     credentialFile: "~/.claude/.credentials.json",
     keychainService: "Claude Code-credentials",
+  },
+  {
+    id: "codex-local",
+    source: "codex",
+    endpoint: "openai",
+    method: "oauth-bearer",
+    label: "My Codex login",
+    pickLabel: "$(sign-in) Use my existing Codex login",
+    detail:
+      "Bill against your ChatGPT/Codex subscription — the Codex CLI reads its own login (~/.codex/auth.json); nothing is pasted or injected.",
+    credentialFile: "~/.codex/auth.json",
   },
 ]
 

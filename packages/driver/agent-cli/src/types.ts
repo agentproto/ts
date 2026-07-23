@@ -81,8 +81,21 @@ export interface AgentCliAuth {
  */
 export interface AgentCliAuthSubscription {
   /** Env var SET to the resolved subscription credential (the OAuth/bearer
-   *  token). */
-  setEnv: string
+   *  token). Omitted for an {@link external} (file-based) subscription — that
+   *  form injects NOTHING, so there is no var to set. */
+  setEnv?: string
+  /**
+   * File-based subscription: the CLI reads its OWN local-login file
+   * (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, …) rather than a
+   * bearer the runtime injects. When true, the runtime SETS no credential env
+   * var (there is none) — it only SCRUBS the conflicting api-key vars
+   * ({@link conflictEnv} + the provider's api-key var) so a leftover key can't
+   * silently flip the CLI to api-key billing, and the host verifies the login
+   * is present (fail-loud) before the spawn. Money-safe by construction: an
+   * OAuth bearer is NEVER injected into an api-key channel because no bearer is
+   * injected at all. Mutually exclusive with {@link setEnv}.
+   */
+  external?: boolean
   /**
    * Sibling billing-credential env vars the SAME consumer also honors and
    * that must therefore be scrubbed in EVERY resolved mode except when the
@@ -1124,8 +1137,15 @@ export interface ResolvedAuthSpec {
   /** The resolved secret value for `mode`, or absent when nothing resolved
    *  (⇒ fail-fast on engage). Never read ambiently. */
   credential?: string
-  /** Env var SET to `credential` on engage. */
+  /** Env var SET to `credential` on engage. Empty string for an
+   *  {@link externalCredential} subscription (nothing is set). */
   setEnv: string
+  /** File-based subscription (see `AgentCliAuthSubscription.external`): the CLI
+   *  reads its OWN local-login file, so the driver injects NO credential — it
+   *  only applies {@link unsetEnv} (the api-key scrub) and does NOT fail-fast on
+   *  a missing `credential` (there deliberately is none). Money-safe: no bearer
+   *  ever reaches an env var. Absent/false ⇒ today's inject-a-credential path. */
+  externalCredential?: boolean
   /** Conflicting billing-credential (and, in native mode, gateway-hygiene)
    *  env vars DELETED on engage — unless this spawn's own mode/option patch
    *  explicitly set the key. */

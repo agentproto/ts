@@ -50,9 +50,28 @@ export const codex: AgentCliHandle = defineAgentCli({
   },
   // Billing-auth (opt-in — no authEnforce, so unconfigured spawns stay
   // ambient). Single-provider adapter: api-key mode SETS providerEnvVar
-  // ("openai") = OPENAI_API_KEY, derived from the catalog. No authSubscription
-  // ⇒ a `subscription` request fails loud with `unsupported_auth_mode`.
+  // ("openai") = OPENAI_API_KEY, derived from the catalog.
   provider: "openai",
+  // "Use my existing Codex login" — a FILE-BASED (external) subscription. The
+  // Codex CLI's ChatGPT/subscription login lives in `~/.codex/auth.json`
+  // (`tokens.access_token`), which the bundled codex runtime reads ITSELF; it
+  // has no env-bearer channel like claude-code's CLAUDE_CODE_OAUTH_TOKEN. So
+  // `external: true`: subscription mode injects NOTHING (no setEnv) — the host
+  // verifies the login is present (fail-loud, via the `codex` provision recipe)
+  // and the driver only SCRUBS the api-key vars so a leftover OPENAI_API_KEY /
+  // CODEX_API_KEY can't silently flip the spawn to per-token API billing under
+  // a "subscription" label. OPENAI_API_KEY is scrubbed automatically (it's the
+  // provider's api-key var); CODEX_API_KEY is the sibling the codex runtime
+  // also honors, so it's listed as a conflictEnv. Money-safe by construction:
+  // no OAuth bearer is ever written into an api-key env var, because no bearer
+  // is injected at all. An unconfigured codex spawn stays ambient — codex uses
+  // its own auth.json precedence (a ChatGPT login already outranks an ambient
+  // OPENAI_API_KEY), so this only ADDS an explicit, verified, billing-guaranteed
+  // opt-in on top of that.
+  authSubscription: {
+    external: true,
+    conflictEnv: ["CODEX_API_KEY"],
+  },
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./codex-acp.ACP.md",

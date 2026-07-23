@@ -431,6 +431,82 @@ describe("resolveAuthSpec — mode validation + ordered preference", () => {
   })
 })
 
+// The codex file-based (external) subscription descriptor — no setEnv (the CLI
+// reads ~/.codex/auth.json itself), external:true, CODEX_API_KEY as the sibling
+// api-key var to scrub alongside the provider var OPENAI_API_KEY.
+const CODEX_EXTERNAL_DESCRIPTOR: AdapterAuthDescriptor = {
+  provider: "openai",
+  authSubscription: {
+    external: true,
+    conflictEnv: ["CODEX_API_KEY"],
+  },
+}
+
+describe("resolveAuthSpec — file-based (external) subscription", () => {
+  it("verified external login ⇒ subscription, injects NOTHING, scrubs the api-key vars", () => {
+    const r = resolveAuthSpec({
+      descriptor: CODEX_EXTERNAL_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.externalCredential).toBe(true)
+    // Money-safety: no credential, no env var set.
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.setEnv).toBe("")
+    // Both the provider api-key var and the sibling are scrubbed.
+    expect(r?.spec.unsetEnv).toEqual(
+      expect.arrayContaining(["OPENAI_API_KEY", "CODEX_API_KEY"]),
+    )
+    // Observable echo records the local login (non-secret marker, no fingerprint
+    // of a real secret since none was injected).
+    expect(r?.echo.credentialSource).toBe("cli-local-login")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.echo.fingerprint).toBe("subscription · local-login")
+  })
+
+  it("ordered preference picks the external subscription when the login is verified", () => {
+    const r = resolveAuthSpec({
+      descriptor: CODEX_EXTERNAL_DESCRIPTOR,
+      explicit: true,
+      // no requestedMode → ordered preference; verified login counts as available
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.neitherConfigured).toBeUndefined()
+  })
+
+  it("unverified/unconfigured external adapter ⇒ neitherConfigured, echo stays honest as none", () => {
+    const r = resolveAuthSpec({
+      descriptor: CODEX_EXTERNAL_DESCRIPTOR,
+      explicit: false,
+    })
+    // Ordered preference still lands on subscription (the only sub-supporting
+    // mode) but flags it as an arbitrary pick — the driver won't engage it
+    // (when-configured + not explicit ⇒ ambient).
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.neitherConfigured).toBe(true)
+    expect(r?.echo.credentialSource).toBe("none")
+    // No secret was used, so no fingerprint marker.
+    expect(r?.echo.fingerprint).toBeUndefined()
+  })
+
+  it("api-key requested on an external adapter still resolves the api-key path", () => {
+    const r = resolveAuthSpec({
+      descriptor: CODEX_EXTERNAL_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "sk-openai-key",
+    })
+    expect(r?.spec.mode).toBe("api-key")
+    expect(r?.spec.externalCredential).toBeUndefined()
+    expect(r?.spec.setEnv).toBe("OPENAI_API_KEY")
+    expect(r?.spec.credential).toBe("sk-openai-key")
+  })
+})
+
 // The money bug (scope correction): an api-key-only, zero-credential user was
 // silently resolved to "subscription" (preference[0]) and told to buy one —
 // the api-key advice sat in an unreachable else branch. `neitherConfigured`

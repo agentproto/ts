@@ -239,8 +239,10 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
   })
 
   it("Ry: a method the adapter can't present on the route is rejected with a 400", async () => {
-    // codex presents api-key only (no authSubscription) — an oauth-bearer
-    // profile for its own vendor is still ineligible (method gate, SPEC §1c).
+    // A descriptor presenting api-key only (no authSubscription) — an
+    // oauth-bearer profile for its own vendor is still ineligible (method gate,
+    // SPEC §1c). (The real codex adapter now declares a file-based external
+    // authSubscription; this synthetic descriptor keeps the api-key-only case.)
     const { resolver, captured } = makeResolver(CODEX_DESC)
     const registry = createSessionsRegistry({ persist: false })
     const prev = registry.spawnAgent({

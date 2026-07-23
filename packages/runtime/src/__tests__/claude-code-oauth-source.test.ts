@@ -14,7 +14,11 @@ vi.mock("@agentproto/secrets/provision/recipe", () => ({
   resolveRecipeMethod: (...args: unknown[]) => resolveRecipeMethod(...args),
 }))
 
-import { resolveClaudeCodeOauthToken } from "../claude-code-oauth-source.js"
+import {
+  resolveClaudeCodeOauthToken,
+  verifyLocalLoginPresent,
+} from "../claude-code-oauth-source.js"
+import { SubscriptionSourceError } from "../spawn-defaults.js"
 
 describe("resolveClaudeCodeOauthToken", () => {
   beforeEach(() => {
@@ -41,5 +45,41 @@ describe("resolveClaudeCodeOauthToken", () => {
     await expect(resolveClaudeCodeOauthToken("claude-code-oauth")).rejects.toThrow(
       "no credential source resolved",
     )
+  })
+})
+
+describe("verifyLocalLoginPresent (file-based / external login)", () => {
+  beforeEach(() => {
+    resolveSourceSpec.mockReset()
+    resolveRecipeMethod.mockReset()
+  })
+
+  it("resolves the recipe and returns void when a login token is present (value discarded)", async () => {
+    const fakeSource = { file: "~/.codex/auth.json", jsonPath: "tokens.access_token" }
+    resolveRecipeMethod.mockReturnValue({ recipe: { id: "codex" }, method: { source: fakeSource } })
+    resolveSourceSpec.mockResolvedValue("  ya29.codex-oauth-token\n")
+
+    await expect(verifyLocalLoginPresent("codex", "codex")).resolves.toBeUndefined()
+    expect(resolveRecipeMethod).toHaveBeenCalledWith("codex")
+    expect(resolveSourceSpec).toHaveBeenCalledWith(fakeSource)
+  })
+
+  it("fails LOUD with SubscriptionSourceError when the login file is missing", async () => {
+    resolveRecipeMethod.mockReturnValue({ recipe: { id: "codex" }, method: { source: {} } })
+    resolveSourceSpec.mockRejectedValue(new Error("no credential source resolved"))
+
+    const err = await verifyLocalLoginPresent("codex", "codex").catch(e => e)
+    expect(err).toBeInstanceOf(SubscriptionSourceError)
+    expect((err as SubscriptionSourceError).code).toBe("auth_source_unresolved")
+    expect((err as Error).message).toMatch(/no codex login found/)
+  })
+
+  it("fails LOUD when the source resolves to an empty token", async () => {
+    resolveRecipeMethod.mockReturnValue({ recipe: { id: "codex" }, method: { source: {} } })
+    resolveSourceSpec.mockResolvedValue("   ")
+
+    const err = await verifyLocalLoginPresent("codex", "codex").catch(e => e)
+    expect(err).toBeInstanceOf(SubscriptionSourceError)
+    expect((err as SubscriptionSourceError).code).toBe("auth_source_unresolved")
   })
 })

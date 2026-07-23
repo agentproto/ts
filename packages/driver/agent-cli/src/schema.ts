@@ -199,15 +199,41 @@ const authSchema = z.object({
 }).strict()
 
 // Subscription (OAuth/bearer) billing declaration — see
-// AgentCliAuthSubscription. Only the Claude adapters declare it; presence =
-// "supports subscription mode". `setEnv` is the var SET; `conflictEnv` are
-// sibling credential vars scrubbed in every mode (except when set);
-// `unsetEnvAdd` is native-mode-only gateway hygiene.
+// AgentCliAuthSubscription. Presence = "supports subscription mode". Two
+// shapes:
+//   - bearer-injection (claude-code): `setEnv` is the var the runtime SETS to
+//     the resolved OAuth bearer.
+//   - external / file-based (codex, gemini): `external: true` and NO `setEnv` —
+//     the CLI reads its own local-login file (`~/.codex/auth.json`, …), so the
+//     runtime injects NOTHING and only scrubs the conflicting api-key vars.
+// `conflictEnv` are sibling credential vars scrubbed in every mode (except when
+// set); `unsetEnvAdd` is native-mode-only gateway hygiene.
 const authSubscriptionSchema = z.object({
-  setEnv: z.string().min(1),
+  setEnv: z.string().min(1).optional(),
+  external: z.boolean().optional(),
   conflictEnv: z.array(z.string()).optional(),
   unsetEnvAdd: z.array(z.string()).optional(),
-}).strict()
+}).strict().superRefine((v, ctx) => {
+  if (v.external) {
+    if (v.setEnv !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "authSubscription.external: true must NOT declare setEnv — an external " +
+          "(file-based) subscription injects no bearer; the CLI reads its own login file.",
+        path: ["setEnv"],
+      })
+    }
+  } else if (v.setEnv === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "authSubscription requires setEnv unless external: true (the bearer must be " +
+        "injected into some env var).",
+      path: ["setEnv"],
+    })
+  }
+})
 
 const sessionSchema = z.object({
   mode: z.enum(["ephemeral", "persistent", "resumable"]).default("ephemeral"),
