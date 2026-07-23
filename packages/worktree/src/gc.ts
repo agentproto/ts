@@ -237,6 +237,7 @@ async function salvageOne(options: ApplyGcOptions, worktree: GitWorktreeRef): Pr
   let salvageDir: string
   try {
     const result = await salvageWorktree({
+      repoRoot: options.repoRoot,
       repoName: options.repoName,
       worktreePath: worktree.path,
       branch: worktree.branch,

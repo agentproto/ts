@@ -637,14 +637,55 @@ export interface RunCommandInput {
 
 const STREAM_BUFFER_CAP = 1_048_576 // 1 MiB per stream
 
+/**
+ * Standard system / package-manager bin dirs a spawned command's PATH should
+ * always resolve through. A launchd plist's `EnvironmentVariables.PATH` is
+ * captured ONCE, at `agentproto daemon install` time, from whatever shell ran
+ * the install (`packages/cli/src/commands/daemon.ts`'s `renderPlist`) — if
+ * that shell's own PATH was narrow (a non-interactive install context, a
+ * profile that doesn't source Homebrew's `/opt/homebrew/bin`, …), the daemon
+ * carries that narrow PATH for its entire lifetime, and every subprocess it
+ * spawns (`command_execute`, a cron `kind:"command"` action) inherits it —
+ * `spawn git ENOENT` even though `git` is really installed. Appended AFTER
+ * whatever's already on `PATH`, so nothing already resolvable changes.
+ */
+const DEFAULT_PATH_DIRS = [
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/usr/local/bin",
+  "/usr/local/sbin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+]
+
+/**
+ * `env` with `DEFAULT_PATH_DIRS` appended onto `PATH` for every entry not
+ * already present — order-preserving, so an existing PATH entry always wins
+ * a name collision; this only fills gaps a narrow inherited PATH left open.
+ * Returns `env` unchanged (same reference) when there's nothing to add.
+ */
+export function withSanePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const existing = (env.PATH ?? "").split(":").filter(Boolean)
+  const existingSet = new Set(existing)
+  const missing = DEFAULT_PATH_DIRS.filter(dir => !existingSet.has(dir))
+  if (missing.length === 0) return env
+  return { ...env, PATH: [...existing, ...missing].join(":") }
+}
+
 export async function runCommand(input: RunCommandInput): Promise<ExecuteResult> {
   return new Promise<ExecuteResult>(resolvePromise => {
     const startedAt = Date.now()
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       shell: false,
-      // Inherit user env so PATH lookups for `claude`, `gh`, etc. work.
-      env: process.env,
+      // Inherit user env so PATH lookups for `claude`, `gh`, etc. work —
+      // merged with a sane default PATH (`withSanePath`) so a narrow
+      // inherited PATH can't ENOENT common tools like `git`. See
+      // `DEFAULT_PATH_DIRS`'s doc for why the inherited PATH alone isn't
+      // always enough.
+      env: withSanePath(process.env),
       stdio: ["pipe", "pipe", "pipe"],
     })
 

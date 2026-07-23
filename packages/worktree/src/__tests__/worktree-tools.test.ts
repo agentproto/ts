@@ -90,7 +90,7 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     })
     cleanupPaths.push(provisioned.cwd)
 
-    const marker = await readWorktreeMarker(provisioned.cwd)
+    const marker = await readWorktreeMarker(repoRoot, provisioned.cwd)
     expect(marker).not.toBeNull()
     expect(marker?.worktreeId).toMatch(/^wt_/)
     expect(marker?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)

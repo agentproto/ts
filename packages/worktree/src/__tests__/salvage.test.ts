@@ -47,6 +47,7 @@ describe("salvageWorktree", () => {
     const tipSha = headRes.stdout.trim()
 
     const { dir, manifest } = await salvageWorktree({
+      repoRoot,
       repoName: "test-repo",
       worktreePath: wtDir,
       branch: "wt/dirty-one",
@@ -92,6 +93,7 @@ describe("salvageWorktree", () => {
 
     // 1. Salvage BEFORE removal — this is what makes `archive` safe.
     const { dir } = await salvageWorktree({
+      repoRoot,
       repoName: "test-repo",
       worktreePath: wtDir,
       branch: "wt/to-archive",
@@ -131,6 +133,7 @@ describe("salvageWorktree", () => {
 
     const headRes = await execGit(wtDir, ["rev-parse", "HEAD"])
     const { manifest } = await salvageWorktree({
+      repoRoot,
       repoName: "test-repo",
       worktreePath: wtDir,
       branch: "wt/clean",

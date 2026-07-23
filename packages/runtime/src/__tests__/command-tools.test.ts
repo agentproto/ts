@@ -38,7 +38,7 @@ vi.mock("@agentproto/command-sandbox", async importOriginal => {
   }
 })
 
-import { registerCommandTools } from "../command-tools.js"
+import { registerCommandTools, runCommand, withSanePath } from "../command-tools.js"
 import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
@@ -607,5 +607,57 @@ describe("command_execute → callerSessionId provenance (Gap 7)", () => {
     const desc = registry.get(sessionId)
     expect(desc?.callerSessionId).toBeUndefined()
     await close()
+  })
+})
+
+describe("withSanePath — hardens a spawned child's PATH against a narrow inherited one", () => {
+  it("appends missing standard bin dirs after whatever PATH already has", () => {
+    const result = withSanePath({ PATH: "/some/custom/bin" })
+    expect(result.PATH).toBe(
+      "/some/custom/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
+    )
+  })
+
+  it("does not duplicate a default dir that's already present", () => {
+    const result = withSanePath({ PATH: "/usr/bin:/custom" })
+    expect(result.PATH?.split(":").filter(d => d === "/usr/bin")).toHaveLength(1)
+  })
+
+  it("builds a full default PATH when none was inherited at all", () => {
+    const result = withSanePath({})
+    expect(result.PATH).toBe(
+      "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
+    )
+  })
+
+  it("returns the same env reference untouched when PATH already covers every default", () => {
+    const env = {
+      PATH: "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
+    }
+    expect(withSanePath(env)).toBe(env)
+  })
+
+  it("never drops other env vars (HOME, etc.) alongside the PATH merge", () => {
+    const result = withSanePath({ PATH: "/custom", HOME: "/Users/test" })
+    expect(result.HOME).toBe("/Users/test")
+  })
+})
+
+describe("runCommand — resolves a tool that's only on a default dir, not the inherited PATH", () => {
+  it("finds /bin/echo even when the caller's PATH is scoped to an unrelated dir", async () => {
+    const originalPath = process.env.PATH
+    process.env.PATH = "/some/nonexistent/scoped/bin"
+    try {
+      const result = await runCommand({
+        command: "echo",
+        args: ["hardened-path-ok"],
+        cwd: tmpdir(),
+        timeoutMs: 5000,
+      })
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim()).toBe("hardened-path-ok")
+    } finally {
+      process.env.PATH = originalPath
+    }
   })
 })

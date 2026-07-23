@@ -142,7 +142,7 @@ describe("computeProvenance", () => {
       { id: "s1", startedAt: "2026-01-01T00:00:00.000Z", status: "exited", cwd: join(worktreePath, "pkg") },
       { id: "s3", startedAt: "2026-01-03T00:00:00.000Z", status: "exited", cwd: "/somewhere/else" },
     ])
-    const provenance = await computeProvenance(worktreePath, { sessionsPath })
+    const provenance = await computeProvenance(worktreePath, worktreePath, { sessionsPath })
     expect(provenance.confidence).toBe("best-effort")
     expect(provenance.sessions.map((s) => s.id)).toEqual(["s1", "s2"])
   })
@@ -166,7 +166,7 @@ describe("computeProvenance", () => {
       { id: "before", startedAt: "2026-01-01T00:00:00.000Z", status: "exited", cwd: repoRoot },
       { id: "after", startedAt: "2026-01-03T00:00:00.000Z", status: "exited", cwd: repoRoot },
     ])
-    const provenance = await computeProvenance(repoRoot, { sessionsPath })
+    const provenance = await computeProvenance(repoRoot, repoRoot, { sessionsPath })
     expect(provenance.confidence).toBe("exact")
     expect(provenance.sessions.map((s) => s.id)).toEqual(["after"])
   })
@@ -175,7 +175,7 @@ describe("computeProvenance", () => {
     const repoRoot = await realpath(await mkdtemp(join(tmpdir(), "wt-prov-repo-")))
     cleanupPaths.push(repoRoot)
     await execGit(repoRoot, ["init", "-b", "main"])
-    expect(await readWorktreeMarker(repoRoot)).toBeNull()
+    expect(await readWorktreeMarker(repoRoot, repoRoot)).toBeNull()
   })
 
   it("writeWorktreeMarker + readWorktreeMarker round-trip through the private gitdir, not .git/config", async () => {
@@ -189,9 +189,9 @@ describe("computeProvenance", () => {
     await execGit(repoRoot, ["commit", "-m", "init"])
 
     const marker = { worktreeId: "wt_abc12345", createdAt: "2026-07-15T00:00:00.000Z" }
-    await writeWorktreeMarker(repoRoot, marker)
+    await writeWorktreeMarker(repoRoot, repoRoot, marker)
 
-    expect(await readWorktreeMarker(repoRoot)).toEqual(marker)
+    expect(await readWorktreeMarker(repoRoot, repoRoot)).toEqual(marker)
     // Written into the gitdir, not the shared `.git/config` the PLAN rejects.
     const raw = await readFile(join(repoRoot, ".git", "agentproto-worktree.json"), "utf8")
     expect(JSON.parse(raw)).toEqual(marker)
@@ -328,7 +328,7 @@ describe("computeProvenance — joins over buckets, not just the legacy file", (
 
     // No `sessionsPath` — this is the production call shape, and before
     // the union it would have found nothing here.
-    const provenance = await computeProvenance(worktree)
+    const provenance = await computeProvenance(worktree, worktree)
     expect(provenance.sessions.map((s) => s.id)).toEqual(["in-bucket"])
   })
 })

@@ -858,6 +858,7 @@ async function runArchive(args: readonly string[]): Promise<number> {
   let salvageDir: string
   try {
     const result = await salvageWorktree({
+      repoRoot,
       repoName: repoLabel(repoRoot),
       worktreePath: cwd,
       branch: branch ?? null,

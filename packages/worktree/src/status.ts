@@ -51,14 +51,21 @@ export type TreeState =
     }
 
 /**
- * `git status --porcelain=v2` in the worktree itself (not `repoRoot` — tree
- * state is per-worktree). Gitignored files never appear here (no
- * `--ignored` flag passed), matching git's own non-`--force` `worktree
- * remove` tolerance for them (PLAN.md §0.5) — the two notions of "clean"
- * agree by construction.
+ * `git status --porcelain=v2` in the worktree itself, via `-C worktreePath`
+ * (tree state is per-worktree, not `repoRoot`'s). The spawn's own `cwd`,
+ * though, is `repoRoot` — the main checkout, which git itself refuses to
+ * remove (`gc.ts`'s docblock) — NOT `worktreePath`: a linked worktree can be
+ * removed by a concurrent `gc` reap while this call (or a racing caller
+ * reading the same worktree, e.g. a status poll) is in flight, and a spawn
+ * whose `cwd` no longer exists on disk fails `ENOENT` on the COMMAND itself
+ * (a Node/libuv quirk, not "directory not found") — exactly the failure mode
+ * `exec.ts`'s `execGit` already anchors against. Gitignored files never
+ * appear here (no `--ignored` flag passed), matching git's own non-`--force`
+ * `worktree remove` tolerance for them (PLAN.md §0.5) — the two notions of
+ * "clean" agree by construction.
  */
-export async function computeTreeState(worktreePath: string): Promise<TreeState> {
-  const res = await execArgv("git", ["-C", worktreePath, "status", "--porcelain=v2"], worktreePath)
+export async function computeTreeState(repoRoot: string, worktreePath: string): Promise<TreeState> {
+  const res = await execArgv("git", ["-C", worktreePath, "status", "--porcelain=v2"], repoRoot)
   if (res.exitCode !== 0) {
     throw new Error(
       `git status --porcelain=v2 failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim() || res.stdout.trim()}`,
@@ -80,7 +87,13 @@ export async function computeTreeState(worktreePath: string): Promise<TreeState>
     }
   }
   if (modified === 0 && staged === 0 && untracked === 0) return { state: "clean" }
-  return { state: "dirty", modified, staged, untracked, newestMtimeMs: await newestDirtyMtimeMs(worktreePath) }
+  return {
+    state: "dirty",
+    modified,
+    staged,
+    untracked,
+    newestMtimeMs: await newestDirtyMtimeMs(repoRoot, worktreePath),
+  }
 }
 
 /**
@@ -89,13 +102,14 @@ export async function computeTreeState(worktreePath: string): Promise<TreeState>
  * confuse the split) rather than by parsing `status --porcelain=v2`'s mixed
  * ordinary/rename record shapes. A path that stats out from under us
  * (removed/renamed between the status read and this call) is skipped, not
- * fatal — this is a best-effort recency signal, not a source of truth.
+ * fatal — this is a best-effort recency signal, not a source of truth. Spawn
+ * `cwd` is `repoRoot`, not `worktreePath` — see `computeTreeState`'s doc.
  */
-async function newestDirtyMtimeMs(worktreePath: string): Promise<number | null> {
+async function newestDirtyMtimeMs(repoRoot: string, worktreePath: string): Promise<number | null> {
   const [unstaged, staged, untracked] = await Promise.all([
-    execArgv("git", ["-C", worktreePath, "diff", "--name-only", "-z"], worktreePath),
-    execArgv("git", ["-C", worktreePath, "diff", "--cached", "--name-only", "-z"], worktreePath),
-    execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"], worktreePath),
+    execArgv("git", ["-C", worktreePath, "diff", "--name-only", "-z"], repoRoot),
+    execArgv("git", ["-C", worktreePath, "diff", "--cached", "--name-only", "-z"], repoRoot),
+    execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"], repoRoot),
   ])
   const paths = new Set<string>()
   for (const res of [unstaged, staged, untracked]) {
@@ -619,7 +633,7 @@ export interface ComputeWorktreeStatusInput {
 /** Computes all three axes + provenance + classification for one worktree. */
 export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): Promise<WorktreeStatusEntry> {
   const [tree, integration, liveness, provenance] = await Promise.all([
-    computeTreeState(input.worktree.path),
+    computeTreeState(input.repoRoot, input.worktree.path),
     reconcileIntegration({
       repoRoot: input.repoRoot,
       repoName: input.repoName,
@@ -631,7 +645,7 @@ export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): 
       now: input.now,
     }),
     computeLiveness(input.worktree.path, { sessionsPath: input.sessionsPath }),
-    computeProvenance(input.worktree.path, { sessionsPath: input.sessionsPath }),
+    computeProvenance(input.repoRoot, input.worktree.path, { sessionsPath: input.sessionsPath }),
   ])
   const { reclaimable, class: cls } = classify(tree, integration, liveness, input.nowMs)
   return {
