@@ -8,7 +8,7 @@
  *  title/label — may carry. Exported so the rename write-path
  *  (`SessionsRegistry.renameSession`) caps to the SAME bound the derivation
  *  uses, rather than inventing a second limit. */
-export const MAX_LENGTH = 60
+export const MAX_LENGTH = 72
 
 /** Structural narrowing for an `unknown` prompt payload — no `as` casts.
  *  `Record<string, unknown>` lets property access type-check without
@@ -64,7 +64,8 @@ export function deriveSessionTitle(message: unknown): string | undefined {
   if (collapsed === "") return undefined
   // Cut at the first sentence end — precedent: session-story.ts's
   // `classifyRoute` does the same for chapter titles, at 42 chars; a tree
-  // row and a tab have more room than a story chapter, so this uses 60.
+  // row and a tab have more room than a story chapter, so this uses 72
+  // (PR-title size — see `MAX_LENGTH`).
   // UNLIKE that precedent, the terminator must be followed by whitespace
   // or end-of-string: a coding agent's prompts are full of periods that
   // aren't sentence ends — filenames (`PLAN.md`), versions (`v1.2.3`) — and

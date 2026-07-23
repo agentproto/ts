@@ -136,22 +136,22 @@ describe("renameSession", () => {
     reg.shutdown()
   })
 
-  it("caps a too-long name at 60 code points", () => {
+  it("caps a too-long name at MAX_LENGTH (72) code points", () => {
     const reg = createSessionsRegistry({ persistPath, persist: false })
     const desc = spawn(reg)
     const long = "x".repeat(200)
     const renamed = reg.renameSession(desc.id, { label: long })
-    expect(Array.from(renamed.label ?? "")).toHaveLength(60)
+    expect(Array.from(renamed.label ?? "")).toHaveLength(72)
     reg.shutdown()
   })
 
   it("caps by CODE POINT, never splitting an astral char at the boundary", () => {
     const reg = createSessionsRegistry({ persistPath, persist: false })
     const desc = spawn(reg)
-    // 61 emoji — one past the cap. A UTF-16-unit slice would orphan a surrogate.
-    const renamed = reg.renameSession(desc.id, { label: "😀".repeat(61) })
+    // 73 emoji — one past the cap. A UTF-16-unit slice would orphan a surrogate.
+    const renamed = reg.renameSession(desc.id, { label: "😀".repeat(73) })
     const points = Array.from(renamed.label ?? "")
-    expect(points).toHaveLength(60)
+    expect(points).toHaveLength(72)
     expect(points.every(p => p === "😀")).toBe(true)
     reg.shutdown()
   })
