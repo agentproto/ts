@@ -372,6 +372,16 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, { kind: "turn-end", sessionId, reason: evt.reason })
           break
+        case "notice":
+          // A daemon-side system notice (not agent output) — e.g. the
+          // interrupted-turn banner written on resume of a session that died
+          // mid-turn under a daemon restart. Durable in events.jsonl so the
+          // warning survives beyond the in-memory ring buffer; readers render
+          // it as a system message (see transcript-export's "notice" case).
+          if (!evt.text) break
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, { kind: "notice", sessionId, text: evt.text })
+          break
         case "error":
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, { kind: "error", sessionId, error: evt.error })

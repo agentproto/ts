@@ -556,6 +556,17 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
+   *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
+   *  this session died with a turn in flight under a daemon restart —
+   *  `killedMidTurn && endedReason === "daemon-restart"` — the interrupted-turn
+   *  marker (§4 of the session-survivability contract). Surfaces to
+   *  `session_list` / `session_monitor` so a human or orchestrator can tell a
+   *  session that came back idle from one that came back with dropped work
+   *  that was NOT re-run. Cleared on the next successful turn-end (which clears
+   *  the underlying `killedMidTurn`/`endedReason`). The in-place resume path
+   *  never auto-retries the interrupted prompt. */
+  interrupted?: boolean
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -1026,6 +1037,50 @@ function stampProcessAlive(desc: SessionDescriptor): void {
   } catch {
     desc.processAlive = false
   }
+}
+
+/** Compute the DERIVED `desc.interrupted` marker (§4 interrupted-turn
+ *  contract): true iff the session died with a turn in flight under a daemon
+ *  restart (`killedMidTurn && endedReason === "daemon-restart"`). Mutates
+ *  `desc` in place; called at read time (list()/get()/findByIdOrName) — never
+ *  persisted, since it derives entirely from two fields that ARE persisted, and
+ *  it must go false the moment the next successful turn-end clears those. When
+ *  the condition doesn't hold the field is deleted rather than set false, so a
+ *  session that was never interrupted carries no `interrupted` key at all
+ *  (same convention as `processAlive`). */
+function stampInterrupted(desc: SessionDescriptor): void {
+  if (desc.killedMidTurn === true && desc.endedReason === "daemon-restart") {
+    desc.interrupted = true
+  } else {
+    delete desc.interrupted
+  }
+}
+
+/**
+ * Eligibility predicate for in-place resume of a dead row (§5 of the
+ * session-survivability contract). True only for an agent-cli session that
+ * carries everything the resume path needs — an `adapterSlug`, the
+ * provider-native `adapterSessionId` that ACP `loadSession` rehydrates the
+ * conversation from, and a `cwd` to re-spawn the adapter in — and that isn't
+ * archived. PTY (`pty: true`) and generic `command` rows are never in-place
+ * resumable: a PTY is raw screen+shell state the daemon can't reconstruct, and
+ * a `command` is a one-shot. Both revive only via new-id `session_restart`.
+ *
+ * The EAGER resume-on-boot pass (PR-4) layers `endedReason === "daemon-restart"`
+ * on TOP of this base predicate, so it never resurrects an operator kill. That
+ * clause is deliberately NOT here: the lazy resume-on-prompt path treats a
+ * deliberate prompt to a killed row as explicit operator intent and honours it
+ * (§5). Keeping the base predicate free of the reason check is what lets PR-4
+ * add the stricter gate without changing lazy behaviour.
+ */
+export function isResumable(desc: SessionDescriptor): boolean {
+  return (
+    desc.kind === "agent-cli" &&
+    !!desc.adapterSlug &&
+    !!desc.adapterSessionId &&
+    !!desc.cwd &&
+    !desc.archived
+  )
 }
 
 /** Find the most recently-completed `kind: "command"` session whose `cwd`
@@ -2243,13 +2298,15 @@ export function createSessionsRegistry(opts?: {
     }, PERSIST_DEBOUNCE_MS)
   }
 
-  /** Descriptors as they go to disk. `processAlive` is a live OS query
-   *  (see stampProcessAlive) — strip it before writing so a restored
-   *  descriptor is never seen with a stale value before the next
-   *  list()/get() call recomputes it fresh. */
+  /** Descriptors as they go to disk. `processAlive` and `interrupted` are
+   *  DERIVED, read-time fields (see stampProcessAlive / stampInterrupted) —
+   *  strip them before writing so a restored descriptor is never seen with a
+   *  stale value before the next list()/get() recomputes it fresh
+   *  (`interrupted` re-derives from the persisted `killedMidTurn`/
+   *  `endedReason`, so nothing is lost by not persisting it). */
   const snapshotRows = (): SessionDescriptor[] =>
     Array.from(sessions.values()).map(s => {
-      const { processAlive: _processAlive, ...rest } = s.desc
+      const { processAlive: _processAlive, interrupted: _interrupted, ...rest } = s.desc
       return rest
     })
 
@@ -2828,10 +2885,19 @@ export function createSessionsRegistry(opts?: {
   const maybeResumeAgent = async (rt: SessionRuntime): Promise<void> => {
     if (rt.agentSession) return
     if (!resumeAgent) return
-    if (rt.desc.kind !== "agent-cli") return
+    // Descriptor-level eligibility (§5): agent-cli with the resume essentials
+    // (adapterSlug, adapterSessionId, cwd) and not archived. PTY/command/
+    // archived rows never resume in place — they revive only via new-id
+    // session_restart. The eager boot pass (PR-4) layers
+    // `endedReason === "daemon-restart"` on top of this predicate; the lazy
+    // prompt path here deliberately lets an operator's prompt to any killed
+    // row through, treating it as explicit intent.
+    if (!isResumable(rt.desc)) return
     const adapterSlug = rt.desc.adapterSlug ?? rt.adapterSlug
     const adapterSessionId = rt.desc.adapterSessionId
     const cwd = rt.desc.cwd
+    // isResumable already guaranteed all three; this guard re-narrows the
+    // optional descriptor fields for the type-checker.
     if (!adapterSlug || !adapterSessionId || !cwd) return
     if (rt.resumePromise) {
       await rt.resumePromise
@@ -2885,6 +2951,33 @@ export function createSessionsRegistry(opts?: {
         // Write point 2/3: adapterSessionId just refreshed post-resume —
         // the old id's native transcript stops growing, the new one starts.
         recordConversationLink(rt)
+        // ── Interrupted-turn contract (§4) ──────────────────────────────
+        // Announce the resume on the bus so watchers/policies learn the
+        // session is promptable again (distinct from the session:exited that
+        // marked its death). When it died with a turn IN FLIGHT under a daemon
+        // restart, also warn — in the ring buffer AND durably in events.jsonl —
+        // that the dropped turn was NOT re-run: this path never auto-retries a
+        // prompt (its tool calls aren't idempotent), the caller must re-issue.
+        // `killedMidTurn`/`endedReason` are left in place; the next successful
+        // turn-end clears them (and with them the derived `interrupted` field).
+        const interrupted =
+          rt.desc.killedMidTurn === true &&
+          rt.desc.endedReason === "daemon-restart"
+        if (interrupted) {
+          const banner =
+            "── resumed after daemon restart; previous turn was interrupted " +
+            "and was NOT re-run — re-prompt to continue ──"
+          appendLine(rt, banner, "stdout")
+          transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+        }
+        sessionEvents?.emit({
+          type: "session:resumed",
+          sessionId: rt.desc.id,
+          interrupted,
+          resumedFrom: "daemon-restart",
+          ...(rt.desc.label ? { label: rt.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
@@ -3092,6 +3185,16 @@ export function createSessionsRegistry(opts?: {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+
+        // ── Interrupted-turn contract (§4): a SUCCESSFUL turn-end clears the
+        // daemon-restart interruption markers, so the derived `interrupted`
+        // field (stampInterrupted) goes false — the session has demonstrably
+        // recovered and is doing fresh work. Only clears when they're actually
+        // set (a resumed-mid-turn row); a no-op for every ordinary turn.
+        if (rt.desc.killedMidTurn || rt.desc.endedReason === "daemon-restart") {
+          delete rt.desc.killedMidTurn
+          delete rt.desc.endedReason
+        }
 
         // ── Cost refresh (best-effort) ───────────────────────────────
         // The adapter's own reader (e.g. hermes state.db) is authoritative —
@@ -4005,12 +4108,16 @@ export function createSessionsRegistry(opts?: {
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
         .map(desc => {
           stampProcessAlive(desc)
+          stampInterrupted(desc)
           return desc
         })
     },
     get(id) {
       const desc = sessions.get(id)?.desc
-      if (desc) stampProcessAlive(desc)
+      if (desc) {
+        stampProcessAlive(desc)
+        stampInterrupted(desc)
+      }
       return desc
     },
     attach(id, onLine) {
@@ -4074,11 +4181,13 @@ export function createSessionsRegistry(opts?: {
       const direct = sessions.get(query)
       if (direct) {
         stampProcessAlive(direct.desc)
+        stampInterrupted(direct.desc)
         return direct.desc
       }
       for (const rt of sessions.values()) {
         if (rt.desc.name === query) {
           stampProcessAlive(rt.desc)
+          stampInterrupted(rt.desc)
           return rt.desc
         }
       }

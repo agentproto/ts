@@ -100,6 +100,13 @@ export interface SessionWaitResult {
    *  REST /sessions/:id/wait) can read the question without a separate
    *  transcript fetch. Mirrors desc.awaitingQuestion / ev.question. */
   question?: SessionAwaitingQuestion
+  /** DERIVED interrupted-turn marker (§4): present and `true` when the watched
+   *  session died with a turn in flight under a daemon restart and hasn't yet
+   *  completed a fresh turn (`SessionDescriptor.interrupted`). Lets a
+   *  supervisor tell a session that came back idle from one that came back with
+   *  dropped work that was NOT re-run — the in-place resume never auto-retries.
+   *  Absent (not `false`) when the session was not interrupted. */
+  interrupted?: boolean
 }
 
 /**
@@ -178,12 +185,16 @@ export async function monitorSessionWait(opts: {
         ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
           ? ev.question
           : undefined
+      const replayDesc = evWithSid.sessionId
+        ? registry.get(evWithSid.sessionId)
+        : undefined
       return {
         sessionId: evWithSid.sessionId,
         event: ev.type.replace("session:", ""),
         source: "ring",
         since: opts.since,
         ...(question ? { question } : {}),
+        ...(replayDesc?.interrupted ? { interrupted: true } : {}),
       }
     }
   }
@@ -205,6 +216,7 @@ export async function monitorSessionWait(opts: {
         awaitingInput: true,
         status: desc.status,
         ...(desc.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+        ...(desc.interrupted ? { interrupted: true } : {}),
       }
     }
     // Already-finished turn: turnsCompleted > 0 && !busy && running.
@@ -221,6 +233,7 @@ export async function monitorSessionWait(opts: {
         awaitingInput: false,
         status: desc.status,
         turnsCompleted: desc.turnsCompleted,
+        ...(desc.interrupted ? { interrupted: true } : {}),
       }
     }
     const terminal =
@@ -232,6 +245,7 @@ export async function monitorSessionWait(opts: {
         source: "state",
         awaitingInput: false,
         status: desc.status,
+        ...(desc.interrupted ? { interrupted: true } : {}),
       }
     }
   }
@@ -277,6 +291,7 @@ export async function monitorSessionWait(opts: {
             awaitingInput: desc?.awaitingInput ?? false,
             status: desc?.status ?? "unknown",
             ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
+            ...(desc?.interrupted ? { interrupted: true } : {}),
           })
         }),
       )
