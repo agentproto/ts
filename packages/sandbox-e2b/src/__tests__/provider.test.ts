@@ -274,6 +274,29 @@ describe("e2bSandboxProvider.boot", () => {
     expect(sandbox.commands.run).not.toHaveBeenCalled()
   })
 
+  it("still runs config.setupCommands when the daemon was already autostarted — the hook install must not be skipped", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true }) // health probe succeeds immediately: autostart case
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const bootSpec: SandboxSpec = {
+      provider: "e2b",
+      config: { setupCommands: ["install-hook-a"] },
+    }
+    await e2bSandboxProvider.boot(bootSpec, { env: { OPENROUTER_API_KEY: "k" } })
+
+    // the setup command still lands even though this provider never had to
+    // start the daemon itself
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      "install-hook-a",
+      expect.objectContaining({ envs: { OPENROUTER_API_KEY: "k" } }),
+    )
+    // but the CLI update and `agentproto serve` are still skipped — only the
+    // setup command ran
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1)
+  })
+
   it("uses config.template/port/workspace overrides from the spec", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
