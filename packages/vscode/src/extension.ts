@@ -13,6 +13,7 @@ import * as vscode from "vscode"
 import { createDaemonClient, type DaemonClient } from "./client/daemonClient.js"
 import { registerHarnessCommands } from "./commands/harnesses.js"
 import { registerAuthProfileCommands } from "./commands/authProfiles.js"
+import { registerOnboardingCommand } from "./commands/onboarding.js"
 import { maybeAutoAdoptLocalLogin } from "./commands/localLogin.js"
 import { registerCreateWorkspaceCommand } from "./commands/createWorkspace.js"
 import { registerPermissionCommands } from "./commands/permissions.js"
@@ -106,6 +107,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)
   registerAuthProfileCommands(ctx, client, authProfilesProvider)
+  registerOnboardingCommand(ctx, client, authProfilesProvider) // agentproto.runOnboarding
   registerAuthSettingsPanel(ctx, client, authProfilesProvider) // agentproto.openAuthSettings
 
   // One-time auto-adopt of a local Claude Code login (agentproto.autoAdoptLocalLogin).

@@ -35,9 +35,12 @@ import type {
   AdapterInstallResult,
   AuthProfileSummary,
   CatalogModelsResponse,
+  CatalogProviderModelsResponse,
   CreateAuthProfileRequest,
   CreatedAuthProfileResult,
   DaemonHealth,
+  DiscoveredCredential,
+  ImportCredentialRequest,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -481,6 +484,23 @@ export class DaemonClient {
   }
 
   /**
+   * `catalog_provider_models` is an MCP-only tool — fetch the EXHAUSTIVE
+   * model list a single provider can serve (the full surface the launch-menu
+   * "+" picker browses, separate from the lean spawn `catalog_models`). An
+   * unknown/empty provider comes back as `{ provider, models: [] }`, never an
+   * error; large providers (openrouter) return whole, so paginate client-side.
+   */
+  async getCatalogProviderModels(
+    provider: string,
+  ): Promise<CatalogProviderModelsResponse> {
+    const result = await this.mcpCall<CatalogProviderModelsResponse>(
+      "catalog_provider_models",
+      provider ? { endpoint: provider } : {},
+    )
+    return result ?? { provider, models: [] }
+  }
+
+  /**
    * `list_provider_presets` is an MCP-only tool — fetch the daemon's gateway
    * provider presets and their key-env availability status.
    */
@@ -530,6 +550,76 @@ export class DaemonClient {
    */
   async deleteAuthProfile(id: string): Promise<{ deleted: boolean; id: string }> {
     return this.mcpCall<{ deleted: boolean; id: string }>("auth_profile_delete", { id })
+  }
+
+  /**
+   * `auth_profile_set_enabled` (WS2) — enable/disable a whole profile. A
+   * disabled profile is skipped by the eligibility predicate, so its models
+   * drop to non-runnable. Metadata-only (the keychain credential is
+   * untouched). Returns the updated non-secret profile.
+   */
+  async setAuthProfileEnabled(id: string, enabled: boolean): Promise<AuthProfileSummary> {
+    const result = await this.mcpCall<{ profile?: AuthProfileSummary }>(
+      "auth_profile_set_enabled",
+      { id, enabled },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_set_enabled returned no profile")
+    return profile
+  }
+
+  /**
+   * `auth_profile_set_models` (WS3) — set a profile's per-model curation
+   * allowlist. `mode: "all"` services every eligible model (and clears any
+   * stored allowlist); `mode: "allow"` narrows the profile to `ids` (each a
+   * catalog `vendor/product` or route-qualified `ref`). Metadata-only.
+   * Returns the updated non-secret profile.
+   */
+  async setAuthProfileModels(
+    id: string,
+    mode: "all" | "allow",
+    ids: string[] = [],
+  ): Promise<AuthProfileSummary> {
+    const result = await this.mcpCall<{ profile?: AuthProfileSummary }>(
+      "auth_profile_set_models",
+      { id, mode, ids },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_set_models returned no profile")
+    return profile
+  }
+
+  /**
+   * `auth_discover_credentials` — read-only scan of the known local credential
+   * locations (Claude Code Keychain/OAuth file, Codex/Gemini logins,
+   * `~/.hermes/config.yaml`, provider env keys). Returns found-but-not-imported
+   * credentials with provenance and a non-secret `hint` locator only — NEVER a
+   * credential value.
+   */
+  async discoverCredentials(): Promise<DiscoveredCredential[]> {
+    const result = await this.mcpCall<
+      { credentials?: DiscoveredCredential[] } | DiscoveredCredential[]
+    >("auth_discover_credentials")
+    if (Array.isArray(result)) return result
+    return result.credentials ?? []
+  }
+
+  /**
+   * `auth_profile_import` — materialize a credential DISCOVERED by
+   * `discoverCredentials()` into a named auth profile (WS6). Source-backed
+   * where possible, else the daemon COPIES the located api-key into the
+   * keychain. No secret crosses the wire — the daemon reads it locally. The
+   * result is non-secret metadata + a one-way fingerprint + the stamped
+   * `origin`, never the credential.
+   */
+  async importCredential(req: ImportCredentialRequest): Promise<CreatedAuthProfileResult> {
+    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult }>(
+      "auth_profile_import",
+      { ...req },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_import returned no profile")
+    return profile
   }
 
   /**

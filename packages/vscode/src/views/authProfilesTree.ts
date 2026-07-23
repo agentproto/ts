@@ -6,6 +6,7 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
+import type { AuthProfileSummary } from "../client/types.js"
 import {
   buildPresetNodes,
   buildProfileNodesWithProfiles,
@@ -13,8 +14,9 @@ import {
   presetConnectionIcon,
   presetRowDescription,
   presetTooltip,
-  profileDescription,
-  profileTooltip,
+  profileContextValue,
+  profileRowDescription,
+  profileRowTooltip,
   servicedModelDescription,
   servicedModelIcon,
   servicedModelsByProfile,
@@ -37,6 +39,7 @@ export class AuthProfilesTreeProvider
   private presets: AuthProfileNode[] = []
   private profiles: AuthProfileNode[] = []
   private servicedByProfile = new Map<string, ServicedModel[]>()
+  private profilesById = new Map<string, AuthProfileSummary>()
   private loadError = false
 
   constructor(client: DaemonClient) {
@@ -57,6 +60,7 @@ export class AuthProfilesTreeProvider
         this.client.listAuthProfiles(),
       ])
       this.servicedByProfile = servicedModelsByProfile(catalog)
+      this.profilesById = new Map(authProfiles.map(p => [p.id, p]))
       this.presets = buildPresetNodes(presetEntries, authProfiles)
       this.profiles = buildProfileNodesWithProfiles(catalog, authProfiles).map(profile => ({
         kind: "profile",
@@ -67,6 +71,7 @@ export class AuthProfilesTreeProvider
       this.presets = []
       this.profiles = []
       this.servicedByProfile = new Map()
+      this.profilesById = new Map()
     }
     this._onDidChange.fire()
   }
@@ -119,16 +124,21 @@ export class AuthProfilesTreeProvider
 
     // A profile node — expandable when it services at least one model.
     const serviced = this.servicedByProfile.get(element.profileId) ?? []
+    const summary = this.profilesById.get(element.profileId)
     const collapsibleState =
       serviced.length > 0
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
     const item = new vscode.TreeItem(element.profileId, collapsibleState)
     item.id = `profile:${element.profileId}`
-    item.description = profileDescription(element.routesCount)
-    item.tooltip = new vscode.MarkdownString(profileTooltip(element.profileId, element.routesCount))
-    item.iconPath = new vscode.ThemeIcon("account")
-    item.contextValue = "auth-profile"
+    item.description = profileRowDescription(element.routesCount, summary)
+    item.tooltip = new vscode.MarkdownString(
+      profileRowTooltip(element.profileId, element.routesCount, summary),
+    )
+    // A disabled profile reads as muted/off; an enabled one keeps the account
+    // glyph. The context value drives the enable/disable menu split (WS2).
+    item.iconPath = new vscode.ThemeIcon(summary?.disabled ? "circle-slash" : "account")
+    item.contextValue = profileContextValue(summary)
     return item
   }
 

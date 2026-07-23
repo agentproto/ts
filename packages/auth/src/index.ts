@@ -62,7 +62,7 @@ export type {
   StoredCredential,
 } from "./store/types.js"
 export { CredentialBroker, type CredentialBrokerOptions } from "./broker.js"
-export type { AuthMethod, AuthProfile } from "./profile-types.js"
+export type { AuthMethod, AuthProfile, ModelCuration } from "./profile-types.js"
 export {
   authProfilesPath,
   loadAuthProfiles,
@@ -75,13 +75,17 @@ export {
 export {
   createAuthProfile,
   deleteAuthProfile,
+  setAuthProfileEnabled,
+  setAuthProfileModels,
   validateCreateInput,
   deriveCredentialRef,
   fingerprintCredential,
+  credentialIdentity,
   AuthProfileValidationError,
   type CreateAuthProfileInput,
   type CreatedAuthProfile,
   type DeletedAuthProfile,
+  type CredentialIdentity,
   type ProfileProvisionDeps,
   type ValidatedCreateInput,
 } from "./profile-provision.js"

@@ -76,8 +76,11 @@ export function methodsPresentable(
 }
 
 /** The eligibility predicate: profiles whose endpoint matches the route's
- *  resolved endpoint AND whose method the adapter can present on that
- *  route. */
+ *  resolved endpoint AND whose method the adapter can present on that route.
+ *  A whole-profile-disabled profile (`disabled: true`) is skipped outright —
+ *  every model it would otherwise service drops to non-runnable (WS2). This is
+ *  the profile-level gate; per-model curation (`models`) is intersected
+ *  downstream in the catalog join, not here (SPEC §1c / catalog-models.ts). */
 export function eligibleProfiles(
   profiles: readonly AuthProfile[],
   manifest: AdapterAuthManifest,
@@ -85,5 +88,7 @@ export function eligibleProfiles(
 ): AuthProfile[] {
   const { endpoint } = resolveEndpoint(manifest, route)
   const methods = methodsPresentable(manifest, route)
-  return profiles.filter(p => p.endpoint === endpoint && methods.includes(p.method))
+  return profiles.filter(
+    p => !p.disabled && p.endpoint === endpoint && methods.includes(p.method),
+  )
 }

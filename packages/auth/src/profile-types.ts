@@ -20,6 +20,22 @@
  *  new methods are additive. */
 export type AuthMethod = "oauth-bearer" | "api-key"
 
+/** Per-profile model curation (the allowlist). `mode: "all"` (or an ABSENT
+ *  {@link AuthProfile.models}) services every model the profile is otherwise
+ *  eligible for — today's behavior. `mode: "allow"` narrows the profile to
+ *  exactly `ids`: it services a model only when the model's catalog identity
+ *  (its `vendor/product` or its route-qualified `ref`) is in the list. The
+ *  intersection is applied INSIDE the catalog eligibility join
+ *  (`catalog-models.ts`), never at the endpoint/method predicate here, so a
+ *  curated profile stays endpoint-eligible but only makes its chosen model
+ *  refs runnable. */
+export interface ModelCuration {
+  mode: "all" | "allow"
+  /** Model identities allowed when `mode === "allow"` — each a catalog
+   *  `vendor/product` or route-qualified `ref`. Empty ⇒ services nothing. */
+  ids: string[]
+}
+
 /** A named, billing-endpoint-scoped credential reference. */
 export interface AuthProfile {
   /** Stable id, unique across all profiles (the `profileRef` a session
@@ -48,4 +64,23 @@ export interface AuthProfile {
   source?: string
   /** Optional human-readable name ("Jeremy Max", "work OpenRouter"). */
   label?: string
+  /** Whole-profile enable/disable. ABSENT (or `false`) ⇒ enabled (today's
+   *  behavior). `true` ⇒ the profile is skipped by {@link eligibleProfiles}
+   *  entirely, so every model it would otherwise service drops to
+   *  non-runnable. A REAL persisted state, distinct from the derived
+   *  `runnable` flag the catalog computes. */
+  disabled?: boolean
+  /** Optional per-model curation (the allowlist). ABSENT ⇒ `{ mode: "all" }`
+   *  — services every eligible model, byte-identical to a profile that
+   *  predates this field. See {@link ModelCuration}. */
+  models?: ModelCuration
+  /** Provenance: where this profile's credential was IMPORTED from, when it
+   *  was materialized by the WS6 discovery→import flow
+   *  (`auth_profile_import`) rather than created by hand. One of the discovery
+   *  origins (`claude-code`, `hermes-config`, `env`, `codex`, `gemini`). Purely
+   *  informational — it drives the panel's "imported from <origin>" badge and
+   *  nothing in the spawn/eligibility path. ABSENT for a hand-created profile.
+   *  Kept as `string` (not a union) to stay decoupled, same rationale as
+   *  {@link endpoint}. */
+  origin?: string
 }
