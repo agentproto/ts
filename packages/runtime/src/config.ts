@@ -56,6 +56,20 @@ export interface DaemonConfig {
    *  `$(openssl rand -hex 32)`). Unset ⇒ the gateway boots with
    *  `mode: "none"` — fully open on loopback, same as today. */
   authToken?: string
+  /** Opt-in eager resume-on-boot (session-survivability plan §5
+   *  "Opt-in vs automatic", PR-4). When true, a daemon restart doesn't just
+   *  leave agent-cli sessions dead-but-lazy-resumable — the boot pass eagerly
+   *  re-spawns the eligible ones (those that died with
+   *  `endedReason: "daemon-restart"` and still pass `canResume`) IN PLACE,
+   *  restoring liveness without waiting for a prompt. Lazy resume-on-prompt is
+   *  always on regardless of this flag (it costs nothing until someone acts);
+   *  this flag only controls the *automatic* boot-time pass. Default false: a
+   *  box-wide restart should not silently relaunch every adapter (cost, spawn
+   *  storm, credential re-resolution), and default-off also keeps two daemons
+   *  sharing the workspace buckets from racing to resume the same rows. Set via
+   *  `agentproto config set daemon.resumeSessionsOnBoot true`. Surfaced in
+   *  `daemon_health` / `GET /health`. */
+  resumeSessionsOnBoot?: boolean
 }
 
 export interface TunnelConfig {

@@ -627,6 +627,9 @@ export interface RuntimeHttpServerOptions {
     registered: readonly string[]
     /** Daemon start timestamp. Defaults to `Date.now()` at server start. */
     startedAt?: number
+    /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
+     *  with the `daemon_health` MCP tool's field of the same name. */
+    resumeSessionsOnBoot?: boolean
   }
 }
 
@@ -1028,6 +1031,7 @@ export async function startHttpServer(
         workspace: opts.meta.workspace,
         registered: opts.meta.registered,
         uptimeMs: Date.now() - startedAt,
+        resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
       }),
     )
   }
