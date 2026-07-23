@@ -567,6 +567,25 @@ export interface SessionDescriptor {
    *  the underlying `killedMidTurn`/`endedReason`). The in-place resume path
    *  never auto-retries the interrupted prompt. */
   interrupted?: boolean
+  /** How many in-place resume attempts have FAILED in a row for this session
+   *  (§5 cap/backoff). Incremented on every failed `maybeResumeAgent` attempt —
+   *  the resume throws, the adapter rejects the id, or the spawn returns null —
+   *  and reset on the next successful turn-end (a resume that then runs a turn
+   *  to completion has demonstrably recovered). PERSISTED (unlike the derived
+   *  `interrupted`): the counter has to outlive the daemon so a launchd
+   *  KeepAlive crash-loop can't re-attempt a broken session past the cap on
+   *  each fresh boot — N daemon crashes eager-resume a row at most
+   *  `MAX_RESUME_ATTEMPTS` times TOTAL, not N×cap. Once it reaches
+   *  `MAX_RESUME_ATTEMPTS` the lazy path stops spawning and fails loud
+   *  (`ResumeDisabledError` → "use session_restart"); the eager pass (PR-4)
+   *  skips the row via `canResume`. Absent (never `0`) until the first
+   *  failure. */
+  resumeAttempts?: number
+  /** ISO 8601 timestamp of the most recent FAILED in-place resume attempt
+   *  (§5). Stamped alongside every `resumeAttempts` increment; cleared with the
+   *  counter on a successful turn-end. Lets an operator see how recently the
+   *  backoff last tripped. Absent until the first failure. */
+  lastResumeAt?: string
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
@@ -1081,6 +1100,55 @@ export function isResumable(desc: SessionDescriptor): boolean {
     !!desc.cwd &&
     !desc.archived
   )
+}
+
+/**
+ * Cap on consecutive FAILED in-place resume attempts before a session stops
+ * being auto-resumed (§5 "Cap/backoff — no resurrect-forever"). A session whose
+ * adapter crashes on every resume must not be retried on every prompt forever,
+ * and — because `resumeAttempts` is PERSISTED — this also bounds a launchd
+ * KeepAlive daemon crash-loop: across N daemon boots the eager pass (PR-4)
+ * re-attempts each broken row at most this many times TOTAL, not N×cap. Named
+ * (not an inline `3`) so the lazy path, the eager pass, and the tests all agree
+ * on the number.
+ */
+export const MAX_RESUME_ATTEMPTS = 3
+
+/**
+ * Cap-aware eligibility for in-place resume: `isResumable` (the descriptor has
+ * everything the resume path needs) AND the session hasn't already burned
+ * through `MAX_RESUME_ATTEMPTS` consecutive failed attempts. This is the shared
+ * gate the lazy resume-on-prompt path enforces (fail loud with
+ * `ResumeDisabledError` once it returns false on a resumable row) and that the
+ * eager resume-on-boot pass (PR-4) reuses — the eager pass layers
+ * `endedReason === "daemon-restart"` on top, exactly as it layers that clause
+ * on `isResumable`. Kept separate from `isResumable` so the base
+ * eligibility (kind/essentials/not-archived) and the attempt cap stay
+ * independently testable.
+ */
+export function canResume(desc: SessionDescriptor): boolean {
+  return isResumable(desc) && (desc.resumeAttempts ?? 0) < MAX_RESUME_ATTEMPTS
+}
+
+/**
+ * Thrown by the lazy resume path when a resumable session has already failed to
+ * resume `MAX_RESUME_ATTEMPTS` times in a row (`canResume` false on a row that
+ * `isResumable`). Fail-loud and terminal: no further adapter spawn is
+ * attempted, and the prompter is told to fall back to new-id `session_restart`
+ * rather than re-prompting a session that will never come back in place. Carries
+ * the id + attempt count so ingress layers can report a structured error.
+ */
+export class ResumeDisabledError extends Error {
+  readonly sessionId: string
+  readonly attempts: number
+  constructor(sessionId: string, attempts: number) {
+    super(
+      `resume disabled after ${MAX_RESUME_ATTEMPTS} failed attempts — use session_restart`,
+    )
+    this.name = "ResumeDisabledError"
+    this.sessionId = sessionId
+    this.attempts = attempts
+  }
 }
 
 /** Find the most recently-completed `kind: "command"` session whose `cwd`
@@ -2866,6 +2934,20 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Record one FAILED in-place resume attempt (§5 cap/backoff): bump the
+   * persisted `resumeAttempts` counter and stamp `lastResumeAt`. Persisted (not
+   * in-memory) so the cap survives a daemon restart — a crash-looping daemon
+   * can't re-attempt a broken session past `MAX_RESUME_ATTEMPTS` on each boot.
+   * Called from both resume failure modes (adapter returned null / resume
+   * threw). Reset to idle by the next successful turn-end.
+   */
+  const recordFailedResume = (rt: SessionRuntime): void => {
+    rt.desc.resumeAttempts = (rt.desc.resumeAttempts ?? 0) + 1
+    rt.desc.lastResumeAt = new Date().toISOString()
+    schedulePersist()
+  }
+
+  /**
    * Attempt to resume a dead agent-cli session by re-spawning the
    * adapter with the persisted `adapterSessionId`. The conversation
    * continues from where it left off — ACP's `resumeSessionId`
@@ -2893,6 +2975,16 @@ export function createSessionsRegistry(opts?: {
     // prompt path here deliberately lets an operator's prompt to any killed
     // row through, treating it as explicit intent.
     if (!isResumable(rt.desc)) return
+    // Cap/backoff (§5): a session whose adapter fails to resume must not be
+    // retried on every prompt forever. `isResumable` is already true here, so
+    // a false `canResume` means the attempt counter has hit
+    // MAX_RESUME_ATTEMPTS — refuse to spawn and fail LOUD (no silent no-op, no
+    // fourth spawn). The prompter is told to fall back to new-id
+    // session_restart. Because `resumeAttempts` is persisted, this also caps a
+    // launchd KeepAlive crash-loop's total re-attempts across boots.
+    if (!canResume(rt.desc)) {
+      throw new ResumeDisabledError(rt.desc.id, rt.desc.resumeAttempts ?? 0)
+    }
     const adapterSlug = rt.desc.adapterSlug ?? rt.adapterSlug
     const adapterSessionId = rt.desc.adapterSessionId
     const cwd = rt.desc.cwd
@@ -2932,6 +3024,7 @@ export function createSessionsRegistry(opts?: {
             `[error] resume failed: adapter '${adapterSlug}' returned null`,
             "stderr"
           )
+          recordFailedResume(rt)
           return
         }
         rt.agentSession = fresh
@@ -2981,6 +3074,7 @@ export function createSessionsRegistry(opts?: {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
+        recordFailedResume(rt)
       }
     })()
     try {
@@ -3194,6 +3288,17 @@ export function createSessionsRegistry(opts?: {
         if (rt.desc.killedMidTurn || rt.desc.endedReason === "daemon-restart") {
           delete rt.desc.killedMidTurn
           delete rt.desc.endedReason
+        }
+
+        // ── Cap/backoff reset (§5): a turn that ran to completion proves the
+        // session resumed cleanly, so the failed-resume backoff is cleared —
+        // resumeAttempts goes back to 0 and lastResumeAt is dropped. Guarded so
+        // it's a no-op for the overwhelming majority of turns that never failed
+        // a resume (nothing to reset). Co-located with the interruption-marker
+        // clear above: both express "this session has demonstrably recovered".
+        if (rt.desc.resumeAttempts) {
+          delete rt.desc.resumeAttempts
+          delete rt.desc.lastResumeAt
         }
 
         // ── Cost refresh (best-effort) ───────────────────────────────
