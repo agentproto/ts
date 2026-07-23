@@ -1746,6 +1746,12 @@ export type AgentSessionResumer = (input: {
   adapterSlug: string
   cwd: string
   resumeSessionId: string
+  /** The full prior descriptor of the row being resumed. Threaded so the
+   *  hook can re-resolve billing-auth (mode from `descriptor.auth.mode`,
+   *  named profile from `descriptor.accessProfile`, model/route from the
+   *  descriptor) exactly as a fresh spawn / `session_restart` does — never
+   *  inheriting the daemon's ambient env (the lazy-resume "money bug"). */
+  descriptor: SessionDescriptor
   /** MCP servers to re-mount on the resumed session — threaded from the
    *  descriptor's persisted `mcpServers` so the re-spawned agent keeps the
    *  same host-chosen toolset it had on the initial spawn (orchestrator
@@ -2842,6 +2848,9 @@ export function createSessionsRegistry(opts?: {
           adapterSlug,
           cwd,
           resumeSessionId: adapterSessionId,
+          // The prior descriptor — the hook re-resolves billing-auth off its
+          // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
+          descriptor: rt.desc,
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
           // Keep pulsing lastActivityAt across a resume the same way the
