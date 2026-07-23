@@ -481,6 +481,10 @@ jobs:
       - name: Check local-review bypass
         id: bypass
         if: steps.prstate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
@@ -495,8 +499,20 @@ jobs:
           # second review when HEAD is exactly that changeset commit. (Build+test
           # / hygiene still re-run — cheap, and the code is unchanged anyway.)
           if [ "$(git log -1 --format='%s')" = "chore: agentic reviewer — changeset" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "HEAD is the reviewer's changeset commit — skipping the re-review."
+            # The bypass assumes the reviewer already reviewed the PARENT commit
+            # (the code this changeset was written for) and mirrored its statuses.
+            # But a reviewer that wrote the changeset yet posted NO review (a
+            # review-post no-op) would otherwise slip through as a FALSE GREEN
+            # (PR #625). Only trust the bypass if a real review exists for HEAD^.
+            PARENT_SHA="$(git rev-parse HEAD^)"
+            REVIEW_COUNT="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -s "add | [.[] | select(.commit_id==\"$PARENT_SHA\")] | length")"
+            if [ "${REVIEW_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "HEAD is the reviewer's changeset commit; parent $PARENT_SHA has $REVIEW_COUNT review(s) — skipping the re-review."
+            else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::HEAD is the changeset commit but parent $PARENT_SHA has no posted review — refusing the bypass (would be a false green); running the real review."
+            fi
           elif git log origin/main..HEAD --format='%B' | grep -qF '[agentflow-reviewed]'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Local-review marker found — skipping the cloud reviewer."
