@@ -29,6 +29,7 @@ import {
   credentialSourceChoices,
   loginCommandFor,
 } from "./authProfileConnect.logic.js"
+import { pickAndConnectLocalLogin } from "./localLogin.js"
 
 export function registerAuthProfileCommands(
   ctx: vscode.ExtensionContext,
@@ -41,6 +42,9 @@ export function registerAuthProfileCommands(
     }),
     vscode.commands.registerCommand("agentproto.configureAuthProfile", (_node?: AuthProfileNode) => {
       void runCreateAuthProfileFlow(client, provider)
+    }),
+    vscode.commands.registerCommand("agentproto.connectLocalLogin", () => {
+      void pickAndConnectLocalLogin(client, provider)
     }),
     vscode.commands.registerCommand("agentproto.connectAuthProfile", (node?: AuthProfileNode) => {
       // Reached from an unconnected preset row (click or context menu). With a
@@ -145,17 +149,31 @@ export async function runCreateAuthProfileFlow(
   client: DaemonClient,
   provider: AuthProfilesTreeProvider,
 ): Promise<void> {
-  // Step 1 — method.
+  // Step 1 — method. Lead with the zero-friction "use my existing local login"
+  // shortcut (source-backed, no token to paste); picking it diverts to that
+  // flow and skips the rest of the wizard.
   const methodPick = await vscode.window.showQuickPick(
-    methodChoices().map(c => ({
-      label: c.label,
-      description: c.description,
-      detail: c.detail,
-      method: c.method,
-    })),
+    [
+      {
+        label: "$(sign-in) Use my existing local login…",
+        description: "no token to paste",
+        detail: "Reuse a CLI you're already signed into (Claude Code, Codex, Gemini) — it refreshes itself.",
+        localLogin: true as const,
+      },
+      ...methodChoices().map(c => ({
+        label: c.label,
+        description: c.description,
+        detail: c.detail,
+        method: c.method,
+      })),
+    ],
     { title: "Add auth profile (1/5): method", placeHolder: "How does this profile authenticate?" },
   )
   if (!methodPick) return
+  if ("localLogin" in methodPick) {
+    await pickAndConnectLocalLogin(client, provider)
+    return
+  }
   const method: AuthMethod = methodPick.method
 
   // Step 2 — endpoint. A subscription is always `anthropic`, so skip the

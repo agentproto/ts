@@ -280,6 +280,12 @@
         "icon": "$(plug)"
       },
       {
+        "command": "agentproto.connectLocalLogin",
+        "title": "agentproto: Use My Existing Local Login",
+        "category": "agentproto",
+        "icon": "$(sign-in)"
+      },
+      {
         "command": "agentproto.deleteAuthProfile",
         "title": "agentproto: Delete Auth Profile",
         "category": "agentproto",
@@ -520,6 +526,21 @@
           "type": "boolean",
           "default": true,
           "description": "Group the Sessions panel by registered agentproto workspace, with the workspace(s) matching your open folder(s) sorted first and expanded. Off restores the flat session list. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Workspace)."
+        },
+        "agentproto.autoAdoptLocalLogin": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ask",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Silently adopt a detected local Claude Code login on first activation (only when no anthropic profile exists yet), creating a self-refreshing source-backed wallet.",
+            "Offer a one-time prompt to adopt a detected local Claude Code login.",
+            "Never detect or adopt a local login automatically."
+          ],
+          "default": "ask",
+          "description": "On activation, whether to adopt an existing local Claude Code login as a self-refreshing auth profile. The token is resolved fresh from your local login per spawn — nothing is pasted or stored. You can always connect one manually from Auth Settings (\"Use my existing Claude Code login\")."
         }
       }
     }

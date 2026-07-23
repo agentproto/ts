@@ -132,31 +132,144 @@ export function validateCredential(raw: string): string | undefined {
   return undefined
 }
 
-/** The fields the flow collects before assembling a request. */
+/** The fields the flow collects before assembling a request. A profile is
+ *  either credential-backed (paste/login) or source-backed (a self-refreshing
+ *  local login) — give exactly one of `credential` / `source`. */
 export interface CollectedProfileInput {
   id: string
   endpoint: string
   method: AuthMethod
-  credential: string
+  credential?: string
+  /** Self-refreshing credential source (oauth-bearer only) — when set, no
+   *  credential is collected or sent; the daemon resolves it fresh per spawn. */
+  source?: string
   label?: string
 }
 
 /**
  * Assemble the wire request from collected inputs. Trims every field and
- * drops an empty label. The credential passes through verbatim (the daemon
- * trims it) — this is the only place it travels, and it's never logged.
+ * drops an empty label. A `source` wins over `credential` and is mutually
+ * exclusive with it (the daemon rejects both) — a source-backed profile
+ * stores no secret. The credential otherwise passes through verbatim (the
+ * daemon trims it) — this is the only place it travels, and it's never logged.
  */
 export function buildCreateRequest(
   input: CollectedProfileInput,
 ): CreateAuthProfileRequest {
   const label = input.label?.trim()
+  const source = input.source?.trim()
   return {
     id: input.id.trim(),
     endpoint: input.endpoint.trim(),
     method: input.method,
-    credential: input.credential,
+    ...(source ? { source } : { credential: input.credential ?? "" }),
     ...(label ? { label } : {}),
   }
+}
+
+/**
+ * A "use my existing local login" recipe — a source-backed profile that reuses
+ * a CLI the user is already signed into on this host. The daemon resolves the
+ * bearer FRESH from that login on every spawn (Mode 3), so there's no token to
+ * paste and nothing static to go stale. Purely descriptive data; the impure
+ * detection + connect live in `localLogin.ts`.
+ */
+export interface LocalLoginRecipe {
+  /** Collision-safe profile id created for this login. */
+  id: string
+  /** Provision-recipe / `auth.source` id the daemon resolves per spawn. */
+  source: string
+  /** Billing endpoint the source authenticates. */
+  endpoint: string
+  method: AuthMethod
+  /** Human-readable profile label. */
+  label: string
+  /** QuickPick row label (leading codicon). */
+  pickLabel: string
+  /** QuickPick detail line. */
+  detail: string
+  /** `~`-relative credential file whose presence signals the login (the
+   *  fallback / non-macOS location). */
+  credentialFile: string
+  /** macOS login-keychain generic-password service that also holds it, when
+   *  the CLI keeps its token there instead of the file (Claude Code on macOS). */
+  keychainService?: string
+}
+
+/**
+ * The local logins we can adopt. Claude Code is the first-class one (its
+ * `claude-code-oauth` source is what the daemon resolves at spawn today);
+ * codex/gemini are siblings for the CLIs that follow the same convention.
+ */
+export const LOCAL_LOGIN_RECIPES: readonly LocalLoginRecipe[] = [
+  {
+    id: "claude-code-local",
+    source: "claude-code-oauth",
+    endpoint: "anthropic",
+    method: "oauth-bearer",
+    label: "My Claude Code login",
+    pickLabel: "$(sign-in) Use my existing Claude Code login",
+    detail:
+      "Bill against your local Claude Code subscription — refreshed automatically, no token to paste.",
+    credentialFile: "~/.claude/.credentials.json",
+    keychainService: "Claude Code-credentials",
+  },
+  {
+    id: "codex-local",
+    source: "codex",
+    endpoint: "openai",
+    method: "oauth-bearer",
+    label: "My Codex login",
+    pickLabel: "$(sign-in) Use my existing Codex login",
+    detail: "Reuse the OpenAI Codex CLI subscription you're signed into on this machine.",
+    credentialFile: "~/.codex/auth.json",
+  },
+  {
+    id: "gemini-local",
+    source: "gemini",
+    endpoint: "google",
+    method: "oauth-bearer",
+    label: "My Gemini login",
+    pickLabel: "$(sign-in) Use my existing Gemini login",
+    detail: "Reuse the Google Gemini CLI login cached on this machine.",
+    credentialFile: "~/.gemini/oauth_creds.json",
+  },
+]
+
+/** Assemble the create request for a source-backed local-login profile — no
+ *  credential is collected or sent, only the self-refreshing `source`. */
+export function buildLocalLoginRequest(
+  recipe: LocalLoginRecipe,
+): CreateAuthProfileRequest {
+  return buildCreateRequest({
+    id: recipe.id,
+    endpoint: recipe.endpoint,
+    method: recipe.method,
+    source: recipe.source,
+    label: recipe.label,
+  })
+}
+
+/** How the `agentproto.autoAdoptLocalLogin` setting treats a detected local
+ *  Claude Code login on activation. */
+export type AutoAdoptMode = "auto" | "ask" | "off"
+
+/**
+ * Decide what to do on activation given the setting and the two facts we
+ * probe: whether a local Claude Code login is present, and whether an
+ * anthropic profile already exists. "off" never acts; otherwise we only act
+ * when a login is present AND no anthropic profile exists yet (so we never
+ * shadow a wallet the user already configured). Adopting the sole anthropic
+ * profile makes it the default wallet through the daemon's existing
+ * single-eligible-profile precedence — no separate "set default" write.
+ */
+export function autoAdoptDecision(
+  mode: AutoAdoptMode,
+  facts: { loginDetected: boolean; anthropicProfileExists: boolean },
+): "create" | "prompt" | "skip" {
+  if (mode === "off") return "skip"
+  if (!facts.loginDetected || facts.anthropicProfileExists) return "skip"
+  return mode === "auto" ? "create" : "prompt"
 }
 
 /** A user-facing success line — names the profile and shows the credential
