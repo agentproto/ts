@@ -137,9 +137,9 @@ function walletCard(w: WalletRow): string {
 
 /**
  * The "use my existing local login" card — one button per source-backed recipe
- * (Claude Code / Codex / Gemini). A source-backed profile stores no secret and
- * refreshes itself, so it's the zero-friction way to connect a wallet. Lives at
- * the top of the Providers section.
+ * (Claude Code today). A source-backed profile stores no secret and refreshes
+ * itself, so it's the zero-friction way to connect a wallet. Lives at the top
+ * of the Providers section.
  */
 function localLoginCard(): string {
   const buttons = LOCAL_LOGIN_RECIPES.map(

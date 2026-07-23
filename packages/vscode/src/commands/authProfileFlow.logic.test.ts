@@ -154,9 +154,12 @@ describe("buildLocalLoginRequest / LOCAL_LOGIN_RECIPES", () => {
     })
   })
 
-  it("offers codex and gemini siblings, each source-backed with a unique id", () => {
-    expect(LOCAL_LOGIN_RECIPES.find(r => r.source === "codex")?.endpoint).toBe("openai")
-    expect(LOCAL_LOGIN_RECIPES.find(r => r.source === "gemini")?.endpoint).toBe("google")
+  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code today)", () => {
+    // Codex/Gemini are intentionally absent: the subscription-source mechanism
+    // needs an adapter with an `authSubscription` bearer env, which only
+    // claude-code declares. Surfacing them would create profiles that dead-end
+    // at spawn (see LOCAL_LOGIN_RECIPES' doc).
+    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual(["claude-code-oauth"])
     for (const r of LOCAL_LOGIN_RECIPES) {
       expect(r.method).toBe("oauth-bearer")
       const req = buildLocalLoginRequest(r)

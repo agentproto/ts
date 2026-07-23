@@ -157,7 +157,7 @@ export async function runCreateAuthProfileFlow(
       {
         label: "$(sign-in) Use my existing local login…",
         description: "no token to paste",
-        detail: "Reuse a CLI you're already signed into (Claude Code, Codex, Gemini) — it refreshes itself.",
+        detail: "Reuse your local Claude Code login — a self-refreshing subscription, nothing to paste.",
         localLogin: true as const,
       },
       ...methodChoices().map(c => ({
