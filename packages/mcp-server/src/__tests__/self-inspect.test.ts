@@ -45,6 +45,7 @@ id: daily-ping
 description: Fires the agent once a day.
 version: 1.0.0
 schedule:
+  kind: cron
   cron: "0 9 * * *"
 target:
   action: ping

@@ -620,10 +620,14 @@ export interface RuntimeHttpServerOptions {
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
   /** Optional — when wired, exposes `POST /routine-defs/:id/trigger` — fires
    *  an AIP-41 `.routines/<id>/ROUTINE.md` routine's target immediately,
-   *  bypassing its schedule (mirrors `POST /cron/:id/run`). Deliberately NOT
+   *  bypassing its schedule (mirrors `POST /cron/:id/run`) — and
+   *  `POST /routine-defs/reconcile`, which re-scans `.routines/*` and
+   *  registers/updates/removes live cron jobs to match (the same pass
+   *  `index.ts` runs once at boot, callable on demand so a routine dropped
+   *  after boot schedules without a daemon restart). Deliberately NOT
    *  mounted under `/routines/*` — that prefix is already `routineRunner`'s
    *  (an unrelated ad-hoc primitive, see `routine-registrar.ts`). Without it
-   *  the route 404s. */
+   *  the routes 404. */
   routineRegistrar?: import("./routine-registrar.js").RoutineRegistrar
   /** Optional — when wired, exposes /routines/* routes for starting and
    *  managing background routine runs (sequential steps with per-step
@@ -2372,9 +2376,10 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // AIP-41 routine-def manual trigger — deliberately NOT under
-        // /routines/* (that prefix is routineRunner's, an unrelated
-        // primitive — see routine-registrar.ts). Only /routine-defs/:id/trigger.
+        // AIP-41 routine-def manual trigger + reconcile — deliberately NOT
+        // under /routines/* (that prefix is routineRunner's, an unrelated
+        // primitive — see routine-registrar.ts). /routine-defs/:id/trigger
+        // and /routine-defs/reconcile.
         if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
           const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
           if (handled) return
@@ -5311,6 +5316,9 @@ async function handleCron(
  * /routine-defs routes:
  *   POST /routine-defs/:id/trigger → fire an AIP-41 routine's target
  *   immediately, bypassing its schedule (mirrors POST /cron/:id/run).
+ *   POST /routine-defs/reconcile → re-scan `.routines/*` and
+ *   register/update/remove live cron jobs to match (the boot-time pass,
+ *   callable on demand — see `routine_reconcile` in orchestration-tools.ts).
  *
  * Mounted at a different prefix than /routines/* on purpose — that prefix
  * already belongs to `routineRunner` (see routine-registrar.ts SPEC note).
@@ -5324,6 +5332,17 @@ async function handleRoutineDefs(
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
+  }
+
+  if (path === "/routine-defs/reconcile" && req.method === "POST") {
+    try {
+      const result = registrar.reconcile()
+      json(200, result)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(500, { error: "reconcile_failed", message: msg })
+    }
+    return true
   }
 
   const triggerMatch = path.match(/^\/routine-defs\/([^/]+)\/trigger$/)
