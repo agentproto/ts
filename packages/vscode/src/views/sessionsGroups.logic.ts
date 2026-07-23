@@ -20,7 +20,15 @@
 
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import { findWorkspaceByPath } from "../services/workspaces.logic.js"
-import { buildSessionRows, isSeparatorNode, type TreeNode } from "./sessionsTree.logic.js"
+import {
+  buildSessionRows,
+  isSeparatorNode,
+  STATUS_CATEGORY_ORDER,
+  statusCategoryFor,
+  statusCategoryLabel,
+  type StatusCategory,
+  type TreeNode,
+} from "./sessionsTree.logic.js"
 
 /** Bucket id for sessions whose cwd matches no registered workspace. Distinct
  *  from any real slug ("default" is also the CLI's fallback active-workspace
@@ -46,7 +54,7 @@ export interface GroupNode {
   children: TreeNode[]
   /** Which dimension this group buckets by — drives the tree icon +
    *  contextValue in sessionsTree.ts. Absent ⇒ "workspace" (back-compat). */
-  variant?: "workspace" | "origin"
+  variant?: "workspace" | "origin" | "status"
 }
 
 /** The "Create workspace here" inline row — shown per open VS Code folder
@@ -285,8 +293,71 @@ export function buildOriginGroups(
   sessions: readonly SessionDescriptor[],
   now: number,
 ): GroupNode[] {
+  const groups = groupSessionsByRoot(
+    sessions,
+    now,
+    root => root.origin ?? UNKNOWN_ORIGIN_SLUG,
+    slug => ({ id: originGroupNodeId(slug), label: originLabelFor(slug) }),
+    "origin",
+  )
+  return groups.sort((a, b) => {
+    if (a.slug === UNKNOWN_ORIGIN_SLUG) return b.slug === UNKNOWN_ORIGIN_SLUG ? 0 : 1
+    if (b.slug === UNKNOWN_ORIGIN_SLUG) return -1
+    return a.label.localeCompare(b.label)
+  })
+}
+
+/** Stable TreeItem id for a status group row. */
+export function statusGroupNodeId(category: StatusCategory): string {
+  return `status-group:${category}`
+}
+
+/**
+ * One GroupNode per coarse status bucket — Awaiting you / Live / Failed /
+ * Stopped / Done — keyed off each session's ROOT status (so an orchestrator
+ * subtree groups by the root's state, staying intact, uniform with the origin
+ * and workspace views). Buckets render in attention-first order
+ * (`STATUS_CATEGORY_ORDER`); empty categories are omitted. `now` matters here
+ * (unlike origin): a stalled session folds into `live` only relative to the
+ * current clock.
+ */
+export function buildStatusGroups(
+  sessions: readonly SessionDescriptor[],
+  now: number,
+): GroupNode[] {
+  const groups = groupSessionsByRoot(
+    sessions,
+    now,
+    root => statusCategoryFor(root, now),
+    category => ({
+      id: statusGroupNodeId(category as StatusCategory),
+      label: statusCategoryLabel(category as StatusCategory),
+    }),
+    "status",
+  )
+  const rank = new Map(STATUS_CATEGORY_ORDER.map((c, i) => [c as string, i]))
+  return groups.sort(
+    (a, b) => (rank.get(a.slug) ?? 99) - (rank.get(b.slug) ?? 99),
+  )
+}
+
+/**
+ * Shared bucketing for the "by source" and "by status" views: assign each
+ * session to a bucket keyed off its ROOT ancestor (walking `parentSessionId`
+ * within the provided set, cycle-guarded) so children stay nested under their
+ * root's group rather than splitting off; each bucket's rows reuse
+ * `buildSessionRows` (24h divider + parentSessionId nesting) unchanged. Buckets
+ * are returned in first-appearance order — callers sort as they see fit.
+ */
+function groupSessionsByRoot(
+  sessions: readonly SessionDescriptor[],
+  now: number,
+  keyOfRoot: (root: SessionDescriptor) => string,
+  metaOf: (slug: string) => { id: string; label: string },
+  variant: NonNullable<GroupNode["variant"]>,
+): GroupNode[] {
   const byId = new Map(sessions.map(s => [s.id, s]))
-  const rootOriginOf = (start: SessionDescriptor): string => {
+  const rootKeyOf = (start: SessionDescriptor): string => {
     let cur = start
     const seen = new Set<string>([cur.id])
     while (cur.parentSessionId && byId.has(cur.parentSessionId)) {
@@ -295,39 +366,42 @@ export function buildOriginGroups(
       seen.add(parent.id)
       cur = parent
     }
-    return cur.origin ?? UNKNOWN_ORIGIN_SLUG
+    return keyOfRoot(cur)
   }
 
+  const order: string[] = []
   const buckets = new Map<string, SessionDescriptor[]>()
   for (const session of sessions) {
-    const key = rootOriginOf(session)
+    const key = rootKeyOf(session)
     const bucket = buckets.get(key)
     if (bucket) bucket.push(session)
-    else buckets.set(key, [session])
+    else {
+      buckets.set(key, [session])
+      order.push(key)
+    }
   }
 
-  const groups: GroupNode[] = [...buckets.entries()].map(([origin, bucket]) => ({
-    kind: "group",
-    id: originGroupNodeId(origin),
-    slug: origin,
-    label: originLabelFor(origin),
-    count: bucket.length,
-    isOpen: false,
-    children: buildSessionRows(bucket, now),
-    variant: "origin",
-  }))
-
-  return groups.sort((a, b) => {
-    if (a.slug === UNKNOWN_ORIGIN_SLUG) return b.slug === UNKNOWN_ORIGIN_SLUG ? 0 : 1
-    if (b.slug === UNKNOWN_ORIGIN_SLUG) return -1
-    return a.label.localeCompare(b.label)
+  return order.map(slug => {
+    const bucket = buckets.get(slug)!
+    const { id, label } = metaOf(slug)
+    return {
+      kind: "group",
+      id,
+      slug,
+      label,
+      count: bucket.length,
+      isOpen: false,
+      children: buildSessionRows(bucket, now),
+      variant,
+    }
   })
 }
 
 /** How the sessions panel groups its top level. `"none"` = the flat list;
  *  `"workspace"` = one group per registered workspace (+ CTAs); `"origin"` =
- *  one group per source (Claude Code desktop / VS Code / cron / …). */
-export type SessionGrouping = "none" | "workspace" | "origin"
+ *  one group per source (Claude Code desktop / VS Code / cron / …);
+ *  `"status"` = one group per state (Awaiting / Live / Failed / …). */
+export type SessionGrouping = "none" | "workspace" | "origin" | "status"
 
 export interface BuildSessionsRootsOptions {
   grouping: SessionGrouping
@@ -351,6 +425,7 @@ export function buildSessionsRoots(
   opts: BuildSessionsRootsOptions,
 ): RootNode[] {
   if (opts.grouping === "origin") return buildOriginGroups(sessions, now)
+  if (opts.grouping === "status") return buildStatusGroups(sessions, now)
   if (opts.grouping !== "workspace") return buildSessionRows(sessions, now)
   const ctas: RootNode[] = buildCreateWorkspaceCtas(config, openFolderPaths)
   const groups: RootNode[] = buildWorkspaceGroups(sessions, config, openFolderPaths, now, {

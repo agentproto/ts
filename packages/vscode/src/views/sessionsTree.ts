@@ -3,12 +3,13 @@
  * .plans/agentproto-vscode-workspace-tree/PLAN.md "PR B"). TreeDataProvider
  * on view id `agentproto.sessions`.
  *
- * Three top-level shapes, chosen by the `agentproto.groupByWorkspace` +
- * `agentproto.groupByOrigin` settings via `buildSessionsRoots`
- * (sessionsGroups.logic.ts) — `groupByOrigin` wins when both are on:
- *   - by source (groupByOrigin on): one GroupNode per origin — "Claude Code
- *     (desktop)", "VS Code extension", "cron", … — sessions bucketed by their
- *     ROOT's origin (agentproto.toggleGroupByOrigin).
+ * One grouping control — the `agentproto.sessionGrouping` setting
+ * (none/workspace/origin/status, picked via agentproto.setSessionGrouping) —
+ * drives `buildSessionsRoots` (sessionsGroups.logic.ts):
+ *   - by status: one GroupNode per state — Awaiting you / Live / Failed /
+ *     Stopped / Done — sessions bucketed by their ROOT's status.
+ *   - by source: one GroupNode per origin — "Claude Code (desktop)", "VS Code
+ *     extension", "cron", … — sessions bucketed by their ROOT's origin.
  *   - by workspace (default): one collapsible GroupNode per registered
  *     agentproto workspace, sessions assigned by cwd→longest-prefix (NOT the
  *     unreliable per-session workspaceSlug), plus a trailing "default
@@ -83,16 +84,23 @@ function openFolderPaths(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
 }
 
-/** Resolve the top-level grouping from the two independent boolean settings,
- *  read fresh on every rebuild (same pattern as spawn.ts's
- *  holdPermissionsSetting()). `groupByOrigin` WINS when both are on — it's the
- *  more specific "where did this come from" view; turning it off falls back to
- *  the workspace grouping, and turning that off too is the flat list. */
+const GROUPING_VALUES: readonly SessionGrouping[] = ["none", "workspace", "origin", "status"]
+
+function isGrouping(value: unknown): value is SessionGrouping {
+  return typeof value === "string" && (GROUPING_VALUES as readonly string[]).includes(value)
+}
+
+/** Resolve the single `agentproto.sessionGrouping` control, read fresh on every
+ *  rebuild (same pattern as spawn.ts's holdPermissionsSetting()). Migration: if
+ *  the new setting was never set, fall back to the legacy `groupByWorkspace`
+ *  boolean — an explicit `false` maps to "none", otherwise "workspace". */
 function groupingSetting(): SessionGrouping {
   const cfg = vscode.workspace.getConfiguration("agentproto")
-  if (cfg.get<boolean>("groupByOrigin", false)) return "origin"
-  if (cfg.get<boolean>("groupByWorkspace", true)) return "workspace"
-  return "none"
+  const inspected = cfg.inspect<string>("sessionGrouping")
+  const explicit =
+    inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? inspected?.globalValue
+  if (isGrouping(explicit)) return explicit
+  return cfg.get<boolean>("groupByWorkspace", true) ? "workspace" : "none"
 }
 
 export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, vscode.Disposable {
@@ -134,6 +142,12 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   /** Sessions present in the store but excluded by the current filter. */
   get hiddenCount(): number {
     return this._hiddenCount
+  }
+
+  /** Current top-level nodes — used by the "Expand All" command to reveal each
+   *  group (VS Code ships a collapse-all button but no expand-all). */
+  get rootNodes(): readonly RootNode[] {
+    return this.nodes
   }
 
   /** Force a rebuild from outside a store/filter/seen event — the
@@ -277,6 +291,9 @@ function groupTreeItem(group: GroupNode): vscode.TreeItem {
   if (group.variant === "origin") {
     item.contextValue = "origin-group"
     item.iconPath = new vscode.ThemeIcon("plug")
+  } else if (group.variant === "status") {
+    item.contextValue = "status-group"
+    item.iconPath = new vscode.ThemeIcon("pulse")
   } else {
     item.contextValue = "workspace-group"
     item.iconPath = new vscode.ThemeIcon(group.isOpen ? "root-folder-opened" : "root-folder")
@@ -341,28 +358,58 @@ export function registerSessionsView(
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
-        e.affectsConfiguration("agentproto.groupByWorkspace") ||
-        e.affectsConfiguration("agentproto.groupByOrigin")
+        e.affectsConfiguration("agentproto.sessionGrouping") ||
+        e.affectsConfiguration("agentproto.groupByWorkspace")
       ) {
         provider.refresh()
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()),
-    vscode.commands.registerCommand("agentproto.toggleGroupByWorkspace", async () => {
-      const cfg = vscode.workspace.getConfiguration("agentproto")
-      const next = !cfg.get<boolean>("groupByWorkspace", true)
-      await cfg.update("groupByWorkspace", next, vscode.ConfigurationTarget.Global)
-      vscode.window.setStatusBarMessage(
-        `agentproto: sessions grouped by workspace ${next ? "on" : "off"}`,
-        3000,
-      )
+    // One control for the whole grouping dimension — a QuickPick over the four
+    // mutually-exclusive modes, so the panel can never land in a confusing
+    // "both toggles off" state.
+    vscode.commands.registerCommand("agentproto.setSessionGrouping", async () => {
+      const current = groupingSetting()
+      const items: (vscode.QuickPickItem & { value: SessionGrouping })[] = [
+        { value: "workspace", label: "$(root-folder) Workspace", description: "by registered workspace" },
+        { value: "origin", label: "$(plug) Source", description: "by where it was launched (Claude Code, VS Code, cron…)" },
+        { value: "status", label: "$(pulse) Status", description: "by state (awaiting, live, failed…)" },
+        { value: "none", label: "$(list-flat) None (flat)", description: "one flat list" },
+      ]
+      for (const item of items) if (item.value === current) item.description += "  ✓ current"
+      const pick = await vscode.window.showQuickPick(items, {
+        title: "Group Sessions By",
+        placeHolder: "Choose how to group the Sessions panel",
+      })
+      if (!pick || pick.value === current) return
+      await vscode.workspace
+        .getConfiguration("agentproto")
+        .update("sessionGrouping", pick.value, vscode.ConfigurationTarget.Global)
     }),
-    vscode.commands.registerCommand("agentproto.toggleGroupByOrigin", async () => {
-      const cfg = vscode.workspace.getConfiguration("agentproto")
-      const next = !cfg.get<boolean>("groupByOrigin", false)
-      await cfg.update("groupByOrigin", next, vscode.ConfigurationTarget.Global)
+    // Expand All — VS Code's tree ships a collapse-all button (showCollapseAll)
+    // but no expand-all, so grouped views can only be re-opened one group at a
+    // time. Reveal each top-level group expanded (VS Code caps expand depth at
+    // 3, which covers a group → its sessions → one nesting level).
+    vscode.commands.registerCommand("agentproto.expandAllSessions", async () => {
+      for (const node of provider.rootNodes) {
+        if (!isGroupNode(node)) continue
+        try {
+          await view.reveal(node, { expand: 3, select: false, focus: false })
+        } catch {
+          // reveal can reject if the node is momentarily gone (a rebuild raced
+          // this loop) — skip it; the next group still expands.
+        }
+      }
+    }),
+    // Back-compat alias for the released command / any user keybinding: flip
+    // between workspace grouping and the flat list via the new setting.
+    vscode.commands.registerCommand("agentproto.toggleGroupByWorkspace", async () => {
+      const next: SessionGrouping = groupingSetting() === "workspace" ? "none" : "workspace"
+      await vscode.workspace
+        .getConfiguration("agentproto")
+        .update("sessionGrouping", next, vscode.ConfigurationTarget.Global)
       vscode.window.setStatusBarMessage(
-        `agentproto: sessions grouped by source ${next ? "on (workspace grouping paused)" : "off"}`,
+        `agentproto: sessions grouped by workspace ${next === "workspace" ? "on" : "off"}`,
         3000,
       )
     }),

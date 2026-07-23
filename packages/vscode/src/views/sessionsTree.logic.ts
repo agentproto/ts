@@ -342,6 +342,50 @@ export function activityFor(session: SessionDescriptor, now?: number): SessionAc
   return "idle"
 }
 
+/** Coarse status buckets for the "group by status" view — the same taxonomy
+ *  the status FILTER uses (sessionFilter.logic.ts), folded from the finer
+ *  {@link SessionActivity}. `awaiting` first (most actionable), `done` last. */
+export type StatusCategory = "awaiting" | "live" | "failed" | "stopped" | "done"
+
+/** Display order for status groups — attention-first. */
+export const STATUS_CATEGORY_ORDER: readonly StatusCategory[] = [
+  "awaiting",
+  "live",
+  "failed",
+  "stopped",
+  "done",
+]
+
+const STATUS_CATEGORY_LABELS: Record<StatusCategory, string> = {
+  awaiting: "Awaiting you",
+  live: "Live",
+  failed: "Failed",
+  stopped: "Stopped",
+  done: "Done",
+}
+
+export function statusCategoryLabel(category: StatusCategory): string {
+  return STATUS_CATEGORY_LABELS[category]
+}
+
+/** Fold a session's fine-grained activity into its coarse status bucket. */
+export function statusCategoryFor(session: SessionDescriptor, now?: number): StatusCategory {
+  switch (activityFor(session, now)) {
+    case "needs-you":
+      return "awaiting"
+    case "working":
+    case "idle":
+    case "stalled":
+      return "live"
+    case "failed":
+      return "failed"
+    case "stopped":
+      return "stopped"
+    case "done":
+      return "done"
+  }
+}
+
 /**
  * Icon per activity. The alphabet is deliberately small, and shaped so weight
  * carries meaning rather than decoration:

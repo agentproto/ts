@@ -163,16 +163,27 @@
         "icon": "$(archive)"
       },
       {
-        "command": "agentproto.toggleGroupByWorkspace",
-        "title": "agentproto: Toggle Group Sessions By Workspace",
+        "command": "agentproto.setSessionGrouping",
+        "title": "agentproto: Group Sessions By…",
         "category": "agentproto",
         "icon": "$(group-by-ref-type)"
       },
       {
-        "command": "agentproto.toggleGroupByOrigin",
-        "title": "agentproto: Toggle Group Sessions By Source",
+        "command": "agentproto.expandAllSessions",
+        "title": "agentproto: Expand All Sessions",
         "category": "agentproto",
-        "icon": "$(plug)"
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "agentproto.cleanEndedSessions",
+        "title": "agentproto: Clean Up Ended Sessions",
+        "category": "agentproto",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "agentproto.toggleGroupByWorkspace",
+        "title": "agentproto: Toggle Group Sessions By Workspace",
+        "category": "agentproto"
       },
       {
         "command": "agentproto.createWorkspace",
@@ -364,12 +375,17 @@
           "group": "navigation"
         },
         {
-          "command": "agentproto.toggleGroupByWorkspace",
+          "command": "agentproto.setSessionGrouping",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
         },
         {
-          "command": "agentproto.toggleGroupByOrigin",
+          "command": "agentproto.expandAllSessions",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        },
+        {
+          "command": "agentproto.cleanEndedSessions",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
         },
@@ -555,15 +571,28 @@
           "default": true,
           "description": "Ask before stopping a session. When off, Stop terminates the agent immediately with no prompt — its transcript stays readable and the post-stop notification offers Restart. Turn this off here, or from the confirmation dialog itself via \"Stop and don't ask again\"."
         },
+        "agentproto.sessionGrouping": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "origin",
+            "status",
+            "none"
+          ],
+          "enumDescriptions": [
+            "One group per registered agentproto workspace (open folders first).",
+            "One group per source — Claude Code (desktop), VS Code, cron, … — by the root session's origin.",
+            "One group per state — Awaiting you, Live, Failed, Stopped, Done — by the root session's status.",
+            "A single flat session list, no groups."
+          ],
+          "default": "workspace",
+          "description": "How the Sessions panel groups its top level. Pick from the panel's toolbar (agentproto: Group Sessions By…)."
+        },
         "agentproto.groupByWorkspace": {
           "type": "boolean",
           "default": true,
-          "description": "Group the Sessions panel by registered agentproto workspace, with the workspace(s) matching your open folder(s) sorted first and expanded. Off restores the flat session list. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Workspace)."
-        },
-        "agentproto.groupByOrigin": {
-          "type": "boolean",
-          "default": false,
-          "description": "Group the Sessions panel by source — Claude Code (desktop), VS Code extension, cron, … — so you can see where each root session was launched from. Sessions nest under their root's source. When on, this takes precedence over Group By Workspace. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Source)."
+          "deprecationMessage": "Superseded by agentproto.sessionGrouping. Still honoured for migration when sessionGrouping is unset (false → \"none\", otherwise \"workspace\").",
+          "description": "Deprecated — use agentproto.sessionGrouping. Group the Sessions panel by registered agentproto workspace. Off restores the flat session list."
         },
         "agentproto.autoAdoptLocalLogin": {
           "type": "string",
