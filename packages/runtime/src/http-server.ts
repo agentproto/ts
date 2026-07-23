@@ -29,6 +29,7 @@ import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
+import { ZodError } from "zod"
 import type { ConversationStore } from "./conversations.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
@@ -110,7 +111,13 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
-import { getUserPreset, listUserPresets } from "./user-presets.js"
+import {
+  deleteUserPreset,
+  getUserPreset,
+  listUserPresets,
+  saveUserPreset,
+  type UserPreset,
+} from "./user-presets.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { listPresets } from "./preset-tools.js"
@@ -2197,6 +2204,54 @@ export async function startHttpServer(
         if (path === "/user-presets" && req.method === "GET") {
           res.writeHead(200, { "content-type": "application/json" })
           res.end(JSON.stringify({ presets: await listUserPresets() }))
+          return
+        }
+        // POST /user-presets — create or update a favorite (upsert by id).
+        // `saveUserPreset` is the single validation boundary (the same Zod
+        // parse the CLI goes through), so a bad body surfaces as a 400 with
+        // the parse message rather than a silent 500. Token-gated like the
+        // other filesystem-mutating routes (POST /workspaces above): a preset
+        // pins a `cwd` the daemon will later spawn into and a profileRef the
+        // spawn bills against, so it earns the same protection as a GET does
+        // not. The body still carries only a profileRef *reference*, never
+        // credential material.
+        if (path === "/user-presets" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as Partial<UserPreset> | null
+          try {
+            await saveUserPreset((body ?? {}) as UserPreset)
+            const saved = await getUserPreset(String(body?.id ?? ""))
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ preset: saved }))
+          } catch (err) {
+            const status = err instanceof ZodError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: err instanceof ZodError ? "invalid_input" : "save_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        // DELETE /user-presets/:id — remove a favorite. 404 when it never
+        // existed, mirroring DELETE /auth/profiles/:id above.
+        const userPresetMatch = path.match(/^\/user-presets\/(.+)$/)
+        if (userPresetMatch && req.method === "DELETE") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = decodeURIComponent(userPresetMatch[1] ?? "")
+          const deleted = await deleteUserPreset(id)
+          res.writeHead(deleted ? 200 : 404, { "content-type": "application/json" })
+          res.end(JSON.stringify({ deleted }))
           return
         }
 

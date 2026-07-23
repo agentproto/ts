@@ -562,6 +562,37 @@ export class DaemonClient {
   }
 
   /**
+   * POST /user-presets — create or update a saved favorite (upsert by id),
+   * the isomorphic counterpart to the CLI's `agentproto preset save`. Backs
+   * the sessions tree's "Save as favorite…" action. Throws on a daemon
+   * without the write route (a 404 there means "old daemon", surfaced as the
+   * generic HTTP error) or on an invalid body (400 with the daemon's Zod
+   * parse message). Returns the saved preset the daemon echoes back.
+   */
+  async saveUserPreset(preset: UserPreset): Promise<UserPreset> {
+    const body = await this.postJson<{ preset?: UserPreset }>("/user-presets", preset)
+    return body.preset ?? preset
+  }
+
+  /**
+   * DELETE /user-presets/:id — remove a saved favorite. Resolves `false`
+   * when the id was already absent (the daemon's 404), `true` on a delete.
+   */
+  async deleteUserPreset(id: string): Promise<boolean> {
+    const res = await this.authedFetch(`/user-presets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) return false
+    if (!res.ok) {
+      throw new Error(`DELETE /user-presets failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as { deleted?: boolean }
+    return body.deleted ?? true
+  }
+
+  /**
    * POST /workspaces — register a folder as an agentproto workspace, the
    * isomorphic counterpart to the CLI's `agentproto workspace add` (body
    * `{ path, slug?, label? }`, response is the updated WorkspacesConfig).

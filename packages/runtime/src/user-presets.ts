@@ -44,6 +44,15 @@ export interface UserPreset extends Partial<SessionConfig> {
   posture?: Posture
   effort?: EffortLevel
   contextProfile?: ContextProfile
+  /** Working directory the favorite pins to. When set, a spawn from this
+   *  preset lands here regardless of the caller's active folder — the axis
+   *  that makes a favorite fully location-pinned (true zero-input). Omitted
+   *  means the caller's cwd ladder resolves it as before. */
+  cwd?: string
+  /** Skills to preload for a spawn from this preset — the same axis as
+   *  `SpawnAgentSessionInput.skills`. Omitted means the adapter/defaults
+   *  decide. */
+  skills?: string[]
 }
 
 const userPresetSchema = z.object({
@@ -57,6 +66,8 @@ const userPresetSchema = z.object({
   posture: postureSchema.optional(),
   effort: effortSchema.optional(),
   contextProfile: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  skills: z.array(z.string().min(1)).optional(),
 }) satisfies z.ZodType<UserPreset>
 
 const userPresetsFileSchema = z.object({
