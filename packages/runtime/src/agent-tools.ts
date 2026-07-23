@@ -196,6 +196,14 @@ export interface RegisterAgentToolsOptions {
    *  Absent → full visibility, depth-0 spawns, no parent (today's root
    *  behaviour). */
   callerScope?: OrchestratorScope
+  /** Daemon-derived id of the session driving THIS `/mcp` request, parsed from
+   *  the trusted `?callerSessionId=` query the self-ref `mcpServers` URL
+   *  carries (PR 7 / Gap 7). On the plain `/mcp` path (no `callerScope`) it is
+   *  the implicit auto-parent: a spawn made by this session attaches under it
+   *  by default (see `spawn-attach.ts`), so a supervisor's executors nest
+   *  instead of orphaning. Absent → no auto-parent (attribution falls back to
+   *  an explicit `parentSessionId` hint, if any). */
+  callerSessionId?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -236,6 +244,7 @@ export function registerAgentTools(
     listCatalogModels,
     buildOrchestratorMcp,
     callerScope,
+    callerSessionId,
     webhookNotifier,
     daemonMcpUrl,
     loadRoleRegistry,
@@ -342,6 +351,22 @@ export function registerAgentTools(
             "from the parent (parent depth + 1); you don't set it. Ignored when this " +
             "call arrives through the scoped orchestrator gateway — that path derives " +
             "the parent from its own token, which always wins over this hint."
+        ),
+      attach: jsonTolerant(
+        z.union([z.boolean(), z.object({ parent: z.string().min(1).optional() })]),
+      )
+        .optional()
+        .describe(
+          "Parent-attach control, mirroring `worktree`. By DEFAULT (omitted) a " +
+            "spawn attaches under the session that made it — the daemon derives " +
+            "that parent from the trusted caller id, so a supervisor's executors " +
+            "nest instead of appearing as depth-0 roots, no `parentSessionId` " +
+            "needed. Pass `false` to launch an INDEPENDENT root (no parent) — the " +
+            "deliberate detached spawn. `true` forces attach even under an " +
+            "`on-request` daemon policy; `{ parent: \"<id>\" }` pins an explicit " +
+            "parent. Ignored when this call arrives through the scoped " +
+            "orchestrator gateway (the scope token wins). Descriptor-only lineage: " +
+            "never relaxes a depth-gated worktree/role guard."
         ),
       boardId: z
         .string()
@@ -763,6 +788,11 @@ export function registerAgentTools(
         {
           ...spawnInput,
           adapter,
+          // The trusted caller id (from `?callerSessionId=`) becomes the
+          // implicit auto-parent — attach-by-default without the caller
+          // passing its own id. An explicit `parentSessionId` still outranks
+          // it in `decideSpawnAttach`.
+          ...(callerSessionId ? { autoParentSessionId: callerSessionId } : {}),
           ...(rawPosture ? { posture: parsePostureInput(rawPosture) } : {}),
           ...(preset ? { preset } : {}),
         },

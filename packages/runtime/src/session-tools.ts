@@ -83,8 +83,56 @@ export interface SessionTreeNode {
   depth: number
   adapterSlug?: string
   parentSessionId?: string
+  /** Source label this session was spawned from ("claude-code", "vscode",
+   *  "cron", …) — the descriptor's `origin`. Present on every node, but it's
+   *  the ROOT nodes (client-launched sessions) whose origin is the meaningful
+   *  grouping key; see `groupRootsByOrigin`. */
+  origin?: string
   isOrchestrator: boolean
   children: SessionTreeNode[]
+}
+
+/** The stable bucket key for a root with no `origin` on its descriptor (a
+ *  client that connected without announcing a `clientInfo`, or an in-repo
+ *  spawn that set none). Kept explicit so the grouped view never drops roots
+ *  into an unlabeled void. */
+export const UNKNOWN_ORIGIN = "unknown"
+
+/**
+ * One origin bucket: the source label and the root session subtrees launched
+ * from it. Built by {@link groupRootsByOrigin} for the "group my sessions by
+ * where they came from" view (claude-code desktop vs vscode extension vs
+ * cron), which flat `parentSessionId` nesting can't express — a human-launched
+ * root has no agent parent to nest under, so origin is its only cluster key.
+ */
+export interface OriginGroup {
+  origin: string
+  sessions: SessionTreeNode[]
+}
+
+/**
+ * Group already-built tree ROOTS by their `origin`, preserving each root's
+ * nested `children` untouched. Only top-level roots are bucketed — a child
+ * keeps nesting under its real parent regardless of its own origin. Buckets
+ * are ordered by first appearance (roots arrive pre-sorted by `startedAt`);
+ * within a bucket, root order is preserved. Roots with no origin fall into the
+ * `UNKNOWN_ORIGIN` bucket rather than being dropped.
+ */
+export function groupRootsByOrigin(
+  roots: readonly SessionTreeNode[],
+): OriginGroup[] {
+  const order: string[] = []
+  const byOrigin = new Map<string, SessionTreeNode[]>()
+  for (const root of roots) {
+    const key = root.origin ?? UNKNOWN_ORIGIN
+    const bucket = byOrigin.get(key)
+    if (bucket) bucket.push(root)
+    else {
+      byOrigin.set(key, [root])
+      order.push(key)
+    }
+  }
+  return order.map(origin => ({ origin, sessions: byOrigin.get(origin)! }))
 }
 
 /**
@@ -119,6 +167,7 @@ export function buildSessionTree(
     depth: s.depth ?? 0,
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+    ...(s.origin ? { origin: s.origin } : {}),
     isOrchestrator: orchestratorIds.has(s.id),
     children: (childrenOf.get(s.id) ?? [])
       .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
@@ -187,6 +236,10 @@ export interface RegisterSessionToolsOptions {
    *  Absent → full visibility, depth-0 spawns, no parent (today's root
    *  behaviour). */
   callerScope?: OrchestratorScope
+  /** Forwarded to `registerAgentTools` — the trusted `?callerSessionId=` of
+   *  this `/mcp` request, used as the implicit auto-parent for attach-by-
+   *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
+  callerSessionId?: string
   /** Optional webhook notifier — when provided, per-session `notifyUrl`
    *  values from `agent_start` are registered on spawn and
    *  unregistered on exit via the session-event bus. */
@@ -877,9 +930,14 @@ export function registerSessionTools(
         )
       }
       const tree = buildSessionTree(rows)
+      // Additive companion view: the same roots bucketed by `origin` so a
+      // client can show "claude-code desktop vs vscode extension vs cron"
+      // groups — the human-launched roots have no agent parent to nest under,
+      // so origin is their only cluster key. `tree` is unchanged.
+      const byOrigin = groupRootsByOrigin(tree)
       return {
         content: [
-          { type: "text", text: JSON.stringify({ tree }, null, 2) },
+          { type: "text", text: JSON.stringify({ tree, byOrigin }, null, 2) },
         ],
       }
     },

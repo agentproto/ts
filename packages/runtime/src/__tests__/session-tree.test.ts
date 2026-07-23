@@ -17,7 +17,9 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import {
   buildSessionTree,
+  groupRootsByOrigin,
   registerSessionTools,
+  UNKNOWN_ORIGIN,
   type SessionTreeNode,
 } from "../session-tools.js"
 import {
@@ -55,6 +57,7 @@ function spawnNode(
   parentSessionId?: string,
   depth = 0,
   label?: string,
+  origin?: string,
 ): SessionDescriptor {
   return registry.spawnAgent({
     workspaceSlug: "w",
@@ -64,6 +67,7 @@ function spawnNode(
     ...(parentSessionId ? { parentSessionId } : {}),
     depth,
     ...(label ? { label } : {}),
+    ...(origin ? { origin } : {}),
   })
 }
 
@@ -219,6 +223,57 @@ describe("buildSessionTree", () => {
     const childNode = rootNode.children[0]!
     expect(childNode.parentSessionId).toBe(root.id)
     expect(childNode.id).toBe(child.id)
+  })
+
+  it("carries the descriptor's origin onto the node", () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    spawnNode(registry, undefined, 0, "root", "vscode")
+    const tree = buildSessionTree(registry.list())
+    expect(tree[0]!.origin).toBe("vscode")
+  })
+})
+
+// ── (a2) groupRootsByOrigin — origin bucketing of roots ──────────────────────
+
+describe("groupRootsByOrigin", () => {
+  it("buckets roots by origin, preserving each subtree", () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const desktop = spawnNode(registry, undefined, 0, "desktop-root", "claude-code")
+    spawnNode(registry, desktop.id, 1, "desktop-child")
+    spawnNode(registry, undefined, 0, "vscode-root", "vscode")
+
+    const groups = groupRootsByOrigin(buildSessionTree(registry.list()))
+    const byKey = new Map(groups.map(g => [g.origin, g]))
+    expect(byKey.get("claude-code")!.sessions).toHaveLength(1)
+    // the desktop root keeps its child nested inside its bucket
+    expect(byKey.get("claude-code")!.sessions[0]!.children).toHaveLength(1)
+    expect(byKey.get("vscode")!.sessions).toHaveLength(1)
+  })
+
+  it("groups originless roots under UNKNOWN_ORIGIN rather than dropping them", () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    spawnNode(registry, undefined, 0, "orphan-a")
+    spawnNode(registry, undefined, 0, "orphan-b")
+
+    const groups = groupRootsByOrigin(buildSessionTree(registry.list()))
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.origin).toBe(UNKNOWN_ORIGIN)
+    expect(groups[0]!.sessions).toHaveLength(2)
+  })
+
+  it("only top-level roots are bucketed — children keep nesting under parents", () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const root = spawnNode(registry, undefined, 0, "root", "cron")
+    // child with a DIFFERENT origin must NOT surface as its own bucket
+    spawnNode(registry, root.id, 1, "child", "vscode")
+
+    const groups = groupRootsByOrigin(buildSessionTree(registry.list()))
+    expect(groups.map(g => g.origin)).toEqual(["cron"])
+    expect(groups[0]!.sessions[0]!.children).toHaveLength(1)
   })
 })
 

@@ -402,6 +402,82 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toBeUndefined()
   })
 
+  it("(c) stamps callerSessionId onto a CALLER-provided mcpServers entry that targets the daemon (identity ≠ capability)", async () => {
+    // A claude-code supervisor pointed at the daemon explicitly: the daemon
+    // grants no new tools, but identity-stamps the entry so this session's
+    // sub-agents auto-attach under it. Non-hermes, caller-supplied — the path
+    // the hermes-only default never covered.
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl,
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      mcpServers: [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }],
+    })
+    expect(result.ok).toBe(true)
+    const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
+    expect(captured[0]?.mcpServers).toEqual([
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+    ])
+  })
+
+  it("(c) leaves a caller mcpServers entry that does NOT target this daemon untouched", async () => {
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl: "http://127.0.0.1:18790/mcp",
+    })
+
+    const foreign = { name: "other", transport: "http" as const, ref: "https://example.com/mcp" }
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      mcpServers: [foreign],
+    })
+    expect(result.ok).toBe(true)
+    // untouched: not the daemon's own endpoint → no callerSessionId appended
+    expect(captured[0]?.mcpServers).toEqual([foreign])
+  })
+
+  it("(c) does not double-stamp a caller entry that already carries callerSessionId", async () => {
+    const captured: { mcpServers?: AcpMcpServer[] }[] = []
+    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
+      captured.push({ mcpServers: opts.mcpServers })
+      return fakeAgentSession()
+    })
+    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      daemonMcpUrl,
+    })
+
+    const preset = {
+      name: "agentproto",
+      transport: "http" as const,
+      ref: `${daemonMcpUrl}?callerSessionId=explicit-id`,
+    }
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      mcpServers: [preset],
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers).toEqual([preset])
+  })
+
   it("(d) folds config defaults.skills into options.skills per the adapter's declared shape", async () => {
     const captured: { options?: Record<string, boolean | number | string> }[] = []
     const startSession = vi.fn(

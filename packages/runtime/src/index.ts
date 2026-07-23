@@ -1282,6 +1282,11 @@ export async function createGateway(
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
       buildOrchestratorMcp: orchestratorInjector,
+      // Same `?callerSessionId=` query that attributes `command_execute` back
+      // to the calling session (above) — here it's the implicit auto-parent so
+      // a spawn made by an agent session attaches under it by default (see
+      // spawn-attach.ts). Absent on a human/root `/mcp` call → no auto-parent.
+      ...(callerSessionId ? { callerSessionId } : {}),
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,

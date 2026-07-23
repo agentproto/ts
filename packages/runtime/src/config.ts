@@ -163,6 +163,34 @@ export interface WorktreesConfig {
   isolation?: WorktreeIsolationMode
 }
 
+/**
+ * Policy for `agent_start.attach` — whether a spawn AUTO-attaches to its
+ * calling session as parent lineage. `"always"` (the default) nests a
+ * spawned child under the session that spawned it whenever that identity is
+ * derivable (the trusted `?callerSessionId=` on the daemon self-ref URL, or
+ * an explicit `parentSessionId` hint), so a supervisor's executors stop
+ * landing as depth-0 orphans. `"on-request"` reverts to the pre-attach
+ * behaviour: auto-attribution is off, and a child nests only when the caller
+ * explicitly opts in (`attach: true` / `attach: { parent }` / an explicit
+ * `parentSessionId`). Either way a per-call `attach: false` forces an
+ * independent root, exactly as `worktree: false` opts out of isolation. See
+ * `spawn-attach.ts`.
+ */
+export type SpawnAttachMode = "always" | "on-request"
+
+export interface SpawnConfig {
+  /**
+   * Attach policy for `agent_start`. Resolution order mirrors the module
+   * docblock (no CLI flag — a daemon-side policy read at spawn):
+   * `AGENTPROTO_SPAWN_ATTACH` env > this field > the hardcoded default
+   * `"always"`. Unlike `worktrees.isolation` (whose default preserves
+   * back-compat by NOT isolating), attach defaults ON: an orphaned executor
+   * is a bug, not a feature, and the auto-parent is descriptor-only lineage
+   * that never relaxes a privilege gate.
+   */
+  attach?: SpawnAttachMode
+}
+
 export interface PairingConfig {
   /** Rendezvous broker WS URL (ws:// or wss://) used by `pair offer` and by
    *  autoconnect on boot. When unset, `pair offer` requires an explicit
@@ -274,6 +302,8 @@ export interface AgentprotoConfig {
   /** Where `agentproto worktree new` creates worktrees. See
    *  {@link WorktreesConfig}. */
   worktrees?: WorktreesConfig
+  /** Spawn-time policy (`agent_start`). See {@link SpawnConfig}. */
+  spawn?: SpawnConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */
