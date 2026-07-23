@@ -229,6 +229,9 @@ export type {
   PermissionRespondInput,
   PermissionRespondResult,
 } from "./sessions.js"
+// Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
+// PR-4's eager pass) — not a type-only export like the block above.
+export { ResumeDisabledError } from "./sessions.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
