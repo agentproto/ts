@@ -39,6 +39,8 @@ import type {
   CreateAuthProfileRequest,
   CreatedAuthProfileResult,
   DaemonHealth,
+  DiscoveredCredential,
+  ImportCredentialRequest,
   PendingPermission,
   ProviderPresetEntry,
   RouteSpec,
@@ -584,6 +586,39 @@ export class DaemonClient {
     )
     const profile = result.profile
     if (!profile) throw new Error("auth_profile_set_models returned no profile")
+    return profile
+  }
+
+  /**
+   * `auth_discover_credentials` — read-only scan of the known local credential
+   * locations (Claude Code Keychain/OAuth file, Codex/Gemini logins,
+   * `~/.hermes/config.yaml`, provider env keys). Returns found-but-not-imported
+   * credentials with provenance and a non-secret `hint` locator only — NEVER a
+   * credential value.
+   */
+  async discoverCredentials(): Promise<DiscoveredCredential[]> {
+    const result = await this.mcpCall<
+      { credentials?: DiscoveredCredential[] } | DiscoveredCredential[]
+    >("auth_discover_credentials")
+    if (Array.isArray(result)) return result
+    return result.credentials ?? []
+  }
+
+  /**
+   * `auth_profile_import` — materialize a credential DISCOVERED by
+   * `discoverCredentials()` into a named auth profile (WS6). Source-backed
+   * where possible, else the daemon COPIES the located api-key into the
+   * keychain. No secret crosses the wire — the daemon reads it locally. The
+   * result is non-secret metadata + a one-way fingerprint + the stamped
+   * `origin`, never the credential.
+   */
+  async importCredential(req: ImportCredentialRequest): Promise<CreatedAuthProfileResult> {
+    const result = await this.mcpCall<{ profile?: CreatedAuthProfileResult }>(
+      "auth_profile_import",
+      { ...req },
+    )
+    const profile = result.profile
+    if (!profile) throw new Error("auth_profile_import returned no profile")
     return profile
   }
 

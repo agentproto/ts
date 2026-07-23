@@ -74,4 +74,13 @@ export interface AuthProfile {
    *  — services every eligible model, byte-identical to a profile that
    *  predates this field. See {@link ModelCuration}. */
   models?: ModelCuration
+  /** Provenance: where this profile's credential was IMPORTED from, when it
+   *  was materialized by the WS6 discovery→import flow
+   *  (`auth_profile_import`) rather than created by hand. One of the discovery
+   *  origins (`claude-code`, `hermes-config`, `env`, `codex`, `gemini`). Purely
+   *  informational — it drives the panel's "imported from <origin>" badge and
+   *  nothing in the spawn/eligibility path. ABSENT for a hand-created profile.
+   *  Kept as `string` (not a union) to stay decoupled, same rationale as
+   *  {@link endpoint}. */
+  origin?: string
 }

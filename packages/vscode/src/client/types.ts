@@ -442,6 +442,10 @@ export interface AuthProfileSummary {
   /** Trailing 4 chars of the stored secret — present only when
    *  `keyStatus === "stored"` and the secret is long enough. */
   last4?: string
+  /** Provenance (WS6) — the discovery origin this profile was imported from
+   *  (`auth_profile_import`). Absent for a hand-created profile. Drives the
+   *  panel's "imported from <origin>" badge. */
+  origin?: string
 }
 
 /** Request body for `auth_profile_create`. `credential` is INPUT-only — the
@@ -467,7 +471,38 @@ export interface CreatedAuthProfileResult {
   credentialRef?: string
   source?: string
   label?: string
+  /** Provenance stamped at import time (WS6) — the discovery origin. Absent
+   *  for a hand-created profile. */
+  origin?: string
   fingerprint?: string
+}
+
+/** Request body for `auth_profile_import` (WS6). Names a credential DISCOVERED
+ *  by `auth_discover_credentials`; the daemon materializes it into a profile.
+ *  No secret crosses the wire — the daemon reads it locally. */
+export interface ImportCredentialRequest {
+  origin: CredentialOrigin
+  endpoint: string
+  id?: string
+  label?: string
+}
+
+/** Where a discovered credential came from (`auth_discover_credentials`). */
+export type CredentialOrigin =
+  | "claude-code"
+  | "hermes-config"
+  | "env"
+  | "codex"
+  | "gemini"
+
+/** One found-but-not-imported credential from `auth_discover_credentials` — a
+ *  read-only scan of the known local credential locations. Carries provenance
+ *  and a non-secret `hint` locator only; NEVER the credential value. */
+export interface DiscoveredCredential {
+  endpoint: string
+  method: AuthMethod
+  origin: CredentialOrigin
+  hint: string
 }
 
 /** One entry from `list_provider_presets`. */
