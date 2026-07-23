@@ -1052,6 +1052,32 @@ export async function spawnAgentSession(
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
   }
+  // ── Identity stamp: decouple attribution from capability ────────
+  // Ensure EVERY mcpServers entry that targets THIS daemon's own `/mcp`
+  // endpoint carries `callerSessionId=<own id>`, so any spawn this child makes
+  // back through it attributes to the child (→ auto-parent, see
+  // spawn-attach.ts) — regardless of adapter, and regardless of whether the
+  // daemon default-injected the entry (the hermes case above, already stamped
+  // and skipped as idempotent) or the CALLER supplied it (e.g. a claude-code
+  // supervisor explicitly pointed at the daemon). This grants NO new
+  // capability — it only identity-stamps daemon access the session already has
+  // — which is why it's safe to apply uniformly. The scoped orchestrator entry
+  // (`/mcp/orchestrator?scope=…`) attributes via its own token and sits on a
+  // deeper path than `daemonMcpUrl`, so the exact-path match below leaves it
+  // untouched. A caller who set `callerSessionId` themselves is respected.
+  if (daemonMcpUrl && mcpServers) {
+    const daemonQ = `${daemonMcpUrl}?`
+    mcpServers = mcpServers.map(entry => {
+      if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+      const targetsDaemon = entry.ref === daemonMcpUrl || entry.ref.startsWith(daemonQ)
+      if (!targetsDaemon || entry.ref.includes("callerSessionId=")) return entry
+      const sep = entry.ref.includes("?") ? "&" : "?"
+      return {
+        ...entry,
+        ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(mintedSessionId)}`,
+      }
+    })
+  }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
