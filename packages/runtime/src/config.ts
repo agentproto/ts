@@ -70,6 +70,19 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.resumeSessionsOnBoot true`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   resumeSessionsOnBoot?: boolean
+  /** Idle agent-session reaper (PR-6). When set to a positive number of
+   *  milliseconds, the daemon periodically retires agent-cli sessions that have
+   *  been idle (not busy, not awaiting input, `status:"running"`) longer than
+   *  this: it SIGTERMs the adapter child to free the process and flips the row
+   *  to `killed`/`endedReason:"idle-reaped"` — dead-but-lazy-resumable (a later
+   *  prompt revives it) and, critically, excluded from eager resume-on-boot
+   *  (#638 gates on `endedReason === "daemon-restart"`), so enabling this makes
+   *  eager resume safe: only genuinely-recent work survives a restart. Default
+   *  OFF (unset / 0 / negative ⇒ the reaper never runs). Resolution order
+   *  mirrors the module docblock: `AGENTPROTO_IDLE_REAP_AFTER_MS` env > this
+   *  field > off. Set via `agentproto config set daemon.idleReapAfterMs
+   *  <ms>`. Surfaced in `daemon_health` / `GET /health`. */
+  idleReapAfterMs?: number
 }
 
 export interface TunnelConfig {

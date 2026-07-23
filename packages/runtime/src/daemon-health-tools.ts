@@ -23,6 +23,11 @@ export interface RegisterDaemonHealthToolsOptions {
    *  surfaced so an operator can confirm whether a restart will eagerly revive
    *  sessions or leave them dead-but-lazy-resumable. */
   resumeSessionsOnBoot: boolean
+  /** Effective value of the `daemon.idleReapAfterMs` knob (PR-6) — the idle
+   *  threshold (ms) after which the reaper retires an idle agent-cli session,
+   *  or 0 when the reaper is off. Surfaced so an operator can confirm whether
+   *  idle sessions are being retired (and thus kept out of eager resume). */
+  idleReapAfterMs: number
 }
 
 function text(value: string | object): {
@@ -57,6 +62,7 @@ export function registerDaemonHealthTools(
         registered: opts.registered,
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
+        idleReapAfterMs: opts.idleReapAfterMs,
       })
     },
   )

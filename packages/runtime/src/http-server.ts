@@ -630,6 +630,10 @@ export interface RuntimeHttpServerOptions {
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
+    /** Effective `daemon.idleReapAfterMs` knob (PR-6) — idle threshold (ms)
+     *  before the reaper retires an idle agent-cli session, or 0 when off. Kept
+     *  in sync with the `daemon_health` MCP tool's field of the same name. */
+    idleReapAfterMs?: number
   }
 }
 
@@ -1032,6 +1036,7 @@ export async function startHttpServer(
         registered: opts.meta.registered,
         uptimeMs: Date.now() - startedAt,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
+        idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
       }),
     )
   }

@@ -19,6 +19,7 @@ async function buildHarness(
   startedAt: number,
   deferred = false,
   resumeSessionsOnBoot = false,
+  idleReapAfterMs = 0,
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server: rawServer } = await createMcpServer({
     specs: [],
@@ -33,6 +34,7 @@ async function buildHarness(
     registered,
     startedAt,
     resumeSessionsOnBoot,
+    idleReapAfterMs,
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -111,6 +113,22 @@ describe("daemon_health", () => {
       textOf(await on.client.callTool({ name: "daemon_health", arguments: {} })),
     )
     expect(onBody.resumeSessionsOnBoot).toBe(true)
+    await on.close()
+  })
+
+  it("surfaces the effective idleReapAfterMs knob (PR-6)", async () => {
+    const off = await buildHarness(workspace, ["x"], startedAt)
+    const offBody = JSON.parse(
+      textOf(await off.client.callTool({ name: "daemon_health", arguments: {} })),
+    )
+    expect(offBody.idleReapAfterMs).toBe(0)
+    await off.close()
+
+    const on = await buildHarness(workspace, ["x"], startedAt, false, false, 900_000)
+    const onBody = JSON.parse(
+      textOf(await on.client.callTool({ name: "daemon_health", arguments: {} })),
+    )
+    expect(onBody.idleReapAfterMs).toBe(900_000)
     await on.close()
   })
 

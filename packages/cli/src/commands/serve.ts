@@ -644,6 +644,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // daemon.resumeSessionsOnBoot (profile-overlaid). Off ⇒ the handle
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
+        // Idle agent-session reaper (PR-6). Resolution order mirrors the config
+        // module docblock: AGENTPROTO_IDLE_REAP_AFTER_MS env > config field >
+        // off. A positive ms value arms the periodic sweep; anything else keeps
+        // it off (0), so idle sessions are never auto-retired unless opted in.
+        idleReapAfterMs: resolveIdleReapAfterMs(cfgDaemon.idleReapAfterMs),
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -1189,6 +1194,23 @@ function isAddrInUse(err: unknown): boolean {
     err !== null &&
     (err as { code?: unknown }).code === "EADDRINUSE"
   )
+}
+
+/**
+ * Resolve the effective idle-reaper threshold (PR-6): `AGENTPROTO_IDLE_REAP_AFTER_MS`
+ * env > the `daemon.idleReapAfterMs` config field > off. Returns a positive ms
+ * value to arm the reaper, or 0 to leave it off (the default). A malformed /
+ * non-positive value at either layer reads as off rather than throwing — the
+ * reaper is opt-in, so "couldn't parse it" defaults to the safe, disabled path.
+ */
+function resolveIdleReapAfterMs(configured: number | undefined): number {
+  const raw = process.env.AGENTPROTO_IDLE_REAP_AFTER_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+    return 0
+  }
+  return typeof configured === "number" && configured > 0 ? configured : 0
 }
 
 /**
