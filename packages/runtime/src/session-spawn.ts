@@ -492,6 +492,11 @@ export async function spawnAgentSession(
       posture: explicit.posture ?? preset.posture,
       effort: explicit.effort ?? preset.effort,
       contextProfile: explicit.contextProfile ?? preset.contextProfile,
+      // A preset `cwd` pins the favorite to a fixed repo — it feeds the same
+      // slot an explicit request would, so the cwd ladder below treats it as
+      // caller-named (and the worktree guard sees a real repo, not a fallback).
+      cwd: explicit.cwd ?? preset.cwd,
+      skills: explicit.skills ?? preset.skills,
     }
   }
   const {

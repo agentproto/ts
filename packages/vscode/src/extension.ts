@@ -22,6 +22,7 @@ import {
 } from "./commands/sessionActions.js"
 import { registerSessionArchive } from "./commands/sessionArchive.js"
 import { registerSessionRename } from "./commands/sessionRename.js"
+import { registerSaveFavorite } from "./commands/saveFavorite.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
 import { registerSessionRestart } from "./commands/sessionRestart.js"
 import { registerSessionResume } from "./commands/sessionResume.js"
@@ -98,6 +99,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionAccessProfile(ctx, client, store, authProfilesProvider) // agentproto.setSessionAccessProfile
   registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
   registerSessionRename(ctx, client, store) // agentproto.renameSession
+  registerSaveFavorite(ctx, client, store) // agentproto.saveFavorite
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation
   registerCreateWorkspaceCommand(ctx, client, filter) // agentproto.createWorkspace
   registerHarnessCommands(ctx, client, harnessesProvider)

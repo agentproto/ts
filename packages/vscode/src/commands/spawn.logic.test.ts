@@ -105,21 +105,21 @@ describe("mapPresetQuickPickItems", () => {
     ]
     const items = mapPresetQuickPickItems(presets)
     expect(items).toEqual([
-      { label: "My Preset", description: "claude-code · opus", preset: presets[0] },
-      { label: "Alt Preset", description: "hermes · sonnet", preset: presets[1] },
+      { label: "$(star-full) My Preset", description: "claude-code · opus", preset: presets[0] },
+      { label: "$(star-full) Alt Preset", description: "hermes · sonnet", preset: presets[1] },
     ])
   })
 
   it("shows only adapter when no model is set", () => {
     const presets = [preset({ id: "p1", label: "Adapter Only", adapter: "claude-code" })]
     const items = mapPresetQuickPickItems(presets)
-    expect(items[0]).toEqual({ label: "Adapter Only", description: "claude-code", preset: presets[0] })
+    expect(items[0]).toEqual({ label: "$(star-full) Adapter Only", description: "claude-code", preset: presets[0] })
   })
 
   it("shows only model when no adapter/harness is set", () => {
     const presets = [preset({ id: "p1", label: "Model Only", model: "opus" })]
     const items = mapPresetQuickPickItems(presets)
-    expect(items[0]).toEqual({ label: "Model Only", description: "opus", preset: presets[0] })
+    expect(items[0]).toEqual({ label: "$(star-full) Model Only", description: "opus", preset: presets[0] })
   })
 
   it("uses harness when adapter is absent", () => {
@@ -131,7 +131,7 @@ describe("mapPresetQuickPickItems", () => {
   it("sets description to undefined when preset has no adapter, harness, or model", () => {
     const presets = [preset({ id: "p1", label: "Empty Preset" })]
     const items = mapPresetQuickPickItems(presets)
-    expect(items[0]).toEqual({ label: "Empty Preset", description: undefined, preset: presets[0] })
+    expect(items[0]).toEqual({ label: "$(star-full) Empty Preset", description: undefined, preset: presets[0] })
   })
 })
 
@@ -149,24 +149,29 @@ describe("prependPresetGroup", () => {
     ]
     const items = [{ label: "adapter-1", adapter: adapter() }]
     const result = prependPresetGroup(items, presets)
-    expect(result.length).toBe(4) // separator + 2 presets + 1 original
-    expect(result[0]?.label).toBe("Presets")
+    expect(result.length).toBe(4) // separator + 2 favorites + 1 original
+    expect(result[0]?.label).toBe("Favorites")
     expect(result[0]?.kind).toBe(-1)
-    expect(result[1]?.label).toBe("Preset 1")
+    expect(result[1]?.label).toBe("$(star-full) Preset 1")
     expect(result[1]?.preset).toEqual(presets[0])
-    expect(result[2]?.label).toBe("Preset 2")
+    expect(result[2]?.label).toBe("$(star-full) Preset 2")
     expect(result[2]?.preset).toEqual(presets[1])
     expect(result[3]).toEqual(items[0])
   })
 
-  it("correctly orders preset rows, separator first", () => {
+  it("correctly orders favorite rows, separator first", () => {
     const presets = [preset({ id: "p1", label: "My Preset", adapter: "claude-code" })]
     const items = [
       { label: "adapter-1", adapter: adapter({ slug: "adapter-1" }) },
       { label: "adapter-2", adapter: adapter({ slug: "adapter-2" }) },
     ]
     const result = prependPresetGroup(items, presets)
-    expect(result.map(i => i.label)).toEqual(["Presets", "My Preset", "adapter-1", "adapter-2"])
+    expect(result.map(i => i.label)).toEqual([
+      "Favorites",
+      "$(star-full) My Preset",
+      "adapter-1",
+      "adapter-2",
+    ])
   })
 })
 

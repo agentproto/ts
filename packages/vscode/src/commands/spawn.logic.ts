@@ -99,33 +99,39 @@ export function mapModeQuickPickItems(modes: SpawnAdapterInfo["modes"]): ModeQui
   }))
 }
 
+/** Star codicon that marks a favorite row as pinned in the quick-pick. */
+const FAVORITE_ICON = "$(star-full)"
+
 /**
- * Presets picker group — one row per saved user preset, meant to be
- * prepended ahead of the adapter/model rows (see prependPresetGroup) so a
- * saved combo is one Enter away. The row's description surfaces the
- * resolved adapter/model up front: the preset expands server-side, and
- * without this the row would show only a label and nothing about what
- * actually gets spawned — exactly the silent-autodetection this wizard
- * exists to avoid (see spawn.ts's header comment).
+ * Favorites picker group — one row per saved user preset (a favorite),
+ * pinned ahead of the adapter/model rows (see prependPresetGroup) so a
+ * saved combo is one Enter away with zero further input. Each row is
+ * star-prefixed so it reads as a pinned favorite rather than just another
+ * picker line. The row's description surfaces the resolved adapter/model up
+ * front: the favorite expands server-side, and without this the row would
+ * show only a label and nothing about what actually gets spawned — exactly
+ * the silent-autodetection this wizard exists to avoid (see spawn.ts's
+ * header comment). Kept named "favorite" in the UI copy, never "preset"
+ * bare — provider/gateway presets are a different concept (user-presets.ts).
  */
 export function mapPresetQuickPickItems(presets: UserPreset[]): SpawnQuickPickItem[] {
   return presets.map(preset => ({
-    label: preset.label,
+    label: `${FAVORITE_ICON} ${preset.label}`,
     description: [preset.adapter ?? preset.harness, preset.model].filter(Boolean).join(" · ") || undefined,
     preset,
   }))
 }
 
-const PRESETS_HEADING = "Presets"
+const FAVORITES_HEADING = "Favorites"
 
 /**
- * Prepends a "Presets" separator group ahead of the given picker items —
- * a no-op when there are no saved presets, so callers can call this
- * unconditionally on every spawn.
+ * Prepends a pinned "Favorites" separator group ahead of the given picker
+ * items — a no-op when there are no saved favorites, so callers can call
+ * this unconditionally on every spawn.
  */
 export function prependPresetGroup(items: SpawnQuickPickItem[], presets: UserPreset[]): SpawnQuickPickItem[] {
   if (presets.length === 0) return items
-  return [{ label: PRESETS_HEADING, kind: SEPARATOR_KIND }, ...mapPresetQuickPickItems(presets), ...items]
+  return [{ label: FAVORITES_HEADING, kind: SEPARATOR_KIND }, ...mapPresetQuickPickItems(presets), ...items]
 }
 
 export const CONFIGURE_LABEL = "$(gear) Configure…"
