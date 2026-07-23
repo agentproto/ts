@@ -211,9 +211,9 @@ agentproto permissions deny <id>          # reject
 ```
 
 Same capability over MCP (`agent_start { permissionHold: true }` +
-`permissions_list` / `permissions_respond`) and HTTP (`POST /sessions/agent
-{ permissionHold: true }`, `GET /permissions`, `POST /permissions/:id`). A
-held session renders with a `!` badge in `--watch`. See
+`permissions_list` / `permissions_respond`) and HTTP
+(`POST /sessions/agent { permissionHold: true }`, `GET /permissions`,
+`POST /permissions/:id`). A held session renders with a `!` badge in `--watch`. See
 [`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
 only (e.g. claude-code); adapters with no permission surface ignore the flag.
 

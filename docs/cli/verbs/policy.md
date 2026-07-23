@@ -63,7 +63,7 @@ same duration format as `--timeout` (`30s`, `5m`, ...; bare integer = ms).
 | `--on-fail-max-retries <n>` | — | Cap the retries. Must be ≥ 1. |
 | `--attach-json <json\|@file>` | — | Sent as the **entire** POST body, ignoring every other attach flag. The full recursive shape — fan-in `sessionIds`, `next` chaining, judge-gate detail — when flags get unwieldy. |
 | `--wait` | `false` | Block on the new policy (like `policy wait`) before returning. |
-| `--timeout <duration>` | `900000` | With `--wait`: total wait ceiling. Accepts `500ms`, `30s`, `5m`, `2h`; bare integer = ms, but bare integers <1000 are rejected as ambiguous. |
+| `--timeout <duration>` | `900000` | With `--wait`: total wait ceiling. Accepts `500ms`, `30s`, `5m`, `2h`; bare integer = ms, but bare integers `<1000` are rejected as ambiguous. |
 | `--json` | `false` | Emit the `PolicyRunState` as JSON. |
 
 The commit flags (`--commit-path`, `--commit-message`, `--ack`, `--no-ack`)
