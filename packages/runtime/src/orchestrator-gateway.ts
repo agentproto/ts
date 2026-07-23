@@ -37,6 +37,7 @@ import type {
   AgentAdapterLister,
 } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { SUPERVISOR_ROLE } from "./role.js"
 
 /**
@@ -256,6 +257,14 @@ export interface OrchestratorGatewayDeps {
    *  through this scoped sub-gateway that pass no `mcpServers`. See
    *  `RegisterAgentToolsOptions.daemonMcpUrl`. */
   daemonMcpUrl?: string
+  /** Resolves an `agent_start.sandbox` slug (or an inline spec's own
+   *  `.provider`) to a concrete sandbox provider handle — forwarded to
+   *  `registerSessionTools` so a child spawned THROUGH this scoped
+   *  sub-gateway can declare `sandbox` too. Same resolver instance as the
+   *  root `/mcp` gateway. Omitted → a scoped-gateway child's `sandbox`
+   *  spawn is rejected with `sandbox_provider_not_found`, exactly as the
+   *  root gateway would be without it. */
+  resolveSandboxProvider?: SandboxProviderResolver
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -299,6 +308,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.webhookNotifier
         ? { webhookNotifier: deps.webhookNotifier }
+        : {}),
+      ...(deps.resolveSandboxProvider
+        ? { resolveSandboxProvider: deps.resolveSandboxProvider }
         : {}),
       daemonMcpUrl: deps.daemonMcpUrl,
     })

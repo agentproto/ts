@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
+import { fileURLToPath } from "node:url"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -485,8 +486,25 @@ describe("WorkflowRunner persistence", () => {
 describe("WorkflowRunner.startFromFile", () => {
   let tmpDir: string
 
+  // These fixtures include an `entry.mjs` that `loadWorkflowHandle` pulls in via
+  // a dynamic `import()`. Under vitest that import is served by Vite's module
+  // resolver, which refuses any path outside `server.fs.allow` (the project
+  // root) — so a WORKFLOW.md written to the OS temp dir flakes with a spurious
+  // "cannot import entry: Cannot find module …/entry.mjs" whenever vitest routes
+  // the loader through the transform rather than externalising it. Native Node
+  // (production) imports the same path fine; the flake is purely the harness.
+  // Rooting the temp dir inside the package (under the always-gitignored
+  // `node_modules/`) keeps every entry under the allow-root, so the import is
+  // deterministic — mirroring the workflow-loader package's own on-disk fixtures.
+  const inRootTmpBase = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "node_modules",
+  )
+
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "workflow-startFromFile-test-"))
+    tmpDir = mkdtempSync(join(inRootTmpBase, ".workflow-startFromFile-test-"))
   })
 
   afterEach(() => {

@@ -1459,6 +1459,61 @@ describe("createSessionsRegistry", () => {
       reg.shutdown()
     })
 
+    it("also writes a normalized ToolCallRecord to the same events.jsonl (unified logger, gap 4)", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "gh",
+        args: ["pr", "view"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 7,
+        stdout: "full body\n",
+        stderr: "",
+      })
+      const records = await pollUntil(async () => {
+        const rs = await reg.readToolCallRecords(desc.id)
+        return rs.length > 0 ? rs : null
+      })
+      expect(records).toHaveLength(1)
+      expect(records[0]).toMatchObject({
+        sessionId: desc.id,
+        tool: "command_execute",
+        command: "gh",
+        args: ["pr", "view"],
+        exitCode: 0,
+        isError: false,
+        durationMs: 7,
+      })
+      // The bare CommandLogEntry must still be the first line — readCommandLog
+      // trusts that ordering (see recordCommand's chained write).
+      const entry = await reg.readCommandLog(desc.id)
+      expect(entry).toMatchObject({ command: "gh", args: ["pr", "view"] })
+      reg.shutdown()
+    })
+
+    it("marks isError true on the ToolCallRecord for a nonzero exit", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "node",
+        args: ["fail.js"],
+        exitCode: 1,
+        signal: null,
+        durationMs: 5,
+        stdout: "",
+        stderr: "boom",
+      })
+      const records = await pollUntil(async () => {
+        const rs = await reg.readToolCallRecords(desc.id)
+        return rs.length > 0 ? rs : null
+      })
+      expect(records[0]).toMatchObject({ exitCode: 1, isError: true })
+      reg.shutdown()
+    })
+
     it("leaves origin/callerSessionId absent when the caller doesn't pass them", () => {
       const reg = createSessionsRegistry({ persistPath, persist: false })
       const desc = reg.recordCommand({

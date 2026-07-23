@@ -103,6 +103,18 @@ export interface SessionWaitResult {
 }
 
 /**
+ * `session_monitor`'s MCP response shape: `SessionWaitResult` plus an
+ * optional `hint`, populated only on `timedOut: true` — the moment a
+ * caller is polling this tool in a loop — pointing shell-capable callers
+ * at the uncapped `agentproto sessions wait` CLI instead. Local to the MCP
+ * tool handler; `monitorSessionWait`'s return type (shared with the REST
+ * `GET /sessions/:id/wait` route) is unchanged.
+ */
+interface SessionMonitorResult extends SessionWaitResult {
+  hint?: string
+}
+
+/**
  * Block until one of the listed sessions fires a matching lifecycle event
  * (turn-end / awaiting-input / exited / any), or until `timeoutMs` elapses.
  *
@@ -1352,7 +1364,10 @@ export function registerOrchestrationTools(
     "Multiplexed long-poll: block until ANY of the listed sessions fires a " +
       "lifecycle event. Returns immediately when a session is already in the " +
       "target state. Eliminates polling in multi-session fan-in orchestration — " +
-      "one call replaces N concurrent waitForTurnEnd calls.",
+      "one call replaces N concurrent waitForTurnEnd calls. " +
+      "If you have shell access, prefer `agentproto sessions wait <id> " +
+      "[--until <event>]` instead of polling this tool in a loop — it's a " +
+      "scriptable blocking wait with no 49s cap. (No shell? Keep using this tool.)",
     {
       // Accept the natural shapes an agent already has on hand: a single id
       // (the `id` agent_start returns, or `sessionId` from the drive tools),
@@ -1451,9 +1466,18 @@ export function registerOrchestrationTools(
       // (so callers can chain); the state/bus hit returns the event shape.
       // monitorSessionWait returns the same fields — forward verbatim,
       // including the `question` field (harness-parity) when present.
-      const payload: Record<string, unknown> = { ...result }
+      const payload: SessionMonitorResult = { ...result }
       if (result.source === "ring" && input.since !== undefined) {
         payload.since = input.since
+      }
+      // A timeout is exactly the moment a polling loop is grinding away —
+      // nudge shell-capable callers toward the uncapped CLI wait right when
+      // it'd help. Bash-less MCP clients just ignore the extra field.
+      if (result.timedOut) {
+        payload.hint =
+          "If you have shell access, prefer `agentproto sessions wait <id> " +
+          "[--until <event>]` instead of polling this tool in a loop — it's " +
+          "a scriptable blocking wait with no 49s cap."
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],
