@@ -34,57 +34,19 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { panelBridgeScript } from "./panel-bridge.js"
 import type { SessionDescriptor } from "./sessions.js"
 import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import { summarizeLines, deriveSessionState } from "./session-activity.js"
+import type { SessionState } from "./session-activity.js"
 
 // ── Heuristic summary (pure, server-side) ────────────────────────────────────
-
-export type SessionState = "à traiter" | "au travail" | "en attente" | "terminé"
-
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g
-/** Chrome-only lines we never want as a summary (spinners, box-drawing,
- *  bare prompts, separators). */
-const CHROME_RE = /^[\s>$#*✻✶✳·•.\-=_|~╭╰╮╯│─├┤┌┐└┘]+$/u
-
-function strip(s: string): string {
-  return s.replace(ANSI_RE, "").replace(/\r/g, "")
-}
-
-/**
- * Pick the last meaningful output line as a one-sentence summary.
- * Falls back to the session label/command when there's no usable output.
- */
-export function summarizeLines(
-  lines: readonly string[],
-  desc: Pick<SessionDescriptor, "command" | "label" | "name">,
-): string {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const t = strip(lines[i] ?? "").trim()
-    if (t.length < 3) continue
-    if (CHROME_RE.test(t)) continue
-    return t.length > 160 ? `${t.slice(0, 157)}…` : t
-  }
-  return desc.label || desc.name || desc.command || "Aucune sortie pour le moment."
-}
-
-/**
- * Coarse state from lifecycle + recency. Heuristic, no LLM:
- *   terminé      — exited / killed / error
- *   à traiter    — alive and the agent flagged awaiting-input (your turn)
- *   au travail   — alive and produced output recently (< staleMs)
- *   en attente   — alive but idle (no recent output, not awaiting input)
- */
-export function deriveSessionState(
-  desc: Pick<SessionDescriptor, "status" | "awaitingInput" | "lastOutputAt">,
-  nowMs: number,
-  staleMs = 30_000,
-): SessionState {
-  if (desc.status === "exited" || desc.status === "killed" || desc.status === "error") {
-    return "terminé"
-  }
-  if (desc.awaitingInput) return "à traiter"
-  const last = desc.lastOutputAt ? Date.parse(desc.lastOutputAt) : Number.NaN
-  if (!Number.isNaN(last) && nowMs - last < staleMs) return "au travail"
-  return "en attente"
-}
+//
+// `summarizeLines` / `deriveSessionState` / `SessionState` now live in
+// session-activity.ts so the session store can reuse the SAME heuristic to
+// stamp the descriptor's `activitySummary` on turn-end (see
+// `regenerateActivitySummary`) without pulling this panel's HTML bundle into
+// the hot path. Re-exported here so existing `summarize_session` callers keep
+// importing them from where they always did.
+export { summarizeLines, deriveSessionState }
+export type { SessionState }
 
 export interface SessionSummary {
   sessionId: string

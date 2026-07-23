@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
 import {
+  ACTIVITY_ROW_MAX,
+  activityLineFor,
   SEPARATOR_ID,
   STALL_AFTER_MS,
   bucketFor,
@@ -111,6 +113,60 @@ describe("descriptionFor", () => {
       expect(descriptionFor(session({ origin: "codex" }), {})).toBe("in-place · via codex")
       expect(descriptionFor(session({ origin: "cron" }), { now: undefined })).toContain("via cron")
     })
+
+    it("LEADS the row with the live activity line when present", () => {
+      const s = session({
+        startedAt: "2026-01-01T00:00:00Z",
+        worktreePath: "/repo/.worktrees/fix-login",
+        activitySummary: { text: "Patched the token refresh path.", state: "au travail", at: "x" },
+      })
+      // Activity outranks the isolation/time metadata, which follows it.
+      expect(descriptionFor(s, { now })).toBe(
+        "Patched the token refresh path. · ⑂ fix-login · 5 days ago",
+      )
+    })
+
+    it("reads exactly as before when there is no activity line", () => {
+      // Absent activitySummary (no turn-end yet, or a renamed session) → the
+      // row is byte-identical to the pre-feature rendering.
+      const s = session({ startedAt: "2026-01-01T00:00:00Z" })
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago")
+    })
+  })
+})
+
+describe("activityLineFor", () => {
+  it("returns undefined when there is no activity summary", () => {
+    expect(activityLineFor(session())).toBeUndefined()
+  })
+  it("treats blank/whitespace text as absent", () => {
+    expect(activityLineFor(session({ activitySummary: { text: "   ", state: "au travail", at: "x" } }))).toBeUndefined()
+  })
+  it("returns short text verbatim", () => {
+    expect(
+      activityLineFor(session({ activitySummary: { text: "Running the tests", state: "au travail", at: "x" } })),
+    ).toBe("Running the tests")
+  })
+  it("truncates a long line to the row cap with an ellipsis", () => {
+    const long = "y".repeat(200)
+    const out = activityLineFor(session({ activitySummary: { text: long, state: "au travail", at: "x" } }))!
+    expect(out.length).toBe(ACTIVITY_ROW_MAX)
+    expect(out.endsWith("…")).toBe(true)
+  })
+})
+
+describe("tooltipFieldsFor — activity", () => {
+  it("carries the full (untruncated) activity line + state", () => {
+    const long = "z".repeat(200)
+    const fields = tooltipFieldsFor(
+      session({ activitySummary: { text: long, state: "au travail", at: "x" } }),
+    )
+    const activity = fields.find(f => f.label === "activity")
+    expect(activity?.value).toBe(`${long} (au travail)`)
+  })
+  it("omits the activity field when there is no summary", () => {
+    const fields = tooltipFieldsFor(session())
+    expect(fields.find(f => f.label === "activity")).toBeUndefined()
   })
 })
 
