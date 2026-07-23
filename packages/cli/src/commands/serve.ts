@@ -71,6 +71,7 @@ import {
 import {
   createGateway,
   createPairingRegistry,
+  createReconnectLogGate,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
   unlinkRuntimeMeta,
@@ -607,78 +608,99 @@ export async function runServe(args: readonly string[]): Promise<number> {
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
-  // ── boot the gateway ──
+  // ── idempotent boot ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
-  try {
-    gateway = await createGateway({
-      pairingRegistry,
-      workspace: opts.workspace,
-      port: opts.port,
-      bind: opts.bind,
-      specs: [driverSpec],
-      name: "agentproto-serve",
-      // BOOT.md is silly for a tunnel daemon — skip it.
-      boot: false,
-      resolveAgentAdapter,
-      // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
-      // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
-      // runtime deliberately doesn't take (so it's wired here, at the daemon's
-      // composition root).
-      provisionWorktree: makeWorktreeProvisioner(),
-      // Injected port behind `worktree_status` + `GET /worktrees`: runs the
-      // `listWorktreeStatuses` join over @agentproto/worktree, same dep
-      // reasoning as above.
-      listWorktreeStatuses: makeWorktreeStatusLister(),
-      // Injected port behind `worktree_gc` + `POST /worktrees/gc`: runs the
-      // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
-      // dry run), same dep reasoning as above.
-      runWorktreeGc: makeWorktreeGcRunner(),
-      // Injected port behind the daemon PR-provenance reconciler: resolves the
-      // open PR for a session's branch (branch→PR over @agentproto/worktree),
-      // so an executor's PR gets the provenance footer even though it opened it
-      // through its own shell, not command_execute.
-      resolveOpenPr: makeOpenPrResolver(),
-      // Injected port behind the Activity projector's PR settlement pass:
-      // resolves a PR url's forge state (gh-backed, same dep reasoning as
-      // above), so a pending-on-forge `pr` activity settles to done/cancelled
-      // once the PR is merged/closed.
-      resolvePrState: makePrStateResolver(),
-      // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
-      // MCP tool. Starts from the bundled catalog so known adapters always
-      // appear (with status "supported") even when not yet installed, and
-      // appends the generic ACP agents (curated ACP_CATALOG + a user's
-      // config.acpAgents) so a zero-code ACP CLI is discoverable too.
-      listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
-      // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
-      // install` + the `adapter_install` MCP tool. Drives npm-global for
-      // acp-catalog CLIs and the manifest install[] pipeline for first-party
-      // adapters (see install-driver.ts). Lets the VS Code Harnesses panel
-      // install a not-yet-ready harness inline.
-      installAgentAdapter: (slug: string) => installAdapter(slug),
-      // Read-only catalog/vendor endpoint (SPEC §5) — `GET /catalog/models`
-      // + `catalog_models` MCP tool. Joins the same installed-adapter
-      // listing `listAgentAdapters` uses with the real named-profile store.
-      listCatalogModels: query => listCatalogModelsFromInstalled(query),
-      resolveBrowserAdapter,
-      listBrowserAdapters,
-      ...(spawnPty ? { spawnPty } : {}),
-      ...(opts.allowedOrigins
-        ? { allowedOrigins: opts.allowedOrigins }
-        : {}),
-      ...(opts.strictOrigins ? { strictOrigins: true } : {}),
-      ...(opts.authToken
-        ? { auth: { mode: "bearer" as const, token: opts.authToken } }
-        : {}),
-    })
-  } catch (err) {
+  //
+  // Before binding, preflight `<url>/health`: if a healthy daemon already
+  // owns this bind+port, a second `serve` is a redundant launch (a
+  // hand-relaunch, a `pnpm dev` spawning one, or a launchd respawn racing the
+  // incumbent). We exit 0 cleanly instead of colliding on EADDRINUSE — which,
+  // under `KeepAlive`-style supervision, otherwise crash-loops. If the bind
+  // still races (two serves launched near-simultaneously, both past the
+  // preflight), `bootGatewayIdempotent` re-probes on EADDRINUSE and defers to
+  // the winner rather than failing.
+  const probeHost =
+    opts.bind === "0.0.0.0" || opts.bind === "::" ? "127.0.0.1" : opts.bind
+  const healthUrl = `http://${probeHost}:${opts.port}`
+  const bootOutcome = await bootGatewayIdempotent({
+    healthUrl,
+    probe: probeHealthyDaemon,
+    boot: () =>
+      createGateway({
+        pairingRegistry,
+        workspace: opts.workspace,
+        port: opts.port,
+        bind: opts.bind,
+        specs: [driverSpec],
+        name: "agentproto-serve",
+        // BOOT.md is silly for a tunnel daemon — skip it.
+        boot: false,
+        resolveAgentAdapter,
+        // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
+        // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
+        // runtime deliberately doesn't take (so it's wired here, at the daemon's
+        // composition root).
+        provisionWorktree: makeWorktreeProvisioner(),
+        // Injected port behind `worktree_status` + `GET /worktrees`: runs the
+        // `listWorktreeStatuses` join over @agentproto/worktree, same dep
+        // reasoning as above.
+        listWorktreeStatuses: makeWorktreeStatusLister(),
+        // Injected port behind `worktree_gc` + `POST /worktrees/gc`: runs the
+        // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
+        // dry run), same dep reasoning as above.
+        runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected port behind the daemon PR-provenance reconciler: resolves the
+        // open PR for a session's branch (branch→PR over @agentproto/worktree),
+        // so an executor's PR gets the provenance footer even though it opened it
+        // through its own shell, not command_execute.
+        resolveOpenPr: makeOpenPrResolver(),
+        // Injected port behind the Activity projector's PR settlement pass:
+        // resolves a PR url's forge state (gh-backed, same dep reasoning as
+        // above), so a pending-on-forge `pr` activity settles to done/cancelled
+        // once the PR is merged/closed.
+        resolvePrState: makePrStateResolver(),
+        // Discovery for UIs / operators — `GET /adapters` + `adapter_list`
+        // MCP tool. Starts from the bundled catalog so known adapters always
+        // appear (with status "supported") even when not yet installed, and
+        // appends the generic ACP agents (curated ACP_CATALOG + a user's
+        // config.acpAgents) so a zero-code ACP CLI is discoverable too.
+        listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+        // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
+        // install` + the `adapter_install` MCP tool. Drives npm-global for
+        // acp-catalog CLIs and the manifest install[] pipeline for first-party
+        // adapters (see install-driver.ts). Lets the VS Code Harnesses panel
+        // install a not-yet-ready harness inline.
+        installAgentAdapter: (slug: string) => installAdapter(slug),
+        // Read-only catalog/vendor endpoint (SPEC §5) — `GET /catalog/models`
+        // + `catalog_models` MCP tool. Joins the same installed-adapter
+        // listing `listAgentAdapters` uses with the real named-profile store.
+        listCatalogModels: query => listCatalogModelsFromInstalled(query),
+        resolveBrowserAdapter,
+        listBrowserAdapters,
+        ...(spawnPty ? { spawnPty } : {}),
+        ...(opts.allowedOrigins
+          ? { allowedOrigins: opts.allowedOrigins }
+          : {}),
+        ...(opts.strictOrigins ? { strictOrigins: true } : {}),
+        ...(opts.authToken
+          ? { auth: { mode: "bearer" as const, token: opts.authToken } }
+          : {}),
+      }),
+  })
+  if (bootOutcome.kind === "peer-up") {
+    process.stdout.write(
+      `agentproto serve: a healthy daemon already owns ${bootOutcome.url} — nothing to do\n`,
+    )
+    return 0
+  }
+  if (bootOutcome.kind === "failed") {
     process.stderr.write(
-      `agentproto serve: gateway boot failed — ${
-        err instanceof Error ? err.message : String(err)
-      }\n`
+      `agentproto serve: gateway boot failed — ${bootOutcome.message}\n`,
     )
     return 1
   }
+  gateway = bootOutcome.gateway
 
   // The capability set this daemon announces in its tunnel hello: the MCP
   // doctypes it serves PLUS the agent adapters installed on this machine.
@@ -856,6 +878,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // doing a graceful preStop drain finish its rollover in ~2s instead
   // of the daemon's normal ~30s backoff (or even the 2s settle).
   const reconnectState = { immediate: false }
+  // Rate-limit tunnel-error logging. A dead host (wrong URL, revoked token,
+  // permanently-down peer) reconnects on backoff forever; logging every
+  // attempt buried daemon.log (this line alone spun 1344× in one log). Log
+  // the first failure at once, then at most one line per window with the
+  // suppressed count; a successful connect resets it. Backoff is unchanged.
+  const tunnelLogGate = createReconnectLogGate()
+  const TUNNEL_LOG_KEY = "tunnel"
   while (!aborter.signal.aborted) {
     try {
       await runOneTunnel(
@@ -867,6 +896,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         reconnectState
       )
       backoffMs = opts.reconnectMinMs ?? 1_000 // success resets backoff
+      tunnelLogGate.onSuccess(TUNNEL_LOG_KEY)
       if (reconnectState.immediate) {
         reconnectState.immediate = false
         // Host signaled graceful drain — skip the settle pause and
@@ -881,9 +911,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
     } catch (err) {
       if (aborter.signal.aborted) break
       const msg = err instanceof Error ? err.message : String(err)
-      process.stderr.write(
-        `agentproto serve: tunnel error: ${msg}\n  reconnecting in ${backoffMs}ms…\n`
+      const line = tunnelLogGate.onFailure(
+        TUNNEL_LOG_KEY,
+        `agentproto serve: tunnel error: ${msg}\n  reconnecting in ${backoffMs}ms…`,
       )
+      if (line) process.stderr.write(`${line}\n`)
       await sleep(backoffMs, aborter.signal)
       backoffMs = Math.min(backoffMs * 2, backoffMax)
     }
@@ -1046,6 +1078,74 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve()
     })
   })
+}
+
+/**
+ * Probe a candidate daemon's `/health`. Returns true iff a 2xx answers within a
+ * short timeout — i.e. a healthy daemon already owns this bind+port, so a fresh
+ * `serve` would only collide with it. Connection-refused / timeout / non-2xx
+ * all read as "no live incumbent", so the caller proceeds to bind.
+ */
+export async function probeHealthyDaemon(healthUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${healthUrl}/health`, {
+      signal: AbortSignal.timeout(800),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Discriminated outcome of {@link bootGatewayIdempotent}. */
+export type BootOutcome =
+  | { kind: "booted"; gateway: GatewayHandle }
+  | { kind: "peer-up"; url: string }
+  | { kind: "failed"; message: string }
+
+/**
+ * Boot the gateway idempotently against a possibly-already-running peer.
+ *
+ * 1. Preflight `probe(healthUrl)`: a healthy incumbent means this launch is
+ *    redundant (a hand-relaunch, a launchd respawn racing the incumbent) →
+ *    `peer-up`, no bind attempted.
+ * 2. Otherwise `boot()`. On success → `booted`.
+ * 3. If `boot()` fails with `EADDRINUSE`, a serve raced us onto the port
+ *    between our preflight and our listen. Re-probe: a healthy winner →
+ *    `peer-up` (defer to it, exit 0); anything else → `failed` (exit 1).
+ * 4. Any non-`EADDRINUSE` boot failure → `failed`.
+ *
+ * The `probe`/`boot` seams keep this unit testable without a real socket.
+ */
+export async function bootGatewayIdempotent(opts: {
+  healthUrl: string
+  probe: (healthUrl: string) => Promise<boolean>
+  boot: () => Promise<GatewayHandle>
+}): Promise<BootOutcome> {
+  if (await opts.probe(opts.healthUrl)) {
+    return { kind: "peer-up", url: opts.healthUrl }
+  }
+  try {
+    const gateway = await opts.boot()
+    return { kind: "booted", gateway }
+  } catch (err) {
+    if (isAddrInUse(err) && (await opts.probe(opts.healthUrl))) {
+      return { kind: "peer-up", url: opts.healthUrl }
+    }
+    return {
+      kind: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+/** True for a Node bind error whose `code` is `EADDRINUSE`. */
+function isAddrInUse(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "EADDRINUSE"
+  )
 }
 
 /**

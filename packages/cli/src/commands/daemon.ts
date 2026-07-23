@@ -18,7 +18,10 @@
  * Sub-verbs:
  *   install     write the plist + launchctl bootstrap
  *   uninstall   launchctl bootout + delete plist
- *   start       launchctl kickstart (one-shot; honours KeepAlive)
+ *   start       launchctl kickstart WITHOUT -k — idempotent: launches the
+ *               daemon if it's down, leaves a healthy one running. Never kills.
+ *   restart     launchctl kickstart -k — kill the running daemon and relaunch.
+ *               The clean replacement for `pnpm killport 18790`.
  *   stop        launchctl kill SIGTERM
  *   status      plist installed? launchctl loaded? /health probe?
  *               last 10 lines of daemon.log
@@ -38,7 +41,8 @@ const USAGE = `agentproto daemon — run agentproto serve as a background servic
 Usage:
   agentproto daemon install [--dry-run]   register service + start it (macOS launchd today)
   agentproto daemon uninstall             stop + deregister service
-  agentproto daemon start                 launchctl kickstart
+  agentproto daemon start                 launchctl kickstart (idempotent; never kills a healthy daemon)
+  agentproto daemon restart               launchctl kickstart -k (kill + relaunch; replaces \`pnpm killport 18790\`)
   agentproto daemon stop                  launchctl kill SIGTERM
   agentproto daemon status                installed? loaded? /health reachable?
   agentproto daemon logs [--lines <N>]    tail daemon.log
@@ -71,6 +75,8 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
       return runUninstall()
     case "start":
       return runStart()
+    case "restart":
+      return runRestart()
     case "stop":
       return runStop()
     case "status":
@@ -202,9 +208,19 @@ async function runUninstall(): Promise<number> {
   return 0
 }
 
-async function runStart(): Promise<number> {
+/**
+ * `start` — idempotent launch. `kickstart` WITHOUT `-k` asks launchd to start
+ * the service if it isn't running and is a no-op if it already is; it never
+ * kills a healthy daemon. Pairs with the crash-only `KeepAlive` in
+ * {@link renderPlist} and the idempotent `serve` preflight: a re-`start` won't
+ * fight an incumbent, so a hand-relaunch or a `RunAtLoad` respawn settles
+ * cleanly instead of crash-looping on the port. Use `restart` to force-cycle.
+ */
+export async function runStart(
+  run: LaunchctlFn = launchctl,
+): Promise<number> {
   const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
-  const out = await launchctl(["kickstart", "-k", target])
+  const out = await run(["kickstart", target])
   if (out.code !== 0) {
     process.stderr.write(
       `agentproto daemon start: ${out.stderr || "launchctl exited " + out.code}\n` +
@@ -212,7 +228,29 @@ async function runStart(): Promise<number> {
     )
     return out.code
   }
-  process.stdout.write("agentproto daemon: kickstart sent\n")
+  process.stdout.write("agentproto daemon: started\n")
+  return 0
+}
+
+/**
+ * `restart` — force-cycle. `kickstart -k` kills the running daemon (if any)
+ * and relaunches it. This is the clean replacement for `pnpm killport 18790`:
+ * a supervised restart that goes through launchd rather than SIGKILLing the
+ * port out from under it.
+ */
+export async function runRestart(
+  run: LaunchctlFn = launchctl,
+): Promise<number> {
+  const target = `gui/${process.getuid?.() ?? 0}/${LABEL}`
+  const out = await run(["kickstart", "-k", target])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon restart: ${out.stderr || "launchctl exited " + out.code}\n` +
+        `  Run \`agentproto daemon install\` first.\n`,
+    )
+    return out.code
+  }
+  process.stdout.write("agentproto daemon: restarted\n")
   return 0
 }
 
@@ -327,7 +365,7 @@ interface PlistOpts {
   logPath: string
 }
 
-function renderPlist(opts: PlistOpts): string {
+export function renderPlist(opts: PlistOpts): string {
   const argEls = opts.fullArgv
     .map(a => `    <string>${xmlEscape(a)}</string>`)
     .join("\n")
@@ -341,7 +379,15 @@ function renderPlist(opts: PlistOpts): string {
 ${argEls}
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- Crash-only restart: relaunch when the daemon exits NON-zero (a crash),
+       but leave a clean exit-0 alone. The idempotent \`serve\` exits 0 when a
+       healthy daemon already owns the port; a bare \`KeepAlive: true\` would
+       fight that by respawning the redundant launcher into an EADDRINUSE
+       crash-loop. SuccessfulExit:false restarts on failure only. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>${xmlEscape(opts.logPath)}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(opts.logPath)}</string>
@@ -368,6 +414,9 @@ interface LaunchctlResult {
   stdout: string
   stderr: string
 }
+
+/** Runner shape shared by `launchctl` and its test doubles. */
+type LaunchctlFn = (args: string[]) => Promise<LaunchctlResult>
 
 function launchctl(args: string[]): Promise<LaunchctlResult> {
   return new Promise(resolve => {

@@ -304,6 +304,10 @@ export {
   type CreateOfferInput,
 } from "./pairing-registry.js"
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
+export {
+  createReconnectLogGate,
+  type ReconnectLogGate,
+} from "./reconnect-log-gate.js"
 export { listPresets, declaredPresetToProviderPreset } from "./preset-tools.js"
 export type { PresetInfo, DeclaredAdapterPreset } from "./preset-tools.js"
 export { decomposeMode, composeMode } from "./session-config.js"
