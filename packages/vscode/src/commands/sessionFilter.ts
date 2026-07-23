@@ -116,6 +116,8 @@ const STATUS_OPTIONS: ReadonlyArray<{ id: SessionFilterState["status"][number]; 
   { id: "live", label: "Live" },
   { id: "awaiting", label: "Awaiting" },
   { id: "done", label: "Done" },
+  { id: "stopped", label: "Stopped" },
+  { id: "failed", label: "Failed" },
 ]
 
 type FilterPickValue =
