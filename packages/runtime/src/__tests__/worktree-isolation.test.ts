@@ -132,6 +132,75 @@ describe("decideWorktreeIsolation — resolution matrix", () => {
       )
     })
   })
+
+  // ── nested implicit-in-place into a SHARED, DIRTY cwd ─────────────────
+  // The remaining footgun #622 didn't close: an implicit (no `worktree`)
+  // nested spawn silently runs in place in whatever cwd it inherited — which
+  // may be a live, dirty, shared checkout. Not hard-rejected (in-place is
+  // legitimate), but LOUD: the caller passes the impure `sharedDirtyCwd`
+  // signal and gets a `spawn-in-place` carrying a `warn`, unless it opts in
+  // via `allowSharedCwd`.
+  describe("nested (depth > 0) — shared-dirty-cwd warning", () => {
+    for (const mode of MODES) {
+      it(`${mode} + no request + sharedDirtyCwd → spawn-in-place WITH warn`, () => {
+        const d = decideWorktreeIsolation({
+          mode,
+          field: undefined,
+          depth: 1,
+          sharedDirtyCwd: true,
+        })
+        expect(d.action).toBe("spawn-in-place")
+        if (d.action !== "spawn-in-place") throw new Error("expected spawn-in-place")
+        expect(d.warn).toBeDefined()
+        expect(d.warn).toContain("UNCOMMITTED")
+        expect(d.warn).toContain("allowSharedCwd")
+      })
+
+      it(`${mode} + no request + sharedDirtyCwd=false → plain spawn-in-place (no warn)`, () => {
+        expect(
+          decideWorktreeIsolation({
+            mode,
+            field: undefined,
+            depth: 1,
+            sharedDirtyCwd: false,
+          }),
+        ).toEqual({ action: "spawn-in-place" })
+      })
+
+      it(`${mode} + sharedDirtyCwd + allowSharedCwd → plain spawn-in-place (ack silences warn)`, () => {
+        expect(
+          decideWorktreeIsolation({
+            mode,
+            field: undefined,
+            depth: 1,
+            sharedDirtyCwd: true,
+            allowSharedCwd: true,
+          }),
+        ).toEqual({ action: "spawn-in-place" })
+      })
+    }
+
+    it("an EXPLICIT request still rejects even when sharedDirtyCwd is set (#622 unchanged)", () => {
+      const d = decideWorktreeIsolation({
+        mode: "on-request",
+        field: true,
+        depth: 1,
+        sharedDirtyCwd: true,
+      })
+      expect(d.action).toBe("reject")
+    })
+
+    it("the signal is ignored at depth 0 (root spawn unchanged)", () => {
+      expect(
+        decideWorktreeIsolation({
+          mode: "on-request",
+          field: undefined,
+          depth: 0,
+          sharedDirtyCwd: true,
+        }),
+      ).toEqual({ action: "spawn-in-place" })
+    })
+  })
 })
 
 describe("parseWorktreeIsolationMode", () => {

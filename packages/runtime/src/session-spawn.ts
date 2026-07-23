@@ -385,6 +385,12 @@ export interface SpawnAgentSessionInput {
    *  already isolates). Cleanup is the human's job (`agentproto worktree
    *  rm|archive|gc`); the tree is never auto-removed on session exit. */
   worktree?: WorktreeField
+  /** Acknowledge that spawning IN PLACE into a shared, dirty working tree is
+   *  intended, silencing the `sharedDirtyCwd` warning a nested implicit spawn
+   *  would otherwise emit (see `decideWorktreeIsolation`). Only meaningful for
+   *  a nested (depth > 0) spawn with no `worktree` request and no `sandbox`;
+   *  ignored everywhere else. Default false — the warning fires. */
+  allowSharedCwd?: boolean
   /** Start this session in permission-hold mode: every ACP permission request
    *  is surfaced + parked in the cross-session inbox (`permissions_list` /
    *  `permissions_respond`) instead of auto-answered. Threaded to the driver's
@@ -407,6 +413,11 @@ export type SpawnAgentSessionResult =
       ok: true
       descriptor: SessionDescriptor
       output?: string[]
+      /** Non-fatal spawn-time notices surfaced to the caller — currently the
+       *  shared-dirty-cwd warning for a nested in-place spawn (see
+       *  `decideWorktreeIsolation`'s `warn`). Absent when there's nothing to
+       *  warn about. The spawn still succeeded; these are advisory. */
+      warnings?: string[]
       /** Set when this result was returned to a duplicate call recognized
        *  via `idempotencyKey` — no new process was spawned; `descriptor` is
        *  the ORIGINAL spawn's. Absent on the original (non-duplicate) call. */
@@ -711,17 +722,36 @@ export async function spawnAgentSession(
   // request, or a provision with no provisioner wired) fail LOUD here, before
   // any side effect — mirroring the role/depth gates above.
   let worktreeRequest: { slug?: string; base?: string } | undefined
+  // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
+  // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
+  const spawnWarnings: string[] = []
   if (input.sandbox === undefined) {
     const mode = resolveWorktreeIsolation
       ? await resolveWorktreeIsolation()
       : await loadWorktreeIsolation()
+    // Impure signal for the implicit nested-in-place case only: is the
+    // inherited cwd a SHARED, DIRTY tree the child would edit in place (dirty
+    // AND not a daemon-provisioned worktree)? Computed here — never inside the
+    // pure decision — and only when it can matter (a nested spawn that made no
+    // explicit `worktree` request), so a root spawn or an explicit request
+    // pays no git-status cost and the decision matrix stays pure/testable.
+    const sharedDirtyCwd =
+      childDepth > 0 && normalizeWorktreeField(input.worktree) === undefined
+        ? await isSharedDirtyCwd(cwd)
+        : false
     const decision = decideWorktreeIsolation({
       mode,
       field: input.worktree,
       depth: childDepth,
+      sharedDirtyCwd,
+      ...(input.allowSharedCwd ? { allowSharedCwd: true } : {}),
     })
     if (decision.action === "reject") {
       return { ok: false, code: "worktree_disabled", message: decision.message }
+    }
+    if (decision.action === "spawn-in-place" && decision.warn) {
+      spawnWarnings.push(decision.warn)
+      console.warn(`[agent_start] ${decision.warn}`)
     }
     if (decision.action === "provision") {
       // Deterministic base-repo guard (the incident this exists to prevent):
@@ -1523,9 +1553,18 @@ export async function spawnAgentSession(
       if (waitUnsub) waitUnsub()
       const waitTail = waitLines.slice(-80)
       const output = cleanAgentLines(waitTail)
-      return finish({ ok: true, descriptor: desc, output })
+      return finish({
+        ok: true,
+        descriptor: desc,
+        output,
+        ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
+      })
     }
-    return finish({ ok: true, descriptor: desc })
+    return finish({
+      ok: true,
+      descriptor: desc,
+      ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
+    })
   } catch (err) {
     return finish({
       ok: false,
@@ -1535,6 +1574,48 @@ export async function spawnAgentSession(
       }`,
     })
   }
+}
+
+/**
+ * Impure signal for `decideWorktreeIsolation`: is `cwd` a SHARED, DIRTY
+ * working tree the spawn would edit in place? True only when the tree has
+ * uncommitted changes AND is not a daemon-provisioned worktree (which is
+ * isolated by construction — its whole point is that the child edits it).
+ *
+ * Robust by design: a `cwd` outside any git repo, or a `git` that isn't on
+ * PATH / errors, yields `false` (nothing to warn about) rather than throwing —
+ * the warning is advisory, never a spawn blocker. Untracked files count as
+ * dirty (bare `status --porcelain` reports them), matching the intuition that
+ * a checkout with new untracked work is "in use".
+ */
+async function isSharedDirtyCwd(cwd: string): Promise<boolean> {
+  // A daemon-provisioned worktree (carries a provision marker ⇒ `worktreeId`)
+  // is isolated ground the child is meant to own — never "shared". A bare
+  // `git worktree add` tree has no marker, so it (like the primary checkout)
+  // is treated as shared. Sync, filesystem-only — no subprocess.
+  const identity = resolveWorktreeIdentity(cwd)
+  if (identity?.worktreeId !== undefined) return false
+  const { spawn } = await import("node:child_process")
+  return await new Promise<boolean>(resolve => {
+    let stdout = ""
+    let settled = false
+    const done = (v: boolean) => {
+      if (!settled) {
+        settled = true
+        resolve(v)
+      }
+    }
+    const child = spawn("git", ["-C", cwd, "status", "--porcelain"], {
+      shell: false,
+    })
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString("utf8")
+    })
+    // git missing / cwd not a repo (spawn error or non-zero exit) ⇒ not a
+    // shared dirty tree we can warn about; stay quiet.
+    child.on("error", () => done(false))
+    child.on("close", code => done(code === 0 && stdout.trim().length > 0))
+  })
 }
 
 /**

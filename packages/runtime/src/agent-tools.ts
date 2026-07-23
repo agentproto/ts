@@ -381,6 +381,16 @@ export function registerAgentTools(
             "orchestrator approves or denies it. Default false = today's " +
             "auto-answer behaviour. ACP adapters only; others ignore it."
         ),
+      allowSharedCwd: mcpBool
+        .optional()
+        .describe(
+          "Acknowledge that this nested spawn WILL run in place inside its " +
+            "parent's working tree even when that tree has uncommitted changes " +
+            "and isn't an isolated worktree — silencing the shared-dirty-cwd " +
+            "warning agent_start otherwise returns in `warnings`. Only relevant " +
+            "for a delegated (depth > 0) spawn with no `worktree` and no " +
+            "`sandbox`; ignored otherwise. Default false = warn."
+        ),
       options: jsonTolerant(
         z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
       )
@@ -732,6 +742,7 @@ export function registerAgentTools(
         const body = {
           ...result.descriptor,
           ...(result.output ? { output: result.output } : {}),
+          ...(result.warnings ? { warnings: result.warnings } : {}),
           ...(result.deduped ? { deduped: true } : {}),
         }
         return {

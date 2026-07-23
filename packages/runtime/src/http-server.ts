@@ -3024,6 +3024,22 @@ async function handleSessions(
               return parsed !== undefined ? { worktree: parsed } : {}
             })()
           : {}),
+        // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
+        // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
+        // a stringified boolean like `permissionHold`/`trace`.
+        ...(b.allowSharedCwd !== undefined
+          ? (() => {
+              const a =
+                typeof b.allowSharedCwd === "boolean"
+                  ? b.allowSharedCwd
+                  : b.allowSharedCwd === "true"
+                    ? true
+                    : b.allowSharedCwd === "false"
+                      ? false
+                      : undefined
+              return a ? { allowSharedCwd: true } : {}
+            })()
+          : {}),
       },
     )
     if (!result.ok) {
@@ -3051,6 +3067,7 @@ async function handleSessions(
     }
     json(201, {
       ...result.descriptor,
+      ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
     })
     return true
