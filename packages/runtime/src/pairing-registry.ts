@@ -65,6 +65,7 @@ import {
   identityFingerprint,
   type DaemonIdentity,
 } from "@agentproto/secrets/identity"
+import { createReconnectLogGate } from "./reconnect-log-gate.js"
 
 export const PAIRINGS_VERSION = 1 as const
 
@@ -229,6 +230,13 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   const reconnectMaxMs = deps.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
 
+  // Rate-limit dial-failure logging per loop key. A revoked/offline peer's
+  // standing reconnect re-dials forever; without this a single dead pairing
+  // buries daemon.log (it was ~85% of one 2.9MB log). First failure logs at
+  // once, then at most one line per window carrying the suppressed count;
+  // a successful dial resets the key. Backoff/timing is unchanged.
+  const dialFailureGate = createReconnectLogGate({ now })
+
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
   /** token → offer. */
@@ -321,11 +329,18 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         sink = await deps.dial(dialUrl(spec.rendezvousUrl, expected), signal)
       } catch (err) {
         if (signal.aborted) break
-        log(`[pairing] dial ${spec.key} failed: ${errMsg(err)}`)
+        const line = dialFailureGate.onFailure(
+          spec.key,
+          `[pairing] dial ${spec.key} failed: ${errMsg(err)}`,
+        )
+        if (line) log(line)
         await sleep(backoff, signal)
         backoff = Math.min(backoff * 2, reconnectMaxMs)
         continue
       }
+      // Dial succeeded — clear any accumulated suppression for this key so the
+      // next outage logs its first failure promptly.
+      dialFailureGate.onSuccess(spec.key)
 
       // Make the in-flight handshake abortable: closing the sink on shutdown
       // makes `daemonHandshakeOverSink` reject promptly (transport closed),
