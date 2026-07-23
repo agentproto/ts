@@ -117,6 +117,7 @@ import {
   resolveWorktreeQueryRoot,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
+import type { WorktreeGcRunner } from "./worktree-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -543,6 +544,11 @@ export interface RuntimeHttpServerOptions {
    *  Injected because the join lives in `@agentproto/worktree`, a dependency
    *  the runtime deliberately does NOT take. */
   listWorktreeStatuses?: WorktreeStatusLister
+  /** Optional — mirrors `RegisterSessionToolsOptions.runWorktreeGc`. When
+   *  wired, enables `POST /worktrees/gc` + the `worktree_gc` MCP tool.
+   *  Injected because the plan/apply engine lives in `@agentproto/worktree`,
+   *  a dependency the runtime deliberately does NOT take. */
+  runWorktreeGc?: WorktreeGcRunner
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
@@ -1440,6 +1446,76 @@ export async function startHttpServer(
             res.end(
               JSON.stringify({
                 error: "worktree_status_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        if (path === "/worktrees/gc" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          // Transport twin of `GET /worktrees`, over the `gc` engine
+          // (`planGc` / `applyGc`). DEFAULTS TO A DRY RUN — `apply` must be
+          // explicitly true to mutate. All classification + safety
+          // (merge-gated reclaim, open-PR-is-hold, dirty-is-salvage-only)
+          // lives in the injected runner's engine, untouched here.
+          if (!opts.runWorktreeGc) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "worktree_gc_not_configured",
+                message:
+                  "POST /worktrees/gc is not enabled — the daemon was started " +
+                  "without a worktree gc runner. The host must wire " +
+                  "`runWorktreeGc` in createGateway.",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: object =
+            typeof body === "object" && body !== null ? body : {}
+          const repoRoot =
+            "repoRoot" in obj && typeof obj.repoRoot === "string"
+              ? obj.repoRoot
+              : undefined
+          const workspaceSlug =
+            "workspaceSlug" in obj && typeof obj.workspaceSlug === "string"
+              ? obj.workspaceSlug
+              : undefined
+          // Accept a real JSON boolean or its "true"/"false" string form, so
+          // the HTTP surface is as lenient as the MCP tool's `mcpBool`.
+          const apply = "apply" in obj && (obj.apply === true || obj.apply === "true")
+          const salvageDirty =
+            "salvageDirty" in obj &&
+            (obj.salvageDirty === true || obj.salvageDirty === "true")
+          const includeDetached =
+            "includeDetached" in obj &&
+            (obj.includeDetached === true || obj.includeDetached === "true")
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot,
+            workspaceSlug,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const result = await opts.runWorktreeGc({
+              repoRoot: resolved.repoRoot,
+              apply,
+              salvageDirty,
+              includeDetached,
+            })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "worktree_gc_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
             )

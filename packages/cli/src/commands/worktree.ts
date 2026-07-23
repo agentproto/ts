@@ -73,6 +73,10 @@ import {
   toWorktreeStatusView,
   type WorktreeStatusLister,
   type WorktreeStatusView,
+  type WorktreeGcRunner,
+  type WorktreeGcResult,
+  type WorktreeGcPlanEntryView,
+  type WorktreeGcOutcomeView,
   type OpenPrResolver,
   type PrStateResolver,
   type PrResolvedState,
@@ -410,6 +414,98 @@ export function makeWorktreeStatusLister(): WorktreeStatusLister {
       defaultBranchRef: `origin/${defaultBranch}`,
     })
     return entries.map(toWorktreeStatusView)
+  }
+}
+
+/** Runtime-local projection of one `GcPlanEntry` — flattens the engine's rich
+ *  tree/integration/liveness objects to the discriminants the runtime carries. */
+function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
+  const integration: { state: string; pr?: number } = { state: entry.integration.state }
+  if ("pr" in entry.integration) integration.pr = entry.integration.pr
+  return {
+    path: entry.path,
+    branch: entry.branch,
+    head: entry.head,
+    class: entry.class,
+    tree: entry.tree.state,
+    integration,
+    liveness: {
+      state: entry.liveness.state,
+      sessionCount: entry.liveness.sessions.length,
+    },
+  }
+}
+
+/** Runtime-local projection of one `GcApplyOutcome` — preserves every
+ *  discriminant `result` and only the extra fields that variant carries. */
+function toGcOutcomeView(outcome: GcApplyOutcome): WorktreeGcOutcomeView {
+  const base = { path: outcome.path, branch: outcome.branch }
+  switch (outcome.result) {
+    case "salvaged":
+      return { ...base, result: outcome.result, salvageDir: outcome.salvageDir }
+    case "aborted-reclassified":
+      return { ...base, result: outcome.result, from: outcome.from, to: outcome.to }
+    case "failed":
+      return { ...base, result: outcome.result, message: outcome.message }
+    default:
+      return { ...base, result: outcome.result }
+  }
+}
+
+/**
+ * Concrete `WorktreeGcRunner` for the daemon — the injected port behind
+ * `worktree_gc` and `POST /worktrees/gc`. Lives in the CLI (not the runtime)
+ * because it runs the `planGc` / `applyGc` engine over `@agentproto/worktree`,
+ * the heavy dependency the runtime deliberately refuses to take. Mirrors the
+ * exact construction used by `agentproto worktree gc`: resolves the owning
+ * repo, wires the same forge/memo/default-branch `gc` uses, always plans, and
+ * only applies when `apply` is set. Defaulting to a dry run is enforced at the
+ * tool/route boundary (`apply` defaults false); this runner just honors it.
+ */
+export function makeWorktreeGcRunner(): WorktreeGcRunner {
+  return async ({
+    repoRoot: repoRootCandidate,
+    apply,
+    salvageDirty,
+    includeDetached,
+  }): Promise<WorktreeGcResult> => {
+    const repoRoot = repoRootOf(resolve(repoRootCandidate))
+    if (!repoRoot) {
+      throw new Error(
+        `worktree_gc: "${repoRootCandidate}" is not inside a git repository.`
+      )
+    }
+    const [forge, defaultBranch] = await Promise.all([
+      createForgeClient(repoRoot),
+      detectDefaultBranch(repoRoot),
+    ])
+    const repoName = repoLabel(repoRoot)
+    const memo = new FileVerdictMemoStore()
+    const defaultBranchRef = `origin/${defaultBranch}`
+
+    const plan = await planGc({
+      repoRoot,
+      repoName,
+      forge,
+      memo,
+      defaultBranchRef,
+      includeDetached,
+    })
+
+    if (!apply) {
+      return { mode: "plan", plan: plan.map(toGcPlanEntryView) }
+    }
+
+    const outcomes = await applyGc(plan, {
+      repoRoot,
+      repoName,
+      forge,
+      memo,
+      defaultBranchRef,
+      includeDetached,
+      salvageDirty,
+    })
+    return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
 }
 

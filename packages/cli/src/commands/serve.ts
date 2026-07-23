@@ -50,6 +50,7 @@ import { loadNodePtyFactory, type PtyFactory } from "../util/pty-factory.js"
 import {
   makeWorktreeProvisioner,
   makeWorktreeStatusLister,
+  makeWorktreeGcRunner,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -628,6 +629,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
       // `listWorktreeStatuses` join over @agentproto/worktree, same dep
       // reasoning as above.
       listWorktreeStatuses: makeWorktreeStatusLister(),
+      // Injected port behind `worktree_gc` + `POST /worktrees/gc`: runs the
+      // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
+      // dry run), same dep reasoning as above.
+      runWorktreeGc: makeWorktreeGcRunner(),
       // Injected port behind the daemon PR-provenance reconciler: resolves the
       // open PR for a session's branch (branch→PR over @agentproto/worktree),
       // so an executor's PR gets the provenance footer even though it opened it
