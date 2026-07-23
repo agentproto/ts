@@ -201,6 +201,23 @@ export class DaemonClient {
   }
 
   /**
+   * `POST /sessions/gc` — bulk-retire ENDED sessions (the `session_gc` verb).
+   * Default (no `forget`) ARCHIVES them: they stay readable and can be
+   * unarchived. `forget: true` drops them permanently. `olderThanDays` limits
+   * to sessions idle at least that long. Only terminal sessions are eligible —
+   * a live one is never touched. Returns what it did.
+   */
+  async gcSessions(opts?: {
+    olderThanDays?: number
+    forget?: boolean
+  }): Promise<{ mode: "archived" | "forgotten"; ids: string[]; count: number }> {
+    return this.postJson("/sessions/gc", {
+      ...(opts?.olderThanDays !== undefined ? { olderThanDays: opts.olderThanDays } : {}),
+      ...(opts?.forget ? { forget: true } : {}),
+    })
+  }
+
+  /**
    * `PATCH /sessions/:id` — set or clear a session's user-facing name (SPEC-3
    * FIX B). Each of `title`/`label`: a string sets it, `null`/`""` clears it,
    * an omitted key leaves it untouched. Returns the updated descriptor. A user

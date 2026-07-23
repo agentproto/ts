@@ -22,6 +22,7 @@ import {
   resolveSessionArg,
 } from "./commands/sessionActions.js"
 import { registerSessionArchive } from "./commands/sessionArchive.js"
+import { registerSessionCleanup } from "./commands/sessionCleanup.js"
 import { registerSessionRename } from "./commands/sessionRename.js"
 import { registerSaveFavorite } from "./commands/saveFavorite.js"
 import { registerSessionFilter } from "./commands/sessionFilter.js"
@@ -101,6 +102,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionResume(ctx, client, store) // agentproto.resumeSession (in place, same id)
   registerSessionAccessProfile(ctx, client, store, authProfilesProvider) // agentproto.setSessionAccessProfile
   registerSessionArchive(ctx, client, store) // agentproto.archiveSession / unarchiveSession
+  registerSessionCleanup(ctx, client, store) // agentproto.cleanEndedSessions
   registerSessionRename(ctx, client, store) // agentproto.renameSession
   registerSaveFavorite(ctx, client, store) // agentproto.saveFavorite
   registerImportConversationCommand(ctx, client, store) // agentproto.importConversation

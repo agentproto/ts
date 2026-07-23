@@ -5,6 +5,7 @@ import {
   buildCreateWorkspaceCtas,
   buildOriginGroups,
   buildSessionsRoots,
+  buildStatusGroups,
   buildWorkspaceGroups,
   collectGroupMembership,
   groupDescriptionFor,
@@ -16,6 +17,7 @@ import {
   partitionSessionsByWorkspace,
   resolveOpenWorkspaceSlugs,
   sanitizeWorkspaceSlug,
+  statusGroupNodeId,
   UNASSIGNED_LABEL,
   UNASSIGNED_SLUG,
   UNKNOWN_ORIGIN_SLUG,
@@ -331,6 +333,45 @@ describe("buildOriginGroups", () => {
 
   it("renders an unknown origin under its raw slug (no code change needed)", () => {
     expect(originLabelFor("some-new-host")).toBe("some-new-host")
+  })
+})
+
+describe("buildStatusGroups", () => {
+  it("buckets by status category, attention-first (awaiting/live/failed/stopped/done)", () => {
+    const sessions = [
+      session({ id: "d", status: "exited" }), // done
+      session({ id: "r", status: "running" }), // live
+      session({ id: "e", status: "error" }), // failed
+    ]
+    const groups = buildStatusGroups(sessions, NOW)
+    // present categories, in STATUS_CATEGORY_ORDER: live, failed, done
+    expect(groups.map(g => g.slug)).toEqual(["live", "failed", "done"])
+    expect(groups.every(g => g.variant === "status")).toBe(true)
+    expect(groups[0]?.label).toBe("Live")
+    expect(groups.find(g => g.slug === "done")?.id).toBe(statusGroupNodeId("done"))
+  })
+
+  it("omits empty categories", () => {
+    const groups = buildStatusGroups([session({ id: "r", status: "running" })], NOW)
+    expect(groups.map(g => g.slug)).toEqual(["live"])
+  })
+
+  it("nests a child under its ROOT's status group, not its own", () => {
+    const sessions = [
+      session({ id: "root", status: "running", startedAt: "2026-01-01T23:00:00Z" }), // live
+      session({
+        id: "child",
+        status: "exited", // done on its own, but must follow the root into 'live'
+        parentSessionId: "root",
+        startedAt: "2026-01-01T23:30:00Z",
+      }),
+    ]
+    const groups = buildStatusGroups(sessions, NOW)
+    expect(groups.map(g => g.slug)).toEqual(["live"])
+    expect(groups[0]?.count).toBe(2)
+    const membership = collectGroupMembership(groups)
+    expect(membership.get("root")).toBe(groups[0])
+    expect(membership.get("child")).toBe(groups[0])
   })
 })
 
