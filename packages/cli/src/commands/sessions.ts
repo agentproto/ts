@@ -84,6 +84,9 @@ Usage:
   agentproto sessions story <id-or-name> [--json] [--no-color]
                              [--source auto|native|daemon]
   agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
+                              (archive terminal sessions by default; --forget
+                               DROPS descriptors instead. Never touches live.)
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
                               [--timeout <duration>] [--json]
                               (duration: bare integer = ms, unchanged — or an
@@ -161,6 +164,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
+  if (sub === "gc") return runGc(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
   if (sub === "story") return runStory(args.slice(1))
@@ -494,6 +498,90 @@ async function runStop(args: readonly string[]): Promise<number> {
       return 2
     }
     process.stderr.write(`agentproto sessions stop: ${msg}\n`)
+    return 1
+  }
+}
+
+/**
+ * `agentproto sessions gc [--older-than-days <n>] [--forget] [--json]` —
+ * CLI parity for the `session_gc` MCP verb (which had no CLI surface). Bulk
+ * garbage-collects TERMINAL-status sessions (exited/killed/error) so the
+ * list stops accumulating dead rows. ARCHIVES by default (reversible —
+ * hidden from the default view, still readable + importable); `--forget`
+ * instead DROPS each descriptor to reclaim `~/.agentproto/sessions.json`
+ * space (the native conversation on disk survives). `--older-than-days`
+ * keeps anything more recent. Never touches a live (running/starting)
+ * session — the registry guards that. Hits `POST /sessions/gc`.
+ */
+async function runGc(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      "older-than-days": { type: "string" },
+      forget: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  if (positionals.length > 0) {
+    process.stderr.write(
+      `agentproto sessions gc: unexpected positional(s): ${positionals.join(" ")}\n` +
+        "  Try: agentproto sessions gc --older-than-days 7\n" +
+        "       agentproto sessions gc --forget\n",
+    )
+    return 2
+  }
+
+  let olderThanDays: number | undefined
+  if (values["older-than-days"] !== undefined) {
+    const n = Number(values["older-than-days"])
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(
+        `agentproto sessions gc: invalid --older-than-days "${values["older-than-days"]}" ` +
+          "(expected a positive number of days).\n",
+      )
+      return 2
+    }
+    olderThanDays = n
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions gc")
+    return 2
+  }
+  const endpoint = report.found
+
+  const body: Record<string, unknown> = {}
+  if (olderThanDays !== undefined) body.olderThanDays = olderThanDays
+  if (values.forget) body.forget = true
+
+  try {
+    const result = await httpPostJson<{ mode: string; ids: string[]; count: number }>(
+      `${endpoint.url}/sessions/gc`,
+      body,
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    } else {
+      const scope = olderThanDays !== undefined ? ` older than ${olderThanDays}d` : ""
+      process.stdout.write(
+        `agentproto sessions gc: ${result.mode} ${result.count} terminal ` +
+          `session${result.count === 1 ? "" : "s"}${scope}.\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write(
+        (await explain401(endpoint, "agentproto sessions gc")) + "\n",
+      )
+      return 1
+    }
+    process.stderr.write(`agentproto sessions gc: ${msg}\n`)
     return 1
   }
 }
