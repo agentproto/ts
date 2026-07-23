@@ -169,6 +169,12 @@
         "icon": "$(group-by-ref-type)"
       },
       {
+        "command": "agentproto.toggleGroupByOrigin",
+        "title": "agentproto: Toggle Group Sessions By Source",
+        "category": "agentproto",
+        "icon": "$(plug)"
+      },
+      {
         "command": "agentproto.createWorkspace",
         "title": "agentproto: Create Workspace Here",
         "category": "agentproto",
@@ -363,6 +369,11 @@
           "group": "navigation"
         },
         {
+          "command": "agentproto.toggleGroupByOrigin",
+          "when": "view == 'agentproto.sessions'",
+          "group": "navigation"
+        },
+        {
           "command": "agentproto.importConversation",
           "when": "view == 'agentproto.sessions'",
           "group": "navigation"
@@ -548,6 +559,11 @@
           "type": "boolean",
           "default": true,
           "description": "Group the Sessions panel by registered agentproto workspace, with the workspace(s) matching your open folder(s) sorted first and expanded. Off restores the flat session list. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Workspace)."
+        },
+        "agentproto.groupByOrigin": {
+          "type": "boolean",
+          "default": false,
+          "description": "Group the Sessions panel by source — Claude Code (desktop), VS Code extension, cron, … — so you can see where each root session was launched from. Sessions nest under their root's source. When on, this takes precedence over Group By Workspace. Toggle from the panel's toolbar (agentproto: Toggle Group Sessions By Source)."
         },
         "agentproto.autoAdoptLocalLogin": {
           "type": "string",

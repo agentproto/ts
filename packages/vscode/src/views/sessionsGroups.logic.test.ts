@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import {
   buildCreateWorkspaceCtas,
+  buildOriginGroups,
   buildSessionsRoots,
   buildWorkspaceGroups,
   collectGroupMembership,
@@ -10,11 +11,14 @@ import {
   groupNodeId,
   isCtaNode,
   isGroupNode,
+  originGroupNodeId,
+  originLabelFor,
   partitionSessionsByWorkspace,
   resolveOpenWorkspaceSlugs,
   sanitizeWorkspaceSlug,
   UNASSIGNED_LABEL,
   UNASSIGNED_SLUG,
+  UNKNOWN_ORIGIN_SLUG,
   type GroupNode,
 } from "./sessionsGroups.logic.js"
 import { isSeparatorNode, type SessionNode } from "./sessionsTree.logic.js"
@@ -234,12 +238,12 @@ describe("buildWorkspaceGroups", () => {
   })
 })
 
-describe("buildSessionsRoots (the flat/grouped toggle)", () => {
+describe("buildSessionsRoots (the grouping selector)", () => {
   const sessions = [session({ id: "a", cwd: "/Code/studio" })]
 
-  it("groupByWorkspace: false returns the plain flat rows — no GroupNode, no CTA", () => {
+  it("grouping 'none' returns the plain flat rows — no GroupNode, no CTA", () => {
     const roots = buildSessionsRoots(sessions, config, ["/Code/unregistered"], NOW, {
-      groupByWorkspace: false,
+      grouping: "none",
       filterActive: false,
     })
     expect(roots.some(isGroupNode)).toBe(false)
@@ -247,21 +251,86 @@ describe("buildSessionsRoots (the flat/grouped toggle)", () => {
     expect(roots).toHaveLength(1)
   })
 
-  it("groupByWorkspace: true returns groups, with any CTA rows prepended first", () => {
+  it("grouping 'workspace' returns groups, with any CTA rows prepended first", () => {
     const roots = buildSessionsRoots(sessions, config, ["/Code/unregistered"], NOW, {
-      groupByWorkspace: true,
+      grouping: "workspace",
       filterActive: false,
     })
     expect(isCtaNode(roots[0])).toBe(true)
     expect(roots.slice(1).every(isGroupNode)).toBe(true)
   })
 
-  it("grouped mode never emits a CTA when every open folder is registered", () => {
+  it("workspace mode never emits a CTA when every open folder is registered", () => {
     const roots = buildSessionsRoots(sessions, config, ["/Code/studio"], NOW, {
-      groupByWorkspace: true,
+      grouping: "workspace",
       filterActive: false,
     })
     expect(roots.some(isCtaNode)).toBe(false)
+  })
+
+  it("grouping 'origin' buckets by source — GroupNodes only, no workspace CTA", () => {
+    const originSessions = [
+      session({ id: "a", cwd: "/Code/studio", origin: "vscode" }),
+      session({ id: "b", cwd: "/Code/studio", origin: "claude-code" }),
+    ]
+    const roots = buildSessionsRoots(originSessions, config, ["/Code/unregistered"], NOW, {
+      grouping: "origin",
+      filterActive: false,
+    })
+    expect(roots.some(isCtaNode)).toBe(false)
+    expect(roots.every(isGroupNode)).toBe(true)
+    expect(roots.filter(isGroupNode).every(g => g.variant === "origin")).toBe(true)
+  })
+})
+
+describe("buildOriginGroups", () => {
+  it("buckets roots by origin with friendly labels", () => {
+    const sessions = [
+      session({ id: "a", origin: "claude-code" }),
+      session({ id: "b", origin: "vscode" }),
+    ]
+    const groups = buildOriginGroups(sessions, NOW)
+    const bySlug = new Map(groups.map(g => [g.slug, g]))
+    expect(bySlug.get("claude-code")?.label).toBe("Claude Code (desktop)")
+    expect(bySlug.get("vscode")?.label).toBe("VS Code extension")
+    expect(bySlug.get("claude-code")?.id).toBe(originGroupNodeId("claude-code"))
+    expect(groups.every(g => g.variant === "origin")).toBe(true)
+  })
+
+  it("nests a child under its ROOT's origin group, not its own", () => {
+    const sessions = [
+      session({ id: "root", origin: "vscode", startedAt: "2026-01-01T23:00:00Z" }),
+      // child carries a different origin — must still land in the vscode bucket
+      session({
+        id: "child",
+        origin: "claude-code",
+        parentSessionId: "root",
+        startedAt: "2026-01-01T23:30:00Z",
+      }),
+    ]
+    const groups = buildOriginGroups(sessions, NOW)
+    expect(groups.map(g => g.slug)).toEqual(["vscode"])
+    expect(groups[0]?.count).toBe(2)
+    const membership = collectGroupMembership(groups)
+    expect(membership.get("root")).toBe(groups[0])
+    expect(membership.get("child")).toBe(groups[0])
+  })
+
+  it("puts originless roots in the 'unknown' bucket, always sorted last", () => {
+    const sessions = [
+      session({ id: "a" }), // no origin
+      session({ id: "b", origin: "vscode" }),
+      session({ id: "c", origin: "cron" }),
+    ]
+    const groups = buildOriginGroups(sessions, NOW)
+    expect(groups[groups.length - 1]?.slug).toBe(UNKNOWN_ORIGIN_SLUG)
+    expect(originLabelFor(UNKNOWN_ORIGIN_SLUG)).toBe("Unknown source")
+    // the known ones sort alphabetically by label ("Cron" before "VS Code…")
+    expect(groups.slice(0, -1).map(g => g.slug)).toEqual(["cron", "vscode"])
+  })
+
+  it("renders an unknown origin under its raw slug (no code change needed)", () => {
+    expect(originLabelFor("some-new-host")).toBe("some-new-host")
   })
 })
 
