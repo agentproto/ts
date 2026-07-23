@@ -189,11 +189,19 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     })
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
     const desc = JSON.parse(text) as {
+      id: string
       mcpServers?: Array<{ name: string; transport: string; ref: string }>
     }
 
+    // PR 7 / Gap 7: the ref also carries `callerSessionId=<this child's own
+    // id>`, minted before the child starts so its later command_execute
+    // calls can be attributed back to it.
     const expectedEntry = [
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt&callerSessionId=${desc.id}`,
+      },
     ]
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ mcpServers: expectedEntry }),
@@ -236,10 +244,13 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     })
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
     const desc = JSON.parse(text) as {
+      id: string
       mcpServers?: Array<{ name: string; transport: string; ref: string }>
     }
 
-    const expectedEntry = [{ name: "agentproto", transport: "http", ref: daemonMcpUrl }]
+    const expectedEntry = [
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${desc.id}` },
+    ]
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ mcpServers: expectedEntry }),
     )

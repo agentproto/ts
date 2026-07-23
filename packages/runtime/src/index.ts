@@ -1125,7 +1125,10 @@ export async function createGateway(
       : {}),
   })
 
-  const mcpServerFactory = async (denyTools?: ReadonlySet<string>) => {
+  const mcpServerFactory = async (
+    denyTools?: ReadonlySet<string>,
+    callerSessionId?: string,
+  ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
@@ -1160,8 +1163,16 @@ export async function createGateway(
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
-    // `.agentproto/allowed-commands.json`; default-deny.
-    registerCommandTools(server, { workspace, registry: sessions })
+    // `.agentproto/allowed-commands.json`; default-deny. `callerSessionId`
+    // (PR 7 / Gap 7) comes from THIS request's `?callerSessionId=` query
+    // param — set when the caller is an agent session spawned with the
+    // daemon's own self-ref `mcpServers` entry (see `session-spawn.ts`) —
+    // and is recorded on every command session this request mints.
+    registerCommandTools(server, {
+      workspace,
+      registry: sessions,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.

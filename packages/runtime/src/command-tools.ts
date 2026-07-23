@@ -12,16 +12,34 @@
  *
  * Default-deny. The runtime reads
  * `<workspace>/.agentproto/allowed-commands.json` on every call (cheap
- * stat; cached for 1s) for the list of allowed command basenames.
- * Missing / empty file ⇒ no commands run. The error message points the
- * user at the file path so they know exactly where to opt in.
+ * stat; cached for 1s) for the list of allowed commands. Missing / empty
+ * file ⇒ no commands run. The error message points the user at the file
+ * path so they know exactly where to opt in.
  *
- * Allowlist file shape:
- *   { "version": 1, "commands": ["claude", "gh", "pnpm", "node"] }
+ * Allowlist file shape — each entry in `commands` is either a plain
+ * basename string (unconstrained args, today's behavior) or an object
+ * constraining the argv prefix:
+ *   {
+ *     "version": 1,
+ *     "commands": [
+ *       "claude",
+ *       "node",
+ *       { "command": "git", "args": ["status"] },
+ *       { "command": "git", "args": ["log"] }
+ *     ]
+ *   }
  *
- * Match is by command BASENAME (`/usr/local/bin/claude` → `claude`)
- * to keep the allowlist short and not break when users have multiple
- * binaries on their PATH.
+ * Match is by command BASENAME (`/usr/local/bin/claude` → `claude`) to
+ * keep the allowlist short and not break when users have multiple
+ * binaries on their PATH. A plain string entry allows that basename with
+ * ANY args — same as before. An object entry with `args` only allows
+ * invocations whose argv starts with exactly that token sequence (a
+ * prefix match, so `{ "command": "git", "args": ["status"] }` also
+ * allows `git status --short`), letting an operator express "allow `git
+ * status`, block `git push`" without allowing the whole binary. When a
+ * basename has BOTH a plain entry and constrained entries, the plain
+ * entry wins (any args allowed) — constraints only bite when every entry
+ * for that basename is constrained.
  *
  * ## Safety notes
  *
@@ -127,25 +145,72 @@ export interface RegisterCommandToolsOptions {
    *  to "default", matching the fallback cron-scheduler.ts already uses
    *  for its own agent-action spawns. */
   workspaceSlug?: string
+  /** Session id of the MCP caller that invoked this specific `/mcp`
+   *  registration, when known — recorded on every `command_execute` call's
+   *  minted command session as `callerSessionId` (PR 7 / Gap 7 provenance).
+   *  `registerCommandTools` still mounts once per `/mcp` POST (not a
+   *  persistent per-caller server), so this is per-REQUEST: the daemon
+   *  resolves it from that request's `?callerSessionId=` query param (see
+   *  `index.ts`'s `mcpServerFactory` / `http-server.ts`'s `handleMcp`) —
+   *  present only when the caller is an agent session spawned with the
+   *  daemon's own self-ref `mcpServers` entry (`session-spawn.ts`). Absent
+   *  for the plain daemon-wide `/mcp` mount with no such query param —
+   *  fabricating one there would be worse than leaving it absent. */
+  callerSessionId?: string
+}
+
+/** One normalized allowlist entry — a basename with an optional argv-prefix
+ *  constraint. `args` absent ⇒ unconstrained (any args), matching a plain
+ *  basename-string entry in the JSON file. */
+export interface AllowlistEntry {
+  command: string
+  args?: string[]
 }
 
 interface AllowlistFile {
   version?: number
-  commands?: string[]
+  commands?: Array<string | { command?: unknown; args?: unknown }>
 }
 
 interface AllowlistCacheEntry {
   mtimeMs: number
-  commands: Set<string>
+  entries: AllowlistEntry[]
 }
 
 let allowlistCache: { path: string; entry: AllowlistCacheEntry } | null = null
 
-export async function loadAllowlist(workspace: string): Promise<Set<string>> {
+function normalizeAllowlistEntry(
+  raw: string | { command?: unknown; args?: unknown },
+): AllowlistEntry | undefined {
+  if (typeof raw === "string") {
+    const command = raw.trim()
+    return command.length > 0 ? { command } : undefined
+  }
+  if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
+    return undefined
+  }
+  const command = raw.command.trim()
+  if (raw.args === undefined) return { command }
+  if (!Array.isArray(raw.args) || !raw.args.every(a => typeof a === "string")) {
+    // Malformed `args` (not a string array) — drop the constraint rather
+    // than silently allowlisting an unintended shape; the operator gets a
+    // basename-only entry, which is at least not MORE permissive than
+    // the array they wrote.
+    return undefined
+  }
+  return { command, args: [...raw.args] }
+}
+
+/** Load the workspace's allowlist as normalized entries (basename +
+ *  optional argv-prefix constraint). Cheap stat-cached, same as
+ *  `loadAllowlist`; both share one cache keyed on the file's mtime. */
+export async function loadAllowlistEntries(
+  workspace: string,
+): Promise<AllowlistEntry[]> {
   const path = resolve(workspace, ALLOWLIST_REL)
   if (!existsSync(path)) {
     allowlistCache = null
-    return new Set()
+    return []
   }
   try {
     const s = await stat(path)
@@ -154,18 +219,16 @@ export async function loadAllowlist(workspace: string): Promise<Set<string>> {
       allowlistCache.path === path &&
       allowlistCache.entry.mtimeMs === s.mtimeMs
     ) {
-      return allowlistCache.entry.commands
+      return allowlistCache.entry.entries
     }
     const raw = await readFile(path, "utf8")
     const parsed = JSON.parse(raw) as AllowlistFile
     const list = Array.isArray(parsed.commands) ? parsed.commands : []
-    const commands = new Set(
-      list
-        .filter((x): x is string => typeof x === "string" && x.length > 0)
-        .map(x => x.trim()),
-    )
-    allowlistCache = { path, entry: { mtimeMs: s.mtimeMs, commands } }
-    return commands
+    const entries = list
+      .map(normalizeAllowlistEntry)
+      .filter((e): e is AllowlistEntry => e !== undefined)
+    allowlistCache = { path, entry: { mtimeMs: s.mtimeMs, entries } }
+    return entries
   } catch (err) {
     // Bad JSON / unreadable file ⇒ deny all and surface in the error
     // the next caller gets. Don't poison the cache.
@@ -174,8 +237,41 @@ export async function loadAllowlist(workspace: string): Promise<Set<string>> {
       err,
     )
     allowlistCache = null
-    return new Set()
+    return []
   }
+}
+
+/** Basename-only view of the allowlist — every basename that has AT LEAST
+ *  ONE entry, constrained or not. Existing callers (cron-scheduler.ts,
+ *  task-ledger.ts, supervisor.ts) gate on basename alone, same as before
+ *  this change; only `command_execute` itself enforces argv constraints
+ *  (see `isCommandAllowed`). */
+export async function loadAllowlist(workspace: string): Promise<Set<string>> {
+  const entries = await loadAllowlistEntries(workspace)
+  return new Set(entries.map(e => e.command))
+}
+
+/** True when `pattern` (an allowed argv prefix) matches the start of
+ *  `actual` token-for-token. An empty `pattern` matches anything. */
+function argsMatchPrefix(pattern: readonly string[], actual: readonly string[]): boolean {
+  if (pattern.length > actual.length) return false
+  return pattern.every((tok, i) => actual[i] === tok)
+}
+
+/** Argv-aware allowlist check used by `command_execute`. A basename with
+ *  no matching entry ⇒ denied. A basename with any unconstrained entry
+ *  (plain string, or object with no `args`) ⇒ allowed regardless of args.
+ *  Otherwise every matching entry is constrained, so `args` must match
+ *  one of them as a prefix. */
+export function isCommandAllowed(
+  entries: readonly AllowlistEntry[],
+  baseName: string,
+  args: readonly string[],
+): boolean {
+  const matching = entries.filter(e => e.command === baseName)
+  if (matching.length === 0) return false
+  if (matching.some(e => e.args === undefined)) return true
+  return matching.some(e => argsMatchPrefix(e.args!, args))
 }
 
 export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
@@ -267,14 +363,21 @@ export function registerCommandTools(
         ),
     },
     async ({ command, args, cwd, stdin, timeoutMs, origin }) => {
-      const allowlist = await loadAllowlist(opts.workspace)
+      const allowlistEntries = await loadAllowlistEntries(opts.workspace)
       const baseName = basename(command)
-      if (!allowlist.has(baseName)) {
-        const allowed = [...allowlist].sort().join(", ") || "(empty)"
+      if (!isCommandAllowed(allowlistEntries, baseName, args ?? [])) {
+        const allowedBasenames =
+          [...new Set(allowlistEntries.map(e => e.command))].sort().join(", ") ||
+          "(empty)"
+        const basenameKnown = allowlistEntries.some(e => e.command === baseName)
         throw new Error(
-          `command '${baseName}' is not in the allowlist. ` +
-            `Add it to ${join(opts.workspace, ALLOWLIST_REL)} ` +
-            `under "commands": [...]. Currently allowed: ${allowed}.`,
+          basenameKnown
+            ? `command '${baseName}' is allowlisted but its argv doesn't match ` +
+              `any allowed pattern for it. Check the "args" constraints for ` +
+              `'${baseName}' in ${join(opts.workspace, ALLOWLIST_REL)}.`
+            : `command '${baseName}' is not in the allowlist. ` +
+              `Add it to ${join(opts.workspace, ALLOWLIST_REL)} ` +
+              `under "commands": [...]. Currently allowed: ${allowedBasenames}.`,
         )
       }
       // Interpreter footgun: allowlisting bash/node/python/… grants arbitrary
@@ -367,12 +470,13 @@ export function registerCommandTools(
         stderr: result.stderr,
         ...(result.truncated ? { truncated: true } : {}),
         // Never leave a bare call unlabeled — default to the tool's own
-        // name when the caller didn't pass one. No `callerSessionId` here:
-        // `registerCommandTools` mounts once, daemon-wide (not per-caller
-        // scoped like session-tools.ts's `callerScope`), so this tool has
-        // no way to resolve which session actually invoked it. Fabricating
-        // one would be worse than leaving it absent.
+        // name when the caller didn't pass one.
         origin: origin ?? "command_execute",
+        // Per-request caller identity (PR 7 / Gap 7) — see this option's
+        // doc on `RegisterCommandToolsOptions`. Absent unless the caller
+        // was an agent session spawned with the daemon's own self-ref
+        // `mcpServers` entry, same as before this field existed.
+        ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
       })
       // Daemon-lane PR provenance: when this run was a successful `gh pr
       // create` issued by an executor session, stamp the `@agentproto-bot`

@@ -252,8 +252,15 @@ describe("spawnAgentSession", () => {
 
     const result = await spawnAgentSession(deps, { adapter: "hermes", cwd: "/tmp" })
     expect(result.ok).toBe(true)
+    // PR 7 / Gap 7: the injected ref carries `callerSessionId=<this session's
+    // OWN id>` — minted before the child starts (see session-spawn.ts) so a
+    // command_execute call this child makes back through it can be
+    // attributed to it. The id has to match the resulting descriptor's own
+    // id, not some other value, or attribution would point at the wrong
+    // session.
+    const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: daemonMcpUrl },
+      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
     ])
   })
 
@@ -598,13 +605,13 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: "http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt",
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
   })
 
-  it("supervisor (explicit) keeps the plain hermes default-gateway ref (no denyTools)", async () => {
+  it("supervisor (explicit) keeps the plain hermes default-gateway ref (no denyTools, still carries callerSessionId)", async () => {
     const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
 
     const result = await spawnAgentSession(deps, {
@@ -615,7 +622,11 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.descriptor.mcpServers).toEqual([
-        { name: "agentproto", transport: "http", ref: "http://127.0.0.1:18790/mcp" },
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?callerSessionId=${result.descriptor.id}`,
+        },
       ])
     }
   })

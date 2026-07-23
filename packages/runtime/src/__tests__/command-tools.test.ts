@@ -45,9 +45,10 @@ import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } 
 async function buildHarness(
   workspace: string,
   registry: SessionsRegistry,
+  opts?: { callerSessionId?: string },
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
-  registerCommandTools(server, { workspace, registry })
+  registerCommandTools(server, { workspace, registry, ...opts })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -57,7 +58,10 @@ async function buildHarness(
   return { client, close: () => client.close() }
 }
 
-function allowlist(workspace: string, commands: string[]): void {
+function allowlist(
+  workspace: string,
+  commands: Array<string | { command: string; args?: string[] }>,
+): void {
   mkdirSync(join(workspace, ".agentproto"), { recursive: true })
   writeFileSync(
     join(workspace, ".agentproto", "allowed-commands.json"),
@@ -456,6 +460,152 @@ describe("command_execute → sandbox confinement default posture", () => {
     const { stdout, exitCode } = JSON.parse(textOf(result))
     expect(exitCode).toBe(0)
     expect(stdout).toContain("confined-ok")
+    await close()
+  })
+})
+
+describe("command_execute → argv-level allowlist matching (Gap 10)", () => {
+  let workspace: string
+  let registry: SessionsRegistry
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "command-tools-argv-test-"))
+    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+  })
+
+  afterEach(() => {
+    registry.shutdown()
+    rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it("a plain basename string entry stays unconstrained — any argv is allowed (backward compat)", async () => {
+    allowlist(workspace, ["node"])
+    const { client, close } = await buildHarness(workspace, registry)
+    const a = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('a')"] },
+    })
+    const b = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["--version"] },
+    })
+    expect(a.isError).toBeFalsy()
+    expect(b.isError).toBeFalsy()
+    await close()
+  })
+
+  it("an argv-constrained entry allows a matching prefix and denies a non-matching one", async () => {
+    allowlist(workspace, [{ command: "node", args: ["-e"] }])
+    const { client, close } = await buildHarness(workspace, registry)
+
+    const allowed = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('yes')"] },
+    })
+    expect(allowed.isError).toBeFalsy()
+    const { stdout } = JSON.parse(textOf(allowed))
+    expect(stdout).toContain("yes")
+
+    const denied = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["--version"] },
+    })
+    expect(denied.isError).toBeTruthy()
+    expect(textOf(denied)).toContain("argv doesn't match any allowed pattern")
+
+    await close()
+  })
+
+  it("denies a basename that has no allowlist entry at all, same message shape as before", async () => {
+    allowlist(workspace, [{ command: "git", args: ["status"] }])
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "1"] },
+    })
+    expect(result.isError).toBeTruthy()
+    expect(textOf(result)).toContain("is not in the allowlist")
+    await close()
+  })
+
+  it("mixes constrained and unconstrained entries for the SAME basename — the unconstrained one wins (any args allowed)", async () => {
+    allowlist(workspace, ["node", { command: "node", args: ["-e"] }])
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["--version"] },
+    })
+    expect(result.isError).toBeFalsy()
+    await close()
+  })
+
+  it("distinct constrained entries for the same basename allow either matching prefix (\"git status\" vs \"git log\")", async () => {
+    allowlist(workspace, [
+      { command: "node", args: ["-e", "process.stdout.write('status')"] },
+      { command: "node", args: ["-e", "process.stdout.write('log')"] },
+    ])
+    const { client, close } = await buildHarness(workspace, registry)
+
+    const status = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "process.stdout.write('status')"] },
+    })
+    expect(status.isError).toBeFalsy()
+
+    const log = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "process.stdout.write('log')"] },
+    })
+    expect(log.isError).toBeFalsy()
+
+    const push = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "process.stdout.write('push')"] },
+    })
+    expect(push.isError).toBeTruthy()
+
+    await close()
+  })
+})
+
+describe("command_execute → callerSessionId provenance (Gap 7)", () => {
+  let workspace: string
+  let registry: SessionsRegistry
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "command-tools-caller-test-"))
+    allowlist(workspace, ["node"])
+    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+  })
+
+  afterEach(() => {
+    registry.shutdown()
+    rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it("records the mounting registration's callerSessionId onto every command session it mints", async () => {
+    const { client, close } = await buildHarness(workspace, registry, {
+      callerSessionId: "sess_caller123",
+    })
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.callerSessionId).toBe("sess_caller123")
+    await close()
+  })
+
+  it("leaves callerSessionId unset when the registration carries none (today's plain /mcp mount)", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.callerSessionId).toBeUndefined()
     await close()
   })
 })
