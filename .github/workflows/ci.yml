@@ -753,7 +753,19 @@ jobs:
             # "Changeset present?" on the new HEAD. No [skip ci] here — that
             # token ends up in squash-merge commit bodies and silently skips
             # the Release workflow after merge (GitHub checks the full message).
-            git commit -m "chore: agentic reviewer — changeset"
+            #
+            # Commit under an explicit @users.noreply.github.com bot identity
+            # (matching the sandbox path in agentproto-workflows/lib/
+            # sandbox-agent.mjs) rather than the App token's implicit
+            # anthropic.com identity. Otherwise GitHub's squash-merge derives a
+            # co-author trailer naming that anthropic.com address from this
+            # commit's author, which the hygiene-check ATTRIBUTION_PATTERN
+            # (this file, ~:279) bans — a self-conflict that blocked any PR
+            # into which this changeset commit got squashed (e.g. a
+            # consolidated auth stack).
+            git -c user.name="agentproto-bot" \
+                -c user.email="agentproto-bot@users.noreply.github.com" \
+                commit -m "chore: agentic reviewer — changeset"
             git push
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
