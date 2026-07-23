@@ -441,8 +441,18 @@ export interface RuntimeHttpServerOptions {
    * other tool (fs, command_execute, …) — unlike the orchestrator's
    * curated allowlist, this surface can't just narrow to a small
    * subset without breaking the child's ability to do real work.
+   *
+   * `callerSessionId`, when present, is parsed from the request's
+   * `?callerSessionId=<id>` query string (see `handleMcp` below) — the
+   * same hermes-default `mcpServers` entry carries it (PR 7 / Gap 7)
+   * so a `command_execute` call made through THIS one-shot server can
+   * be attributed to the session that made it (see `command-tools.ts`'s
+   * `RegisterCommandToolsOptions.callerSessionId`).
    */
-  mcpServerFactory: (denyTools?: ReadonlySet<string>) => Promise<McpServer>
+  mcpServerFactory: (
+    denyTools?: ReadonlySet<string>,
+    callerSessionId?: string,
+  ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -938,10 +948,20 @@ export async function startHttpServer(
     return names.length > 0 ? new Set(names) : undefined
   }
 
+  /** Mirrors `parseDenyToolsQuery` for the `callerSessionId` query param
+   *  (PR 7 / Gap 7) — see `mcpServerFactory`'s doc for the wire contract. */
+  function parseCallerSessionIdQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("callerSessionId")
+    return raw && raw.length > 0 ? raw : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     const denyTools = parseDenyToolsQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools)
+    const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId)
     await serveMcp(req, res, server)
   }
 

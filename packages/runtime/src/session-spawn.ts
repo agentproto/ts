@@ -8,7 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import type { AgentSessionLike, SessionsRegistry, SessionDescriptor } from "./sessions.js"
+import { mintSessionId, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -907,6 +907,14 @@ export async function spawnAgentSession(
   // capability gate applied from outside; `promptAppend` cannot
   // reopen it (it's never consulted here at all).
   let mcpServers = input.mcpServers
+  // Minted here (not left to `registry.spawnAgent`'s own default) so it can
+  // be baked into the daemon-self-ref URL below BEFORE the child's static
+  // MCP config is written — `spawnAgent` doesn't return an id until AFTER
+  // the child has already started (see its call below), which is too late
+  // for anything embedded in the child's own callback URL. Handed to
+  // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
+  // this exact id rather than a second, different one (PR 7 / Gap 7).
+  const mintedSessionId = mintSessionId()
   // hermes (unlike claude-code) has zero built-in tools — without an
   // explicit `mcpServers`, it silently spawns as a chat-only session
   // with no error. Default it to the daemon's own gateway so it's no
@@ -919,10 +927,16 @@ export async function spawnAgentSession(
   // daemon's `/mcp` handler strips `agent_start`/`agent_prompt` from
   // what it registers for this one request — the child still gets the
   // rest of the daemon's tools (fs, command_execute, …) to do real work.
+  //
+  // It also carries `callerSessionId=<mintedSessionId>` so a
+  // `command_execute` call this child makes back through that URL can be
+  // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
+  // the query param and threads it into `registerCommandTools`.
   if (!mcpServers && input.adapter === "hermes" && daemonMcpUrl) {
-    const ref = delegationDenied
+    let ref = delegationDenied
       ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
       : daemonMcpUrl
+    ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(mintedSessionId)}`
     mcpServers = [{ name: "agentproto", transport: "http", ref }]
   }
   let bindOrchestratorLifecycle:
@@ -1477,6 +1491,7 @@ export async function spawnAgentSession(
     }
 
     const desc = registry.spawnAgent({
+      id: mintedSessionId,
       workspaceSlug: resolvedSlug,
       cwd,
       agentSession,

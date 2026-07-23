@@ -429,6 +429,14 @@ function isAbortError(err: unknown): boolean {
 export const SESSIONS_FILE_PATH = (): string =>
   resolve(homedir(), ".agentproto", "sessions.json")
 
+/** Mint a session id in the registry's own format. Exported so a spawner
+ *  (session-spawn.ts) can pre-generate one BEFORE the child session starts —
+ *  e.g. to bake it into the child's own MCP callback URL as `callerSessionId`
+ *  — and hand it in via `SpawnAgentInput.id` / `SpawnSessionInput.id`. */
+export function mintSessionId(): string {
+  return `sess_${randomUUID().slice(0, 8)}`
+}
+
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
   | "starting"
@@ -1513,6 +1521,14 @@ export interface RegisterSessionInput {
 export interface SpawnAgentInput {
   workspaceSlug: string
   cwd: string
+  /** Optional pre-set id — lets the spawner (session-spawn.ts) mint the
+   *  id BEFORE `agentSession` is started, so it can be baked into the
+   *  child's own `mcpServers` callback URL as `callerSessionId` (PR 7 /
+   *  Gap 7 provenance) — the id has to exist before the child's static
+   *  MCP config is written, which is before `spawnAgent` itself returns
+   *  one. Same pattern as `SpawnSessionInput.id`. Omit to generate one
+   *  here, as before. */
+  id?: string
   /** Driver-built session ready to receive turns. Caller resolves
    *  the adapter, calls createAgentCliRuntime(handle).start({cwd}),
    *  and hands the result here. */
@@ -3369,7 +3385,7 @@ export function createSessionsRegistry(opts?: {
       return desc
     },
     spawnAgent(input) {
-      const id = `sess_${randomUUID().slice(0, 8)}`
+      const id = input.id ?? mintSessionId()
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
       const desc: SessionDescriptor = {
         id,
