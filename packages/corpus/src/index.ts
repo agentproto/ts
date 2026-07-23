@@ -82,6 +82,7 @@ export { LocalFilesImporter } from "./importers/local-files.js"
 export { KbMigrationImporter } from "./importers/kb-migration.js"
 export { WebImporter } from "./importers/web.js"
 export { ConversationImporter } from "./importers/conversation.js"
+export { CodeImporter } from "./importers/code.js"
 export type {
   CorpusImporter,
   ImporterTarget,
@@ -92,6 +93,7 @@ export type {
 export type { LocalFilesImporterOptions } from "./importers/local-files.js"
 export type { WebImporterOptions } from "./importers/web.js"
 export type { ConversationImporterOptions } from "./importers/conversation.js"
+export type { CodeImporterOptions } from "./importers/code.js"
 
 // Distill — raw source → refined entries (KNOWLEDGE layer)
 export { DistillRunner } from "./distill/runner.js"
