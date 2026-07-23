@@ -87,6 +87,15 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "gemini",
+    name: "Gemini",
+    description:
+      "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Native billing-auth: \"use my existing Gemini login\".",
+    packageName: "@agentproto/adapter-gemini",
+    hint: "google · ACP · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "hermes",
     name: "Hermes",
     description:

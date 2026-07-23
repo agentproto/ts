@@ -2587,3 +2587,134 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     expect(result.descriptor.auth?.credentialSource).not.toBe("cli-local-login")
   })
 })
+
+// "Use my existing Gemini login" — the SAME file-based (external) subscription
+// primitive as codex, on the native `@agentproto/adapter-gemini` adapter. The
+// Gemini CLI reads its own ~/.gemini/oauth_creds.json, so the daemon injects
+// NOTHING — it verifies the login is present (fail-loud, via the `gemini`
+// provision recipe) and echoes `cli-local-login`. Money-safety: the resolved
+// spec never carries a bearer, so nothing can land in an api-key var.
+describe("spawnAgentSession — gemini file-based (external) subscription login", () => {
+  const GEMINI_EXTERNAL_DESCRIPTOR: AdapterAuthDescriptor = {
+    provider: "google",
+    authSubscription: {
+      external: true,
+      conflictEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    },
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: GEMINI_EXTERNAL_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    oauthState.verifyImpl = async () => {}
+  })
+
+  it("config-defaults `auth.source: gemini` + login present ⇒ subscription, cli-local-login, no bearer injected", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "gemini",
+      cwd: "/tmp",
+      auth: { source: "gemini" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    // No env var is SET — the CLI reads its own login file.
+    expect(result.descriptor.auth?.setEnv).toBe("")
+    expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
+    // The login was verified against the `gemini` recipe.
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+  })
+
+  it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "gemini",
+      cwd: "/tmp",
+      auth: { mode: "subscription" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+  })
+
+  it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
+    oauthState.verifyImpl = async () => {
+      throw new SubscriptionSourceError(
+        "auth_source_unresolved",
+        "no gemini login found — run `gemini login` and sign in with your subscription first.",
+      )
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "gemini",
+      cwd: "/tmp",
+      auth: { source: "gemini" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_source_unresolved")
+    expect(result.message).toMatch(/no gemini login found/)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("a source-backed gemini PROFILE (endpoint google / oauth-bearer) resolves the external login", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["gemini-local"] = {
+      id: "gemini-local",
+      endpoint: "google",
+      method: "oauth-bearer",
+      source: "gemini",
+      label: "My Gemini login",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "gemini",
+      cwd: "/tmp",
+      access: { profileRef: "gemini-local" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("gemini", "gemini")
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "gemini-local",
+      endpoint: "google",
+      method: "oauth-bearer",
+    })
+  })
+
+  it("an unconfigured gemini spawn stays ambient — no external login verified, no auth echo engaged", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "gemini",
+      cwd: "/tmp",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Not explicit ⇒ the login is never verified and nothing is stamped as a
+    // used local login (gemini uses its own oauth_creds.json precedence).
+    expect(verify).not.toHaveBeenCalled()
+    expect(result.descriptor.auth?.credentialSource).not.toBe("cli-local-login")
+  })
+})

@@ -507,6 +507,72 @@ describe("resolveAuthSpec — file-based (external) subscription", () => {
   })
 })
 
+// The gemini file-based (external) subscription descriptor — the same primitive
+// as codex, but provider "google" (⇒ provider api-key var
+// GOOGLE_GENERATIVE_AI_API_KEY scrubbed automatically) and TWO conflictEnv
+// siblings: GEMINI_API_KEY and GOOGLE_API_KEY. Both matter because an env API
+// key OVERRIDES the OAuth login in Google's precedence, so all three must be
+// scrubbed for the login to win.
+const GEMINI_EXTERNAL_DESCRIPTOR: AdapterAuthDescriptor = {
+  provider: "google",
+  authSubscription: {
+    external: true,
+    conflictEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  },
+}
+
+describe("resolveAuthSpec — gemini file-based (external) subscription", () => {
+  it("verified external login ⇒ subscription, injects NOTHING, scrubs ALL THREE gemini api-key vars", () => {
+    const r = resolveAuthSpec({
+      descriptor: GEMINI_EXTERNAL_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.externalCredential).toBe(true)
+    // Money-safety: no credential, no env var set.
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.setEnv).toBe("")
+    // The provider api-key var PLUS both siblings — the whole set the Gemini CLI
+    // honors — is scrubbed, so a stray key can't flip billing.
+    expect(r?.spec.unsetEnv).toEqual(
+      expect.arrayContaining([
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+      ]),
+    )
+    expect(r?.echo.credentialSource).toBe("cli-local-login")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.echo.fingerprint).toBe("subscription · local-login")
+  })
+
+  it("unverified/unconfigured gemini spawn ⇒ neitherConfigured, echo stays honest as none", () => {
+    const r = resolveAuthSpec({
+      descriptor: GEMINI_EXTERNAL_DESCRIPTOR,
+      explicit: false,
+    })
+    expect(r?.spec.mode).toBe("subscription")
+    expect(r?.spec.neitherConfigured).toBe(true)
+    expect(r?.echo.credentialSource).toBe("none")
+    expect(r?.echo.fingerprint).toBeUndefined()
+  })
+
+  it("api-key requested on gemini still resolves the api-key path (sets the provider var)", () => {
+    const r = resolveAuthSpec({
+      descriptor: GEMINI_EXTERNAL_DESCRIPTOR,
+      explicit: true,
+      requestedMode: "api-key",
+      apiKeyConfigCredential: "AIza-key",
+    })
+    expect(r?.spec.mode).toBe("api-key")
+    expect(r?.spec.externalCredential).toBeUndefined()
+    expect(r?.spec.setEnv).toBe("GOOGLE_GENERATIVE_AI_API_KEY")
+    expect(r?.spec.credential).toBe("AIza-key")
+  })
+})
+
 // The money bug (scope correction): an api-key-only, zero-credential user was
 // silently resolved to "subscription" (preference[0]) and told to buy one —
 // the api-key advice sat in an unreachable else branch. `neitherConfigured`
