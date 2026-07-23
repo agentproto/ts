@@ -12,10 +12,10 @@
 
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
 import { workspaceLabelFor } from "../services/workspaces.logic.js"
-import { contextValueFor, type SessionContextValue } from "./sessionsTree.logic.js"
+import { activityFor, type SessionActivity } from "./sessionsTree.logic.js"
 
 export interface SessionFilterState {
-  status: ("live" | "awaiting" | "done")[]
+  status: ("live" | "awaiting" | "done" | "stopped" | "failed")[]
   workspaces: string[]
   adapters: string[]
   search: string
@@ -37,16 +37,21 @@ export function isFilterActive(state: SessionFilterState): boolean {
   )
 }
 
-const STATUS_TO_CONTEXT_VALUE: Record<SessionFilterState["status"][number], SessionContextValue> = {
-  live: "session-live",
-  awaiting: "session-awaiting",
-  done: "session-done",
+const STATUS_TO_ACTIVITIES: Record<
+  SessionFilterState["status"][number],
+  readonly SessionActivity[]
+> = {
+  live: ["working", "idle", "stalled"],
+  awaiting: ["needs-you"],
+  done: ["done"],
+  stopped: ["stopped"],
+  failed: ["failed"],
 }
 
 function matchesStatus(session: SessionDescriptor, status: readonly SessionFilterState["status"][number][]): boolean {
   if (status.length === 0) return true
-  const contextValue = contextValueFor(session)
-  return status.some(s => STATUS_TO_CONTEXT_VALUE[s] === contextValue)
+  const activity = activityFor(session) // no `now`: stalled folds into working, which is under "live" anyway
+  return status.some(s => STATUS_TO_ACTIVITIES[s].includes(activity))
 }
 
 function matchesWorkspace(

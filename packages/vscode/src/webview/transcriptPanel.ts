@@ -32,7 +32,7 @@ import {
 } from "./attachments.logic.js"
 import { mentionQueryAt } from "./mentions.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
-import { accessIdentity, contextGauge, harnessGlyph } from "./panelChrome.logic.js"
+import { accessIdentity, contextGauge, harnessGlyph, postureLabel } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import type { SeenTracker } from "../services/seen.js"
 import { formatTitle } from "./transcript.logic.js"
@@ -238,6 +238,10 @@ export async function handleWebviewMessage(
     case "changeModel":
       await runChangeModelFlow(controller, client)
       return
+    case "changePosture":
+    case "changeAccess":
+      await vscode.commands.executeCommand("agentproto.configureSession", controller.session.id)
+      return
     case "send":
       await controller.onSend(msg.text, false)
       return
@@ -317,6 +321,7 @@ export function buildHtml(nonce: string): string {
     pushHistoryEntry,
     harnessGlyph,
     accessIdentity,
+    postureLabel,
     contextGauge,
   ]
     .map(fn => fn.toString())
@@ -1120,6 +1125,8 @@ export function buildHtml(nonce: string): string {
         <span id="composer-meta">
           <span id="composer-harness" class="composer-chip"></span>
           <button id="composer-model" class="composer-chip composer-chip-btn" type="button" title="Switch model"></button>
+          <button id="composer-posture" class="composer-chip composer-chip-btn" type="button" title="Switch mode / posture"></button>
+          <button id="composer-auth" class="composer-chip composer-chip-btn" type="button" title="Switch access profile"></button>
         </span>
         <span id="send-status"></span>
         <button id="interrupt-send" hidden title="Interrupt the current turn and send the queued message now">Interrupt &amp; send</button>
@@ -1167,6 +1174,8 @@ export function buildHtml(nonce: string): string {
       const composer = document.getElementById('composer');
       const composerHarness = document.getElementById('composer-harness');
       const composerModel = document.getElementById('composer-model');
+      const composerPosture = document.getElementById('composer-posture');
+      const composerAuth = document.getElementById('composer-auth');
       const input = document.getElementById('input');
       const sendBtn = document.getElementById('send');
       const stopBtn = document.getElementById('stop');
@@ -1474,11 +1483,17 @@ export function buildHtml(nonce: string): string {
         headerIcon.textContent = session.adapterSlug ? mark.glyph : '';
         headerIcon.title = session.adapterSlug ? mark.label : '';
         // What will answer, shown where you type to it — the header no longer
-        // repeats any of it. Each chip is omitted when the daemon doesn't
-        // report the field (CSS :empty), rather than rendering "undefined". The
-        // auth/access identity moved to the detail popover (FIX 3/4).
+        // repeats any of it. The harness chip is omitted when the daemon
+        // doesn't report the field (CSS :empty), rather than rendering
+        // "undefined". Model/posture/auth are always-visible instead: each
+        // gets a visible "?" fallback so a missing field reads as a gap, not
+        // an absent chip (a collapsed chip looks like there's nothing to
+        // configure, which is worse than an honest "model?").
         composerHarness.textContent = session.adapterSlug || '';
-        composerModel.textContent = session.model || '';
+        composerModel.textContent = session.model || 'model?';
+        composerPosture.textContent = postureLabel(session.posture) || 'posture?';
+        const auth = accessIdentity(session);
+        composerAuth.textContent = auth === '—' ? 'no wallet' : auth;
 
         // Cost only, on the button — the full in/out breakdown plus what
         // decides the rate (model/harness/auth) lives one click away, in the
@@ -2315,6 +2330,15 @@ export function buildHtml(nonce: string): string {
       // the webview — see runChangeModelFlow / changeModel.logic.ts).
       composerModel.addEventListener('click', function() {
         vscode.postMessage({ type: 'changeModel' });
+      });
+      // Posture and auth chips route through the same unified config picker
+      // (agentproto.configureSession) rather than their own dedicated flow —
+      // see handleWebviewMessage's changePosture/changeAccess cases.
+      composerPosture.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changePosture' });
+      });
+      composerAuth.addEventListener('click', function() {
+        vscode.postMessage({ type: 'changeAccess' });
       });
       sendBtn.addEventListener('click', function() { send(false); });
       // Abandon the in-flight turn, send nothing — distinct from "Interrupt &

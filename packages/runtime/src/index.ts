@@ -1078,6 +1078,11 @@ export async function createGateway(
     orchestratorInjector,
     webhookNotifier,
     daemonMcpUrl,
+    // Same resolver the root /mcp gateway threads into registerSessionTools
+    // (below) — so a child spawned THROUGH the scoped orchestrator gateway
+    // can declare `sandbox` and resolve a provider, instead of throwing
+    // `sandbox_provider_not_found`.
+    resolveSandboxProvider: resolveSandboxProviderResolved,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),

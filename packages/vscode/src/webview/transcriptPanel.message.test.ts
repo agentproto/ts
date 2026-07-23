@@ -62,6 +62,28 @@ describe("handleWebviewMessage", () => {
     expect(executeCommand).toHaveBeenCalledWith("agentproto.openTerminal", "session-abc")
   })
 
+  it("changePosture routes to the unified agentproto.configureSession picker", async () => {
+    await handleWebviewMessage(
+      { type: "changePosture" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+  })
+
+  it("changeAccess routes to the unified agentproto.configureSession picker", async () => {
+    await handleWebviewMessage(
+      { type: "changeAccess" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+  })
+
   it("WP3: setView conversation reveals the webview panel", async () => {
     controller.onSetView = vi.fn().mockResolvedValue(undefined)
     await handleWebviewMessage(

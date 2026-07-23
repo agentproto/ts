@@ -255,6 +255,19 @@ export type WebviewMessage =
    */
   | { type: "changeModel" }
   /**
+   * The posture chip was clicked — open the unified per-session config
+   * picker (`agentproto.configureSession`) so the user can switch posture.
+   * Carries no payload, same reasoning as `changeModel`: the host already
+   * holds the session and resolves everything else itself.
+   */
+  | { type: "changePosture" }
+  /**
+   * The auth/access chip was clicked — open the unified per-session config
+   * picker (`agentproto.configureSession`) so the user can switch access
+   * profile. Carries no payload, same reasoning as `changeModel`.
+   */
+  | { type: "changeAccess" }
+  /**
    * The header's Terminal segment was clicked — open a REAL VS Code terminal
    * for this session beside the conversation panel (WP1). Distinct from the
    * raw-HTML view switch (`setView`), which remains available as an internal
@@ -291,6 +304,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "stop":
     case "restart":
     case "changeModel":
+    case "changePosture":
+    case "changeAccess":
     case "openTerminal":
       return true
     case "send":

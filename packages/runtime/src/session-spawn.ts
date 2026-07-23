@@ -1257,11 +1257,22 @@ export async function spawnAgentSession(
   // ITSELF, before role/promptAppend composition, so every future prepended
   // block (a skill header, a memory dump, another role field) can't
   // re-introduce this bug by ending up ahead of the caller's actual ask.
-  // An explicit `--title` (FIX C) wins over the derivation; a trimmed empty
-  // string is treated as "not supplied" so it falls through to the prompt.
+  // Precedence for the raw `title` slot at spawn:
+  //   1. an explicit `--title` (FIX C) — the caller named it outright.
+  //   2. else the spawn `label` — for orchestrator/agent spawns the prompt is
+  //      boilerplate ("You are the leaf…", "You are a SUPERVISOR…") that
+  //      derives to a useless title, while the `label` carries the real
+  //      intent. A label is ALREADY a title, so it's used verbatim — NOT run
+  //      through `deriveSessionTitle` (no sentence-splitting/truncation): it's
+  //      not prose to summarise. This aligns the stored title with the display
+  //      chain (`sessionDisplayName`), which already prefers the label.
+  //   3. else the first-sentence derivation from `input.prompt`.
+  // A trimmed-empty title/label is treated as "not supplied" so it falls
+  // through to the next tier rather than stamping a blank.
   const explicitTitle = input.title?.trim() ? input.title.trim() : undefined
+  const spawnLabel = input.label?.trim() ? input.label.trim() : undefined
   const initialTitle =
-    explicitTitle ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
+    explicitTitle ?? spawnLabel ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
   // Opt-in: no idempotencyKey ⇒ no map lookup, no behavioural change.

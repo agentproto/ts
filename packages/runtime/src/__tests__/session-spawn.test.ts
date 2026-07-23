@@ -799,6 +799,83 @@ describe("spawnAgentSession — title derives from the caller's prompt, not the 
   })
 })
 
+describe("spawnAgentSession — title slot precedence: explicit title > label > derived", () => {
+  it("an explicit --title wins over both the label and the prompt", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      title: "Explicit wins",
+      label: "the-label",
+      prompt: "Fix the markdown renderer.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Explicit wins")
+  })
+
+  it("uses the label VERBATIM (no sentence-split/derivation) when no explicit title", async () => {
+    const { deps } = baseDeps()
+    // A label that WOULD be mangled if run through `deriveSessionTitle`: it has
+    // a sentence terminator, so derivation would guillotine it to "Ship it".
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "Ship it. Then celebrate.",
+      prompt: "Fix the markdown renderer.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Ship it. Then celebrate.")
+  })
+
+  it("a boilerplate-prompt spawn with a label titles from the label, not the disposition", async () => {
+    const { deps } = baseDeps()
+    // role: executor composes a "You are the leaf…" disposition ahead of the
+    // prompt — pre-fix the title derived from that boilerplate. The label
+    // carries the real intent and must win.
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      label: "session-title-precedence",
+      prompt: "You are an executor. Do the work.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("session-title-precedence")
+  })
+
+  it("a whitespace-only label falls through to the prompt derivation", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "   ",
+      prompt: "Update the docs.",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Update the docs")
+  })
+
+  it("with neither title nor label, still derives from the prompt and caps at 72", async () => {
+    const { deps } = baseDeps()
+    const long = "a".repeat(200) // one unbroken token: forces the MAX_LENGTH cap
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: long,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    const title = result.descriptor.title
+    expect(title).toBeDefined()
+    expect(title?.endsWith("…")).toBe(true)
+    expect(Array.from(title ?? "").length).toBe(73) // 72 + ellipsis
+  })
+})
+
 describe("spawnAgentSession — privilege-lattice spawn gate (role-registry-extensible)", () => {
   const PLANNER_ROLE = {
     name: "planner",

@@ -87,4 +87,10 @@ describe("isWebviewMessage", () => {
   it("accepts openTerminal (header Terminal segment) with no payload", () => {
     expect(isWebviewMessage({ type: "openTerminal" })).toBe(true)
   })
+
+  it("accepts changeModel, changePosture, and changeAccess with no payload", () => {
+    expect(isWebviewMessage({ type: "changeModel" })).toBe(true)
+    expect(isWebviewMessage({ type: "changePosture" })).toBe(true)
+    expect(isWebviewMessage({ type: "changeAccess" })).toBe(true)
+  })
 })
