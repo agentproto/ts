@@ -116,9 +116,15 @@
       },
       {
         "command": "agentproto.restartSession",
-        "title": "agentproto: Restart Session",
+        "title": "agentproto: Restart Session (New Session)",
         "category": "agentproto",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "agentproto.resumeSession",
+        "title": "agentproto: Resume Session In Place",
+        "category": "agentproto",
+        "icon": "$(debug-continue)"
       },
       {
         "command": "agentproto.setSessionAccessProfile",
@@ -362,7 +368,7 @@
         },
         {
           "command": "agentproto.openTranscript",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "inline@4"
         },
         {
@@ -371,13 +377,23 @@
           "group": "inline@5"
         },
         {
+          "command": "agentproto.resumeSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?$/",
+          "group": "inline@5"
+        },
+        {
+          "command": "agentproto.restartSession",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-interrupted(-archived)?$/",
+          "group": "1_config@3"
+        },
+        {
           "command": "agentproto.renameSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "modify@1"
         },
         {
           "command": "agentproto.copySessionId",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "modify@2"
         },
         {
@@ -392,7 +408,7 @@
         },
         {
           "command": "agentproto.openTerminal",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "inline@7"
         },
         {
@@ -402,7 +418,7 @@
         },
         {
           "command": "agentproto.openTranscriptChannel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "transcript@1"
         },
         {
@@ -452,7 +468,7 @@
         },
         {
           "command": "agentproto.setSessionAccessProfile",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done)(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "1_config@1"
         }
       ],

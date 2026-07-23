@@ -31,6 +31,12 @@ describe("canRestart", () => {
   it("is TRUE for a terminal-status session still flagged awaiting input (contextValueFor gates on status first)", () => {
     expect(canRestart(session({ status: "exited", awaitingInput: true }))).toBe(true)
   })
+
+  it("is TRUE for a daemon-restart ghost — restart-fresh (new id) stays valid alongside resume-in-place", () => {
+    // Such a row renders as session-interrupted (resume-in-place is the primary
+    // action), but restarting it to a NEW id is still a legitimate choice.
+    expect(canRestart(session({ status: "killed", endedReason: "daemon-restart" }))).toBe(true)
+  })
 })
 
 describe("parseRestartResult", () => {
