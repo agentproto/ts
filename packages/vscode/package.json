@@ -139,6 +139,12 @@
         "icon": "$(edit)"
       },
       {
+        "command": "agentproto.saveFavorite",
+        "title": "agentproto: Save as Favorite…",
+        "category": "agentproto",
+        "icon": "$(star-full)"
+      },
+      {
         "command": "agentproto.archiveSession",
         "title": "agentproto: Archive Session",
         "category": "agentproto",
@@ -401,6 +407,11 @@
           "command": "agentproto.copySessionId",
           "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
           "group": "modify@2"
+        },
+        {
+          "command": "agentproto.saveFavorite",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-archived)?$/",
+          "group": "modify@3"
         },
         {
           "command": "agentproto.archiveSession",

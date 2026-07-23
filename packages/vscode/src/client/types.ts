@@ -424,6 +424,11 @@ export interface UserPreset {
   posture?: Posture
   effort?: EffortLevel
   contextProfile?: ContextProfile
+  /** Working directory the favorite pins to — makes it location-independent
+   *  of the caller's open folder (true zero-input spawn). */
+  cwd?: string
+  /** Skills to preload for a spawn from this preset. */
+  skills?: string[]
 }
 
 /** A session lifecycle event from session_events_poll (MCP). */

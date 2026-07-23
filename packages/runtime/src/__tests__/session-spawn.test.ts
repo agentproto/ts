@@ -140,6 +140,75 @@ describe("spawnAgentSession", () => {
     })
   })
 
+  it("expands a location-pinned favorite: the preset's own cwd + skills drive a zero-input spawn", async () => {
+    const captured: {
+      cwd?: string
+      options?: Record<string, boolean | number | string>
+    }[] = []
+    const startSession = vi.fn(
+      async (opts: { cwd?: string; options?: Record<string, boolean | number | string> }) => {
+        captured.push({ cwd: opts.cwd, options: opts.options })
+        return fakeAgentSession()
+      },
+    )
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      declaredOptions: [{ id: "skills", type: "string" }],
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+
+    // No explicit cwd and no explicit skills on the call — a true zero-input
+    // favorite spawn. The favorite pins both, so the spawn lands in the
+    // preset's repo with the preset's skills preloaded.
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      preset: {
+        id: "pinned-repo",
+        label: "Pinned repo",
+        cwd: "/tmp",
+        skills: ["agentproto"],
+      },
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.cwd).toBe("/tmp")
+    expect(captured[0]?.options?.skills).toBe("agentproto")
+  })
+
+  it("an explicit cwd/skills call still wins over the favorite's pinned values", async () => {
+    const captured: {
+      cwd?: string
+      options?: Record<string, boolean | number | string>
+    }[] = []
+    const startSession = vi.fn(
+      async (opts: { cwd?: string; options?: Record<string, boolean | number | string> }) => {
+        captured.push({ cwd: opts.cwd, options: opts.options })
+        return fakeAgentSession()
+      },
+    )
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      declaredOptions: [{ id: "skills", type: "string" }],
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      skills: ["explicit-only"],
+      preset: {
+        id: "pinned-repo",
+        label: "Pinned repo",
+        cwd: "/some/other/repo",
+        skills: ["agentproto"],
+      },
+    })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.cwd).toBe("/tmp")
+    expect(captured[0]?.options?.skills).toBe("explicit-only")
+  })
+
   it("forwards decomposed posture/contextProfile and applies a native posture before the opening prompt", async () => {
     const switched: string[] = []
     const startSession = vi.fn(async () => ({
