@@ -39,7 +39,7 @@ vi.mock("@agentproto/command-sandbox", async importOriginal => {
 })
 
 import { registerCommandTools } from "../command-tools.js"
-import { COMMAND_SANDBOX_MODE_ENV } from "../command-sandbox.js"
+import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
 async function buildHarness(
