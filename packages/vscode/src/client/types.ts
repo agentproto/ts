@@ -332,6 +332,13 @@ export interface DaemonHealth {
   workspace: string
   registered: readonly string[]
   uptimeMs?: number
+  /** Effective `daemon.resumeSessionsOnBoot` knob — the live boot-behavior the
+   *  daemon is actually running with (runtime http-server `handleHealth`).
+   *  Absent on daemons predating the field. */
+  resumeSessionsOnBoot?: boolean
+  /** Effective `daemon.idleReapAfterMs` knob (0 = reaper off). Absent on
+   *  daemons predating the field. */
+  idleReapAfterMs?: number
 }
 
 /** Catalog pricing for a route, surfaced by `catalog_models`. */
