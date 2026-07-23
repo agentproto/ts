@@ -55,6 +55,7 @@ import {
 import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
+import type { WorktreeGcRunner } from "./worktree-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -114,6 +115,14 @@ export type {
   WorktreeStatusView,
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
+export type {
+  WorktreeGcRunner,
+  WorktreeGcRunInput,
+  WorktreeGcResult,
+  WorktreeGcClass,
+  WorktreeGcPlanEntryView,
+  WorktreeGcOutcomeView,
+} from "./worktree-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
@@ -580,6 +589,14 @@ export interface CreateGatewayOptions {
    * clear "not enabled" error.
    */
   listWorktreeStatuses?: WorktreeStatusLister
+  /**
+   * Optional git-worktree `gc` runner powering `worktree_gc` (+ the parallel
+   * HTTP surface). Injected for the same reason as `listWorktreeStatuses`:
+   * the plan/apply engine runs over `@agentproto/worktree`, a dependency the
+   * runtime deliberately does NOT take. The CLI wires it. Omitted →
+   * `worktree_gc` returns a clear "not enabled" error.
+   */
+  runWorktreeGc?: WorktreeGcRunner
   /**
    * Optional resolver: given a session's cwd, return the OPEN PR for that
    * cwd's git branch (or null). Powers the daemon PR-provenance reconciler,
@@ -1167,6 +1184,7 @@ export async function createGateway(
       ...(opts.listWorktreeStatuses
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
+      ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
     })
     // Named auth-profile lifecycle (auth_profile_create/delete/list). No
     // host wiring — `@agentproto/auth` reads/writes the fixed
@@ -1391,6 +1409,7 @@ export async function createGateway(
     ...(opts.listWorktreeStatuses
       ? { listWorktreeStatuses: opts.listWorktreeStatuses }
       : {}),
+    ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
       : {}),
