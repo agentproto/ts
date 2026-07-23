@@ -19,6 +19,10 @@ export interface RegisterDaemonHealthToolsOptions {
   workspace: string
   registered: readonly string[]
   startedAt: number
+  /** Effective value of the `daemon.resumeSessionsOnBoot` knob (§5, PR-4) —
+   *  surfaced so an operator can confirm whether a restart will eagerly revive
+   *  sessions or leave them dead-but-lazy-resumable. */
+  resumeSessionsOnBoot: boolean
 }
 
 function text(value: string | object): {
@@ -52,6 +56,7 @@ export function registerDaemonHealthTools(
         workspace: opts.workspace,
         registered: opts.registered,
         uptimeMs: Date.now() - opts.startedAt,
+        resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
       })
     },
   )

@@ -68,8 +68,10 @@ import {
 import {
   createSessionsRegistry,
   type SessionsRegistry,
+  type SessionDescriptor,
   type PtyFactory,
 } from "./sessions.js"
+import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth } from "./session-restart-core.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -232,6 +234,12 @@ export type {
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
 export { ResumeDisabledError } from "./sessions.js"
+export type {
+  EagerResumeOutcome,
+  EagerResumeSkipReason,
+  EagerResumeFailReason,
+} from "./sessions.js"
+export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
@@ -472,6 +480,13 @@ export interface CreateGatewayOptions {
   bind?: string
   /** Auth mode. Default `none` (safe only on loopback). */
   auth?: AuthOptions
+  /** Opt-in eager resume-on-boot (§5 "Opt-in vs automatic", PR-4). Mirrors the
+   *  `daemon.resumeSessionsOnBoot` config knob; the CLI resolves the knob and
+   *  passes it here. When true, the `resumeSessionsOnBoot()` handle method
+   *  actually runs the bounded boot pass; when false/omitted it short-circuits
+   *  to an `enabled: false` summary. Also surfaced in `daemon_health` /
+   *  `GET /health` so an operator can see the effective value. */
+  resumeSessionsOnBoot?: boolean
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -693,6 +708,17 @@ export interface GatewayHandle {
   mintOrchestratorScope(opts?: {
     tools?: readonly string[]
   }): OrchestratorScope
+  /** Run the opt-in eager resume-on-boot pass (§5, PR-4) and return its tally.
+   *  A no-op returning `{ enabled: false, ... }` when the
+   *  `resumeSessionsOnBoot` config knob is off. The caller (serve.ts) invokes
+   *  this AFTER the stale-runtime sweeps — which is after `createGateway`
+   *  returned, hence after the supervisor was re-armed (§5 "Event ordering") —
+   *  and turns the summary into the boot-banner line. `isServed` is the
+   *  cross-process gate: serve.ts supplies a predicate that keeps a daemon from
+   *  resuming a sibling daemon's workspace rows out of the shared buckets. */
+  resumeSessionsOnBoot(opts?: {
+    isServed?: (desc: SessionDescriptor) => boolean
+  }): Promise<EagerResumeSummary>
   stop(): Promise<void>
 }
 
@@ -1194,7 +1220,12 @@ export async function createGateway(
     registerFsTools(server, { workspace })
     // Cheap, read-only liveness probe. Registered early so it is available
     // even when deferred tools hide the rest of the surface.
-    registerDaemonHealthTools(server, { workspace, registered, startedAt })
+    registerDaemonHealthTools(server, {
+      workspace,
+      registered,
+      startedAt,
+      resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+    })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at
@@ -1479,7 +1510,12 @@ export async function createGateway(
     ...(opts.listBrowserAdapters
       ? { listBrowserAdapters: opts.listBrowserAdapters }
       : {}),
-    meta: { workspace, registered, startedAt },
+    meta: {
+      workspace,
+      registered,
+      startedAt,
+      resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+    },
     cronScheduler,
   })
 
@@ -1516,6 +1552,24 @@ export async function createGateway(
     ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
+    async resumeSessionsOnBoot(passOpts) {
+      // Off by default (§5 "Opt-in vs automatic") — lazy resume-on-prompt
+      // still works regardless; this only controls the automatic boot pass.
+      if (!opts.resumeSessionsOnBoot) {
+        return { enabled: false, candidates: 0, resumed: 0, failed: 0, skipped: 0 }
+      }
+      // Small concurrency cap so a box-wide restart doesn't spawn every adapter
+      // at once (§5 "Resume-storm control"). Default 4; override via
+      // AGENTPROTO_RESUME_CONCURRENCY, mirroring AGENTPROTO_POLICY_CONCURRENCY.
+      const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
+      const parsed = raw ? Number.parseInt(raw, 10) : NaN
+      const concurrency = Number.isFinite(parsed) && parsed > 0 ? parsed : 4
+      return runEagerResumePass({
+        registry: sessions,
+        concurrency,
+        ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
+      })
+    },
     async stop() {
       heartbeat.stop()
       // Flush inbound-watcher cursor state before sessions shut down.

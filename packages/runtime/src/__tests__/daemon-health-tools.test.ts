@@ -18,6 +18,7 @@ async function buildHarness(
   registered: readonly string[],
   startedAt: number,
   deferred = false,
+  resumeSessionsOnBoot = false,
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server: rawServer } = await createMcpServer({
     specs: [],
@@ -27,7 +28,12 @@ async function buildHarness(
   const server = deferred
     ? withDeferredTools(rawServer, { alwaysOn: new Set(["daemon_health"]) })
     : rawServer
-  registerDaemonHealthTools(server, { workspace, registered, startedAt })
+  registerDaemonHealthTools(server, {
+    workspace,
+    registered,
+    startedAt,
+    resumeSessionsOnBoot,
+  })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -90,6 +96,22 @@ describe("daemon_health", () => {
     const body = JSON.parse(textOf(result))
     expect(body.registered).toEqual([])
     await close()
+  })
+
+  it("surfaces the effective resumeSessionsOnBoot knob (§5, PR-4)", async () => {
+    const off = await buildHarness(workspace, ["x"], startedAt)
+    const offBody = JSON.parse(
+      textOf(await off.client.callTool({ name: "daemon_health", arguments: {} })),
+    )
+    expect(offBody.resumeSessionsOnBoot).toBe(false)
+    await off.close()
+
+    const on = await buildHarness(workspace, ["x"], startedAt, false, true)
+    const onBody = JSON.parse(
+      textOf(await on.client.callTool({ name: "daemon_health", arguments: {} })),
+    )
+    expect(onBody.resumeSessionsOnBoot).toBe(true)
+    await on.close()
   })
 
   it("remains visible when deferred tools hide the rest of the surface", async () => {

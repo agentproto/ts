@@ -24,7 +24,7 @@ import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
 import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdirSync, writeFileSync, promises as fs, readFileSync } from "node:fs"
+import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
@@ -1151,6 +1151,46 @@ export class ResumeDisabledError extends Error {
   }
 }
 
+/** Why an eager (boot-time) in-place resume of one row was skipped without
+ *  ever reaching the adapter. Distinct from a `failed` outcome (the adapter WAS
+ *  asked and refused / the worktree was gone): a skip is a decision made from
+ *  the descriptor alone. */
+export type EagerResumeSkipReason =
+  /** No such session in the registry (raced a forget). */
+  | "unknown"
+  /** Already has a live agent session — nothing to resume (idempotent). */
+  | "already-live"
+  /** Fails the base `isResumable` predicate (not agent-cli / no
+   *  adapterSessionId / archived / PTY / command). */
+  | "not-resumable"
+  /** Resumable, but didn't die from a daemon restart — the eager pass never
+   *  resurrects operator kills / errored / naturally-exited rows (§5). */
+  | "not-daemon-restart"
+  /** Already burned through `MAX_RESUME_ATTEMPTS` — the persisted cap (§5). */
+  | "cap-exhausted"
+  /** `worktreeId` is pinned but the marker at `cwd` names a different
+   *  generation (or is gone) — refuse to resume into the wrong worktree (§5). */
+  | "worktree-generation-mismatch"
+
+/** Why an eager in-place resume of one row failed after being attempted. */
+export type EagerResumeFailReason =
+  /** `cwd` no longer exists on disk (worktree GC'd/removed) — counts a resume
+   *  attempt, same as a spawn that failed (§5). */
+  | "cwd-missing"
+  /** The adapter was asked and declined (returned null / threw — typically
+   *  "session not found") or the resume hook is unwired. The row is left
+   *  dead-but-lazy-resumable — the eager pass NEVER fresh-spawns (an unprompted
+   *  fresh spawn burns tokens for nothing; that fallback is `session_restart`
+   *  territory only). */
+  | "resume-failed"
+
+/** Outcome of a single eager (boot-time) in-place resume — the per-row result
+ *  the bounded boot pass tallies into its summary. */
+export type EagerResumeOutcome =
+  | { status: "resumed" }
+  | { status: "skipped"; reason: EagerResumeSkipReason }
+  | { status: "failed"; reason: EagerResumeFailReason }
+
 /** Find the most recently-completed `kind: "command"` session whose `cwd`
  *  matches, for stamping `priorCommandSessionId` on a freshly spawned
  *  agent-cli/PTY session in the same workspace. Scans the in-memory
@@ -1402,6 +1442,28 @@ export interface SessionsRegistry {
     message: unknown,
     opts?: { interrupt?: boolean }
   ): Promise<void>
+  /** Eagerly resume ONE dead-but-resumable agent-cli session IN PLACE,
+   *  WITHOUT a prompt — the boot-time counterpart to the lazy resume that
+   *  `sendPrompt`/`enqueuePrompt` trigger on the first prompt after a restart
+   *  (session-survivability plan §5, PR-4). Routes through the exact same
+   *  `maybeResumeAgent` code path as the lazy trigger, so #634's billing-auth
+   *  re-resolution, #635's `session:resumed` event + interrupted banner, and
+   *  #636's persisted attempt cap all apply for free.
+   *
+   *  Eager-eligibility is stricter than the lazy path: on top of `isResumable`
+   *  it requires `endedReason === "daemon-restart"` (idle-or-mid-turn killed by
+   *  a restart — never an operator kill, natural exit, error, or archive) and
+   *  `canResume` (under the attempt cap). It adds the two eager-only pre-flights
+   *  the lazy path deliberately skips: `cwd`-exists-on-disk (a missing worktree
+   *  fails clean and COUNTS an attempt) and worktree-generation match (a marker
+   *  mismatch skips without an attempt). It NEVER fresh-spawns — an adapter that
+   *  rejects the id leaves the row dead-but-lazy-resumable, reported as
+   *  `failed:"resume-failed"`, rather than minting a new session (that fallback
+   *  is `session_restart`'s alone). Idempotent + no-throw: an already-live,
+   *  ineligible, or cap-exhausted row returns a `skipped` outcome without
+   *  touching the adapter, so the bounded boot pass can call it per row and
+   *  tally the results. */
+  resumeOnBoot(id: string): Promise<EagerResumeOutcome>
   /** Cancel the in-flight turn on a live agent-cli session and leave the
    *  session itself alive and idle — the bare "interrupt, no next prompt"
    *  primitive `sendPrompt`/`enqueuePrompt`'s `opts.interrupt` arm lacks
@@ -4045,6 +4107,72 @@ export function createSessionsRegistry(opts?: {
           "stderr"
         )
       })
+    },
+    async resumeOnBoot(id) {
+      const rt = sessions.get(id)
+      if (!rt) return { status: "skipped", reason: "unknown" }
+      // Idempotent: a row already resumed (this pass or a lazy prompt that
+      // raced boot) has nothing to do — never a second spawn.
+      if (rt.agentSession) return { status: "skipped", reason: "already-live" }
+      // Base eligibility (§5): agent-cli with the resume essentials and not
+      // archived. PTY/command/archived rows are never in-place resumable.
+      if (!isResumable(rt.desc)) return { status: "skipped", reason: "not-resumable" }
+      // Eager-only clause layered on top of the base predicate (§5): the boot
+      // pass resurrects ONLY rows the daemon restart itself killed. Operator
+      // kills, natural exits, and errors keep the base `isResumable` shape but
+      // are deliberately left dead — the lazy prompt path still honours an
+      // explicit re-prompt of them, this automatic pass does not.
+      if (rt.desc.endedReason !== "daemon-restart") {
+        return { status: "skipped", reason: "not-daemon-restart" }
+      }
+      // Attempt cap (§5): a row that's already burned MAX_RESUME_ATTEMPTS
+      // never spawns again — the persisted counter is what bounds a launchd
+      // crash-loop across boots (skip, don't count a further attempt).
+      if (!canResume(rt.desc)) return { status: "skipped", reason: "cap-exhausted" }
+      // Worktree re-association (§5). `cwd` was already required by
+      // `isResumable`, so the non-null assertions below are narrowing only.
+      const cwd = rt.desc.cwd!
+      // (a) cwd gone (worktree GC'd/removed between death and this boot):
+      // fail clean and COUNT an attempt — the same debt a spawn into a missing
+      // dir would incur, so a permanently-gone worktree can't be retried on
+      // every boot forever.
+      if (!existsSync(cwd)) {
+        appendLine(
+          rt,
+          `[error] resume skipped: worktree gone — ${cwd} no longer exists; ` +
+            `use session_restart with a fresh cwd`,
+          "stderr"
+        )
+        recordFailedResume(rt)
+        return { status: "failed", reason: "cwd-missing" }
+      }
+      // (b) worktreeId pinned but the marker at cwd names a different
+      // generation (or is unmarked now): refuse — resuming into the wrong
+      // generation would attach the conversation to someone else's checkout.
+      // No attempt counted: nothing is broken about the session, the path is
+      // just occupied by a different worktree.
+      if (rt.desc.worktreeId) {
+        const current = resolveWorktreeIdentity(cwd)
+        if (current?.worktreeId !== rt.desc.worktreeId) {
+          appendLine(
+            rt,
+            `[error] resume skipped: worktree at ${cwd} is a different ` +
+              `generation (${current?.worktreeId ?? "unmarked"} ≠ ` +
+              `${rt.desc.worktreeId}); use session_restart`,
+            "stderr"
+          )
+          return { status: "skipped", reason: "worktree-generation-mismatch" }
+        }
+      }
+      // Same code path as the lazy trigger — auth re-resolution, event/banner,
+      // and the attempt counter all live inside it. `canResume` was already
+      // true above so it won't throw ResumeDisabledError; on adapter refusal it
+      // records a failed attempt and returns WITHOUT fresh-spawning, exactly the
+      // no-fresh-spawn rule the eager pass needs.
+      await maybeResumeAgent(rt)
+      return rt.agentSession
+        ? { status: "resumed" }
+        : { status: "failed", reason: "resume-failed" }
     },
     async interruptSession(id) {
       const rt = sessions.get(id)
