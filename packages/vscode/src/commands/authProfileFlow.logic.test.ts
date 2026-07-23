@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import type { ProviderPresetEntry } from "../client/types.js"
 import {
+  autoAdoptDecision,
   buildCreateRequest,
+  buildLocalLoginRequest,
   endpointChoices,
   methodChoices,
   successMessage,
@@ -10,6 +12,7 @@ import {
   validateCredential,
   validateEndpoint,
   validateProfileId,
+  LOCAL_LOGIN_RECIPES,
   SUBSCRIPTION_ENDPOINT,
 } from "./authProfileFlow.logic.js"
 
@@ -118,6 +121,71 @@ describe("buildCreateRequest", () => {
       label: "Work OpenRouter",
     })
     expect(req.label).toBe("Work OpenRouter")
+  })
+
+  it("passes a source through and never sends a credential alongside it", () => {
+    const req = buildCreateRequest({
+      id: "claude-code-local",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: " claude-code-oauth ",
+      label: "My Claude Code login",
+    })
+    expect(req).toEqual({
+      id: "claude-code-local",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      label: "My Claude Code login",
+    })
+    expect(req.credential).toBeUndefined()
+  })
+})
+
+describe("buildLocalLoginRequest / LOCAL_LOGIN_RECIPES", () => {
+  it("builds the exact Claude Code source-backed request the feature specifies", () => {
+    const claude = LOCAL_LOGIN_RECIPES.find(r => r.source === "claude-code-oauth")!
+    expect(buildLocalLoginRequest(claude)).toEqual({
+      id: "claude-code-local",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      label: "My Claude Code login",
+    })
+  })
+
+  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code today)", () => {
+    // Codex/Gemini are intentionally absent: the subscription-source mechanism
+    // needs an adapter with an `authSubscription` bearer env, which only
+    // claude-code declares. Surfacing them would create profiles that dead-end
+    // at spawn (see LOCAL_LOGIN_RECIPES' doc).
+    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual(["claude-code-oauth"])
+    for (const r of LOCAL_LOGIN_RECIPES) {
+      expect(r.method).toBe("oauth-bearer")
+      const req = buildLocalLoginRequest(r)
+      expect(req.source).toBe(r.source)
+      expect(req.credential).toBeUndefined()
+    }
+    const ids = LOCAL_LOGIN_RECIPES.map(r => r.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe("autoAdoptDecision", () => {
+  const login = { loginDetected: true, anthropicProfileExists: false }
+
+  it("never acts when off", () => {
+    expect(autoAdoptDecision("off", login)).toBe("skip")
+  })
+
+  it("skips when no login is detected or a wallet already exists", () => {
+    expect(autoAdoptDecision("auto", { ...login, loginDetected: false })).toBe("skip")
+    expect(autoAdoptDecision("ask", { ...login, anthropicProfileExists: true })).toBe("skip")
+  })
+
+  it("creates in auto and prompts in ask when a fresh login is present", () => {
+    expect(autoAdoptDecision("auto", login)).toBe("create")
+    expect(autoAdoptDecision("ask", login)).toBe("prompt")
   })
 })
 

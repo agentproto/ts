@@ -69,6 +69,15 @@ describe("buildAuthSettingsHtml", () => {
     expect(html).toContain("claude-fable-5")
   })
 
+  it("surfaces a source-backed local-login button in the Providers section", () => {
+    const model = buildAuthSettingsModel(presets, catalog, profiles)
+    const html = buildAuthSettingsHtml(model, "NONCE123")
+    expect(html).toContain('data-action="connectLocal" data-source="claude-code-oauth"')
+    expect(html).toContain("Use an existing local login")
+    // The dispatcher must forward the source attribute for these buttons.
+    expect(html).toContain("data-source")
+  })
+
   it("escapes interpolated text", () => {
     expect(esc(`<b>"x"&'y'`)).toBe("&lt;b&gt;&quot;x&quot;&amp;&#39;y&#39;")
   })

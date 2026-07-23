@@ -15,12 +15,15 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { ProviderPresetEntry } from "../client/types.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import { runConnectPresetFlow, runCreateAuthProfileFlow, runDeleteAuthProfileFlow } from "../commands/authProfiles.js"
+import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
+import { runConnectLocalLoginFlow } from "../commands/localLogin.js"
 import { buildAuthSettingsHtml, buildAuthSettingsModel } from "./authSettingsPanel.logic.js"
 
 interface InboundMessage {
-  type: "connect" | "delete" | "addProfile" | "refresh"
+  type: "connect" | "connectLocal" | "delete" | "addProfile" | "refresh"
   slug?: string
   id?: string
+  source?: string
 }
 
 export function registerAuthSettingsPanel(
@@ -56,6 +59,11 @@ export function registerAuthSettingsPanel(
       case "connect": {
         const preset = presets.find(p => p.slug === msg.slug)
         if (preset) await runConnectPresetFlow(client, provider, preset)
+        break
+      }
+      case "connectLocal": {
+        const recipe = LOCAL_LOGIN_RECIPES.find(r => r.source === msg.source)
+        if (recipe) await runConnectLocalLoginFlow(client, provider, recipe)
         break
       }
       case "delete":

@@ -10,6 +10,7 @@
  * spawnable now (active) or merely eligible (inactive).
  */
 
+import { LOCAL_LOGIN_RECIPES } from "../commands/authProfileFlow.logic.js"
 import {
   presetConnected,
   servicedModelsByProfile,
@@ -135,6 +136,24 @@ function walletCard(w: WalletRow): string {
 }
 
 /**
+ * The "use my existing local login" card — one button per source-backed recipe
+ * (Claude Code today). A source-backed profile stores no secret and refreshes
+ * itself, so it's the zero-friction way to connect a wallet. Lives at the top
+ * of the Providers section.
+ */
+function localLoginCard(): string {
+  const buttons = LOCAL_LOGIN_RECIPES.map(
+    r =>
+      `<button class="act" data-action="connectLocal" data-source="${esc(r.source)}" title="${esc(r.detail)}">${esc(r.label)}</button>`,
+  ).join("")
+  return `<div class="card">
+    <div class="row"><span class="title">Use an existing local login</span></div>
+    <div class="sub">Reuse a CLI you're already signed into — the token refreshes itself, nothing to paste.</div>
+    <div class="pills">${buttons}</div>
+  </div>`
+}
+
+/**
  * The full page. `nonce` gates the inline script (CSP); the only script is a
  * tiny event-delegated dispatcher that posts each button's action back to the
  * host — all rendering is server-built here so there's no client-side state to
@@ -142,7 +161,9 @@ function walletCard(w: WalletRow): string {
  */
 export function buildAuthSettingsHtml(model: AuthSettingsModel, nonce: string): string {
   const csp = ["default-src 'none'", "style-src 'unsafe-inline'", `script-src 'nonce-${nonce}'`].join("; ")
-  const presetSection = model.presets.map(presetCard).join("") || `<div class="empty">No provider presets.</div>`
+  const presetSection =
+    localLoginCard() +
+    (model.presets.map(presetCard).join("") || `<div class="empty">No provider presets.</div>`)
   const walletSection = model.wallets.map(walletCard).join("") || `<div class="empty">No auth profiles yet.</div>`
 
   return `<!DOCTYPE html>
@@ -195,6 +216,7 @@ export function buildAuthSettingsHtml(model: AuthSettingsModel, nonce: string): 
         type: el.getAttribute('data-action'),
         slug: el.getAttribute('data-slug') || undefined,
         id: el.getAttribute('data-id') || undefined,
+        source: el.getAttribute('data-source') || undefined,
       });
     });
   </script>
