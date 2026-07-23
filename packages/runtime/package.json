@@ -81,6 +81,11 @@
       "import": "./dist/session-story.mjs",
       "default": "./dist/session-story.mjs"
     },
+    "./session-story-panel": {
+      "types": "./dist/session-story-panel.d.ts",
+      "import": "./dist/session-story-panel.mjs",
+      "default": "./dist/session-story-panel.mjs"
+    },
     "./user-presets": {
       "types": "./dist/user-presets.d.ts",
       "import": "./dist/user-presets.mjs",

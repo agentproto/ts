@@ -48,6 +48,7 @@ import { registerStatusBar } from "./views/statusBar.js"
 import { registerWorkspacePinStatusBar } from "./views/workspacePinStatusBar.js"
 import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
+import { registerStoryPanels } from "./webview/storyPanel.js"
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const config = getConfig()
@@ -114,6 +115,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   void maybeAutoAdoptLocalLogin(ctx, client, authProfilesProvider)
 
   const transcriptPanels = registerTranscriptPanels(ctx, client, store, seen)
+  const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSwitchHarness(ctx, client, store, () => transcriptPanels.activeSessionId())
   registerSessionConfig(ctx, client, store, authProfilesProvider, () => transcriptPanels.activeSessionId()) // agentproto.configureSession
@@ -148,6 +150,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
           client,
         )
         if (session) transcriptPanels.open(session)
+      },
+    ),
+    vscode.commands.registerCommand(
+      "agentproto.openStory",
+      async (arg: unknown) => {
+        const session = await resolveSessionArg(
+          arg,
+          store,
+          "Select a session to open its story",
+          () => true,
+          client,
+        )
+        if (session) storyPanels.open(session)
       },
     ),
   )

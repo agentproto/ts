@@ -3,9 +3,13 @@
  * .plans/agentproto-vscode-workspace-tree/PLAN.md "PR B"). TreeDataProvider
  * on view id `agentproto.sessions`.
  *
- * Two top-level shapes, chosen by the `agentproto.groupByWorkspace` setting
- * (default true) via `buildSessionsRoots` (sessionsGroups.logic.ts):
- *   - grouped (default): one collapsible GroupNode per registered
+ * Three top-level shapes, chosen by the `agentproto.groupByWorkspace` +
+ * `agentproto.groupByOrigin` settings via `buildSessionsRoots`
+ * (sessionsGroups.logic.ts) — `groupByOrigin` wins when both are on:
+ *   - by source (groupByOrigin on): one GroupNode per origin — "Claude Code
+ *     (desktop)", "VS Code extension", "cron", … — sessions bucketed by their
+ *     ROOT's origin (agentproto.toggleGroupByOrigin).
+ *   - by workspace (default): one collapsible GroupNode per registered
  *     agentproto workspace, sessions assigned by cwd→longest-prefix (NOT the
  *     unreliable per-session workspaceSlug), plus a trailing "default
  *     (unassigned)" group for sessions matching no workspace. The group(s)
@@ -56,6 +60,7 @@ import {
   type CtaNode,
   type GroupNode,
   type RootNode,
+  type SessionGrouping,
 } from "./sessionsGroups.logic.js"
 import {
   collapseResumeChains,
@@ -78,11 +83,16 @@ function openFolderPaths(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)
 }
 
-/** `agentproto.groupByWorkspace` — default true (see package.json). Read
- *  fresh on every rebuild rather than cached, same pattern as
- *  spawn.ts's holdPermissionsSetting(). */
-function groupByWorkspaceSetting(): boolean {
-  return vscode.workspace.getConfiguration("agentproto").get<boolean>("groupByWorkspace", true)
+/** Resolve the top-level grouping from the two independent boolean settings,
+ *  read fresh on every rebuild (same pattern as spawn.ts's
+ *  holdPermissionsSetting()). `groupByOrigin` WINS when both are on — it's the
+ *  more specific "where did this come from" view; turning it off falls back to
+ *  the workspace grouping, and turning that off too is the flat list. */
+function groupingSetting(): SessionGrouping {
+  const cfg = vscode.workspace.getConfiguration("agentproto")
+  if (cfg.get<boolean>("groupByOrigin", false)) return "origin"
+  if (cfg.get<boolean>("groupByWorkspace", true)) return "workspace"
+  return "none"
 }
 
 export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, vscode.Disposable {
@@ -127,8 +137,8 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   }
 
   /** Force a rebuild from outside a store/filter/seen event — the
-   *  `groupByWorkspace` setting and the set of open VS Code folders can both
-   *  change without any of those firing. */
+   *  `groupByWorkspace` / `groupByOrigin` settings and the set of open VS Code
+   *  folders can all change without any of those firing. */
   refresh(): void {
     this.rebuild()
   }
@@ -150,7 +160,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // builder so restart-chain collapse and workspace grouping compose.
     const collapsed = collapseResumeChains(survivors)
     this.nodes = buildSessionsRoots(collapsed, this.filter.workspaces, openFolderPaths(), this.now, {
-      groupByWorkspace: groupByWorkspaceSetting(),
+      grouping: groupingSetting(),
       filterActive: isFilterActive(this.filter.state),
     })
     this.groupOf = collectGroupMembership(this.nodes.filter(isGroupNode))
@@ -251,7 +261,9 @@ function findNode(nodes: readonly RootNode[], id: string): SessionNode | undefin
 }
 
 /** Open/closed root-folder icon doubles as the "(open)" marker at a glance,
- *  same visual language VS Code's own Explorer uses for a workspace root. */
+ *  same visual language VS Code's own Explorer uses for a workspace root. An
+ *  origin group instead reads as a source: a plug icon + its own contextValue
+ *  (no workspace inline actions apply to it). */
 function groupTreeItem(group: GroupNode): vscode.TreeItem {
   const collapsibleState =
     group.children.length > 0
@@ -262,8 +274,13 @@ function groupTreeItem(group: GroupNode): vscode.TreeItem {
   const item = new vscode.TreeItem(group.label, collapsibleState)
   item.id = group.id
   item.description = groupDescriptionFor(group.count)
-  item.contextValue = "workspace-group"
-  item.iconPath = new vscode.ThemeIcon(group.isOpen ? "root-folder-opened" : "root-folder")
+  if (group.variant === "origin") {
+    item.contextValue = "origin-group"
+    item.iconPath = new vscode.ThemeIcon("plug")
+  } else {
+    item.contextValue = "workspace-group"
+    item.iconPath = new vscode.ThemeIcon(group.isOpen ? "root-folder-opened" : "root-folder")
+  }
   return item
 }
 
@@ -323,7 +340,12 @@ export function registerSessionsView(
   // toolbar toggle or opening a second folder.
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration("agentproto.groupByWorkspace")) provider.refresh()
+      if (
+        e.affectsConfiguration("agentproto.groupByWorkspace") ||
+        e.affectsConfiguration("agentproto.groupByOrigin")
+      ) {
+        provider.refresh()
+      }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()),
     vscode.commands.registerCommand("agentproto.toggleGroupByWorkspace", async () => {
@@ -332,6 +354,15 @@ export function registerSessionsView(
       await cfg.update("groupByWorkspace", next, vscode.ConfigurationTarget.Global)
       vscode.window.setStatusBarMessage(
         `agentproto: sessions grouped by workspace ${next ? "on" : "off"}`,
+        3000,
+      )
+    }),
+    vscode.commands.registerCommand("agentproto.toggleGroupByOrigin", async () => {
+      const cfg = vscode.workspace.getConfiguration("agentproto")
+      const next = !cfg.get<boolean>("groupByOrigin", false)
+      await cfg.update("groupByOrigin", next, vscode.ConfigurationTarget.Global)
+      vscode.window.setStatusBarMessage(
+        `agentproto: sessions grouped by source ${next ? "on (workspace grouping paused)" : "off"}`,
         3000,
       )
     }),
