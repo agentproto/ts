@@ -16,6 +16,7 @@ export default createTsupConfig({
     "resume-strategies": "src/resume-strategies.ts",
     "providers-store": "src/providers-store.ts",
     "session-story": "src/session-story.ts",
+    "session-story-panel": "src/session-story-panel.ts",
     "user-presets": "src/user-presets.ts",
     "pr-provenance": "src/pr-provenance.ts",
   },

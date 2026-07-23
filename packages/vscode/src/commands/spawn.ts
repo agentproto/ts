@@ -216,10 +216,16 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
   try {
     const session = await client.spawnAgent({ ...assembleSpawnOptions(answers), origin: "vscode" })
     void vscode.window
-      .showInformationMessage(`agentproto: spawned ${session.label ?? session.id}`, "Open transcript")
+      .showInformationMessage(
+        `agentproto: spawned ${session.label ?? session.id}`,
+        "Open transcript",
+        "Open story",
+      )
       .then(choice => {
         if (choice === "Open transcript") {
           void vscode.commands.executeCommand("agentproto.openTranscript", session.id)
+        } else if (choice === "Open story") {
+          void vscode.commands.executeCommand("agentproto.openStory", session.id)
         }
       })
     await store.refreshAll()

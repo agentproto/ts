@@ -2958,6 +2958,9 @@ importers:
 
   packages/vscode:
     dependencies:
+      '@agentproto/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       ws:
         specifier: ^8.20.0
         version: 8.21.0(bufferutil@4.1.0)
