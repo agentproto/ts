@@ -2750,6 +2750,9 @@ export function deliverRecordsExactlyOnce(opts: {
  *                                    session, 400 not a live PTY.
  *   DELETE /sessions/:id          → forget (drop from registry; only
  *                                    valid for exited/killed/error)
+ *   POST   /sessions/gc           → bulk GC terminal sessions (session_gc's
+ *                                    HTTP twin); body { olderThanDays?,
+ *                                    forget? }; returns { mode, ids, count }
  *   POST   /sessions/browser      → start a browser adapter and register
  *                                    as a tracked session; body:
  *                                    { adapter, port?, camofoxPort?, label?,
@@ -3747,6 +3750,37 @@ async function handleSessions(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(msg.includes("no session") ? 404 : 500, { error: "rename_failed", message: msg })
+    }
+    return true
+  }
+
+  // Bulk garbage-collect terminal-status sessions — the HTTP twin of the
+  // `session_gc` MCP verb, powering `agentproto sessions gc`. Body:
+  // `{ olderThanDays?: number, forget?: boolean }`. ARCHIVES by default
+  // (reversible — hidden from the default list, still readable + importable);
+  // `forget:true` DROPS each descriptor to reclaim sessions.json space (the
+  // native conversation on disk survives). The registry never touches a live
+  // (running/starting) session. Operator surface — no subtree scoping (unlike
+  // the scoped MCP verb): the CLI operator GCs the whole registry. Collection
+  // route, so it MUST precede the per-id `idMatch` below (which would else eat
+  // `/sessions/gc` as an id).
+  if (path === "/sessions/gc" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const olderThanDays =
+      typeof b.olderThanDays === "number" && b.olderThanDays > 0 ? b.olderThanDays : undefined
+    const forget = b.forget === true
+    try {
+      const res = registry.gcSessions({
+        ...(olderThanDays !== undefined ? { olderThanDays } : {}),
+        ...(forget ? { forget: true } : {}),
+      })
+      json(200, res)
+    } catch (err) {
+      json(500, {
+        error: "gc_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
     return true
   }
