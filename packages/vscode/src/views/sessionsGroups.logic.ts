@@ -44,6 +44,9 @@ export interface GroupNode {
   /** True when this group matches an open VS Code folder — sorted first, expanded by default. */
   isOpen: boolean
   children: TreeNode[]
+  /** Which dimension this group buckets by — drives the tree icon +
+   *  contextValue in sessionsTree.ts. Absent ⇒ "workspace" (back-compat). */
+  variant?: "workspace" | "origin"
 }
 
 /** The "Create workspace here" inline row — shown per open VS Code folder
@@ -242,19 +245,103 @@ export function buildWorkspaceGroups(
   return groups
 }
 
+/** Bucket id for a root whose descriptor carries no `origin`. */
+export const UNKNOWN_ORIGIN_SLUG = "unknown"
+
+/** Friendly display labels for the origins the daemon stamps (see the runtime
+ *  `origin` field). An origin not in this table renders under its raw slug —
+ *  new sources show up readably without a code change here. */
+const ORIGIN_LABELS: Record<string, string> = {
+  "claude-code": "Claude Code (desktop)",
+  vscode: "VS Code extension",
+  cron: "Cron",
+  codex: "Codex",
+  cowork: "Cowork",
+  [UNKNOWN_ORIGIN_SLUG]: "Unknown source",
+}
+
+export function originLabelFor(origin: string): string {
+  return ORIGIN_LABELS[origin] ?? origin
+}
+
+/** Stable TreeItem id for an origin group row — distinct namespace from the
+ *  workspace groups so the two can never collide on id. */
+export function originGroupNodeId(origin: string): string {
+  return `origin-group:${origin}`
+}
+
+/**
+ * One GroupNode per distinct ORIGIN — "Claude Code (desktop)", "VS Code
+ * extension", "Cron", … — the client mirror of the daemon's
+ * `groupRootsByOrigin` (session-tools.ts). Sessions are bucketed by their ROOT
+ * ancestor's origin (walking `parentSessionId` up within the provided set) so
+ * a child stays nested under its root's group rather than splitting into its
+ * own origin bucket; each bucket's rows reuse `buildSessionRows` unchanged (24h
+ * divider + parentSessionId nesting). Buckets sort alphabetically by label,
+ * with the `unknown` bucket always last. A root with no origin lands in
+ * `unknown` rather than being dropped.
+ */
+export function buildOriginGroups(
+  sessions: readonly SessionDescriptor[],
+  now: number,
+): GroupNode[] {
+  const byId = new Map(sessions.map(s => [s.id, s]))
+  const rootOriginOf = (start: SessionDescriptor): string => {
+    let cur = start
+    const seen = new Set<string>([cur.id])
+    while (cur.parentSessionId && byId.has(cur.parentSessionId)) {
+      const parent = byId.get(cur.parentSessionId)!
+      if (seen.has(parent.id)) break // cycle guard
+      seen.add(parent.id)
+      cur = parent
+    }
+    return cur.origin ?? UNKNOWN_ORIGIN_SLUG
+  }
+
+  const buckets = new Map<string, SessionDescriptor[]>()
+  for (const session of sessions) {
+    const key = rootOriginOf(session)
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(session)
+    else buckets.set(key, [session])
+  }
+
+  const groups: GroupNode[] = [...buckets.entries()].map(([origin, bucket]) => ({
+    kind: "group",
+    id: originGroupNodeId(origin),
+    slug: origin,
+    label: originLabelFor(origin),
+    count: bucket.length,
+    isOpen: false,
+    children: buildSessionRows(bucket, now),
+    variant: "origin",
+  }))
+
+  return groups.sort((a, b) => {
+    if (a.slug === UNKNOWN_ORIGIN_SLUG) return b.slug === UNKNOWN_ORIGIN_SLUG ? 0 : 1
+    if (b.slug === UNKNOWN_ORIGIN_SLUG) return -1
+    return a.label.localeCompare(b.label)
+  })
+}
+
+/** How the sessions panel groups its top level. `"none"` = the flat list;
+ *  `"workspace"` = one group per registered workspace (+ CTAs); `"origin"` =
+ *  one group per source (Claude Code desktop / VS Code / cron / …). */
+export type SessionGrouping = "none" | "workspace" | "origin"
+
 export interface BuildSessionsRootsOptions {
-  groupByWorkspace: boolean
+  grouping: SessionGrouping
   /** Whether the sessions passed in already went through an active filter —
    *  see BuildWorkspaceGroupsOptions.hideEmpty. */
   filterActive: boolean
 }
 
 /**
- * The tree's single top-level entry point. `groupByWorkspace: false` is
- * byte-identical to today's flat list (`buildSessionRows`, no groups, no
- * CTA); `true` prepends any "Create workspace here" rows ahead of the
- * workspace groups. Kept here (not in the provider) so the flat↔grouped
- * decision is itself a pure, tested function.
+ * The tree's single top-level entry point. `"none"` is byte-identical to
+ * today's flat list (`buildSessionRows`, no groups, no CTA); `"workspace"`
+ * prepends any "Create workspace here" rows ahead of the workspace groups;
+ * `"origin"` buckets by source. Kept here (not in the provider) so the
+ * grouping decision is itself a pure, tested function.
  */
 export function buildSessionsRoots(
   sessions: readonly SessionDescriptor[],
@@ -263,7 +350,8 @@ export function buildSessionsRoots(
   now: number,
   opts: BuildSessionsRootsOptions,
 ): RootNode[] {
-  if (!opts.groupByWorkspace) return buildSessionRows(sessions, now)
+  if (opts.grouping === "origin") return buildOriginGroups(sessions, now)
+  if (opts.grouping !== "workspace") return buildSessionRows(sessions, now)
   const ctas: RootNode[] = buildCreateWorkspaceCtas(config, openFolderPaths)
   const groups: RootNode[] = buildWorkspaceGroups(sessions, config, openFolderPaths, now, {
     hideEmpty: opts.filterActive,
