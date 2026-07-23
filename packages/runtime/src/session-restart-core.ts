@@ -211,6 +211,238 @@ function eligibilityManifest(
   }
 }
 
+/** Resolved billing-auth for a resume — the pair {@link resolveResumeAuth}
+ *  produces and both call-sites thread into `startSession({ auth })` and its
+ *  `base_url` option. Both fields absent ⇒ ambient (adapter with no
+ *  `authDescriptor`, or a resolver that produced no spec), same as a fresh
+ *  spawn with no configured credential. */
+export interface ResumeAuthResolution {
+  authSpec?: ResolvedAuthSpec
+  authEcho?: AuthEcho
+}
+
+export interface ResolveResumeAuthOptions {
+  /** Adapter slug of the session being resumed. */
+  adapterSlug: string
+  /** Effective model — override-overlaid for `restartAgentSession`'s base
+   *  branch, `prev.model` for the lazy in-place resume hook. Feeds the
+   *  provider derivation + model↔wallet eligibility gate. */
+  model?: string
+  /** Effective route — drives the gateway/base_url + api-key store provider. */
+  route?: RouteSpec
+  /** The pinned named auth profile to re-resolve, if any (from
+   *  `prev.accessProfile.profileRef` on the lazy path). Undefined ⇒ base mode
+   *  path only, which is exactly what `restartAgentSession` passes so its
+   *  behaviour is byte-identical to before the extraction (its own `access`
+   *  OVERRIDE stays inline — this is only the pinned-profile re-bind the lazy
+   *  resume needs). A source-backed profile (spawn-only, `credentialRef`
+   *  absent) falls back to the base mode path. */
+  accessProfileRef?: string
+  /** Prefix for the model↔wallet ineligibility message ("restart" for the
+   *  restart base branch — preserving its exact wording — "resume" otherwise). */
+  prefix?: string
+  /** config.json `defaults` loader — same seam as
+   *  {@link RestartAgentSessionOptions.loadDefaultsConfig}. Defaults to
+   *  `loadConfig()`; tests inject a stub. */
+  loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Resolve `accessProfileRef` → profile metadata + secret. Defaults to
+   *  {@link resolveAccessProfileFromStore}; tests inject a stub. */
+  resolveAccessProfile?: AccessProfileResolver
+}
+
+/**
+ * Re-resolve billing-auth for a resume of `prev`, using the SAME resolver chain
+ * a fresh spawn / `session_restart` uses — the MODE comes from the prior
+ * descriptor's `auth.mode` echo (or a pinned named profile), the CREDENTIAL is
+ * re-resolved fresh from config / providers.json / the keychain, NEVER copied
+ * (it was never persisted, by design — `SessionDescriptor.auth`) and NEVER
+ * inherited from the daemon's ambient env. This is the shared core of the
+ * "money bug" fix: extracted out of `restartAgentSession`'s base branch so the
+ * registry's lazy in-place `resumeAgent` hook (which used to call
+ * `startSession` with NO `auth` at all — index.ts) re-bills correctly instead
+ * of on whatever `ANTHROPIC_API_KEY` the daemon happened to hold.
+ *
+ * Fail-loud contract (identical to spawn/restart): an unsupported mode throws
+ * `AuthResolutionError`; a pinned profile that can't be verified eligible or
+ * doesn't match its route throws `RestartOverrideError`; a model↔wallet
+ * mismatch throws `RestartOverrideError`; and an engaged mode with no resolved
+ * credential is caught downstream by the driver's `missing_auth_credential`.
+ * The caller NEVER silently starts a session on ambient env when a pinned mode
+ * fails to resolve.
+ *
+ * Returns `{}` when the adapter presents no `authDescriptor` (ambient — e.g.
+ * hermes), unchanged from before this existed.
+ */
+export async function resolveResumeAuth(
+  prev: SessionDescriptor,
+  resolved: { authDescriptor?: AdapterAuthDescriptor; defaultModel?: string },
+  opts: ResolveResumeAuthOptions,
+): Promise<ResumeAuthResolution> {
+  const { adapterSlug } = opts
+  const effModel = opts.model
+  const effRoute = opts.route
+  const prefix = opts.prefix ?? "resume"
+
+  // ── Pinned named-profile re-resolution ───────────────────────────
+  // A session pinned to a named `accessProfile` re-binds to THAT profile's own
+  // credential (keychain) + re-validates its eligibility against the resolved
+  // `(adapter × route)` endpoint — the same Rx/Ry gate `restartAgentSession`'s
+  // access-OVERRIDE branch and `session-spawn.ts` apply, so a resume can't
+  // silently swap in a wallet the operator never named. Source-backed profiles
+  // are spawn-only today (documented limitation, `resolveAccessProfileFromStore`
+  // throws for them) → fall back to the base mode path below, fail-loud if
+  // nothing resolves there.
+  if (opts.accessProfileRef !== undefined && resolved.authDescriptor) {
+    const resolveProfile = opts.resolveAccessProfile ?? resolveAccessProfileFromStore
+    let found: { profile: AuthProfile; credential?: string } | undefined
+    try {
+      found = await resolveProfile(opts.accessProfileRef)
+    } catch (err) {
+      // The default resolver throws `RestartOverrideError` only for a
+      // source-backed profile — treat that as "not credential-backed here" and
+      // fall through to the base mode path. Any other error is real; propagate.
+      if (!(err instanceof RestartOverrideError)) throw err
+      found = undefined
+    }
+    if (found) {
+      const { profile, credential } = found
+      const projected = eligibilityManifest(
+        adapterSlug,
+        resolved.authDescriptor,
+        effRoute,
+        effModel ?? resolved.defaultModel,
+      )
+      if (!projected) {
+        throw new RestartOverrideError(
+          `${prefix} access profile: cannot resolve a billing vendor for adapter ` +
+            `"${adapterSlug}" (no fixed provider, no model) — profile "${profile.id}" ` +
+            `eligibility is unverifiable, refusing to resume.`,
+        )
+      }
+      const { manifest, routeId } = projected
+      if (eligibleProfiles([profile], manifest, routeId).length === 0) {
+        const billed = manifest.endpointByRoute[routeId]
+        const methods = manifest.methodsByRoute[routeId] ?? []
+        throw new RestartOverrideError(
+          `${prefix} access profile: profile "${profile.id}" (${profile.endpoint}/${profile.method}) ` +
+            `is not eligible for adapter "${adapterSlug}" on route "${routeId}" — that endpoint ` +
+            `bills "${billed}" via [${methods.join(", ") || "no presentable methods"}].`,
+        )
+      }
+      const mode = methodToMode(profile.method)
+      const result = resolveAuthSpec({
+        descriptor: resolved.authDescriptor,
+        ...(effModel ? { model: effModel } : {}),
+        ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
+        ...(!effRoute?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
+        requestedMode: mode,
+        // A named profile is an EXPLICIT billing choice — a missing credential
+        // fails loud (driver `missing_auth_credential`), never ambient.
+        explicit: true,
+        ...(mode === "subscription" && credential !== undefined
+          ? { subscriptionCredential: credential }
+          : {}),
+        ...(mode === "api-key" && credential !== undefined
+          ? { apiKeyConfigCredential: credential }
+          : {}),
+      })
+      return { authSpec: result?.spec, authEcho: result?.echo }
+    }
+    // found === undefined → profile gone / source-backed → base mode path.
+  }
+
+  // ── Base mode path (extracted verbatim from restartAgentSession) ──
+  // Mode from the prior descriptor's `auth.mode` echo; credential re-resolved
+  // from config/providers.json in the same merge order as a fresh spawn. No
+  // prior echo ⇒ `explicitAuthInput` undefined ⇒ resolves like a fresh spawn
+  // with no explicit `auth`, never inventing a mode.
+  if (!resolved.authDescriptor) return {}
+  const configDefaults = opts.loadDefaultsConfig
+    ? await opts.loadDefaultsConfig()
+    : (await loadConfig()).defaults
+  const explicitAuthInput: DefaultsAdapterAuthConfig | undefined = prev.auth
+    ? { mode: prev.auth.mode }
+    : undefined
+  const spawnDefaults = resolveSpawnDefaults(configDefaults, adapterSlug, {
+    auth: explicitAuthInput,
+  })
+  const authModel = effModel ?? resolved.defaultModel
+  const pinnedProvider = spawnDefaults.auth.provider
+  const resolvedProvider =
+    pinnedProvider ??
+    resolved.authDescriptor.provider ??
+    (authModel ? getModelProvider(authModel) : undefined)
+  // With an explicit gateway route the provider-store key is looked up under
+  // the gateway id (e.g. "moonshot") rather than the model-derived vendor.
+  const apiKeyStoreProvider = effRoute?.gateway ?? resolvedProvider
+  // Same money-safety gate as session-spawn.ts: the providers.json store is
+  // only consulted when the resolved auth is EXPLICIT (never for an
+  // unconfigured `always`-enforcing adapter, which must fail-fast).
+  const apiKeyStoreCredential =
+    apiKeyStoreProvider &&
+    spawnDefaults.auth.explicit &&
+    spawnDefaults.auth.apiKeyCredential === undefined
+      ? await getProviderKey(apiKeyStoreProvider)
+      : undefined
+  const result = resolveAuthSpec({
+    descriptor: resolved.authDescriptor,
+    ...(authModel ? { model: authModel } : {}),
+    ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
+    ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
+    ...(spawnDefaults.auth.requestedMode
+      ? { requestedMode: spawnDefaults.auth.requestedMode }
+      : {}),
+    explicit: spawnDefaults.auth.explicit,
+    ...(spawnDefaults.auth.subscriptionCredential !== undefined
+      ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
+      : {}),
+    ...(spawnDefaults.auth.apiKeyCredential !== undefined
+      ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
+      : {}),
+    ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
+  })
+  let authSpec = result?.spec
+  const authEcho = result?.echo
+  // Money-safety spawn guard (SPEC §1c): the auth-MODE path validates only
+  // provider→mode support, never that the resolved wallet can bill THIS model.
+  // Scoped to the UNNAMED-wallet case; FAIL LOUD, never swap in an eligible
+  // wallet the operator didn't name.
+  if (
+    effRoute?.gateway === undefined &&
+    authModel !== undefined &&
+    resolvedProvider !== undefined
+  ) {
+    const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
+    if (!verdict.ok) {
+      throw new RestartOverrideError(
+        modelWalletIneligibleMessage({
+          prefix,
+          adapter: adapterSlug,
+          model: authModel,
+          walletRoute: resolvedProvider,
+          ...(authSpec?.mode ? { walletMode: authSpec.mode } : {}),
+          suggestedRoutes: verdict.suggestedRoutes,
+        }),
+      )
+    }
+  }
+  // Same non-authenticating hint as session-spawn.ts: only when about to
+  // hard-fail (enforce "always", no credential) and auth wasn't explicit.
+  if (
+    authSpec &&
+    authSpec.enforce === "always" &&
+    authSpec.credential === undefined &&
+    !spawnDefaults.auth.explicit &&
+    apiKeyStoreProvider !== undefined
+  ) {
+    const ignored = await getProviderKey(apiKeyStoreProvider)
+    if (ignored !== undefined) {
+      authSpec = { ...authSpec, ignoredApiKeyInStore: true }
+    }
+  }
+  return { authSpec, authEcho }
+}
+
 export interface RestartAgentSessionResult {
   desc: SessionDescriptor
   resumedFrom: string
@@ -418,102 +650,22 @@ export async function restartAgentSession(
       method: profile.method,
     }
   } else if (resolved.authDescriptor) {
-    const configDefaults = opts.loadDefaultsConfig
-      ? await opts.loadDefaultsConfig()
-      : (await loadConfig()).defaults
-    const explicitAuthInput: DefaultsAdapterAuthConfig | undefined = prev.auth
-      ? { mode: prev.auth.mode }
-      : undefined
-    const spawnDefaults = resolveSpawnDefaults(configDefaults, adapterSlug, {
-      auth: explicitAuthInput,
+    // Base mode path (no `access` override): re-resolve billing-auth from the
+    // prior descriptor's `auth.mode` echo through the shared helper the lazy
+    // in-place resume hook also uses. `accessProfileRef` is intentionally NOT
+    // passed here — this branch's job is the base mode re-resolution ONLY (the
+    // `access` OVERRIDE is the `if` branch above), so passing no profileRef
+    // keeps this byte-identical to the pre-extraction inline block. `prefix:
+    // "restart"` preserves the exact model↔wallet ineligibility wording.
+    const resumeAuth = await resolveResumeAuth(prev, resolved, {
+      adapterSlug,
+      ...(effModel ? { model: effModel } : {}),
+      ...(effRoute ? { route: effRoute } : {}),
+      prefix: "restart",
+      ...(opts.loadDefaultsConfig ? { loadDefaultsConfig: opts.loadDefaultsConfig } : {}),
     })
-    const authModel = effModel ?? resolved.defaultModel
-    const pinnedProvider = spawnDefaults.auth.provider
-    const resolvedProvider =
-      pinnedProvider ??
-      resolved.authDescriptor.provider ??
-      (authModel ? getModelProvider(authModel) : undefined)
-    // When an explicit gateway route is set, the provider-store key is looked
-    // up under the gateway id (e.g. "moonshot") rather than the model-derived
-    // vendor, because the gateway preset/custom route defines the credential
-    // env var and the billing endpoint.
-    const apiKeyStoreProvider = effRoute?.gateway ?? resolvedProvider
-    // Same money-safety gate as session-spawn.ts: the providers.json store
-    // is only consulted when the resolved auth is EXPLICIT (never for an
-    // unconfigured `always`-enforcing adapter, which must fail-fast instead
-    // of silently picking up a leftover store key).
-    const apiKeyStoreCredential =
-      apiKeyStoreProvider &&
-      spawnDefaults.auth.explicit &&
-      spawnDefaults.auth.apiKeyCredential === undefined
-        ? await getProviderKey(apiKeyStoreProvider)
-        : undefined
-    const result = resolveAuthSpec({
-      descriptor: resolved.authDescriptor,
-      ...(authModel ? { model: authModel } : {}),
-      ...(effRoute?.gateway ? { routeGateway: effRoute.gateway } : {}),
-      ...(pinnedProvider ? { requestedProvider: pinnedProvider } : {}),
-      ...(spawnDefaults.auth.requestedMode
-        ? { requestedMode: spawnDefaults.auth.requestedMode }
-        : {}),
-      explicit: spawnDefaults.auth.explicit,
-      ...(spawnDefaults.auth.subscriptionCredential !== undefined
-        ? { subscriptionCredential: spawnDefaults.auth.subscriptionCredential }
-        : {}),
-      ...(spawnDefaults.auth.apiKeyCredential !== undefined
-        ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
-        : {}),
-      ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
-    })
-    if (result) {
-      authSpec = result.spec
-      authEcho = result.echo
-    }
-    // Same money-safety spawn guard as session-spawn.ts (SPEC §1c), mirrored
-    // here so a restart-with-override can't reopen the hole the base path
-    // closes: the auth-MODE path validates only provider→mode support, never
-    // that the resolved wallet can bill THIS model. A gateway/router model
-    // (e.g. `deepseek/deepseek-v4-pro`, billing `openrouter`) restarted onto
-    // claude-code's FIXED `anthropic` wallet with NO `route.gateway` would 404
-    // upstream. Scoped to the UNNAMED-wallet case (an explicit `route.gateway`
-    // is a deliberate operator wallet choice — see session-spawn.ts for the
-    // full rationale). FAIL LOUD (RestartOverrideError ⇒ 400); NEVER swap in an
-    // eligible wallet the operator didn't name.
-    if (
-      effRoute?.gateway === undefined &&
-      authModel !== undefined &&
-      resolvedProvider !== undefined
-    ) {
-      const verdict = checkModelWalletEligibility(authModel, resolvedProvider)
-      if (!verdict.ok) {
-        throw new RestartOverrideError(
-          modelWalletIneligibleMessage({
-            prefix: "restart",
-            adapter: adapterSlug,
-            model: authModel,
-            walletRoute: resolvedProvider,
-            ...(authSpec?.mode ? { walletMode: authSpec.mode } : {}),
-            suggestedRoutes: verdict.suggestedRoutes,
-          }),
-        )
-      }
-    }
-    // Same non-authenticating hint as session-spawn.ts (kept in sync by
-    // inspection, per this module's own doc comment above): only checked
-    // when about to hard-fail (enforce "always", no credential) and auth
-    // wasn't explicit, i.e. the store was never consulted for real above.
-    if (
-      authSpec &&
-      authSpec.enforce === "always" &&
-      authSpec.credential === undefined &&
-      !spawnDefaults.auth.explicit &&
-      apiKeyStoreProvider !== undefined
-    ) {
-      const ignored = await getProviderKey(apiKeyStoreProvider)
-      if (ignored !== undefined) {
-        authSpec = { ...authSpec, ignoredApiKeyInStore: true }
-      }
-    }
+    authSpec = resumeAuth.authSpec
+    authEcho = resumeAuth.authEcho
   }
 
   const spawnWithResume = async (

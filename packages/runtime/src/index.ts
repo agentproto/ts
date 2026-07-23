@@ -71,6 +71,7 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { loadConfig } from "./config.js"
+import { resolveResumeAuth } from "./session-restart-core.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
@@ -871,12 +872,35 @@ export async function createGateway(
             adapterSlug,
             cwd,
             resumeSessionId,
+            descriptor,
             mcpServers,
             onActivity,
           }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
             if (!adapter) return null
             try {
+              // Re-resolve billing-auth the SAME way a fresh spawn /
+              // `session_restart` does — mode from the descriptor's `auth.mode`
+              // echo (or its pinned `accessProfile`), credential re-resolved
+              // fresh from config/providers.json/keychain, NEVER inherited from
+              // the daemon's ambient env. Before this, the lazy in-place resume
+              // called `startSession` with no `auth` at all, so a session
+              // pinned to `subscription` silently came back billing on whatever
+              // `ANTHROPIC_API_KEY` the daemon held — the "money bug" already
+              // fixed for `session_restart` (session-restart-core.ts). Fail-loud:
+              // an unresolvable pinned mode throws here (or the driver throws
+              // `missing_auth_credential`) → caught below → resume returns null,
+              // the session stays dead rather than starting on the wrong wallet.
+              const { authSpec } = await resolveResumeAuth(descriptor, adapter, {
+                adapterSlug,
+                ...(descriptor.model ? { model: descriptor.model } : {}),
+                ...(descriptor.route ? { route: descriptor.route } : {}),
+                ...(descriptor.accessProfile?.profileRef
+                  ? { accessProfileRef: descriptor.accessProfile.profileRef }
+                  : {}),
+                prefix: "resume",
+              })
+              const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
@@ -884,6 +908,10 @@ export async function createGateway(
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
                 ...(mcpServers ? { mcpServers } : {}),
+                ...(authSpec ? { auth: authSpec } : {}),
+                ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
+                  ? { options: { base_url: resolvedBaseUrl } }
+                  : {}),
                 ...(onActivity ? { onActivity } : {}),
               })
             } catch (err) {
