@@ -89,8 +89,8 @@ interface E2bSandboxConfig {
    *  and BEFORE `agentproto serve` hands control to the agent. Generic
    *  provision-time hook — no policy baked in here; callers decide what to run
    *  (e.g. installing a git hook). Each entry is passed verbatim to
-   *  `sandbox.commands.run`. Runs only when this provider starts the daemon
-   *  (skipped when the health probe finds it already autostarted). */
+   *  `sandbox.commands.run`. Runs on EVERY boot/connect, even when the health
+   *  probe finds the daemon already autostarted — entries must be idempotent. */
   setupCommands?: string[]
 }
 
@@ -141,9 +141,8 @@ async function ensureDaemonHealthy(
   const pollIntervalMs = config.pollIntervalMs ?? POLL_INTERVAL_MS
 
   const alreadyUp = await probeHealth(healthUrl, healthProbeTimeoutMs, pollIntervalMs)
-  if (alreadyUp) return
 
-  if (config.updateCliOnBoot ?? true) {
+  if (!alreadyUp && (config.updateCliOnBoot ?? true)) {
     // One `npm i -g` for the CLI update AND any caller-declared extras
     // (`installPackages` — typically the adapter about to be spawned). The
     // CLI update alone replaces the global install and LOSES template-baked
@@ -162,9 +161,16 @@ async function ensureDaemonHealthy(
   // Caller-declared provision hooks — host-executed after the npm install and
   // before the agent gets control. Kept generic (no policy here); the ts layer
   // uses this to install a commit-msg hook that strips AI-attribution trailers.
+  // Runs regardless of `alreadyUp`: the workstation template MAY autostart the
+  // daemon (module doc above), and a caller-declared hook install must still
+  // land on that path — callers rely on `setupCommands` entries being
+  // idempotent so re-running them against an already-provisioned box is safe.
   for (const command of config.setupCommands ?? []) {
     await sandbox.commands.run(command, { envs: env })
   }
+
+  if (alreadyUp) return
+
   await sandbox.commands.run(
     `agentproto serve --port ${port} --bind 0.0.0.0 --workspace ${workspace} --allow-origin https://${host}`,
     // timeoutMs: 0 disables e2b's per-command timeout — which DEFAULTS TO 60
