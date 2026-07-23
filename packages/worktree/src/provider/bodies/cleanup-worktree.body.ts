@@ -82,7 +82,7 @@ export const cleanupWorktreeBuiltin = implementTool(
       // granted flag(s) actually cover everything dirty before force-passing
       // — otherwise a lone `discardUntracked` could silently also destroy
       // modified tracked files it never authorized.
-      const tree = await computeTreeState(input.cwd)
+      const tree = await computeTreeState(input.repoRoot, input.cwd)
       if (tree.state === "dirty") {
         const blocked: ("untracked" | "modified")[] = []
         if (tree.untracked > 0 && !discardUntracked) blocked.push("untracked")

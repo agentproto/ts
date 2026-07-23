@@ -93,7 +93,7 @@ describe("agentproto worktree new", () => {
     const branchRes = spawnSync("git", ["-C", expectedDir, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" })
     expect(branchRes.stdout.trim()).toBe("wt/my-feature")
 
-    const marker = await readWorktreeMarker(expectedDir)
+    const marker = await readWorktreeMarker(repoRoot, expectedDir)
     expect(marker).not.toBeNull()
     expect(marker?.worktreeId).toMatch(/^wt_/)
   })

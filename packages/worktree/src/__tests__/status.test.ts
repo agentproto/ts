@@ -84,7 +84,7 @@ describe("computeTreeState", () => {
   it("reports clean for a freshly committed tree", async () => {
     const repo = await makeRepo()
     cleanupPaths.push(repo)
-    expect(await computeTreeState(repo)).toEqual({ state: "clean" })
+    expect(await computeTreeState(repo, repo)).toEqual({ state: "clean" })
   })
 
   it("counts modified, staged, and untracked separately", async () => {
@@ -94,7 +94,7 @@ describe("computeTreeState", () => {
     await writeFile(join(repo, "new.txt"), "new\n") // untracked
     await writeFile(join(repo, "staged.txt"), "staged\n")
     await execGit(repo, ["add", "staged.txt"]) // staged
-    const result = await computeTreeState(repo)
+    const result = await computeTreeState(repo, repo)
     expect(result).toMatchObject({ state: "dirty", modified: 1, staged: 1, untracked: 1 })
     expect(result.state === "dirty" && result.newestMtimeMs).toEqual(expect.any(Number))
   })
@@ -108,7 +108,7 @@ describe("computeTreeState", () => {
     const longAgo = new Date(Date.now() - 60 * 60 * 1000) // 1 hour ago
     await utimes(join(repo, "old.txt"), longAgo, longAgo)
 
-    const result = await computeTreeState(repo)
+    const result = await computeTreeState(repo, repo)
     if (result.state !== "dirty") throw new Error("expected dirty")
     // The newest write wins (README.md, just now) even though old.txt (an
     // hour old) is also part of the dirty set.
@@ -123,7 +123,23 @@ describe("computeTreeState", () => {
     await execGit(repo, ["commit", "-m", "ignore"])
     await mkdir(join(repo, "ignored"))
     await writeFile(join(repo, "ignored", "scratch.txt"), "x\n")
-    expect(await computeTreeState(repo)).toEqual({ state: "clean" })
+    expect(await computeTreeState(repo, repo)).toEqual({ state: "clean" })
+  })
+
+  it("a worktreePath removed out from under it surfaces as a real git error, not a raw spawn ENOENT (the mid-reap TOCTOU gc.ts hits)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    // Never created on disk — simulates a linked worktree a concurrent `gc`
+    // reap (or a racing status read) already removed by the time this call's
+    // git spawn goes out. Node's spawn(), if a spawn's own `cwd` doesn't
+    // exist, fails the CHILD PROCESS ITSELF with `ENOENT` blamed on the
+    // COMMAND ("spawn git ENOENT") rather than the missing directory — the
+    // exact misleading failure this anchor-to-repoRoot fix prevents, since
+    // the spawn's `cwd` here is `repo` (always present), not the ghost path.
+    const ghostWorktree = join(repo, "_worktrees", "already-removed")
+    await expect(computeTreeState(repo, ghostWorktree)).rejects.toThrow(
+      /git status --porcelain=v2 failed/,
+    )
   })
 })
 

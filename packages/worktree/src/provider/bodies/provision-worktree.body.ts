@@ -28,7 +28,7 @@ export const provisionWorktreeBuiltin = implementTool(
     // session is spawned into the worktree), and recording a guess would be
     // worse than the honest `best-effort` provenance callers already fall
     // back to.
-    await writeWorktreeMarker(cwd, {
+    await writeWorktreeMarker(input.repoRoot, cwd, {
       worktreeId: `wt_${randomUUID().slice(0, 8)}`,
       createdAt: new Date().toISOString(),
     })

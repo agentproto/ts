@@ -187,12 +187,21 @@ export type WorktreeMarker = z.infer<typeof worktreeMarkerSchema>
  * Read the per-worktree creation marker, if PR-B has written one. This PR
  * never writes it — only reads, so a worktree created before PR-B shipped
  * (all of them, today) honestly reports `confidence: "best-effort"`.
+ *
+ * Spawn `cwd` is anchored to `repoRoot`, NOT `worktreePath` — `worktreePath`
+ * targets the git command via `-C`, but a linked worktree can be removed by
+ * a concurrent `gc` reap (or by this very call's caller, moments later) while
+ * `repoRoot` (the main checkout) never is (`gc.ts`'s docblock: git itself
+ * refuses to remove the main working tree). A spawn whose `cwd` no longer
+ * exists on disk fails `ENOENT` on the COMMAND itself (a Node/libuv quirk,
+ * not a "not found" for the directory) — see `exec.ts`'s `execGit` for the
+ * same anchor, established first.
  */
-export async function readWorktreeMarker(worktreePath: string): Promise<WorktreeMarker | null> {
+export async function readWorktreeMarker(repoRoot: string, worktreePath: string): Promise<WorktreeMarker | null> {
   const gitDirRes = await execArgv(
     "git",
     ["-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir"],
-    worktreePath,
+    repoRoot,
   )
   if (gitDirRes.exitCode !== 0) return null
   const gitDir = gitDirRes.stdout.trim()
@@ -221,12 +230,19 @@ export async function readWorktreeMarker(worktreePath: string): Promise<Worktree
  * config, so it wouldn't die with the worktree and would collide across
  * worktrees). Called once, by `worktree.provision`, right after the
  * worktree is created; nothing else ever rewrites it.
+ *
+ * Spawn `cwd` is anchored to `repoRoot`, not `worktreePath` — see
+ * `readWorktreeMarker`'s doc for why.
  */
-export async function writeWorktreeMarker(worktreePath: string, marker: WorktreeMarker): Promise<void> {
+export async function writeWorktreeMarker(
+  repoRoot: string,
+  worktreePath: string,
+  marker: WorktreeMarker,
+): Promise<void> {
   const gitDirRes = await execArgv(
     "git",
     ["-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir"],
-    worktreePath,
+    repoRoot,
   )
   if (gitDirRes.exitCode !== 0) {
     throw new Error(
@@ -249,6 +265,7 @@ export interface ComputeProvenanceOptions {
  * generations and is bounded by `HISTORY_CAP`'s recency window.
  */
 export async function computeProvenance(
+  repoRoot: string,
   worktreePath: string,
   options: ComputeProvenanceOptions = {},
 ): Promise<ProvenanceInfo> {
@@ -257,7 +274,7 @@ export async function computeProvenance(
     // alone — pinning it here would hide every partitioned session from
     // the GC join. See this file's header.
     readSessionsRegistry(options.sessionsPath),
-    readWorktreeMarker(worktreePath),
+    readWorktreeMarker(repoRoot, worktreePath),
   ])
   const sessions = registry ?? []
   const matched = sessions

@@ -36,6 +36,8 @@ export interface SalvageManifest {
 }
 
 export interface SalvageWorktreeInput {
+  /** The main repo root — the stable spawn anchor for this worktree's git reads (see `listUntrackedFiles`'s doc). */
+  repoRoot: string
   repoName: string
   worktreePath: string
   branch: string | null
@@ -54,18 +56,28 @@ export interface SalvageResult {
   manifest: SalvageManifest
 }
 
-/** Untracked, non-ignored files in the worktree — the same class `git worktree remove` refuses without `--force`. */
-async function listUntrackedFiles(worktreePath: string): Promise<string[]> {
-  const res = await execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard"], worktreePath)
+/**
+ * Untracked, non-ignored files in the worktree — the same class `git
+ * worktree remove` refuses without `--force`. Spawn `cwd` is `repoRoot`, not
+ * `worktreePath` — a linked worktree can be removed by a concurrent `gc`
+ * reap (or a racing status read) while this call is in flight, and a spawn
+ * whose `cwd` no longer exists fails `ENOENT` on the COMMAND itself (a
+ * Node/libuv quirk), not the directory — see `exec.ts`'s `execGit`, which
+ * anchors the same way.
+ */
+async function listUntrackedFiles(repoRoot: string, worktreePath: string): Promise<string[]> {
+  const res = await execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard"], repoRoot)
   if (res.exitCode !== 0) {
     throw new Error(`git ls-files --others failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim()}`)
   }
   return res.stdout.split("\n").filter(Boolean)
 }
 
-/** `git diff HEAD` — staged + unstaged changes to tracked files, uniformly. Empty string on a clean tree. */
-async function diffHead(worktreePath: string): Promise<string> {
-  const res = await execArgv("git", ["-C", worktreePath, "diff", "HEAD"], worktreePath)
+/** `git diff HEAD` — staged + unstaged changes to tracked files, uniformly.
+ *  Empty string on a clean tree. Spawn `cwd` is `repoRoot`, not
+ *  `worktreePath` — see `listUntrackedFiles`'s doc. */
+async function diffHead(repoRoot: string, worktreePath: string): Promise<string> {
+  const res = await execArgv("git", ["-C", worktreePath, "diff", "HEAD"], repoRoot)
   if (res.exitCode !== 0) {
     throw new Error(`git diff HEAD failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim()}`)
   }
@@ -109,9 +121,9 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
   await mkdir(dir, { recursive: true })
 
   const [patch, untrackedFiles, provenance] = await Promise.all([
-    diffHead(input.worktreePath),
-    listUntrackedFiles(input.worktreePath),
-    computeProvenance(input.worktreePath, { sessionsPath: input.sessionsPath }),
+    diffHead(input.repoRoot, input.worktreePath),
+    listUntrackedFiles(input.repoRoot, input.worktreePath),
+    computeProvenance(input.repoRoot, input.worktreePath, { sessionsPath: input.sessionsPath }),
   ])
 
   await writeFileSynced(join(dir, "changes.patch"), patch)
