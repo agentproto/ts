@@ -473,3 +473,99 @@ describe("routine_trigger MCP tool", () => {
     }
   })
 })
+
+// ── routine_reconcile MCP tool — the Phase A gap this PR closes: without
+// it, reconcile() only ran once at daemon boot (index.ts), so a
+// `.routines/<id>/ROUTINE.md` dropped, edited, or removed afterward never
+// took effect until a restart. ──
+
+describe("routine_reconcile MCP tool", () => {
+  let tmpDirs: string[] = []
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true }) } catch { /* ignore */ }
+    }
+    tmpDirs = []
+  })
+
+  it("is gated behind routineRegistrar and excluded from DEFAULT_ORCHESTRATOR_TOOLS", async () => {
+    const { DEFAULT_ORCHESTRATOR_TOOLS } = await import("../orchestrator-gateway.js")
+    expect(DEFAULT_ORCHESTRATOR_TOOLS).not.toContain("routine_reconcile")
+  })
+
+  it("registers a newly-added routine, reflects an edit, and drops a removed one — all without a daemon restart", async () => {
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js")
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js")
+    const { registerOrchestrationTools } = await import("../orchestration-tools.js")
+
+    const workspace = mkdtempSync(join(tmpdir(), "routine-reconcile-mcp-test-"))
+    tmpDirs.push(workspace)
+
+    const dispatchTool = async (name: string, inputs: Record<string, unknown>) => ({
+      content: [{ type: "text", text: `dispatched ${name} ${JSON.stringify(inputs)}` }],
+    })
+    const cronScheduler = makeFakeCronScheduler()
+    const routineRegistrar = createRoutineRegistrar({ workspace, cronScheduler, dispatchTool })
+
+    const sessionEvents = createSessionEventBus()
+    const eventRing = await import("../event-ring.js").then(m => m.createEventRing())
+    const registry = createSessionsRegistry({ sessionEvents, persistPath: join(workspace, "sessions.json") })
+
+    const server = new McpServer({ name: "routine-reconcile-test", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents, eventRing, routineRegistrar })
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "routine-reconcile-test-client", version: "0.0.0" })
+    await client.connect(clientTransport)
+
+    const callReconcile = async (): Promise<{
+      registered: string[]
+      skipped: Array<{ id: string; reason: string }>
+      removed: string[]
+      errors: Array<{ file: string; error: string }>
+    }> => {
+      const result = await client.callTool({ name: "routine_reconcile", arguments: {} })
+      const content = (result as { content?: Array<{ type: string; text?: string }> }).content
+      const text = content?.find(c => c.type === "text")?.text
+      return JSON.parse(text!)
+    }
+
+    // 1. Nothing on disk yet.
+    const first = await callReconcile()
+    expect(first.registered).toEqual([])
+    expect(cronScheduler.list()).toHaveLength(0)
+
+    // 2. A routine dropped after "boot" (no restart) — routine_reconcile picks it up.
+    writeRoutine(
+      workspace,
+      "live-demo",
+      "schema: routine/v1\nid: live-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
+    )
+    const second = await callReconcile()
+    expect(second.registered).toEqual(["live-demo"])
+    const jobsAfterRegister = cronScheduler.list()
+    expect(jobsAfterRegister).toHaveLength(1)
+    const firstJobId = jobsAfterRegister[0]!.id
+
+    // 3. Editing the routine's schedule — reflected as delete+recreate.
+    writeRoutine(
+      workspace,
+      "live-demo",
+      "schema: routine/v1\nid: live-demo\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 5 * * *\"\ntarget:\n  tool: worktree_gc",
+    )
+    const third = await callReconcile()
+    expect(third.registered).toEqual(["live-demo"])
+    expect(third.removed).toEqual([firstJobId])
+    const jobsAfterEdit = cronScheduler.list()
+    expect(jobsAfterEdit).toHaveLength(1)
+    expect(jobsAfterEdit[0]!.schedule).toBe("0 5 * * *")
+
+    // 4. Removing the routine file — its cron job is torn down.
+    rmSync(join(workspace, ".routines", "live-demo"), { recursive: true })
+    const fourth = await callReconcile()
+    expect(fourth.removed).toEqual([jobsAfterEdit[0]!.id])
+    expect(cronScheduler.list()).toHaveLength(0)
+  })
+})
