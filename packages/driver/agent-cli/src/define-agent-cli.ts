@@ -9,6 +9,7 @@ import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
+import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
 import type {
   AgentCliClient,
   AgentCliDefinition,
@@ -261,15 +262,21 @@ export function createAgentCliRuntime(
         opts?.posture,
         config?.mode,
       )
+      // Hoisted out of the `if` below so it's visible to the commandSandbox
+      // wrap further down: bwrap's `--tmpfs /tmp` (`command-sandbox.ts`)
+      // would otherwise HIDE this dir on Linux since it's mkdtemp'd under
+      // `os.tmpdir()` BEFORE the confined spawn — it must ride along as an
+      // extraWritePaths entry, not rely on the workspace bind.
+      let claudeConfigDir: string | undefined
       if (permissionMode) {
-        const configDir = mkdtempSync(
+        claudeConfigDir = mkdtempSync(
           join(tmpdir(), "agentproto-claude-config-"),
         )
         writeFileSync(
-          join(configDir, "settings.json"),
+          join(claudeConfigDir, "settings.json"),
           JSON.stringify({ permissions: { defaultMode: permissionMode } }),
         )
-        env.CLAUDE_CONFIG_DIR = configDir
+        env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
       // The print arm spawns a fresh subprocess per turn — no
@@ -286,6 +293,8 @@ export function createAgentCliRuntime(
             : {}),
           ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
           printConfig: definition.print,
+          commandSandbox: opts?.commandSandbox,
+          ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
         })
       }
 
@@ -296,7 +305,23 @@ export function createAgentCliRuntime(
       let child: ChildProcess | undefined
       const stderrBuf: string[] = []
       if (definition.protocol !== "proprietary") {
-        child = spawn(definition.bin, composed.binArgs, {
+        // OS-level confinement (`AgentCliStartOptions.commandSandbox`):
+        // wraps THIS spawn's argv through the same Seatbelt/bwrap backends
+        // `command_execute` already uses (`@agentproto/command-sandbox`),
+        // so the adapter's own process tree — not just its reported tool
+        // calls — is denied out-of-workspace reads/writes. Off by default;
+        // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
+        const [execBin, execArgs] = wrapAgentCliSpawn(
+          definition.bin,
+          composed.binArgs,
+          {
+            mode: opts?.commandSandbox,
+            cwd,
+            ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
+            label: definition.id,
+          },
+        )
+        child = spawn(execBin, execArgs, {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],

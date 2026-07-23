@@ -26,7 +26,9 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { join } from "node:path"
+import type { SandboxMode } from "@agentproto/command-sandbox"
 import { toFileBasedMcpServers } from "../mcp-servers.js"
+import { wrapAgentCliSpawn } from "../command-sandbox-wrap.js"
 import type {
   AcpMcpServer,
   AgentCliPrintConfig,
@@ -55,6 +57,13 @@ export interface PrintArmOptions {
    * (e.g. Claude Code), which don't load MCP config from this path.
    */
   mcpServers?: AcpMcpServer[]
+  /** OS-level confinement for the per-turn spawn — see
+   *  `AgentCliStartOptions.commandSandbox` in `../types.ts` and
+   *  `wrapAgentCliSpawn`'s doc for the fail-closed contract. */
+  commandSandbox?: SandboxMode
+  /** Extra write-capable paths beyond the default toolchain set, e.g. the
+   *  per-session `CLAUDE_CONFIG_DIR` temp dir set up by the caller. */
+  extraWritePaths?: string[]
 }
 
 // ── Defaults (Claude Code backward-compatible) ──────────────────────
@@ -117,7 +126,15 @@ export function createPrintSession(
         args.push(prompt)
       }
 
-      const child = spawn(opts.bin, args, {
+      // OS-level confinement — same fail-closed contract as the ACP arm's
+      // spawn in `define-agent-cli.ts`; see `wrapAgentCliSpawn`'s doc.
+      const [execBin, execArgs] = wrapAgentCliSpawn(opts.bin, args, {
+        mode: opts.commandSandbox,
+        cwd: opts.cwd,
+        ...(opts.extraWritePaths ? { extraWritePaths: opts.extraWritePaths } : {}),
+        label: "print-arm",
+      })
+      const child = spawn(execBin, execArgs, {
         cwd: opts.cwd,
         env: opts.env,
         stdio: ["ignore", "pipe", "pipe"],

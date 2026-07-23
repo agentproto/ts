@@ -13,6 +13,7 @@ import type {
   StreamEvent,
 } from "@agentproto/acp"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
+import type { SandboxMode } from "@agentproto/command-sandbox"
 
 export type {
   AcpMcpServer,
@@ -1089,6 +1090,25 @@ export interface AgentCliStartOptions {
    * both `posture` and legacy `config.mode` — each axis is independent.
    */
   contextProfile?: string
+  /**
+   * OS-level confinement for the spawned child itself (macOS Seatbelt /
+   * Linux bubblewrap, `@agentproto/command-sandbox`) — confines the
+   * adapter's own process tree, unlike `posture`/`contextProfile` which
+   * only shape what the adapter is TOLD to do. This is a SEPARATE axis
+   * from AIP-36 `sandbox` (the remote-box session provider,
+   * `resolveSandboxProvider`/`SandboxProviderHandle` in
+   * `@agentproto/runtime`): that boots a whole nested daemon on a
+   * different machine/box; this wraps THIS host's spawn argv so even an
+   * in-process Bash tool the ACP permission seam can't see is denied
+   * out-of-workspace reads/writes (and, under `"strict"`, network).
+   * Undefined/`"off"` ⇒ unconfined, unchanged behaviour for every
+   * existing caller. `"workspace"`/`"strict"` with no backend available
+   * for this platform is a FAIL-CLOSED refusal to spawn, mirroring
+   * `command_execute`'s own fail-closed contract in
+   * `@agentproto/runtime`'s `command-tools.ts` — see
+   * `define-agent-cli.ts` / `print-arm.ts` for where this is applied.
+   */
+  commandSandbox?: SandboxMode
 }
 
 /**

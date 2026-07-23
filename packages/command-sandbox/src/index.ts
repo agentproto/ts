@@ -1,37 +1,32 @@
 /**
- * OS-level confinement for `command_execute` subprocesses — macOS Seatbelt
- * (phase 2) and Linux bubblewrap (phase 3) backends.
+ * OS-level process confinement — macOS Seatbelt (`sandbox-exec`) and Linux
+ * bubblewrap (`bwrap`) backends for wrapping a spawned argv.
  *
- * The allowlist (`command-tools.ts`) gates WHICH binary may run; this bounds
- * what that binary may READ/WRITE and — in strict mode — reach on the network.
- * It closes the residual gap where an allowlisted interpreter (`bash`, `node`,
- * `python3`, …) reads `~/.ssh/id_rsa` or exfiltrates: the cwd anchor bounds the
- * working directory, not what the process opens.
+ * Extracted from `@agentproto/runtime`'s original `command-tools.ts`-only
+ * use (which still consumes this package for `command_execute`) so
+ * `@agentproto/driver-agent-cli` can wrap its OWN adapter-child spawn
+ * (`define-agent-cli.ts` / `print-arm.ts`) through the identical policy and
+ * backends, without creating a circular package dependency — `runtime`
+ * depends on `driver-agent-cli` (it spawns adapter sessions), so
+ * `driver-agent-cli` cannot depend back on `runtime`. This package has zero
+ * workspace dependencies; both sides depend on it.
  *
- * Opt-in per workspace via `.agentproto/command-sandbox.json`; default OFF, so
- * existing behavior is unchanged until a user explicitly enables it. Backends
- * are platform-specific — macOS Seatbelt and Linux bubblewrap (`bwrap`), each
- * selected + probed by `resolveCommandSandbox`.
+ * The allowlist (`command-tools.ts` in `runtime`) gates WHICH binary may
+ * run; this bounds what that binary (or, for the adapter-spawn use, the
+ * agent-cli child itself) may READ/WRITE and — in strict mode — reach on
+ * the network. It closes the residual gap where an allowlisted interpreter
+ * (`bash`, `node`, `python3`, …) reads `~/.ssh/id_rsa` or exfiltrates: the
+ * cwd anchor bounds the working directory, not what the process opens.
  *
- * The Seatbelt profile was validated empirically (2026-07): under it `node` /
- * `cat` read workspace files fine, `~/.ssh` reads fail with EPERM, and strict
- * mode makes network connects fail with EPERM.
- *
- * ## Why the default stays OFF (re-verified 2026-07-22)
- *
- * `workspace` mode denies the WHOLE home directory except the workspace
- * subpath — which is exactly what real, currently-relied-upon commands
- * through `command_execute` don't survive: empirically, under a Seatbelt
- * profile built this way, `gh` fails outright (`open ~/.config/gh/config.yml:
- * operation not permitted`) and `pnpm` fails harder — it needs to both READ
- * `~/.npmrc` / `~/Library/Preferences/pnpm/rc` AND WRITE its self-managed
- * toolchain under `~/Library/pnpm/.tools/...`, and `extraReadPaths` can't fix
- * a write. So flipping the hard default risks silently breaking every
- * gh/pnpm-driven flow that shells through `command_execute` today. See
- * `command-tools.ts`'s `registerCommandTools` for the loud per-call warning
- * this ships instead, and `COMMAND_SANDBOX_MODE_ENV` below for the operator
- * escape hatch into (or out of) confinement without editing the tracked
- * config file.
+ * The Seatbelt profile was validated empirically (2026-07): under it `node`
+ * / `cat` read workspace files fine, `~/.ssh` reads fail with EPERM, and
+ * strict mode makes network connects fail with EPERM. Re-validated 2026-07-22
+ * against a REAL `npx`-spawned adapter child (`@agentclientprotocol/
+ * claude-agent-acp`, the actual `claude-code` AGENT-CLI.md bin): npm's
+ * arborist `lstat`s $HOME itself while resolving config and hard-fails with
+ * EPERM without a metadata-only re-allow across $HOME (see
+ * `buildSeatbeltProfile`) — content read/write and directory listing under
+ * $HOME stay denied; only stat/lstat-class metadata is re-opened.
  */
 
 import { existsSync } from "node:fs"
@@ -61,6 +56,15 @@ export interface CommandSandboxConfig {
 export interface SandboxPolicy {
   workspace: string
   extraReadPaths: string[]
+  /**
+   * Extra absolute paths to grant READ+WRITE access, outside the
+   * workspace — e.g. a toolchain's self-managed install directory
+   * (`~/Library/pnpm/.tools`) or a per-spawn scratch dir created before
+   * the wrap (`CLAUDE_CONFIG_DIR`'s mkdtemp'd settings dir). Unlike
+   * `extraReadPaths`, these are also writable. Defaults to `[]` when
+   * omitted by a caller built against the pre-`extraWritePaths` shape.
+   */
+  extraWritePaths?: string[]
   network: "deny" | "allow"
 }
 
@@ -97,7 +101,7 @@ export const COMMAND_SANDBOX_MODE_ENV = "AGENTPROTO_COMMAND_SANDBOX_MODE"
  * Load + normalize the per-workspace sandbox config. Missing file, bad JSON, or
  * an unknown mode all fall back to `off` (fail-open on config, not on
  * confinement — a broken config must not silently pretend to sandbox; that's
- * surfaced by `command-tools.ts` when a mode is set but no backend exists).
+ * surfaced by the caller when a mode is set but no backend exists).
  * `COMMAND_SANDBOX_MODE_ENV`, when set to a valid mode, overrides whatever the
  * file (or the default) resolved to.
  */
@@ -146,9 +150,12 @@ function sbplQuote(p: string): string {
  * Build a macOS Seatbelt (SBPL) profile for the policy. Strategy: start
  * permissive (`allow default`) so interpreters can read their runtime + system
  * libraries, then DENY the whole home directory (the crown jewels — ~/.ssh,
- * ~/.aws, credentials), then RE-ALLOW the workspace subpath and any explicit
- * extra read paths. SBPL is last-match-wins, so the workspace re-allow overrides
- * the home deny. Strict mode also denies all network. Exported for testing.
+ * ~/.aws, credentials), then RE-ALLOW the workspace subpath, any explicit
+ * extra read paths (read-only), and any explicit extra write paths
+ * (read+write — e.g. a toolchain's self-managed install dir living under
+ * `$HOME`, which a read-only re-allow can't satisfy). SBPL is
+ * last-match-wins, so the workspace/extra re-allows override the home deny.
+ * Strict mode also denies all network. Exported for testing.
  */
 export function buildSeatbeltProfile(policy: SandboxPolicy): string {
   const home = homedir()
@@ -157,10 +164,24 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
     "(version 1)",
     "(allow default)",
     `(deny file-read* file-write* (subpath "${sbplQuote(home)}"))`,
+    // Metadata-only re-allow across all of $HOME (stat/lstat — existence,
+    // permissions, mtime; NOT directory listing or file content, both of
+    // which need file-read-data and stay denied). Empirically required
+    // (2026-07): npm/npx's arborist `lstat`s ancestor directories while
+    // resolving config/paths and hard-fails with EPERM on $HOME itself
+    // otherwise — even for a workspace-cwd invocation that never reads
+    // any OTHER file under $HOME. Without this, no npx-spawned adapter
+    // (claude-agent-acp included) can even start under `workspace` mode.
+    `(allow file-read-metadata (subpath "${sbplQuote(home)}"))`,
     `(allow file-read* file-write* (subpath "${sbplQuote(ws)}"))`,
   ]
   for (const extra of policy.extraReadPaths) {
     parts.push(`(allow file-read* (subpath "${sbplQuote(resolve(extra))}"))`)
+  }
+  for (const extra of policy.extraWritePaths ?? []) {
+    parts.push(
+      `(allow file-read* file-write* (subpath "${sbplQuote(resolve(extra))}"))`,
+    )
   }
   if (policy.network === "deny") parts.push("(deny network*)")
   return parts.join("")
@@ -194,8 +215,11 @@ const BWRAP_SYSTEM_DIRS: readonly string[] = [
  * "deny home except workspace", bwrap is allowlist-by-construction: ONLY the
  * paths bound here are visible, so `$HOME` secrets (~/.ssh, credentials) are
  * simply absent from the mount namespace. System dirs are read-only, the
- * workspace + extra reads are bound, and strict mode adds `--unshare-net` for
- * an isolated (no-connectivity) network namespace. Exported for testing.
+ * workspace + extra reads are bound read-only, extra writes are bound
+ * read-write (`--bind-try`, not `--ro-bind-try` — e.g. a toolchain's
+ * self-managed install dir, or a per-spawn scratch dir that may not exist yet
+ * when the argv is built), and strict mode adds `--unshare-net` for an
+ * isolated (no-connectivity) network namespace. Exported for testing.
  *
  * Empirically validated (2026-07, ubuntu container): workspace reads succeed,
  * `~/.ssh` reads fail (invisible), and `--unshare-net` makes connects fail with
@@ -217,6 +241,10 @@ export function buildBwrapArgs(argv: string[], policy: SandboxPolicy): string[] 
   for (const extra of policy.extraReadPaths) {
     const p = resolve(extra)
     out.push("--ro-bind-try", p, p)
+  }
+  for (const extra of policy.extraWritePaths ?? []) {
+    const p = resolve(extra)
+    out.push("--bind-try", p, p)
   }
   if (policy.network === "deny") out.push("--unshare-net")
   out.push("--", ...argv)
@@ -244,8 +272,8 @@ function bwrapAvailable(): boolean {
 /**
  * The confinement backend available on this host, or `null` when none applies
  * (macOS → Seatbelt, Linux → bubblewrap when installed, Windows unsupported).
- * `command-tools.ts` warns when a sandbox mode is configured but this returns
- * null — so a missing backend never silently pretends to confine.
+ * Callers warn when a sandbox mode is configured but this returns null — so a
+ * missing backend never silently pretends to confine.
  */
 export function resolveCommandSandbox(): CommandSandbox | null {
   if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {

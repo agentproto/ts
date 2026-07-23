@@ -106,6 +106,7 @@
   "dependencies": {
     "@agentproto/acp": "workspace:*",
     "@agentproto/auth": "workspace:*",
+    "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
