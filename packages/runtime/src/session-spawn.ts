@@ -34,7 +34,10 @@ import {
   type AdapterAuthDescriptor,
   type CredentialSource,
 } from "./spawn-defaults.js"
-import { resolveClaudeCodeOauthToken } from "./claude-code-oauth-source.js"
+import {
+  resolveClaudeCodeOauthToken,
+  verifyLocalLoginPresent,
+} from "./claude-code-oauth-source.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -1101,7 +1104,28 @@ export async function spawnAgentSession(
     let subscriptionCredential: string | undefined
     let subscriptionCredentialSource: CredentialSource | undefined
     let apiKeyCredential: string | undefined
-    if (authMode === "subscription" && profile.source !== undefined) {
+    let externalSubscriptionVerified = false
+    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
+    // login file, so a source-backed profile injects NOTHING. Verify the login
+    // is present (fail-loud) and let `resolveAuthSpec` produce a scrub-only
+    // external spec; never resolve/inject a bearer.
+    const externalSub = resolved.authDescriptor.authSubscription?.external === true
+    if (authMode === "subscription" && externalSub) {
+      try {
+        await verifyLocalLoginPresent(profile.source ?? input.adapter, input.adapter)
+        externalSubscriptionVerified = true
+      } catch (err) {
+        if (err instanceof SubscriptionSourceError) {
+          return {
+            ok: false,
+            code: err.code,
+            message: `agent_start: ${err.message}`,
+            details: { adapter: input.adapter, profile: profile.id },
+          }
+        }
+        throw err
+      }
+    } else if (authMode === "subscription" && profile.source !== undefined) {
       try {
         const subResolution = await resolveSubscriptionCredential(
           { source: profile.source },
@@ -1146,6 +1170,7 @@ export async function spawnAgentSession(
         ...(subscriptionCredentialSource !== undefined
           ? { subscriptionCredentialSource }
           : {}),
+        ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
         ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
       })
       if (result) {
@@ -1211,21 +1236,41 @@ export async function spawnAgentSession(
     // above resolves its own `source` the same way, scoped to that branch.
     let subscriptionCredential: string | undefined
     let subscriptionCredentialSource: CredentialSource | undefined
+    let externalSubscriptionVerified = false
+    // File-based (external) subscription — codex/gemini: the CLI reads its OWN
+    // login file, so an explicit subscription opt-in (mode:"subscription" or a
+    // configured source) verifies the login is present (fail-loud) and injects
+    // NOTHING — never routed through resolveSubscriptionCredential (which
+    // resolves+injects a bearer, and would reject a non-Anthropic source). An
+    // unconfigured or api-key codex spawn skips this and stays untouched.
+    const wantsExternalLogin =
+      resolved.authDescriptor.authSubscription?.external === true &&
+      spawnDefaults.auth.explicit &&
+      (spawnDefaults.auth.requestedMode === "subscription" ||
+        spawnDefaults.auth.subscriptionSource !== undefined)
     try {
-      const subResolution = await resolveSubscriptionCredential(
-        {
-          ...(input.auth?.token !== undefined ? { explicitToken: input.auth.token } : {}),
-          ...(spawnDefaults.auth.subscriptionSource !== undefined
-            ? { source: spawnDefaults.auth.subscriptionSource }
-            : {}),
-          ...(spawnDefaults.auth.subscriptionCredential !== undefined
-            ? { fallbackStaticToken: spawnDefaults.auth.subscriptionCredential }
-            : {}),
-        },
-        resolveClaudeCodeOauthToken,
-      )
-      subscriptionCredential = subResolution.credential
-      subscriptionCredentialSource = subResolution.source
+      if (wantsExternalLogin) {
+        await verifyLocalLoginPresent(
+          spawnDefaults.auth.subscriptionSource ?? input.adapter,
+          input.adapter,
+        )
+        externalSubscriptionVerified = true
+      } else {
+        const subResolution = await resolveSubscriptionCredential(
+          {
+            ...(input.auth?.token !== undefined ? { explicitToken: input.auth.token } : {}),
+            ...(spawnDefaults.auth.subscriptionSource !== undefined
+              ? { source: spawnDefaults.auth.subscriptionSource }
+              : {}),
+            ...(spawnDefaults.auth.subscriptionCredential !== undefined
+              ? { fallbackStaticToken: spawnDefaults.auth.subscriptionCredential }
+              : {}),
+          },
+          resolveClaudeCodeOauthToken,
+        )
+        subscriptionCredential = subResolution.credential
+        subscriptionCredentialSource = subResolution.source
+      }
     } catch (err) {
       if (err instanceof SubscriptionSourceError) {
         return {
@@ -1251,6 +1296,7 @@ export async function spawnAgentSession(
         ...(subscriptionCredentialSource !== undefined
           ? { subscriptionCredentialSource }
           : {}),
+        ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
         ...(spawnDefaults.auth.apiKeyCredential !== undefined
           ? { apiKeyConfigCredential: spawnDefaults.auth.apiKeyCredential }
           : {}),

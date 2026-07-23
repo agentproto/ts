@@ -274,4 +274,46 @@ body
       ).toThrow(/AIP-45/)
     })
   })
+
+  describe("authSubscription — bearer vs external (file-based)", () => {
+    it("accepts a bearer subscription (setEnv, no external)", () => {
+      const handle = defineAgentCli(
+        minimal({ provider: "anthropic", authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
+      )
+      expect(handle.authSubscription?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+    })
+
+    it("accepts an external subscription (external:true, no setEnv, conflictEnv scrub)", () => {
+      const handle = defineAgentCli(
+        minimal({
+          provider: "openai",
+          authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
+        }),
+      )
+      expect(handle.authSubscription?.external).toBe(true)
+      expect(handle.authSubscription?.setEnv).toBeUndefined()
+    })
+
+    it("rejects external:true WITH setEnv (an external subscription injects nothing)", () => {
+      expect(() =>
+        defineAgentCli(
+          minimal({
+            provider: "openai",
+            authSubscription: { external: true, setEnv: "OPENAI_API_KEY" },
+          }),
+        ),
+      ).toThrow(/external/)
+    })
+
+    it("rejects a non-external authSubscription with NO setEnv (the bearer needs a var)", () => {
+      expect(() =>
+        defineAgentCli(
+          minimal({
+            provider: "anthropic",
+            authSubscription: {} as unknown as { setEnv: string },
+          }),
+        ),
+      ).toThrow(/setEnv/)
+    })
+  })
 })

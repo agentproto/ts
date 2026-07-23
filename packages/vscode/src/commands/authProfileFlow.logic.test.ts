@@ -154,16 +154,28 @@ describe("buildLocalLoginRequest / LOCAL_LOGIN_RECIPES", () => {
     })
   })
 
-  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code today)", () => {
-    // Codex/Gemini are intentionally absent: the subscription-source mechanism
-    // needs an adapter with an `authSubscription` bearer env, which only
-    // claude-code declares. Surfacing them would create profiles that dead-end
-    // at spawn (see LOCAL_LOGIN_RECIPES' doc).
-    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual(["claude-code-oauth"])
+  it("builds the exact Codex file-based source-backed request", () => {
+    const codex = LOCAL_LOGIN_RECIPES.find(r => r.source === "codex")!
+    expect(buildLocalLoginRequest(codex)).toEqual({
+      id: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      label: "My Codex login",
+    })
+  })
+
+  it("only lists source-backed logins the runtime can resolve at spawn (Claude Code + Codex)", () => {
+    // Claude Code (bearer-injection) and Codex (file-based/external) both have a
+    // runtime path now. Gemini stays absent until a native adapter declares the
+    // same external authSubscription (see LOCAL_LOGIN_RECIPES' doc).
+    expect(LOCAL_LOGIN_RECIPES.map(r => r.source)).toEqual(["claude-code-oauth", "codex"])
+    expect(LOCAL_LOGIN_RECIPES.some(r => r.source === "gemini")).toBe(false)
     for (const r of LOCAL_LOGIN_RECIPES) {
       expect(r.method).toBe("oauth-bearer")
       const req = buildLocalLoginRequest(r)
       expect(req.source).toBe(r.source)
+      // A source-backed profile never carries a pasted credential.
       expect(req.credential).toBeUndefined()
     }
     const ids = LOCAL_LOGIN_RECIPES.map(r => r.id)

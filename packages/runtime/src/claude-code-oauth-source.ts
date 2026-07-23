@@ -16,6 +16,7 @@ import {
   resolveRecipeMethod,
   resolveSourceSpec,
 } from "@agentproto/secrets/provision/recipe"
+import { SubscriptionSourceError } from "./spawn-defaults.js"
 
 /**
  * Resolve a provision recipe's default method to a plaintext credential. `id`
@@ -27,4 +28,40 @@ import {
 export async function resolveClaudeCodeOauthToken(id: string): Promise<string> {
   const { method } = resolveRecipeMethod(id)
   return (await resolveSourceSpec(method.source)).trim()
+}
+
+/**
+ * Verify a FILE-BASED (external) subscription login is actually present before
+ * a spawn commits to it — the money-safety net for codex/gemini "use my
+ * existing login". Unlike {@link resolveClaudeCodeOauthToken}, the resolved
+ * value is DISCARDED: an external subscription injects no bearer (the CLI reads
+ * its own login file), so we only need to confirm the file exists and carries a
+ * token. Fails LOUD ({@link SubscriptionSourceError}) if the recipe's login
+ * source resolves to nothing — refusing the spawn rather than letting the CLI
+ * silently fall back to api-key billing under a "subscription" label. `recipeId`
+ * is the provision-recipe id (e.g. `"codex"` → `~/.codex/auth.json`);
+ * `adapterSlug` only shapes the actionable error message.
+ */
+export async function verifyLocalLoginPresent(
+  recipeId: string,
+  adapterSlug: string,
+): Promise<void> {
+  let token: string
+  try {
+    const { method } = resolveRecipeMethod(recipeId)
+    token = (await resolveSourceSpec(method.source)).trim()
+  } catch (err) {
+    throw new SubscriptionSourceError(
+      "auth_source_unresolved",
+      `no ${adapterSlug} login found — run \`${adapterSlug} login\` and sign in ` +
+        `with your subscription first (${err instanceof Error ? err.message : String(err)}).`,
+    )
+  }
+  if (!token) {
+    throw new SubscriptionSourceError(
+      "auth_source_unresolved",
+      `no ${adapterSlug} login found — run \`${adapterSlug} login\` and sign in ` +
+        `with your subscription first.`,
+    )
+  }
 }

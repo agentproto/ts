@@ -40,9 +40,18 @@ vi.mock("../workspaces-config.js", async (importOriginal) => {
 // self-refreshing source path — so these tests never touch the real Keychain.
 const oauthState = vi.hoisted(() => ({
   impl: (async (_id: string) => "sk-ant-oat01-fresh-from-keychain") as (id: string) => Promise<string>,
+  // File-based (external) login presence check — default: login present (void).
+  // A test sets `verifyImpl` to throw a SubscriptionSourceError to exercise the
+  // fail-loud "not logged in" path.
+  verifyImpl: (async (_recipeId: string, _slug: string) => {}) as (
+    recipeId: string,
+    slug: string,
+  ) => Promise<void>,
 }))
 vi.mock("../claude-code-oauth-source.js", () => ({
   resolveClaudeCodeOauthToken: (id: string) => oauthState.impl(id),
+  verifyLocalLoginPresent: (recipeId: string, slug: string) =>
+    oauthState.verifyImpl(recipeId, slug),
 }))
 
 // Control named auth-profile resolution (`access.profileRef`) deterministically
@@ -69,6 +78,7 @@ vi.mock("@agentproto/auth", async importOriginal => {
 
 import { spawnAgentSession, cleanAgentLines, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
+import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -2369,5 +2379,135 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     if (result.ok) throw new Error("expected failure")
     expect(result.code).toBe("access_profile_ineligible")
     expect(registry.list()).toHaveLength(0)
+  })
+})
+
+// "Use my existing Codex login" — a FILE-BASED (external) subscription. The
+// codex adapter declares `authSubscription: { external: true }`: the CLI reads
+// its own ~/.codex/auth.json, so the daemon injects NOTHING — it verifies the
+// login is present (fail-loud) and echoes `cli-local-login`. Money-safety: the
+// resolved spec never carries a bearer, so nothing can land in an api-key var.
+describe("spawnAgentSession — codex file-based (external) subscription login", () => {
+  const CODEX_EXTERNAL_DESCRIPTOR: AdapterAuthDescriptor = {
+    provider: "openai",
+    authSubscription: {
+      external: true,
+      conflictEnv: ["CODEX_API_KEY"],
+    },
+  }
+
+  function authDeps() {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+      authDescriptor: CODEX_EXTERNAL_DESCRIPTOR,
+    })
+    return baseDeps({ resolveAgentAdapter })
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    oauthState.verifyImpl = async () => {}
+  })
+
+  it("config-defaults `auth.source: codex` + login present ⇒ subscription, cli-local-login, no bearer injected", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+      auth: { source: "codex" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    // No env var is SET — the CLI reads its own login file.
+    expect(result.descriptor.auth?.setEnv).toBe("")
+    expect(result.descriptor.auth?.fingerprint).toBe("subscription · local-login")
+    // The login was verified against the `codex` recipe.
+    expect(verify).toHaveBeenCalledWith("codex", "codex")
+  })
+
+  it("`auth.mode: subscription` with no source verifies against the adapter slug", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+      auth: { mode: "subscription" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("codex", "codex")
+  })
+
+  it("login NOT present ⇒ loud spawn failure (auth_source_unresolved), no session, nothing injected", async () => {
+    oauthState.verifyImpl = async () => {
+      throw new SubscriptionSourceError(
+        "auth_source_unresolved",
+        "no codex login found — run `codex login` and sign in with your subscription first.",
+      )
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+      auth: { source: "codex" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_source_unresolved")
+    expect(result.message).toMatch(/no codex login found/)
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("a source-backed codex PROFILE (endpoint openai / oauth-bearer) resolves the external login", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    authProfileState.profiles["codex-local"] = {
+      id: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      label: "My Codex login",
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+      access: { profileRef: "codex-local" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.auth?.mode).toBe("subscription")
+    expect(result.descriptor.auth?.credentialSource).toBe("cli-local-login")
+    expect(verify).toHaveBeenCalledWith("codex", "codex")
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "codex-local",
+      endpoint: "openai",
+      method: "oauth-bearer",
+    })
+  })
+
+  it("an unconfigured codex spawn stays ambient — no external login verified, no auth echo engaged", async () => {
+    const verify = vi.fn(async () => {})
+    oauthState.verifyImpl = verify
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "codex",
+      cwd: "/tmp",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Not explicit ⇒ the login is never verified and nothing is stamped as a
+    // used local login (codex uses its own auth.json precedence).
+    expect(verify).not.toHaveBeenCalled()
+    expect(result.descriptor.auth?.credentialSource).not.toBe("cli-local-login")
   })
 })

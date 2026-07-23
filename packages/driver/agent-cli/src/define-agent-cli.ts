@@ -207,6 +207,18 @@ export function createAgentCliRuntime(
         for (const key of authSpec.unsetEnv) {
           if (!(key in composed.env)) delete env[key]
         }
+        // File-based (external) subscription — codex/gemini: the CLI reads its
+        // OWN local-login file (`~/.codex/auth.json`, …), so there is no bearer
+        // to inject and no credential to fail-fast on. The scrub above (the
+        // api-key vars) is the whole job: it stops a leftover OPENAI_API_KEY /
+        // GEMINI_API_KEY from silently flipping the CLI to api-key billing under
+        // a "subscription" label. Money-safe by construction — NOTHING is set
+        // into any env var, so an OAuth bearer can never land in an api-key
+        // channel. The host already verified the login is present (fail-loud)
+        // before resolving this spec.
+        // An external subscription stops here: the scrub above is the entire
+        // effect. Only the inject-a-credential path continues below.
+        if (!authSpec.externalCredential) {
         // Fail-fast: the credential is resolved by the HOST from a named
         // config/store ref, never read ambiently — if it didn't resolve,
         // refuse the spawn rather than silently falling back to another or an
@@ -242,6 +254,7 @@ export function createAgentCliRuntime(
           throw new RuntimeConfigError("missing_auth_credential", "opts.auth.credential", message)
         }
         env[authSpec.setEnv] = authSpec.credential
+        }
       }
 
       Object.assign(env, opts?.env ?? {})

@@ -252,9 +252,13 @@ export interface AdapterAuthDescriptor {
    *  #312 fail-fast); `"when-configured"` (default) only when `explicit`. */
   authEnforce?: "always" | "when-configured"
   /** Subscription (OAuth/bearer) support. Presence ⇒ the adapter supports
-   *  `"subscription"` mode. Mirrors the driver's `AgentCliAuthSubscription`. */
+   *  `"subscription"` mode. Mirrors the driver's `AgentCliAuthSubscription`.
+   *  `external: true` (codex/gemini) ⇒ file-based: the CLI reads its own
+   *  local-login file, so `setEnv` is absent and the runtime injects NO
+   *  bearer — it only scrubs the conflicting api-key vars. */
   authSubscription?: {
-    setEnv: string
+    setEnv?: string
+    external?: boolean
     conflictEnv?: string[]
     unsetEnvAdd?: string[]
   }
@@ -285,6 +289,11 @@ export interface ResolvedAuthSpec {
    *  root cause of a zero-credential user being told to buy a subscription
    *  they never asked for. */
   neitherConfigured?: boolean
+  /** File-based subscription (see `AdapterAuthDescriptor.authSubscription.
+   *  external`): the CLI reads its OWN local-login file, so the driver injects
+   *  NO credential — it only applies {@link unsetEnv} and does NOT fail-fast on
+   *  a missing `credential`. Money-safe: no bearer ever reaches an env var. */
+  externalCredential?: boolean
   /** Non-authenticating hint: true when `providers.json` HAS a key for the
    *  resolved provider that is currently being ignored because auth isn't
    *  explicitly configured (no `defaults.adapters.<slug>.auth` block — the
@@ -302,11 +311,15 @@ export interface ResolvedAuthSpec {
 /** Where the resolved credential came from — the observable billing axis
  *  (DECISION 10②), never inferred. `"claude-code-oauth"` is the Mode-3
  *  self-refreshing source: the subscription bearer was read fresh from the
- *  local Claude Code login via the `claude-code-oauth` provision recipe. */
+ *  local Claude Code login via the `claude-code-oauth` provision recipe.
+ *  `"cli-local-login"` is the file-based (external) subscription: the CLI
+ *  (codex/gemini) reads its OWN local-login file — the runtime injected no
+ *  bearer, it only verified the login is present and scrubbed api-key vars. */
 export type CredentialSource =
   | "explicit-config"
   | "providers-store"
   | "claude-code-oauth"
+  | "cli-local-login"
   | "none"
 
 /**
@@ -358,6 +371,13 @@ export interface ResolveAuthSpecInput {
    *  for the echo; NEVER affects mode/credential selection. Omitted ⇒ the
    *  subscription credential (if any) is treated as `"explicit-config"`. */
   subscriptionCredentialSource?: CredentialSource
+  /** File-based subscription only: the caller (impure) verified the CLI's OWN
+   *  local-login file is present (e.g. `~/.codex/auth.json` has a subscription
+   *  token) and fails LOUD before reaching here if not. Makes an `external`
+   *  `authSubscription` count as an available subscription for ordered-mode
+   *  selection — the login file IS the credential, even though the runtime
+   *  injects no bearer. Ignored for a non-external (bearer) authSubscription. */
+  externalSubscriptionVerified?: boolean
   /** Explicit api-key credential from config, if configured. */
   apiKeyConfigCredential?: string
   /** api-key credential from `providers.json` (fetched by the caller). */
@@ -428,7 +448,14 @@ export function resolveAuthSpec(
   const supportsSub = sub !== undefined && gatewayRoute === undefined
   const enforce = input.descriptor.authEnforce ?? "when-configured"
 
-  const subCredAvailable = input.subscriptionCredential !== undefined
+  // File-based (external) subscription (codex/gemini): the CLI reads its OWN
+  // local-login file, so there is no bearer to inject. The login file IS the
+  // credential — availability comes from the caller's fail-loud presence check
+  // (`externalSubscriptionVerified`), NOT from an injected token.
+  const external = supportsSub && sub?.external === true
+  const subCredAvailable =
+    input.subscriptionCredential !== undefined ||
+    (external && input.externalSubscriptionVerified === true)
   const apiCredAvailable =
     input.apiKeyConfigCredential !== undefined || input.apiKeyStoreCredential !== undefined
 
@@ -467,10 +494,24 @@ export function resolveAuthSpec(
   let setEnv: string
   let credential: string | undefined
   let credentialSource: CredentialSource
-  if (mode === "subscription") {
+  let externalCredential = false
+  if (mode === "subscription" && external) {
+    // File-based: inject NOTHING (setEnv empty). The credential lives in the
+    // CLI's own login file; the source label records that for the echo. The
+    // scrub below still removes the api-key vars so a leftover key can't flip
+    // billing. Money-safe by construction — no bearer is ever set. When the
+    // login was NOT verified (the unconfigured ordered-preference fallback,
+    // which the driver never engages because it isn't explicit), the echo
+    // stays honest as "none" rather than claiming a local login was used.
+    setEnv = ""
+    credential = undefined
+    credentialSource = subCredAvailable ? "cli-local-login" : "none"
+    externalCredential = true
+  } else if (mode === "subscription") {
     // Guaranteed present: the explicit path validated supportsSub, and the
-    // ordered path only yields "subscription" when supportsSub.
-    setEnv = sub!.setEnv
+    // ordered path only yields "subscription" when supportsSub. A bearer
+    // (non-external) authSubscription always declares setEnv (schema-enforced).
+    setEnv = sub!.setEnv!
     credential = input.subscriptionCredential
     credentialSource =
       credential !== undefined
@@ -504,7 +545,7 @@ export function resolveAuthSpec(
 
   const credVars = new Set<string>([apiKeyEnv])
   if (sub) {
-    credVars.add(sub.setEnv)
+    if (sub.setEnv) credVars.add(sub.setEnv)
     for (const c of sub.conflictEnv ?? []) credVars.add(c)
   }
   credVars.delete(setEnv)
@@ -518,6 +559,7 @@ export function resolveAuthSpec(
     unsetEnv,
     explicit: input.explicit,
     enforce,
+    ...(externalCredential ? { externalCredential: true } : {}),
     ...(neitherConfigured ? { neitherConfigured } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
   }
@@ -526,9 +568,15 @@ export function resolveAuthSpec(
     authMode: mode,
     credentialSource,
     setEnv,
+    // A verified file-based login has no injected credential to fingerprint, so
+    // carry a NON-SECRET marker (`subscription · local-login`) instead — it lets
+    // the descriptor echo record the spawn for verifiability (same guard as a
+    // real fingerprint) without inventing a fake secret shape.
     ...(credential !== undefined
       ? { fingerprint: credentialFingerprint(mode, credential) }
-      : {}),
+      : credentialSource === "cli-local-login"
+        ? { fingerprint: `${mode} · local-login` }
+        : {}),
   }
   return { spec, echo }
 }
