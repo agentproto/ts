@@ -2989,17 +2989,20 @@ async function handleSessions(
     return true
   }
 
-  // GET /usage/rollup?window=<w>&profileRef=<ref> — local-derived, provider-
-  // agnostic spend estimate over a rolling window, aggregated from the durable
-  // per-session usage_snapshot records. Full daemon view (REST has no
+  // GET /usage/rollup?window=<w>&profileRef=<ref>&probe=<bool> — local-derived,
+  // provider-agnostic spend estimate over a rolling window, aggregated from the
+  // durable per-session usage_snapshot records. Full daemon view (REST has no
   // callerScope / subtree scoping). Same collector + reducer the `usage_rollup`
-  // MCP tool uses, so the two surfaces can't drift.
+  // MCP tool uses, so the two surfaces can't drift. `probe=true` opts into a
+  // live provider refresh of `byProfile[].remaining` (default: side-effect-free,
+  // last-seen only).
   if (path === "/usage/rollup" && req.method === "GET") {
     const reqUrl = req.url ?? ""
     const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
     const params = new URLSearchParams(queryString)
     const window = params.get("window") ?? ""
     const profileRef = params.get("profileRef") ?? undefined
+    const probe = params.get("probe") === "true"
     const parsed = parseWindow(window)
     if ("error" in parsed) {
       json(400, { error: "invalid_window", message: parsed.error })
@@ -3012,7 +3015,7 @@ async function handleSessions(
     const baseRollup = rollupUsage(sessions, { window, nowMs: Date.now() })
     // Best-effort per-provider "remaining quota" enrichment — never fatal:
     // any failure returns the un-enriched rollup unchanged.
-    const rollup = await enrichRollupWithProviderQuota(baseRollup, window)
+    const rollup = await enrichRollupWithProviderQuota(baseRollup, window, { probe })
     json(200, rollup)
     return true
   }

@@ -145,6 +145,14 @@ function pickWindow(windows: WindowQuotas, window: string): RemainingQuota | und
  *  a real default so the wired surfaces just `new AnthropicRemainingQuotaReader()`;
  *  tests inject a fake `fetchImpl`/`resolveToken` and a temp store `dir`. */
 export interface AnthropicReaderConfig {
+  /** Whether to make a live network probe to refresh the rate-limit headers.
+   *  Default FALSE — a spend-REPORT read (`usage_rollup`) must be
+   *  side-effect-free, so by default the reader returns only the last-seen
+   *  value from the store and NEVER touches the network. Set true (opt-in, via
+   *  the surface `probe` flag) to make a minimal metadata call that refreshes
+   *  the store; that call also consumes a sliver of the profile's OWN
+   *  rate-limit budget, which is why it is never the default. */
+  liveProbe?: boolean
   /** Fetch used for the live header probe. Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch
   /** Endpoint probed for rate-limit headers. Defaults to the Anthropic
@@ -174,13 +182,17 @@ const ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20"
 
 /**
  * Anthropic reader. Handles ONLY `endpoint === "anthropic"`. The load-bearing,
- * tested parts are the parse (above) and the store round-trip; the live fetch
- * is an optional best-effort layer that resolves a Claude Code OAuth bearer,
- * probes the messages endpoint for its rate-limit headers under a short
- * timeout, persists whatever it parses, and — on ANY failure — falls back to
- * the last-seen store value (or undefined). It never throws and never blocks.
+ * tested parts are the parse (above) and the store round-trip. The live fetch
+ * is an OPT-IN (`liveProbe`, default off) best-effort layer that resolves a
+ * Claude Code OAuth bearer, probes the messages endpoint for its rate-limit
+ * headers under a short timeout, persists whatever it parses, and — on ANY
+ * failure — falls back to the last-seen store value (or undefined). With
+ * `liveProbe` off (the default for a spend-report read) the reader is
+ * side-effect-free: it makes NO network call and returns only the stored
+ * last-seen value. It never throws and never blocks.
  */
 export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
+  private readonly liveProbe: boolean
   private readonly fetchImpl: typeof fetch
   private readonly endpointUrl: string
   private readonly timeoutMs: number
@@ -190,6 +202,7 @@ export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
   private readonly now: () => Date
 
   constructor(config?: AnthropicReaderConfig) {
+    this.liveProbe = config?.liveProbe ?? false
     this.fetchImpl = config?.fetchImpl ?? fetch
     this.endpointUrl = config?.endpointUrl ?? DEFAULT_ENDPOINT_URL
     this.timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -236,6 +249,10 @@ export class AnthropicRemainingQuotaReader implements RemainingQuotaReader {
   private async fetchHeaders(
     profile: QuotaReadableProfile,
   ): Promise<Headers | undefined> {
+    // Opt-in only: a spend-report read is side-effect-free by default, so the
+    // live network probe fires ONLY when the caller explicitly asked for it
+    // (`probe: true` on the surface). Off → store-only fallback below.
+    if (!this.liveProbe) return undefined
     // Only the self-refreshing Claude Code OAuth source yields a bearer we can
     // resolve in-process. Everything else → no live probe (store fallback).
     if (profile.method !== "oauth-bearer" || profile.source !== "claude-code-oauth") {

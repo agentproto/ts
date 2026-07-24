@@ -118,6 +118,7 @@ describe("AnthropicRemainingQuotaReader", () => {
 
   it("happy path: live fetch returns the requested window and persists it", async () => {
     const reader = new AnthropicRemainingQuotaReader({
+      liveProbe: true,
       fetchImpl: fetchWithHeaders({
         "anthropic-ratelimit-unified-5h-remaining": "50",
         "anthropic-ratelimit-unified-5h-reset": "1753336800",
@@ -143,6 +144,7 @@ describe("AnthropicRemainingQuotaReader", () => {
       return new Response(null, { status: 200 })
     }
     const reader = new AnthropicRemainingQuotaReader({
+      liveProbe: true,
       fetchImpl: spyFetch as unknown as typeof fetch,
       resolveToken: async () => "fake-bearer",
       store: { dir },
@@ -169,6 +171,7 @@ describe("AnthropicRemainingQuotaReader", () => {
       { dir },
     )
     const reader = new AnthropicRemainingQuotaReader({
+      liveProbe: true,
       fetchImpl: throwingFetch(),
       resolveToken: async () => "fake-bearer",
       store: { dir },
@@ -179,6 +182,7 @@ describe("AnthropicRemainingQuotaReader", () => {
 
   it("fetch throws with no stored value → undefined (never throws)", async () => {
     const reader = new AnthropicRemainingQuotaReader({
+      liveProbe: true,
       fetchImpl: throwingFetch(),
       resolveToken: async () => "fake-bearer",
       store: { dir },
@@ -188,6 +192,7 @@ describe("AnthropicRemainingQuotaReader", () => {
 
   it("token resolution failure → no live fetch, store fallback (never throws)", async () => {
     const reader = new AnthropicRemainingQuotaReader({
+      liveProbe: true,
       fetchImpl: fetchWithHeaders({
         "anthropic-ratelimit-unified-5h-remaining": "99",
         "anthropic-ratelimit-unified-5h-reset": "1753336800",
@@ -199,5 +204,48 @@ describe("AnthropicRemainingQuotaReader", () => {
     })
     // No token ⇒ no live probe ⇒ nothing stored ⇒ undefined, and no throw.
     await expect(reader.readRemainingQuota(OAUTH_PROFILE, "5h")).resolves.toBeUndefined()
+  })
+
+  it("default (probe off): NO network call — reports only the stored last-seen", async () => {
+    // Seed a last-seen value; the default reader must return it WITHOUT fetching.
+    await recordProfileQuota(
+      {
+        profileRef: "max",
+        windows: {
+          "5h": { window: "5h", remaining: 7, resetsAt: "2026-07-24T05:00:00.000Z", basis: "provider" },
+        },
+        fetchedAt: "2026-07-23T00:00:00.000Z",
+      },
+      { dir },
+    )
+    let fetched = false
+    const spyFetch = async (): Promise<Response> => {
+      fetched = true
+      return new Response(null, { status: 200 })
+    }
+    // No `liveProbe` ⇒ side-effect-free: store-only, never touches the network.
+    const reader = new AnthropicRemainingQuotaReader({
+      fetchImpl: spyFetch as unknown as typeof fetch,
+      resolveToken: async () => "fake-bearer",
+      store: { dir },
+    })
+    const out = await reader.readRemainingQuota(OAUTH_PROFILE, "5h")
+    expect(out?.remaining).toBe(7)
+    expect(fetched).toBe(false)
+  })
+
+  it("default (probe off) with no stored value → undefined, no network call", async () => {
+    let fetched = false
+    const spyFetch = async (): Promise<Response> => {
+      fetched = true
+      return new Response(null, { status: 200 })
+    }
+    const reader = new AnthropicRemainingQuotaReader({
+      fetchImpl: spyFetch as unknown as typeof fetch,
+      resolveToken: async () => "fake-bearer",
+      store: { dir },
+    })
+    expect(await reader.readRemainingQuota(OAUTH_PROFILE, "5h")).toBeUndefined()
+    expect(fetched).toBe(false)
   })
 })

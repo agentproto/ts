@@ -159,11 +159,11 @@ function toQuotaReadableProfile(profile: AuthProfile): QuotaReadableProfile {
 
 /**
  * Surface-shared, fully non-fatal wrapper both the `usage_rollup` MCP tool and
- * `GET /usage/rollup` call after `rollupUsage`. Instantiates the default
- * (real-fetch) Anthropic reader, resolves the auth profiles once, and enriches
- * — but if ANYTHING throws (profile load, reader construction, enrichment) it
- * returns the original rollup untouched. The rollup NEVER depends on this
- * succeeding.
+ * `GET /usage/rollup` call after `rollupUsage`. Instantiates the Anthropic
+ * reader (side-effect-free unless `deps.probe` opts into a live refresh),
+ * resolves the auth profiles once, and enriches — but if ANYTHING throws
+ * (profile load, reader construction, enrichment) it returns the original
+ * rollup untouched. The rollup NEVER depends on this succeeding.
  *
  * `deps` is injectable purely for tests; production passes nothing.
  */
@@ -174,10 +174,15 @@ export async function enrichRollupWithProviderQuota(
     reader?: RemainingQuotaReader
     loadProfiles?: () => Promise<AuthProfile[]>
     timeoutMs?: number
+    /** Opt in to a live provider refresh. Default false = side-effect-free
+     *  (last-seen store values only); the reporting read never makes a
+     *  provider call unless the caller explicitly asked. */
+    probe?: boolean
   },
 ): Promise<UsageRollup> {
   try {
-    const reader = deps?.reader ?? new AnthropicRemainingQuotaReader()
+    const reader =
+      deps?.reader ?? new AnthropicRemainingQuotaReader({ liveProbe: deps?.probe ?? false })
     const profiles = await (deps?.loadProfiles ?? (() => listAuthProfiles()))()
     const byId = new Map(profiles.map(p => [p.id, p]))
     return await enrichWithRemainingQuota(rollup, {

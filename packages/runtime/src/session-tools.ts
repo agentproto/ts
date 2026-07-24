@@ -505,6 +505,18 @@ export function registerSessionTools(
         .string()
         .optional()
         .describe("Filter to a single auth profile by its `profileRef`."),
+      probe: z
+        .boolean()
+        .optional()
+        .describe(
+          "Opt in to a LIVE provider refresh of `byProfile[].remaining`. " +
+            "Default false — this read is side-effect-free and reports only " +
+            "the last-seen provider value (or omits `remaining` when none is " +
+            "known; never fabricated). When true, a best-effort minimal " +
+            "metadata call is made per Anthropic OAuth profile to refresh the " +
+            "value; that call consumes a sliver of that profile's OWN " +
+            "rate-limit budget and never blocks or fails the rollup.",
+        ),
     },
     async input => {
       const parsed = parseWindow(input.window)
@@ -536,7 +548,9 @@ export function registerSessionTools(
       const baseRollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
       // Best-effort per-provider "remaining quota" enrichment — never fatal:
       // any failure returns the un-enriched rollup unchanged.
-      const rollup = await enrichRollupWithProviderQuota(baseRollup, input.window)
+      const rollup = await enrichRollupWithProviderQuota(baseRollup, input.window, {
+        probe: input.probe ?? false,
+      })
       // Prune the breakdowns not requested; always keep total + window metadata.
       let result: unknown = rollup
       if (input.groupBy) {
