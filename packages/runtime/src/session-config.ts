@@ -33,6 +33,12 @@
  */
 
 import { inferLegacyModeKind } from "@agentproto/driver-agent-cli"
+// A `type`-only import (erased at compile — no runtime edge). `CostBudget` is a
+// pure record in `@agentproto/auth`, a package strictly BELOW runtime in the
+// layer stack (and already a workspace dependency, `package.json`), so naming
+// its windowed-spend type here — unlike the structurally-mirrored `AuthMethod`
+// facet below — takes no value dependency and cannot introduce a cycle.
+import type { CostBudget } from "@agentproto/auth"
 
 /**
  * Reasoning / compute budget label.
@@ -128,6 +134,14 @@ export interface SessionConfig {
   posture?: Posture
   /** What enters context. */
   contextProfile?: ContextProfile
+  /** Windowed cost-budget cap (SPEC §1c). A RESTART-only axis: it is read at
+   *  spawn time to auto-attach a governance policy that trips `policy:failed`
+   *  when the session's (or its profile's) ROLLING windowed spend crosses the
+   *  cap. DISTINCT from the scalar `maxCostUsd` session-kill — a `costBudget`
+   *  never kills the session, it only trips a policy. The record lives in
+   *  `@agentproto/auth` (`CostBudget { maxCostUsd, window, scope }`). Omit ⇒ no
+   *  windowed budget. */
+  costBudget?: CostBudget
   /** Adapter harness slug — the canonical name for the adapter that runs the
    *  session (e.g. 'claude-code', 'hermes'). This is the same value historically
    *  carried on the wire as `adapter` / `adapterSlug`; the `harness` field is the

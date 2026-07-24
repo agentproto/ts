@@ -1347,6 +1347,9 @@ export async function createGateway(
       registry: sessions,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
+      // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
+      // windowed cost-budget governance policy on the spawned session.
+      supervisor,
       buildOrchestratorMcp: orchestratorInjector,
       // Same `?callerSessionId=` query that attributes `command_execute` back
       // to the calling session (above) — here it's the implicit auto-parent so
@@ -1824,3 +1827,13 @@ async function runBoot(
     durationMs: 0,
   })
 }
+
+// ── Windowed cost-budget caps (phase 4) ──────────────────────────────────────
+// The pure decision helper + its result type, plus a re-export of the shared
+// `CostBudget`/`CostBudgetScope` record from `@agentproto/auth` so a runtime
+// consumer needn't reach into the auth package for the type. Placed at the end
+// of the file (not beside the usage-rollup exports) to avoid colliding with a
+// parallel edit in that region.
+export { evaluateCostBudget } from "./cost-budget.js"
+export type { CostBudgetDecision } from "./cost-budget.js"
+export type { CostBudget, CostBudgetScope } from "@agentproto/auth"

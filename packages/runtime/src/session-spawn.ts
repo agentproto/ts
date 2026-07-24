@@ -53,6 +53,7 @@ import {
   KeychainStore,
   type AuthMethod,
   type AdapterAuthManifest,
+  type CostBudget,
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
 import { resolvePosture } from "./canonical-posture.js"
@@ -380,6 +381,11 @@ export interface SpawnAgentSessionInput {
   notifyUrl?: string
   wait?: boolean
   maxCostUsd?: number
+  /** Windowed cost-budget cap (phase 4). DISTINCT from the scalar `maxCostUsd`
+   *  session-kill: this is recorded on the descriptor/runtime and drives an
+   *  auto-attached governance policy (`policy:failed` on windowed overage) — it
+   *  never kills the session. Omit ⇒ no windowed budget. */
+  costBudget?: CostBudget
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -1681,6 +1687,7 @@ export async function spawnAgentSession(
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+      ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,
