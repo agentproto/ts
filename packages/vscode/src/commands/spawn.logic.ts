@@ -16,6 +16,7 @@ import type {
   CatalogRoute,
   CatalogVendor,
   RouteSpec,
+  SessionDescriptor,
   UserPreset,
   WorkspacesConfig,
 } from "../client/types.js"
@@ -149,6 +150,11 @@ const SEPARATOR_KIND = -1
 export interface SpawnQuickPickItem {
   label: string
   description?: string
+  /** The row's second, taller line (vscode's `QuickPickItem.detail`). Set on
+   *  the rich one-click rows (favorites / recent) so a whole combo —
+   *  harness · model · provider · where/when — reads at a glance instead of a
+   *  slim single line. Absent on the drill-down/heading rows. */
+  detail?: string
   /** Set only on a group-heading row (`SEPARATOR_KIND`) — vscode ignores
    *  every other field when this is set, and the row can't be picked. */
   kind?: number
@@ -162,6 +168,20 @@ export interface SpawnQuickPickItem {
   mode?: string
   /** Row asks for a typed-in model id instead of spawning immediately. */
   custom?: boolean
+  /** Entry-picker harness row: selecting it narrows to that harness's models
+   *  (mapHarnessCatalogModelItems) rather than spawning — the drill-down step,
+   *  not a leaf. Carries `adapter` (the harness) and no model. */
+  harness?: boolean
+  /** A one-click "latest used" row (deriveRecentSpawns): carries the full combo
+   *  — adapter/model/mode/route/accessProfileRef — so it spawns immediately,
+   *  reusing the exact wallet the past session billed (no route-access prompt). */
+  recent?: boolean
+  /** The named auth profile to bill, carried on a recent row so its wallet is
+   *  reused verbatim (SessionAccessProfileEcho.profileRef). */
+  accessProfileRef?: string
+  /** Entry-picker "Browse all models…" row: opens the harness drill-down for a
+   *  combo not in favorites/recent. */
+  browse?: boolean
   /** The row opens the full mode/cwd/label/prompt chain unchanged. */
   configure?: boolean
   /** Set when this row spawns a saved user preset — see mapPresetQuickPickItems. */
@@ -247,44 +267,315 @@ export function mapSpawnQuickPickItems(adapters: SpawnAdapterInfo[]): SpawnQuick
 
 // ── Catalog-based spawn picker (SPEC §5) ────────────────────────────────────
 
+/** Bottom section heading for models with no connected wallet to bill them. */
+export const NEEDS_PROFILE_SECTION_LABEL = "Needs a profile"
+
 /**
- * Build spawn picker items from the daemon's unified model catalog instead
- * of adapter manifest `models.allowed[]`. Groups by vendor, shows runnable
- * status, and carries route info for spawn-time routing.
+ * The one route to represent a product in the collapsed spawn picker.
  *
- * Every runnable model gets one row per route; non-runnable models are shown
- * with a "(no profile)" description so the user sees the gap rather than
- * a mysteriously missing model. The first adapter in the route's `adapters`
- * list is used as the default harness.
+ * A product is offered on many routes (native, openrouter, requesty, …) and
+ * the old picker emitted a row for EVERY (product × route) pair — the same
+ * model repeated once per gateway, most of them `runnable: false` "no
+ * profile" rows for wallets the user never connected. That combinatorial
+ * flood is the whole complaint this collapse fixes: one row per product, on
+ * its best route. "Best" = runnable beats non-runnable (you can spawn it now),
+ * then curated beats uncurated (the vendor's blessed path), then first-seen —
+ * so a model you can run today surfaces on the route that actually bills.
+ * Alternate routes aren't lost: the session's route chip switches gateway
+ * after spawn (sessionConfig.logic.ts resolveRouteRows).
+ */
+export function pickPrimaryRoute(routes: CatalogRoute[]): CatalogRoute | undefined {
+  const rank = (r: CatalogRoute): number => (r.runnable ? 0 : 2) + (r.curated ? 0 : 1)
+  return routes
+    .map((route, index) => ({ route, index }))
+    .sort((a, b) => rank(a.route) - rank(b.route) || a.index - b.index)
+    .map(({ route }) => route)[0]
+}
+
+/**
+ * Build spawn picker items from the daemon's unified model catalog. ONE row
+ * per product (see pickPrimaryRoute — routes are collapsed, not fanned out),
+ * split into two sections: the models you can spawn right now, grouped under
+ * their vendor heading, then a single deprioritized "Needs a profile" section
+ * for products whose best route has no connected wallet — shown (never hidden:
+ * the gap is named, SPEC §6 rule 5) but swept out of the way so the runnable
+ * models read first. The first adapter in the route's `adapters` list is the
+ * default harness; the row still carries model/mode/route/eligibleProfiles so
+ * a non-runnable pick routes straight to the connect-a-profile flow.
  */
 export function mapCatalogSpawnQuickPickItems(catalog: CatalogModelsResponse): SpawnQuickPickItem[] {
-  const items: SpawnQuickPickItem[] = []
+  const runnableByVendor: { vendor: string; rows: SpawnQuickPickItem[] }[] = []
+  const needsProfile: SpawnQuickPickItem[] = []
 
   for (const vendor of catalog.vendors) {
-    items.push({ label: vendor.vendor, kind: SEPARATOR_KIND })
+    const runnableRows: SpawnQuickPickItem[] = []
 
     for (const product of vendor.products) {
-      for (const route of product.routes) {
-        const ref = route.ref
-        const isRunnable = route.runnable
-        const profileHint = isRunnable ? route.route : `${route.route} · no profile`
-        const adapters = route.adapters
-        const defaultAdapter = adapters[0] ?? vendor.vendor
-
-        items.push({
-          label: product.product,
-          description: `${defaultAdapter} · ${profileHint}`,
-          adapter: { slug: defaultAdapter, name: defaultAdapter } as SpawnAdapterInfo,
-          model: ref,
-          mode: route.adapterModes[0],
-          route: route.route,
-          eligibleProfiles: route.eligibleProfiles,
-          runnable: isRunnable,
-        })
+      const route = pickPrimaryRoute(product.routes)
+      if (!route) continue
+      const defaultAdapter = route.adapters[0] ?? vendor.vendor
+      const extraRoutes = product.routes.length - 1
+      const row: SpawnQuickPickItem = {
+        label: product.product,
+        description: route.runnable
+          ? `${defaultAdapter} · ${route.route}${extraRoutes > 0 ? ` · +${extraRoutes} more` : ""}`
+          : `${defaultAdapter} · ${route.route} · no profile`,
+        adapter: { slug: defaultAdapter, name: defaultAdapter } as SpawnAdapterInfo,
+        model: route.ref,
+        mode: route.adapterModes[0],
+        route: route.route,
+        eligibleProfiles: route.eligibleProfiles,
+        runnable: route.runnable,
       }
+      if (route.runnable) runnableRows.push(row)
+      else needsProfile.push(row)
+    }
+
+    if (runnableRows.length > 0) runnableByVendor.push({ vendor: vendor.vendor, rows: runnableRows })
+  }
+
+  const items: SpawnQuickPickItem[] = []
+  for (const { vendor, rows } of runnableByVendor) {
+    items.push({ label: vendor, kind: SEPARATOR_KIND })
+    items.push(...rows)
+  }
+  if (needsProfile.length > 0) {
+    items.push({ label: NEEDS_PROFILE_SECTION_LABEL, kind: SEPARATOR_KIND })
+    items.push(...needsProfile)
+  }
+
+  items.push({ label: CONFIGURE_LABEL, configure: true })
+  return items
+}
+
+// ── Harness-first spawn picker (drill-down, not a pre-exploded flat list) ────
+
+/** Entry-picker heading over the harness rows. */
+export const HARNESSES_SECTION_LABEL = "Harnesses"
+
+/**
+ * The spawn entry picker: favorites (prepended by the caller) over one row
+ * per installed harness — NOT the pre-exploded model catalog. The harness
+ * (claude-code / hermes / codex / mastra-agent …) is agentproto's biggest
+ * behavioral axis, and the same model served under N harnesses is exactly
+ * what flooded the old flat list. Picking a harness here narrows to just that
+ * harness's models (mapHarnessCatalogModelItems) — so "which model" is asked
+ * against a short, relevant set instead of the whole cross-product. Ready
+ * harnesses sort first (mapAdapterQuickPickItems); a trailing Configure… row
+ * still opens the full cwd/label/orchestrator/permissions chain.
+ */
+export function mapHarnessEntryItems(adapters: SpawnAdapterInfo[]): SpawnQuickPickItem[] {
+  const items: SpawnQuickPickItem[] = [{ label: HARNESSES_SECTION_LABEL, kind: SEPARATOR_KIND }]
+  for (const { label, description, adapter } of mapAdapterQuickPickItems(adapters)) {
+    items.push({ label, description, adapter, harness: true })
+  }
+  items.push({ label: CONFIGURE_LABEL, configure: true })
+  return items
+}
+
+/**
+ * Stage two of the harness-first flow: the models a chosen harness can serve,
+ * from the unified catalog, filtered to routes whose `adapters` include that
+ * harness. Same collapse/section rules as mapCatalogSpawnQuickPickItems — one
+ * row per product on its best route (pickPrimaryRoute), runnable models grouped
+ * by vendor first, non-runnable swept under "Needs a profile" — but scoped to
+ * the harness, so the provider is the vendor·route in the row (the adapter is
+ * fixed and no longer worth repeating). A trailing custom… row types any model
+ * id for this harness; there's no Configure row here (Configure is its own
+ * entry path). Empty of model rows when the catalog knows nothing this harness
+ * serves — the caller then falls back to the manifest list.
+ */
+export function mapHarnessCatalogModelItems(
+  catalog: CatalogModelsResponse,
+  harness: string,
+): SpawnQuickPickItem[] {
+  const runnableByVendor: { vendor: string; rows: SpawnQuickPickItem[] }[] = []
+  const needsProfile: SpawnQuickPickItem[] = []
+
+  for (const vendor of catalog.vendors) {
+    const rows: SpawnQuickPickItem[] = []
+    for (const product of vendor.products) {
+      const served = product.routes.filter(r => r.adapters.includes(harness))
+      const route = pickPrimaryRoute(served)
+      if (!route) continue
+      const extraRoutes = served.length - 1
+      const row: SpawnQuickPickItem = {
+        label: product.product,
+        description: route.runnable
+          ? `${vendor.vendor} · ${route.route}${extraRoutes > 0 ? ` · +${extraRoutes} more` : ""}`
+          : `${vendor.vendor} · ${route.route} · no profile`,
+        adapter: { slug: harness, name: harness } as SpawnAdapterInfo,
+        model: route.ref,
+        mode: route.adapterModes[0],
+        route: route.route,
+        eligibleProfiles: route.eligibleProfiles,
+        runnable: route.runnable,
+      }
+      if (route.runnable) rows.push(row)
+      else needsProfile.push(row)
+    }
+    if (rows.length > 0) runnableByVendor.push({ vendor: vendor.vendor, rows })
+  }
+
+  const items: SpawnQuickPickItem[] = []
+  for (const { vendor, rows } of runnableByVendor) {
+    items.push({ label: vendor, kind: SEPARATOR_KIND })
+    items.push(...rows)
+  }
+  if (needsProfile.length > 0) {
+    items.push({ label: NEEDS_PROFILE_SECTION_LABEL, kind: SEPARATOR_KIND })
+    items.push(...needsProfile)
+  }
+  items.push({ label: `${harness} · ${CUSTOM_MODEL_LABEL}`, adapter: { slug: harness, name: harness } as SpawnAdapterInfo, custom: true })
+  return items
+}
+
+/**
+ * Manifest fallback for stage two on a daemon with no `/catalog/models`:
+ * the harness's own declared models grouped by provider heading (unstated
+ * provider under the harness's own name), plus a trailing custom… row. No
+ * route/runnable info exists here, so every row is a plain native pick.
+ */
+export function mapHarnessManifestModelItems(adapter: SpawnAdapterInfo): SpawnQuickPickItem[] {
+  const groups = new Map<string, SpawnQuickPickItem[]>()
+  for (const entry of modelEntriesOf(adapter)) {
+    const key = entry.provider ?? adapter.slug
+    const rows = groups.get(key) ?? (groups.set(key, []), groups.get(key)!)
+    rows.push({
+      label: entry.id,
+      adapter,
+      model: entry.id,
+      ...(entry.mode ? { mode: entry.mode } : {}),
+    })
+  }
+  const items: SpawnQuickPickItem[] = []
+  for (const [heading, rows] of groups) {
+    items.push({ label: heading, kind: SEPARATOR_KIND })
+    items.push(...rows)
+  }
+  items.push({ label: `${adapter.slug} · ${CUSTOM_MODEL_LABEL}`, adapter, custom: true })
+  return items
+}
+
+// ── Quick-spawn entry: favorites + latest-used, one click each ───────────────
+
+/** Entry-picker row that reopens the full harness → model drill-down. */
+export const BROWSE_ALL_LABEL = "$(list-tree) Browse all models…"
+const RECENT_HEADING = "Recent"
+const RECENT_ICON = "$(history)"
+
+/** A distinct past spawn combo, newest-first, for the "latest used" rows. */
+export interface RecentSpawn {
+  adapter: string
+  model?: string
+  mode?: string
+  /** route.gateway of the past session — the billing rail to reuse. */
+  gateway?: string
+  accessProfileRef?: string
+  workspaceSlug?: string
+  startedAtMs: number
+}
+
+/**
+ * Collapse a session list into the distinct spawn combos to offer as one-click
+ * "recent" rows. Newest first, deduped by (adapter · model · gateway) so the
+ * same combo run ten times is one row, capped at `limit`. Only agent-cli
+ * sessions with a known adapter qualify — a bare terminal has no combo to
+ * replay. Pure: `startedAt` is parsed here, no ambient clock.
+ */
+export function deriveRecentSpawns(sessions: readonly SessionDescriptor[], limit = 6): RecentSpawn[] {
+  const seen = new Set<string>()
+  const out: RecentSpawn[] = []
+  const ranked = sessions
+    .filter(s => s.kind === "agent-cli" && !!s.adapterSlug)
+    .map(s => ({ s, at: Date.parse(s.startedAt) }))
+    .filter(({ at }) => !Number.isNaN(at))
+    .sort((a, b) => b.at - a.at)
+  for (const { s, at } of ranked) {
+    const key = `${s.adapterSlug}|${s.model ?? ""}|${s.route?.gateway ?? ""}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      adapter: s.adapterSlug!,
+      model: s.model,
+      mode: s.mode,
+      gateway: s.route?.gateway,
+      accessProfileRef: s.accessProfile?.profileRef,
+      workspaceSlug: s.workspaceSlug || undefined,
+      startedAtMs: at,
+    })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+/** Coarse "how long ago", pure given `nowMs`. */
+export function relativeTime(thenMs: number, nowMs: number): string {
+  const s = Math.max(0, Math.round((nowMs - thenMs) / 1000))
+  if (s < 45) return "just now"
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
+}
+
+/**
+ * The quick-spawn entry picker: tall, one-click rows for the combos you
+ * actually reach for — your saved favorites, then your latest-used combos —
+ * each carrying the WHOLE spawn (harness · model · provider · wallet) in its
+ * `detail` line so a single Enter spawns it, no drill-down. A favorite row is
+ * a saved preset (daemon-expanded); a recent row replays a past session's exact
+ * adapter/model/route/wallet. Trailing "Browse all models…" opens the harness
+ * drill-down for anything not listed, and "Configure…" the full chain. Returns
+ * an empty combo list (only the two trailing rows) when there are neither
+ * favorites nor recent — the caller then falls back to the harness picker so a
+ * brand-new user still has a first step.
+ */
+export function mapQuickSpawnItems(
+  presets: UserPreset[],
+  recent: RecentSpawn[],
+  nowMs: number,
+): SpawnQuickPickItem[] {
+  const items: SpawnQuickPickItem[] = []
+
+  if (presets.length > 0) {
+    items.push({ label: FAVORITES_HEADING, kind: SEPARATOR_KIND })
+    for (const preset of presets) {
+      const combo = [preset.adapter ?? preset.harness, preset.model].filter(Boolean).join(" · ")
+      items.push({
+        label: `${FAVORITE_ICON} ${preset.label}`,
+        detail: combo || "saved favorite",
+        preset,
+      })
     }
   }
 
+  if (recent.length > 0) {
+    items.push({ label: RECENT_HEADING, kind: SEPARATOR_KIND })
+    for (const r of recent) {
+      const detail = [
+        r.adapter,
+        r.gateway,
+        r.workspaceSlug,
+        relativeTime(r.startedAtMs, nowMs),
+      ]
+        .filter(Boolean)
+        .join(" · ")
+      items.push({
+        label: `${RECENT_ICON} ${r.model ?? r.adapter}`,
+        detail,
+        adapter: { slug: r.adapter, name: r.adapter } as SpawnAdapterInfo,
+        recent: true,
+        ...(r.model ? { model: r.model } : {}),
+        ...(r.mode ? { mode: r.mode } : {}),
+        ...(r.gateway ? { route: r.gateway } : {}),
+        ...(r.accessProfileRef ? { accessProfileRef: r.accessProfileRef } : {}),
+      })
+    }
+  }
+
+  items.push({ label: BROWSE_ALL_LABEL, browse: true })
   items.push({ label: CONFIGURE_LABEL, configure: true })
   return items
 }

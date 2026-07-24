@@ -1728,6 +1728,17 @@ export interface SessionsRegistry {
   /** Stop tracking a session (after it exited and the user clicked
    *  "clear"). Doesn't kill — use `kill` first. */
   forget(id: string): boolean
+  /** Await every best-effort fire-and-forget per-session write currently in
+   *  flight — today the `CommandLogEntry` → `ToolCallRecord` chain
+   *  `recordCommand` kicks off. Resolves once they've all settled (success
+   *  or swallowed failure), and immediately when nothing is pending. A live
+   *  daemon never needs this (it doesn't remove the transcript base dir out
+   *  from under an in-flight write); a test that tears that dir down right
+   *  after a `command_execute` MUST drain first or race the removal
+   *  (ENOTEMPTY on the parent rmdir, or ENOENT in the writer). `shutdown()`
+   *  is sync (it runs from `process.on("exit")`) so it can't await these —
+   *  this is the async escape hatch for callers that can. */
+  settlePendingWrites(): Promise<void>
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
@@ -2123,6 +2134,27 @@ export function createSessionsRegistry(opts?: {
   // serve --interactive's Ctrl-C race; without this, the second
   // call writes an empty snapshot over the real one.
   let shutdownDone = false
+  // In-flight best-effort per-session writes fired fire-and-forget (today:
+  // `recordCommand`'s CommandLogEntry → ToolCallRecord chain). Tracked only
+  // so `settlePendingWrites()` can await them settling. A live daemon never
+  // needs this — nothing removes `transcriptBaseDir` under it — but a caller
+  // that tears that dir down right after the write was kicked off (tests do)
+  // races the write: its `mkdir(recursive)` re-creates a dir the removal
+  // just emptied (→ ENOTEMPTY on the parent rmdir) or its `appendFile` hits a
+  // dir already removed (→ ENOENT). Draining first makes that deterministic.
+  const pendingWrites = new Set<Promise<void>>()
+  function trackWrite(p: Promise<unknown>): void {
+    // Swallow inside the tracked promise (the underlying writers already
+    // `.catch` and log) so `settlePendingWrites` never rejects, and self-
+    // remove on settle so the set only ever holds genuinely in-flight work.
+    const tracked = p.then(
+      () => {},
+      () => {},
+    ).finally(() => {
+      pendingWrites.delete(tracked)
+    })
+    pendingWrites.add(tracked)
+  }
 
   // ── boot-time history load ──
   // Read sessions.json synchronously at construction so the dashboard
@@ -4023,35 +4055,38 @@ export function createSessionsRegistry(opts?: {
       // CommandLogEntry line, because `readCommandLogEntry` trusts the
       // file's FIRST non-empty line to be the CommandLogEntry — two
       // independent fire-and-forget appendFile calls give no ordering
-      // guarantee on their own.
-      void writeCommandLogEntry(
-        id,
-        {
-          ts: now.toISOString(),
-          command: input.command,
-          args: input.args,
-          cwd: input.cwd,
-          exitCode: input.exitCode,
-          signal: input.signal,
-          durationMs: input.durationMs,
-          stdout: input.stdout,
-          stderr: input.stderr,
-          ...(input.truncated ? { truncated: true } : {}),
-        },
-        transcriptBaseDir,
-      ).then(() =>
-        writeToolCallRecord(
+      // guarantee on their own. Tracked (not bare-`void`) so
+      // `settlePendingWrites()` can drain it — see `pendingWrites`.
+      trackWrite(
+        writeCommandLogEntry(
+          id,
           {
-            sessionId: id,
-            tool: "command_execute",
+            ts: now.toISOString(),
             command: input.command,
             args: input.args,
+            cwd: input.cwd,
             exitCode: input.exitCode,
-            isError: input.exitCode !== 0,
+            signal: input.signal,
             durationMs: input.durationMs,
-            ts: now.toISOString(),
+            stdout: input.stdout,
+            stderr: input.stderr,
+            ...(input.truncated ? { truncated: true } : {}),
           },
           transcriptBaseDir,
+        ).then(() =>
+          writeToolCallRecord(
+            {
+              sessionId: id,
+              tool: "command_execute",
+              command: input.command,
+              args: input.args,
+              exitCode: input.exitCode,
+              isError: input.exitCode !== 0,
+              durationMs: input.durationMs,
+              ts: now.toISOString(),
+            },
+            transcriptBaseDir,
+          ),
         ),
       )
       schedulePersist()
@@ -4753,6 +4788,17 @@ export function createSessionsRegistry(opts?: {
       sessions.delete(id)
       schedulePersist()
       return true
+    },
+    async settlePendingWrites() {
+      // Drain until empty rather than awaiting a single snapshot: the
+      // tracked write is itself a chain (CommandLogEntry → ToolCallRecord),
+      // and a caller could enqueue another recordCommand between awaits.
+      // Each tracked promise self-removes on settle, so the set shrinks to
+      // empty and this terminates. Resolves immediately when nothing's
+      // pending.
+      while (pendingWrites.size > 0) {
+        await Promise.all([...pendingWrites])
+      }
     },
     shutdown() {
       shutdownImpl()

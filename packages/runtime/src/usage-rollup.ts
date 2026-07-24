@@ -31,10 +31,11 @@
  *  4. The rollup is a priced ESTIMATE, tagged `basis: "local-estimate"`.
  */
 
-// Type-only import — this module stays pure (the import is erased at compile).
-// `remaining` on a `byProfile` entry is set exclusively by the impure
-// `enrichWithRemainingQuota` surface layer, never by `rollupUsage` here.
+// Type-only imports — this module stays pure (the imports are erased at
+// compile). `remaining`/`credits` on a `byProfile` entry are set exclusively by
+// the impure enrichment surface layer, never by `rollupUsage` here.
 import type { RemainingQuota } from "./remaining-quota.js"
+import type { AccountCredits } from "./account-credits.js"
 
 /** A single durable `usage_snapshot` record, projected to the fields the
  *  rollup needs. `source` decides priced vs unpriced (see pin 2). Cost/token
@@ -75,10 +76,16 @@ export interface UsageRollup {
   now: string
   windowStart: string
   total: UsageBucket
-  /** Per-profile spend. The optional `remaining` is populated ONLY by the
-   *  best-effort `enrichWithRemainingQuota` surface layer — the pure
-   *  `rollupUsage` below never sets it. */
-  byProfile: Array<{ profileRef: string } & UsageBucket & { remaining?: RemainingQuota }>
+  /** Per-profile spend. The optional `remaining`/`credits` are populated ONLY
+   *  by the best-effort enrichment surface layer
+   *  (`enrichWithRemainingQuota` / `enrichWithAccountCredits`) — the pure
+   *  `rollupUsage` below never sets either. */
+  byProfile: Array<
+    { profileRef: string } & UsageBucket & {
+        remaining?: RemainingQuota
+        credits?: AccountCredits
+      }
+  >
   byModel: Array<{ model: string } & UsageBucket>
   byHarness: Array<{ harness: string } & UsageBucket>
   sessionsConsidered: number
