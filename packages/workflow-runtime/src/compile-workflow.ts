@@ -288,15 +288,21 @@ function compileStep(step: any, opts: CompileWorkflowOptions): RunStep {
       return { kind: "subworkflow", id, workflow: compiledChild }
     }
 
-    case "agent": {
-      // `agent` is not a declarative manifest kind — it only reaches the
-      // compiler from an ENTRY-based handle, where it is already a runtime
-      // AgentStep (function-valued adapter/cwd/prompt selectors). There is
-      // nothing declarative to resolve, so pass it through unchanged. This is
-      // what lets a WORKFLOW.md whose entry.mjs is a chain of agent steps run
-      // via startFromFile. `step` is `any`, so no cast is needed.
-      const agent: RunStep = step
-      return agent
+    case "agent":
+    case "transform": {
+      // Neither `agent` nor `transform` is a declarative manifest kind — both
+      // only reach the compiler from an ENTRY-based handle, already built as
+      // a runtime AgentStep (function-valued adapter/cwd/prompt selectors) or
+      // TransformStep (function-valued `compute`). There is nothing
+      // declarative to resolve, so pass through unchanged. This is what lets
+      // a WORKFLOW.md whose entry.mjs chains agent steps run via
+      // `startFromFile` — and, for `transform`, what lets an entry.mjs step
+      // shape/serialize an earlier tool step's output (e.g. `JSON.stringify`
+      // a prior `$steps.<id>` value) for a later tool step to consume as a
+      // plain string input, something the `$steps.*` ref grammar alone can't
+      // do. `step` is `any`, so no cast is needed.
+      const passthrough: RunStep = step
+      return passthrough
     }
 
     case "branch":

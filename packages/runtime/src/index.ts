@@ -96,6 +96,7 @@ import { createTaskLedger } from "./task-ledger.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
+import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
   WatcherStartInput,
   WatcherDescriptor,
@@ -1096,12 +1097,13 @@ export async function createGateway(
         // `agent_start.sandbox` uses.
         resolveSandboxProvider: resolveSandboxProviderResolved,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
-        // for `workflow_run_file` / `startFromFile`. The daemon's workflow
-        // surface is agent-step based (like the stage primitive), so no tool/
-        // driver registry is wired here — `tool` steps in a WORKFLOW.md fail
-        // clearly ("no tool registered") until a workflow tool registry is
-        // added. Agent-step workflows compile + run.
-        compileWorkflow: handle => compileWorkflow(handle, { tools: {}, candidates: [] }),
+        // for `workflow_run_file` / `startFromFile`. `tool` steps resolve
+        // through `createDaemonToolRegistry` — a per-handle registry scanning
+        // the step graph for referenced tool ids and routing each through
+        // the same `dispatchTool` the routine registrar / cron scheduler use
+        // (see `workflow-tool-registry.ts`). Agent-step workflows are
+        // unaffected: an empty tool registry compiles them exactly as before.
+        compileWorkflow: handle => compileWorkflow(handle, createDaemonToolRegistry(handle, dispatchTool)),
       })
     : undefined
 

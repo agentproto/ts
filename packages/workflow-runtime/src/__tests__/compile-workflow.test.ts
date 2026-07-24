@@ -121,6 +121,32 @@ describe("compileWorkflow", () => {
     expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([2, 4, 6])
   })
 
+  it("passes an entry-based `transform` step through unchanged, threading a prior tool step's output", async () => {
+    // `transform` isn't a declarative manifest kind (no string expression
+    // language for `compute`) — it only reaches the compiler from an
+    // ENTRY-based handle, already built as a runtime TransformStep. This is
+    // what lets an entry.mjs serialize a tool step's output (e.g.
+    // `JSON.stringify`) into a plain string a later tool step can consume,
+    // something the `$steps.*` ref grammar alone can't do.
+    const handle = {
+      id: "transform-demo",
+      description: "demo",
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        {
+          id: "t",
+          kind: "transform",
+          compute: (b: { steps: Record<string, unknown> }) =>
+            `n=${(b.steps.d as { n: number }).n}`,
+        },
+      ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    const compiled = compileWorkflow(handle, { tools, candidates })
+    const { output } = await runWorkflow({ workflow: compiled, input: { n: 5 } })
+    expect(output).toBe("n=10")
+  })
+
   it("maps the workflow output from a declarative `result` expression", async () => {
     const wf = defineWorkflow({
       name: "Double, report both",
