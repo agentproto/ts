@@ -311,9 +311,9 @@
       },
       {
         "command": "agentproto.configureAuthProfile",
-        "title": "agentproto: Configure Auth Profile",
+        "title": "agentproto: Add Auth Profile",
         "category": "agentproto",
-        "icon": "$(gear)"
+        "icon": "$(add)"
       },
       {
         "command": "agentproto.connectAuthProfile",
@@ -368,7 +368,7 @@
       "view/title": [
         {
           "command": "agentproto.refresh",
-          "when": "view == 'agentproto.sessions' || view == 'agentproto.permissions' || view == 'agentproto.harnesses' || view == 'agentproto.authProfiles'",
+          "when": "view == 'agentproto.sessions' || view == 'agentproto.permissions'",
           "group": "navigation"
         },
         {
