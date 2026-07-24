@@ -9,6 +9,7 @@ export {
   MODEL_ALIASES,
   DEFAULT_PRICING,
   resolvePricing,
+  resolvePricingExact,
   resolveAlias,
   resolveContextWindow,
   getModelProvider,

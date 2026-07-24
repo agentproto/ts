@@ -575,16 +575,24 @@ describe("buildCatalogModels — multiModel + servable-models-per-route (WP1 / S
 })
 
 describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC §1c)", () => {
-  // claude-fable-5 is curated by claude-code (a real Anthropic-vendor id
+  // claude-opus-4.7 is curated by claude-code (a real Anthropic-vendor id
   // reachable through the adapter's model list) but bills ONLY openrouter/
-  // requesty in the pricing catalog — the exact gateway-only-model-on-a-
-  // fixed-subscription-wallet shape the spawn guard (`checkModelWalletEligibility`,
-  // session-spawn.ts:1143) rejects with `model_wallet_ineligible`. Before this
-  // fix the catalog never checked this and reported the direct anthropic
-  // route as runnable, which then 500'd on a real spawn.
-  const CLAUDE_CODE_FABLE: CatalogAdapterInput = {
+  // requesty in the pricing catalog: its OpenRouter route key `anthropic/
+  // claude-opus-4.7` carries NO first-party bare pricing entry (Anthropic's own
+  // dash-form ids are `claude-opus-4-8` etc.), so the direct anthropic SDK
+  // genuinely cannot serve it — the exact gateway-only-model-on-a-fixed-
+  // subscription-wallet shape the spawn guard (`checkModelWalletEligibility`,
+  // session-spawn.ts:1143) rejects with `model_wallet_ineligible`. Before that
+  // guard the catalog reported the direct anthropic route as runnable, which
+  // then 500'd on a real spawn.
+  //
+  // NB: a first-party id whose `<vendor>/<product>` form COLLIDES with a router
+  // key (claude-sonnet-5 / claude-fable-5 — SAME dash spelling) is the OPPOSITE
+  // case: it IS serviceable on the direct anthropic route and MUST stay
+  // runnable. See the "first-party ↔ router-key collision" describe below.
+  const CLAUDE_CODE_GATEWAY_ONLY: CatalogAdapterInput = {
     slug: "claude-code",
-    models: [{ id: "claude-fable-5" }],
+    models: [{ id: "claude-opus-4.7" }],
     authDescriptor: {
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
@@ -593,10 +601,10 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
 
   it("a gateway-only model is NOT runnable on its adapter's direct (fixed-wallet) route — matches the spawn 500", () => {
     const response = buildCatalogModels({
-      adapters: [CLAUDE_CODE_FABLE],
+      adapters: [CLAUDE_CODE_GATEWAY_ONLY],
       profiles: [anthropicOauth, anthropicApiKey],
     })
-    const direct = findRoute(response, "anthropic", "claude-fable-5", "anthropic")
+    const direct = findRoute(response, "anthropic", "claude-opus-4.7", "anthropic")
     expect(direct).toBeDefined()
     expect(direct?.runnable).toBe(false)
     expect(direct?.eligibleProfiles).toEqual([])
@@ -610,10 +618,10 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
       credentialRef: "ref-openrouter",
     }
     const response = buildCatalogModels({
-      adapters: [CLAUDE_CODE_FABLE],
+      adapters: [CLAUDE_CODE_GATEWAY_ONLY],
       profiles: [openrouterKey],
     })
-    const openrouter = findRoute(response, "anthropic", "claude-fable-5", "openrouter")
+    const openrouter = findRoute(response, "anthropic", "claude-opus-4.7", "openrouter")
     expect(openrouter).toBeDefined()
     expect(openrouter?.runnable).toBe(true)
     expect(openrouter?.eligibleProfiles).toEqual(["openrouter-key"])
@@ -637,5 +645,96 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
     const moonshot = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
     expect(moonshot?.runnable).toBe(true)
     expect(moonshot?.eligibleProfiles).toEqual(["personal-moonshot"])
+  })
+})
+
+describe("buildCatalogModels — first-party ↔ router-key collision (firstparty-eligibility bug)", () => {
+  // Regression for the first-party-eligibility bug: OpenRouter keys
+  // `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5` with the SAME
+  // dash spelling Anthropic's OWN first-party ids use (tagged
+  // `provider:"openrouter"`), so `resolvePricing`/`getModelProvider` on the
+  // `<vendor>/<product>` form resolve to the ROUTER and the direct anthropic
+  // route dropped out of `serviceableModelRoutes` — the wallet gate then
+  // rejected the genuine direct route and reported `runnable:false` /
+  // `eligibleProfiles:[]` for these two, while `claude-opus-4-8` (OpenRouter
+  // spells it `claude-opus-4.8`, dot — no collision) was spared. The fix
+  // restores the direct vendor route whenever the BARE product is itself a
+  // first-party model of that vendor.
+  const firstPartyCollisionAdapter = (id: string): CatalogAdapterInput => ({
+    slug: "claude-code",
+    models: [{ id }],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+  })
+
+  for (const product of ["claude-sonnet-5", "claude-fable-5"]) {
+    it(`${product} is runnable on the direct anthropic route with the uncurated sub/api-key profiles`, () => {
+      const response = buildCatalogModels({
+        adapters: [firstPartyCollisionAdapter(product)],
+        profiles: [anthropicOauth, anthropicApiKey],
+      })
+      const direct = findRoute(response, "anthropic", product, "anthropic")
+      expect(direct).toBeDefined()
+      expect(direct?.runnable).toBe(true)
+      expect(direct?.eligibleProfiles.sort()).toEqual(["jeremy-max", "work-anthropic-key"])
+    })
+
+    it(`${product} still exposes its router (@openrouter) route, unaffected by the fix`, () => {
+      const openrouterKey: AuthProfile = {
+        id: "openrouter-key",
+        endpoint: "openrouter",
+        method: "api-key",
+        credentialRef: "ref-openrouter",
+      }
+      const response = buildCatalogModels({
+        adapters: [firstPartyCollisionAdapter(product)],
+        profiles: [openrouterKey],
+      })
+      const openrouter = findRoute(response, "anthropic", product, "openrouter")
+      expect(openrouter?.runnable).toBe(true)
+      expect(openrouter?.eligibleProfiles).toEqual(["openrouter-key"])
+    })
+  }
+
+  it("regression guard: claude-opus-4-8 (no dash/dot collision) stays runnable on the direct anthropic route", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE],
+      profiles: [anthropicOauth, anthropicApiKey],
+    })
+    const direct = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(direct?.runnable).toBe(true)
+    expect(direct?.eligibleProfiles.sort()).toEqual(["jeremy-max", "work-anthropic-key"])
+  })
+
+  // The OTHER half of the fix, and the coverage hole that let the substring bug
+  // through: an openrouter-only sibling variant whose bare product only
+  // SUBSTRING-matches a first-party pricing row (`gemini-2.5-flash-image` →
+  // `gemini-2.5-flash`, provider google) must NOT be revived onto its vendor's
+  // direct wallet. The pre-fix `resolvePricing` substring fallback flipped this
+  // route runnable:true under a google api-key; `resolvePricingExact` keeps the
+  // direct google route runnable:false — google's own SDK cannot bill it.
+  it("an openrouter-only sibling variant (google/gemini-2.5-flash-image) stays NOT runnable on the direct google route", () => {
+    const geminiCli: CatalogAdapterInput = {
+      slug: "gemini-cli",
+      models: [{ id: "google/gemini-2.5-flash-image" }],
+      authDescriptor: { provider: "google" },
+    }
+    const googleApiKey: AuthProfile = {
+      id: "my-google",
+      endpoint: "google",
+      method: "api-key",
+      credentialRef: "ref-google",
+    }
+    const response = buildCatalogModels({
+      adapters: [geminiCli],
+      profiles: [googleApiKey],
+    })
+    const direct = findRoute(response, "google", "gemini-2.5-flash-image", "google")
+    // The direct google route row exists (google curated it) but is unbillable.
+    expect(direct).toBeDefined()
+    expect(direct?.runnable).toBe(false)
+    expect(direct?.eligibleProfiles).toEqual([])
   })
 })

@@ -27,6 +27,7 @@ import {
   modelWalletIneligibleMessage,
   suggestModelSlugs,
 } from "../catalog-models.js"
+import { getModelProvider } from "@agentproto/model-catalog/llm"
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { restartAgentSession, RestartOverrideError } from "../session-restart-core.js"
 import { createSessionsRegistry } from "../sessions.js"
@@ -106,6 +107,50 @@ describe("serviceableModelRoutes — reuses the catalog route-resolution", () =>
   it("an unknown model resolves to NO routes (a mismatch cannot be proven ⇒ never reject)", () => {
     expect(serviceableModelRoutes("totally-made-up-xyz-model")).toEqual([])
   })
+
+  it("a first-party model whose vendor/product form COLLIDES with a router key keeps its own vendor route (claude-sonnet-5 / claude-fable-5)", () => {
+    // OpenRouter keys `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5`
+    // with the SAME dash spelling Anthropic uses (tagged provider:"openrouter"),
+    // so `getModelProvider` alone would hide the direct anthropic route. The
+    // first-party bare-product check restores it — WITHOUT dropping the router
+    // routes the model genuinely also bills.
+    for (const id of ["anthropic/claude-sonnet-5", "anthropic/claude-fable-5"]) {
+      const routes = serviceableModelRoutes(id)
+      expect(routes).toContain("anthropic")
+      expect(routes).toContain("openrouter")
+      expect(routes).toContain("requesty")
+    }
+  })
+
+  it("does NOT grant a vendor route to an openrouter-only sibling variant that merely shares a name prefix (google/gemini-2.5-flash-image)", () => {
+    // The exact-lookup guard's raison d'être: `gemini-2.5-flash-image` is NOT a
+    // first-party pricing key — it's an OpenRouter-only route whose bare product
+    // only SUBSTRING-matches the unrelated `gemini-2.5-flash` row (provider
+    // google). The old `resolvePricing(...)` substring fallback tripped on that
+    // and spuriously added a `google` direct route the model cannot be billed
+    // on; `resolvePricingExact` requires a VERBATIM key/alias, so it doesn't.
+    const routes = serviceableModelRoutes("google/gemini-2.5-flash-image")
+    expect(routes).not.toContain("google")
+    expect(routes).toContain("openrouter")
+    // Same class, other vendors — never earn their vendor route either.
+    expect(serviceableModelRoutes("google/gemini-3.1-pro-preview-customtools")).not.toContain(
+      "google",
+    )
+    expect(serviceableModelRoutes("openai/gpt-5.4-image-2")).not.toContain("openai")
+  })
+
+  it("the fix is scoped to serviceability — pricing resolution (getModelProvider) is deliberately unchanged", () => {
+    // The direct route is restored at the serviceability layer only; the
+    // `<vendor>/<product>` pricing row still resolves to the router, so
+    // `getModelProvider` (which every routing/billing DEFAULT reads) is
+    // untouched for this and every other caller. A guard against a later,
+    // riskier broadening of `resolvePricing` direct-match precedence.
+    expect(getModelProvider("anthropic/claude-sonnet-5")).toBe("openrouter")
+    expect(getModelProvider("anthropic/claude-fable-5")).toBe("openrouter")
+    // The bare first-party ids resolve to anthropic, exactly as before.
+    expect(getModelProvider("claude-sonnet-5")).toBe("anthropic")
+    expect(getModelProvider("claude-fable-5")).toBe("anthropic")
+  })
 })
 
 describe("suggestModelSlugs — the 'did you mean' matcher for unknown slugs", () => {
@@ -150,6 +195,29 @@ describe("checkModelWalletEligibility — the money-safety predicate", () => {
 
   it("ACCEPTS an unknown model on any wallet (never over-reject a not-yet-catalogued model)", () => {
     expect(checkModelWalletEligibility("totally-made-up-xyz-model", "anthropic").ok).toBe(true)
+  })
+
+  it("ACCEPTS a first-party model colliding with a router key on its own vendor wallet (claude-sonnet-5 / claude-fable-5)", () => {
+    // The money-safety verdict behind the catalog `runnable` flag: these bill
+    // the direct anthropic wallet just like claude-opus-4-8, despite the
+    // OpenRouter dash-spelling collision that used to reject them.
+    expect(checkModelWalletEligibility("anthropic/claude-sonnet-5", "anthropic").ok).toBe(true)
+    expect(checkModelWalletEligibility("anthropic/claude-fable-5", "anthropic").ok).toBe(true)
+    // ...and still accepted on the router wallet they genuinely also bill.
+    expect(checkModelWalletEligibility("anthropic/claude-sonnet-5", "openrouter").ok).toBe(true)
+  })
+
+  it("REJECTS an openrouter-only sibling variant on the substring-collided vendor wallet (google/gemini-2.5-flash-image)", () => {
+    // The negative that the substring bug hid: `gemini-2.5-flash-image` is
+    // openrouter-only, so a `google` (direct Gemini) wallet CANNOT bill it. The
+    // pre-fix substring hit on `gemini-2.5-flash` spuriously flipped this ok
+    // false→true; the exact guard keeps it false and points at the real route.
+    const v = checkModelWalletEligibility("google/gemini-2.5-flash-image", "google")
+    expect(v.ok).toBe(false)
+    expect(v.suggestedRoutes).toContain("openrouter")
+    expect(v.suggestedRoutes).not.toContain("google")
+    // ...and it IS billable on the router wallet it actually routes through.
+    expect(checkModelWalletEligibility("google/gemini-2.5-flash-image", "openrouter").ok).toBe(true)
   })
 })
 
