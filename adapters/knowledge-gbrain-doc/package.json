@@ -1,0 +1,73 @@
+{
+  "name": "@agentproto/adapter-knowledge-gbrain-doc",
+  "version": "0.1.0",
+  "description": "Knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over a gbrain server's document API (put_page / search) via pure fetch over its JSON-RPC /mcp endpoint. gbrain fuses lexical (tsvector) + semantic recall. Registers as a provider-kit family. No vendor SDK, no app coupling. Distinct from the code-graph gbrain adapter.",
+  "keywords": [
+    "agentproto",
+    "knowledge-engine",
+    "knowledge",
+    "retrieval",
+    "rag",
+    "gbrain",
+    "document-search",
+    "hybrid-search",
+    "adapter",
+    "provider-kit",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "adapters/knowledge-gbrain-doc"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/knowledge-engine": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}
