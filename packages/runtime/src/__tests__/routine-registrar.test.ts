@@ -101,6 +101,24 @@ describe("routineTargetToToolCall", () => {
     expect(call).toEqual({ tool: "agent_start", inputs: { adapter: "claude-code", prompt: "say hi" } })
   })
 
+  it("target.agent stamps origin:routine:<id> when a routineId is passed", () => {
+    const call = routineTargetToToolCall({ agent: { adapter: "claude-code", prompt: "say hi" } }, "demo-gc")
+    expect(call).toEqual({
+      tool: "agent_start",
+      inputs: { adapter: "claude-code", prompt: "say hi", origin: "routine:demo-gc" },
+    })
+  })
+
+  it("target.agent omits origin when no routineId is passed", () => {
+    const call = routineTargetToToolCall({ agent: { adapter: "claude-code", prompt: "say hi" } })
+    expect(call.inputs).not.toHaveProperty("origin")
+  })
+
+  it("target.tool ignores routineId — inputs pass through verbatim, no origin injected", () => {
+    const call = routineTargetToToolCall({ tool: "worktree_gc", inputs: { apply: true } }, "demo-gc")
+    expect(call).toEqual({ tool: "worktree_gc", inputs: { apply: true } })
+  })
+
   it("target.workflow.file lowers to a workflow_run_file tool call", () => {
     const call = routineTargetToToolCall({ workflow: { file: "WORKFLOW.md" }, inputs: { foo: "bar" } })
     expect(call).toEqual({ tool: "workflow_run_file", inputs: { path: "WORKFLOW.md", input: { foo: "bar" } } })
@@ -289,7 +307,7 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     expect(calls).toEqual([{ name: "worktree_gc", inputs: { apply: true } }])
   })
 
-  it("trigger() dispatches an agent-target routine as agent_start", async () => {
+  it("trigger() dispatches an agent-target routine as agent_start, tagged with its routine's origin", async () => {
     const { workspace, calls, registrar } = setup()
     writeRoutine(
       workspace,
@@ -298,7 +316,9 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     )
     const result = await registrar.trigger("agent-demo")
     expect(result.ok).toBe(true)
-    expect(calls).toEqual([{ name: "agent_start", inputs: { adapter: "claude-code", prompt: "say hi" } }])
+    expect(calls).toEqual([
+      { name: "agent_start", inputs: { adapter: "claude-code", prompt: "say hi", origin: "routine:agent-demo" } },
+    ])
   })
 
   it("trigger() dispatches a workflow-target routine as workflow_run_file", async () => {
@@ -404,7 +424,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
       const toolCall = calls.find(c => c.name === "worktree_gc")!
       expect(toolCall.args).toEqual({ apply: true })
       const agentCall = calls.find(c => c.name === "agent_start")!
-      expect(agentCall.args).toEqual({ adapter: "claude-code", prompt: "say hi" })
+      expect(agentCall.args).toEqual({ adapter: "claude-code", prompt: "say hi", origin: "routine:agent-demo" })
       const workflowCall = calls.find(c => c.name === "workflow_run_file")!
       expect(workflowCall.args).toEqual({ path: "WORKFLOW.md" })
     } finally {
