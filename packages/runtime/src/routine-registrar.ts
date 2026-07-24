@@ -36,8 +36,19 @@ export interface RoutineDispatchTool {
  * understands. Throws a clear, caller-facing error for shapes this runtime
  * bridge doesn't dispatch yet (`action`, and the `ref`/`inline` forms of
  * `workflow` — see the SPEC for why).
+ *
+ * `routineId`, when passed, is stamped onto an `agent` target's `agent_start`
+ * call as `origin: "routine:<id>"` — the same origin convention
+ * `cron-scheduler.ts`'s native `kind:"agent"` action already uses for
+ * `origin: "cron"` — so a routine-fired session is attributable back to its
+ * routine in `session_list` / the sessions tree instead of looking like a
+ * manual launch. `tool` / `workflow` targets pass inputs through verbatim
+ * (unchanged): their tool handlers aren't guaranteed to accept `origin`.
  */
-export function routineTargetToToolCall(target: RoutineFrontmatter["target"]): RoutineDispatchTool {
+export function routineTargetToToolCall(
+  target: RoutineFrontmatter["target"],
+  routineId?: string,
+): RoutineDispatchTool {
   if ("tool" in target) {
     return { tool: target.tool, inputs: (target.inputs as Record<string, unknown> | undefined) ?? {} }
   }
@@ -50,6 +61,7 @@ export function routineTargetToToolCall(target: RoutineFrontmatter["target"]): R
         prompt,
         ...(model ? { model } : {}),
         ...(cwd ? { cwd } : {}),
+        ...(routineId ? { origin: `${JOB_LABEL_PREFIX}${routineId}` } : {}),
       },
     }
   }
@@ -194,7 +206,7 @@ export function createRoutineRegistrar(opts: {
 
         let call: RoutineDispatchTool
         try {
-          call = routineTargetToToolCall(frontmatter.target)
+          call = routineTargetToToolCall(frontmatter.target, id)
         } catch (err) {
           skipped.push({ id, reason: err instanceof Error ? err.message : String(err) })
           continue
@@ -257,7 +269,7 @@ export function createRoutineRegistrar(opts: {
             : `routine '${routineId}' not found under ${routinesDir}`,
         )
       }
-      const call = routineTargetToToolCall(found.frontmatter.target)
+      const call = routineTargetToToolCall(found.frontmatter.target, routineId)
       const result = await dispatchTool(call.tool, call.inputs)
       const r = result as { content?: Array<{ text?: string }>; isError?: boolean } | undefined
       const text = (r?.content ?? []).map(c => c.text ?? "").join("\n").trim()
