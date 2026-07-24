@@ -44,6 +44,7 @@ import type {
   Posture,
   RouteSpec,
 } from "./session-config.js"
+import type { CostBudget } from "@agentproto/auth"
 import type {
   SessionEventBus,
   SessionAwaitingQuestion,
@@ -999,6 +1000,11 @@ interface SessionRuntime {
    *  the accumulated costUsd against this ceiling and kills the session
    *  if exceeded. */
   maxCostUsd?: number
+  /** Windowed cost-budget cap (phase 4). Recorded here for provenance/read-back;
+   *  DISTINCT from `maxCostUsd` — it never kills the session. Enforcement is a
+   *  governance policy auto-attached at spawn time (`policy:failed` on windowed
+   *  overage), not this turn-end block. */
+  costBudget?: CostBudget
   /** Best-effort usage reader called after each turn. The adapter returns
    *  accumulated cost/token counts which are mirrored onto the descriptor. */
   readUsage?: () => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
@@ -1849,6 +1855,10 @@ export interface SpawnAgentInput {
    *  is stopped (best-effort, turn-granular — caps continuation, can't abort
    *  a turn mid-flight). */
   maxCostUsd?: number
+  /** Windowed cost-budget cap (phase 4). Stored on the runtime for read-back;
+   *  the spawn layer auto-attaches a governance policy that enforces it. Never
+   *  kills the session — see {@link SessionRuntime.costBudget}. */
+  costBudget?: CostBudget
   /** Best-effort usage reader, called on each turn-end to refresh the
    *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
    *  reads its state.db keyed by the adapter session id). Omit for adapters
@@ -3815,6 +3825,7 @@ export function createSessionsRegistry(opts?: {
         textBuf: "",
         thoughtBuf: "",
         maxCostUsd: input.maxCostUsd,
+        costBudget: input.costBudget,
         readUsage: input.readUsage,
         ...(input.permissionHold ? { permissionHold: true } : {}),
       }

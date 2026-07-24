@@ -86,7 +86,7 @@ import {
 } from "node:fs"
 
 import type { SessionEventBus, TaskChangedEvent } from "./session-event-bus.js"
-import type { GateSpec, JudgeGateSpec } from "./supervisor.js"
+import type { GateSpec, JudgeGateSpec, CostGateSpec } from "./supervisor.js"
 import {
   runCommand as defaultRunCommand,
   loadAllowlist,
@@ -244,6 +244,11 @@ function isJudgeGateSpec(gate: GateSpec): gate is JudgeGateSpec {
   return "judge" in gate
 }
 
+/** Narrow a gate spec to the cost-budget variant (mirrors supervisor.ts). */
+function isCostGateSpec(gate: GateSpec): gate is CostGateSpec {
+  return "costBudget" in gate
+}
+
 /** How long the default gate-runner waits for the one-shot policy to settle
  *  before giving up. Generous: the policy gates on the owning session's NEXT
  *  turn-end, which can be minutes away. */
@@ -357,6 +362,16 @@ export function createSupervisorTaskGateRunner(opts: {
       return {
         passed: false,
         error: "judge verify gate requires a live owning session",
+      }
+    }
+    // A cost-budget gate is a windowed spend rollup, not a runnable shell
+    // command — it can only be evaluated by the supervisor (which holds the
+    // registry + rollup). In the ownerless inline path there is no supervisor
+    // policy to attach it to, so fail-safe, exactly like the judge gate above.
+    if (isCostGateSpec(gate)) {
+      return {
+        passed: false,
+        error: "cost-budget verify gate must be attached to the supervisor, not run inline",
       }
     }
     try {

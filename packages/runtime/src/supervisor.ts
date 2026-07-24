@@ -103,6 +103,10 @@ import {
 import { isResumable, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
+import type { CostBudget } from "@agentproto/auth"
+import { collectSessionSnapshots } from "./usage-rollup-service.js"
+import { rollupUsage } from "./usage-rollup.js"
+import { evaluateCostBudget, type CostBudgetDecision } from "./cost-budget.js"
 import {
   runCommand as defaultRunCommand,
   loadAllowlist,
@@ -151,12 +155,37 @@ export interface JudgeGateSpec {
   }
 }
 
-/** A gate is either a shell command (exit 0 = pass) or a judge agent. */
-export type GateSpec = ShellGateSpec | JudgeGateSpec
+/**
+ * Windowed cost-budget gate (phase 4). Instead of a shell command or a judge
+ * agent, the gate computes the ROLLING windowed spend for the budget's scope
+ * (from durable usage snapshots via `collectSessionSnapshots` + `rollupUsage`)
+ * and PASSES when spend is within `costBudget.maxCostUsd`, FAILS (→ the existing
+ * emitFailed / policy:failed path) when it is over. DISTINCT from the scalar
+ * `maxCostUsd` session-kill (`sessions.ts` turn-end): a tripped cost gate trips
+ * a governance policy, it never kills the session. Best-effort: if the snapshots
+ * can't be read, spend is treated as 0 (the gate passes) rather than throwing.
+ */
+export interface CostGateSpec {
+  /** The windowed spend cap to evaluate — `{ maxCostUsd, window, scope }`. */
+  costBudget: CostBudget
+  /** Which session's spend surface the window is summed over. Defaults to the
+   *  policy's representative watched session (group[0]). Set at auto-attach to
+   *  the spawned session id so a profile-scoped budget resolves that session's
+   *  `accessProfile.profileRef`. */
+  sessionId?: string
+}
+
+/** A gate is a shell command (exit 0 = pass), a judge agent, or a cost budget. */
+export type GateSpec = ShellGateSpec | JudgeGateSpec | CostGateSpec
 
 /** Narrow a gate spec to the judge variant. */
 function isJudgeGate(gate: GateSpec): gate is JudgeGateSpec {
   return typeof (gate as JudgeGateSpec).judge === "object"
+}
+
+/** Narrow a gate spec to the cost-budget variant. */
+function isCostGate(gate: GateSpec): gate is CostGateSpec {
+  return typeof (gate as CostGateSpec).costBudget === "object"
 }
 
 /** Discriminated outcome of `runShellGate` — mirrors the branches the
@@ -1005,6 +1034,42 @@ export function createCompletionPolicySupervisor(opts: {
       }
     }
 
+    /**
+     * Phase 4: evaluate a windowed cost-budget gate. Sums the ROLLING windowed
+     * spend for the budget's scope off durable usage snapshots and compares it
+     * to the cap. Scope `"session"` sums just the watched session's snapshots;
+     * scope `"profile"` sums every session that resolved to the SAME auth
+     * profile (the session's `accessProfile.profileRef`) — falling back to
+     * session-only when the session has no resolved profile. Best-effort: any
+     * read/parse failure treats spend as 0, so the gate passes rather than
+     * throwing and wedging the policy.
+     */
+    const evaluateCostGate = async (
+      gate: CostGateSpec,
+    ): Promise<CostBudgetDecision> => {
+      const budget = gate.costBudget
+      // The gate's explicit session (set at auto-attach) else the watched repr.
+      const sid = gate.sessionId ?? repr
+      let spentUsd = 0
+      try {
+        const profileRef = registry.get(sid)?.accessProfile?.profileRef
+        const collectOpts =
+          budget.scope === "profile" && profileRef
+            ? { profileRef }
+            : { onlyIds: new Set([sid]) }
+        const snapshots = await collectSessionSnapshots(registry, collectOpts)
+        const rollup = rollupUsage(snapshots, {
+          window: budget.window,
+          nowMs: Date.now(),
+        })
+        spentUsd = rollup.total.spentUsd
+      } catch {
+        // Best-effort: unreadable snapshots / invalid window → spend 0 (pass).
+        spentUsd = 0
+      }
+      return evaluateCostBudget({ budget, spentUsd })
+    }
+
     const runGate = async () => {
       if (entry.cancelled || state.status !== "watching") return
       state.status = "gating"
@@ -1012,6 +1077,23 @@ export function createCompletionPolicySupervisor(opts: {
 
       if (!input.gate) {
         await act(true, 0)
+        return
+      }
+
+      // Phase 4: windowed cost-budget gate. PASS when within the cap, FAIL
+      // (→ emitFailed / policy:failed) when the windowed spend is over it.
+      if (isCostGate(input.gate)) {
+        const decision = await evaluateCostGate(input.gate)
+        const exitCode = decision.tripped ? 1 : 0
+        state.lastGate = { exitCode, at: new Date().toISOString() }
+        if (decision.tripped) {
+          state.error =
+            `cost budget tripped: windowed spend $${decision.spentUsd} exceeds ` +
+            `cap $${decision.maxCostUsd} (window ${decision.window}, scope ` +
+            `${decision.scope}, overage $${decision.overageUsd})`
+        }
+        schedulePersist()
+        await act(!decision.tripped, exitCode)
         return
       }
 

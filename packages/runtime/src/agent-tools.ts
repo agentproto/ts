@@ -37,6 +37,7 @@ import { jsonTolerant } from "./json-tolerant.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
+import type { CompletionPolicySupervisor } from "./supervisor.js"
 import { parsePostureInput } from "./canonical-posture.js"
 import { getUserPreset } from "./user-presets.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
@@ -231,6 +232,13 @@ export interface RegisterAgentToolsOptions {
    *  `spawnAgentSession`. Omitted → it reads `~/.agentproto/config.json`
    *  (env > config > `on-request`) itself. */
   resolveWorktreeIsolation?: () => Promise<WorktreeIsolationMode>
+  /** Completion-policy supervisor (phase 4). When wired, an `agent_start`
+   *  carrying `costBudget` auto-attaches a windowed cost-budget governance
+   *  policy on the spawned session (`gate: { costBudget }`, `then: "emit"`) so
+   *  the cap is evaluated at every turn-end. Omitted → the budget is still
+   *  recorded on the session, but nothing auto-evaluates it (a caller can
+   *  attach the same gate by hand via `policy_attach`). */
+  supervisor?: CompletionPolicySupervisor
 }
 
 export function registerAgentTools(
@@ -252,6 +260,7 @@ export function registerAgentTools(
     resolveSandboxProvider,
     provisionWorktree,
     resolveWorktreeIsolation,
+    supervisor,
   } = opts
 
   // ── agent_start ────────────────────────────────────────
@@ -604,6 +613,20 @@ export function registerAgentTools(
         .describe(
           "Hard ceiling on cumulative session cost (USD). The session is stopped at a turn-end once exceeded."
         ),
+      costBudget: jsonTolerant(
+        z.object({
+          maxCostUsd: z.number().positive().describe("Windowed spend ceiling in USD."),
+          window: z.string().min(1).describe("Rolling window spec (\"5h\"/\"7d\"/\"P7D\")."),
+          scope: z.enum(["session", "profile"]).describe("Spend surface: this session, or every session on its auth profile."),
+        }),
+      )
+        .optional()
+        .describe(
+          "Windowed cost-budget cap (DISTINCT from `maxCostUsd`). Auto-attaches a " +
+            "governance policy that trips `policy:failed` when the rolling windowed " +
+            "spend for `scope` crosses `maxCostUsd`. Never kills the session — it " +
+            "trips a policy for a supervisor to act on."
+        ),
       role: z
         .string()
         .optional()
@@ -799,11 +822,37 @@ export function registerAgentTools(
         },
       )
       if (result.ok) {
+        // Phase 4: auto-attach a windowed cost-budget governance policy on the
+        // freshly-spawned session. The gate carries the spawned session id
+        // explicitly (so a profile-scoped budget resolves THAT session's
+        // profileRef) and `then: "emit"` trips `policy:failed` on windowed
+        // overage — it never kills the session (that's the orthogonal scalar
+        // `maxCostUsd` cap). Best-effort: a supervisor-attach failure must not
+        // sink an otherwise-successful spawn, so its policyId rides back as a
+        // non-fatal warning rather than turning the spawn into an error.
+        const attachWarnings: string[] = []
+        let costBudgetPolicyId: string | undefined
+        if (input.costBudget && supervisor && !result.deduped) {
+          try {
+            const state = supervisor.attach({
+              sessionId: result.descriptor.id,
+              gate: { costBudget: input.costBudget, sessionId: result.descriptor.id },
+              then: "emit",
+            })
+            costBudgetPolicyId = state.policyId
+          } catch (err) {
+            attachWarnings.push(
+              `cost-budget policy auto-attach failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
+        const warnings = [...(result.warnings ?? []), ...attachWarnings]
         const body = {
           ...result.descriptor,
           ...(result.output ? { output: result.output } : {}),
-          ...(result.warnings ? { warnings: result.warnings } : {}),
+          ...(warnings.length > 0 ? { warnings } : {}),
           ...(result.deduped ? { deduped: true } : {}),
+          ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
         }
         return {
           content: [{ type: "text", text: JSON.stringify(body, null, 2) }],

@@ -258,6 +258,10 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
   resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
+  /** Forwarded to `registerAgentTools` — the completion-policy supervisor used
+   *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
+   *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
+  supervisor?: RegisterAgentToolsOptions["supervisor"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join
