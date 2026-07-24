@@ -173,7 +173,14 @@ function liveAgentSession(sessionId: string, closed: { value: boolean }): AgentS
 
 describe("registry.markCrashed — the crash action", () => {
   let tmp: string
-  let killSpy: ReturnType<typeof vi.spyOn> | null = null
+  // Loosely typed on purpose: `vi.spyOn(process, "kill")`'s inferred
+  // MockInstance<...> generic doesn't survive round-tripping through a
+  // block-scoped `let` declared ahead of the call (the declared generic
+  // default and the call-site-inferred signature aren't assignable to each
+  // other under `tsc --noEmit`) — this variable only ever calls
+  // `.mockRestore()`, so a structural type covering just that member
+  // sidesteps the mismatch without touching runtime behavior.
+  let killSpy: { mockRestore: () => void } | null = null
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "crash-detect-"))
   })

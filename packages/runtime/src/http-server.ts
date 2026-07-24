@@ -3246,6 +3246,22 @@ async function handleSessions(
               return a ? { allowSharedCwd: true } : {}
             })()
           : {}),
+        // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
+        // `keepAlive` field. Tolerate a stringified boolean like
+        // `permissionHold`/`trace`/`allowSharedCwd`.
+        ...(b.keepAlive !== undefined
+          ? (() => {
+              const k =
+                typeof b.keepAlive === "boolean"
+                  ? b.keepAlive
+                  : b.keepAlive === "true"
+                    ? true
+                    : b.keepAlive === "false"
+                      ? false
+                      : undefined
+              return k ? { keepAlive: true } : {}
+            })()
+          : {}),
       },
     )
     if (!result.ok) {

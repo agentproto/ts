@@ -31,14 +31,19 @@ export interface RegisterDaemonHealthToolsOptions {
   /** Effective value of the `daemon.crashDetectIntervalMs` knob (crash-detect
    *  PR-1) — the sweep interval (ms) the crash-detect pass runs on, or 0 when
    *  explicitly disabled. Detection is default-on, so this is normally a
-   *  positive value even when the knob was never configured. */
-  crashDetectIntervalMs: number
+   *  positive value even when the knob was never configured. Optional (unlike
+   *  `idleReapAfterMs`) so a caller from before this knob existed still
+   *  type-checks; defaults to 0 where consumed. */
+  crashDetectIntervalMs?: number
   /** Effective value of the `daemon.restartSweepIntervalMs` knob (restart-
    *  scheduler PR-2) — the sweep cadence (ms) that EXECUTES an
    *  already-scheduled restart for a session carrying a `restartPolicy`, or
    *  0 when off (the default). Off doesn't disable per-session opt-in
-   *  scheduling itself — it just leaves a stamped `nextRestartAt` inert. */
-  restartSweepIntervalMs: number
+   *  scheduling itself — it just leaves a stamped `nextRestartAt` inert.
+   *  Optional (same shape as `crashDetectIntervalMs`) so a caller from
+   *  before this knob existed still type-checks; defaults to 0 where
+   *  consumed. */
+  restartSweepIntervalMs?: number
 }
 
 function text(value: string | object): {
@@ -74,8 +79,8 @@ export function registerDaemonHealthTools(
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
         idleReapAfterMs: opts.idleReapAfterMs,
-        crashDetectIntervalMs: opts.crashDetectIntervalMs,
-        restartSweepIntervalMs: opts.restartSweepIntervalMs,
+        crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
+        restartSweepIntervalMs: opts.restartSweepIntervalMs ?? 0,
       })
     },
   )

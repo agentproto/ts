@@ -183,6 +183,10 @@ export interface SessionDescriptor {
    *  from `listSessions()` here too, unless `includeArchived` is passed).
    *  Set/cleared via `session_archive`/`session_unarchive`. */
   archived?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.keepAlive — when `true`,
+   *  the idle-reaper never retires this session regardless of idle time.
+   *  Set at spawn time or toggled via `session_set_keepalive`. */
+  keepAlive?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
