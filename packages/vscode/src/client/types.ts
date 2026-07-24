@@ -671,3 +671,40 @@ export interface WorkspacesConfig {
   active?: string
   workspaces: WorkspaceEntry[]
 }
+
+// ── Worktree GC (mirrors @agentproto/runtime worktree-gc.ts — the client takes
+//    no runtime import; keep in sync by hand). `reclaim` = safe to remove
+//    (merged, clean, no open PR, no live session); `salvage` = dirty, only
+//    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
+export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
+
+export interface WorktreeGcPlanEntryView {
+  path: string
+  branch: string | null
+  head: string
+  class: WorktreeGcClass
+  tree: string
+  integration: { state: string; pr?: number }
+  liveness: { state: string; sessionCount: number }
+}
+
+export interface WorktreeGcOutcomeView {
+  path: string
+  branch: string | null
+  result:
+    | "reclaimed"
+    | "salvaged"
+    | "held"
+    | "skipped-dirty"
+    | "aborted-reclassified"
+    | "aborted-vanished"
+    | "failed"
+  salvageDir?: string
+  from?: WorktreeGcClass
+  to?: WorktreeGcClass
+  message?: string
+}
+
+export type WorktreeGcResult =
+  | { mode: "plan"; plan: WorktreeGcPlanEntryView[] }
+  | { mode: "apply"; outcomes: WorktreeGcOutcomeView[] }

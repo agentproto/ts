@@ -49,6 +49,7 @@ import type {
   SessionEventsPollResult,
   UserPreset,
   WorkspacesConfig,
+  WorktreeGcResult,
 } from "./types.js"
 
 export interface SessionEventsOptions {
@@ -214,6 +215,32 @@ export class DaemonClient {
     return this.postJson("/sessions/gc", {
       ...(opts?.olderThanDays !== undefined ? { olderThanDays: opts.olderThanDays } : {}),
       ...(opts?.forget ? { forget: true } : {}),
+    })
+  }
+
+  /**
+   * `POST /worktrees/gc` — plan (and, with `apply`, execute) a worktree sweep
+   * for ONE repo. DEFAULTS TO A DRY RUN: without `apply` it returns the plan
+   * (`mode:"plan"`) and mutates nothing. Target the repo by `repoRoot` (the
+   * daemon resolves it to the git root) or `workspaceSlug`. Engine safety is
+   * server-side: only merged, clean, no-open-PR, no-live-session worktrees are
+   * `reclaim`; dirty ones are `salvage` (removed only with `salvageDirty`); an
+   * open PR or a live session is `hold` (kept). Throws when the daemon has no
+   * gc runner wired (`501 worktree_gc_not_configured`).
+   */
+  async gcWorktrees(opts: {
+    repoRoot?: string
+    workspaceSlug?: string
+    apply?: boolean
+    salvageDirty?: boolean
+    includeDetached?: boolean
+  }): Promise<WorktreeGcResult> {
+    return this.postJson("/worktrees/gc", {
+      ...(opts.repoRoot ? { repoRoot: opts.repoRoot } : {}),
+      ...(opts.workspaceSlug ? { workspaceSlug: opts.workspaceSlug } : {}),
+      apply: opts.apply === true,
+      salvageDirty: opts.salvageDirty === true,
+      includeDetached: opts.includeDetached === true,
     })
   }
 
