@@ -1,0 +1,70 @@
+{
+  "name": "@agentproto/workflow-mastra",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/workflow-mastra — project an AIP-15 WORKFLOW.md's compiled RuntimeWorkflow onto a Mastra `createWorkflow`. Runtime projection (same one-level-up relationship `toMastraTool` has to `implementTool`): tool steps dispatch through the same `runTool` resolver the engine itself uses, and control-flow kinds (branch/parallel/map/loop/subworkflow) map onto Mastra's native `.branch()/.parallel()/.foreach()/.dowhile()` combinators. Kinds with no clean Mastra target (`suspend`, `approval`) fail loud instead of silently dropping.",
+  "keywords": [
+    "agentproto",
+    "aip-15",
+    "workflow",
+    "mastra",
+    "projection",
+    "adapter",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-15",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/workflow-mastra"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/workflow-runtime": "workspace:*"
+  },
+  "peerDependencies": {
+    "@mastra/core": "*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@mastra/core": "1.32.1",
+    "@types/node": "^25.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}

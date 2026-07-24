@@ -1,0 +1,71 @@
+{
+  "name": "@agentproto/workflow-ai-sdk",
+  "version": "0.1.0-alpha.0",
+  "description": "@agentproto/workflow-ai-sdk — project an AIP-15 WORKFLOW.md's compiled RuntimeWorkflow onto a Vercel AI SDK `dynamicTool`. AI SDK has no first-class step-graph primitive, so the whole compiled workflow runs through `@agentproto/workflow-runtime`'s own `runWorkflow` behind one tool call (whole-workflow-as-one-tool) rather than a step-by-step mapping. Kinds with no clean single-call target (`suspend`, `approval`) fail loud at wrap time instead of silently dropping.",
+  "keywords": [
+    "agentproto",
+    "aip-15",
+    "workflow",
+    "ai-sdk",
+    "vercel-ai",
+    "projection",
+    "adapter",
+    "open-standard"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-15",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/workflow-ai-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/workflow-runtime": "workspace:*"
+  },
+  "peerDependencies": {
+    "ai": "^5.0.0 || ^6.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.6.2",
+    "ai": "^6.0.204",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}
