@@ -9,7 +9,10 @@ export default {
   description:
     "Garbage-collect merged/fresh+clean worktrees, then report the outcome to Telegram via hosted agentpush.",
   version: "0.1.0",
-  inputs: {},
+  // `chatId` is the Telegram chat id `notify` reports to — operator-supplied
+  // at invocation (routine `target.inputs` / `workflow_run_file`'s `input`),
+  // never hardcoded, since this workflow ships in a public repo.
+  inputs: { chatId: { type: "string" } },
   outputs: {},
   steps: [
     {
@@ -47,7 +50,7 @@ export default {
         let text = `🧹 worktree-gc (${stamp} UTC) — ${line}`
         if (reaped.length) text += `\nreaped: ${reaped.join(", ")}`
         return JSON.stringify({
-          to: { channel: "telegram", address: "6371794295" },
+          to: { channel: "telegram", address: b.input?.chatId },
           content: { text },
         })
       },

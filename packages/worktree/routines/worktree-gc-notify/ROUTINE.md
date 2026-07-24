@@ -18,6 +18,8 @@ schedule:
 target:
   workflow:
     file: /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts/packages/worktree/routines/worktree-gc-notify/WORKFLOW.md
+  inputs:
+    chatId: "<REPLACE_WITH_YOUR_TELEGRAM_CHAT_ID>"
 retry:
   max_attempts: 1
   backoff: fixed
@@ -55,8 +57,9 @@ tool steps could never actually complete.
    (ROUTINE.md + WORKFLOW.md + entry.mjs together).
 2. Allowlist `bash` in that workspace's `.agentproto/allowed-commands.json`
    (`command_execute`'s `notify` step needs it) — see the WORKFLOW.md.
-3. Set `enabled: true`, and update `target.workflow.file` to wherever the
-   WORKFLOW.md actually lives in that environment.
+3. Set `enabled: true`, update `target.workflow.file` to wherever the
+   WORKFLOW.md actually lives in that environment, and replace
+   `target.inputs.chatId` with your own Telegram chat id.
 4. Reload routines, or fire it once ad-hoc via `routine_trigger` without
    waiting for the schedule or flipping `enabled`.
 

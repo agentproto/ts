@@ -12,7 +12,10 @@ description: |
   in the declarative manifest.
 version: 0.1.0
 entry: ./entry.mjs
-inputs: {}
+inputs:
+  chatId:
+    type: string
+    description: Telegram chat id `notify` reports to. Operator-supplied — never hardcoded.
 outputs: {}
 steps:
   - id: gc
@@ -58,9 +61,10 @@ Ships wired to `routines/worktree-gc-notify/ROUTINE.md`, disabled
 1. Copy this directory to `<workspace>/.routines/worktree-gc-notify/`.
 2. `command_execute` requires `bash` (and whatever `curl` needs) allowlisted
    in that workspace's `.agentproto/allowed-commands.json`.
-3. Set `enabled: true` on the copied `ROUTINE.md`, and update
+3. Set `enabled: true` on the copied `ROUTINE.md`, update
    `target.workflow.file` if the workflow isn't installed at this same
-   absolute path in that environment — `workflow_run_file`'s `path` is read
-   as-is, with no anchoring to the routine's own directory.
+   absolute path in that environment (`workflow_run_file`'s `path` is read
+   as-is, with no anchoring to the routine's own directory), and set
+   `target.inputs.chatId` to your own Telegram chat id.
 4. Reload routines so the daemon registers the schedule (or fire it once
    ad-hoc via `routine_trigger`).

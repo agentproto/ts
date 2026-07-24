@@ -52,7 +52,7 @@ describe("worktree-gc-notify dogfood workflow", () => {
 
     const handle = await loadWorkflowHandle(WORKFLOW_PATH)
     const compiled = compileWorkflow(handle, createDaemonToolRegistry(handle, dispatchTool))
-    await runWorkflow({ workflow: compiled, input: {} })
+    await runWorkflow({ workflow: compiled, input: { chatId: "test-chat-id" } })
 
     expect(calls).toHaveLength(2)
     expect(calls[0]!.name).toBe("worktree_gc")
@@ -67,7 +67,7 @@ describe("worktree-gc-notify dogfood workflow", () => {
     expect(calls[1]!.inputs.command).toBe("bash")
     const stdin = calls[1]!.inputs.stdin as string
     const body = JSON.parse(stdin)
-    expect(body.to).toEqual({ channel: "telegram", address: "6371794295" })
+    expect(body.to).toEqual({ channel: "telegram", address: "test-chat-id" })
     expect(body.content.text).toMatch(/worktree-gc/)
     expect(body.content.text).toMatch(/1 reclaimed/)
     expect(body.content.text).toMatch(/1 held/)
