@@ -107,9 +107,16 @@ describe("command_execute → session-based persistence", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // command_execute's log write (CommandLogEntry → ToolCallRecord) is
+    // fire-and-forget under the workspace's sessions/ dir. Drain it BEFORE
+    // rmSync, or the write races the removal — mkdir(recursive) re-creates a
+    // dir rmSync just emptied (ENOTEMPTY on the parent rmdir) or appendFile
+    // hits a dir already gone (ENOENT). maxRetries covers any straggler the
+    // drain can't see (writes fired by other registries in the same test).
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("mints a kind:\"command\" session and echoes its id back to the caller", async () => {
@@ -391,9 +398,13 @@ describe("command_execute → sandbox confinement default posture", () => {
     sandboxOverride.backend = undefined
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // See the persistence block's afterEach: drain the fire-and-forget
+    // command-log write before removing the workspace, else it races rmSync
+    // (ENOTEMPTY / ENOENT). This is the flake this describe block hit in CI.
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
     sandboxOverride.backend = undefined
     if (originalEnv === undefined) delete process.env[COMMAND_SANDBOX_MODE_ENV]
     else process.env[COMMAND_SANDBOX_MODE_ENV] = originalEnv
