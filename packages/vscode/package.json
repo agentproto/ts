@@ -182,6 +182,12 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "agentproto.cleanWorktrees",
+        "title": "agentproto: Clean Up Worktrees…",
+        "category": "agentproto",
+        "icon": "$(trash)"
+      },
+      {
         "command": "agentproto.toggleGroupByWorkspace",
         "title": "agentproto: Toggle Group Sessions By Workspace",
         "category": "agentproto"
