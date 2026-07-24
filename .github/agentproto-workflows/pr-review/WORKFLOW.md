@@ -10,9 +10,18 @@ description: >
 version: 0.1.0
 entry: ./entry.mjs
 inputs:
+  placement:
+    type: string
+    description: >-
+      Delivery placement — "host" (gh CLI, default), "sandbox" (inferred from
+      reviewConfig.reviewerSandbox + repo), or "local" (no PR, no posting —
+      emit a structured verdict as the final message; see "Local placement"
+      below).
+    default: host
   prNumber:
     type: number
-    description: The pull request number to review.
+    description: The pull request number to review. Unused (may be 0) when placement is "local".
+    default: 0
   baseRef:
     type: string
     description: Base branch ref (e.g. "main").
@@ -92,3 +101,23 @@ continuity. When `lastReviewedSha` is empty, it's a first (full-diff) review.
 When `claudeCodeOauthToken` is absent, the calling job in `ci.yml` falls back
 to the existing hand-rolled `scripts/review-pr.mjs` path (API-key billing).
 This workflow is ONLY exercised when the OAuth token is present and valid.
+
+## Local placement
+
+`placement: "local"` runs the SAME review rubric against the current branch
+diff with no PR involved: no `bootstrapBlock` clone, no `gh`/curl posting, no
+changeset write. Instead of Phase 2 "Act", the agent's only job is Phase 2
+"Report" — emit a single JSON object as its final message:
+
+```json
+{ "conclusion": "approve" | "request_changes", "summary": "...", "findings": [...] }
+```
+
+This placement exists so the local pre-push gate
+(`scripts/agentflow/review.mjs`, currently its own single-shot
+`primitives/review.mjs` implementation — see `scripts/agentflow/README.md`)
+can eventually drive this SAME workflow through the daemon instead of a
+separate review path, once a caller exists that can reach `workflow_run_file`
+headless from a plain node script and read a structured verdict back out of
+the finished run. Landing that caller is tracked separately — this entry only
+adds the placement the caller will need.

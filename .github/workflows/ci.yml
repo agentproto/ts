@@ -146,6 +146,12 @@ jobs:
       - name: Run changeset-check tests
         run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs
 
+      # Guards the pr-review workflow's placement switch (host/sandbox/local
+      # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
+      # file entirely (it lives outside packages/**/adapters/**).
+      - name: Run pr-review entry tests
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs
+
       # `changeset version` only runs on main, after the merge, and hard-errors
       # on a package name that isn't in the workspace — so one bad changeset
       # takes down every release until a human notices. pr-338-review declared
