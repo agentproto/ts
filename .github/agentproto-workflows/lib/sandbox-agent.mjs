@@ -44,6 +44,16 @@ export const adapterFor = (config, verb) =>
  * provision time the box has NO checkout yet — the clone happens later in
  * Phase 0. A global hooks path applies to that future clone too.
  *
+ * CAVEAT — this global hook is not sufficient on its own. This repo's `prepare`
+ * script runs husky, which points a LOCAL `core.hooksPath` at `.husky/_`, and a
+ * local hooksPath SHADOWS the global one. So the moment the box runs
+ * `pnpm install` (e.g. to validate a change), this strip hook stops firing and a
+ * model's `Co-Authored-By: Claude …` trailer survives — which deadlocked PR #676
+ * against Hygiene. The durable backstop is the committed `.husky/commit-msg` hook
+ * (same strip logic), which husky's own `_/commit-msg` wrapper execs, so coverage
+ * holds under whichever hooksPath wins. Keep both: this one covers a box that
+ * never installs; `.husky/commit-msg` covers one that does.
+ *
  * Idempotent: the command only (re)writes the same hook file and (re)sets the
  * same config key, so re-running it never double-installs or corrupts.
  *
