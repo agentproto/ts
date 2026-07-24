@@ -492,9 +492,7 @@ export function turnToActivities(
 // ── workflow-step mapper (source: workflow) ──────────────────────────
 
 /** Structural slice of a run's step state — shared by `workflow-runner.ts`'s
- *  `WorkflowStageState.steps` (and, historically, the retired
- *  `routine-runner.ts`'s flat `RoutineStepState`, whose shape it kept for
- *  the routine-workflow-shim's flattened `routine_status` view). */
+ *  `WorkflowStageState.steps`. */
 export interface ActivityRunStepSlice {
   index: number
   label: string

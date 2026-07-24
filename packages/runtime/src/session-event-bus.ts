@@ -4,7 +4,7 @@
  * individual sessions and fire at turn-level granularity.
  *
  * Consumers: EventRing (session_events_poll cursor), WebhookNotifier
- * (fire-and-forget HTTP), RoutineRunner (state machine fan-in),
+ * (fire-and-forget HTTP), WorkflowRunner (state machine fan-in),
  * and session_monitor MCP tool (long-poll multiplexed).
  */
 
