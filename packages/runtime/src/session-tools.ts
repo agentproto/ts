@@ -46,6 +46,7 @@ import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
   collectSessionSnapshots,
+  enrichRollupWithAccountCredits,
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
@@ -551,8 +552,12 @@ export function registerSessionTools(
       const rollup = await enrichRollupWithProviderQuota(baseRollup, input.window, {
         probe: input.probe ?? false,
       })
+      // Best-effort per-provider "account credits" (prepaid balance) enrichment
+      // — also never fatal: any failure returns the rollup unchanged. Rides on
+      // the same byProfile entries, so it survives the groupBy pruning below.
+      const rollupWithCredits = await enrichRollupWithAccountCredits(rollup)
       // Prune the breakdowns not requested; always keep total + window metadata.
-      let result: unknown = rollup
+      let result: unknown = rollupWithCredits
       if (input.groupBy) {
         const want = new Set(input.groupBy)
         const {
@@ -560,12 +565,12 @@ export function registerSessionTools(
           byModel: _byModel,
           byHarness: _byHarness,
           ...rest
-        } = rollup
+        } = rollupWithCredits
         result = {
           ...rest,
-          ...(want.has("profile") ? { byProfile: rollup.byProfile } : {}),
-          ...(want.has("model") ? { byModel: rollup.byModel } : {}),
-          ...(want.has("harness") ? { byHarness: rollup.byHarness } : {}),
+          ...(want.has("profile") ? { byProfile: rollupWithCredits.byProfile } : {}),
+          ...(want.has("model") ? { byModel: rollupWithCredits.byModel } : {}),
+          ...(want.has("harness") ? { byHarness: rollupWithCredits.byHarness } : {}),
         }
       }
       return {

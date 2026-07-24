@@ -71,6 +71,7 @@ import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
   collectSessionSnapshots,
+  enrichRollupWithAccountCredits,
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
@@ -3017,7 +3018,10 @@ async function handleSessions(
     // Best-effort per-provider "remaining quota" enrichment — never fatal:
     // any failure returns the un-enriched rollup unchanged.
     const rollup = await enrichRollupWithProviderQuota(baseRollup, window, { probe })
-    json(200, rollup)
+    // Best-effort per-provider "account credits" (prepaid balance) enrichment —
+    // also never fatal: any failure returns the rollup unchanged.
+    const rollupWithCredits = await enrichRollupWithAccountCredits(rollup)
+    json(200, rollupWithCredits)
     return true
   }
 
