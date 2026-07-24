@@ -17,7 +17,7 @@ import type {
   SessionAwaitingQuestion,
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
-import type { RoutineRunner } from "./routine-runner.js"
+import type { RoutineRunner } from "./routine-workflow-shim.js"
 import { logRoutineRunnerDeprecation } from "./step-run-types.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"

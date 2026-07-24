@@ -167,13 +167,17 @@ Hermes a aussi un export natif (JSONL only) :
 ## Pattern 6 — Orchestration durable (cible long terme)
 
 Le vrai « babysitter » fiable ne vit pas dans cowork (dépend de l'app ouverte)
-mais **dans agentproto** : un `RoutineRunner` qui s'abonne in-process aux events
-de session (`turn-end`, `awaiting-input`, `exited`), enchaîne les étapes, répond
+mais **dans agentproto** : un moteur qui s'abonne in-process aux events de
+session (`turn-end`, `awaiting-input`, `exited`), enchaîne les étapes, répond
 aux questions selon une policy, et **n'escalade à l'humain (webhook `notifyUrl`)
-que quand c'est vraiment bloqué**. Surfaces à exposer :
-`session_monitor({sessionIds})`, `session_events_poll({since})`, webhook de
-notification. C'est « un agent qui babysit un autre agent en jouant l'humain »,
-sans polling tokenivore.
+que quand c'est vraiment bloqué**. Livré via `workflow_*`
+(`workflow_start`/`workflow_status`/`workflow_cancel`/
+`workflow_escalation_resolve`) — `routine_start` et le reste de `routine_*`
+sont **DEPRECATED** (l'ancien moteur impératif `RoutineRunner` a été retiré en
+Phase B2 ; ces tools ne restent que comme alias le temps d'une fenêtre de
+dépréciation). Surfaces à exposer : `session_monitor({sessionIds})`,
+`session_events_poll({since})`, webhook de notification. C'est « un agent qui
+babysit un autre agent en jouant l'humain », sans polling tokenivore.
 
 ## Pattern 7 — Multi-session supervision (session_monitor)
 

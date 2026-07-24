@@ -40,14 +40,12 @@ import {
   linkTasks,
   policyToActivities,
   prToActivities,
-  routineToActivities,
   turnToActivities,
   workflowToActivities,
   type ActivityListFilter,
   type ActivityPolicySlice,
   type ActivityPrSession,
   type ActivityRecord,
-  type ActivityRoutineRunSlice,
   type ActivitySource,
   type ActivityTaskSlice,
   type ActivityTurnSession,
@@ -72,11 +70,6 @@ export interface ActivityProjectorRegistry {
  *  `CompletionPolicySupervisor` (same `list()` that `policy_list` reads). */
 export interface ActivityPolicyLister {
   list(): readonly ActivityPolicySlice[]
-}
-
-/** The routine-runner slice — structurally satisfied by `RoutineRunner`. */
-export interface ActivityRoutineLister {
-  list(): readonly ActivityRoutineRunSlice[]
 }
 
 /** The workflow-runner slice — structurally satisfied by `WorkflowRunner`. */
@@ -125,13 +118,14 @@ export interface ActivityProjector {
 // Which projection owner each activity source belongs to — used to scope
 // the vanished-record sweep of a per-owner re-projection so one owner's
 // diff can never evict another owner's cached rows. `cron` maps to nothing
-// (no cron activities in v1).
-type ActivityOwner = "session" | "supervisor" | "routine" | "workflow"
+// (no cron activities in v1). No separate "routine" owner: a deprecated
+// `routine_start` run is a `workflowRunner` run under the hood
+// (routine-workflow-shim.ts) and already projects via "workflow".
+type ActivityOwner = "session" | "supervisor" | "workflow"
 const OWNER_OF_SOURCE: Record<ActivitySource, ActivityOwner | undefined> = {
   session: "session",
   "code-host": "session",
   supervisor: "supervisor",
-  routine: "routine",
   workflow: "workflow",
   cron: undefined,
 }
@@ -158,7 +152,6 @@ export function createActivityProjector(opts: {
   registry: ActivityProjectorRegistry
   sessionEvents: SessionEventBus
   supervisor: ActivityPolicyLister
-  routineRunner?: ActivityRoutineLister
   workflowRunner?: ActivityWorkflowLister
   taskLedger?: ActivityTaskLister
   /** Optional forge port for PR settlement — see {@link PrStateResolver}. */
@@ -195,10 +188,6 @@ export function createActivityProjector(opts: {
       }
       case "supervisor":
         return opts.supervisor.list().flatMap(policy => policyToActivities(policy))
-      case "routine":
-        return opts.routineRunner
-          ? opts.routineRunner.list().flatMap(run => routineToActivities(run))
-          : []
       case "workflow":
         return opts.workflowRunner
           ? opts.workflowRunner.list().flatMap(run => workflowToActivities(run))
@@ -254,9 +243,9 @@ export function createActivityProjector(opts: {
   /**
    * Which owners an incoming event can have moved. `policy:*` only moves
    * policy state; `session:*` can move everything (a turn-end flips a
-   * watching policy to gating and advances routine/workflow steps WITHOUT
-   * any policy/run event of its own); `cron:*` moves nothing in v1; and our
-   * own `activity:changed` moves nothing — the re-entrance guard.
+   * watching policy to gating and advances workflow steps WITHOUT any
+   * policy/run event of its own); `cron:*` moves nothing in v1; and our own
+   * `activity:changed` moves nothing — the re-entrance guard.
    */
   const ownersTouchedBy = (type: SessionEvent["type"]): readonly ActivityOwner[] => {
     if (type === "activity:changed") return []
@@ -265,7 +254,7 @@ export function createActivityProjector(opts: {
     if (type === "task:changed") return ["session", "supervisor"]
     if (type.startsWith("policy:")) return ["supervisor"]
     if (type.startsWith("cron:")) return []
-    return ["session", "supervisor", "routine", "workflow"]
+    return ["session", "supervisor", "workflow"]
   }
 
   // ── PR settlement (the injected forge port) ────────────────────────
@@ -343,7 +332,7 @@ export function createActivityProjector(opts: {
   // Prime the cache from current owner state WITHOUT announcing, so a daemon
   // booting over persisted policies/runs doesn't spray `activity:changed`
   // for state nothing changed. Best-effort like every other pass.
-  for (const owner of ["session", "supervisor", "routine", "workflow"] as const) {
+  for (const owner of ["session", "supervisor", "workflow"] as const) {
     try {
       reprojectOwner(owner, false)
     } catch {
@@ -373,7 +362,6 @@ export function createActivityProjector(opts: {
     const all = [
       ...projectOwner("session"),
       ...projectOwner("supervisor"),
-      ...projectOwner("routine"),
       ...projectOwner("workflow"),
     ]
     return filterActivities(all, filter)

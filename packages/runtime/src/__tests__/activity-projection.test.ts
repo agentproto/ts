@@ -13,7 +13,6 @@ import {
   linkTasks,
   policyToActivities,
   prToActivities,
-  routineToActivities,
   STALE_TURN_AFTER_MS,
   turnToActivities,
   workflowToActivities,
@@ -21,7 +20,6 @@ import {
   type ActivityTaskSlice,
   type ActivityPrSession,
   type ActivityRecord,
-  type ActivityRoutineRunSlice,
   type ActivityRunStepSlice,
   type ActivityState,
   type ActivityTurnSession,
@@ -248,59 +246,6 @@ describe("turnToActivities", () => {
     expect(stale[0]?.staleSince).toBe(lastActivityAt)
     const fresh = turnToActivities(turnSession({ busy: true, lastActivityAt }), { now: freshNow })
     expect(fresh[0]?.staleSince).toBeUndefined()
-  })
-})
-
-describe("routineToActivities", () => {
-  function run(over: Partial<ActivityRoutineRunSlice> = {}): ActivityRoutineRunSlice {
-    return { runId: "run_1", status: "running", startedAt: T0, steps: [], ...over }
-  }
-
-  it("maps every step status: running→active, done/failed terminal, skipped→cancelled", () => {
-    const records = routineToActivities(
-      run({
-        steps: [
-          step({ index: 0, status: "done", sessionId: "s0", endedAt: T1 }),
-          step({ index: 1, status: "failed", error: "boom" }),
-          step({ index: 2, status: "skipped" }),
-          step({ index: 3, status: "running", sessionId: "s3", startedAt: T1 }),
-        ],
-      }),
-    )
-    expect(byId(records, "routine-step:run_1:0")?.state).toBe("done")
-    expect(byId(records, "routine-step:run_1:1")?.state).toBe("failed")
-    expect(byId(records, "routine-step:run_1:1")?.error).toBe("boom")
-    expect(byId(records, "routine-step:run_1:2")?.state).toBe("cancelled")
-    const running = byId(records, "routine-step:run_1:3")
-    expect(running?.state).toBe("active")
-    expect(running?.sessionId).toBe("s3")
-    expect(running?.startedAt).toBe(T1)
-    expect(running?.sourceRef).toBe("run_1#3")
-    expect(running?.source).toBe("routine")
-  })
-
-  it("a pending step waits on the earlier unfinished steps' sessions", () => {
-    const records = routineToActivities(
-      run({
-        steps: [
-          step({ index: 0, status: "done", sessionId: "s0" }),
-          step({ index: 1, status: "running", sessionId: "s1" }),
-          step({ index: 2, status: "pending" }),
-        ],
-      }),
-    )
-    const pending = byId(records, "routine-step:run_1:2")
-    expect(pending?.state).toBe("pending")
-    expect(pending?.waitingOn?.kind).toBe("session-turn")
-    // s0 is done — only the still-running s1 is a ref.
-    expect(pending?.waitingOn?.refs).toEqual(["s1"])
-  })
-
-  it("a step still pending inside a terminal run settles as cancelled", () => {
-    const records = routineToActivities(
-      run({ status: "cancelled", steps: [step({ index: 0, status: "pending" })] }),
-    )
-    expect(byId(records, "routine-step:run_1:0")?.state).toBe("cancelled")
   })
 })
 
