@@ -436,6 +436,12 @@ export interface SpawnAgentSessionInput {
    *  for sandbox spawns (the box's own daemon owns permission handling).
    *  Default false — unchanged auto-answer behaviour. */
   permissionHold?: boolean
+  /** Exempt this session from the idle-reaper (`isReapable` in
+   *  idle-reaper.ts) regardless of how long it sits idle. Stamped straight
+   *  onto the descriptor — see `SessionDescriptor.keepAlive`. Default false
+   *  — unchanged reap-eligible behaviour. Toggleable later via the
+   *  `session_set_keepalive` MCP verb. */
+  keepAlive?: boolean
   /** Caller-declared "this is the same logical spawn" token. A second
    *  `agent_start` with the same `(adapter, cwd, idempotencyKey)` within
    *  `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn returns that spawn's
@@ -1728,6 +1734,7 @@ export async function spawnAgentSession(
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
+      ...(input.keepAlive ? { keepAlive: true } : {}),
     })
     // Stamp the title from the caller's ask BEFORE anything else can name
     // this session from the composed prompt instead: `spawnAgent` above,
