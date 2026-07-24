@@ -854,6 +854,27 @@ export function resolvePricing(modelId: string): LLMPricing | undefined {
 }
 
 /**
+ * Like {@link resolvePricing} but WITHOUT the substring/partial-prefix
+ * fallback — an id resolves ONLY on an exact catalog key or an exact alias.
+ * The substring scan in `resolvePricing` (intended for dated snapshots like
+ * `claude-sonnet-4-6-20260301` → `claude-sonnet-4`) also over-fires for
+ * unrelated cross-product siblings (`gemini-2.5-flash-image` substring-hits
+ * the `gemini-2.5-flash` row), so any caller that must PROVE a verbatim
+ * first-party identity — e.g. the direct-vendor route restore in
+ * `serviceableModelRoutes` — needs this exact form instead. Semantics of
+ * `resolvePricing`/`resolveAlias` are intentionally left unchanged for their
+ * existing callers.
+ */
+export function resolvePricingExact(modelId: string): LLMPricing | undefined {
+  // Direct match
+  if (PRICING_BY_ID[modelId]) return PRICING_BY_ID[modelId]
+  // Alias (exact key only — no substring fallback)
+  const alias = ALIAS_BY_ID[modelId]
+  if (alias && PRICING_BY_ID[alias]) return PRICING_BY_ID[alias]
+  return undefined
+}
+
+/**
  * Resolves a model id to its canonical catalog key (or the original id if no
  * match). Public surface for consumers that need the canonical id without
  * the pricing payload.
