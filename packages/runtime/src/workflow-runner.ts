@@ -34,7 +34,7 @@ import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
-import type { RoutinePolicy, RoutineStepState } from "./routine-runner.js"
+import type { RoutinePolicy, RoutineStepState } from "./step-run-types.js"
 import { SessionsRegistryAgentHost } from "./sessions-registry-agent-host.js"
 import { createFileStepCache } from "./workflow-step-cache.js"
 
