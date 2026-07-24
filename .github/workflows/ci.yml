@@ -485,6 +485,7 @@ jobs:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          LAST_SHA: ${{ steps.lastreview.outputs.sha }}
         run: |
           # origin/main is fetched by the agent-setup harness. Fail-safe: if the
           # range can't resolve, skip stays false and the cloud reviewer runs.
@@ -498,6 +499,29 @@ jobs:
           # the gate below treats a bypass as success. So skip the redundant
           # second review when HEAD is exactly that changeset commit. (Build+test
           # / hygiene still re-run — cheap, and the code is unchanged anyway.)
+          # Skip re-review when a push left the PR's OWN contribution unchanged
+          # since the last review — the "merge main into the branch" case (and any
+          # no-op push). A PR's net contribution is its three-dot diff vs main
+          # (origin/main...TIP); comparing that patch at HEAD and at the
+          # last-reviewed commit via `git patch-id --stable` is order- and
+          # base-independent, so a merge that only carries main forward compares
+          # equal and we skip, while a real new commit changes the id and the
+          # review runs. Reuses this step's bypass path, so the merge gate still
+          # gets its green statuses without billing a second review. Fail-safe:
+          # any unresolved sha ⇒ fall through and the reviewer runs.
+          if [ -n "$LAST_SHA" ] && git cat-file -e "${LAST_SHA}^{commit}" 2>/dev/null; then
+            BASE_HEAD="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+            BASE_LAST="$(git merge-base origin/main "$LAST_SHA" 2>/dev/null || true)"
+            if [ -n "$BASE_HEAD" ] && [ -n "$BASE_LAST" ]; then
+              NOW="$(git diff "$BASE_HEAD" HEAD | git patch-id --stable | awk '{print $1}')"
+              THEN="$(git diff "$BASE_LAST" "$LAST_SHA" | git patch-id --stable | awk '{print $1}')"
+              if [ -n "$NOW" ] && [ "$NOW" = "$THEN" ]; then
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                echo "PR contribution unchanged since last review ($LAST_SHA) — push only carried main forward; skipping the re-review."
+                exit 0
+              fi
+            fi
+          fi
           if [ "$(git log -1 --format='%s')" = "chore: agentic reviewer — changeset" ]; then
             # The bypass assumes the reviewer already reviewed the PARENT commit
             # (the code this changeset was written for) and mirrored its statuses.
