@@ -39,7 +39,12 @@ import {
   tryParseModelRef,
   formatModelRef,
 } from "@agentproto/model-catalog/route-identity"
-import { getModelProvider, LLM_PRICING_CATALOG, MODEL_ALIASES } from "@agentproto/model-catalog/llm"
+import {
+  getModelProvider,
+  resolvePricingExact,
+  LLM_PRICING_CATALOG,
+  MODEL_ALIASES,
+} from "@agentproto/model-catalog/llm"
 import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
@@ -624,6 +629,28 @@ export function serviceableModelRoutes(model: string): string[] {
     // the `getModelProvider` quirk on `<vendor>/<product>@<router>` forms from
     // hiding the route the operator literally named).
     if (parsed.route !== parsed.vendor) routes.add(parsed.route)
+    // A first-party vendor model whose `<vendor>/<product>` form COLLIDES with a
+    // router-namespaced pricing key hides its own direct vendor route: OpenRouter
+    // keys e.g. `anthropic/claude-sonnet-5` / `anthropic/claude-fable-5` with the
+    // SAME dash spelling Anthropic uses, tagged `provider:"openrouter"`, so
+    // `getModelProvider("anthropic/claude-sonnet-5")` resolves to the ROUTER and
+    // `anthropic` never enters `routes` above. Restore it: when the BARE product
+    // is itself a first-party model of this vendor — a VERBATIM first-party
+    // pricing key (`resolvePricingExact(product).provider === vendor`) — the
+    // vendor's own SDK/wallet can bill it, so the direct vendor route genuinely
+    // IS serviceable. This MUST be the exact lookup, never `resolvePricing`'s
+    // substring fallback: an openrouter-only sibling variant like
+    // `google/gemini-2.5-flash-image` substring-hits the unrelated
+    // `gemini-2.5-flash` row (provider `google`) and would spuriously earn a
+    // `google` direct route it cannot actually be billed on. A gateway-only
+    // slash id (`deepseek/deepseek-v4-pro` — no bare first-party pricing row)
+    // likewise yields no exact match and is left untouched, preserving the
+    // money-safety guard's reject on a true router-only model. Scoped to this
+    // function: `resolvePricingExact`/`getModelProvider` semantics are unchanged
+    // for every other caller.
+    if (resolvePricingExact(parsed.product)?.provider === parsed.vendor) {
+      routes.add(parsed.vendor)
+    }
     for (const router of WIDENING_ROUTES) {
       if (tryResolveLlmModelRoute(`${parsed.vendor}/${parsed.product}@${router}`)) {
         routes.add(router)
