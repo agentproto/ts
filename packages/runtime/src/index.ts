@@ -94,6 +94,7 @@ import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
+import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
@@ -1225,6 +1226,12 @@ export async function createGateway(
     persist,
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
   })
+
+  // Supervisor crash-notification (crash-detect PR-4). Opt-in per child
+  // (`notifyParentOnCrash`) — delivers a `[child-crashed] …` notice into a
+  // crashed child's live parent, without ever interrupting a busy one. See
+  // supervisor-notify.ts's header doc for the full contract.
+  wireSupervisorNotify({ registry: sessions, sessionEvents })
 
   // Activity projector — the unified active/pending read-model over
   // completion policies, session turns, workflow steps, and opened PRs

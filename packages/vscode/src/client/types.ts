@@ -249,6 +249,10 @@ export interface SessionDescriptor {
    *  ("codex", "cowork", "vscode", …). Mirrors runtime SessionDescriptor.origin. */
   origin?: string
   parentSessionId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.notifyParentOnCrash —
+   *  opt-in for the direct in-band `[child-crashed]` notice to `parentSessionId`
+   *  on this session's crash. Default false/absent. */
+  notifyParentOnCrash?: boolean
   depth?: number
   priorCommandSessionId?: string
   /** Id of the prior session this one continues from — set when this session

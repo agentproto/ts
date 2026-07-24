@@ -417,6 +417,20 @@ export function registerAgentTools(
             "orchestrator approves or denies it. Default false = today's " +
             "auto-answer behaviour. ACP adapters only; others ignore it."
         ),
+      notifyParentOnCrash: mcpBool
+        .optional()
+        .describe(
+          "Opt this spawn into a direct in-band crash notice to its parent: if " +
+            "THIS session later crashes (adapter process gone between turns), the " +
+            "parent (`parentSessionId`, direct or inherited) is told via " +
+            "`[child-crashed] <label/id>: <reason> — <lastError>` — enqueued " +
+            "immediately if the parent is alive and idle, or queued for its next " +
+            "turn (never interrupting an in-flight one) if it's busy. Default " +
+            "false. The free external webhook (`notifyUrl`) already fires on any " +
+            "crash regardless of this flag — this only adds the direct signal " +
+            "into the parent's OWN session, for a delegating supervisor that " +
+            "wants to react to a child's death without polling."
+        ),
       allowSharedCwd: mcpBool
         .optional()
         .describe(

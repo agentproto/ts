@@ -925,6 +925,27 @@ export interface SessionDescriptor {
    *  list/kill and the per-parent child quota (orchestrator WP4).
    *  Persisted so the tree survives a daemon restart. */
   parentSessionId?: string
+  /** Opt-in (default false/absent): when this session crashes
+   *  (`markCrashed` → `session:exited` with `status:"error"`/
+   *  `reason:"crashed"`), the supervisor-notify subscriber
+   *  (`supervisor-notify.ts`) delivers a `[child-crashed]` notice to its
+   *  `parentSessionId`, if any — directly (enqueued prompt) when the parent
+   *  is alive and idle, or stamped onto `pendingChildCrashNotices` and
+   *  flushed at the parent's next turn when it's busy. The free external
+   *  webhook path (`notifyUrl`) already fires regardless of this flag; this
+   *  only gates the additional IN-BAND signal into the parent's own
+   *  session, which a caller that isn't a delegating supervisor doesn't
+   *  want. Threaded like `permissionHold` — set at spawn time, immutable
+   *  thereafter. */
+  notifyParentOnCrash?: boolean
+  /** Queued `[child-crashed] …` notices from crashed children, stamped by
+   *  the supervisor-notify subscriber when THIS session was busy at the
+   *  time a child it should be told about crashed (mid-turn is never
+   *  interrupted for this — see `notifyParentOnCrash`). Flushed and cleared
+   *  by prepending the joined notices onto the next dispatched turn's
+   *  message (`runAgentTurn`) — so delivery survives a busy parent without
+   *  ever cancelling its in-flight work. Absent when nothing is queued. */
+  pendingChildCrashNotices?: string[]
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
@@ -1877,6 +1898,17 @@ export interface SessionsRegistry {
    *  window keeps aging out naturally rather than being wiped by the
    *  give-up itself. Returns false (no-op) for an unknown id. */
   giveUpRestart(id: string, message: string): boolean
+  /** Queue a `[child-crashed] …` notice on a BUSY parent's descriptor
+   *  (`SessionDescriptor.pendingChildCrashNotices`) for delivery at its next
+   *  turn (`runAgentTurn`'s flush) — the never-interrupt path
+   *  `supervisor-notify.ts` takes when the parent can't be prompted
+   *  directly right now (it's mid-turn). Idempotent: the exact same notice
+   *  string is never queued twice, so a duplicate event for the same crash
+   *  can't double-deliver. No-op (returns false) on an unknown id, a
+   *  non-agent-cli row, or a row that isn't alive (`running`/`starting`) —
+   *  nothing to flush a notice INTO. Returns true iff the notice was newly
+   *  queued. */
+  stampPendingChildCrashNotice(id: string, notice: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -2060,6 +2092,9 @@ export interface SpawnAgentInput {
    *  respondable permission requests. Gates whether the registry registers
    *  them in the pending-permissions inbox. Default false. */
   permissionHold?: boolean
+  /** Recorded verbatim onto {@link SessionDescriptor.notifyParentOnCrash} —
+   *  see that field's doc. Default false. */
+  notifyParentOnCrash?: boolean
   /** Exempt this session from the idle-reaper (`isReapable` in
    *  idle-reaper.ts) regardless of how long it sits idle — stamped straight
    *  onto `SessionDescriptor.keepAlive`. Default false. */
@@ -3496,6 +3531,17 @@ export function createSessionsRegistry(opts?: {
     // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
     // `rt.desc.title` is already set and this line is skipped for that turn.
     if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
+    // Flush any `[child-crashed]` notices the supervisor-notify subscriber
+    // queued while this session was busy (`SessionDescriptor
+    // .pendingChildCrashNotices` — see that field's doc) onto THIS turn's
+    // outgoing message, then clear the queue so delivery happens exactly
+    // once. String messages only — a non-string turn (a raw ACP
+    // ContentBlock) has no text slot to prepend into; the notice stays
+    // queued for the next turn that does.
+    if (rt.desc.pendingChildCrashNotices?.length && typeof message === "string") {
+      message = `${rt.desc.pendingChildCrashNotices.join("\n")}\n\n${message}`
+      rt.desc.pendingChildCrashNotices = []
+    }
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.emitter.emit("busy", true)
@@ -4022,6 +4068,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         // Spawn-time hints (e.g. `boardId`) — copied, not aliased, so a
@@ -4952,6 +4999,15 @@ export function createSessionsRegistry(opts?: {
       delete rt.desc.nextRestartAt
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+    stampPendingChildCrashNotice(id, notice) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      if (rt.desc.kind !== "agent-cli") return false
+      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
+      if (!isAlive) return false
+      const pending = rt.desc.pendingChildCrashNotices ?? []
+      if (pending.includes(notice)) return false
+      rt.desc.pendingChildCrashNotices = [...pending, notice]
       schedulePersist()
       return true
     },
