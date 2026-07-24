@@ -8,9 +8,34 @@ Quarantine all of its setup complexity behind a dedicated Settings surface.
 Link each upstream to an *existing* credential instead of re-entering keys.
 Fronting a **subscription** (not an API key) is **not** a separate heavy
 workstream: it falls out of the same "unify the credential source" work,
-because `@agentproto/auth`'s broker already yields a refreshed
-`Authorization: Bearer` for an `oauth-bearer` credential. One credential model,
-one header-shape branch (`api-key` → `x-api-key`; `oauth-bearer` → `Bearer`).
+because a linked `oauth-bearer` auth-profile already carries a stored
+`Authorization: Bearer` token. One credential model, one header-shape branch
+(`api-key` → `x-api-key`; `oauth-bearer` → `Bearer`).
+
+---
+
+## Status (implemented)
+
+The core of this proposal has shipped. Where the design below and the shipped
+code diverge, the code wins — the notable correction is the credential
+mechanism (§2.3/§2.4): upstreams resolve from the named **`AuthProfile` store +
+`KeychainStore`**, *not* a `CredentialBroker` (that broker is for AIP-50
+CLI-login flows and doesn't handle `anthropic`).
+
+| Slice | PR | State |
+|---|---|---|
+| Daemon-supervised proxy lifecycle (start/stop/status verbs) | **#693** | merged |
+| Credential unification — upstreams resolved from named profiles; `api-key` + anthropic `oauth-bearer` sub support, **fail-closed** (OAuth is only ever sent to the `anthropic` upstream; every other path 401s) | **#694** | merged |
+| VS Code "Local Router" panel node — status, start/stop, live `/v1/models` discovery + `owned_by`-aware pricing | **#695** | merged |
+| Packs UI + validation + hot-reload | **PR-4** | pending |
+| Register the `agproxy` catalog route so proxy models are selectable/runnable in the picker | **PR-5** | pending |
+| Config UX — credential-linking dropdowns + per-upstream key status/test | **PR-6** | pending |
+
+**Deferrals.** Source-backed self-refreshing profiles (e.g. a
+`claude-code-local` profile that re-mints its own token) are **not yet
+supported by the proxy** — stored-token subscriptions work, a live self-refresh
+source does not. `KeychainStore` is **macOS-only**; on other platforms the proxy
+falls back to the per-provider env key.
 
 ---
 
@@ -119,53 +144,64 @@ Each upstream either **links an existing auth-profile** (matched by endpoint) or
 **The enabler is unifying the credential source.** Today the proxy reads
 `providers.json` and the panel reads `auth-profiles.json` — two stores, so any
 key the user already set for direct spawning has to be **re-entered** for the
-proxy. The proposal: have the proxy resolve each upstream's credential through
-`@agentproto/auth`'s **`CredentialBroker`** (`broker.ts`) against the
-auth-profiles store, killing the double-entry. `providers.json` remains the
-own-key fallback for keys that should exist *only* for the proxy.
+proxy. As shipped (#694), the proxy resolves each upstream's credential from the
+named **`AuthProfile` store + `KeychainStore`** — the same path the daemon's own
+call sites use — keyed by an env var `LLM_ENDPOINT_PROFILE_<PROVIDER>=<profileId>`
+that names which profile backs each upstream. When no profile is linked, the
+proxy falls back to the per-provider env key, killing the double-entry without
+breaking the old flow.
+
+> **Not the `CredentialBroker`.** An earlier draft routed this through
+> `@agentproto/auth`'s `CredentialBroker.resolveHeaders`. That was wrong: the
+> broker is for AIP-50 CLI-login flows (only `"guilde"` is registered; it
+> *throws* on `"anthropic"`). The shipped path is the `AuthProfile` store +
+> `KeychainStore`, not the broker.
 
 **"Link" now covers subscriptions too, not just API keys.** An auth-profile
 carries the credential *kind* as `method: "oauth-bearer" | "api-key"`
-(`profile-types.ts:17-21`). The broker resolves an `oauth-bearer` profile (a
-Claude sub, `source:"claude-code-oauth"`) to a ready `Authorization: Bearer`
-header just as it resolves an `api-key` — so linking a subscription is the same
-gesture as linking a key. The profile's `method` then **drives the outbound
-header shape automatically** (see §2.4): the proxy never has to ask the user
-"key or sub?" — the linked profile already says which.
+(`profile-types.ts:17-21`). Resolving an `oauth-bearer` profile (a Claude sub,
+`source:"claude-code-oauth"`) from the store yields a stored
+`Authorization: Bearer` token just as an `api-key` profile yields its key — so
+linking a subscription is the same gesture as linking a key. The profile's
+`method` then **drives the outbound header shape automatically** (see §2.4): the
+proxy never has to ask the user "key or sub?" — the linked profile already says
+which. **Fail-closed:** the resolved OAuth bearer is only ever sent to the
+`anthropic` upstream; any other upstream receiving an `oauth-bearer` credential
+401s rather than leaking it.
 
 ### 2.4 Subscriptions ≠ API keys — but it's one header branch, not a new workstream
 
 Earlier drafts treated "front a subscription through the proxy" as a distinct,
-heavy feature. It isn't. Once §2.3 routes every upstream through the
-`CredentialBroker`, subscription support is **one branch on the credential
+heavy feature. It isn't. Once §2.3 resolves every upstream from the
+`AuthProfile` store, subscription support is **one branch on the credential
 kind**, sharing the exact same resolve path as an API key.
 
-- **The broker already does the hard part.** For an `oat`/`pat` credential it
-  returns `{ Authorization: "Bearer <token>" }` (`broker.ts:53-61`), and it
-  **refreshes before expiry** — `isFresh` treats a credential inside a 60s skew
-  of its `expiresAt` as stale (`broker.ts:15-17,42-47`) and re-runs the auth
-  flow to mint a fresh token (`broker.ts:115`). So a subscription OAT arrives at
-  the proxy already valid and already refreshed. No token lifecycle for the
-  proxy to own.
+- **The store already holds a valid token.** An `oauth-bearer` profile carries
+  its stored bearer token (via `KeychainStore` on macOS), and the proxy reads it
+  straight from the store — the same way the daemon's own call sites do. A
+  stored subscription token arrives at the proxy ready to send. *(Note the
+  deferral: the proxy does not yet drive a **self-refreshing source** to re-mint
+  an expired token — see §5.1 and the Deferrals note above.)*
 - **All the proxy adds is a header-shape branch.** Today anthropic sends
   `x-api-key` (`index.ts:1577`); every other upstream sends `Bearer <api-key>`.
-  The unified path becomes: resolve the credential via the broker, then branch
+  The unified path becomes: resolve the credential from the store, then branch
   on the profile's `method` (`profile-types.ts:17-21`):
   - `api-key` → `x-api-key` (anthropic) / `Authorization: Bearer` (others), as today.
   - `oauth-bearer` → `Authorization: Bearer <oat>` **plus**, for anthropic, the
-    OAuth beta header (see Job-1 finding below).
+    OAuth beta header (see Job-1 finding below). Fail-closed: this branch is
+    **anthropic-only** — an `oauth-bearer` credential aimed at any other upstream
+    401s instead of being forwarded.
 - **The one anthropic-specific header is known in-repo, not opaque.** An
   OAuth-bearer request to `api.anthropic.com/v1/messages` needs
   `anthropic-beta: oauth-2025-04-20` alongside `anthropic-version: 2023-06-01`
   and the `Bearer` — and this repo **already constructs exactly that request**
   in `remaining-quota.ts:267-283` (constants at `:179,:181`; the `:180` comment:
   *"Beta header Claude Code's OAuth bearer requires on the messages endpoint"*).
-  It's a *live, working* probe against the real endpoint, so the proxy can
-  **mirror the exact header** rather than reverse-engineer it. This closes the
-  last real unknown (see §5.1).
+  It's a *live, working* probe against the real endpoint, so the proxy
+  **mirrors the exact header** rather than reverse-engineering it.
 - **`providers.json` still needs no token-kind field.** The kind lives on the
-  auth-profile (`method`), which is what the proxy branches on — `providers.json`
-  stays the own-key fallback only.
+  auth-profile (`method`), which is what the proxy branches on — the per-provider
+  env key stays the own-key fallback only.
 
 The existing direct-spawn path (`resolveAuthSpec`, `spawn-defaults.ts:392-433`)
 still routes a subscription straight to Anthropic with no proxy, and remains the
@@ -190,55 +226,63 @@ right answer when you don't want the proxy in the path. Proxying a sub is now a
 
 ## 4. Recommended build sequence
 
-Each step is a clean, independently-shippable PR.
+Each step is a clean, independently-shippable PR. Steps 1–3 have shipped (see
+the Status table); the PR numbers are noted inline.
 
 1. **Daemon-managed lifecycle + status.** Start/stop/restart/health for the
    proxy as a supervised process instead of a manual sidecar. Unblocks
    everything else — the panel needs something to talk to. (Fixes §3.4.)
+   — **shipped, #693.**
 2. **Local Router card + live discovery + catalog cross-ref.** Render the card,
-   call `/v1/models`, join against the model-catalog for pricing/capabilities
-   the discovery endpoint lacks. (Fixes §3.6.)
-3. **Credential unification (broker-resolved upstreams) + subscription support.**
-   Route every upstream's credential through `@agentproto/auth`'s
-   `CredentialBroker` against the auth-profiles store (kills double-entry, §2.3),
-   add the `set-key` verb for own-keys, and per-upstream ✓/✗ from a real ping.
-   Because the broker resolves `oauth-bearer` and `api-key` the same way,
-   **subscription support is folded in here**, not deferred: the only added code
-   is the header-shape branch on the profile's `method` — and for anthropic
-   `oauth-bearer`, the known `anthropic-beta: oauth-2025-04-20` header mirrored
-   from `remaining-quota.ts:267-283`. (Fixes §3.5, §3.1; delivers §2.4.)
+   call `/v1/models`, join against the model-catalog for `owned_by`-aware
+   pricing/capabilities the discovery endpoint lacks. (Fixes §3.6.)
+   — **shipped, #695.**
+3. **Credential unification (store-resolved upstreams) + subscription support.**
+   Resolve every upstream's credential from the named `AuthProfile` store +
+   `KeychainStore` (kills double-entry, §2.3), keyed by
+   `LLM_ENDPOINT_PROFILE_<PROVIDER>`, with a per-provider env-key fallback and
+   per-upstream ✓/✗ from a real ping. Because the store resolves `oauth-bearer`
+   and `api-key` the same way, **subscription support is folded in here**, not
+   deferred: the only added code is the header-shape branch on the profile's
+   `method` — and for anthropic `oauth-bearer`, the known
+   `anthropic-beta: oauth-2025-04-20` header mirrored from
+   `remaining-quota.ts:267-283`, sent **only** to the anthropic upstream
+   (fail-closed). (Fixes §3.5, §3.1; delivers §2.4.) — **shipped, #694.**
 4. **Packs UI + validation + hot reload.** Editor that validates against the
    `ModelPack` schema and reloads without a restart. (Fixes §3.2, §3.3, §3.7.)
+   — **pending (PR-4).**
+5. **`agproxy` catalog route.** Register the route so proxy models are
+   selectable/runnable in the picker. — **pending (PR-5).**
+6. **Config UX.** Credential-linking dropdowns + per-upstream key status/test.
+   — **pending (PR-6).**
 
-Steps 1–4 deliver the entire "self-hosted OpenRouter" experience for API keys
-**and** subscriptions — there is no separate heavy PR for OAT. The subscription
-header shape is one branch inside step 3's credential-unification work.
+Steps 1–4 deliver the "self-hosted OpenRouter" experience for API keys **and**
+subscriptions — there is no separate heavy PR for OAT. The subscription header
+shape is one branch inside step 3's credential-unification work.
 
 ---
 
 ## 5. Open questions
 
-1. **Does forwarding a broker `Bearer` OAT to `api.anthropic.com` need an extra
-   header — and is it discoverable?** *(Was: "is OAT-through-proxy in scope?" —
-   the broker makes it cheap, so the real question is the wire format.)*
-   **Finding: resolved, low risk.** Yes, one extra header is required beyond
+1. **Does forwarding a stored `Bearer` OAT to `api.anthropic.com` need an extra
+   header — and is it discoverable?** *(Was: "is OAT-through-proxy in scope?")*
+   **Resolved, shipped in #694.** Yes, one extra header is required beyond
    `Authorization: Bearer <oat>` — `anthropic-beta: oauth-2025-04-20` (with
    `anthropic-version: 2023-06-01`). It is **not** opaque inside the `claude`
    binary: this repo already builds that exact OAuth-bearer request against the
    real messages endpoint in `remaining-quota.ts:267-283` (constants `:179,:181`,
-   comment `:180`). The proxy can mirror those three headers verbatim. The only
-   residual risk is drift if Anthropic bumps the beta tag — a one-constant
-   change, and the live probe would surface it. So "proxy forwards a broker
-   `Bearer` to Anthropic + the known beta header" is sufficient; no empirical
-   discovery needed. **This is the design's single remaining technical risk, and
-   it is small.**
+   comment `:180`). The shipped proxy mirrors those three headers verbatim, and
+   sends them **only** to the anthropic upstream (fail-closed). The only residual
+   risk is drift if Anthropic bumps the beta tag — a one-constant change.
 
-   *Note on durability:* OATs expire, but the broker's refresh-before-expiry
-   (`broker.ts:15-17,42-47,115`) handles it transparently — the proxy always
-   receives a valid token. So a **stored** `oauth-bearer` profile and a
-   **self-refreshing source** (`source:"claude-code-oauth"`) differ only in
-   durability, not in how the proxy consumes them: same `Bearer` header, same
-   branch.
+   *Note on durability — the live deferral.* OATs expire. The proxy reads a
+   **stored** `oauth-bearer` token from the `AuthProfile` store, so a stored
+   subscription token works while it is valid, but the proxy does **not yet**
+   drive a **self-refreshing source** (`source:"claude-code-oauth"`, e.g. a
+   `claude-code-local` profile) to re-mint an expired one. A stored token and a
+   self-refreshing source are consumed the same way once resolved (same `Bearer`
+   header, same branch); wiring the proxy to *trigger* the refresh is the
+   outstanding piece.
 2. **Where does the Settings surface live?** A native VS Code view vs a webview.
    Lifecycle controls and a JSON packs editor push toward a webview; a simple
    status list is fine as a native tree.
