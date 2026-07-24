@@ -28,6 +28,11 @@ export interface RegisterDaemonHealthToolsOptions {
    *  or 0 when the reaper is off. Surfaced so an operator can confirm whether
    *  idle sessions are being retired (and thus kept out of eager resume). */
   idleReapAfterMs: number
+  /** Effective value of the `daemon.crashDetectIntervalMs` knob (crash-detect
+   *  PR-1) — the sweep interval (ms) the crash-detect pass runs on, or 0 when
+   *  explicitly disabled. Detection is default-on, so this is normally a
+   *  positive value even when the knob was never configured. */
+  crashDetectIntervalMs: number
 }
 
 function text(value: string | object): {
@@ -63,6 +68,7 @@ export function registerDaemonHealthTools(
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
         idleReapAfterMs: opts.idleReapAfterMs,
+        crashDetectIntervalMs: opts.crashDetectIntervalMs,
       })
     },
   )
