@@ -12,11 +12,14 @@
  *   - omitted — the legacy default: glob `.skills/agentproto-plugin-v*`
  *     from the repo root, picking the highest semver. UNCHANGED behavior —
  *     but note that `.skills/` in THIS repo is no longer committed (it used
- *     to be, hand-copied on every bump; see packages/skill-pack-*). This
- *     path now only resolves something inside this repo's own worktree
- *     after a local `agentproto pack skill --out .skills` dry run. Pass
- *     `--pack agentproto-plugin` (resolves the real package, local or npm)
- *     instead of relying on the bare default.
+ *     to be, hand-copied on every bump; see packages/skill-pack-*).
+ *
+ * With `allowFetch` (the CLI turns it on; direct callers stay purely local),
+ * a final step FETCHES the pack from the network when nothing local matches —
+ * npm (`@agentproto/skill-pack-<name>@<ver|latest>`) or a github ref — and
+ * materializes it into `~/.agentproto/packs/<name>@<ver>/`, returning that
+ * dir (see ./fetch-pack.ts). So `agentproto onboard` / `install skill/<name>`
+ * resolve the published pack out of the box with no `--pack`.
  */
 
 import { readdir, readFile, stat } from "node:fs/promises"
@@ -25,6 +28,7 @@ import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
 import matter from "gray-matter"
 import { pathExists } from "./shared.js"
+import { fetchPack, parsePackSpec } from "./fetch-pack.js"
 import type { SkillInfo } from "./types.js"
 
 // ── ~ / env expansion ────────────────────────────────────────────────────
@@ -189,32 +193,97 @@ async function findSkillPackInNodeModules(name: string): Promise<string | null> 
 
 // ── public resolver ───────────────────────────────────────────────────────
 
+export interface ResolvePackOpts {
+  /**
+   * Permit a NETWORK fetch (npm / github) as the final resolution step when
+   * nothing local matches. OFF by default so direct callers (and the unit
+   * tests) keep the original purely-local behavior — the CLI turns it on.
+   */
+  allowFetch?: boolean
+  /** Bypass the `packs/<name>@<ver>` cache and re-fetch from the source. */
+  refresh?: boolean
+}
+
 /**
- * Resolve a pack directory. See module doc for the three modes
- * (path / bare name / omitted).
+ * Resolve a pack directory. Modes (path / bare name / omitted) are unchanged;
+ * with `allowFetch`, a final fetch step materializes the pack into the
+ * central store `~/.agentproto/packs/<name>@<ver>/` and returns that dir.
+ *
+ * Resolution order:
+ *   1. omitted   → legacy `.skills/agentproto-plugin-v*` → node_modules
+ *      `@agentproto/skill-pack-agentproto` → (fetch) npm `…@latest`.
+ *   2. path      → used verbatim (home-expanded), unchanged.
+ *   3. bare name → central `packs/<name>` pointer → repo `.skills/<name>` →
+ *      node_modules → (fetch) per the `--pack` grammar (npm / github).
+ * `refresh` forces the fetch even when a cache dir/pointer already exists.
  */
-export async function resolveSkillPackDir(pack?: string): Promise<string | null> {
+export async function resolveSkillPackDir(
+  pack?: string,
+  opts: ResolvePackOpts = {},
+): Promise<string | null> {
+  const { allowFetch = false, refresh = false } = opts
+
   if (pack === undefined) {
-    return resolveLegacyPluginPack()
+    const legacy = await resolveLegacyPluginPack()
+    if (legacy) return legacy
+    // Prefer an already-present node_modules copy before the network.
+    const nm = await findSkillPackInNodeModules("agentproto")
+    if (nm) return nm
+    if (allowFetch) return fetchPack(parsePackSpec(undefined), { refresh })
+    return null
   }
 
   const expanded = expandHome(pack)
-  const looksLikePath = expanded.includes("/")
-  if (looksLikePath || (await pathExists(expanded))) {
+  // A `github:`/`npm:` scheme spec contains '/' (owner/repo) but is NEVER a
+  // filesystem path — parse it as a spec, don't short-circuit to verbatim.
+  const isSchemeSpec = pack.startsWith("github:") || pack.startsWith("npm:")
+  if (!isSchemeSpec) {
+    const looksLikePath = expanded.includes("/")
+    if (looksLikePath || (await pathExists(expanded))) {
+      return expanded
+    }
+  }
+
+  const spec = parsePackSpec(pack)
+  const packsDir = join(homedir(), ".agentproto", "packs")
+
+  if (spec.kind === "local") {
     return expanded
   }
 
-  // bare name: central store first, then repo-local .skills/<name>, then npm
-  const central = join(homedir(), ".agentproto", "packs", pack)
-  if (await pathExists(central)) return central
-
-  const root = await findRepoRoot()
-  if (root) {
-    const local = join(root, ".skills", pack)
-    if (await pathExists(local)) return local
+  // A PINNED npm version or a github ref names a SPECIFIC source — don't let
+  // an unrelated bare-name copy in node_modules/.skills satisfy it. Check
+  // only that source's own cache dir, then fetch.
+  if (spec.kind === "github") {
+    const cached = join(packsDir, `${spec.name}@${spec.ref.replace(/[/\\]/g, "-")}`)
+    if (!refresh && (await pathExists(cached))) return cached
+    return allowFetch ? fetchPack(spec, { refresh }) : null
+  }
+  if (spec.version !== "latest") {
+    const pinned = join(packsDir, `${spec.name}@${spec.version}`)
+    if (!refresh && (await pathExists(pinned))) return pinned
+    return allowFetch ? fetchPack(spec, { refresh }) : null
   }
 
-  return findSkillPackInNodeModules(pack)
+  // bare name / latest / omitted default: prefer a local copy — central
+  // `packs/<name>` pointer, repo `.skills/<name>`, then node_modules — and
+  // only hit the network when nothing local matches. `--refresh` skips the
+  // local layers so a re-fetch actually re-fetches.
+  if (!refresh) {
+    const central = join(packsDir, spec.name)
+    if (await pathExists(central)) return central
+
+    const root = await findRepoRoot()
+    if (root) {
+      const local = join(root, ".skills", spec.name)
+      if (await pathExists(local)) return local
+    }
+
+    const nm = await findSkillPackInNodeModules(spec.name)
+    if (nm) return nm
+  }
+
+  return allowFetch ? fetchPack(spec, { refresh }) : null
 }
 
 // ── skill listing / parsing ────────────────────────────────────────────

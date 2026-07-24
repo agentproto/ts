@@ -2,13 +2,21 @@
  * agentproto install skill/SLUG — install AIP-3 skills from a skill pack
  * into target agents.
  *
- * Pack resolution (see ./skill-install/pack-resolve.ts):
- *   --pack <path>   → used verbatim (home-expanded)
- *   --pack <name>   → `~/.agentproto/packs/<name>/`, then
- *                     `<repoRoot>/.skills/<name>/`, then the npm dual
- *                     naming convention
- *   (omitted)       → legacy default: glob `.skills/agentproto-plugin-v*`
- *                     from the repo root, picking the highest semver
+ * Pack resolution (see ./skill-install/pack-resolve.ts + fetch-pack.ts):
+ *   --pack <path>              → used verbatim (home-expanded)
+ *   --pack <name>[@<semver>]   → `~/.agentproto/packs/<name>[@ver]/`, then
+ *                                `<repoRoot>/.skills/<name>/`, then the npm
+ *                                dual naming convention, then a NETWORK fetch
+ *                                of `@agentproto/skill-pack-<name>@<ver|latest>`
+ *   --pack npm:<pkg>[@<ver>]   → pinned npm fetch, name derived from <pkg>
+ *   --pack github:<o>/<r>[#ref]→ github codeload tarball fetch (test an
+ *                                unreleased ref)
+ *   (omitted)                  → legacy `.skills/agentproto-plugin-v*` →
+ *                                node_modules → fetch npm latest
+ *   --refresh                  → bypass the pack cache and re-fetch
+ *
+ * A fetch materializes the pack into `~/.agentproto/packs/<name>@<ver>/` and
+ * updates a `packs/<name>` pointer, so the next resolve is offline.
  *
  * Each skill lives at pack/skills/NAME/ with a SKILL.md + optional assets.
  *
@@ -93,14 +101,16 @@ export async function runInstallSkill(
       "dry-run": { type: "boolean" },
       list: { type: "boolean" },
       out: { type: "string" },
+      refresh: { type: "boolean" },
     },
   })
 
   const packArg = values.pack
+  const resolveOpts = { allowFetch: true, refresh: values.refresh === true }
 
   // --list → dump skill names + descriptions and exit
   if (values.list) {
-    const packDir = await resolveSkillPackDir(packArg)
+    const packDir = await resolveSkillPackDir(packArg, resolveOpts)
     if (!packDir) {
       process.stderr.write(packNotFoundMessage(packArg))
       return 1
@@ -128,7 +138,7 @@ export async function runInstallSkill(
   }
 
   // Resolve the pack
-  const packDir = await resolveSkillPackDir(packArg)
+  const packDir = await resolveSkillPackDir(packArg, resolveOpts)
   if (!packDir) {
     process.stderr.write(packNotFoundMessage(packArg))
     return 1
@@ -181,6 +191,11 @@ export async function runInstallSkill(
 }
 
 function packNotFoundMessage(packArg: string | undefined): string {
+  if (packArg && (packArg.startsWith("github:") || packArg.startsWith("npm:"))) {
+    // A fetch spec — the fetcher already wrote the specific failure reason
+    // (offline, 404, missing built pack) to stderr just above.
+    return `agentproto install skill: could not fetch pack '${packArg}' (see the reason above).\n`
+  }
   if (packArg) {
     return (
       `agentproto install skill: could not resolve pack '${packArg}'. Looked for:\n` +
