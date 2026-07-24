@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest"
 import type { AuthProfile } from "@agentproto/auth"
 import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
+import { registerBuiltinRoutes } from "../builtin-routes.js"
 
 const CLAUDE_CODE: CatalogAdapterInput = {
   slug: "claude-code",
@@ -736,5 +737,109 @@ describe("buildCatalogModels — first-party ↔ router-key collision (firstpart
     expect(direct).toBeDefined()
     expect(direct?.runnable).toBe(false)
     expect(direct?.eligibleProfiles).toEqual([])
+  })
+})
+
+describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", () => {
+  // The built-in `llm-endpoint` custom route must be registered for a curated
+  // `<vendor>/<product>@llm-endpoint` row to carry a baseUrl to spawn against.
+  // `registerBuiltinRoutes` writes it into the (module-global, idempotent)
+  // custom-route map — the same call `createGateway` makes at daemon boot.
+  registerBuiltinRoutes()
+
+  // claude-code curates a native id, an @openrouter id, and an @llm-endpoint id
+  // — mirroring the real adapter allowlist, so the same fixture proves the new
+  // llm-endpoint row is runnable AND the existing direct/@openrouter rows are
+  // untouched by it.
+  const CLAUDE_CODE_LLM: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [
+      { id: "claude-opus-4-8" },
+      { id: "z-ai/glm-5.2@openrouter" },
+      { id: "moonshot/kimi-k2.7-code@llm-endpoint" },
+    ],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+  }
+
+  // The CRUX (STEP 0b): a gateway route bills its OWN route id, so an
+  // llm-endpoint profile must carry `endpoint: "llm-endpoint"` + `method:
+  // "api-key"` — NOT the underlying model's vendor (`moonshot`).
+  const llmEndpointKey: AuthProfile = {
+    id: "llm-endpoint-key",
+    endpoint: "llm-endpoint",
+    method: "api-key",
+    credentialRef: "ref-llm-endpoint",
+  }
+  const openrouterKey: AuthProfile = {
+    id: "personal-openrouter",
+    endpoint: "openrouter",
+    method: "api-key",
+    credentialRef: "ref-or",
+  }
+
+  it("runnable:true given an enabled api-key profile whose endpoint is `llm-endpoint`", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [llmEndpointKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.baseUrl).toBe("http://localhost:18090")
+    expect(route?.eligibleProfiles).toEqual(["llm-endpoint-key"])
+  })
+
+  it("runnable:false without an llm-endpoint api-key profile (anthropic/openrouter don't bill it)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [anthropicOauth, openrouterKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("a gateway route never accepts an oauth-bearer profile, even at the right endpoint", () => {
+    const llmEndpointOauth: AuthProfile = {
+      id: "llm-endpoint-oauth",
+      endpoint: "llm-endpoint",
+      method: "oauth-bearer",
+      credentialRef: "ref-oauth",
+    }
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [llmEndpointOauth],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route?.runnable).toBe(false)
+  })
+
+  it("a disabled llm-endpoint profile drops the row to non-runnable (WS2)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [{ ...llmEndpointKey, disabled: true }],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route?.runnable).toBe(false)
+  })
+
+  it("leaves the direct and @openrouter rows unchanged by the llm-endpoint wiring", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [anthropicOauth, openrouterKey, llmEndpointKey],
+    })
+    // Direct anthropic route: still runnable via the Claude subscription.
+    const direct = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(direct?.runnable).toBe(true)
+    expect(direct?.eligibleProfiles).toEqual(["jeremy-max"])
+    // @openrouter route: still runnable via the openrouter api-key, and never
+    // eligible for the llm-endpoint profile.
+    const openrouter = findRoute(response, "z-ai", "glm-5.2", "openrouter")
+    expect(openrouter?.runnable).toBe(true)
+    expect(openrouter?.eligibleProfiles).toEqual(["personal-openrouter"])
   })
 })

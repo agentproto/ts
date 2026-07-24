@@ -205,6 +205,7 @@ export {
   type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
+export { registerBuiltinRoutes } from "./builtin-routes.js"
 export {
   buildCatalogProviderModels,
   type CatalogProviderModelsQuery,
@@ -309,6 +310,7 @@ import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
+import { registerBuiltinRoutes } from "./builtin-routes.js"
 import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
@@ -790,6 +792,11 @@ export async function createGateway(
   opts: CreateGatewayOptions,
 ): Promise<GatewayHandle> {
   const startedAt = Date.now()
+  // Activate the built-in custom routes (the local `llm-endpoint` proxy) before
+  // anything resolves a model ref or builds the catalog — `resolveLlmModelRoute`
+  // reads the custom-route map at call time, so a curated `@llm-endpoint` row is
+  // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
+  registerBuiltinRoutes()
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
   // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface

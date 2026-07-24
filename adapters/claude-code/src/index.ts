@@ -147,6 +147,17 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       // Requesty — route resolved from the catalog `@route`
       { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
       { id: "sference/glm-5.2@requesty", provider: "requesty" },
+      // Local llm-endpoint proxy — route resolved from the catalog `@route`
+      // (registerBuiltinRoutes registers `llm-endpoint` → Anthropic surface at
+      // localhost:18090). A SMALL curated set from the proxy's own `default`
+      // pack (packages/llm-endpoint/src/packs.ts) — vendor prefix is the proxy's
+      // transparent-provider name so the boundary-stripped `vendor/product`
+      // upstream id (e.g. `moonshot/kimi-k2.7-code`) transparently routes.
+      { id: "moonshot/kimi-k2.7-code@llm-endpoint", provider: "llm-endpoint" },
+      { id: "moonshot/kimi-k2.6@llm-endpoint", provider: "llm-endpoint" },
+      { id: "zai/glm-5.2@llm-endpoint", provider: "llm-endpoint" },
+      { id: "openai/gpt-4.1@llm-endpoint", provider: "llm-endpoint" },
+      { id: "openai/gpt-4o-mini@llm-endpoint", provider: "llm-endpoint" },
     ],
     env: { anthropic: "ANTHROPIC_API_KEY" },
   },
