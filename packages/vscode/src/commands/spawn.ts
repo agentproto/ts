@@ -1,11 +1,18 @@
 /**
- * agentproto.spawnAgent — one quick-pick grouping every adapter's declared
- * models under a provider heading (see mapSpawnQuickPickItems), so picking
- * a row is enough to spawn — mode/cwd/label/prompt all default. Picking a
- * gateway model (e.g. claude-sdk's kimi-k2.7-code) applies its bound mode
- * automatically, since a gateway id spawned in the adapter's default mode
- * routes to the wrong provider (moonshot's model id sent straight to
- * native Anthropic). The default cwd (active editor's folder → sole folder
+ * agentproto.spawnAgent — a harness-first drill-down, NOT one flat list of
+ * every model×route (that pre-exploded cross-product — the same model once
+ * per gateway across every harness — was the flood this replaces). The entry
+ * picker is favorites over one row per harness (mapHarnessEntryItems);
+ * picking a harness narrows to just that harness's models
+ * (mapHarnessCatalogModelItems, collapsed one-per-model + runnable-first, or
+ * the manifest list on an old daemon), so "which model" is asked against a
+ * short relevant set. Picking a model is then enough to spawn —
+ * mode/cwd/label/prompt all default. Picking a gateway model (e.g.
+ * claude-sdk's kimi-k2.7-code) applies its bound mode automatically, since a
+ * gateway id spawned in the adapter's default mode routes to the wrong
+ * provider (moonshot's model id sent straight to native Anthropic). The
+ * wallet is resolved from the model's route (attach when one eligible profile,
+ * pick when several, connect-flow when none). The default cwd (active editor's folder → sole folder
  * → ambiguous folder pick → none, see resolveDefaultCwd) and its matching
  * daemon workspace slug are resolved up front and shown in the picker's
  * placeHolder, then sent explicitly on spawn rather than left to the
@@ -29,17 +36,19 @@ import {
   buildSpawnPlaceHolder,
   classifyProfileChoice,
   CUSTOM_MODEL_LABEL,
+  deriveRecentSpawns,
   mapAdapterQuickPickItems,
-  mapCatalogSpawnQuickPickItems,
   mapFolderQuickPickItems,
+  mapHarnessCatalogModelItems,
+  mapHarnessEntryItems,
+  mapHarnessManifestModelItems,
   mapModeQuickPickItems,
   mapModelQuickPickItems,
   mapOrchestratorQuickPickItems,
   mapPermissionQuickPickItems,
   mapProviderQuickPickItems,
-  mapSpawnQuickPickItems,
+  mapQuickSpawnItems,
   modelEntriesOf,
-  prependPresetGroup,
   resolveDefaultCwd,
   resolveWorkspaceSlug,
   type SpawnAdapterInfo,
@@ -126,16 +135,46 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
 
   const holdDefault = holdPermissionsSetting()
   let answers: SpawnWizardAnswers
-  const pickerItems = prependPresetGroup(
-    catalog && catalog.vendors.length > 0
-      ? mapCatalogSpawnQuickPickItems(catalog)
-      : mapSpawnQuickPickItems(adapters),
-    userPresets,
-  )
-  const picked = await vscode.window.showQuickPick(pickerItems, {
+  // Entry picker: tall one-click rows for the combos you actually reach for —
+  // favorites, then latest-used (deriveRecentSpawns) — each carrying the whole
+  // harness·model·provider·wallet in its `detail` line, so a single Enter
+  // spawns. "Browse all models…" opens the harness drill-down for anything
+  // else; "Configure…" the full chain. A brand-new user (no favorites, no
+  // recent) has nothing to one-click, so fall straight through to the harness
+  // picker rather than show an entry list that's only the two trailing rows.
+  const recent = deriveRecentSpawns(store.sessions)
+  const hasQuickRows = userPresets.length > 0 || recent.length > 0
+  const pickerItems = hasQuickRows
+    ? mapQuickSpawnItems(userPresets, recent, Date.now())
+    : mapHarnessEntryItems(adapters)
+  let picked = await vscode.window.showQuickPick(pickerItems, {
     placeHolder: buildSpawnPlaceHolder(workspaceConfig, defaultCwd, holdDefault),
   })
   if (!picked) return
+  // "Browse all models…" reopens the harness drill-down; its result (a harness
+  // row, or Configure…) replaces `picked` and flows on through the same steps.
+  if (picked.browse) {
+    const harnessPick = await vscode.window.showQuickPick(mapHarnessEntryItems(adapters), {
+      placeHolder: "Select an agent harness",
+    })
+    if (!harnessPick) return
+    picked = harnessPick
+  }
+  // Stage two: a harness row narrows to that harness's models (catalog-scoped,
+  // or the manifest list on an old daemon). The picked model row replaces
+  // `picked` and flows through the same leaf handling as before.
+  if (picked.harness && picked.adapter) {
+    const harnessSlug = picked.adapter.slug
+    const modelItems =
+      catalog && catalog.vendors.length > 0
+        ? mapHarnessCatalogModelItems(catalog, harnessSlug)
+        : mapHarnessManifestModelItems(picked.adapter)
+    const modelPick = await vscode.window.showQuickPick(modelItems, {
+      placeHolder: `${harnessSlug} — select a model`,
+    })
+    if (!modelPick) return
+    picked = modelPick
+  }
   if (picked.configure) {
     const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
     if (!configured) return
@@ -158,6 +197,23 @@ async function runSpawnWizard(client: DaemonClient, store: SessionStore, workspa
     }
     answers = { adapter: presetAdapter, presetId: preset.id, permissionHold: holdDefault }
     if (preset.model) answers.model = preset.model
+    if (!defaultCwd) {
+      vscode.window.showWarningMessage(
+        "agentproto: no folder open and no workspace pinned — pin a target workspace (status bar) or use Configure… to set a working directory.",
+      )
+      return
+    }
+    answers.cwd = defaultCwd
+  } else if (picked.recent && picked.adapter) {
+    // A one-click recent row replays a past session's exact combo — its route
+    // and the very wallet it billed are known, so bind them directly instead of
+    // re-running the route-access prompt (resolveRouteAccess) as a fresh catalog
+    // pick would. If that profile is since gone the daemon surfaces it on spawn.
+    answers = { adapter: picked.adapter.slug, permissionHold: holdDefault }
+    if (picked.model) answers.model = picked.model
+    if (picked.mode) answers.mode = picked.mode
+    if (picked.route) answers.route = { gateway: picked.route }
+    if (picked.accessProfileRef) answers.accessProfileRef = picked.accessProfileRef
     if (!defaultCwd) {
       vscode.window.showWarningMessage(
         "agentproto: no folder open and no workspace pinned — pin a target workspace (status bar) or use Configure… to set a working directory.",
