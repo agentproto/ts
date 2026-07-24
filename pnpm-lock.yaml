@@ -2604,6 +2604,9 @@ importers:
       '@agentproto/command-sandbox':
         specifier: workspace:*
         version: link:../command-sandbox
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
@@ -2643,6 +2646,9 @@ importers:
       '@agentproto/telemetry-langfuse':
         specifier: workspace:*
         version: link:../telemetry-langfuse
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
@@ -2668,15 +2674,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@agentproto/driver':
-        specifier: workspace:*
-        version: link:../driver/core
       '@agentproto/rendezvous':
         specifier: workspace:*
         version: link:../rendezvous
-      '@agentproto/tool':
-        specifier: workspace:*
-        version: link:../tool
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
