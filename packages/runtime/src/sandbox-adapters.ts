@@ -93,6 +93,14 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
     hint: "e2b · cloud",
   },
   {
+    slug: "box",
+    name: "Box",
+    description:
+      "Runs the agentproto daemon on an ascii.dev Box cloud computer, behind an always-on systemd unit.",
+    packageName: "@agentproto/sandbox-box",
+    hint: "box · cloud",
+  },
+  {
     slug: "modal",
     name: "Modal",
     description: "Modal sandbox backend. Catalog placeholder — no package published yet.",
