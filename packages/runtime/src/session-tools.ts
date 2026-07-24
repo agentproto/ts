@@ -44,7 +44,10 @@ import {
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
-import { collectSessionSnapshots } from "./usage-rollup-service.js"
+import {
+  collectSessionSnapshots,
+  enrichRollupWithProviderQuota,
+} from "./usage-rollup-service.js"
 import { withToolSubset } from "./tool-subset.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -526,7 +529,10 @@ export function registerSessionTools(
         ...(onlyIds ? { onlyIds } : {}),
         ...(input.profileRef ? { profileRef: input.profileRef } : {}),
       })
-      const rollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
+      const baseRollup = rollupUsage(sessions, { window: input.window, nowMs: Date.now() })
+      // Best-effort per-provider "remaining quota" enrichment — never fatal:
+      // any failure returns the un-enriched rollup unchanged.
+      const rollup = await enrichRollupWithProviderQuota(baseRollup, input.window)
       // Prune the breakdowns not requested; always keep total + window metadata.
       let result: unknown = rollup
       if (input.groupBy) {

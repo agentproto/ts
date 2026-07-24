@@ -68,7 +68,10 @@ import {
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
-import { collectSessionSnapshots } from "./usage-rollup-service.js"
+import {
+  collectSessionSnapshots,
+  enrichRollupWithProviderQuota,
+} from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream } from "node:fs"
@@ -3006,7 +3009,11 @@ async function handleSessions(
       registry,
       profileRef ? { profileRef } : {},
     )
-    json(200, rollupUsage(sessions, { window, nowMs: Date.now() }))
+    const baseRollup = rollupUsage(sessions, { window, nowMs: Date.now() })
+    // Best-effort per-provider "remaining quota" enrichment — never fatal:
+    // any failure returns the un-enriched rollup unchanged.
+    const rollup = await enrichRollupWithProviderQuota(baseRollup, window)
+    json(200, rollup)
     return true
   }
 

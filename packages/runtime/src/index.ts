@@ -280,6 +280,27 @@ export type {
   UsageBucket,
   UsageRollup,
 } from "./usage-rollup.js"
+// Phase-2: best-effort per-provider live remaining-quota enrichment.
+export {
+  AnthropicRemainingQuotaReader,
+  parseAnthropicRateLimitHeaders,
+} from "./remaining-quota.js"
+export type {
+  RemainingQuota,
+  QuotaReadableProfile,
+  RemainingQuotaReader,
+  AnthropicReaderConfig,
+} from "./remaining-quota.js"
+export {
+  loadQuotaStore,
+  readProfileQuota,
+  recordProfileQuota,
+} from "./remaining-quota-store.js"
+export type { StoredProfileQuota, QuotaStoreFile, QuotaStoreOptions } from "./remaining-quota-store.js"
+export {
+  enrichWithRemainingQuota,
+  enrichRollupWithProviderQuota,
+} from "./usage-rollup-service.js"
 export { readUsageSnapshots } from "./usage-snapshot-log.js"
 import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
