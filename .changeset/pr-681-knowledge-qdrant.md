@@ -1,6 +1,6 @@
 ---
-"@agentproto/adapter-knowledge-qdrant": minor
 "@agentproto/adapter-knowledge-corpus": minor
+"@agentproto/adapter-knowledge-qdrant": minor
 ---
 
-knowledge adapters: qdrant (IKnowledgeProvider over Qdrant + OpenAI embeddings, tenant-scoped) and corpus (AIP-10 composition wrapper for any backing IKnowledgeProvider)
+knowledge qdrant adapter (pr4) stacked on the corpus adapter (pr3) — cumulative delta vs main until pr3 merges
