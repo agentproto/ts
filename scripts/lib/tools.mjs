@@ -24,13 +24,17 @@ import {
 import { resolve, dirname, join } from 'node:path'
 import { tmpdir, hostname } from 'node:os'
 import { ROOT, run } from './agent-core.mjs'
-import { buildFooter, MARKER } from './provenance-footer.mjs'
-// `computeProvenance` lives in @agentproto/worktree's *built* dist. It is only
-// needed on the PR-open footer path (gh_open_pr), so it is imported lazily at
-// that call site — a static top-level import would crash module load in any job
-// that runs a tools.mjs consumer without a built worktree package (e.g. the
-// Auto-fix job, which runs apply-review.mjs --delivery commit and never opens a
-// PR). See the dynamic import in gh_open_pr below.
+// The PR-open footer path (gh_open_pr) needs `buildFooter`/`MARKER` — re-exported
+// from @agentproto/runtime's *built* dist via provenance-footer.mjs — and
+// `computeProvenance` from @agentproto/worktree's *built* dist. BOTH are imported
+// LAZILY at that call site: a static top-level import would crash module load in
+// any job that runs a tools.mjs consumer without those built packages. That is a
+// live failure, not a hypothetical — the Auto-fix job runs
+// `apply-review.mjs --delivery commit` (which never opens a PR, so never needs the
+// footer) in a box that installs deps but does NOT `pnpm build` @agentproto/runtime,
+// so `packages/runtime/dist/pr-provenance.mjs` is absent and a static
+// `import … from './provenance-footer.mjs'` here took the whole job down. See the
+// dynamic imports in gh_open_pr below.
 
 /**
  * Map a raw SessionRef (as returned by computeProvenance) to the provenance
@@ -659,6 +663,9 @@ function allTools(ctx) {
         execSync(`git push -u origin "${branch}"`, { cwd: ROOT, stdio: 'pipe' })
         const sha = run('git rev-parse HEAD')
         let stampedBody = body
+        // Lazy — see the top-of-file note: loading these statically would crash
+        // every tools.mjs consumer that runs without a built @agentproto/runtime.
+        const { buildFooter, MARKER } = await import('./provenance-footer.mjs')
         if (!body.includes(MARKER)) {
           try {
             const { computeProvenance } = await import('../../packages/worktree/dist/index.mjs')
