@@ -657,6 +657,15 @@ export interface SessionDescriptor {
    *  field is. Absent (not `false`) for every descriptor from before this
    *  field existed — treated the same as `false` everywhere it's read. */
   archived?: boolean
+  /** When `true`, the idle-reaper (`isReapable`, `idle-reaper.ts`) never
+   *  retires this session regardless of how long it's sat idle. For a
+   *  supervisor that legitimately parks — waiting on a child, waiting on a
+   *  scheduled wake — idle looks identical to finished, and the reaper would
+   *  otherwise pull the rug out from under it. Set at spawn time
+   *  (`keepAlive` on `SpawnAgentInput`) or toggled later via
+   *  `session_set_keepalive` (`registry.setKeepAlive`). Absent (not `false`)
+   *  for every session that hasn't opted in. */
+  keepAlive?: boolean
   /** True when the session was spawned under a real PTY (node-pty)
    *  instead of `child_process.spawn`. PTY sessions carry raw ANSI
    *  bytes (alt-screen, key bindings, colors); attach goes through
@@ -1645,6 +1654,14 @@ export interface SessionsRegistry {
     id: string,
     patch: { title?: string | null; label?: string | null },
   ): SessionDescriptor
+  /** Set or clear a session's idle-reaper exemption (the `session_set_keepalive`
+   *  MCP verb). `true` flips `SessionDescriptor.keepAlive` on — `isReapable`
+   *  (idle-reaper.ts) then never retires this session no matter how idle it
+   *  sits; `false` clears it, restoring ordinary reap eligibility. Persists via
+   *  the same `schedulePersist` every descriptor mutation uses. Pure display/
+   *  policy state — never touches the live agent. Throws when the id is
+   *  unknown. */
+  setKeepAlive(id: string, keepAlive: boolean): SessionDescriptor
   /** Subscribe to a session's output. Returns an unsubscribe fn.
    *  Initial backfill: synchronously invokes `onLine` once for each
    *  line currently in the ring buffer so attaches show context. */
@@ -1892,6 +1909,10 @@ export interface SpawnAgentInput {
    *  respondable permission requests. Gates whether the registry registers
    *  them in the pending-permissions inbox. Default false. */
   permissionHold?: boolean
+  /** Exempt this session from the idle-reaper (`isReapable` in
+   *  idle-reaper.ts) regardless of how long it sits idle — stamped straight
+   *  onto `SessionDescriptor.keepAlive`. Default false. */
+  keepAlive?: boolean
 }
 
 export interface SpawnSessionInput {
@@ -3844,6 +3865,7 @@ export function createSessionsRegistry(opts?: {
         // gate would silently drop the empty-string case.
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
+        ...(input.keepAlive ? { keepAlive: true } : {}),
       }
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
@@ -4767,6 +4789,14 @@ export function createSessionsRegistry(opts?: {
         renamedByUser: true,
         ts: new Date().toISOString(),
       })
+      stampProcessAlive(rt.desc)
+      return rt.desc
+    },
+    setKeepAlive(id, keepAlive) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setKeepAlive: no session "${id}"`)
+      rt.desc.keepAlive = keepAlive
+      schedulePersist()
       stampProcessAlive(rt.desc)
       return rt.desc
     },
