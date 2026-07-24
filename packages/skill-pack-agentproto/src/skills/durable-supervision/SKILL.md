@@ -162,57 +162,28 @@ d'exception dans le hot-path. Déclenché sur `turn-end` / `awaiting-input` /
 `exitCode`/`status` à l'exit). C'est le seam « préviens-moi quand un agent
 attend » sans cowork ouvert.
 
-## 7. RoutineRunner — la cible « babysit durable » (source, MVP)
+## 7. Policy d'attente par étape (`workflow_start`)
 
-> **DEPRECATED (Phase B2) — utilise `workflow_*` à la place.** Le moteur
-> impératif `routine-runner.ts` décrit ci-dessous a été retiré : une séquence
-> `RoutineStep[]` est maintenant un workflow AIP-15 à étapes mono-step, piloté
-> par `workflowRunner` (`routine-workflow-shim.ts`). Les tools
+> **RoutineRunner et son shim ont été retirés (Phase B2 puis B3).** Les tools
 > `routine_start`/`routine_status`/`routine_cancel`/`routine_escalation_resolve`
-> restent vivants comme alias DEPRECATED le temps d'une fenêtre de dépréciation
-> (retrait prévu en B3) — préfère `workflow_start`/`workflow_status`/
-> `workflow_cancel`/`workflow_escalation_resolve` pour tout nouveau code.
-> `waitFor` (fan-in externe) a été supprimé sans remplacement (aucun
-> consommateur in-repo) ; exprime le fan-in via des stages workflow parallèles.
-> Le reste de cette section décrit le comportement de la policy d'attente
-> (`auto-allow`/`escalate`/`fail`) — TOUJOURS vrai, juste porté par
-> `workflow_*` désormais.
+> et les routes `/routines/*` de run n'existent plus — utilise
+> `workflow_start`/`workflow_status`/`workflow_cancel`/
+> `workflow_escalation_resolve`. `waitFor` (fan-in externe) n'a pas
+> d'équivalent workflow ; exprime le fan-in via des stages parallèles.
 
-`routine-runner.ts` est le superviseur durable complet : il exécute une séquence
-de `RoutineStep[]` **en réagissant aux events** (pas de polling), gère le
-**fan-in** (`waitFor: string[]` attend que TOUTES les sessions finissent), et
-applique une **policy d'attente** par étape :
+Chaque step d'un stage `workflow_start` peut porter une **policy** pour ce qui
+se passe si sa session demande une entrée en cours de stage :
 
 - `auto-allow` (+`prompt`) : répond tout seul et continue.
 - `escalate` (+`webhookUrl?`, `timeoutMs?` défaut 5 min) : POST le webhook puis
-  attend un `routine_escalation_resolve({ runId, stepIndex, response })` ou
-  `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`
+  attend un `workflow_escalation_resolve({ runId, stageIndex, stepIndex, response })`
   externe ; timeout = échec.
 - `fail` : marque l'étape/le run en échec.
 
 C'est « un agent qui babysit un autre en jouant l'humain **et n'escalade que si
 bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
-
-**Limites importantes (à connaître avant de s'appuyer dessus) :**
-
-- **In-memory MVP** : l'état des runs n'est PAS persisté
-  (`TODO: persist to ~/.agentproto/routine-runs.json`). Un restart du daemon
-  **perd** les runs en cours. (Les policies `policy_attach` et les transcripts
-  de session, eux, survivent ; c'est le RoutineRunner qui est volatile.)
-- **Surface MCP : câblée sur branche, pas encore déployée.** Les tools
-  `routine_start` / `routine_status` / `routine_cancel` /
-  `routine_escalation_resolve` / `routine_list` existaient déjà dans
-  `orchestration-tools.ts` mais ne s'enregistraient que `if (routineRunner)`
-  fourni — et aucun call-site ne le passait. Le wiring (singleton dans
-  `index.ts`, root gateway) **+ la persistance**
-  (`~/.agentproto/routine-runs.json`, save atomique, recovery des runs stale en
-  `failed` au restart) ont été livrés sur **PR #101
-  `feat/routine-runner-durable`** (commit `3cc75a7`, gate vert vérifié). Tant
-  que la PR n'est pas mergée **et** le daemon rebuild+restart, ces tools ne sont
-  pas actifs sur le daemon en cours : la voie **pilotable aujourd'hui** reste
-  `policy_attach` + `next` (DAG) + `session_events_poll` + webhook. Note de
-  design retenue : routine tools **hors** du subset orchestrateur scopé
-  (invariant handshake).
+Les runs sont persistés (`~/.agentproto/workflow-runs.json` par défaut) — un
+restart du daemon ne perd pas un run en cours.
 
 ## 8. Quand utiliser quoi
 
@@ -221,8 +192,8 @@ bloqué** » (cf. le babysit live de `nested-orchestration`, ici rendu durable).
 - **Commit gouverné par un gate vert** → `policy_attach then:commit` +
   `requireHumanAck` + `policy_ack`.
 - **Plusieurs étapes enchaînées** → `next` (DAG de policies, pilotable) ou
-  `workflow_start` (stages mono-step) — PAS `routine_start`/`routine_*`,
-  DEPRECATED depuis la Phase B2 (voir §7).
+  `workflow_start` (stages mono-step) — `routine_start`/`routine_*` (l'ancien
+  RoutineRunner) ont été retirés, voir §7.
 - **Critère qualitatif** → gate `judge`.
 - **Prévenir un humain quand ça attend/bloque** → `notifyUrl` (per-session) ou
   global.
@@ -291,9 +262,9 @@ appel d'outil synchrone dans ton tour.
   session est re-promptée (`nudge`, `{code}` = exit code) jusqu'à `maxRetries`
   (défaut 2) puis `blocked` — la session doit être **encore running** pour
   recevoir le nudge.
-- **RoutineRunner DEPRECATED** : voir §7 — le moteur impératif est retiré
-  (Phase B2), `routine_*` reste vivant en alias le temps d'une fenêtre de
-  dépréciation ; utilise `workflow_*` pour tout nouveau code.
+- **RoutineRunner retiré** : voir §7 — le moteur impératif (Phase B2) et ses
+  alias `routine_*` (Phase B3) ont tous les deux disparu ; utilise
+  `workflow_*`.
 
 ## Checklist supervision durable
 

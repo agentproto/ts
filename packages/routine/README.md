@@ -121,20 +121,16 @@ from source before writing any code:
    bypasses schedule for an existing job (`cron-scheduler.ts:514-519` has no
    `active` check either).
 
-### `/routines/*` naming collision (found while scouting, not created by
-this change)
+### `/routines/*` naming collision (resolved)
 
-`routine_start` / `routine_status` / `routine_cancel` / `routine_list` /
-`routine_escalation_resolve` (`orchestration-tools.ts:611-725`) and `POST
-/routines` etc. (`http-server.ts:4292` region) **already exist** — but they
-are `RoutineRunner`, an unrelated ad-hoc primitive ("a named sequence of
-steps that spawn agent sessions and fan-in on their turn-end events"), not
-AIP-41. `routine_trigger` as a tool name doesn't collide (that verb wasn't
-taken). The HTTP surface would have: `/routines/:id/trigger` legitimately
-risks a caller confusing an AIP-41 routine id with a `RoutineRunner` `runId`,
-so this bridge mounts its manual-fire route at **`/routine-defs/:id/trigger`**
-instead of reusing `/routines/*`. Flagged here for whoever eventually
-reconciles the two "routine" vocabularies — out of scope for this change.
+This bridge's manual-fire route lives at **`/routine-defs/:id/trigger`**,
+not `/routines/:id/trigger` — originally to avoid confusing an AIP-41
+routine id with a `RoutineRunner` run id on the same `/routines/*` prefix.
+That collision is now moot: `routine_start`/`routine_status`/
+`routine_cancel`/`routine_escalation_resolve` and their `/routines/*` run
+routes (the unrelated ad-hoc `RoutineRunner` primitive) were removed
+entirely (PLAN.md Phase B3). `GET /routines` now serves only this
+registrar's `list()`, and `/routine-defs/*` keeps its own prefix regardless.
 
 ### Specs-repo follow-up (not applied here — separate repo, per brief)
 

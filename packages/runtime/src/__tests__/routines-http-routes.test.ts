@@ -1,12 +1,8 @@
 /**
- * `/routines` REST route — PLAN.md PR B1 #2's semantic repoint.
- *
- * `GET /routines` now answers from the AIP-41 registrar's `list()`
- * (routine DEFINITIONS from `.routines/*`), not RoutineRunner runs. The
- * rest of the prefix (`POST /routines`, `GET /routines/:id`, cancel,
- * escalation/resolve) stays a thin — but now DEPRECATED (#3) — adapter
- * over RoutineRunner. Exercises the real REST layer via `startHttpServer`,
- * same pattern as user-presets-http-routes.test.ts.
+ * `GET /routines` REST route — answers from the AIP-41 registrar's
+ * `list()` (routine DEFINITIONS from `.routines/*`). Exercises the real
+ * REST layer via `startHttpServer`, same pattern as
+ * user-presets-http-routes.test.ts.
  */
 
 import { describe, expect, it } from "vitest"
@@ -16,47 +12,9 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
-import { createRoutineWorkflowShim } from "../routine-workflow-shim.js"
-import { createWorkflowRunner } from "../workflow-runner.js"
-import { createSessionEventBus } from "../session-event-bus.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
-import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
-import type { SessionEventBus } from "../session-event-bus.js"
-import type { AgentAdapterResolver } from "../http-server.js"
 import type { RoutineRegistrar } from "../routine-registrar.js"
-
-function makeMockRegistry(bus: SessionEventBus): SessionsRegistry {
-  const SESSION_ID = "sess_http"
-  const desc: SessionDescriptor = {
-    id: SESSION_ID,
-    kind: "agent-cli",
-    workspaceSlug: "test",
-    command: "mock",
-    pid: null,
-    status: "running",
-    startedAt: new Date().toISOString(),
-  }
-  return {
-    spawnAgent: () => desc,
-    sendPrompt: async (sessionId: string) => {
-      bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
-    },
-    get: (id: string) => (id === SESSION_ID ? desc : undefined),
-  } as unknown as SessionsRegistry
-}
-
-function makeMockAdapter(): AgentAdapterResolver {
-  return (async () => ({
-    startSession: async () => ({
-      sessionId: "adapter_http",
-      send: async function* () {},
-      cancel: async () => {},
-      close: async () => {},
-    }),
-    commandPreview: "mock-adapter",
-  })) as unknown as AgentAdapterResolver
-}
 
 function makeMockRegistrar(definitions: unknown[] = []): RoutineRegistrar {
   return {
@@ -69,17 +27,10 @@ function makeMockRegistrar(definitions: unknown[] = []): RoutineRegistrar {
 describe("/routines REST route", () => {
   async function withServer(
     fn: (base: string) => Promise<void>,
-    opts: { withRunner?: boolean; withRegistrar?: boolean; definitions?: unknown[] } = {},
+    opts: { withRegistrar?: boolean; definitions?: unknown[] } = {},
   ): Promise<void> {
-    const { withRunner = true, withRegistrar = true, definitions = [] } = opts
+    const { withRegistrar = true, definitions = [] } = opts
     const port = await freePort()
-    const bus = createSessionEventBus()
-    const registry = makeMockRegistry(bus)
-    const routineRunner = withRunner
-      ? createRoutineWorkflowShim({
-          workflowRunner: createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() }),
-        })
-      : undefined
     const routineRegistrar = withRegistrar ? makeMockRegistrar(definitions) : undefined
 
     const http = await startHttpServer({
@@ -91,7 +42,6 @@ describe("/routines REST route", () => {
       events: createRuntimeEvents(),
       heartbeat: noopHeartbeat(),
       meta: { workspace: process.cwd(), registered: [] },
-      ...(routineRunner ? { routineRunner } : {}),
       ...(routineRegistrar ? { routineRegistrar } : {}),
     })
     try {
@@ -101,18 +51,10 @@ describe("/routines REST route", () => {
     }
   }
 
-  it("GET /routines returns registrar definitions, not RoutineRunner runs", async () => {
+  it("GET /routines returns registrar definitions", async () => {
     const definitions = [{ id: "daily-brief", enabled: true, schedule: { kind: "cron", cron: "0 9 * * *" } }]
     await withServer(
       async base => {
-        // Start a RoutineRunner run first — GET /routines must not reflect it.
-        const startRes = await fetch(`${base}/routines`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ routineId: "r1", steps: [{ label: "only", adapter: "mock", prompt: "go" }] }),
-        })
-        expect(startRes.status).toBe(201)
-
         const listRes = await fetch(`${base}/routines`)
         expect(listRes.status).toBe(200)
         const body = (await listRes.json()) as { routines: unknown[] }
@@ -122,7 +64,7 @@ describe("/routines REST route", () => {
     )
   })
 
-  it("GET /routines 404s when no registrar is wired, even with a runner present", async () => {
+  it("GET /routines 404s when no registrar is wired", async () => {
     await withServer(
       async base => {
         const res = await fetch(`${base}/routines`)
@@ -130,23 +72,6 @@ describe("/routines REST route", () => {
       },
       { withRegistrar: false },
     )
-  })
-
-  it("POST /routines still starts a RoutineRunner run (deprecated, kept functional)", async () => {
-    await withServer(async base => {
-      const res = await fetch(`${base}/routines`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ routineId: "r2", steps: [{ label: "only", adapter: "mock", prompt: "go" }] }),
-      })
-      expect(res.status).toBe(201)
-      const run = (await res.json()) as { runId: string; status: string }
-      // Backed by a workflowRunner run now — id prefix reflects that.
-      expect(run.runId).toMatch(/^wfrun_/)
-
-      const getRes = await fetch(`${base}/routines/${run.runId}`)
-      expect(getRes.status).toBe(200)
-    })
   })
 })
 
