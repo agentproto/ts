@@ -651,6 +651,11 @@ export interface RuntimeHttpServerOptions {
      *  before the reaper retires an idle agent-cli session, or 0 when off. Kept
      *  in sync with the `daemon_health` MCP tool's field of the same name. */
     idleReapAfterMs?: number
+    /** Effective `daemon.crashDetectIntervalMs` knob (crash-detect PR-1) — the
+     *  sweep interval (ms) the crash-detect pass runs on; DEFAULT ON (a sane
+     *  default applies even when unset), 0 only when explicitly disabled. Kept
+     *  in sync with the `daemon_health` MCP tool's field of the same name. */
+    crashDetectIntervalMs?: number
   }
 }
 
@@ -1054,6 +1059,7 @@ export async function startHttpServer(
         uptimeMs: Date.now() - startedAt,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
+        crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
       }),
     )
   }
@@ -3183,6 +3189,22 @@ async function handleSessions(
                       ? false
                       : undefined
               return a ? { allowSharedCwd: true } : {}
+            })()
+          : {}),
+        // Idle-reaper exemption — the HTTP twin of the MCP `agent_start` tool's
+        // `keepAlive` field. Tolerate a stringified boolean like
+        // `permissionHold`/`trace`/`allowSharedCwd`.
+        ...(b.keepAlive !== undefined
+          ? (() => {
+              const k =
+                typeof b.keepAlive === "boolean"
+                  ? b.keepAlive
+                  : b.keepAlive === "true"
+                    ? true
+                    : b.keepAlive === "false"
+                      ? false
+                      : undefined
+              return k ? { keepAlive: true } : {}
             })()
           : {}),
       },

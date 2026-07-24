@@ -106,8 +106,10 @@ export interface SessionDescriptor {
    *  ordinary terminal row: an agent-cli row with `endedReason:"daemon-restart"`
    *  can be revived IN PLACE (same id, same history) by a single plain prompt —
    *  the daemon's lazy resume-on-prompt path. See `isResumableInPlace` in
-   *  sessionsTree.logic.ts. */
-  endedReason?: "daemon-restart"
+   *  sessionsTree.logic.ts. Also mirrors `"crashed"` — the crash-detect sweep
+   *  found the adapter's OS process gone between turns; see `lastError`/
+   *  `crashedAt`. */
+  endedReason?: "daemon-restart" | "crashed"
   /** Mirrors `@agentproto/runtime` SessionDescriptor.interrupted (#635) — a
    *  DERIVED, read-time field (never persisted): `true` when this session died
    *  with a turn in flight under a daemon restart
@@ -123,6 +125,14 @@ export interface SessionDescriptor {
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
+   *  human-readable string for the most recent automatic failure (currently
+   *  only stamped by the crash-detect sweep). */
+  lastError?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.crashedAt — ISO 8601
+   *  timestamp of the crash-detect sweep that flipped this row to
+   *  `endedReason:"crashed"`. */
+  crashedAt?: string
   label?: string
   /** Derived from the session's FIRST prompt — see the runtime's
    *  SessionDescriptor.title doc for the derivation + overwrite rules. Now
@@ -155,6 +165,10 @@ export interface SessionDescriptor {
    *  from `listSessions()` here too, unless `includeArchived` is passed).
    *  Set/cleared via `session_archive`/`session_unarchive`. */
   archived?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.keepAlive — when `true`,
+   *  the idle-reaper never retires this session regardless of idle time.
+   *  Set at spawn time or toggled via `session_set_keepalive`. */
+  keepAlive?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]

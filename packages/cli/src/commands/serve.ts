@@ -649,6 +649,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // off. A positive ms value arms the periodic sweep; anything else keeps
         // it off (0), so idle sessions are never auto-retired unless opted in.
         idleReapAfterMs: resolveIdleReapAfterMs(cfgDaemon.idleReapAfterMs),
+        // Crash-detect sweep (crash-detect PR-1). DEFAULT ON: resolution order
+        // mirrors idleReapAfterMs's comment above (env > config field), but an
+        // unset value here passes `undefined` through so createGateway applies
+        // its own sane default rather than reading "unset" as off.
+        crashDetectIntervalMs: resolveCrashDetectIntervalMs(cfgDaemon.crashDetectIntervalMs),
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -1211,6 +1216,25 @@ function resolveIdleReapAfterMs(configured: number | undefined): number {
     return 0
   }
   return typeof configured === "number" && configured > 0 ? configured : 0
+}
+
+/**
+ * Resolve the effective crash-detect sweep interval (crash-detect PR-1):
+ * `AGENTPROTO_CRASH_DETECT_INTERVAL_MS` env > the `daemon.crashDetectIntervalMs`
+ * config field > `undefined` (letting `createGateway` apply its own DEFAULT-ON
+ * fallback). Unlike `resolveIdleReapAfterMs`, an unset/malformed value here does
+ * NOT mean "off" — it means "let the gateway pick its default", since detection
+ * is non-destructive observability and opt-in-to-DISABLE, not opt-in-to-enable.
+ * An explicit non-positive value at either layer DOES disable it.
+ */
+function resolveCrashDetectIntervalMs(configured: number | undefined): number | undefined {
+  const raw = process.env.AGENTPROTO_CRASH_DETECT_INTERVAL_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0
+    return undefined
+  }
+  return configured
 }
 
 /**

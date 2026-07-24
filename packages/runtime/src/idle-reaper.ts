@@ -72,6 +72,9 @@ function idleMsOf(desc: SessionDescriptor, nowMs: number): number | null {
  *   - a busy session (a turn is in flight) or one awaiting a human
  *     (conversational input OR a parked permission decision);
  *   - an archived row (housekeeping already retired it);
+ *   - a `keepAlive:true` row — the session opted itself out of the reaper (a
+ *     supervisor legitimately parked waiting on a child/scheduled wake looks
+ *     idle but isn't finished);
  *   - a row younger than the threshold, or one we can't age;
  *   - a depth>0 sub-agent whose parent is still alive — reaping it would orphan
  *     an active orchestration mid-flight.
@@ -88,6 +91,7 @@ function isReapable(
   if (desc.awaitingInput === true) return false
   if (desc.awaitingPermission === true) return false
   if (desc.archived === true) return false
+  if (desc.keepAlive === true) return false
   const idle = idleMsOf(desc, nowMs)
   if (idle === null || idle < thresholdMs) return false
   // Don't orphan an active orchestration: a spawned sub-agent whose parent is
