@@ -672,3 +672,67 @@ describe("runCommand — resolves a tool that's only on a default dir, not the i
     }
   })
 })
+
+/** Resolve `true` once `pid` no longer exists (a signal-0 probe throws
+ * ESRCH), or `false` if it's still alive after `timeoutMs`. Same-user
+ * spawns, so an EPERM (process alive, not ours) can't happen here. */
+async function waitForPidGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return true // ESRCH — the process is gone
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
+describe("runCommand — timeouts are honest and reap the whole process group", () => {
+  it("marks timedOut + appends guidance naming the cap when the timeoutMs fires", async () => {
+    const result = await runCommand({
+      command: "sleep",
+      args: ["30"],
+      cwd: tmpdir(),
+      timeoutMs: 300,
+    })
+    // New machine-readable flag: a caller no longer has to string-match a
+    // signal to know a timeout from any other SIGTERM — which is the whole
+    // point, since the OS reports the real "SIGTERM" here and the synthetic
+    // "SIGTERM-timeout" marker is only the fallback when close carries no
+    // signal at all.
+    expect(result.timedOut).toBe(true)
+    // Either way it's a SIGTERM-family kill (back-compat marker unchanged).
+    expect(result.signal).toContain("SIGTERM")
+    // The human note names the effective cap and steers to a persistent
+    // session that outlives the RPC.
+    expect(result.stderr).toContain("killed after 300ms")
+    expect(result.stderr).toContain("agentproto sessions start")
+  })
+
+  // POSIX-only: process groups (and the negative-pid kill) don't exist on
+  // Windows, where `detached` degrades to a plain child kill.
+  it.skipIf(process.platform === "win32")(
+    "kills a slow grandchild's process group, not just the direct child",
+    async () => {
+      // `bash -c` runs with job control OFF, so the backgrounded `sleep`
+      // shares bash's process group — a group-targeted kill reaps it, while a
+      // child-only kill would SIGTERM `bash` and orphan `sleep` (reparented to
+      // init, still ticking). We echo the background pid so we can prove it's
+      // actually gone rather than merely trusting a prompt return.
+      const result = await runCommand({
+        command: "bash",
+        args: ["-c", "sleep 30 & echo $!; wait"],
+        cwd: tmpdir(),
+        timeoutMs: 300,
+      })
+      expect(result.timedOut).toBe(true)
+      const grandchildPid = Number(result.stdout.trim())
+      expect(Number.isInteger(grandchildPid)).toBe(true)
+      // SIGTERM to the group fells `sleep` at once; allow the OS a beat to
+      // reap it before asserting the pid is gone.
+      expect(await waitForPidGone(grandchildPid, 2_000)).toBe(true)
+    },
+  )
+})

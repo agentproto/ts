@@ -1967,6 +1967,9 @@ export interface RecordCommandInput {
   stdout: string
   stderr: string
   truncated?: boolean
+  /** True when the command was killed for exceeding its `timeoutMs` cap —
+   *  mirrors `command-tools.ts`'s `ExecuteResult.timedOut`. */
+  timedOut?: boolean
   label?: string
   /** Source label for this command session — same semantics as
    *  `SpawnAgentInput.origin`/`SpawnPtyInput.origin`. Callers should always
@@ -4071,6 +4074,7 @@ export function createSessionsRegistry(opts?: {
             stdout: input.stdout,
             stderr: input.stderr,
             ...(input.truncated ? { truncated: true } : {}),
+            ...(input.timedOut ? { timedOut: true } : {}),
           },
           transcriptBaseDir,
         ).then(() =>
