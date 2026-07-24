@@ -436,6 +436,16 @@ export interface SpawnAgentSessionInput {
    *  for sandbox spawns (the box's own daemon owns permission handling).
    *  Default false — unchanged auto-answer behaviour. */
   permissionHold?: boolean
+  /** Opt this child into the direct in-band crash notification: when it
+   *  crashes (`markCrashed`), the supervisor-notify subscriber
+   *  (`supervisor-notify.ts`) delivers a `[child-crashed] …` notice into its
+   *  `parentSessionId`, if any — enqueued immediately when the parent is
+   *  alive and idle, queued for its next turn when busy (never
+   *  interrupted). Recorded verbatim onto {@link SessionDescriptor
+   *  .notifyParentOnCrash}; see that field's doc. Default false — the free
+   *  external webhook path (`notifyUrl`) already fires regardless of this
+   *  flag. */
+  notifyParentOnCrash?: boolean
   /** Caller-declared "this is the same logical spawn" token. A second
    *  `agent_start` with the same `(adapter, cwd, idempotencyKey)` within
    *  `SPAWN_CLAIM_WINDOW_MS` of a SUCCESSFUL spawn returns that spawn's
@@ -1692,6 +1702,7 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the

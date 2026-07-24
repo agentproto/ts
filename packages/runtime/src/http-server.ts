@@ -3165,6 +3165,22 @@ async function handleSessions(
               return h ? { permissionHold: true } : {}
             })()
           : {}),
+        // Opt into direct in-band crash notification — the HTTP twin of the
+        // MCP `agent_start` tool's `notifyParentOnCrash` field. Tolerate a
+        // stringified boolean like `permissionHold`/`trace`.
+        ...(b.notifyParentOnCrash !== undefined
+          ? (() => {
+              const n =
+                typeof b.notifyParentOnCrash === "boolean"
+                  ? b.notifyParentOnCrash
+                  : b.notifyParentOnCrash === "true"
+                    ? true
+                    : b.notifyParentOnCrash === "false"
+                      ? false
+                      : undefined
+              return n ? { notifyParentOnCrash: true } : {}
+            })()
+          : {}),
         // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
         // `worktree` field. Same `spawnAgentSession` core resolves the
         // `worktrees.isolation` policy, so `always` bites here too and there's
