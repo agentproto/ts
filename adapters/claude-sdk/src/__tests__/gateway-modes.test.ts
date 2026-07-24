@@ -34,4 +34,18 @@ describe("claude-sdk model routing", () => {
     expect(byId("x-ai/grok-4.5@openrouter")).toEqual({ id: "x-ai/grok-4.5@openrouter", provider: "openrouter" })
     expect(byId("claude-opus-4-8")).toEqual({ id: "claude-opus-4-8", provider: "anthropic" })
   })
+
+  it("curates the local llm-endpoint proxy models under the `@llm-endpoint` route (PR-5)", () => {
+    const allowed = claudeSdk.models?.allowed ?? []
+    const entries = allowed.filter((m): m is AgentCliModelEntry => typeof m !== "string")
+    const byId = (id: string) => entries.find((e) => e.id === id)
+    expect(byId("moonshot/kimi-k2.7-code@llm-endpoint")).toEqual({
+      id: "moonshot/kimi-k2.7-code@llm-endpoint",
+      provider: "llm-endpoint",
+    })
+    expect(byId("openai/gpt-4o-mini@llm-endpoint")).toEqual({
+      id: "openai/gpt-4o-mini@llm-endpoint",
+      provider: "llm-endpoint",
+    })
+  })
 })

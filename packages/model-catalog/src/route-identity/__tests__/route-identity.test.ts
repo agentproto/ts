@@ -358,6 +358,58 @@ describe("resolveLlmModelRoute", () => {
     expect(route).toBeUndefined()
   })
 
+  // ── llm-endpoint built-in proxy route (PR-5) ──────────────────────────────
+  // The runtime registers this route at daemon boot via `registerBuiltinRoutes`
+  // (packages/runtime/src/builtin-routes.ts) with the SAME config asserted here,
+  // derived from the `llm-endpoint` gateway preset. model-catalog can't depend
+  // on the runtime (wrong direction), so these tests register it directly — the
+  // route-identity contract the runtime relies on.
+  const LLM_ENDPOINT_CONFIG: CustomRouteConfig = {
+    label: "LLM Endpoint",
+    flavor: "anthropic",
+    baseUrl: "http://localhost:18090",
+    authEnv: "LLM_ENDPOINT_API_KEY",
+  }
+
+  it("resolves a curated <vendor>/<product>@llm-endpoint ref (Anthropic surface)", () => {
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    const route = resolveLlmModelRoute("moonshot/kimi-k2.7-code@llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route!.route).toBe("llm-endpoint")
+    expect(route!.vendor).toBe("moonshot")
+    expect(route!.product).toBe("kimi-k2.7-code")
+    expect(route!.transport.flavor).toBe("anthropic")
+    expect(route!.transport.baseUrl).toBe("http://localhost:18090")
+    expect(route!.availability).toBe("available")
+  })
+
+  it("resolves a routeless product on @llm-endpoint via DEFAULT_PRICING", () => {
+    // A product with NO direct pricing catalog entry ("routeless") still
+    // resolves through the custom route — the custom branch falls back to
+    // DEFAULT_PRICING rather than dropping the ref, so the proxy can serve
+    // upstreams the catalog has never priced.
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    const route = resolveLlmModelRoute("acme/no-such-model-xyz@llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route!.route).toBe("llm-endpoint")
+    expect(route!.transport.flavor).toBe("anthropic")
+    expect(route!.transport.baseUrl).toBe("http://localhost:18090")
+    expect(route!.pricing.inputPer1M).toBe(0.15)
+    expect(route!.pricing.outputPer1M).toBe(0.6)
+  })
+
+  it("returns undefined for a @llm-endpoint ref when the route is unregistered", () => {
+    // No registerCustomRoute this test (beforeEach cleared the map) → the ref
+    // does not resolve, proving the built-in registration is load-bearing.
+    const route = resolveLlmModelRoute("moonshot/kimi-k2.7-code@llm-endpoint")
+    expect(route).toBeUndefined()
+  })
+
+  it("returns undefined for an unregistered @bogus-route even alongside llm-endpoint", () => {
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    expect(resolveLlmModelRoute("moonshot/kimi-k2.7-code@bogus-route")).toBeUndefined()
+  })
+
   it("preserves legacy bare id compatibility", () => {
     const route = resolveLlmModelRoute("gpt-4o")
     expect(route).toBeDefined()

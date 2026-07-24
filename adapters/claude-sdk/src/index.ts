@@ -134,6 +134,17 @@ export const claudeSdk: AgentCliHandle = defineAgentCli({
       { id: "google/gemini-2.5-flash@openrouter", provider: "openrouter" },
       { id: "google/gemini-2.5-pro@openrouter", provider: "openrouter" },
       { id: "moonshotai/kimi-k2.7-code@openrouter", provider: "openrouter" },
+      // Local llm-endpoint proxy — the `@llm-endpoint` suffix pins the catalog
+      // join to the runtime-registered custom route (Anthropic surface at
+      // localhost:18090). A SMALL curated set from the proxy's own `default`
+      // pack (packages/llm-endpoint/src/packs.ts); the vendor prefix is the
+      // proxy's transparent-provider name so the boundary-stripped
+      // `vendor/product` upstream id transparently routes.
+      { id: "moonshot/kimi-k2.7-code@llm-endpoint", provider: "llm-endpoint" },
+      { id: "moonshot/kimi-k2.6@llm-endpoint", provider: "llm-endpoint" },
+      { id: "zai/glm-5.2@llm-endpoint", provider: "llm-endpoint" },
+      { id: "openai/gpt-4.1@llm-endpoint", provider: "llm-endpoint" },
+      { id: "openai/gpt-4o-mini@llm-endpoint", provider: "llm-endpoint" },
     ],
     env: {
       anthropic: "ANTHROPIC_API_KEY",
