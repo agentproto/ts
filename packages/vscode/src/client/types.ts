@@ -414,6 +414,42 @@ export interface LlmEndpointStatusResult {
   status: "starting" | "running" | "stopped" | "error" | "never-started"
   lastError?: string
   injectedProviders?: string[]
+  linkedProviders?: string[]
+}
+
+/** One auth-profile eligible to be linked to an upstream, as reported by
+ *  `llm_endpoint_list_links`. Never carries a secret. */
+export interface EligibleLinkProfile {
+  id: string
+  label?: string
+  method: "api-key" | "oauth-bearer"
+  endpoint: string
+}
+
+/** One upstream's link state + its eligible profiles, from `llm_endpoint_list_links`. */
+export interface UpstreamLinkInfo {
+  provider: string
+  /** The DESIRED (persisted) link — a running proxy may lag until restarted. */
+  linkedProfile: string | null
+  eligible: EligibleLinkProfile[]
+}
+
+/** Result of `llm_endpoint_list_links` — the persisted link map plus, per
+ *  upstream, the profiles eligible to be linked. */
+export interface LlmEndpointLinksResult {
+  links: Record<string, string>
+  upstreams: UpstreamLinkInfo[]
+}
+
+/** Result of `llm_endpoint_set_upstream_link` — the link is persisted; a running
+ *  proxy must be restarted to apply it (`restartRequired`). Never hot-applied. */
+export interface LlmEndpointSetLinkResult {
+  ok: boolean
+  provider: string
+  profileId: string | null
+  cleared?: boolean
+  applied: boolean
+  restartRequired: boolean
 }
 
 /**
@@ -431,6 +467,17 @@ export interface LlmEndpointReloadPacksResult {
   pack_ids: string[]
   count: number
 }
+
+/**
+ * Result of the proxy's `POST /v1/upstreams/:provider/test` route — the
+ * cheapest authenticated call to an upstream, reached directly over loopback
+ * (mirroring the reload transport). Never carries a secret. A verdict is
+ * `{ok, status, detail}`; an upstream with no cheap safe probe is
+ * `{ok:null, reason:"no-probe"}`.
+ */
+export type LlmEndpointUpstreamTestResult =
+  | { provider: string; ok: boolean; status: number; detail: string }
+  | { provider: string; ok: null; reason: string }
 
 /** Descriptor returned by `llm_endpoint_start` — the freshly spawned (or
  *  reused) proxy child. `wasAlreadyRunning` is true on an idempotent no-op. */

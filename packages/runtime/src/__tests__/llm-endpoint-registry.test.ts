@@ -67,8 +67,9 @@ function makeRegistry(
   over: ConstructorParameters<typeof MockRegistry>[0] = {},
 ): MockRegistry {
   return new MockRegistry({
-    // Never touch the on-disk providers store in unit tests.
+    // Never touch the on-disk providers / links stores in unit tests.
     injectKeys: async () => [],
+    injectLinks: async () => [],
     // `launch` is mocked, but `start` still validates the resolved bin path.
     binPath: EXISTING_BIN,
     readyTimeoutMs: 40,
@@ -145,8 +146,52 @@ describe("assembleLlmEndpointEnv", () => {
         e.MOONSHOT_API_KEY = "sk-injected"
         return ["moonshot"]
       },
+      injectLinks: async () => [],
     })
     expect(env.MOONSHOT_API_KEY).toBe("sk-explicit")
+  })
+
+  it("injects upstream profile links via injectLinks and reports them", async () => {
+    const { env, linkedProviders } = await assembleLlmEndpointEnv({
+      baseEnv: {},
+      injectKeys: async () => [],
+      injectLinks: async e => {
+        e.LLM_ENDPOINT_PROFILE_ANTHROPIC = "claude-subs"
+        return ["anthropic"]
+      },
+    })
+    expect(env.LLM_ENDPOINT_PROFILE_ANTHROPIC).toBe("claude-subs")
+    expect(linkedProviders).toEqual(["anthropic"])
+  })
+
+  it("explicit env wins over an injected link", async () => {
+    const { env } = await assembleLlmEndpointEnv({
+      explicitEnv: { LLM_ENDPOINT_PROFILE_ANTHROPIC: "explicit-profile" },
+      baseEnv: {},
+      injectKeys: async () => [],
+      injectLinks: async e => {
+        // The seam mirrors the real one: it must NOT overwrite a pre-set var,
+        // and even if it did, the explicit-env merge runs after and wins.
+        if (!e.LLM_ENDPOINT_PROFILE_ANTHROPIC) {
+          e.LLM_ENDPOINT_PROFILE_ANTHROPIC = "linked-profile"
+          return ["anthropic"]
+        }
+        return []
+      },
+    })
+    expect(env.LLM_ENDPOINT_PROFILE_ANTHROPIC).toBe("explicit-profile")
+  })
+
+  it("no links → env carries no LLM_ENDPOINT_PROFILE_* var (byte-identical to today)", async () => {
+    const { env, linkedProviders } = await assembleLlmEndpointEnv({
+      baseEnv: {},
+      injectKeys: async () => [],
+      injectLinks: async () => [],
+    })
+    expect(linkedProviders).toEqual([])
+    expect(
+      Object.keys(env).filter(k => k.startsWith("LLM_ENDPOINT_PROFILE_")),
+    ).toEqual([])
   })
 })
 
