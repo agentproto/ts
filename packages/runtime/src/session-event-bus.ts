@@ -174,16 +174,21 @@ export interface SessionReapedEvent {
  * NEVER auto-retries the interrupted prompt (a prompt is not idempotent). See
  * the interrupted-turn contract in the session-survivability plan.
  *
- * `resumedFrom` records what the row was recovering from — today always
- * `"daemon-restart"`, the only reason an in-place resume fires. Same bus
- * distribution as every other lifecycle event (`session_events_poll`, the
- * webhook notifier, the routine engine, `session_monitor`).
+ * `resumedFrom` records what the row was recovering from: `"daemon-restart"`
+ * for the lazy/eager prompt-path revival (the only reason an in-place resume
+ * fired before PR-2), or `"restarted"` for a PROACTIVE revival the restart-
+ * scheduler (PR-2, `restart-scheduler.ts`) drove off an opt-in `restartPolicy`
+ * after a `"crashed"`/unexpected `"error"` death — distinct so a watcher can
+ * tell "the daemon came back and revived me" from "I crashed and my own
+ * policy brought me back". Same bus distribution as every other lifecycle
+ * event (`session_events_poll`, the webhook notifier, the routine engine,
+ * `session_monitor`).
  */
 export interface SessionResumedEvent {
   type: "session:resumed"
   sessionId: string
   interrupted: boolean
-  resumedFrom: "daemon-restart"
+  resumedFrom: "daemon-restart" | "restarted"
   label?: string
   ts: string
 }

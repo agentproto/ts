@@ -75,6 +75,7 @@ import {
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
+import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { loadConfig } from "./config.js"
 import { resolveResumeAuth } from "./session-restart-core.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -557,6 +558,19 @@ export interface CreateGatewayOptions {
    *  (`registry.markCrashed`, driven by `runCrashDetectPass`). Non-positive ⇒
    *  the sweep never runs. Surfaced in `daemon_health` / `GET /health`. */
   crashDetectIntervalMs?: number
+  /** Restart-scheduler sweep interval in ms (restart-scheduler PR-2). Mirrors
+   *  the `daemon.restartSweepIntervalMs` config knob; the CLI resolves it
+   *  (env > config > off) and passes it here. OFF by default — unlike
+   *  `crashDetectIntervalMs`, a positive value here doesn't itself opt any
+   *  session in, it only arms the periodic sweep that EXECUTES an already-
+   *  scheduled restart for a session that carries a per-session
+   *  `restartPolicy` (`agent_start.restartPolicy`). The event-driven half
+   *  that SCHEDULES a restart (`createRestartScheduler`, subscribing to
+   *  `session:exited`) runs regardless of this knob — it just has nothing to
+   *  execute against until the sweep is armed. Non-positive / undefined ⇒
+   *  the sweep never runs, so a scheduled `nextRestartAt` sits inert.
+   *  Surfaced in `daemon_health` / `GET /health`. */
+  restartSweepIntervalMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -838,6 +852,13 @@ export async function createGateway(
         ? opts.crashDetectIntervalMs
         : 0
       : DEFAULT_CRASH_DETECT_INTERVAL_MS
+  // Effective restart-sweep interval (restart-scheduler PR-2): OFF by
+  // default, same shape as idleReapAfterMs — a caller must opt in with a
+  // positive ms value before the sweep ever runs.
+  const restartSweepIntervalMs =
+    typeof opts.restartSweepIntervalMs === "number" && opts.restartSweepIntervalMs > 0
+      ? opts.restartSweepIntervalMs
+      : 0
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -1071,6 +1092,14 @@ export async function createGateway(
         }
       : {}),
   })
+
+  // Restart scheduler (restart-scheduler PR-2) — the EVENT-driven half only;
+  // it subscribes to session:exited and stamps/gives-up a schedule on an
+  // eligible, opted-in death. Runs regardless of `restartSweepIntervalMs`:
+  // that knob only arms the periodic sweep further below that EXECUTES a
+  // landed schedule. Declared right after `sessions` (needs the registry +
+  // its own event bus); disposed in stop().
+  const restartScheduler = createRestartScheduler({ registry: sessions, sessionEvents })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.
   // Declared after `sessions` so it can resolve session cwd at gate time.
@@ -1363,6 +1392,7 @@ export async function createGateway(
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
+      restartSweepIntervalMs,
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -1706,6 +1736,7 @@ export async function createGateway(
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
+      restartSweepIntervalMs,
     },
     cronScheduler,
     routineRegistrar,
@@ -1778,6 +1809,36 @@ export async function createGateway(
     crashDetectTimer.unref?.()
   }
 
+  // Restart-sweep tick (restart-scheduler PR-2). OFF by default — only armed
+  // when `restartSweepIntervalMs > 0`. This is the half that EXECUTES a
+  // schedule the event-driven `restartScheduler` above already stamped
+  // (`nextRestartAt`); the knob controls the sweep cadence, not whether any
+  // given session opted in (that's per-session `restartPolicy`).
+  // `.unref()` so the ticker never keeps the process alive on its own.
+  let restartSweepTimer: ReturnType<typeof setInterval> | null = null
+  if (restartSweepIntervalMs > 0) {
+    restartSweepTimer = setInterval(() => {
+      runRestartSweepPass({ registry: sessions, restartSweepIntervalMs })
+        .then(summary => {
+          if (summary.resumed > 0) {
+            // One line per sweep that actually resumed something (silent
+            // otherwise so a quiet daemon doesn't log every tick).
+            console.log(
+              `[restart-scheduler] resumed ${summary.resumed}/${summary.candidates} ` +
+                `restart-scheduled agent session(s): ${summary.ids.join(", ")}`,
+            )
+          }
+        })
+        .catch(err => {
+          // A sweep must never crash the daemon — log and let the next tick retry.
+          console.warn(
+            `[restart-scheduler] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+    }, restartSweepIntervalMs)
+    restartSweepTimer.unref?.()
+  }
+
   events.emit({
     type: "boot",
     at: new Date().toISOString(),
@@ -1834,6 +1895,10 @@ export async function createGateway(
       if (idleReapTimer) clearInterval(idleReapTimer)
       // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).
       if (crashDetectTimer) clearInterval(crashDetectTimer)
+      // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
+      if (restartSweepTimer) clearInterval(restartSweepTimer)
+      // Detach the restart-scheduler's session:exited subscription.
+      restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       // Stop the cron scheduler tick loop before sessions shut down.

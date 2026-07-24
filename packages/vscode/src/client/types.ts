@@ -72,6 +72,20 @@ export interface SessionAccessProfileEcho {
   method: AuthMethod
 }
 
+/** Mirrors @agentproto/runtime RestartPolicy (restart-scheduler PR-2) — the
+ *  opt-in auto-restart policy a session can carry. Minimal mirror (the field
+ *  round-trips through spawn/descriptor reads; no client UI reads into it
+ *  yet). */
+export interface RestartPolicy {
+  on: ("crashed" | "error")[]
+  maxRetries: number
+  windowMs: number
+  baseDelayMs: number
+  factor: number
+  maxDelayMs: number
+  resume?: boolean
+}
+
 /**
  * SessionDescriptor — the daemon's canonical session row. Field-for-field
  * copy of the recon §Session descriptor contract (packages/runtime
@@ -133,6 +147,10 @@ export interface SessionDescriptor {
    *  timestamp of the crash-detect sweep that flipped this row to
    *  `endedReason:"crashed"`. */
   crashedAt?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.restartPolicy — the
+   *  opt-in auto-restart policy (restart-scheduler PR-2). Absent for the
+   *  overwhelming majority of sessions (today's lazy-resume-only default). */
+  restartPolicy?: RestartPolicy
   label?: string
   /** Derived from the session's FIRST prompt — see the runtime's
    *  SessionDescriptor.title doc for the derivation + overwrite rules. Now
