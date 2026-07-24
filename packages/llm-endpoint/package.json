@@ -54,6 +54,7 @@
     "test:e2e": "tsx src/__tests__/e2e.live.ts"
   },
   "dependencies": {
+    "@agentproto/auth": "workspace:*",
     "@agentproto/providers-store": "workspace:*"
   },
   "devDependencies": {

@@ -22,6 +22,7 @@ import {
   chatCompletionsJsonToResponses,
   OpenAIChatToResponsesStreamConverter,
 } from './responses.js';
+import { getAuthProfile, KeychainStore } from '@agentproto/auth';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
@@ -386,6 +387,175 @@ function getApiKey(provider: string): string {
   return getResolvedKeys()[provider as keyof ProviderKeys] || '';
 }
 
+// ── Named-auth-profile credential resolution ──────────────────────────────
+// An upstream can be authenticated from a NAMED auth-profile
+// (`@agentproto/auth`) instead of only per-provider env vars. Map a provider
+// to a profile id via `LLM_ENDPOINT_PROFILE_<PROVIDER_UPPER>`
+// (e.g. LLM_ENDPOINT_PROFILE_ANTHROPIC=claude-subs-agentik). Absent → the
+// existing env-key path is used, byte-identical to before.
+
+// Anthropic OAuth wire constants — re-declared locally as string literals
+// (mirrors remaining-quota.ts:179-181) so this package never imports
+// @agentproto/runtime.
+const ANTHROPIC_VERSION = '2023-06-01';
+const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
+
+type UpstreamAuthMethod = 'api-key' | 'oauth-bearer';
+
+/** A resolved upstream credential: the secret plus the header shape to use. */
+export interface UpstreamCredential {
+  value: string;
+  method: UpstreamAuthMethod;
+}
+
+function upstreamProfileEnvVar(provider: string): string {
+  return `LLM_ENDPOINT_PROFILE_${provider.toUpperCase()}`;
+}
+
+// Log-once dedupe so a persistent misconfig (e.g. non-darwin keychain) doesn't
+// spam a warning on every single request.
+const _warnedUpstream = new Set<string>();
+function warnUpstreamOnce(key: string, message: string): void {
+  if (_warnedUpstream.has(key)) return;
+  _warnedUpstream.add(key);
+  console.warn(message);
+}
+
+/**
+ * Resolve the outbound credential for `provider`. Mirrors getApiKey()'s
+ * provider-string contract but returns the credential AND the header method.
+ *
+ * - `LLM_ENDPOINT_PROFILE_<P>` set → resolve the named profile:
+ *     • missing / disabled          → undefined (caller 401s, as today)
+ *     • source-backed (no credRef)  → undefined + a clear follow-up log
+ *                                      (self-refresh not supported here yet)
+ *     • credentialRef-backed        → { value, method: profile.method }
+ *     • keychain read returns null (credential absent / present-but-unreadable
+ *       on a supported host, e.g. a locked Keychain) → undefined (fail-closed;
+ *       caller 401s — we do NOT silently downgrade a mapped profile to the env
+ *       key)
+ *     • keychain read throws (platform-unsupported backend, e.g. non-darwin
+ *       host) → env-key fallback + a one-time log; never crashes the request
+ * - no mapping → env-key path UNCHANGED (method "api-key").
+ */
+export async function resolveUpstreamCredential(
+  provider: string,
+): Promise<UpstreamCredential | undefined> {
+  const profileId = process.env[upstreamProfileEnvVar(provider)]?.trim();
+  if (profileId) {
+    const profile = await getAuthProfile(profileId);
+    if (!profile || profile.disabled) {
+      warnUpstreamOnce(
+        `profile:${provider}:${profileId}`,
+        `[Proxy][auth] profile "${profileId}" mapped for provider "${provider}" is ${profile ? 'disabled' : 'missing'}; request will 401. Enable/create it or unset ${upstreamProfileEnvVar(provider)}.`,
+      );
+      return undefined;
+    }
+    if (!profile.credentialRef) {
+      // Source-backed profile (e.g. source:"claude-code-oauth"). Self-refresh
+      // would require re-homing a runtime helper — out of scope for the proxy.
+      warnUpstreamOnce(
+        `source:${provider}:${profileId}`,
+        `[Proxy][auth] profile "${profileId}" is source-backed (source="${profile.source ?? '?'}"); source-backed profiles are not yet supported by the proxy — use a credentialRef profile or a per-provider API-key env var instead. Request will 401.`,
+      );
+      return undefined;
+    }
+    try {
+      const stored = await new KeychainStore().read({ path: profile.credentialRef });
+      if (!stored) {
+        // Read succeeded but the credential is absent / unreadable (e.g. a
+        // locked or emptied Keychain entry on a supported host). Fail closed —
+        // do NOT fall back to the env key, which could silently swap in a
+        // different credential for a deliberately-mapped profile.
+        warnUpstreamOnce(
+          `noref:${provider}:${profileId}`,
+          `[Proxy][auth] profile "${profileId}" credentialRef resolved no stored credential; failing closed — request will 401 (no env-key fallback for a mapped profile).`,
+        );
+        return undefined;
+      }
+      return { value: stored.value, method: profile.method };
+    } catch (err) {
+      // Keychain backend unusable on this host (platform-unsupported, e.g. a
+      // non-darwin host with no Keychain) → fall back to the env key rather than
+      // failing the request. This is the ONLY keychain path that degrades to the
+      // env key; a null read above fails closed instead.
+      warnUpstreamOnce(
+        `keychain:${provider}:${profileId}`,
+        `[Proxy][auth] keychain backend unavailable for profile "${profileId}" (${(err as Error).message}); platform-unsupported — falling back to the ${provider} env key.`,
+      );
+      // fall through to the env-key path below
+    }
+  }
+  // No mapping (or keychain fallback): existing env-key path, unchanged.
+  return { value: getApiKey(provider), method: 'api-key' };
+}
+
+/**
+ * Single source of truth for the outbound upstream-auth header shape. Given a
+ * resolved credential, returns the auth-related headers to merge into the
+ * request. For an `api-key` credential each provider keeps its existing header
+ * exactly; for `oauth-bearer` (only meaningful on the anthropic upstream) it
+ * emits the Bearer + anthropic-version + anthropic-beta triple.
+ *
+ * Fail-closed: an `oauth-bearer` credential (e.g. a Claude subscription OAT)
+ * resolved for a NON-anthropic provider returns `null` — the token is never
+ * emitted to a third-party upstream. Callers MUST treat `null` as a hard 401
+ * and send no request.
+ */
+export function buildUpstreamAuthHeaders(
+  provider: string,
+  cred: UpstreamCredential,
+): Record<string, string> | null {
+  const { value, method } = cred;
+
+  if (method === 'oauth-bearer') {
+    if (provider !== 'anthropic') {
+      // oauth-bearer is only meaningful for the anthropic upstream. Sending a
+      // Claude subscription OAT to any other host would leak the token to a
+      // third party — reject rather than forward it.
+      warnUpstreamOnce(
+        `oauth-misconfig:${provider}`,
+        `[Proxy][auth] oauth-bearer credential resolved for non-anthropic provider "${provider}"; refusing to forward it (subscription/oauth credentials are only valid for the anthropic upstream). Request will 401.`,
+      );
+      return null;
+    }
+    return {
+      'Authorization': `Bearer ${value}`,
+      'anthropic-version': ANTHROPIC_VERSION,
+      'anthropic-beta': ANTHROPIC_OAUTH_BETA,
+    };
+  }
+
+  // api-key — preserve each provider's existing header shape verbatim.
+  switch (provider) {
+    case 'anthropic':
+      return { 'x-api-key': value, 'anthropic-version': ANTHROPIC_VERSION };
+    case 'moonshot':
+      return { 'X-API-Key': value };
+    // openrouter/requesty also set `anthropic-version` at their call sites
+    // (left inline — it is a request-shape header, not an auth header).
+    default:
+      return { 'Authorization': `Bearer ${value}` };
+  }
+}
+
+/**
+ * Fail-closed guard for the OpenAI-compatible surfaces (/v1/responses,
+ * /v1/chat/completions). Those surfaces are ALWAYS non-anthropic
+ * (getChatCompletionsEndpoint returns null for anthropic) and forward the
+ * resolved credential as `Authorization: Bearer <value>` — so only an
+ * `api-key` credential may be used. A subscription/oauth credential (e.g. a
+ * Claude OAT) must be rejected, never leaked to a third-party host.
+ *
+ * Returns true when the credential may proceed on this surface. An absent
+ * credential returns true here (the caller's missing-key check 401s it).
+ */
+export function isCredentialAllowedOnOpenAiSurface(
+  cred: UpstreamCredential | undefined,
+): boolean {
+  return !cred || cred.method === 'api-key';
+}
+
 /**
  * Handles POST /v1/responses (and /v1/{pack}/responses).
  *
@@ -414,7 +584,7 @@ function handleResponsesRequest(
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
       const validated = validateResponsesRequest(payload);
@@ -453,7 +623,18 @@ function handleResponsesRequest(
         return;
       }
       const { hostname, path } = endpoint;
-      const targetApiKey = getApiKey(resolvedTarget.provider);
+      const cred = await resolveUpstreamCredential(resolvedTarget.provider);
+      const targetApiKey = cred?.value ?? '';
+      // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
+      // (getChatCompletionsEndpoint returns null for anthropic). A non-api-key
+      // credential (e.g. a Claude subscription OAT) must never be forwarded as a
+      // Bearer token to a third-party host — reject before sending the request.
+      if (!isCredentialAllowedOnOpenAiSurface(cred)) {
+        console.warn(`[Proxy][responses] refusing to forward a ${cred!.method} credential to non-anthropic provider "${resolvedTarget.provider}"; returning 401.`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
+        return;
+      }
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
@@ -462,6 +643,10 @@ function handleResponsesRequest(
 
       console.log(`[Proxy Sortant][responses] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${chatPayload.model}"`);
 
+      // OpenAI-compatible surface — always Authorization: Bearer (never a
+      // provider's Anthropic-surface header). buildUpstreamAuthHeaders is
+      // keyed on provider, not surface, so it is NOT used here; only the
+      // resolved credential value is (credentialRef-backed profiles included).
       const options: RequestOptions = {
         hostname,
         port: 443,
@@ -550,7 +735,7 @@ function handleChatCompletionsRequest(
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
 
@@ -588,7 +773,18 @@ function handleChatCompletionsRequest(
         return;
       }
       const { hostname, path } = endpoint;
-      const targetApiKey = getApiKey(resolvedTarget.provider);
+      const cred = await resolveUpstreamCredential(resolvedTarget.provider);
+      const targetApiKey = cred?.value ?? '';
+      // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
+      // (getChatCompletionsEndpoint returns null for anthropic). A non-api-key
+      // credential (e.g. a Claude subscription OAT) must never be forwarded as a
+      // Bearer token to a third-party host — reject before sending the request.
+      if (!isCredentialAllowedOnOpenAiSurface(cred)) {
+        console.warn(`[Proxy][chat/completions] refusing to forward a ${cred!.method} credential to non-anthropic provider "${resolvedTarget.provider}"; returning 401.`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
+        return;
+      }
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
@@ -597,6 +793,9 @@ function handleChatCompletionsRequest(
 
       console.log(`[Proxy Sortant][chat/completions] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${payload.model}"`);
 
+      // OpenAI-compatible surface — always Authorization: Bearer (see the
+      // /v1/responses handler above for why buildUpstreamAuthHeaders, which is
+      // keyed on provider not surface, is deliberately not used here).
       const options: RequestOptions = {
         hostname,
         port: 443,
@@ -1527,7 +1726,7 @@ const server = createServer((req, res) => {
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
 
@@ -1553,6 +1752,7 @@ const server = createServer((req, res) => {
       let hostname = '';
       let path = '';
       let targetApiKey = '';
+      let cred: UpstreamCredential | undefined;
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
       payload.model = resolvedTarget.model;
@@ -1573,9 +1773,9 @@ const server = createServer((req, res) => {
           // Anthropic natif — pas de transformation de forme requise.
           hostname = 'api.anthropic.com';
           path = '/v1/messages';
-          targetApiKey = getApiKey('anthropic');
-          headers['x-api-key'] = targetApiKey;
-          headers['anthropic-version'] = '2023-06-01';
+          cred = await resolveUpstreamCredential('anthropic');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('anthropic', cred));
           break;
 
         case 'openrouter':
@@ -1586,8 +1786,9 @@ const server = createServer((req, res) => {
           // tool_choice, stop_sequences passent en natif Anthropic côté OpenRouter.
           hostname = 'openrouter.ai';
           path = '/api/v1/messages';
-          targetApiKey = getApiKey('openrouter');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('openrouter');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('openrouter', cred));
           headers['anthropic-version'] = '2023-06-01';
           break;
 
@@ -1598,16 +1799,18 @@ const server = createServer((req, res) => {
           // request/response, tools/system/thinking passent en natif.
           hostname = 'router.requesty.ai';
           path = '/v1/messages';
-          targetApiKey = getApiKey('requesty');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('requesty');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('requesty', cred));
           headers['anthropic-version'] = '2023-06-01';
           break;
 
         case 'zai':
           hostname = 'open.bigmodel.cn';
           path = '/api/paas/v4/chat/completions'; // Zhipu AI standard path
-          targetApiKey = getApiKey('zai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('zai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('zai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour ZAI
@@ -1631,8 +1834,9 @@ const server = createServer((req, res) => {
         case 'groq':
           hostname = 'api.groq.com';
           path = '/openai/v1/chat/completions'; // Groq utilise l'API OpenAI standard
-          targetApiKey = getApiKey('groq');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('groq');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('groq', cred));
           adaptAnthropicToOpenAI(payload);
           // Raisonnement modèle-aware — Groq a 3 familles aux APIs incompatibles :
           //  - qwen/qwen3.6-27b : reasoning_effort:"none" coupe le raisonnement à la source
@@ -1670,8 +1874,9 @@ const server = createServer((req, res) => {
         case 'xai':
           hostname = 'api.x.ai';
           path = '/v1/chat/completions'; // xAI uses OpenAI-compatible API
-          targetApiKey = getApiKey('xai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('xai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('xai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour xAI (format OpenAI)
@@ -1695,8 +1900,9 @@ const server = createServer((req, res) => {
         case 'openai':
           hostname = 'api.openai.com';
           path = '/v1/chat/completions';
-          targetApiKey = getApiKey('openai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('openai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('openai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour OpenAI (format function)
@@ -1721,8 +1927,9 @@ const server = createServer((req, res) => {
         default:
           hostname = 'api.moonshot.ai';
           path = '/anthropic/v1/messages'; // Mode d'émulation Anthropic natif (Pas besoin de changer les tools)
-          targetApiKey = getApiKey('moonshot');
-          headers['X-API-Key'] = targetApiKey;
+          cred = await resolveUpstreamCredential('moonshot');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('moonshot', cred));
           headers['Accept'] = 'text/event-stream';
 
           if (!payload.max_tokens) {
@@ -1732,6 +1939,17 @@ const server = createServer((req, res) => {
             payload.thinking = { type: 'enabled', budget_tokens: 4000 };
           }
           break;
+      }
+
+      // Fail closed: buildUpstreamAuthHeaders returns null when a non-api-key
+      // credential (e.g. a Claude subscription OAT) is resolved for a
+      // non-anthropic upstream. The per-provider Object.assign above already
+      // refused to emit it — but we must NOT fall through to an unauthenticated
+      // https.request either. 401 before any request is sent.
+      if (cred && buildUpstreamAuthHeaders(resolvedTarget.provider, cred) === null) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `The resolved credential for provider "${resolvedTarget.provider}" cannot be used on this upstream (subscription/oauth credentials are only valid for the anthropic upstream).` } }));
+        return;
       }
 
       if (!targetApiKey) {
